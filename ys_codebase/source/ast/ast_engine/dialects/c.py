@@ -8,6 +8,8 @@ from typing import Dict
 
 from .cpp import CppDialect
 
+_INCLUDE_RE = re.compile(r'^\s*#include\s*[<"]([^>"]+)[>"]', re.MULTILINE)
+
 
 class CDialect(CppDialect):
     language = "c"
@@ -18,8 +20,7 @@ class CDialect(CppDialect):
         imports: Dict[str, str] = {}
         if not source_text:
             return imports
-        inc_re = re.compile(r'^\s*#include\s*[<"]([^>"]+)[>"]', re.MULTILINE)
-        for m in inc_re.finditer(source_text):
+        for m in _INCLUDE_RE.finditer(source_text):
             header = m.group(1).strip()
             stem = Path(header).stem
             imports[header] = header

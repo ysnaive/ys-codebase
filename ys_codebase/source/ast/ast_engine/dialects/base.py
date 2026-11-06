@@ -7,6 +7,12 @@ from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+_XML_TAG_RE = re.compile(r"</?[A-Za-z_][A-Za-z0-9_.:-]*(?:\s+[^<>,]*?)?/?>")
+_STATIC_SIG_RE = re.compile(r"(?:^|\s|@)(?:static|staticmethod|classmethod)\b")
+_GENERIC_CALL_RECEIVER_RE = re.compile(r"<\s*([A-Za-z_][A-Za-z0-9_.]*)\s*>\s*\([^)]*\)$")
+_TRAILING_CALL_PARENS_RE = re.compile(r"\([^)]*\)$")
+_GENERIC_ARGS_RE = re.compile(r"<[^>]+>")
+
 
 class DialectAdapter:
     """
@@ -34,11 +40,13 @@ class DialectAdapter:
                 l = l[2:].strip()
             elif l.startswith("/*"):
                 l = l[2:].strip()
+            elif l.startswith("#"):
+                l = l.lstrip("#").strip()
             if l.endswith("*/"):
                 l = l[:-2].strip()
             if l.startswith("*"):
                 l = l[1:].strip()
-            l = re.sub(r"<[^>]+>", "", l).strip()
+            l = _XML_TAG_RE.sub("", l).strip()
             if l:
                 cleaned_lines.append(l)
         return "\n".join(cleaned_lines).strip()
@@ -87,7 +95,7 @@ class DialectAdapter:
         mods = self.extract_modifiers(def_node)
         if "static" in mods:
             return True
-        if signature and re.search(r"(?:^|\s|@)(?:static|staticmethod|classmethod)\b", signature):
+        if signature and _STATIC_SIG_RE.search(signature):
             return True
         if lines and start_line > 1:
             idx = start_line - 2
@@ -149,12 +157,12 @@ class DialectAdapter:
         if prefix.startswith("(") and prefix.endswith(")"):
             prefix = prefix[1:-1].strip()
         if prefix.endswith(")"):
-            gen_m = re.search(r"<\s*([A-Za-z_][A-Za-z0-9_.]*)\s*>\s*\([^)]*\)$", prefix)
+            gen_m = _GENERIC_CALL_RECEIVER_RE.search(prefix)
             if gen_m:
                 prefix = gen_m.group(1).strip()
             else:
-                prefix = re.sub(r"\([^)]*\)$", "", prefix).strip()
-        prefix = re.sub(r"<[^>]+>", "", prefix).strip()
+                prefix = _TRAILING_CALL_PARENS_RE.sub("", prefix).strip()
+        prefix = _GENERIC_ARGS_RE.sub("", prefix).strip()
 
         if prefix == "this":
             return "self"

@@ -14,6 +14,14 @@ from dev.testing.contract import make_contract_suite
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement
 
+_CATEGORY_MASK = (
+    Requirement.WORKFLOW.value
+    | Requirement.PERF.value
+    | Requirement.ENV.value
+    | Requirement.NETWORK.value
+    | Requirement.LOGIC.value
+)
+
 
 def run_subprocess_with_tree_timeout(
     cmd: List[str],
@@ -55,14 +63,16 @@ def run_subprocess_with_tree_timeout(
             out, err = proc.communicate(timeout=2.0)
         except Exception:
             out, err = "", ""
-        finally:
-            for pipe in (proc.stdout, proc.stderr):
-                if pipe:
-                    try:
-                        pipe.close()
-                    except Exception:
-                        pass
         return -1, out or "", (err or "") + f"\n[dev:runner] Process timed out after {timeout_sec}s"
+    finally:
+        if proc.poll() is None:
+            terminate_popen_tree(proc, timeout_sec=2.0)
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe:
+                try:
+                    pipe.close()
+                except Exception:
+                    pass
 
 
 def filter_suite(
@@ -102,15 +112,20 @@ def filter_suite(
         full_id = f"{module_name}.{class_name}.{method_name}"
 
         if target:
-            t_clean = target.split(":", 1)[1] if ":" in target else target
-            t_clean_lower = t_clean.lower()
-            if (
-                t_clean_lower not in full_id.lower()
-                and t_clean_lower not in method_name.lower()
-                and t_clean_lower not in class_name.lower()
-            ):
-                return False
-            return True
+            t_clean = (target.split(":", 1)[1] if ":" in target else target).strip()
+            if t_clean:
+                t_clean_lower = t_clean.lower()
+                if (
+                    t_clean_lower not in full_id.lower()
+                    and t_clean_lower not in method_name.lower()
+                    and t_clean_lower not in class_name.lower()
+                ):
+                    return False
+                if pattern and (pattern.lower() not in method_name.lower() and pattern.lower() not in class_name.lower()):
+                    return False
+                if class_name == "_FailedTest" or test_type is None:
+                    return True
+                return get_test_category(test_case) in resolved_types
 
         if pattern and (pattern.lower() not in method_name.lower() and pattern.lower() not in class_name.lower()):
             return False
@@ -153,10 +168,11 @@ class TestDiscovery:
         Returns (suite, contract_count, custom_count)
         """
         master_suite = unittest.TestSuite()
+        effective_target = None if target == module_name else target
 
         contract_suite = make_contract_suite(module_name)
-        if pattern or test_type or target:
-            contract_suite = filter_suite(contract_suite, pattern=pattern, test_type=test_type, target=target)
+        if pattern or test_type or effective_target:
+            contract_suite = filter_suite(contract_suite, pattern=pattern, test_type=test_type, target=effective_target)
         contract_count = contract_suite.countTestCases()
         master_suite.addTests(contract_suite)
 
@@ -167,6 +183,8 @@ class TestDiscovery:
             if os.path.isdir(tests_dir):
                 pkg_name = "ast_engine" if module_name == "ast" else module_name.replace("-", "_")
                 for mod_k in list(sys.modules.keys()):
+                    if mod_k in ("core", "dev.testing") or mod_k.startswith(("core.", "dev.testing.")):
+                        continue
                     if (
                         mod_k == "tests"
                         or mod_k.startswith("tests.")
@@ -212,7 +230,7 @@ class TestDiscovery:
                             )
 
                 _validate_test_types(discovered)
-                discovered = filter_suite(discovered, pattern=pattern, test_type=test_type, target=target)
+                discovered = filter_suite(discovered, pattern=pattern, test_type=test_type, target=effective_target)
                 custom_count = discovered.countTestCases()
                 master_suite.addTests(discovered)
 
@@ -223,14 +241,16 @@ def get_test_category(test_case: unittest.TestCase) -> str:
     """Extract semantic category string ('logic', 'env', 'workflow', 'perf', 'network') from TestCase."""
     method_name = getattr(test_case, "_testMethodName", "")
     method = getattr(test_case, method_name, None) if method_name else None
-    req = getattr(method, "__requirement__", None) if method else None
-    if req is None:
-        req = getattr(test_case.__class__, "__requirement__", None)
-    if req is None:
-        req = getattr(test_case, "__requirement__", None)
+    method_req = getattr(method, "__requirement__", None) if method else None
+    class_req = getattr(test_case.__class__, "__requirement__", None)
+    if class_req is None:
+        class_req = getattr(test_case, "__requirement__", None)
 
-    if req is not None:
-        req_val = req.value if hasattr(req, "value") else int(req)
+    method_val = (method_req.value if hasattr(method_req, "value") else int(method_req)) if method_req is not None else 0
+    class_val = (class_req.value if hasattr(class_req, "value") else int(class_req)) if class_req is not None else 0
+    req_val = method_val if (method_req is not None and (method_val & _CATEGORY_MASK) != 0) else class_val
+
+    if req_val:
         if bool(req_val & Requirement.WORKFLOW.value):
             return "workflow"
         if bool(req_val & Requirement.PERF.value):

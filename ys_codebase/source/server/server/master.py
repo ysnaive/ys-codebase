@@ -9,7 +9,6 @@ from dataclasses import asdict, dataclass
 import http.server
 import json
 import os
-import platform
 import secrets
 import subprocess
 import sys
@@ -21,6 +20,7 @@ from urllib.parse import urlparse
 from core import vfs
 from core.platform import (
     InterProcessLock,
+    build_runtime_pythonpath,
     daemon_probe,
     ensure_private_venv,
     is_process_alive,
@@ -28,6 +28,7 @@ from core.platform import (
     spawn_detached,
     terminate_popen_tree,
 )
+from server.config import DEFAULT_WORKER_ALIVE_TIMEOUT_SEC, ServerConfig
 from server.logger import ServerLogger
 from server.watcher import ModulesWatcher
 
@@ -237,6 +238,7 @@ class MasterSupervisor:
         self._is_running = False
         self._is_stopped = False
         self._restarting = False
+        self._restart_thread: Optional[threading.Thread] = None
         self._stop_lock = threading.Lock()
         self._httpd: Optional[http.server.HTTPServer] = None
         self._lock: Optional[InterProcessLock] = None
@@ -244,11 +246,46 @@ class MasterSupervisor:
 
     @staticmethod
     def _load_worker_alive_timeout() -> float:
-        from server.config import DEFAULT_WORKER_ALIVE_TIMEOUT_SEC, ServerConfig
         try:
             return float(ServerConfig.load().worker_alive_timeout_sec)
         except (TypeError, ValueError):
             return DEFAULT_WORKER_ALIVE_TIMEOUT_SEC
+
+    @staticmethod
+    def _emit_task_failure(chunk_emitter: Callable[[Dict[str, Any]], None], error_msg: str) -> int:
+        """Emits a failing task_finish packet and returns exit code 1."""
+        chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": error_msg})
+        return 1
+
+    def _handle_worker_control_packet(self, packet: Dict[str, Any]) -> bool:
+        """Handles control IPC packets ('touch_activity' and 'log') from the warm worker."""
+        pkt_type = packet.get("type")
+        if pkt_type == "touch_activity":
+            self.touch_activity(source=str(packet.get("source") or "worker"))
+            return True
+        if pkt_type == "log":
+            self.logger.log(
+                packet.get("level", "INFO"),
+                packet.get("msg", ""),
+                component=packet.get("component", "worker"),
+            )
+            return True
+        return False
+
+    def _build_shutdown_summary(self) -> Dict[str, Any]:
+        """Builds the graceful shutdown summary dictionary."""
+        proc = self._worker_proc
+        worker_pid = proc.pid if proc is not None else 0
+        uptime = time.time() - self._start_time
+        return {
+            "pid": os.getpid(),
+            "worker_pid": worker_pid,
+            "uptime_seconds": uptime,
+            "tasks_executed": self._tasks_executed,
+            "services_stopped": len(self._worker_services),
+            "reason": "Graceful CLI shutdown request",
+            "archive_log": self.logger.get_expected_archive_path(),
+        }
 
     def _worker_state(self) -> str:
         """Returns worker lifecycle state: 'ready', 'warming' or 'restarting' (no live worker)."""
@@ -269,7 +306,9 @@ class MasterSupervisor:
         worker_pid = proc.pid if proc is not None else 0
         now = time.time()
         uptime = now - self._start_time
-        idle_left = max(0.0, self.idle_timeout_sec - (now - self._last_active_time))
+        with self._activity_lock:
+            last_active = self._last_active_time
+        idle_left = max(0.0, self.idle_timeout_sec - (now - last_active))
         watcher_status = {
             "enabled": self.enable_watcher,
             "active": (self.watcher is not None and self.watcher.is_running),
@@ -314,7 +353,8 @@ class MasterSupervisor:
         self._is_running = True
         self._is_stopped = False
         self._restarting = False
-        self._last_active_time = time.time()
+        with self._activity_lock:
+            self._last_active_time = time.time()
 
     def _start_http_and_watcher_services(self) -> None:
         """Binds localhost HTTP server, spawns warm worker, and activateswatcher & idle TTL threads."""
@@ -355,10 +395,14 @@ class MasterSupervisor:
             except KeyboardInterrupt:
                 pass
             finally:
-                self.stop()
+                if self._restarting:
+                    if self._restart_thread is not None:
+                        self._restart_thread.join(timeout=5.0)
+                else:
+                    self.stop()
         else:
-            self._http_thread = threading.Thread(target=self._httpd.serve_forever, daemon=True, name="http-server")
-            self._http_thread.start()
+            http_thread = threading.Thread(target=self._httpd.serve_forever, daemon=True, name="http-server")
+            http_thread.start()
 
     def start(self, foreground: bool = False) -> int:
         """Starts the master supervisor with rigid single-instance lock protection."""
@@ -431,6 +475,7 @@ class MasterSupervisor:
         immediately so the blocked dispatch `readline()` hits EOF and releases `_dispatch_lock`.
         """
         if not self._worker_proc:
+            self._worker_services = []
             return
         proc = self._worker_proc
 
@@ -458,6 +503,7 @@ class MasterSupervisor:
                     pass
         self._worker_proc = None
         self._warming_since = None
+        self._worker_services = []
 
     def restart_worker(self) -> int:
         """
@@ -473,7 +519,6 @@ class MasterSupervisor:
             WorkerSpawnError: if the fresh worker fails the alive handshake.
         """
         # Load config before any destructive action so a config error never leaves the daemon worker-less
-        from server.config import ServerConfig
         cfg = ServerConfig.load()
 
         with self._worker_lock:
@@ -495,7 +540,8 @@ class MasterSupervisor:
                     except WorkerSpawnError as err:
                         self.logger.error(f"Warm Worker restart failed: {err}")
                         raise
-                self._last_active_time = time.time()
+                with self._activity_lock:
+                    self._last_active_time = time.time()
                 self._write_state()
                 self.logger.info(f"Fresh Warm Worker spawned (PID: {new_pid})")
                 return new_pid
@@ -569,6 +615,7 @@ class MasterSupervisor:
                 os._exit(0)
 
         t = threading.Thread(target=_do_restart, daemon=True, name="server-self-restart")
+        self._restart_thread = t
         t.start()
 
     def _ensure_ready_worker(self) -> subprocess.Popen:
@@ -620,8 +667,7 @@ class MasterSupervisor:
             proc.stdin.flush()  # type: ignore
         except Exception as e:
             self.logger.error(f"Failed to write task payload to worker stdin: {e}", exc_info=e)
-            chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(e)})
-            return 1
+            return self._emit_task_failure(chunk_emitter, str(e))
 
         exit_code = 0
         while True:
@@ -630,23 +676,14 @@ class MasterSupervisor:
                 if not line:
                     err_text = self._worker_eof_error(proc)
                     self.logger.error(f"{err_text} during dispatch for module='{target_mod}'")
-                    chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": err_text})
-                    return 1
+                    return self._emit_task_failure(chunk_emitter, err_text)
 
                 line_str = line.decode("utf-8", errors="replace").strip()
                 if not line_str:
                     continue
 
                 packet = json.loads(line_str)
-                if packet.get("type") == "touch_activity":
-                    self.touch_activity(source=str(packet.get("source") or "worker"))
-                    continue
-                if packet.get("type") == "log":
-                    self.logger.log(
-                        packet.get("level", "INFO"),
-                        packet.get("msg", ""),
-                        component=packet.get("component", "worker"),
-                    )
+                if self._handle_worker_control_packet(packet):
                     continue
 
                 chunk_emitter(packet)
@@ -657,24 +694,27 @@ class MasterSupervisor:
                     self.logger.info(f"Task dispatch finished: module='{target_mod}', exit_code={exit_code}, duration={dur_ms:.1f}ms")
                     break
             except Exception as ex:
-                if proc.pid in self._preempted_pids:
+                with self._worker_lock:
+                    was_preempted = proc.pid in self._preempted_pids
+                    if was_preempted:
+                        self._preempted_pids.discard(proc.pid)
+                if was_preempted:
                     # Pipe closed by a preempting restart/stop
-                    self._preempted_pids.discard(proc.pid)
                     self.logger.warning(f"Dispatch for module='{target_mod}' preempted: {_PREEMPTED_ERROR}")
-                    chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": _PREEMPTED_ERROR})
-                    return 1
+                    return self._emit_task_failure(chunk_emitter, _PREEMPTED_ERROR)
                 self.logger.error(f"Exception during worker stream reading: {ex}", exc_info=ex)
-                chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(ex)})
-                return 1
+                return self._emit_task_failure(chunk_emitter, str(ex))
 
-        self._last_active_time = time.time()
+        with self._activity_lock:
+            self._last_active_time = time.time()
         return exit_code
 
     def _worker_eof_error(self, proc: subprocess.Popen) -> str:
         """Classifies a worker stdout EOF as preemption or unexpected closure."""
-        if proc.pid in self._preempted_pids:
-            self._preempted_pids.discard(proc.pid)
-            return _PREEMPTED_ERROR
+        with self._worker_lock:
+            if proc.pid in self._preempted_pids:
+                self._preempted_pids.discard(proc.pid)
+                return _PREEMPTED_ERROR
         return "Worker stdout closed unexpectedly"
 
     def dispatch_task(self, req_data: Dict[str, Any], chunk_emitter: Any) -> int:
@@ -684,8 +724,9 @@ class MasterSupervisor:
         Tracks `current_task` for status reporting, waits for a warming worker to become
         ready, and converts `WorkerSpawnError` into a failing `task_finish`.
         """
-        with self._worker_lock:
+        with self._activity_lock:
             self._last_active_time = time.time()
+        with self._worker_lock:
             self._tasks_executed += 1
 
         target_mod = req_data.get("module", "unknown")
@@ -693,21 +734,20 @@ class MasterSupervisor:
         self.logger.info(f"Task dispatch requested: module='{target_mod}', args={cmd_args}")
 
         with self._dispatch_lock:
-            self._current_task = {"module": target_mod, "args": list(cmd_args), "started_at": time.time()}
+            with self._worker_lock:
+                self._current_task = {"module": target_mod, "args": list(cmd_args), "started_at": time.time()}
             try:
                 try:
                     proc = self._ensure_ready_worker()
                 except WorkerSpawnError as err:
                     self.logger.error(f"Task dispatch aborted: {err}")
-                    chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(err)})
-                    return 1
+                    return self._emit_task_failure(chunk_emitter, str(err))
                 if not self._wait_worker_ready():
                     err_text = self._worker_eof_error(proc)
                     if err_text != _PREEMPTED_ERROR:
                         err_text = "Worker exited before becoming ready"
                     self.logger.error(f"Task dispatch aborted for module='{target_mod}': {err_text}")
-                    chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": err_text})
-                    return 1
+                    return self._emit_task_failure(chunk_emitter, err_text)
                 req_payload = {
                     "action": "dispatch",
                     "module": req_data["module"],
@@ -717,9 +757,67 @@ class MasterSupervisor:
                 }
                 return self._stream_task_over_worker_pipe(proc, target_mod, req_payload, chunk_emitter)
             finally:
-                self._current_task = None
-                # Dispatch is serialized; stale preemption markers never outlive their task
-                self._preempted_pids.clear()
+                with self._worker_lock:
+                    self._current_task = None
+                    # Dispatch is serialized; stale preemption markers never outlive their task
+                    self._preempted_pids.clear()
+
+    def _drain_worker_stderr(self, pipe: Any, pid: int) -> None:
+        """Drains worker stderr stream in a background thread and logs non-empty lines."""
+        try:
+            for line in iter(pipe.readline, b""):
+                if not line:
+                    break
+                line_str = line.decode("utf-8", errors="replace").rstrip()
+                if line_str:
+                    self.logger.error(f"[Worker:{pid}:stderr] {line_str}")
+        except Exception:
+            pass
+        finally:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    def _read_worker_handshake(
+        self,
+        proc: subprocess.Popen,
+        alive_event: threading.Event,
+        ready_event: threading.Event,
+    ) -> None:
+        """Reads two-stage handshake packets ('worker_alive' -> 'worker_ready') from worker stdout."""
+        try:
+            while True:
+                line = proc.stdout.readline()  # type: ignore
+                if not line:
+                    break
+                line_str = line.decode("utf-8", errors="replace").strip()
+                if not line_str:
+                    continue
+                try:
+                    data = json.loads(line_str)
+                except ValueError:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                if self._handle_worker_control_packet(data):
+                    continue
+                pkt_type = data.get("type")
+                if pkt_type == "worker_alive":
+                    alive_event.set()
+                    continue
+                if pkt_type == "worker_ready":
+                    if "services" in data and isinstance(data["services"], list):
+                        self._worker_services = data["services"]
+                    alive_event.set()
+                    ready_event.set()
+                    if self._worker_proc is proc:
+                        self._warming_since = None
+                    self.logger.info(f"Warm Worker (PID: {proc.pid}) ready")
+                    break
+        except (OSError, ValueError) as err:
+            # Pipe closed by kill: the worker is treated as not ready
+            self.logger.warning(f"Warm Worker (PID: {proc.pid}) handshake reader stopped: {err}")
 
     def _spawn_worker_locked(self) -> int:
         """
@@ -741,8 +839,6 @@ class MasterSupervisor:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
-
-        from core.platform import build_runtime_pythonpath
 
         env["PYTHONPATH"] = build_runtime_pythonpath(
             yscb_root=self.yscb_root,
@@ -772,63 +868,19 @@ class MasterSupervisor:
         )
         self._worker_proc = proc
 
-        def _drain_stderr(pipe: Any, pid: int) -> None:
-            try:
-                for line in iter(pipe.readline, b""):
-                    if not line:
-                        break
-                    line_str = line.decode("utf-8", errors="replace").rstrip()
-                    if line_str:
-                        self.logger.error(f"[Worker:{pid}:stderr] {line_str}")
-            except Exception:
-                pass
-            finally:
-                try:
-                    pipe.close()
-                except OSError:
-                    pass
+        threading.Thread(
+            target=self._drain_worker_stderr,
+            args=(proc.stderr, proc.pid),
+            daemon=True,
+            name=f"worker-stderr-{proc.pid}",
+        ).start()
 
-        threading.Thread(target=_drain_stderr, args=(proc.stderr, proc.pid), daemon=True, name=f"worker-stderr-{proc.pid}").start()
-
-        def _read_handshake() -> None:
-            try:
-                while True:
-                    line = proc.stdout.readline()  # type: ignore
-                    if not line:
-                        break
-                    line_str = line.decode("utf-8", errors="replace").strip()
-                    if not line_str:
-                        continue
-                    try:
-                        data = json.loads(line_str)
-                    except ValueError:
-                        continue
-                    if not isinstance(data, dict):
-                        continue
-                    pkt_type = data.get("type")
-                    if pkt_type == "log":
-                        self.logger.log(data.get("level", "INFO"), data.get("msg", ""), component=data.get("component", "worker"))
-                        continue
-                    if pkt_type == "touch_activity":
-                        self.touch_activity(source=str(data.get("source") or "worker"))
-                        continue
-                    if pkt_type == "worker_alive":
-                        alive_event.set()
-                        continue
-                    if pkt_type == "worker_ready":
-                        if "services" in data and isinstance(data["services"], list):
-                            self._worker_services = data["services"]
-                        alive_event.set()
-                        ready_event.set()
-                        if self._worker_proc is proc:
-                            self._warming_since = None
-                        self.logger.info(f"Warm Worker (PID: {proc.pid}) ready")
-                        break
-            except (OSError, ValueError) as err:
-                # Pipe closed by kill: the worker is treated as not ready
-                self.logger.warning(f"Warm Worker (PID: {proc.pid}) handshake reader stopped: {err}")
-
-        t = threading.Thread(target=_read_handshake, daemon=True, name=f"worker-handshake-{proc.pid}")
+        t = threading.Thread(
+            target=self._read_worker_handshake,
+            args=(proc, alive_event, ready_event),
+            daemon=True,
+            name=f"worker-handshake-{proc.pid}",
+        )
         t.start()
 
         deadline = time.time() + self._worker_alive_timeout_sec
@@ -859,7 +911,9 @@ class MasterSupervisor:
             time.sleep(2.0)
             if not self._is_running:
                 break
-            idle_seconds = time.time() - self._last_active_time
+            with self._activity_lock:
+                last_active = self._last_active_time
+            idle_seconds = time.time() - last_active
             if self.idle_timeout_sec > 0 and idle_seconds >= self.idle_timeout_sec:
                 self.logger.info(f"Idle TTL ({self.idle_timeout_sec}s) reached. Initiating automatic shutdown...")
                 threading.Thread(target=self.stop, daemon=True).start()
@@ -939,55 +993,72 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                 self.end_headers()
                 supervisor.logger.warning(f"HTTP GET {parsed.path} -> 404 Not Found")
 
-        def _handle_post_dispatch(self, t0: float) -> None:
+        def _reject_bad_dispatch(self, error_msg: str, log_msg: Optional[str] = None) -> None:
+            self._send_json_response(400, {"error": error_msg})
+            if log_msg:
+                supervisor.logger.warning(log_msg)
+
+        def _parse_dispatch_request(self) -> Optional[Dict[str, Any]]:
             try:
                 content_len = int(self.headers.get("Content-Length", 0))
             except (TypeError, ValueError):
-                self._send_json_response(400, {"error": "Invalid Content-Length"})
-                supervisor.logger.warning("HTTP POST /api/dispatch -> 400 Invalid Content-Length")
-                return
+                self._reject_bad_dispatch("Invalid Content-Length", "HTTP POST /api/dispatch -> 400 Invalid Content-Length")
+                return None
             if content_len < 0:
-                self._send_json_response(400, {"error": "Invalid Content-Length"})
-                supervisor.logger.warning("HTTP POST /api/dispatch -> 400 Negative Content-Length")
-                return
+                self._reject_bad_dispatch("Invalid Content-Length", "HTTP POST /api/dispatch -> 400 Negative Content-Length")
+                return None
 
             raw_body = self.rfile.read(content_len).decode("utf-8", errors="replace") if content_len > 0 else ""
             try:
                 req_data = json.loads(raw_body)
             except ValueError:
-                self._send_json_response(400, {"error": "Invalid JSON"})
-                supervisor.logger.warning("HTTP POST /api/dispatch -> 400 Invalid JSON")
-                return
+                self._reject_bad_dispatch("Invalid JSON", "HTTP POST /api/dispatch -> 400 Invalid JSON")
+                return None
 
             if not isinstance(req_data, dict):
-                self._send_json_response(400, {"error": "Invalid dispatch payload: expected JSON object"})
-                supervisor.logger.warning("HTTP POST /api/dispatch -> 400 Payload Not Object")
-                return
+                self._reject_bad_dispatch(
+                    "Invalid dispatch payload: expected JSON object",
+                    "HTTP POST /api/dispatch -> 400 Payload Not Object",
+                )
+                return None
 
             mod_val = req_data.get("module")
             if not isinstance(mod_val, str) or not mod_val.strip():
-                self._send_json_response(400, {"error": "Missing or invalid 'module' field"})
-                supervisor.logger.warning("HTTP POST /api/dispatch -> 400 Invalid Module Field")
-                return
+                self._reject_bad_dispatch(
+                    "Missing or invalid 'module' field",
+                    "HTTP POST /api/dispatch -> 400 Invalid Module Field",
+                )
+                return None
 
             args_val = req_data.get("args", [])
             if not isinstance(args_val, list):
-                self._send_json_response(400, {"error": "Invalid 'args' field: expected list"})
-                supervisor.logger.warning("HTTP POST /api/dispatch -> 400 Invalid Args Field")
-                return
+                self._reject_bad_dispatch(
+                    "Invalid 'args' field: expected list",
+                    "HTTP POST /api/dispatch -> 400 Invalid Args Field",
+                )
+                return None
 
             req_root = req_data.get("yscb_root")
             if req_root:
                 if not isinstance(req_root, str):
-                    self._send_json_response(400, {"error": "Invalid 'yscb_root' field"})
-                    return
+                    self._reject_bad_dispatch("Invalid 'yscb_root' field")
+                    return None
                 req_norm = _normalize_root_path(req_root)
                 sup_norm = _normalize_root_path(supervisor.yscb_root)
                 parent_norm = _normalize_root_path(os.path.dirname(supervisor.yscb_root))
                 if req_norm != sup_norm and req_norm != parent_norm:
-                    self._send_json_response(400, {"error": "Workspace Root Mismatch"})
-                    supervisor.logger.warning(f"HTTP POST /api/dispatch -> 400 Workspace Root Mismatch ({req_root})")
-                    return
+                    self._reject_bad_dispatch(
+                        "Workspace Root Mismatch",
+                        f"HTTP POST /api/dispatch -> 400 Workspace Root Mismatch ({req_root})",
+                    )
+                    return None
+
+            return req_data
+
+        def _handle_post_dispatch(self, t0: float) -> None:
+            req_data = self._parse_dispatch_request()
+            if req_data is None:
+                return
 
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson")
@@ -1042,21 +1113,12 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                 dur_ms = (time.time() - t0) * 1000.0
                 supervisor.logger.info(f"HTTP POST /api/reload -> 200 ({dur_ms:.1f}ms, New PID: {new_pid})")
             elif parsed.path == "/api/shutdown":
-                proc = supervisor._worker_proc
-                worker_pid = proc.pid if proc is not None else 0
-                uptime = time.time() - supervisor._start_time
-                summary = {
-                    "pid": os.getpid(),
-                    "worker_pid": worker_pid,
-                    "uptime_seconds": uptime,
-                    "tasks_executed": supervisor._tasks_executed,
-                    "services_stopped": len(supervisor._worker_services),
-                    "reason": "Graceful CLI shutdown request",
-                    "archive_log": supervisor.logger.get_expected_archive_path(),
-                }
+                summary = supervisor._build_shutdown_summary()
                 self._send_json_response(200, {"status": "shutting_down", "summary": summary})
                 dur_ms = (time.time() - t0) * 1000.0
-                supervisor.logger.info(f"HTTP POST /api/shutdown -> 200 ({dur_ms:.1f}ms, Uptime: {uptime:.1f}s)")
+                supervisor.logger.info(
+                    f"HTTP POST /api/shutdown -> 200 ({dur_ms:.1f}ms, Uptime: {summary['uptime_seconds']:.1f}s)"
+                )
                 threading.Thread(target=supervisor.stop, daemon=True).start()
             else:
                 self.send_response(404)

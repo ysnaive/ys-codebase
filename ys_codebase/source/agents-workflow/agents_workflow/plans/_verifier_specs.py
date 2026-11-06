@@ -16,6 +16,23 @@ VALID_STATUSES: Set[str] = {
 
 ORIGIN_SEED_FILES: Set[str] = {"roadmap.md", "todo.md"}
 
+HEADER_NAME_KEYS: Tuple[str, ...] = (
+    "功能名稱", "計畫名稱", "所屬計畫", "name", "title", "調研主題", "topic", "subject", "主題",
+)
+HEADER_DATE_KEYS: Tuple[str, ...] = (
+    "建立日期", "完成日期", "暫停時間", "歸檔日期", "更新日期",
+    "date", "created_at", "updated_at", "archived_at", "日期", "time", "timestamp",
+)
+HEADER_STATUS_KEYS: Tuple[str, ...] = (
+    "狀態", "status", "調研狀態", "research_status", "plan_status", "計畫狀態", "進度", "當前所在階段",
+)
+HEADER_PARENT_KEYS: Tuple[str, ...] = (
+    "所屬主計畫", "所屬計畫", "parent_plan", "主計畫", "parent",
+)
+HEADER_MODEL_KEYS: Tuple[str, ...] = (
+    "模型", "model", "ai_model", "ai-model", "模型名稱", "model_name",
+)
+
 PLACEHOLDER_PATTERNS: List[str] = [
     r"\[YYYY-MM-DD(?:\s+HH:MM)?\]",
     r"\[功能名稱\]",
@@ -56,6 +73,21 @@ PHASE_CANONICAL_FILES: Dict[str, str] = {
     "P07": "P07_walkthrough.md",
 }
 
+_BRACKET_TOKEN_RE = re.compile(r"\[([^\]\r\n]+)\]")
+_CJK_CHAR_RE = re.compile(r"[\u4e00-\u9fa5]")
+_REV_PREFIX_RE = re.compile(r"^REV-\d+")
+_HEADER_NUM_PREFIX_RE = re.compile(r"^\d+(\.\d+)*\s*[\.、]?\s*")
+_HEADER_PARENS_RE = re.compile(r"\(.*?\)|（.*?）")
+_HEADER_SUFFIX_RE = re.compile(r"(清冊|清單|列表|說明書|說明|紀錄表|紀錄|記錄|查閱)$")
+_H2_SECTION_NUM_RE = re.compile(r"^##\s*(\d+)\.")
+_REV_TAG_RE = re.compile(r"\[REV-\d+\]", re.IGNORECASE)
+_AUTO_RANGE_FILE_RE = re.compile(r"^P0[1-5]-05_auto\.md$", re.IGNORECASE)
+_RESEARCH_REPORT_FILE_RE = re.compile(r"^R\d{2}_.+\.md$", re.IGNORECASE)
+_FENCED_CODE_RE = re.compile(r"```[\s\S]*?```")
+_HTML_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
+_STRIKETHROUGH_RE = re.compile(r"~~[\s\S]*?~~")
+_REQ_ID_RE = re.compile(r"\b(?:FR|EC|NFR)-\d+\b", re.IGNORECASE)
+
 
 def extract_dynamic_placeholders(templates_dir: Optional[Path]) -> List[str]:
     """動態自模板目錄提取標頭佔位符正則模式清單。"""
@@ -71,10 +103,10 @@ def extract_dynamic_placeholders(templates_dir: Optional[Path]) -> List[str]:
                 for line in content.splitlines()[:35]:
                     line_s = line.strip()
                     if line_s.startswith(">"):
-                        matches = re.findall(r"\[([^\]\r\n]+)\]", line_s)
+                        matches = _BRACKET_TOKEN_RE.findall(line_s)
                         for m in matches:
                             m_clean = m.strip()
-                            if ("|" in m_clean or re.search(r"[\u4e00-\u9fa5]", m_clean)) and not re.match(r"^REV-\d+", m_clean):
+                            if ("|" in m_clean or _CJK_CHAR_RE.search(m_clean)) and not _REV_PREFIX_RE.match(m_clean):
                                 if "|" in m_clean:
                                     parts = [re.escape(p.strip()) for p in m_clean.split("|")]
                                     pat = r"\[\s*" + r"\s*\|\s*".join(parts) + r"\s*\]"
@@ -103,10 +135,28 @@ def normalize_header_title(header_line: str) -> str:
     例: '## 1. 使用者原始需求與意圖 (User Intent)' -> '使用者原始需求與意圖'
     """
     raw = header_line.lstrip("#").strip()
-    raw = re.sub(r"^\d+(\.\d+)*\s*[\.、]?\s*", "", raw)
-    core = re.sub(r"\(.*?\)|（.*?）", "", raw).strip()
-    core = re.sub(r"(清冊|清單|列表|說明書|說明|紀錄表|紀錄|記錄|查閱)$", "", core)
+    raw = _HEADER_NUM_PREFIX_RE.sub("", raw)
+    core = _HEADER_PARENS_RE.sub("", raw).strip()
+    core = _HEADER_SUFFIX_RE.sub("", core)
     return core.lower().replace(" ", "").replace("_", "").replace("-", "")
+
+
+def extract_markdown_headers(lines: List[str]) -> List[str]:
+    """自 Markdown 行清單提取非程式碼區塊之二/三級章節正規化標題清單。"""
+    doc_headers: List[str] = []
+    in_code_block = False
+    for line in lines:
+        line_s = line.strip()
+        if line_s.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        if line_s.startswith("##") or line_s.startswith("###"):
+            norm = normalize_header_title(line_s)
+            if norm:
+                doc_headers.append(norm)
+    return doc_headers
 
 
 def is_header_match(exp_norm: str, doc_norm: str) -> bool:
@@ -149,15 +199,21 @@ def load_template_header_specs(
         try:
             content = tmpl_path.read_text(encoding="utf-8", errors="ignore")
             current_h2_phase = 0
+            in_code_block = False
             for line in content.splitlines():
                 line_s = line.strip()
+                if line_s.startswith("```"):
+                    in_code_block = not in_code_block
+                    continue
+                if in_code_block:
+                    continue
                 if line_s.startswith("##") and not line_s.startswith("###"):
-                    m_sec = re.match(r"^##\s*(\d+)\.", line_s)
+                    m_sec = _H2_SECTION_NUM_RE.match(line_s)
                     current_h2_phase = int(m_sec.group(1)) if m_sec else 0
                 if line_s.startswith("##") or line_s.startswith("###"):
                     if template_name == "PXX-05_auto.md" and min_phase > 1 and 0 < current_h2_phase < min_phase:
                         continue
-                    if re.search(r"\[REV-\d+\]", line_s, re.IGNORECASE):
+                    if _REV_TAG_RE.search(line_s):
                         continue
                     norm = normalize_header_title(line_s)
                     if norm and len(norm) >= 2:
@@ -170,7 +226,7 @@ def load_template_header_specs(
 def map_file_to_template(file_name: str, templates_dir: Optional[Path] = None) -> Optional[str]:
     """將計畫檔案對齊至標準模板名稱。"""
     base = os.path.basename(file_name)
-    if re.match(r"^P0[1-5]-05_auto\.md$", base, re.IGNORECASE) or base == "PXX-05_auto.md":
+    if _AUTO_RANGE_FILE_RE.match(base) or base == "PXX-05_auto.md":
         return "PXX-05_auto.md"
     if base.startswith("P00_"):
         if templates_dir and (templates_dir / base).exists():
@@ -190,7 +246,7 @@ def map_file_to_template(file_name: str, templates_dir: Optional[Path] = None) -
         return "P06_test_plan.md"
     if base.startswith("P07_"):
         return "P07_walkthrough.md"
-    if re.match(r"^R\d{2}_.+\.md$", base, re.IGNORECASE):
+    if _RESEARCH_REPORT_FILE_RE.match(base):
         return "RXX_research_report.md"
     if base in ("fast_track_plan.md", "umbrella_overview.md", "revision_log.md", "handoff.md", "changelog.md"):
         return base
@@ -199,7 +255,7 @@ def map_file_to_template(file_name: str, templates_dir: Optional[Path] = None) -
 
 def extract_requirement_ids(markdown_text: str) -> Set[str]:
     """
-    從 P01_requirements_spec.md 文本提取有效需求 ID 集合 (FR-XX, EC-XX, NFR-XX)。
+    從 P01_requirements_spec.md 或 P06_test_plan.md 文本提取有效需求 ID 集合 (FR-XX, EC-XX, NFR-XX)。
     提取前依序預先剝除：
       1. Fenced Code Blocks (```...```)
       2. HTML 註解區塊 (<!--...-->)
@@ -208,9 +264,9 @@ def extract_requirement_ids(markdown_text: str) -> Set[str]:
     if not markdown_text:
         return set()
 
-    cleaned = re.sub(r"```[\s\S]*?```", "", markdown_text)
-    cleaned = re.sub(r"<!--[\s\S]*?-->", "", cleaned)
-    cleaned = re.sub(r"~~[\s\S]*?~~", "", cleaned)
+    cleaned = _FENCED_CODE_RE.sub("", markdown_text)
+    cleaned = _HTML_COMMENT_RE.sub("", cleaned)
+    cleaned = _STRIKETHROUGH_RE.sub("", cleaned)
 
-    matches = re.findall(r"\b(?:FR|EC|NFR)-\d+\b", cleaned, flags=re.IGNORECASE)
+    matches = _REQ_ID_RE.findall(cleaned)
     return {m.upper() for m in matches}

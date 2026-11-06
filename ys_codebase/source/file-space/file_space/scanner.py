@@ -16,7 +16,7 @@ import time
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
 import weakref
 
-from .exceptions import FingerprintCorruptedError
+from .exceptions import FingerprintCorruptedError, InvalidFileSpaceConfigError
 from .manager import FileSpaceManager
 from .schema import (
     FileFingerprint,
@@ -73,6 +73,25 @@ def _flush_in_process_watcher(
                 worker.flush_dirty_spaces(force=True)
         except Exception:
             continue
+
+
+def _has_in_process_dirty_spaces(project_root: Optional[Path]) -> bool:
+    with _WATCHER_STATE_LOCK:
+        refs = list(_ACTIVE_WATCHER_WORKERS)
+    for ref in refs:
+        worker = ref()
+        if worker is None:
+            continue
+        try:
+            if project_root is not None:
+                w_root = getattr(getattr(worker, "space_manager", None), "project_root", None)
+                if w_root is not None and Path(w_root).resolve() != Path(project_root).resolve():
+                    continue
+            if getattr(worker, "_dirty_spaces", None):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _check_pid_alive(pid: int) -> bool:
@@ -143,6 +162,7 @@ def is_watcher_active(
     Return True if a background file-space watcher process or worker is actively watching
     the workspace (and the specified space_name has watch=True).
     """
+    # 1. Delegate to file_space.service.is_watcher_active if patched/overridden
     svc_mod = sys.modules.get("file_space.service")
     if svc_mod is not None:
         svc_fn = getattr(svc_mod, "is_watcher_active", None)
@@ -160,6 +180,39 @@ def is_watcher_active(
                     return True
             return True
 
+    # 2. Check active in-process watcher workers matching project_root
+    with _WATCHER_STATE_LOCK:
+        in_proc_active = _ACTIVE_WATCHER_COUNT > 0
+        active_refs = list(_ACTIVE_WATCHER_WORKERS)
+
+    matched_in_proc_worker = None
+    for ref in active_refs:
+        w = ref()
+        if w is None:
+            continue
+        try:
+            if hasattr(w, "is_alive") and not w.is_alive():
+                continue
+            if project_root is not None:
+                w_root = getattr(getattr(w, "space_manager", None), "project_root", None)
+                if w_root is not None and Path(w_root).resolve() != Path(project_root).resolve():
+                    continue
+            matched_in_proc_worker = w
+            break
+        except Exception:
+            continue
+
+    if matched_in_proc_worker is not None:
+        if space_name is not None:
+            target_mgr = space_manager or getattr(matched_in_proc_worker, "space_manager", None)
+            if target_mgr is not None:
+                try:
+                    return bool(target_mgr.get_space(space_name).watch)
+                except Exception:
+                    return False
+        return True
+
+    # 3. Check watcher_state.json and daemon status
     state_data = _read_watcher_state_file(project_root)
     if state_data is not None:
         if not bool(state_data.get("watchdog_running", False)):
@@ -172,12 +225,10 @@ def is_watcher_active(
             if space_name not in watched_list:
                 return False
 
-    with _WATCHER_STATE_LOCK:
-        in_proc_active = _ACTIVE_WATCHER_COUNT > 0
-        active_refs = list(_ACTIVE_WATCHER_WORKERS)
-
-    daemon_alive = in_proc_active or _is_daemon_pid_alive(project_root) or (
-        state_data is not None and bool(state_data.get("watchdog_running", False))
+    daemon_alive = (
+        (in_proc_active and project_root is None)
+        or _is_daemon_pid_alive(project_root)
+        or (state_data is not None and bool(state_data.get("watchdog_running", False)))
     )
     if not daemon_alive:
         return False
@@ -290,10 +341,10 @@ class BinarySnapshotManager:
       - 2B config_len: uint16 + config_hash UTF-8 bytes
     - Per-Entry Record:
       - 2B path_len: uint16 + path UTF-8 bytes
-      - 8B mtime_ns: int64
-      - 8B size: uint64
       - 2B hash_len: uint16 + content_hash UTF-8 bytes
       - 2B root_len: uint16 + source_root UTF-8 bytes
+      - 8B mtime_ns: int64
+      - 8B size: int64
       - 8B created_gen: uint64
       - 8B updated_gen: uint64
       - 1B flags: uint8 (bit 0 = is_deleted, bit 1 = pending_stabilization)
@@ -316,6 +367,31 @@ class BinarySnapshotManager:
         if target is None:
             raise ValueError("Snapshot path must be specified.")
         return target
+
+    @staticmethod
+    def _pack_u16_bytes(data: bytes, field_name: str) -> List[bytes]:
+        if len(data) > 0xFFFF:
+            raise ValueError(
+                f"YFP2 field '{field_name}' exceeds uint16 max length ({len(data)} > 65535)."
+            )
+        return [BinarySnapshotManager.SHORT_LEN.pack(len(data)), data]
+
+    @staticmethod
+    def _unpack_u16_str(
+        body: bytes, offset: int, target: Path
+    ) -> Tuple[str, int]:
+        if offset + BinarySnapshotManager.SHORT_LEN.size > len(body):
+            raise FingerprintCorruptedError(
+                f"Unexpected EOF reading length field in snapshot '{target}'."
+            )
+        (str_len,) = BinarySnapshotManager.SHORT_LEN.unpack_from(body, offset)
+        offset += BinarySnapshotManager.SHORT_LEN.size
+        end_pos = offset + str_len
+        if end_pos > len(body):
+            raise FingerprintCorruptedError(
+                f"Truncated string payload in snapshot '{target}' (needed {str_len} bytes)."
+            )
+        return body[offset:end_pos].decode("utf-8"), end_pos
 
     def save_state(
         self,
@@ -341,10 +417,8 @@ class BinarySnapshotManager:
                 max(0, int(state.head_generation)),
                 len(entries_list),
             ),
-            self.SHORT_LEN.pack(len(merkle_bytes)),
-            merkle_bytes,
-            self.SHORT_LEN.pack(len(config_bytes)),
-            config_bytes,
+            *self._pack_u16_bytes(merkle_bytes, "merkle_root"),
+            *self._pack_u16_bytes(config_bytes, "config_hash"),
         ]
 
         for fp in entries_list:
@@ -354,12 +428,9 @@ class BinarySnapshotManager:
             flags = (1 if fp.is_deleted else 0) | (
                 2 if fp.pending_stabilization else 0
             )
-            chunks.append(self.SHORT_LEN.pack(len(path_b)))
-            chunks.append(path_b)
-            chunks.append(self.SHORT_LEN.pack(len(hash_b)))
-            chunks.append(hash_b)
-            chunks.append(self.SHORT_LEN.pack(len(root_b)))
-            chunks.append(root_b)
+            chunks.extend(self._pack_u16_bytes(path_b, "path"))
+            chunks.extend(self._pack_u16_bytes(hash_b, "content_hash"))
+            chunks.extend(self._pack_u16_bytes(root_b, "source_root"))
             chunks.append(
                 self.ENTRY_FIXED.pack(
                     int(fp.mtime_ns),
@@ -428,33 +499,19 @@ class BinarySnapshotManager:
             )
 
         try:
-            (merkle_len,) = self.SHORT_LEN.unpack_from(body, offset)
-            offset += self.SHORT_LEN.size
-            merkle_root = body[offset : offset + merkle_len].decode("utf-8")
-            offset += merkle_len
-
-            (config_len,) = self.SHORT_LEN.unpack_from(body, offset)
-            offset += self.SHORT_LEN.size
-            config_hash = body[offset : offset + config_len].decode("utf-8")
-            offset += config_len
+            merkle_root, offset = self._unpack_u16_str(body, offset, target)
+            config_hash, offset = self._unpack_u16_str(body, offset, target)
 
             entries: Dict[str, FileFingerprint] = {}
             for _ in range(entry_count):
-                (path_len,) = self.SHORT_LEN.unpack_from(body, offset)
-                offset += self.SHORT_LEN.size
-                rel_path = body[offset : offset + path_len].decode("utf-8")
-                offset += path_len
+                rel_path, offset = self._unpack_u16_str(body, offset, target)
+                content_hash, offset = self._unpack_u16_str(body, offset, target)
+                source_root, offset = self._unpack_u16_str(body, offset, target)
 
-                (hash_len,) = self.SHORT_LEN.unpack_from(body, offset)
-                offset += self.SHORT_LEN.size
-                content_hash = body[offset : offset + hash_len].decode("utf-8")
-                offset += hash_len
-
-                (root_len,) = self.SHORT_LEN.unpack_from(body, offset)
-                offset += self.SHORT_LEN.size
-                source_root = body[offset : offset + root_len].decode("utf-8")
-                offset += root_len
-
+                if offset + self.ENTRY_FIXED.size > len(body):
+                    raise FingerprintCorruptedError(
+                        f"Truncated fixed entry record in snapshot '{target}'."
+                    )
                 (
                     mtime_ns,
                     size,
@@ -628,13 +685,17 @@ class CursorStore:
 
     def list_consumers(self) -> List[str]:
         """List all consumer IDs that currently have persisted cursor files."""
-        if not self.cursors_dir.is_dir():
-            return []
-        result: List[str] = []
-        for p in sorted(self.cursors_dir.glob("*.json")):
-            if not p.name.startswith("."):
-                result.append(p.stem)
-        return result
+        with self._lock:
+            try:
+                if not self.cursors_dir.is_dir():
+                    return []
+                result: List[str] = []
+                for p in sorted(self.cursors_dir.glob("*.json")):
+                    if not p.name.startswith("."):
+                        result.append(p.stem)
+                return result
+            except OSError:
+                return []
 
 
 class FingerprintScanner:
@@ -662,10 +723,46 @@ class FingerprintScanner:
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
         self.snapshot_mgr = BinarySnapshotManager()
         self.cursor_store = CursorStore(self.storage_root)
+        self._lock = threading.RLock()
+        self._ip_lock_depth = 0
+
+    @contextmanager
+    def _snapshot_lock(self) -> Iterator[None]:
+        """
+        Reentrant thread-safe and cross-process lock protecting YFP2 snapshot read-modify-write.
+        Only acquires InterProcessLock on outermost entry (`_ip_lock_depth == 0`) to prevent self-deadlock.
+        """
+        with self._lock:
+            ip_lock = None
+            if self._ip_lock_depth == 0:
+                self.snapshots_dir.mkdir(parents=True, exist_ok=True)
+                lock_path = self.snapshots_dir / ".snapshots.lock"
+                try:
+                    from core.platform.lock import InterProcessLock
+
+                    ip_lock = InterProcessLock(str(lock_path), timeout=5.0)
+                    ip_lock.acquire(blocking=True, timeout_sec=5.0)
+                except Exception:
+                    ip_lock = None
+            self._ip_lock_depth += 1
+            try:
+                yield
+            finally:
+                self._ip_lock_depth -= 1
+                if self._ip_lock_depth == 0 and ip_lock is not None:
+                    try:
+                        ip_lock.release()
+                    except Exception:
+                        pass
 
     def get_snapshot_path(self, space_name: Optional[str] = None) -> Path:
         """Return the YFP2 snapshot file path for a specific space or unified view."""
-        key = space_name if space_name is not None else "unified"
+        if space_name is None:
+            key = "unified"
+        elif space_name == "unified":
+            key = "_space_unified"
+        else:
+            key = space_name
         return self.snapshots_dir / f"{key}.yfp2.bin"
 
     def get_watcher_dirty_beacon_path(self) -> Path:
@@ -721,11 +818,15 @@ class FingerprintScanner:
         Compute content fingerprint according to the space's HashPolicy.
         Returns (content_hash, pending_stabilization).
         """
-        hp = (
-            policy
-            if isinstance(policy, HashPolicy)
-            else HashPolicy(str(policy))
-        )
+        if isinstance(policy, HashPolicy):
+            hp = policy
+        else:
+            try:
+                hp = HashPolicy(str(policy))
+            except ValueError as exc:
+                raise InvalidFileSpaceConfigError(
+                    f"Invalid hash_policy '{policy}'."
+                ) from exc
         threshold_bytes = max(1, int(large_file_threshold_mb)) * 1024 * 1024
 
         if hp == HashPolicy.STAT_ONLY:
@@ -819,6 +920,66 @@ class FingerprintScanner:
                 True,
             )
 
+    def _ensure_valid_state(
+        self,
+        space_name: Optional[str],
+        *,
+        refresh_first: bool = False,
+        flush_watcher: bool = True,
+    ) -> SnapshotState:
+        if flush_watcher and not refresh_first:
+            _flush_in_process_watcher(self.space_manager.project_root, space_name)
+        snap_path = self.get_snapshot_path(space_name)
+        if refresh_first or not snap_path.exists():
+            self.refresh(space_name)
+        state, corrupted = self._load_or_recover_state(space_name)
+        if corrupted:
+            self.refresh(space_name, force=True)
+            state, _ = self._load_or_recover_state(space_name)
+        return state
+
+    def _sync_unified_snapshot_if_exists(self) -> None:
+        """
+        When unified.yfp2.bin already exists on disk, re-aggregate it in memory from
+        existing per-space snapshots without deleting unified.yfp2.bin or forcing a disk walk.
+        """
+        with self._snapshot_lock():
+            unified_path = self.get_snapshot_path(None)
+            if not unified_path.exists():
+                return
+            prev_unified, _ = self._load_or_recover_state(None)
+            unified_entries: Dict[str, FileFingerprint] = {}
+            for s_name in self.space_manager.list_spaces():
+                s_state, _ = self._load_or_recover_state(s_name)
+                for rel_p, fp in s_state.entries.items():
+                    if rel_p not in unified_entries or not fp.is_deleted:
+                        unified_entries[rel_p] = fp
+
+            next_gen = prev_unified.head_generation + 1
+            for rel_p, prev_fp in prev_unified.entries.items():
+                if rel_p not in unified_entries and not prev_fp.is_deleted:
+                    unified_entries[rel_p] = FileFingerprint(
+                        path=rel_p,
+                        mtime_ns=prev_fp.mtime_ns,
+                        size=prev_fp.size,
+                        content_hash=prev_fp.content_hash,
+                        source_root=prev_fp.source_root,
+                        created_gen=prev_fp.created_gen,
+                        updated_gen=next_gen,
+                        is_deleted=True,
+                        pending_stabilization=False,
+                    )
+
+            unified_merkle = compute_merkle_root(unified_entries)
+            unified_cfg_hash = self.space_manager.compute_config_hash(None)
+            updated_unified = SnapshotState(
+                head_generation=next_gen,
+                merkle_root=unified_merkle,
+                config_hash=unified_cfg_hash,
+                entries=unified_entries,
+            )
+            self.snapshot_mgr.save_state(updated_unified, unified_path)
+
     def _prepare_previous_state(
         self,
         space_name: str,
@@ -872,10 +1033,9 @@ class FingerprintScanner:
             ctime_ns = int(getattr(st, "st_ctime_ns", mtime_ns))
             size = int(st.st_size)
 
-        latest_stat_ns = max(mtime_ns, ctime_ns)
         is_racy = (
             abs(scan_start_ns - mtime_ns) < RACY_CLEAN_WINDOW_NS
-            or abs(scan_start_ns - latest_stat_ns) < RACY_CLEAN_WINDOW_NS
+            or abs(scan_start_ns - ctime_ns) < RACY_CLEAN_WINDOW_NS
         )
 
         if (
@@ -1103,215 +1263,272 @@ class FingerprintScanner:
         in O(|dirty|) stat/hash operations without walking the entire directory tree.
         Falls back to scan_space() if no baseline snapshot exists or config_hash has changed.
         """
-        cfg = self.space_manager.get_space(space_name)
-        cfg_hash = self.space_manager.compute_config_hash(space_name)
-        snap_path = self.get_snapshot_path(space_name)
+        with self._snapshot_lock():
+            cfg = self.space_manager.get_space(space_name)
+            cfg_hash = self.space_manager.compute_config_hash(space_name)
+            snap_path = self.get_snapshot_path(space_name)
 
-        if not snap_path.exists():
-            new_state, _ = self.scan_space(space_name, background=background)
-            self.snapshot_mgr.save_state(new_state, snap_path)
-            return new_state
+            if not snap_path.exists():
+                new_state, _ = self.scan_space(space_name, background=background)
+                self.snapshot_mgr.save_state(new_state, snap_path)
+                return new_state
 
-        prev_state, corrupted = self._load_or_recover_state(space_name)
-        if (
-            corrupted
-            or prev_state.head_generation == 0
-            or (prev_state.config_hash and prev_state.config_hash != cfg_hash)
-        ):
-            new_state, _ = self.scan_space(
-                space_name, background=background, force=corrupted
-            )
-            self.snapshot_mgr.save_state(new_state, snap_path)
-            return new_state
+            prev_state, corrupted = self._load_or_recover_state(space_name)
+            if (
+                corrupted
+                or prev_state.head_generation == 0
+                or (prev_state.config_hash and prev_state.config_hash != cfg_hash)
+            ):
+                new_state, _ = self.scan_space(
+                    space_name, background=background, force=corrupted
+                )
+                self.snapshot_mgr.save_state(new_state, snap_path)
+                return new_state
 
-        inc_roots = self.space_manager.resolve_space_include(space_name)
-        multi_root = len(inc_roots) > 1
-        proj_root = self.space_manager.project_root
-        scan_start_ns = time.time_ns()
-        prev_entries = prev_state.entries
-        next_gen_candidate = prev_state.head_generation + 1
+            inc_roots = self.space_manager.resolve_space_include(space_name)
+            if not inc_roots:
+                inc_roots = cfg.resolved_include_paths
+            multi_root = len(inc_roots) > 1
+            proj_root = self.space_manager.project_root
+            scan_start_ns = time.time_ns()
+            prev_entries = prev_state.entries
+            next_gen_candidate = prev_state.head_generation + 1
 
-        added_set: Set[str] = set()
-        modified_set: Set[str] = set()
-        deleted_set: Set[str] = set()
-        new_entries: Dict[str, FileFingerprint] = dict(prev_entries)
-        any_entry_mutated = False
+            added_set: Set[str] = set()
+            modified_set: Set[str] = set()
+            deleted_set: Set[str] = set()
+            new_entries: Dict[str, FileFingerprint] = dict(prev_entries)
+            any_entry_mutated = False
 
-        for raw_item in dirty_paths:
-            if not raw_item:
-                continue
-            cand_path = Path(raw_item)
-            matched_root: Optional[Path] = None
-            rel_to_root: Optional[str] = None
-            abs_file: Optional[Path] = None
+            for raw_item in dirty_paths:
+                if not raw_item:
+                    continue
+                raw_p = Path(raw_item)
+                matched_root: Optional[Path] = None
+                rel_to_root: Optional[str] = None
+                abs_file: Optional[Path] = None
+                explicit_rel_path: Optional[str] = None
 
-            if not cand_path.is_absolute():
-                norm_rel = str(raw_item).replace("\\", "/").strip("/")
-                if norm_rel in prev_entries and prev_entries[norm_rel].source_root:
-                    matched_root = Path(prev_entries[norm_rel].source_root)
-                    abs_file = matched_root / norm_rel
-                    try:
-                        rel_to_root = abs_file.relative_to(matched_root).as_posix()
-                    except ValueError:
-                        rel_to_root = norm_rel
-                else:
-                    for inc_root in inc_roots:
-                        if inc_root.is_file():
-                            if inc_root.name == norm_rel or self.space_manager._compute_rel_path(
-                                inc_root, inc_root, multi_root, proj_root=proj_root
-                            ) == norm_rel:
+                if not raw_p.is_absolute():
+                    norm_rel = str(raw_item).replace("\\", "/").strip("/")
+                    if norm_rel in prev_entries and prev_entries[norm_rel].source_root:
+                        matched_root = Path(prev_entries[norm_rel].source_root)
+                        explicit_rel_path = norm_rel
+                        cand_under_root = matched_root / norm_rel
+                        cand_under_proj = proj_root / norm_rel
+                        if cand_under_root.exists() or cand_under_root.is_symlink():
+                            abs_file = cand_under_root
+                        elif multi_root and (cand_under_proj.exists() or cand_under_proj.is_symlink()):
+                            abs_file = cand_under_proj
+                        else:
+                            try:
+                                rel_from_root = cand_under_proj.relative_to(matched_root)
+                                abs_file = matched_root / rel_from_root
+                            except ValueError:
+                                abs_file = cand_under_root
+                        try:
+                            rel_to_root = abs_file.relative_to(matched_root).as_posix()
+                            if rel_to_root == ".":
+                                rel_to_root = abs_file.name
+                        except ValueError:
+                            rel_to_root = Path(norm_rel).name if matched_root.is_file() else norm_rel
+                    else:
+                        for inc_root in inc_roots:
+                            if inc_root.is_file():
+                                comp_rel = self.space_manager._compute_rel_path(
+                                    inc_root, inc_root, multi_root, proj_root=proj_root
+                                )
+                                if norm_rel in (inc_root.name, comp_rel):
+                                    matched_root = inc_root
+                                    abs_file = inc_root
+                                    rel_to_root = comp_rel
+                                    explicit_rel_path = comp_rel
+                                    break
+                                continue
+                            cand_abs = inc_root / norm_rel
+                            if cand_abs.exists() or cand_abs.is_symlink() or len(inc_roots) == 1:
                                 matched_root = inc_root
-                                abs_file = inc_root
-                                rel_to_root = inc_root.name
+                                abs_file = cand_abs
+                                rel_to_root = norm_rel
+                                break
+                            if multi_root:
+                                cand_proj = proj_root / norm_rel
+                                try:
+                                    sub_rel = cand_proj.relative_to(inc_root).as_posix()
+                                    if sub_rel and sub_rel != ".":
+                                        matched_root = inc_root
+                                        abs_file = cand_proj
+                                        rel_to_root = sub_rel
+                                        explicit_rel_path = norm_rel
+                                        break
+                                except ValueError:
+                                    pass
+                else:
+                    logical_abs = Path(os.path.abspath(str(raw_p)))
+                    for inc_root in inc_roots:
+                        logical_inc = Path(os.path.abspath(str(inc_root)))
+                        if inc_root.is_file() or logical_inc == logical_abs:
+                            if logical_abs == logical_inc or (
+                                cfg.follow_symlinks and logical_abs.resolve() == inc_root.resolve()
+                            ):
+                                matched_root = inc_root
+                                abs_file = logical_abs
+                                comp_rel = self.space_manager._compute_rel_path(
+                                    logical_abs, inc_root, multi_root, proj_root=proj_root
+                                )
+                                rel_to_root = comp_rel
+                                explicit_rel_path = comp_rel
                                 break
                             continue
-                        cand_abs = inc_root / norm_rel
-                        if cand_abs.exists() or len(inc_roots) == 1:
-                            matched_root = inc_root
-                            abs_file = cand_abs
-                            rel_to_root = norm_rel
-                            break
-            else:
-                abs_file = (
-                    cand_path.resolve() if cfg.follow_symlinks else cand_path
-                )
-                for inc_root in inc_roots:
-                    if inc_root.is_file():
-                        if abs_file == inc_root or abs_file.resolve() == inc_root.resolve():
-                            matched_root = inc_root
-                            rel_to_root = inc_root.name
-                            break
-                        continue
-                    try:
-                        rel_to_root = abs_file.relative_to(inc_root).as_posix()
-                        matched_root = inc_root
-                        break
-                    except ValueError:
+                        # 1. Try logical (un-resolved) relative_to first to support symlinks pointing outside inc_root and broken symlinks
                         try:
-                            res_p = abs_file.resolve()
-                            rel_to_root = res_p.relative_to(inc_root).as_posix()
-                            abs_file = res_p
-                            matched_root = inc_root
-                            break
+                            rel_cand = logical_abs.relative_to(logical_inc).as_posix()
+                            if rel_cand and rel_cand != ".":
+                                rel_to_root = rel_cand
+                                matched_root = inc_root
+                                abs_file = logical_abs
+                                break
+                        except ValueError:
+                            pass
+                        try:
+                            rel_cand = logical_abs.relative_to(inc_root.resolve()).as_posix()
+                            if rel_cand and rel_cand != ".":
+                                rel_to_root = rel_cand
+                                matched_root = inc_root
+                                abs_file = logical_abs
+                                break
+                        except ValueError:
+                            pass
+                        # 2. Fallback to resolved path relative_to
+                        try:
+                            res_p = logical_abs.resolve()
+                            rel_cand = res_p.relative_to(inc_root.resolve()).as_posix()
+                            if rel_cand and rel_cand != ".":
+                                rel_to_root = rel_cand
+                                matched_root = inc_root
+                                abs_file = res_p
+                                break
                         except ValueError:
                             continue
 
-            if (
-                matched_root is None
-                or abs_file is None
-                or not rel_to_root
-                or rel_to_root == "."
-            ):
-                continue
+                if (
+                    matched_root is None
+                    or abs_file is None
+                    or not rel_to_root
+                    or rel_to_root == "."
+                ):
+                    continue
 
-            if not cfg.follow_symlinks and not multi_root:
-                rel_path = rel_to_root
-            else:
-                rel_path = self.space_manager._compute_rel_path(
-                    abs_file, matched_root, multi_root, proj_root=proj_root
-                )
-
-            prev_fp = prev_entries.get(rel_path)
-            is_included = cfg.is_file_included(rel_to_root)
-            stat_tuple: Optional[Tuple[int, int, int]] = None
-
-            if is_included:
-                try:
-                    if not cfg.follow_symlinks and abs_file.is_symlink():
-                        stat_tuple = None
-                    else:
-                        st = abs_file.stat()
-                        if stat_mod.S_ISREG(st.st_mode):
-                            mtime_ns = int(st.st_mtime_ns)
-                            ctime_ns = int(getattr(st, "st_ctime_ns", mtime_ns))
-                            size = int(st.st_size)
-                            stat_tuple = (mtime_ns, ctime_ns, size)
-                except OSError:
-                    stat_tuple = None
-
-            if stat_tuple is None:
-                if prev_fp is not None and not prev_fp.is_deleted:
-                    deleted_set.add(rel_path)
-                    any_entry_mutated = True
-                    new_entries[rel_path] = FileFingerprint(
-                        path=rel_path,
-                        mtime_ns=prev_fp.mtime_ns,
-                        size=prev_fp.size,
-                        content_hash=prev_fp.content_hash,
-                        source_root=prev_fp.source_root,
-                        created_gen=prev_fp.created_gen,
-                        updated_gen=next_gen_candidate,
-                        is_deleted=True,
-                        pending_stabilization=False,
+                if explicit_rel_path is not None:
+                    rel_path = explicit_rel_path
+                elif not multi_root:
+                    rel_path = rel_to_root
+                else:
+                    rel_path = self.space_manager._compute_rel_path(
+                        abs_file, matched_root, multi_root, proj_root=proj_root
                     )
-                continue
 
-            status, updated_fp = self._evaluate_entry_fingerprint(
-                rel_path=rel_path,
-                abs_path=abs_file,
-                src_root=matched_root,
-                cfg=cfg,
-                prev_fp=prev_fp,
-                next_gen_candidate=next_gen_candidate,
-                scan_start_ns=scan_start_ns,
-                background=background,
-                force=False,
-                stat_tuple=stat_tuple,
+                prev_fp = prev_entries.get(rel_path)
+                is_included = cfg.is_file_included(rel_to_root)
+                stat_tuple: Optional[Tuple[int, int, int]] = None
+
+                if is_included:
+                    try:
+                        if not cfg.follow_symlinks and abs_file.is_symlink():
+                            stat_tuple = None
+                        else:
+                            st = abs_file.stat()
+                            if stat_mod.S_ISREG(st.st_mode):
+                                mtime_ns = int(st.st_mtime_ns)
+                                ctime_ns = int(getattr(st, "st_ctime_ns", mtime_ns))
+                                size = int(st.st_size)
+                                stat_tuple = (mtime_ns, ctime_ns, size)
+                    except OSError:
+                        stat_tuple = None
+
+                if stat_tuple is None:
+                    if prev_fp is not None and not prev_fp.is_deleted:
+                        deleted_set.add(rel_path)
+                        any_entry_mutated = True
+                        new_entries[rel_path] = FileFingerprint(
+                            path=rel_path,
+                            mtime_ns=prev_fp.mtime_ns,
+                            size=prev_fp.size,
+                            content_hash=prev_fp.content_hash,
+                            source_root=prev_fp.source_root,
+                            created_gen=prev_fp.created_gen,
+                            updated_gen=next_gen_candidate,
+                            is_deleted=True,
+                            pending_stabilization=False,
+                        )
+                    continue
+
+                status, updated_fp = self._evaluate_entry_fingerprint(
+                    rel_path=rel_path,
+                    abs_path=abs_file,
+                    src_root=matched_root,
+                    cfg=cfg,
+                    prev_fp=prev_fp,
+                    next_gen_candidate=next_gen_candidate,
+                    scan_start_ns=scan_start_ns,
+                    background=background,
+                    force=False,
+                    stat_tuple=stat_tuple,
+                )
+                if status == "added":
+                    added_set.add(rel_path)
+                elif status == "modified":
+                    modified_set.add(rel_path)
+                if updated_fp is not None:
+                    new_entries[rel_path] = updated_fp
+                    any_entry_mutated = True
+
+            changed_paths = added_set | modified_set | deleted_set
+            unchanged_set = {
+                k
+                for k, fp in new_entries.items()
+                if not fp.is_deleted and k not in changed_paths
+            }
+            has_structural_change = bool(changed_paths)
+            final_gen = (
+                next_gen_candidate
+                if has_structural_change
+                else prev_state.head_generation
             )
-            if status == "added":
-                added_set.add(rel_path)
-            elif status == "modified":
-                modified_set.add(rel_path)
-            if updated_fp is not None:
-                new_entries[rel_path] = updated_fp
-                any_entry_mutated = True
+            m_root = (
+                compute_merkle_root(new_entries)
+                if has_structural_change
+                else prev_state.merkle_root
+            )
 
-        changed_paths = added_set | modified_set | deleted_set
-        unchanged_set = {
-            k
-            for k, fp in new_entries.items()
-            if not fp.is_deleted and k not in changed_paths
-        }
-        has_structural_change = bool(changed_paths)
-        final_gen = (
-            next_gen_candidate
-            if has_structural_change
-            else prev_state.head_generation
-        )
-        m_root = (
-            compute_merkle_root(new_entries)
-            if has_structural_change
-            else prev_state.merkle_root
-        )
-
-        detail = ScanDiffDetail(
-            added=added_set,
-            modified=modified_set,
-            deleted=deleted_set,
-            unchanged=unchanged_set,
-        )
-        diff_res = ScanDiffResult(
-            added_count=len(added_set),
-            modified_count=len(modified_set),
-            deleted_count=len(deleted_set),
-            unchanged_count=len(unchanged_set),
-            detail=detail,
-            from_generation=prev_state.head_generation,
-            to_generation=final_gen,
-            merkle_root=m_root,
-            space_name=space_name,
-            space_generations={space_name: final_gen},
-        )
-        new_state = SnapshotState(
-            head_generation=final_gen,
-            merkle_root=m_root,
-            config_hash=cfg_hash,
-            entries=new_entries,
-            last_diff=diff_res,
-        )
-        if has_structural_change or any_entry_mutated:
-            self.snapshot_mgr.save_state(new_state, snap_path)
-        return new_state
+            detail = ScanDiffDetail(
+                added=added_set,
+                modified=modified_set,
+                deleted=deleted_set,
+                unchanged=unchanged_set,
+            )
+            diff_res = ScanDiffResult(
+                added_count=len(added_set),
+                modified_count=len(modified_set),
+                deleted_count=len(deleted_set),
+                unchanged_count=len(unchanged_set),
+                detail=detail,
+                from_generation=prev_state.head_generation,
+                to_generation=final_gen,
+                merkle_root=m_root,
+                space_name=space_name,
+                space_generations={space_name: final_gen},
+            )
+            new_state = SnapshotState(
+                head_generation=final_gen,
+                merkle_root=m_root,
+                config_hash=cfg_hash,
+                entries=new_entries,
+                last_diff=diff_res,
+            )
+            if has_structural_change or any_entry_mutated:
+                self.snapshot_mgr.save_state(new_state, snap_path)
+            return new_state
 
     def refresh(
         self,
@@ -1324,79 +1541,116 @@ class FingerprintScanner:
         Perform incremental fingerprint scan for one space or all registered spaces,
         atomically persist updated YFP2 snapshot(s), and return ScanDiffResult.
         """
-        if space_name is not None:
-            new_state, diff_res = self.scan_space(
-                space_name, background=background, force=force
+        with self._snapshot_lock():
+            if space_name is not None:
+                new_state, diff_res = self.scan_space(
+                    space_name, background=background, force=force
+                )
+                self.snapshot_mgr.save_state(
+                    new_state, self.get_snapshot_path(space_name)
+                )
+                return diff_res
+
+            all_added: Set[str] = set()
+            all_modified: Set[str] = set()
+            all_deleted: Set[str] = set()
+            all_unchanged: Set[str] = set()
+            unified_entries: Dict[str, FileFingerprint] = {}
+            space_gens: Dict[str, int] = {}
+
+            prev_unified, _ = self._load_or_recover_state(None)
+            any_change = False
+
+            for s_name in self.space_manager.list_spaces():
+                s_state, s_diff = self.scan_space(
+                    s_name, background=background, force=force
+                )
+                self.snapshot_mgr.save_state(
+                    s_state, self.get_snapshot_path(s_name)
+                )
+                space_gens[s_name] = s_state.head_generation
+                if s_diff.has_changes:
+                    any_change = True
+                all_added |= s_diff.detail.added
+                all_modified |= s_diff.detail.modified
+                all_deleted |= s_diff.detail.deleted
+                all_unchanged |= s_diff.detail.unchanged
+                for rel_p, fp in s_state.entries.items():
+                    if rel_p not in unified_entries or not fp.is_deleted:
+                        unified_entries[rel_p] = fp
+
+            unified_cfg_hash = self.space_manager.compute_config_hash(None)
+            next_unified_gen_candidate = prev_unified.head_generation + 1
+
+            for rel_p, prev_fp in prev_unified.entries.items():
+                if rel_p not in unified_entries and not prev_fp.is_deleted:
+                    all_deleted.add(rel_p)
+                    any_change = True
+                    unified_entries[rel_p] = FileFingerprint(
+                        path=rel_p,
+                        mtime_ns=prev_fp.mtime_ns,
+                        size=prev_fp.size,
+                        content_hash=prev_fp.content_hash,
+                        source_root=prev_fp.source_root,
+                        created_gen=prev_fp.created_gen,
+                        updated_gen=next_unified_gen_candidate,
+                        is_deleted=True,
+                        pending_stabilization=False,
+                    )
+
+            active_unified = {
+                k for k, fp in unified_entries.items() if not fp.is_deleted
+            }
+            all_deleted -= active_unified
+            all_modified -= all_added | all_deleted
+            all_unchanged -= all_added | all_modified | all_deleted
+
+            cfg_changed = bool(
+                prev_unified.config_hash
+                and prev_unified.config_hash != unified_cfg_hash
+            )
+            if (
+                prev_unified.head_generation == 0
+                or any_change
+                or cfg_changed
+                or force
+            ):
+                next_unified_gen = next_unified_gen_candidate
+            else:
+                next_unified_gen = prev_unified.head_generation
+
+            unified_merkle = compute_merkle_root(unified_entries)
+            unified_state = SnapshotState(
+                head_generation=next_unified_gen,
+                merkle_root=unified_merkle,
+                config_hash=unified_cfg_hash,
+                entries=unified_entries,
             )
             self.snapshot_mgr.save_state(
-                new_state, self.get_snapshot_path(space_name)
+                unified_state, self.get_snapshot_path(None)
             )
-            return diff_res
 
-        all_added: Set[str] = set()
-        all_modified: Set[str] = set()
-        all_deleted: Set[str] = set()
-        all_unchanged: Set[str] = set()
-        unified_entries: Dict[str, FileFingerprint] = {}
-        space_gens: Dict[str, int] = {}
+            if not _has_in_process_dirty_spaces(self.space_manager.project_root):
+                self.mark_watcher_dirty(False)
 
-        prev_unified, _ = self._load_or_recover_state(None)
-        any_change = False
-
-        for s_name in self.space_manager.list_spaces():
-            s_state, s_diff = self.scan_space(
-                s_name, background=background, force=force
+            detail = ScanDiffDetail(
+                added=all_added,
+                modified=all_modified,
+                deleted=all_deleted,
+                unchanged=all_unchanged,
             )
-            self.snapshot_mgr.save_state(
-                s_state, self.get_snapshot_path(s_name)
+            return ScanDiffResult(
+                added_count=len(all_added),
+                modified_count=len(all_modified),
+                deleted_count=len(all_deleted),
+                unchanged_count=len(all_unchanged),
+                detail=detail,
+                from_generation=prev_unified.head_generation,
+                to_generation=next_unified_gen,
+                merkle_root=unified_merkle,
+                space_name=None,
+                space_generations=space_gens,
             )
-            space_gens[s_name] = s_state.head_generation
-            if s_diff.has_changes:
-                any_change = True
-            all_added |= s_diff.detail.added
-            all_modified |= s_diff.detail.modified
-            all_deleted |= s_diff.detail.deleted
-            all_unchanged |= s_diff.detail.unchanged
-            for rel_p, fp in s_state.entries.items():
-                if rel_p not in unified_entries or not fp.is_deleted:
-                    unified_entries[rel_p] = fp
-
-        all_unchanged -= all_added | all_modified | all_deleted
-        if prev_unified.head_generation == 0 or any_change or force:
-            next_unified_gen = prev_unified.head_generation + 1
-        else:
-            next_unified_gen = prev_unified.head_generation
-
-        unified_merkle = compute_merkle_root(unified_entries)
-        unified_cfg_hash = self.space_manager.compute_config_hash(None)
-        unified_state = SnapshotState(
-            head_generation=next_unified_gen,
-            merkle_root=unified_merkle,
-            config_hash=unified_cfg_hash,
-            entries=unified_entries,
-        )
-        self.snapshot_mgr.save_state(
-            unified_state, self.get_snapshot_path(None)
-        )
-
-        detail = ScanDiffDetail(
-            added=all_added,
-            modified=all_modified,
-            deleted=all_deleted,
-            unchanged=all_unchanged,
-        )
-        return ScanDiffResult(
-            added_count=len(all_added),
-            modified_count=len(all_modified),
-            deleted_count=len(all_deleted),
-            unchanged_count=len(all_unchanged),
-            detail=detail,
-            from_generation=prev_unified.head_generation,
-            to_generation=next_unified_gen,
-            merkle_root=unified_merkle,
-            space_name=None,
-            space_generations=space_gens,
-        )
 
     def snapshot(
         self, space_name: Optional[str] = None, *, refresh_first: bool = False
@@ -1405,15 +1659,9 @@ class FingerprintScanner:
         Return the current map of active FileFingerprints for a space or all spaces.
         If no snapshot exists on disk yet, triggers an initial refresh().
         """
-        if not refresh_first:
-            _flush_in_process_watcher(self.space_manager.project_root, space_name)
-        snap_path = self.get_snapshot_path(space_name)
-        if refresh_first or not snap_path.exists():
-            self.refresh(space_name)
-        state, corrupted = self._load_or_recover_state(space_name)
-        if corrupted:
-            self.refresh(space_name, force=True)
-            state, _ = self._load_or_recover_state(space_name)
+        state = self._ensure_valid_state(
+            space_name, refresh_first=refresh_first, flush_watcher=True
+        )
         return state.active_entries
 
     def merkle_root(
@@ -1422,15 +1670,9 @@ class FingerprintScanner:
         """
         Return the Blake2b-160 Merkle root hex digest of the specified space (or all spaces).
         """
-        if not refresh_first:
-            _flush_in_process_watcher(self.space_manager.project_root, space_name)
-        snap_path = self.get_snapshot_path(space_name)
-        if refresh_first or not snap_path.exists():
-            self.refresh(space_name)
-        state, corrupted = self._load_or_recover_state(space_name)
-        if corrupted:
-            self.refresh(space_name, force=True)
-            state, _ = self._load_or_recover_state(space_name)
+        state = self._ensure_valid_state(
+            space_name, refresh_first=refresh_first, flush_watcher=True
+        )
         return state.merkle_root
 
     def diff(
@@ -1455,10 +1697,9 @@ class FingerprintScanner:
         return self._diff_space(space_name, consumer_id)
 
     def _diff_space(self, space_name: str, consumer_id: str) -> ScanDiffResult:
-        state, corrupted = self._load_or_recover_state(space_name)
-        if corrupted:
-            self.refresh(space_name, force=True)
-            state, _ = self._load_or_recover_state(space_name)
+        state = self._ensure_valid_state(
+            space_name, refresh_first=False, flush_watcher=False
+        )
 
         cfg_hash = self.space_manager.compute_config_hash(space_name)
         cursor = self.cursor_store.get_cursor(space_name, consumer_id)
@@ -1535,12 +1776,26 @@ class FingerprintScanner:
             all_deleted |= s_diff.detail.deleted
             all_unchanged |= s_diff.detail.unchanged
 
+        # Enforce strict mutual exclusivity across aggregated sets
+        active_elsewhere = all_added | all_modified | all_unchanged
+        all_deleted -= active_elsewhere
+        all_modified -= all_added
         all_unchanged -= all_added | all_modified | all_deleted
+
         unified_state, _ = self._load_or_recover_state(None)
         u_cursor = self.cursor_store.get_cursor(self.UNIFIED_KEY, consumer_id)
+        u_cfg_hash = self.space_manager.compute_config_hash(None)
 
         dynamic_gen = sum(space_gens.values())
         effective_to_gen = max(unified_state.head_generation, dynamic_gen)
+        acked_u_gen = u_cursor["acked_gen"]
+        cursor_u_cfg = u_cursor["config_hash"]
+        if (
+            acked_u_gen > effective_to_gen
+            or (cursor_u_cfg and cursor_u_cfg != u_cfg_hash)
+        ):
+            acked_u_gen = 0
+
         if space_merkle_parts:
             hasher = hashlib.blake2b(digest_size=20)
             for part in sorted(space_merkle_parts):
@@ -1561,7 +1816,7 @@ class FingerprintScanner:
             deleted_count=len(all_deleted),
             unchanged_count=len(all_unchanged),
             detail=detail,
-            from_generation=u_cursor["acked_gen"],
+            from_generation=acked_u_gen,
             to_generation=effective_to_gen,
             merkle_root=effective_merkle,
             space_name=None,
@@ -1663,13 +1918,17 @@ class FingerprintScanner:
                 space_manager=self.space_manager,
             ):
                 auto_refresh = True
-            elif self.is_watcher_dirty(space_name=space_name):
-                auto_refresh = True
-            elif space_name is not None:
-                s_cfg = self.space_manager.get_space(space_name)
-                auto_refresh = bool(s_cfg and not s_cfg.watch)
             else:
-                auto_refresh = False
+                _flush_in_process_watcher(
+                    self.space_manager.project_root, space_name
+                )
+                if self.is_watcher_dirty(space_name=space_name):
+                    auto_refresh = True
+                elif space_name is not None:
+                    s_cfg = self.space_manager.get_space(space_name)
+                    auto_refresh = bool(s_cfg and not s_cfg.watch)
+                else:
+                    auto_refresh = False
         diff_result = self.diff(
             space_name=space_name,
             consumer_id=consumer_id,

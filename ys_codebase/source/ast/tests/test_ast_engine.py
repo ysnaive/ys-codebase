@@ -1,11 +1,10 @@
 """
-Unit tests for AST Engine P3 polish remediations:
-- T-28: UnifiedSymbol.from_dict MemberInfo deduplication and .line / .line_number compatibility
-- T-29: TopologyLinker deque BFS & pre-indexed inheritance/method maps in expand_contract_symbol_ids
-- T-34: SnippetExtractor mtime_ns file line cache and invalidation on file update
-- T-35: Pre-sorted enclosing symbol resolution in extract_call_sites
+Unit tests for `ast_engine` core data models (`schema.py`), binary I/O utilities (`io_utils.py`),
+PEP 562 module lazy exports (`ast_engine.__init__`), overload child parent_id synchronization (`bundler.py`),
+and engine persistence/caching (`engine.py`).
 """
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -16,29 +15,56 @@ import unittest
 _AST_ROOT = str(Path(__file__).resolve().parents[1])
 if _AST_ROOT not in sys.path:
     sys.path.insert(0, _AST_ROOT)
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if "tests" in sys.modules and getattr(sys.modules["tests"], "__file__", None) != str(Path(_TESTS_DIR) / "__init__.py"):
+    del sys.modules["tests"]
 
+import ast_engine
+from ast_engine.bundler import ensure_unique_overload_ids
+from ast_engine.dialects.csharp import CSharpDialect
+from ast_engine.engine import ASTEngine
+from ast_engine.exceptions import SchemaValidationError
+from ast_engine.formatter import ASTResultFormatter
+from ast_engine.io_utils import (
+    atomic_save_gzip_pickle,
+    compute_project_relpath,
+    is_dirty_file_match,
+    load_gzip_pickle,
+    normalize_dirty_paths,
+)
 from ast_engine.linker import TopologyLinker, expand_contract_symbol_ids
 from ast_engine.parsers.python_ast import PythonASTParser
 from ast_engine.resolver import SnippetExtractor
-from ast_engine.schema import MemberInfo, UnifiedSymbol
-from dev.testing import Requirement, YSCBTestCase, require
+from ast_engine.schema import (
+    ASTSnapshot,
+    LanguageConfig,
+    MemberInfo,
+    OutlineNode,
+    OutlineResult,
+    SemanticBundle,
+    SymbolCallSite,
+    SymbolKind,
+    UnifiedSymbol,
+)
+from file_space.schema import FileSpaceConfig
+from tests import ASTTestCase, Requirement, require
 
 
-class TestASTEnginePolish(YSCBTestCase):
-    """Tests for T-28, T-29, T-34, and T-35 in ast_engine."""
+class TestASTEngineCore(ASTTestCase):
+    """Tests for AST schema contracts, binary I/O utilities, PEP 562 exports, and engine core invariants."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
-        self.temp_dir = Path(tempfile.mkdtemp(prefix="yscb_ast_polish_test_"))
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="yscb_ast_core_test_"))
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         if hasattr(self, "temp_dir") and self.temp_dir.exists():
             shutil.rmtree(self.temp_dir, ignore_errors=True)
         super().tearDown()
 
     @require(Requirement.LOGIC)
-    def test_t28_unified_symbol_from_dict_children_member_info(self):
-        """T-28: Verify UnifiedSymbol.from_dict deserializes children/members as Tuple[MemberInfo, ...] with line_number and line properties."""
+    def test_unified_symbol_from_dict_children_member_info(self) -> None:
+        """Verify UnifiedSymbol.from_dict deserializes children/members as Tuple[MemberInfo, ...] with line_number and line properties."""
         member = MemberInfo(
             name="compute",
             kind="method",
@@ -65,7 +91,6 @@ class TestASTEnginePolish(YSCBTestCase):
         self.assertEqual(restored.children[0].line_number, 42)
         self.assertEqual(restored.children[0].line, 42)
 
-        # Verify legacy dict format with 'line' instead of 'line_number'
         legacy_dict = sym.to_dict()
         legacy_dict["children"] = [
             {
@@ -85,8 +110,188 @@ class TestASTEnginePolish(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_t29_linker_inheritance_cache_and_deque_bfs(self):
-        """T-29: Verify TopologyLinker pre-indexes inheritance/methods and expand_contract_symbol_ids expands base and derived methods."""
+    def test_schema_validation_errors_and_none_container_defenses(self) -> None:
+        """Verify all schema dataclasses validate input types, defend against None containers, and index partial_files."""
+        for cls_type in (
+            MemberInfo,
+            LanguageConfig,
+            UnifiedSymbol,
+            SymbolCallSite,
+            SemanticBundle,
+            ASTSnapshot,
+            OutlineNode,
+            OutlineResult,
+        ):
+            with self.assertRaises(SchemaValidationError):
+                cls_type.from_dict("invalid_non_dict")  # type: ignore[arg-type]
+
+        with self.assertRaises(SchemaValidationError):
+            MemberInfo.from_dict({"name": "only_name"})
+        with self.assertRaises(SchemaValidationError):
+            LanguageConfig.from_dict({"id": "python"})
+        with self.assertRaises(SchemaValidationError):
+            UnifiedSymbol.from_dict({"id": "s1", "name": "Foo"})
+
+        # None container defense across dataclasses
+        cfg = LanguageConfig.from_dict({"id": "py", "extensions": None, "custom_kinds": None})
+        self.assertEqual(cfg.extensions, ())
+        self.assertEqual(cfg.custom_kinds, ())
+
+        sym = UnifiedSymbol.from_dict(
+            {
+                "id": "s1",
+                "name": "Widget",
+                "kind": "class",
+                "file_path": "ui/widget_a.cs",
+                "line_number": 1,
+                "language": "c_sharp",
+                "children": None,
+                "parameters": None,
+                "metadata": {"partial_files": ["ui/widget_a.cs", "ui/widget_b.cs"], "space": "ui"},
+            }
+        )
+        self.assertEqual(sym.children, ())
+        self.assertEqual(sym.parameters, ())
+        self.assertEqual(sym.spaces, ["ui"])
+
+        bundle = SemanticBundle.from_dict({"version": "1.0", "space_name": "ui", "symbols": None, "metadata": None})
+        self.assertEqual(bundle.symbols, [])
+        self.assertEqual(bundle.metadata, {})
+
+        snap = ASTSnapshot(symbols={"s1": sym})
+        self.assertIn("s1", snap.file_to_symbol_ids.get("ui/widget_a.cs", []))
+        self.assertIn("s1", snap.file_to_symbol_ids.get("ui/widget_b.cs", []))
+
+        snap_none = ASTSnapshot.from_dict(
+            {"ast_generation": 2, "space_generations": None, "symbols": None, "file_to_symbol_ids": None, "files_map": None}
+        )
+        self.assertEqual(snap_none.space_generations, {})
+        self.assertEqual(snap_none.file_to_symbol_ids, {})
+
+        node = OutlineNode.from_dict({"name": "N", "kind": "class", "line_number": 1, "members": None, "metadata": None})
+        self.assertEqual(node.children, [])
+        self.assertEqual(node.metadata, {})
+
+        out_res = OutlineResult.from_dict(
+            {
+                "file_path": "missing.py",
+                "symbols": None,
+                "partial_siblings": None,
+                "warnings": None,
+                "filters": None,
+                "error": "File not found: missing.py",
+            }
+        )
+        self.assertEqual(out_res.error, "File not found: missing.py")
+        self.assertEqual(out_res.to_dict().get("error"), "File not found: missing.py")
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ast_engine_all_56_public_symbols_lazy_loading(self) -> None:
+        """Verify all 56 exported symbols in ast_engine.__all__ resolve via PEP 562 __getattr__ and match manifest version."""
+        manifest_path = Path(_AST_ROOT) / "manifest.json"
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(ast_engine.__version__, manifest_data["version"])
+        self.assertEqual(len(ast_engine.__all__), 56)
+
+        for sym_name in ast_engine.__all__:
+            self.assertIn(sym_name, dir(ast_engine))
+            resolved_attr = getattr(ast_engine, sym_name)
+            self.assertIsNotNone(resolved_attr, f"Export '{sym_name}' resolved to None")
+
+        with self.assertRaises(AttributeError):
+            _ = ast_engine.NON_EXISTENT_SYMBOL_XYZ
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_io_utils_gzip_pickle_and_relpath_boundaries(self) -> None:
+        """Verify atomic_save_gzip_pickle, load_gzip_pickle corruption/missing handling, and compute_project_relpath '..' boundaries."""
+        missing_p = self.temp_dir / "missing.bin.gz"
+        self.assertIsNone(load_gzip_pickle(missing_p, raise_on_missing=False))
+        with self.assertRaises(FileNotFoundError):
+            load_gzip_pickle(missing_p, raise_on_missing=True)
+
+        valid_p = self.temp_dir / "valid.bin.gz"
+        atomic_save_gzip_pickle(valid_p, {"hello": "world", "count": 7})
+        self.assertEqual(load_gzip_pickle(valid_p), {"hello": "world", "count": 7})
+
+        corrupt_p = self.temp_dir / "corrupt.bin.gz"
+        corrupt_p.write_bytes(b"not a valid gzip stream")
+        self.assertIsNone(load_gzip_pickle(corrupt_p, raise_on_missing=False))
+        with self.assertRaises(Exception):
+            load_gzip_pickle(corrupt_p, raise_on_missing=True)
+
+        # Verify compute_project_relpath handles '..foo.py' inside root vs file outside root
+        proj_root = self.temp_dir / "workspace"
+        proj_root.mkdir(parents=True, exist_ok=True)
+        dotdot_file = proj_root / "..weird_name.py"
+        dotdot_file.write_text("x = 1\n", encoding="utf-8")
+        self.assertEqual(compute_project_relpath(dotdot_file, project_root=proj_root), "..weird_name.py")
+
+        outside_file = self.temp_dir / "outside.py"
+        outside_file.write_text("y = 2\n", encoding="utf-8")
+        fb_dir = self.temp_dir
+        self.assertEqual(
+            compute_project_relpath(outside_file, fallback_base=fb_dir, project_root=proj_root),
+            f"{fb_dir.name}/outside.py",
+        )
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_ensure_unique_overload_ids_updates_child_parent_ids(self) -> None:
+        """Verify ensure_unique_overload_ids includes scope_path and updates child symbols' parent_id when overload IDs change."""
+        shared_dup_id = "dup_method_id"
+        m1 = UnifiedSymbol(
+            id=shared_dup_id,
+            name="Service.Execute",
+            kind="method",
+            file_path="svc.cs",
+            line_number=10,
+            end_line=15,
+            language="c_sharp",
+            fqn="App.Service.Execute",
+            scope_path="App.Service",
+            signature="void Execute(int a)",
+            metadata={"parent_scope": "Service", "short_name": "Execute", "spaces": ["code"]},
+        )
+        m2 = UnifiedSymbol(
+            id=shared_dup_id,
+            name="Service.Execute",
+            kind="method",
+            file_path="svc.cs",
+            line_number=20,
+            end_line=25,
+            language="c_sharp",
+            fqn="App.Service.Execute",
+            scope_path="App.Service",
+            signature="void Execute(string b)",
+            metadata={"parent_scope": "Service", "short_name": "Execute", "spaces": ["code"]},
+        )
+        local_child = UnifiedSymbol(
+            id="child_local_fn",
+            name="Service.Execute.LocalHelper",
+            kind="function",
+            file_path="svc.cs",
+            line_number=21,
+            end_line=23,
+            language="c_sharp",
+            fqn="App.Service.Execute.LocalHelper",
+            scope_path="App.Service.Execute",
+            parent_id=shared_dup_id,
+            signature="void LocalHelper()",
+            metadata={"parent_scope": "Execute", "short_name": "LocalHelper", "spaces": ["code"]},
+        )
+
+        disambiguated = ensure_unique_overload_ids([m1, m2, local_child], default_space="code")
+        self.assertEqual(len(disambiguated), 3)
+        self.assertNotEqual(disambiguated[0].id, disambiguated[1].id)
+        self.assertIn(disambiguated[2].parent_id, {disambiguated[0].id, disambiguated[1].id})
+        self.assertNotEqual(disambiguated[2].parent_id, shared_dup_id)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_linker_inheritance_cache_and_deque_bfs(self) -> None:
+        """Verify TopologyLinker pre-indexes inheritance/methods and expand_contract_symbol_ids expands base and derived methods."""
         base_cls = UnifiedSymbol(
             id="cls_base",
             name="BaseService",
@@ -139,30 +344,31 @@ class TestASTEnginePolish(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_t34_snippet_extractor_mtime_ns_cache_invalidation(self):
-        """T-34: Verify ast_engine SnippetExtractor caches file lines by mtime_ns and refreshes when file is modified."""
+    def test_snippet_extractor_mtime_ns_cache_invalidation(self) -> None:
+        """Verify SnippetExtractor caches file lines by mtime_ns and refreshes when file is modified."""
         target_file = self.temp_dir / "sample.py"
         target_file.write_text("line_one = 1\nline_two = 2\nline_three = 3\n", encoding="utf-8")
 
         extractor = SnippetExtractor(project_root=self.temp_dir)
         snip1 = extractor.extract(str(target_file), line_number=2, end_line=2, context_before=0, context_after=0)
         self.assertIsNotNone(snip1)
+        assert snip1 is not None
         self.assertIn("line_two = 2", snip1.content)
         self.assertEqual(len(extractor._file_lines_cache), 1)
 
-        # Modify file and bump mtime_ns explicitly to guarantee change across fast filesystems
         st_old = target_file.stat()
         target_file.write_text("line_one = 1\nline_two = 222\nline_three = 3\n", encoding="utf-8")
         os.utime(target_file, ns=(st_old.st_atime_ns, st_old.st_mtime_ns + 1_000_000))
 
         snip2 = extractor.extract(str(target_file), line_number=2, end_line=2, context_before=0, context_after=0)
         self.assertIsNotNone(snip2)
+        assert snip2 is not None
         self.assertIn("line_two = 222", snip2.content)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_t35_extract_call_sites_presorted_enclosing_symbol(self):
-        """T-35: Verify extract_call_sites resolves the smallest enclosing symbol span without mutating kind order."""
+    def test_extract_call_sites_presorted_enclosing_symbol(self) -> None:
+        """Verify extract_call_sites resolves the smallest enclosing symbol span without mutating kind order."""
         code = (
             "class Outer:\n"
             "    def inner_method(self):\n"
@@ -176,13 +382,9 @@ class TestASTEnginePolish(YSCBTestCase):
         self.assertTrue(sites[0].caller_member_name.endswith("inner_method"))
         self.mark_passed()
 
-
     @require(Requirement.LOGIC)
-    def test_t36_file_uri_opt_in_and_lazy_graph_meta(self):
-        """T-36 (OPT-01, OPT-03, OPT-05): Verify file_uri=False default vs file_uri=True, and lazy graph loading + unified.meta.json."""
-        from ast_engine.engine import ASTEngine
-        from ast_engine.formatter import ASTResultFormatter
-
+    def test_file_uri_opt_in_and_lazy_graph_meta(self) -> None:
+        """Verify file_uri=False default vs file_uri=True, lazy graph loading, and corrupted graph self-healing."""
         src_f = self.temp_dir / "demo.py"
         src_f.write_text(
             "def alpha():\n    return beta()\n\ndef beta():\n    return 42\n",
@@ -198,23 +400,21 @@ class TestASTEnginePolish(YSCBTestCase):
 
         eng = ASTEngine(project_root=self.temp_dir, storage_dir=self.temp_dir / ".ast_store")
         snap = eng.build_index(allow_parallel=False)
-        self.assertGreaterEqual(snap.ast_generation, 1)
+        self.assertEqual(snap.ast_generation, 1)
         self.assertTrue(eng.meta_index_path.exists())
 
-        # Fresh engine instance: get_persisted_meta() should read unified.meta.json without loading _snapshot or _graph
         eng2 = ASTEngine(project_root=self.temp_dir, storage_dir=self.temp_dir / ".ast_store")
         meta = eng2.get_persisted_meta()
         self.assertIsNotNone(meta)
+        assert meta is not None
         self.assertEqual(meta["ast_generation"], snap.ast_generation)
         self.assertIsNone(eng2._snapshot)
         self.assertIsNone(eng2._graph)
 
-        # ensure_jit_synced on clean workspace should load _snapshot without loading _graph
         eng2.ensure_jit_synced()
         self.assertIsNotNone(eng2._snapshot)
         self.assertIsNone(eng2._graph)
 
-        # Calling callers() loads _graph on demand
         res_callers = eng2.callers("beta")
         self.assertIsNotNone(eng2._graph)
         out_txt = eng2.formatter.format_callers_output(res_callers)
@@ -224,34 +424,16 @@ class TestASTEnginePolish(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_is_dirty_file_match_and_mtime_disambiguation(self):
-        """驗證根目錄單段檔案與子目錄 dirty_files 匹配，以及多空間同名根目錄檔案之 mtime_ns 消歧。"""
-        from ast_engine.io_utils import is_dirty_file_match
+    def test_is_dirty_file_match_and_mtime_disambiguation(self) -> None:
+        """Verify dirty_files path matching and multi-space root-level mtime_ns disambiguation."""
+        dirty_set = normalize_dirty_paths(["ys_codebase/source/dev/scripts/cli.py"])
+        self.assertFalse(is_dirty_file_match("cli.py", dirty_set))
+        self.assertTrue(is_dirty_file_match("source/dev/scripts/cli.py", dirty_set))
+        self.assertTrue(is_dirty_file_match("ys_codebase/source/dev/scripts/cli.py", dirty_set))
 
-        # 1. 含目錄結構路徑維持雙向後綴匹配，不會誤中子目錄同名檔
-        self.assertTrue(
-            is_dirty_file_match(
-                "src/utils.py",
-                {"/workspace/proj/src/utils.py"},
-            )
-        )
-        self.assertFalse(
-            is_dirty_file_match(
-                "pkg/utils.py",
-                {"/workspace/proj/src/utils.py"},
-            )
-        )
-        # 2. 根目錄單檔（無 '/'）可匹配絕對路徑 dirty_files
-        self.assertTrue(
-            is_dirty_file_match(
-                "yscb.py",
-                {"/workspace/proj/yscb.py"},
-            )
-        )
-
-        # 3. _resolve_dirty_files_only 於多空間同名根目錄檔案時選取最新 mtime_ns 空間
-        from ast_engine.engine import ASTEngine
-        from file_space.schema import FileSpaceConfig
+        self.assertTrue(is_dirty_file_match("src/utils.py", {"/workspace/proj/src/utils.py"}))
+        self.assertFalse(is_dirty_file_match("pkg/utils.py", {"/workspace/proj/src/utils.py"}))
+        self.assertTrue(is_dirty_file_match("yscb.py", {"/workspace/proj/yscb.py"}))
 
         space_a = self.temp_dir / "space_a"
         space_b = self.temp_dir / "space_b"
@@ -281,11 +463,8 @@ class TestASTEnginePolish(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_csharp_file_scoped_namespace_and_snapshot_list_symbols(self):
-        """驗證 C# file-scoped namespace 範圍延伸至檔尾與 ASTSnapshot.from_dict 串列反序列化。"""
-        from ast_engine.dialects.csharp import CSharpDialect
-        from ast_engine.schema import ASTSnapshot, SymbolKind
-
+    def test_csharp_file_scoped_namespace_and_snapshot_list_symbols(self) -> None:
+        """Verify C# file-scoped namespace span extension to EOF and ASTSnapshot.from_dict list deserialization."""
         dialect = CSharpDialect()
         raw_items = [
             {
@@ -309,7 +488,7 @@ class TestASTEnginePolish(YSCBTestCase):
         source_lines = ["namespace MyCorp.App;", "", "public class OrderService {", "}"]
         dialect.finalize_raw_items(raw_items, source_lines)
         self.assertEqual(raw_items[0]["end_byte"], 120)
-        self.assertGreaterEqual(raw_items[0]["end_line"], 10)
+        self.assertEqual(raw_items[0]["end_line"], 10)
 
         snap_dict = {
             "space_name": "core",
@@ -333,11 +512,8 @@ class TestASTEnginePolish(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_linker_cache_invalidation_on_inplace_symbol_update(self):
-        """驗證符號表原地更新（長度不變但符號實例替換）時 expand_contract_symbol_ids 快取自動失效重算。"""
-        from ast_engine.linker import expand_contract_symbol_ids
-        from ast_engine.schema import SymbolKind, UnifiedSymbol
-
+    def test_linker_cache_invalidation_on_inplace_symbol_update(self) -> None:
+        """Verify expand_contract_symbol_ids invalidates cache when symbols_map is updated in place."""
         base_v1 = UnifiedSymbol(
             id="cls_base",
             name="BaseWorker",
@@ -389,7 +565,6 @@ class TestASTEnginePolish(YSCBTestCase):
         expanded1 = expand_contract_symbol_ids(symbols_map, method_target)
         self.assertEqual(expanded1, ["m_run"])
 
-        # 原地替換 cls_child（新增繼承 BaseWorker），字典長度與 id(symbols_map) 皆不變
         child_v2 = UnifiedSymbol(
             id="cls_child",
             name="ChildWorker",
@@ -402,8 +577,7 @@ class TestASTEnginePolish(YSCBTestCase):
         )
         symbols_map["cls_child"] = child_v2
         expanded2 = expand_contract_symbol_ids(symbols_map, method_target)
-        self.assertIn("m_run", expanded2)
-        self.assertIn("m_child_run", expanded2)
+        self.assertEqual(set(expanded2), {"m_run", "m_child_run"})
         self.mark_passed()
 
 

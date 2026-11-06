@@ -154,7 +154,7 @@ class InterProcessLock:
                 win_err = getattr(e, "winerror", None)
                 if e.errno in (errno.EACCES, errno.EAGAIN, getattr(errno, "EDEADLK", 36)) or win_err == 33:
                     return False
-                if e.errno is not None and e.errno not in (errno.EACCES, errno.EAGAIN, getattr(errno, "EDEADLK", 36)):
+                if e.errno is not None:
                     raise
                 return False
         else:
@@ -196,3 +196,9 @@ class InterProcessLock:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.release()
+
+    def __del__(self) -> None:
+        try:
+            self.release()
+        except Exception:
+            pass

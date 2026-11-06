@@ -5,13 +5,13 @@ soft-merges `extraPaths`, `excludes`, `analysisExclude`, and `json.schemas` unde
 and provides 100% clean revert on `remove vscode-support` or `vscode-support revert`.
 """
 
+import copy
 import json
 import os
 import platform
-import shutil
 import subprocess
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from core import uri, vfs
 from core.pip_manager import PipManager
@@ -28,7 +28,6 @@ def strip_jsonc(raw_text: str) -> str:
     if not raw_text:
         return ""
 
-    # Phase 1: Strip comments outside string literals
     chars: List[str] = []
     n = len(raw_text)
     i = 0
@@ -68,47 +67,18 @@ def strip_jsonc(raw_text: str) -> str:
                 i += 2
                 continue
 
+        if ch in ("}", "]"):
+            k = len(chars) - 1
+            while k >= 0 and chars[k] in (" ", "\t", "\r", "\n"):
+                k -= 1
+            while k >= 0 and chars[k] == ",":
+                del chars[k]
+                k -= 1
+
         chars.append(ch)
         i += 1
 
-    no_comments = "".join(chars)
-
-    # Phase 2: Strip trailing commas before '}' or ']' outside string literals
-    out: List[str] = []
-    m = len(no_comments)
-    j = 0
-    in_str = False
-    while j < m:
-        ch = no_comments[j]
-        if in_str:
-            out.append(ch)
-            if ch == "\\" and j + 1 < m:
-                out.append(no_comments[j + 1])
-                j += 2
-                continue
-            if ch == '"':
-                in_str = False
-            j += 1
-            continue
-
-        if ch == '"':
-            in_str = True
-            out.append(ch)
-            j += 1
-            continue
-
-        if ch == ",":
-            k = j + 1
-            while k < m and no_comments[k] in (" ", "\t", "\r", "\n"):
-                k += 1
-            if k < m and no_comments[k] in ("}", "]"):
-                j += 1
-                continue
-
-        out.append(ch)
-        j += 1
-
-    return "".join(out)
+    return "".join(chars)
 
 
 def _safe_remove_link(link_path: str) -> bool:
@@ -153,18 +123,60 @@ class SettingsProjector:
     }
 
     def __init__(self, yscb_dir: Optional[str] = None) -> None:
-        self.yscb_dir = os.path.abspath(yscb_dir or self._resolve_yscb_root())
+        self.yscb_dir = os.path.abspath(yscb_dir or uri.resolve_yscb_root())
         self.pip_mgr = PipManager(self.yscb_dir)
         self.schema_compiler = SchemaCompiler(self.yscb_dir)
-
-    def _resolve_yscb_root(self) -> str:
-        return uri.resolve_yscb_root()
+        self.last_revert_error: Optional[str] = None
 
     @staticmethod
     def is_vscode_configured(proj_root: str) -> bool:
         """檢查 `project://.vscode` 目錄是否已存在。"""
         vscode_dir = os.path.join(proj_root, ".vscode")
         return os.path.isdir(vscode_dir)
+
+    @staticmethod
+    def _load_settings_jsonc(settings_path: str) -> Tuple[Optional[Dict[str, Any]], bool, Optional[str]]:
+        """單次讀取 `settings.json`，依序嘗試標準 JSON 與 JSONC 解析，回傳 `(data_dict_or_none, had_jsonc, raw_original)`。"""
+        try:
+            raw_original = vfs.read_text(settings_path)
+        except Exception:
+            return None, False, None
+        try:
+            data = json.loads(raw_original)
+            had_jsonc = False
+        except Exception:
+            had_jsonc = True
+            try:
+                data = json.loads(strip_jsonc(raw_original))
+            except Exception:
+                return None, True, raw_original
+        if not isinstance(data, dict):
+            return None, False, None
+        return data, had_jsonc, raw_original
+
+    @staticmethod
+    def _set_or_pop_list(settings: Dict[str, Any], key: str, items: List[Any]) -> None:
+        """當清單非空時寫入 `settings[key]`，為空時自 `settings` 移除該鍵。"""
+        if items:
+            settings[key] = items
+        else:
+            settings.pop(key, None)
+
+    @staticmethod
+    def _safe_str_list(record: Dict[str, Any], key: str) -> List[str]:
+        """安全讀取字典中之字串清單欄位，若非 list 或元素非 str 則過濾並回退為空清單。"""
+        val = record.get(key)
+        if not isinstance(val, list):
+            return []
+        return [item for item in val if isinstance(item, str)]
+
+    @staticmethod
+    def _safe_dict(record: Dict[str, Any], key: str) -> Dict[str, Any]:
+        """安全讀取字典中之子字典欄位，若非 dict 則回退為空字典。"""
+        val = record.get(key)
+        if not isinstance(val, dict):
+            return {}
+        return dict(val)
 
     def get_stable_link_path(self) -> str:
         """取得 `yscb.venv://current-site-packages` 實體絕對路徑。"""
@@ -231,6 +243,18 @@ class SettingsProjector:
         """安全移除 `yscb.venv://current-site-packages` 穩定連結。"""
         return _safe_remove_link(self.get_stable_link_path())
 
+    def _is_under_yscb_venv(self, cand_path: str, proj_root: str, allow_root: bool = False) -> bool:
+        """判定給定路徑正規化後是否位於 `self.yscb_dir/.venv` 目錄下。"""
+        try:
+            cand = cand_path.replace("\\", "/")
+            if not os.path.isabs(cand):
+                cand = os.path.join(proj_root, cand)
+            abs_cand = os.path.normcase(os.path.abspath(cand))
+            venv_root = os.path.normcase(os.path.abspath(os.path.join(self.yscb_dir, ".venv")))
+            return (allow_root and abs_cand == venv_root) or abs_cand.startswith(venv_root + os.sep)
+        except Exception:
+            return False
+
     def _is_yscb_managed_interpreter(
         self,
         value: Any,
@@ -245,15 +269,7 @@ class SettingsProjector:
             return False
         if old_managed_value and value == old_managed_value:
             return True
-        try:
-            cand = value.replace("\\", "/")
-            if not os.path.isabs(cand):
-                cand = os.path.join(proj_root, cand)
-            abs_cand = os.path.normcase(os.path.abspath(cand))
-            venv_root = os.path.normcase(os.path.abspath(os.path.join(self.yscb_dir, ".venv")))
-            return abs_cand == venv_root or abs_cand.startswith(venv_root + os.sep)
-        except Exception:
-            return False
+        return self._is_under_yscb_venv(value, proj_root, allow_root=True)
 
     @staticmethod
     def _format_proj_rel_path(proj_root: str, target_path: str) -> str:
@@ -299,13 +315,7 @@ class SettingsProjector:
             return False
         norm = path_entry.replace("\\", "/")
         if "/.venv/py" in norm and norm.endswith("/site-packages"):
-            try:
-                cand = norm if os.path.isabs(norm) else os.path.join(proj_root, norm)
-                abs_cand = os.path.normcase(os.path.abspath(cand))
-                venv_root = os.path.normcase(os.path.abspath(os.path.join(self.yscb_dir, ".venv")))
-                return abs_cand.startswith(venv_root + os.sep)
-            except Exception:
-                return False
+            return self._is_under_yscb_venv(norm, proj_root, allow_root=False)
         return False
 
     def _apply_vscode_settings_merge(
@@ -320,10 +330,11 @@ class SettingsProjector:
         if not isinstance(raw_extra, list):
             raw_extra = []
 
+        was_managed = self.YSCB_MANAGED_KEY in settings
         old_managed_record = settings.get(self.YSCB_MANAGED_KEY, {})
         if not isinstance(old_managed_record, dict):
             old_managed_record = {}
-        old_managed_paths = set(old_managed_record.get("extraPaths", []))
+        old_managed_paths = set(self._safe_str_list(old_managed_record, "extraPaths"))
 
         retained_paths = [
             p
@@ -336,21 +347,30 @@ class SettingsProjector:
             if mp not in final_extra_paths:
                 final_extra_paths.append(mp)
 
-        if final_extra_paths:
-            settings["python.analysis.extraPaths"] = final_extra_paths
-        else:
-            settings.pop("python.analysis.extraPaths", None)
+        self._set_or_pop_list(settings, "python.analysis.extraPaths", final_extra_paths)
 
         old_managed_interpreter = old_managed_record.get("defaultInterpreterPath")
         current_interpreter = settings.get("python.defaultInterpreterPath")
         if self._is_yscb_managed_interpreter(current_interpreter, proj_root, old_managed_interpreter):
             settings.pop("python.defaultInterpreterPath", None)
 
-        managed_excludes = dict(old_managed_record.get("excludes", {}))
+        old_managed_excludes = self._safe_dict(old_managed_record, "excludes")
+        managed_excludes: Dict[str, str] = {}
+        for old_sec, old_pat in old_managed_excludes.items():
+            if not isinstance(old_sec, str) or not isinstance(old_pat, str):
+                continue
+            if self.EXCLUDE_KEYS.get(old_sec) != old_pat:
+                if old_sec in settings and isinstance(settings[old_sec], dict):
+                    settings[old_sec].pop(old_pat, None)
+                    if not settings[old_sec]:
+                        settings.pop(old_sec, None)
+            else:
+                managed_excludes[old_sec] = old_pat
+
         for sec, pattern in self.EXCLUDE_KEYS.items():
             if sec not in settings or not isinstance(settings[sec], dict):
                 settings[sec] = {}
-            if pattern not in settings[sec]:
+            if pattern not in settings[sec] or sec in old_managed_excludes:
                 settings[sec][pattern] = True
                 managed_excludes[sec] = pattern
 
@@ -364,15 +384,25 @@ class SettingsProjector:
         raw_analysis_exclude = settings.get("python.analysis.exclude", [])
         if not isinstance(raw_analysis_exclude, list):
             raw_analysis_exclude = []
-        old_managed_analysis_excl = set(old_managed_record.get("analysisExclude", [])) | set(
-            self.ANALYSIS_EXCLUDE_PATTERNS
-        )
-        final_analysis_excl = [p for p in raw_analysis_exclude if p not in old_managed_analysis_excl]
+
+        old_managed_analysis = set(self._safe_str_list(old_managed_record, "analysisExclude"))
+        if was_managed and not isinstance(old_managed_record.get("analysisExclude"), list):
+            removable_old_analysis = set(self.ANALYSIS_EXCLUDE_PATTERNS)
+        else:
+            removable_old_analysis = old_managed_analysis
+
+        retained_analysis_excl = [
+            p
+            for p in raw_analysis_exclude
+            if p not in removable_old_analysis and not (has_modules_extra and p == "**/.modules/**")
+        ]
+        final_analysis_excl = list(retained_analysis_excl)
+        managed_analysis_excl: List[str] = []
         for pat in active_analysis_exclude:
             if pat not in final_analysis_excl:
                 final_analysis_excl.append(pat)
-        if final_analysis_excl:
-            settings["python.analysis.exclude"] = final_analysis_excl
+                managed_analysis_excl.append(pat)
+        self._set_or_pop_list(settings, "python.analysis.exclude", final_analysis_excl)
 
         # 合併 json.schemas (依 url 差集替換，保留使用者自訂條目)
         managed_schema_urls: List[str] = []
@@ -380,7 +410,7 @@ class SettingsProjector:
             raw_json_schemas = settings.get("json.schemas", [])
             if not isinstance(raw_json_schemas, list):
                 raw_json_schemas = []
-            old_managed_urls = set(old_managed_record.get("jsonSchemas", []))
+            old_managed_urls = set(self._safe_str_list(old_managed_record, "jsonSchemas"))
             retained_schemas = [
                 item
                 for item in raw_json_schemas
@@ -392,18 +422,15 @@ class SettingsProjector:
                 if url:
                     managed_schema_urls.append(url)
                 final_schemas.append(b)
-            if final_schemas:
-                settings["json.schemas"] = final_schemas
-            else:
-                settings.pop("json.schemas", None)
+            self._set_or_pop_list(settings, "json.schemas", final_schemas)
         else:
-            managed_schema_urls = list(old_managed_record.get("jsonSchemas", []))
+            managed_schema_urls = self._safe_str_list(old_managed_record, "jsonSchemas")
 
         managed_dict: Dict[str, Any] = {
             "description": "Auto-managed by YSCB vscode-support module. Reversible via 'yscb vscode-support revert' or module uninstall.",
             "extraPaths": new_managed_paths,
             "excludes": managed_excludes,
-            "analysisExclude": list(active_analysis_exclude),
+            "analysisExclude": managed_analysis_excl,
         }
         if managed_schema_urls:
             managed_dict["jsonSchemas"] = managed_schema_urls
@@ -432,18 +459,11 @@ class SettingsProjector:
         settings: Dict[str, Any] = {}
         had_jsonc = False
         raw_original: Optional[str] = None
+        initial_snapshot: Optional[Dict[str, Any]] = None
         if vfs.is_file(settings_path):
-            try:
-                raw_original = vfs.read_text(settings_path)
-            except Exception:
-                return False
-            try:
-                data = json.loads(raw_original)
-            except Exception:
-                had_jsonc = True
-                try:
-                    data = json.loads(strip_jsonc(raw_original))
-                except Exception:
+            loaded_data, had_jsonc, raw_original = self._load_settings_jsonc(settings_path)
+            if loaded_data is None:
+                if had_jsonc and raw_original is not None:
                     bak_path = settings_path + ".bak"
                     try:
                         vfs.write_text(bak_path, raw_original, encoding="utf-8", atomic=True)
@@ -454,10 +474,10 @@ class SettingsProjector:
                         f"(backed up to '{os.path.basename(bak_path)}'); skipped VS Code settings sync to preserve user file.",
                         file=sys.stderr,
                     )
-                    return False
-            if not isinstance(data, dict):
                 return False
-            settings = data
+            settings = loaded_data
+            if not had_jsonc:
+                initial_snapshot = copy.deepcopy(settings)
         else:
             try:
                 os.makedirs(vscode_dir, exist_ok=True)
@@ -474,12 +494,8 @@ class SettingsProjector:
         new_managed_paths = self._compute_managed_extra_paths(proj_root, extra_paths=extra_paths, py_tag=py_tag)
         self._apply_vscode_settings_merge(settings, proj_root, new_managed_paths, schema_bindings=schema_bindings)
 
-        if vfs.is_file(settings_path) and not had_jsonc:
-            try:
-                if vfs.read_json(settings_path) == settings:
-                    return True
-            except Exception:
-                pass
+        if initial_snapshot is not None and settings == initial_snapshot:
+            return True
 
         if had_jsonc and raw_original is not None:
             try:
@@ -498,12 +514,7 @@ class SettingsProjector:
         依據 `_yscb_managed` 標記清冊，100% 乾淨剔除 YSCB 注入之 `extraPaths`、`excludes`、`analysisExclude` 與 `json.schemas`，
         並清除 `project://.vscode/schemas/` 與 `yscb.venv://current-site-packages` 穩定連結。
         """
-        self.remove_stable_site_packages_link()
-
-        schemas_dir = os.path.join(proj_root, ".vscode", "schemas")
-        if os.path.isdir(schemas_dir):
-            vfs.robust_rmtree(schemas_dir, ignore_errors=True)
-
+        self.last_revert_error = None
         if not self.is_vscode_configured(proj_root):
             return False
 
@@ -511,24 +522,24 @@ class SettingsProjector:
         if not vfs.is_file(settings_path):
             return False
 
-        try:
-            raw_text = vfs.read_text(settings_path)
-            try:
-                settings = json.loads(raw_text)
-            except Exception:
-                settings = json.loads(strip_jsonc(raw_text))
-            if not isinstance(settings, dict):
-                return False
-        except Exception:
+        settings, had_jsonc, raw_original = self._load_settings_jsonc(settings_path)
+        if settings is None:
+            if raw_original is None or had_jsonc:
+                self.last_revert_error = f"Failed to read or parse '{settings_path}' during revert."
             return False
-
         if self.YSCB_MANAGED_KEY not in settings:
             return False
+
+        self.remove_stable_site_packages_link()
+
+        schemas_dir = os.path.join(proj_root, ".vscode", "schemas")
+        if os.path.isdir(schemas_dir):
+            vfs.robust_rmtree(schemas_dir, ignore_errors=True)
 
         managed_record = settings.pop(self.YSCB_MANAGED_KEY, {})
         if not isinstance(managed_record, dict):
             managed_record = {}
-        managed_extra = set(managed_record.get("extraPaths", []))
+        managed_extra = set(self._safe_str_list(managed_record, "extraPaths"))
         managed_interpreter = managed_record.get("defaultInterpreterPath")
 
         # 剔除 YSCB 注入之 extraPaths
@@ -539,10 +550,7 @@ class SettingsProjector:
                 for p in raw_extra
                 if p not in managed_extra and not self._is_legacy_yscb_venv_extra_path(p, proj_root)
             ]
-            if clean_extra:
-                settings["python.analysis.extraPaths"] = clean_extra
-            else:
-                settings.pop("python.analysis.extraPaths", None)
+            self._set_or_pop_list(settings, "python.analysis.extraPaths", clean_extra)
 
         # 剔除 YSCB 注入之 defaultInterpreterPath (若存在舊版殘留)
         curr_interp = settings.get("python.defaultInterpreterPath")
@@ -550,26 +558,22 @@ class SettingsProjector:
             settings.pop("python.defaultInterpreterPath", None)
 
         # 剔除 YSCB 注入之 excludes
-        managed_excludes = managed_record.get("excludes", {})
-        if isinstance(managed_excludes, dict):
-            for sec, pattern in managed_excludes.items():
-                if sec in settings and isinstance(settings[sec], dict):
-                    settings[sec].pop(pattern, None)
-                    if not settings[sec]:
-                        settings.pop(sec, None)
+        managed_excludes = self._safe_dict(managed_record, "excludes")
+        for sec, pattern in managed_excludes.items():
+            if isinstance(sec, str) and isinstance(pattern, str) and sec in settings and isinstance(settings[sec], dict):
+                settings[sec].pop(pattern, None)
+                if not settings[sec]:
+                    settings.pop(sec, None)
 
         # 剔除 YSCB 注入之 analysisExclude
-        managed_analysis_excl = set(managed_record.get("analysisExclude", []))
+        managed_analysis_excl = set(self._safe_str_list(managed_record, "analysisExclude"))
         raw_analysis_excl = settings.get("python.analysis.exclude", [])
         if isinstance(raw_analysis_excl, list) and managed_analysis_excl:
             clean_analysis_excl = [p for p in raw_analysis_excl if p not in managed_analysis_excl]
-            if clean_analysis_excl:
-                settings["python.analysis.exclude"] = clean_analysis_excl
-            else:
-                settings.pop("python.analysis.exclude", None)
+            self._set_or_pop_list(settings, "python.analysis.exclude", clean_analysis_excl)
 
         # 剔除 YSCB 注入之 json.schemas
-        managed_schema_urls = set(managed_record.get("jsonSchemas", []))
+        managed_schema_urls = set(self._safe_str_list(managed_record, "jsonSchemas"))
         raw_json_schemas = settings.get("json.schemas", [])
         if isinstance(raw_json_schemas, list) and managed_schema_urls:
             clean_schemas = [
@@ -577,15 +581,13 @@ class SettingsProjector:
                 for item in raw_json_schemas
                 if not (isinstance(item, dict) and item.get("url") in managed_schema_urls)
             ]
-            if clean_schemas:
-                settings["json.schemas"] = clean_schemas
-            else:
-                settings.pop("json.schemas", None)
+            self._set_or_pop_list(settings, "json.schemas", clean_schemas)
 
         try:
             vfs.write_json(settings_path, settings, indent=2, atomic=True)
             return True
-        except Exception:
+        except Exception as exc:
+            self.last_revert_error = f"Failed to write '{settings_path}' during revert: {exc}"
             return False
 
     def get_status(self, proj_root: str) -> Dict[str, Any]:
@@ -613,23 +615,13 @@ class SettingsProjector:
         managed_extra_paths: List[str] = []
         managed_schemas: List[str] = []
         if vfs.is_file(settings_path):
-            try:
-                try:
-                    data = vfs.read_json(settings_path)
-                except Exception:
-                    raw_text = vfs.read_text(settings_path)
-                    try:
-                        data = json.loads(raw_text)
-                    except Exception:
-                        data = json.loads(strip_jsonc(raw_text))
-                if isinstance(data, dict) and self.YSCB_MANAGED_KEY in data:
-                    is_managed = True
-                    rec = data[self.YSCB_MANAGED_KEY]
-                    if isinstance(rec, dict):
-                        managed_extra_paths = list(rec.get("extraPaths", []))
-                        managed_schemas = list(rec.get("jsonSchemas", []))
-            except Exception:
-                pass
+            data, _, _ = self._load_settings_jsonc(settings_path)
+            if data is not None and self.YSCB_MANAGED_KEY in data:
+                is_managed = True
+                rec = data[self.YSCB_MANAGED_KEY]
+                if isinstance(rec, dict):
+                    managed_extra_paths = self._safe_str_list(rec, "extraPaths")
+                    managed_schemas = self._safe_str_list(rec, "jsonSchemas")
 
         return {
             "project_root": proj_root,
@@ -643,4 +635,3 @@ class SettingsProjector:
             "managed_schemas": managed_schemas,
             "managed_schema_count": len(managed_schemas),
         }
-

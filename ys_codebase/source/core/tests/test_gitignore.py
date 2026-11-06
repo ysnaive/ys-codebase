@@ -14,6 +14,7 @@ from unittest.mock import patch
 import core
 from core import gitignore, vfs
 from core.commands.bags import CmdBags, CmdOption
+from tests import load_core_cli_module
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
 
@@ -35,7 +36,7 @@ class TestCoreGitignore(YSCBTestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
         super().tearDown()
 
-    def test_ft_01_subdir_and_same_root_semantic_uri_resolution(self) -> None:
+    def test_subdir_and_same_root_semantic_uri_resolution(self) -> None:
         """驗證子目錄拓撲 (`ys_codebase/`) 與同根拓撲 (`yscb:// == project://`) 之語意 URI 路徑錨定轉換。"""
         # 1. 子目錄拓撲 (project:// = workspace, yscb:// = workspace/ys_codebase)
         p_venv = gitignore.normalize_pattern("yscb://.venv/", self.proj_root, self.yscb_root)
@@ -56,11 +57,14 @@ class TestCoreGitignore(YSCBTestCase):
         # 3. 否定規則與越界路徑過濾
         neg_rule = gitignore.normalize_pattern("!project://configurable/*.local.json", self.proj_root, self.yscb_root)
         self.assertEqual(neg_rule, "!/configurable/*.local.json")
+        neg_keep = gitignore.normalize_pattern("!project://keep.txt", self.proj_root, self.yscb_root)
+        self.assertEqual(neg_keep, "!/keep.txt")
+        self.assertIsNone(gitignore.normalize_pattern("project://../escape", self.proj_root, self.yscb_root))
         outside_dir = os.path.join(self.temp_dir, "outside")
         self.assertIsNone(gitignore.normalize_pattern("yscb://secret/", self.proj_root, outside_dir))
         self.mark_passed()
 
-    def test_ft_02_grouped_managed_block_and_static_dynamic_merge(self) -> None:
+    def test_grouped_managed_block_and_static_dynamic_merge(self) -> None:
         """驗證靜態 contributes (`vscode-support`, `project`) 與動態 SDK (`agents-workflow`) 按 `# [<module>]` 分組合成。"""
         vsc_contrib_dir = os.path.join(self.yscb_root, ".modules", "vscode-support", "contributes")
         os.makedirs(vsc_contrib_dir, exist_ok=True)
@@ -100,13 +104,32 @@ class TestCoreGitignore(YSCBTestCase):
         idx_aw = content.index("# [agents-workflow]")
         idx_vsc = content.index("# [vscode-support]")
         idx_proj = content.index("# [project]")
-        self.assertTrue(idx_core < idx_aw < idx_vsc < idx_proj)
+        self.assertLess(idx_core, idx_aw)
+        self.assertLess(idx_aw, idx_vsc)
+        self.assertLess(idx_vsc, idx_proj)
 
         # Zero-Touch 冪等性驗證：再次 sync 時不重寫磁碟 (updated=False)
         mtime_before = os.stat(gi_path).st_mtime_ns
         res_idempotent = gitignore.sync(proj_root=self.proj_root, yscb_root=self.yscb_root)
         self.assertFalse(res_idempotent["updated"])
         self.assertEqual(os.stat(gi_path).st_mtime_ns, mtime_before)
+
+        # clear_dynamic(sync_now=False) 僅更新動態儲存而不立即重寫 .gitignore
+        gitignore.register_dynamic(
+            "temp-mod",
+            ["/.temp_mod/"],
+            sync_now=False,
+            proj_root=self.proj_root,
+            yscb_root=self.yscb_root,
+        )
+        res_clear_nosync = gitignore.clear_dynamic(
+            "temp-mod",
+            sync_now=False,
+            proj_root=self.proj_root,
+            yscb_root=self.yscb_root,
+        )
+        self.assertTrue(res_clear_nosync["had_dynamic_entries"])
+        self.assertFalse(res_clear_nosync["updated"])
 
         # clear_dynamic 移除後，該模組分組自動從託管區塊消失
         res_clear = gitignore.clear_dynamic(
@@ -122,7 +145,7 @@ class TestCoreGitignore(YSCBTestCase):
         self.assertIn("# [vscode-support]", content_after)
         self.mark_passed()
 
-    def test_ft_03_legacy_migration_and_obsolete_nested_gitignore_cleanup(self) -> None:
+    def test_legacy_migration_and_obsolete_nested_gitignore_cleanup(self) -> None:
         """驗證舊版區塊無縫遷移、保留使用者自訂規則，以及安全清理廢棄之子目錄 `.gitignore`。"""
         gi_path = os.path.join(self.proj_root, ".gitignore")
         legacy_root_content = (
@@ -174,7 +197,7 @@ class TestCoreGitignore(YSCBTestCase):
         self.assertNotIn(gitignore.LEGACY_INTERNAL_BEGIN, yscb_gi_text)
         self.mark_passed()
 
-    def test_et_01_sdk_mandatory_module_validation_and_cli_commands(self) -> None:
+    def test_sdk_mandatory_module_validation_and_cli_commands(self) -> None:
         """驗證 SDK 強制檢查非空 `module` 參數（負向測試），以及 CLI `gitignore status/sync` 行為。"""
         for bad_mod in ("", "   ", None):
             with self.assertRaises(ValueError):
@@ -186,14 +209,8 @@ class TestCoreGitignore(YSCBTestCase):
         self.assertIn("gitignore", core.__all__)
         self.assertIs(core.gitignore, gitignore)
 
-        # 驗證 CLI status / sync (含 --json 與未知子命令負向攔截)
-        import importlib.util
-
-        cli_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "cli.py")
-        spec = importlib.util.spec_from_file_location("_test_core_gi_cli", cli_path)
-        self.assertIsNotNone(spec)
-        cli_mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-        spec.loader.exec_module(cli_mod)  # type: ignore[union-attr]
+        # 驗證 CLI status / sync (含 --json、純文字輸出與錯誤/未知子命令負向攔截)
+        cli_mod = load_core_cli_module()
 
         buf_sync = io.StringIO()
         with redirect_stdout(buf_sync):
@@ -209,6 +226,20 @@ class TestCoreGitignore(YSCBTestCase):
         sync_data = json.loads(buf_sync.getvalue())
         self.assertIn("groups", sync_data)
         self.assertIn("core", sync_data["groups"])
+
+        # 純文字輸出驗證 (非 --json)
+        buf_sync_txt = io.StringIO()
+        with redirect_stdout(buf_sync_txt):
+            rc_sync_txt = cli_mod.gitignore(
+                CmdBags(
+                    raw_cmd="gitignore sync",
+                    command="gitignore",
+                    args=["sync"],
+                    options={},
+                )
+            )
+        self.assertEqual(rc_sync_txt, 0)
+        self.assertIn(".gitignore", buf_sync_txt.getvalue())
 
         buf_status = io.StringIO()
         with redirect_stdout(buf_status):
@@ -226,6 +257,33 @@ class TestCoreGitignore(YSCBTestCase):
         self.assertTrue(status_data["has_managed_block"])
         self.assertTrue(status_data["in_sync"])
 
+        buf_status_txt = io.StringIO()
+        with redirect_stdout(buf_status_txt):
+            rc_status_txt = cli_mod.gitignore(
+                CmdBags(
+                    raw_cmd="gitignore status",
+                    command="gitignore",
+                    args=["status"],
+                    options={},
+                )
+            )
+        self.assertEqual(rc_status_txt, 0)
+        self.assertIn("Status", buf_status_txt.getvalue())
+
+        # gitignore.sync 回傳含 error 時 CLI 應回傳 1
+        err_sync_buf = io.StringIO()
+        with patch("core.gitignore.sync", return_value={"error": "simulated sync failure"}):
+            with redirect_stderr(err_sync_buf):
+                rc_err_sync = cli_mod.gitignore(
+                    CmdBags(
+                        raw_cmd="gitignore sync",
+                        command="gitignore",
+                        args=["sync"],
+                        options={},
+                    )
+                )
+        self.assertEqual(rc_err_sync, 1)
+
         # 未知子命令應回傳 1
         err_buf = io.StringIO()
         with redirect_stderr(err_buf):
@@ -241,7 +299,7 @@ class TestCoreGitignore(YSCBTestCase):
         self.assertIn("Unknown subcommand", err_buf.getvalue())
         self.mark_passed()
 
-    def test_ft_04_default_workspace_storage_local_persistence(self) -> None:
+    def test_default_workspace_storage_local_persistence(self) -> None:
         """驗證預設工作區動態忽略規則持久化至 `storage.local://core/gitignore_dynamic.json`。"""
         self.assertEqual(gitignore.DYNAMIC_CACHE_URI, "storage.local://core/gitignore_dynamic.json")
 
@@ -272,4 +330,3 @@ class TestCoreGitignore(YSCBTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

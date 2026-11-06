@@ -1,63 +1,48 @@
 """
-CLI Routing, Help, UX and Defensive Guide Unit Tests.
-Consolidates previous test_cli_help and test_cli_guide suites.
-100% Python Standard Library.
+CLI Routing, Help, UX and Telemetry Unit Tests.
 """
 import io
+import json
 import os
-import sys
+import tempfile
 import unittest
-import importlib.util
-from contextlib import redirect_stdout, redirect_stderr
-from unittest.mock import patch
+from contextlib import redirect_stdout
+from pathlib import Path
 
-from core import uri
+from core.commands.dispatcher import dispatch, _suggest_command
 from core.commands.help import HelpRenderer
 from core.commands.registry import CommandSpec
+from core.telemetry import (
+    extract_error_hint,
+    record_cli_event,
+    read_telemetry_records,
+    should_record_telemetry,
+)
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
+from tests import load_yscb_host_module
 
 
-def _load_yscb_module():
-    host_d, _ = uri._get_host_config()
-    candidates = [
-        os.path.join(host_d, "yscb.py"),
-        os.path.join(uri.resolve_yscb_root(), "yscb.py"),
-        os.path.join(os.path.dirname(uri.resolve_yscb_root()), "yscb.py"),
-        os.path.abspath("yscb.py")
-    ]
-    for c in candidates:
-        if os.path.isfile(c):
-            spec = importlib.util.spec_from_file_location("yscb", c)
-            if spec and spec.loader:
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                return mod
-    raise FileNotFoundError("Cannot locate yscb.py host script")
+yscb = load_yscb_host_module()
 
 
-yscb = _load_yscb_module()
-
-
+@require(Requirement.LOGIC)
 class TestCLIHelpAndUX(YSCBTestCase):
     """CLI Help, Banner Formatting and Spelling Suggestion Unit Tests."""
 
-    @require(Requirement.LOGIC)
     def test_global_help_output_structure(self):
-        """FT-02: Verifies that global --help outputs Banner, Usage, Core & Module commands."""
+        """Verifies that global --help outputs Banner, Usage, Core & Module commands."""
         f = io.StringIO()
         with redirect_stdout(f):
             yscb.main(["--help"])
         out = f.getvalue()
-        
-        # Assertions for Banner & Sections
+
         self.assertIn("YS-Codebase - Ultra-Thin Modular Microkernel CLI", out)
         self.assertIn("USAGE:", out)
         self.assertIn("CORE COMMANDS:", out)
         self.assertIn("MODULE COMMANDS:", out)
         self.assertIn("GLOBAL OPTIONS:", out)
-        
-        # Assertions for Core Commands (including init)
+
         self.assertIn("init <root>", out)
         self.assertIn("install <module>", out)
         self.assertIn("status", out)
@@ -65,25 +50,20 @@ class TestCLIHelpAndUX(YSCBTestCase):
         self.assertIn("rollback", out)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
     def test_spelling_suggestion_algorithm(self):
-        """FT-04: Verifies difflib-based intelligent spelling suggestion."""
-        from core.commands.dispatcher import _suggest_command
+        """Verifies difflib-based intelligent spelling suggestion."""
         known = ["init", "install", "update", "remove", "list", "status", "rollback", "reload", "dev"]
-        
-        # Close typos
+
         self.assertEqual(_suggest_command("relod", known), "reload")
         self.assertEqual(_suggest_command("stauts", known), "status")
         self.assertEqual(_suggest_command("instll", known), "install")
         self.assertEqual(_suggest_command("updat", known), "update")
-        
-        # Far-off strings (no match)
+
         self.assertIsNone(_suggest_command("completely_unrelated_xyz", known))
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
     def test_unknown_command_dispatch_with_suggestion(self):
-        """ET-02: Verifies error message and suggestion on unknown command execution."""
+        """Verifies error message and suggestion on unknown command execution."""
         f_err = io.StringIO()
         with redirect_stdout(f_err):
             code = yscb.dispatch_module("relod", [])
@@ -94,12 +74,12 @@ class TestCLIHelpAndUX(YSCBTestCase):
         self.mark_passed()
 
 
+@require(Requirement.LOGIC)
 class TestHelpRendererMetadata(YSCBTestCase):
     """測試 HelpRenderer 指令級 -h 渲染之三級權限標籤與 Pros/Cons 輸出。"""
 
-    @require(Requirement.LOGIC)
     def test_cmd_help_renders_security_tier_and_pros_cons(self):
-        """FT-01: 驗證 render_cmd_help 正確渲染 Security ([SAFE]/[CONDITIONAL]/[GATED])、RECOMMENDED USAGE (Pros) 與 RESTRICTIONS & GATES (Cons)。"""
+        """驗證 render_cmd_help 正確渲染 Security ([SAFE]/[CONDITIONAL]/[GATED])、RECOMMENDED USAGE (Pros) 與 RESTRICTIONS & GATES (Cons)。"""
         spec_safe = CommandSpec(
             name="test",
             description="Run module tests",
@@ -139,18 +119,25 @@ class TestHelpRendererMetadata(YSCBTestCase):
         self.mark_passed()
 
 
+@require(Requirement.LOGIC)
 class TestCoreCLITelemetry(YSCBTestCase):
-    """測試 core.telemetry (cache://core/telemetry.jsonl) 寫入、沙盒略過、滾動截斷與路由攔截。"""
+    """測試 core.telemetry (cache://core/telemetry.jsonl) 寫入、沙盒略過、滾動截斷與過濾。"""
 
-    @require(Requirement.LOGIC)
     def test_telemetry_record_filter_and_rotation(self):
-        """FT-01, ET-03, ET-04: 驗證 record_cli_event 寫入、沙盒預設旁路、--help/session-trace 排除與滾動截斷。"""
-        import tempfile
-        from pathlib import Path
-        from core.telemetry import (
-            record_cli_event,
-            read_telemetry_records,
-            should_record_telemetry,
+        """驗證 record_cli_event 寫入、沙盒預設旁路、--help/session-trace 排除、時間窗口/limit 過濾、損毀行容錯與 extract_error_hint 優先序。"""
+        # 1. Verify extract_error_hint priority and empty string handling
+        self.assertEqual(extract_error_hint(""), "")
+        self.assertEqual(
+            extract_error_hint("Normal header\n[ERROR] Critical database failure\nTrailing"),
+            "[ERROR] Critical database failure",
+        )
+        self.assertEqual(
+            extract_error_hint("First line\n[BLOCKER] Daemon required"),
+            "[BLOCKER] Daemon required",
+        )
+        self.assertEqual(
+            extract_error_hint("Plain first line\nPlain second line"),
+            "Plain first line",
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -158,18 +145,15 @@ class TestCoreCLITelemetry(YSCBTestCase):
             orig_override = os.environ.get("YSCB_TELEMETRY_PATH")
             orig_sandbox = os.environ.get("YSCB_TEST_SANDBOX")
             try:
-                # 1. ET-03: 當 YSCB_TEST_SANDBOX=1 且無 YSCB_TELEMETRY_PATH 時預設不記錄
                 os.environ.pop("YSCB_TELEMETRY_PATH", None)
                 os.environ["YSCB_TEST_SANDBOX"] = "1"
                 self.assertFalse(should_record_telemetry("core", ["status"], []))
 
-                # 2. 設定 YSCB_TELEMETRY_PATH 後允許測試環境寫入，但仍排除 --help 與 session-trace
                 os.environ["YSCB_TELEMETRY_PATH"] = str(telem_file)
                 self.assertTrue(should_record_telemetry("core", ["status"], []))
                 self.assertFalse(should_record_telemetry("core", ["status"], ["--help"]))
                 self.assertFalse(should_record_telemetry("agents-workflow", ["session-trace"], ["--json"]))
 
-                # 3. FT-01: 寫入正向與失敗紀錄並驗證讀取與 error_hint 擷取
                 ok1 = record_cli_event(
                     module_name="knowledge-db",
                     cmd_path=["search"],
@@ -198,7 +182,25 @@ class TestCoreCLITelemetry(YSCBTestCase):
                 self.assertEqual(records[1]["exit_code"], 1)
                 self.assertIn("[FAIL] Missing section", records[1]["error_hint"])
 
-                # 4. ET-04: 超過 max_bytes 時自動滾動截斷並僅保留最後 keep_lines 筆
+                # Verify limit, since_minutes, since_iso, missing epoch fallback, and corrupted JSON line resilience
+                with open(telem_file, "a", encoding="utf-8") as f:
+                    f.write("\n{corrupted_json_line\n")
+                    f.write(json.dumps({"ts": "2020-01-01T00:00:00Z", "module": "old_mod", "cmd": "old"}) + "\n")
+
+                all_valid = read_telemetry_records(telemetry_path=telem_file)
+                self.assertEqual(len(all_valid), 3)
+
+                recent_only = read_telemetry_records(telemetry_path=telem_file, since_minutes=5.0)
+                self.assertEqual(len(recent_only), 2)
+
+                limited = read_telemetry_records(telemetry_path=telem_file, limit=1)
+                self.assertEqual(len(limited), 1)
+
+                future_filtered = read_telemetry_records(
+                    telemetry_path=telem_file, since_iso="2099-01-01T00:00:00Z"
+                )
+                self.assertEqual(future_filtered, [])
+
                 for idx in range(10):
                     record_cli_event(
                         module_name="core",
@@ -224,14 +226,8 @@ class TestCoreCLITelemetry(YSCBTestCase):
 
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
     def test_dispatcher_records_router_error_telemetry(self):
-        """FT-01: 驗證 dispatcher.dispatch 在攔截未知模組/指令拼寫錯誤時自動寫入 router_err Telemetry。"""
-        import tempfile
-        from pathlib import Path
-        from core.commands.dispatcher import dispatch
-        from core.telemetry import read_telemetry_records
-
+        """驗證 dispatcher.dispatch 在攔截未知模組/指令拼寫錯誤時自動寫入 router_err Telemetry。"""
         with tempfile.TemporaryDirectory() as tmpdir:
             telem_file = Path(tmpdir) / "router_telemetry.jsonl"
             orig_override = os.environ.get("YSCB_TELEMETRY_PATH")

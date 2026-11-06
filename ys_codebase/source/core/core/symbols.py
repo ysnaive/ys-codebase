@@ -181,9 +181,18 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
                         spec = importlib.util.spec_from_file_location(mod_unique_key, real_file_path)
                         if spec and spec.loader:
                             mod_obj = importlib.util.module_from_spec(spec)
+                            prev_full = sys.modules.get(full_mod_name)
                             sys.modules[mod_unique_key] = mod_obj
                             sys.modules[full_mod_name] = mod_obj
-                            spec.loader.exec_module(mod_obj)
+                            try:
+                                spec.loader.exec_module(mod_obj)
+                            except Exception:
+                                sys.modules.pop(mod_unique_key, None)
+                                if prev_full is None:
+                                    sys.modules.pop(full_mod_name, None)
+                                else:
+                                    sys.modules[full_mod_name] = prev_full
+                                raise
                             loaded_mod = mod_obj
                             break
                     except Exception as e:

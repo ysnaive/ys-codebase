@@ -1,5 +1,5 @@
 """
-Unit tests for AST SymbolSelector (FR-04, EC-02).
+Unit tests for AST SymbolSelector.
 """
 
 import os
@@ -24,8 +24,9 @@ class TestSymbolSelector(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_selector_parsing_simple(self):
-        """FT-04.1: 驗證純識別符與階層點分隔解析"""
+        """驗證純識別符與階層點分隔解析"""
         sel = SymbolSelector.parse("my_func")
+        self.assertIsInstance(sel, ParsedSelector)
         self.assertEqual(sel.identifier, "my_func")
         self.assertIsNone(sel.scope)
         self.assertIsNone(sel.target_kinds)
@@ -40,11 +41,16 @@ class TestSymbolSelector(YSCBTestCase):
         self.assertEqual(sel_nested.identifier, "method_a")
         self.assertEqual(sel_nested.scope, "pkg.module.MyClass")
 
+        sel_cpp = SymbolSelector.parse("Foo::bar()")
+        self.assertEqual(sel_cpp.identifier, "bar")
+        self.assertEqual(sel_cpp.scope, "Foo")
+        self.assertTrue(sel_cpp.is_callable)
+
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_selector_parsing_callable(self):
-        """FT-04.2: 驗證調用限定標記 `()` 解析"""
+        """驗證調用限定標記 `()` 解析"""
         sel = SymbolSelector.parse("run()")
         self.assertEqual(sel.identifier, "run")
         self.assertTrue(sel.is_callable)
@@ -58,7 +64,7 @@ class TestSymbolSelector(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_selector_parsing_kind_prefixes(self):
-        """FT-04.3: 驗證 class, struct, interface, enum, fn 等類型前綴解析"""
+        """驗證 class, struct, interface, enum, fn, doc, h1 等類型前綴解析"""
         sel_class = SymbolSelector.parse("class Foo")
         self.assertEqual(sel_class.identifier, "Foo")
         self.assertEqual(sel_class.target_kinds, {"class"})
@@ -97,11 +103,19 @@ class TestSymbolSelector(YSCBTestCase):
         self.assertEqual(sel_var.identifier, "counter")
         self.assertEqual(sel_var.target_kinds, {"variable"})
 
+        sel_doc = SymbolSelector.parse("doc ArchitectureGuide")
+        self.assertEqual(sel_doc.identifier, "ArchitectureGuide")
+        self.assertIn("doc_heading_1", sel_doc.target_kinds)
+
+        sel_h1 = SymbolSelector.parse("h1 SystemOverview")
+        self.assertEqual(sel_h1.identifier, "SystemOverview")
+        self.assertEqual(sel_h1.target_kinds, {"doc_heading_1"})
+
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_selector_combined_syntax(self):
-        """FT-04.4: 驗證正交複合語法解析 (e.g. class Foo.bar(), struct Point.x)"""
+        """驗證正交複合語法解析 (e.g. class Foo.bar(), struct Point.x)"""
         sel_method = SymbolSelector.parse("class Foo.bar()")
         self.assertEqual(sel_method.identifier, "bar")
         self.assertEqual(sel_method.scope, "Foo")
@@ -117,7 +131,7 @@ class TestSymbolSelector(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_selector_matching_and_filtering(self):
-        """FT-05: 驗證 SelectorMatcher 精準比對與符號過濾"""
+        """驗證 SelectorMatcher 精準比對與符號過濾"""
         sym_class = UnifiedSymbol(
             id="c1",
             name="Engine",
@@ -155,8 +169,17 @@ class TestSymbolSelector(YSCBTestCase):
             language=LanguageType.PYTHON.value,
             fqn="pkg.src.engine.setup",
         )
+        sym_meta = UnifiedSymbol(
+            id="m2",
+            name="custom_entry",
+            kind=SymbolKind.METHOD.value,
+            file_path="src/adapter.py",
+            line_number=40,
+            language=LanguageType.PYTHON.value,
+            metadata={"short_name": "dispatch", "parent_scope": "CommandAdapter"},
+        )
 
-        pool = [sym_class, sym_func, sym_method, sym_var]
+        pool = [sym_class, sym_func, sym_method, sym_var, sym_meta]
 
         # 1. 搜尋 'class Engine' -> 僅匹配 sym_class
         matches = SymbolSelector.find_matches("class Engine", pool)
@@ -180,16 +203,24 @@ class TestSymbolSelector(YSCBTestCase):
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0].id, "v1")
 
+        # 5. 搜尋 'CommandAdapter.dispatch()' -> 透過 metadata.short_name 與 parent_scope 匹配 sym_meta
+        matches_meta = SymbolSelector.find_matches("CommandAdapter.dispatch()", pool)
+        self.assertEqual(len(matches_meta), 1)
+        self.assertEqual(matches_meta[0].id, "m2")
+
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_invalid_syntax_graceful_fallback(self):
-        """ET-01: 邊界測試 - 空字串或非正規語法安全回退不崩潰"""
+        """邊界測試 - 空字串或非正規語法安全回退不崩潰"""
         sel_empty = SymbolSelector.parse("")
         self.assertEqual(sel_empty.identifier, "")
 
         sel_weird = SymbolSelector.parse("class Foo...bar()()()")
         self.assertIsNotNone(sel_weird)
+        self.assertEqual(sel_weird.identifier, "bar()()")
+        self.assertEqual(sel_weird.scope, "class Foo..")
+        self.assertIsNone(sel_weird.target_kinds)
         self.assertTrue(sel_weird.is_callable)
 
         # 比對空符號池

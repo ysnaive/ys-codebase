@@ -15,7 +15,8 @@ import re
 import json
 import hashlib
 import datetime
-from typing import Dict, List, Any, Optional, Set, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Any, Optional, Set, Tuple, Union
 
 try:
     from core import uri
@@ -32,8 +33,34 @@ LOCAL_MANIFEST_CACHE_URI = "storage.local://agents-workflow/release_manifest.jso
 SHA1_CACHE_URI = "storage.local://agents-workflow/source_sha1_cache.json"
 AGENTS_MD_BEGIN = "<!-- YSCB_AGENTS_BEGIN -->"
 AGENTS_MD_END = "<!-- YSCB_AGENTS_END -->"
-GITIGNORE_BEGIN_MARKER = "# === YSCB MANAGED GITIGNORE BEGIN ==="
-GITIGNORE_END_MARKER = "# === YSCB MANAGED GITIGNORE END ==="
+
+_AGENTS_MANAGED_BLOCK_RE = re.compile(
+    re.escape(AGENTS_MD_BEGIN) + r".*?" + re.escape(AGENTS_MD_END),
+    re.DOTALL,
+)
+_EMPTY_AGENTS_BOILERPLATE_RE = re.compile(
+    r"##\s*4\.\s*專案特化工程規範\s*\(Project\s*Specific\s*Standards\)\s*"
+    r"\*\(專案特化工程規範填寫於此，不受中央標準庫覆蓋\)\*",
+    re.DOTALL,
+)
+_HEADER_UNRESOLVED_MACRO_RE = re.compile(r"\{(?:export|target)\.[A-Za-z0-9_]+\}")
+
+
+@dataclass
+class _ReleaseTransactionContext:
+    """封裝單次發布交易流水線之跨階段上下文狀態。"""
+    force: bool
+    proj_root: str
+    active_target_names: List[str]
+    proj_tier_targets: Set[str]
+    proj_targets: List[str]
+    local_targets: List[str]
+    old_proj_manifest: Dict[str, Any]
+    old_local_manifest: Dict[str, Any]
+    all_registered_targets: Dict[str, Dict[str, Any]]
+    proj_fingerprint: str
+    local_fingerprint: str
+    combined_fingerprint: str = ""
 
 
 class ReleasePublisher:
@@ -45,6 +72,28 @@ class ReleasePublisher:
         self._sha1_cache_dirty = False
         self._sha1_cache: Dict[str, List[Any]] = self._load_sha1_cache()
         self._sources_digest_cache: Optional[bytes] = None
+
+    @staticmethod
+    def _write_text_atomic(file_path: str, content: str) -> None:
+        """以 VFS 優先、本機暫存檔原子替換降級之方式寫入純 LF 文字檔。"""
+        parent_dir = os.path.dirname(os.path.abspath(file_path))
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+        if vfs is not None:
+            vfs.write_text(file_path, content, encoding="utf-8", atomic=True)
+            return
+        tmp_path = f"{file_path}.tmp.{os.getpid()}"
+        try:
+            with open(tmp_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(content)
+            os.replace(tmp_path, file_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            raise
 
     def _load_sha1_cache(self) -> Dict[str, List[Any]]:
         """載入持久化之來源檔案 SHA-1 快取 (storage.local://)。"""
@@ -114,25 +163,42 @@ class ReleasePublisher:
 
     def _get_project_config(self) -> Dict[str, Any]:
         """讀取 config://agents-workflow 設定檔（自動計算 Local 與 Project 之 release_targets 聯集）。"""
-        cfg = {
+        cfg: Dict[str, Any] = {
             "paths": {},
             "release_targets": ["antigravity"],
             "enable_agents_md": True,
-            "enable_project_changelog": True
+            "enable_project_changelog": True,
         }
         try:
             from core import config
             data = config.get_all("agents-workflow")
-            if data:
+            if isinstance(data, dict) and data:
                 cfg = dict(data)
-
-            proj_targets = config.get_raw("agents-workflow", "release_targets", local=False, default=["antigravity"]) or ["antigravity"]
-            local_targets = config.get_raw("agents-workflow", "release_targets", local=True, default=[]) or []
-            union_targets = list(dict.fromkeys(list(proj_targets) + list(local_targets)))
-            if union_targets:
-                cfg["release_targets"] = union_targets
         except Exception:
             pass
+
+        try:
+            from agents_workflow.targets import ReleaseTargetManager
+            classified = ReleaseTargetManager.get_classified_targets()
+            cfg["release_targets"] = list(classified.get("union", []))
+        except Exception:
+            try:
+                from core import config
+                raw_proj = config.get_raw("agents-workflow", "release_targets", local=False, default=None)
+                proj_targets = (
+                    ["antigravity"]
+                    if raw_proj is None
+                    else ([str(x).strip() for x in raw_proj if str(x).strip()] if isinstance(raw_proj, list) else ["antigravity"])
+                )
+                raw_local = config.get_raw("agents-workflow", "release_targets", local=True, default=None)
+                local_targets = (
+                    [str(x).strip() for x in raw_local if str(x).strip()]
+                    if isinstance(raw_local, list)
+                    else []
+                )
+                cfg["release_targets"] = list(dict.fromkeys(proj_targets + local_targets))
+            except Exception:
+                pass
 
         return cfg
 
@@ -419,7 +485,7 @@ class ReleasePublisher:
         for k, v in macros.items():
             res = res.replace(f"{{{k}}}", str(v))
 
-        res = re.sub(r"\{(?:export|target)\.[A-Za-z0-9_]+\}", "", res)
+        res = _HEADER_UNRESOLVED_MACRO_RE.sub("", res)
         return res.strip() + "\n\n" if res.strip() else ""
 
     def _soft_merge_agents_text(self, existing_text: str, dev_standards_content: str) -> str:
@@ -435,15 +501,9 @@ class ReleasePublisher:
                 f"*(專案特化工程規範填寫於此，不受中央標準庫覆蓋)*\n"
             )
 
-        pattern = re.compile(
-            re.escape(AGENTS_MD_BEGIN) + r".*?" + re.escape(AGENTS_MD_END),
-            re.DOTALL
-        )
-
-        if pattern.search(existing_text):
-            return pattern.sub(lambda _: injected_section, existing_text)
-        else:
-            return injected_section + "\n\n" + existing_text
+        if _AGENTS_MANAGED_BLOCK_RE.search(existing_text):
+            return _AGENTS_MANAGED_BLOCK_RE.sub(lambda _: injected_section, existing_text)
+        return injected_section + "\n\n" + existing_text
 
     def _soft_unmerge_agents_text(self, existing_text: str) -> str:
         """
@@ -453,73 +513,34 @@ class ReleasePublisher:
         if not existing_text:
             return ""
 
-        pattern = re.compile(
-            re.escape(AGENTS_MD_BEGIN) + r".*?" + re.escape(AGENTS_MD_END),
-            re.DOTALL
-        )
-        cleaned = pattern.sub("", existing_text).strip()
-
-        empty_boilerplate = (
-            r"##\s*4\.\s*專案特化工程規範\s*\(Project\s*Specific\s*Standards\)\s*"
-            r"\*\(專案特化工程規範填寫於此，不受中央標準庫覆蓋\)\*"
-        )
-        without_boilerplate = re.sub(empty_boilerplate, "", cleaned, flags=re.DOTALL).strip()
+        cleaned = _AGENTS_MANAGED_BLOCK_RE.sub("", existing_text).strip()
+        without_boilerplate = _EMPTY_AGENTS_BOILERPLATE_RE.sub("", cleaned).strip()
         if not without_boilerplate:
             return ""
 
         return cleaned
 
-    def _check_short_circuit(
+    def _verify_agent_rule_injections(
         self,
-        force: bool,
-        proj_targets: List[str],
-        local_targets: List[str],
         active_target_names: List[str],
-        old_proj_manifest: Dict[str, Any],
-        old_local_manifest: Dict[str, Any],
-        proj_fingerprint: str,
-        local_fingerprint: str,
         all_registered_targets: Dict[str, Dict[str, Any]],
         proj_root: str,
-    ) -> Tuple[bool, List[str]]:
-        """Stage 0: 檢查是否滿足來源指紋與落地檔案完整性，以執行零 I/O 短路。"""
-        if force or not (proj_targets or local_targets):
-            return False, []
-
-        total_short_circuited_files: List[str] = []
-
-        if proj_targets:
-            if old_proj_manifest.get("fingerprint") != proj_fingerprint:
-                return False, []
-            for p_item in old_proj_manifest.get("published_files", []):
-                p_abs = self._resolve_project_uri(p_item, proj_root)
-                if not os.path.isfile(p_abs):
-                    return False, []
-                total_short_circuited_files.append(p_abs)
-
-        if local_targets:
-            if old_local_manifest.get("fingerprint") != local_fingerprint:
-                return False, []
-            for l_item in old_local_manifest.get("published_files", []):
-                l_abs = self._resolve_project_uri(l_item, proj_root)
-                if not os.path.isfile(l_abs):
-                    return False, []
-                total_short_circuited_files.append(l_abs)
-
+    ) -> bool:
+        """檢查所有啟用 Target 之 agents_md 與 agent_rules 落地檔案及受管標記完整性。"""
         for t_name in active_target_names:
             t_cfg = all_registered_targets.get(t_name, {})
             a_md = t_cfg.get("agents_md")
             if a_md and str(a_md).strip():
                 a_abs = self._resolve_project_uri(str(a_md).strip(), proj_root)
                 if not os.path.isfile(a_abs):
-                    return False, []
+                    return False
                 try:
                     with open(a_abs, "r", encoding="utf-8") as f:
                         a_text = f.read()
                     if AGENTS_MD_BEGIN not in a_text or AGENTS_MD_END not in a_text:
-                        return False, []
+                        return False
                 except Exception:
-                    return False, []
+                    return False
 
             agent_rules = t_cfg.get("agent_rules")
             if isinstance(agent_rules, list):
@@ -531,7 +552,7 @@ class ReleasePublisher:
                         continue
                     r_abs = self._resolve_project_uri(r_target, proj_root)
                     if not os.path.isfile(r_abs):
-                        return False, []
+                        return False
                     r_mode = str(rule_item.get("mode") or "inject").strip().lower()
                     if r_mode == "inject":
                         r_marker = str(rule_item.get("marker") or "").strip()
@@ -541,9 +562,78 @@ class ReleasePublisher:
                             with open(r_abs, "r", encoding="utf-8") as f:
                                 r_text = f.read()
                             if b_mark not in r_text or e_mark not in r_text:
-                                return False, []
+                                return False
                         except Exception:
-                            return False, []
+                            return False
+        return True
+
+    def _check_short_circuit(
+        self,
+        force: Union[bool, _ReleaseTransactionContext] = False,
+        proj_targets: Optional[List[str]] = None,
+        local_targets: Optional[List[str]] = None,
+        active_target_names: Optional[List[str]] = None,
+        old_proj_manifest: Optional[Dict[str, Any]] = None,
+        old_local_manifest: Optional[Dict[str, Any]] = None,
+        proj_fingerprint: str = "",
+        local_fingerprint: str = "",
+        all_registered_targets: Optional[Dict[str, Dict[str, Any]]] = None,
+        proj_root: str = "",
+        *,
+        tx_ctx: Optional[_ReleaseTransactionContext] = None,
+    ) -> Tuple[bool, List[str]]:
+        """Stage 0: 檢查是否滿足來源指紋與落地檔案完整性，以執行零 I/O 短路（相容 _ReleaseTransactionContext 與舊版參數）。"""
+        if isinstance(force, _ReleaseTransactionContext):
+            tx_ctx = force
+
+        if tx_ctx is not None:
+            eff_force = tx_ctx.force
+            eff_proj_targets = tx_ctx.proj_targets
+            eff_local_targets = tx_ctx.local_targets
+            eff_active_names = tx_ctx.active_target_names
+            eff_old_proj = tx_ctx.old_proj_manifest
+            eff_old_local = tx_ctx.old_local_manifest
+            eff_proj_fp = tx_ctx.proj_fingerprint
+            eff_local_fp = tx_ctx.local_fingerprint
+            eff_registered = tx_ctx.all_registered_targets
+            eff_proj_root = tx_ctx.proj_root
+        else:
+            eff_force = bool(force)
+            eff_proj_targets = proj_targets or []
+            eff_local_targets = local_targets or []
+            eff_active_names = active_target_names or []
+            eff_old_proj = old_proj_manifest or {}
+            eff_old_local = old_local_manifest or {}
+            eff_proj_fp = proj_fingerprint
+            eff_local_fp = local_fingerprint
+            eff_registered = all_registered_targets or {}
+            eff_proj_root = proj_root
+
+        if eff_force or not (eff_proj_targets or eff_local_targets):
+            return False, []
+
+        total_short_circuited_files: List[str] = []
+
+        if eff_proj_targets:
+            if eff_old_proj.get("fingerprint") != eff_proj_fp:
+                return False, []
+            for p_item in eff_old_proj.get("published_files", []):
+                p_abs = self._resolve_project_uri(p_item, eff_proj_root)
+                if not os.path.isfile(p_abs):
+                    return False, []
+                total_short_circuited_files.append(p_abs)
+
+        if eff_local_targets:
+            if eff_old_local.get("fingerprint") != eff_local_fp:
+                return False, []
+            for l_item in eff_old_local.get("published_files", []):
+                l_abs = self._resolve_project_uri(l_item, eff_proj_root)
+                if not os.path.isfile(l_abs):
+                    return False, []
+                total_short_circuited_files.append(l_abs)
+
+        if not self._verify_agent_rule_injections(eff_active_names, eff_registered, eff_proj_root):
+            return False, []
 
         return bool(total_short_circuited_files), total_short_circuited_files
 
@@ -724,8 +814,7 @@ class ReleasePublisher:
                             curr_text = f.read()
                         remaining = self._soft_unmerge_agents_text(curr_text)
                         if remaining:
-                            with open(f_rem, "w", encoding="utf-8", newline="\n") as f:
-                                f.write(remaining + "\n")
+                            self._write_text_atomic(f_rem, remaining + "\n")
                             continue
                     os.remove(f_rem)
                     parent_d = os.path.dirname(f_rem)
@@ -764,65 +853,95 @@ class ReleasePublisher:
 
     def _save_deployment_manifests(
         self,
-        proj_targets: List[str],
-        local_targets: List[str],
-        precomputed_project_files: Dict[str, str],
-        precomputed_local_files: Dict[str, str],
-        old_proj_manifest: Dict[str, Any],
-        old_local_manifest: Dict[str, Any],
-        proj_fingerprint: str,
-        local_fingerprint: str,
-        combined_fingerprint: str,
-        proj_root: str,
+        proj_targets: Union[List[str], _ReleaseTransactionContext, None] = None,
+        local_targets: Union[List[str], Dict[str, str], None] = None,
+        precomputed_project_files: Optional[Dict[str, str]] = None,
+        precomputed_local_files: Optional[Dict[str, str]] = None,
+        old_proj_manifest: Optional[Dict[str, Any]] = None,
+        old_local_manifest: Optional[Dict[str, Any]] = None,
+        proj_fingerprint: str = "",
+        local_fingerprint: str = "",
+        combined_fingerprint: str = "",
+        proj_root: str = "",
+        *,
+        tx_ctx: Optional[_ReleaseTransactionContext] = None,
     ) -> None:
-        """Stage 3: 原子寫入 storage.local:// 之 Project 軌與 Local 軌持久化發布清單。"""
+        """Stage 3: 原子寫入 storage.local:// 之 Project 軌與 Local 軌持久化發布清單（相容 _ReleaseTransactionContext 與舊版參數）。"""
+        if isinstance(proj_targets, _ReleaseTransactionContext):
+            tx_ctx = proj_targets
+            if isinstance(local_targets, dict):
+                precomputed_local_files = precomputed_project_files if isinstance(precomputed_project_files, dict) else precomputed_local_files
+                precomputed_project_files = local_targets
+
+        if tx_ctx is not None:
+            eff_proj_targets = tx_ctx.proj_targets
+            eff_local_targets = tx_ctx.local_targets
+            eff_old_proj = tx_ctx.old_proj_manifest
+            eff_old_local = tx_ctx.old_local_manifest
+            eff_proj_fp = tx_ctx.proj_fingerprint
+            eff_local_fp = tx_ctx.local_fingerprint
+            eff_combined_fp = tx_ctx.combined_fingerprint
+            eff_proj_root = tx_ctx.proj_root
+        else:
+            eff_proj_targets = proj_targets if isinstance(proj_targets, list) else []
+            eff_local_targets = local_targets if isinstance(local_targets, list) else []
+            eff_old_proj = old_proj_manifest or {}
+            eff_old_local = old_local_manifest or {}
+            eff_proj_fp = proj_fingerprint
+            eff_local_fp = local_fingerprint
+            eff_combined_fp = combined_fingerprint
+            eff_proj_root = proj_root
+
+        eff_pre_proj = precomputed_project_files or {}
+        eff_pre_local = precomputed_local_files or {}
+
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        if proj_targets or old_proj_manifest:
-            proj_uris = [self._to_project_uri(f, proj_root) for f in precomputed_project_files.keys()]
+        if eff_proj_targets or eff_old_proj:
+            proj_uris = [self._to_project_uri(f, eff_proj_root) for f in eff_pre_proj.keys()]
             sorted_proj_uris = sorted(proj_uris)
             if (
-                old_proj_manifest
-                and old_proj_manifest.get("fingerprint") == proj_fingerprint
-                and old_proj_manifest.get("active_targets") == proj_targets
-                and old_proj_manifest.get("published_files") == sorted_proj_uris
-                and "updated_at" in old_proj_manifest
+                eff_old_proj
+                and eff_old_proj.get("fingerprint") == eff_proj_fp
+                and eff_old_proj.get("active_targets") == eff_proj_targets
+                and eff_old_proj.get("published_files") == sorted_proj_uris
+                and "updated_at" in eff_old_proj
             ):
-                updated_at_proj = old_proj_manifest["updated_at"]
+                updated_at_proj = eff_old_proj["updated_at"]
             else:
                 updated_at_proj = now_str
 
             new_proj_manifest = {
-                "fingerprint": proj_fingerprint,
-                "active_targets": proj_targets,
+                "fingerprint": eff_proj_fp,
+                "active_targets": eff_proj_targets,
                 "published_files": sorted_proj_uris,
-                "combined_fingerprint": combined_fingerprint,
-                "updated_at": updated_at_proj
+                "combined_fingerprint": eff_combined_fp,
+                "updated_at": updated_at_proj,
             }
-            if new_proj_manifest != old_proj_manifest:
+            if new_proj_manifest != eff_old_proj:
                 self._save_manifest(PROJECT_MANIFEST_CACHE_URI, new_proj_manifest)
 
-        if local_targets or old_local_manifest:
-            sorted_local_files = sorted(list(precomputed_local_files.keys()))
+        if eff_local_targets or eff_old_local:
+            sorted_local_files = sorted(list(eff_pre_local.keys()))
             if (
-                old_local_manifest
-                and old_local_manifest.get("fingerprint") == local_fingerprint
-                and old_local_manifest.get("active_targets") == local_targets
-                and old_local_manifest.get("published_files") == sorted_local_files
-                and "updated_at" in old_local_manifest
+                eff_old_local
+                and eff_old_local.get("fingerprint") == eff_local_fp
+                and eff_old_local.get("active_targets") == eff_local_targets
+                and eff_old_local.get("published_files") == sorted_local_files
+                and "updated_at" in eff_old_local
             ):
-                updated_at_local = old_local_manifest["updated_at"]
+                updated_at_local = eff_old_local["updated_at"]
             else:
                 updated_at_local = now_str
 
             new_local_manifest = {
-                "fingerprint": local_fingerprint,
-                "active_targets": local_targets,
+                "fingerprint": eff_local_fp,
+                "active_targets": eff_local_targets,
                 "published_files": sorted_local_files,
-                "combined_fingerprint": combined_fingerprint,
-                "updated_at": updated_at_local
+                "combined_fingerprint": eff_combined_fp,
+                "updated_at": updated_at_local,
             }
-            if new_local_manifest != old_local_manifest:
+            if new_local_manifest != eff_old_local:
                 self._save_manifest(LOCAL_MANIFEST_CACHE_URI, new_local_manifest)
 
     def _materialize_target_files(
@@ -844,8 +963,7 @@ class ReleasePublisher:
                 except Exception:
                     pass
 
-            os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
-            vfs.write_text(dst_abs, content, encoding="utf-8", atomic=True)
+            self._write_text_atomic(dst_abs, content)
             written_count += 1
         return written_count, skipped_count
 
@@ -897,18 +1015,22 @@ class ReleasePublisher:
         else:
             combined_fingerprint = self.compute_source_fingerprint(active_target_names)
 
-        can_short_circuit, short_circuited_files = self._check_short_circuit(
+        tx_ctx = _ReleaseTransactionContext(
             force=force,
+            proj_root=proj_root,
+            active_target_names=active_target_names,
+            proj_tier_targets=proj_tier_targets,
             proj_targets=proj_targets,
             local_targets=local_targets,
-            active_target_names=active_target_names,
             old_proj_manifest=old_proj_manifest,
             old_local_manifest=old_local_manifest,
+            all_registered_targets=all_registered_targets,
             proj_fingerprint=proj_fingerprint,
             local_fingerprint=local_fingerprint,
-            all_registered_targets=all_registered_targets,
-            proj_root=proj_root,
+            combined_fingerprint=combined_fingerprint,
         )
+
+        can_short_circuit, short_circuited_files = self._check_short_circuit(tx_ctx)
         if can_short_circuit:
             self.sync_gitignore(
                 active_targets=active_target_names,
@@ -926,7 +1048,7 @@ class ReleasePublisher:
                 "active_targets": active_target_names,
                 "orphan_targets": [],
                 "shared_path_warnings": [],
-                "fingerprint": combined_fingerprint
+                "fingerprint": combined_fingerprint,
             }
 
         stage1_res = self.compiler.compile_stage1()
@@ -942,7 +1064,7 @@ class ReleasePublisher:
                 "removed_count": 0,
                 "active_targets": active_target_names,
                 "orphan_targets": [],
-                "shared_path_warnings": []
+                "shared_path_warnings": [],
             }
 
         resolved_items = stage1_res.get("resolved_items", [])
@@ -970,16 +1092,9 @@ class ReleasePublisher:
         )
 
         self._save_deployment_manifests(
-            proj_targets=proj_targets,
-            local_targets=local_targets,
+            tx_ctx,
             precomputed_project_files=precomputed_project_files,
             precomputed_local_files=precomputed_local_files,
-            old_proj_manifest=old_proj_manifest,
-            old_local_manifest=old_local_manifest,
-            proj_fingerprint=proj_fingerprint,
-            local_fingerprint=local_fingerprint,
-            combined_fingerprint=combined_fingerprint,
-            proj_root=proj_root,
         )
 
         written_count, skipped_count = self._materialize_target_files(precomputed_all_files, force=force)
@@ -987,7 +1102,7 @@ class ReleasePublisher:
         gitignore_res = self.sync_gitignore(
             active_targets=active_target_names,
             published_files=current_published_set,
-            proj_root=proj_root
+            proj_root=proj_root,
         )
 
         self._save_sha1_cache()
@@ -1002,7 +1117,7 @@ class ReleasePublisher:
             "shared_path_warnings": shared_path_warnings,
             "removed_count": len(files_to_remove),
             "gitignore_synced": gitignore_res.get("updated", False) or gitignore_res.get("created", False),
-            "fingerprint": combined_fingerprint
+            "fingerprint": combined_fingerprint,
         }
 
     def sync_gitignore(
@@ -1031,15 +1146,17 @@ class ReleasePublisher:
         all_registered = {t["name"]: t for t in self.compiler.get_release_targets() if "name" in t}
         ignore_patterns: Set[str] = set()
 
-        file_list = []
+        file_list: List[str] = []
         if published_files is not None:
             file_list = list(published_files)
-        elif vfs and vfs.exists(PROJECT_MANIFEST_CACHE_URI):
-            try:
-                m_data = vfs.read_json(PROJECT_MANIFEST_CACHE_URI)
-                file_list = m_data.get("published_files", [])
-            except Exception:
-                pass
+        else:
+            seen_files: Set[str] = set()
+            for manifest_uri in (PROJECT_MANIFEST_CACHE_URI, LOCAL_MANIFEST_CACHE_URI):
+                m_data = self._load_manifest(manifest_uri)
+                for f_item in m_data.get("published_files", []):
+                    if isinstance(f_item, str) and f_item not in seen_files:
+                        seen_files.add(f_item)
+                        file_list.append(f_item)
 
         agents_md_abs_set: Set[str] = set()
         for t_cfg in all_registered.values():

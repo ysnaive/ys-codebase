@@ -1,70 +1,78 @@
 """
-Unit & Edge Case Tests for agents-workflow Release Publisher Diff Optimization.
+Unit & Edge Case Tests for agents-workflow Release Publisher Diff Optimization, Hooks, and Migrations.
 Validates Stage 0 Fingerprint Short-Circuit, Stage 4 Content Diff, Force Release, and Edge Cases.
 100% Python Standard Library, Zero Third-Party Dependency.
 """
 
-import os
-import sys
+import io
 import json
+import os
 import shutil
+import sys
 import tempfile
 import unittest
-import importlib.util
-from typing import Dict, Any
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+from unittest.mock import patch
 
-_test_dir = os.path.dirname(os.path.abspath(__file__))
-_pkg_root = os.path.dirname(_test_dir)
-if _pkg_root not in sys.path:
-    sys.path.insert(0, _pkg_root)
+if str(Path(__file__).resolve().parent.parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+if getattr(sys.modules.get("tests"), "PKG_ROOT", None) != Path(__file__).resolve().parent.parent:
+    sys.modules.pop("tests", None)
 
-_cli_path = os.path.join(_pkg_root, "scripts", "cli.py")
-_spec_cli = importlib.util.spec_from_file_location("aw_cli_publisher_test", _cli_path)
-cli_mod = importlib.util.module_from_spec(_spec_cli)
-_spec_cli.loader.exec_module(cli_mod)
+from tests import (
+    ConfigStateSnapshot,
+    load_cli_module,
+    load_hook_core_module,
+    load_hook_dev_module,
+    load_migration_module,
+)
+
+cli_mod = load_cli_module("aw_cli_publisher_test")
 cmd_release = cli_mod.release
 
 from agents_workflow.compiler import ArtifactCompiler
 from agents_workflow.publisher import (
-    ReleasePublisher,
-    PROJECT_MANIFEST_CACHE_URI,
+    AGENTS_MD_BEGIN,
+    AGENTS_MD_END,
     LOCAL_MANIFEST_CACHE_URI,
+    PROJECT_MANIFEST_CACHE_URI,
+    SHA1_CACHE_URI,
+    ReleasePublisher,
     ensure_jit_release,
 )
 from agents_workflow.targets import ReleaseTargetManager
-from unittest.mock import patch
 
 try:
-    from core import uri, vfs
+    from core import config, uri, vfs
 except ImportError:
+    config = None
     uri = None
     vfs = None
 
 from dev.testing.case import YSCBTestCase
-from dev.testing.requirement import require, Requirement
+from dev.testing.requirement import Requirement, require
 
 
+@require(Requirement.LOGIC | Requirement.ENV)
 class TestReleasePublisherDiff(YSCBTestCase):
     """測試發布引擎來源指紋短路與落地 Diff 優化。"""
 
     def setUp(self):
         super().setUp()
+        self._snapshot = ConfigStateSnapshot()
+        self.temp_dir = tempfile.mkdtemp(prefix="test_aw_pub_diff_")
         self.compiler = ArtifactCompiler()
         self.publisher = ReleasePublisher(compiler=self.compiler)
 
     def tearDown(self):
-        try:
-            from core import config
-            config.delete("agents-workflow", "release_targets", local=True)
-            config.set("agents-workflow", "release_targets", ["antigravity"], local=False)
-            config.reload()
-        except Exception:
-            pass
+        self._snapshot.restore()
+        if hasattr(self, "temp_dir") and os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
         super().tearDown()
 
-    @require(Requirement.ENV)
-    def test_ft_01_initial_release_persists_fingerprint(self):
-        """FT-01: 首次發布成功物化檔案，Manifest 正確記錄指紋與發布檔案清冊。"""
+    def test_initial_release_persists_fingerprint(self):
+        """驗證首次發布成功物化檔案，Manifest 正確記錄指紋與發布檔案清冊。"""
         res = self.publisher.release_all(force=True)
         self.assertTrue(res["success"])
         self.assertFalse(res["short_circuited"])
@@ -74,21 +82,17 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertIn("fingerprint", res)
         self.assertTrue(len(res["fingerprint"]) > 0)
 
-        # 驗證 storage.local:// 中記錄的 manifest
         self.assertTrue(bool(uri and vfs.exists(PROJECT_MANIFEST_CACHE_URI)))
         manifest_data = vfs.read_json(PROJECT_MANIFEST_CACHE_URI)
         self.assertEqual(manifest_data.get("fingerprint"), res["fingerprint"])
         self.assertEqual(len(manifest_data.get("published_files", [])), res["published_count"])
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_ft_02_short_circuit_when_no_change(self):
-        """FT-02: 二次發布在無異動情況下觸發 Stage 0 短路 (0 I/O)。"""
-        # 第 1 次：全量發布
+    def test_short_circuit_when_no_change(self):
+        """驗證二次發布在無異動情況下觸發 Stage 0 短路 (0 I/O)。"""
         res1 = self.publisher.release_all(force=True)
         self.assertTrue(res1["success"])
 
-        # 第 2 次：無變更發布 -> 應短路
         res2 = self.publisher.release_all(force=False)
         self.assertTrue(res2["success"])
         self.assertTrue(res2["short_circuited"])
@@ -97,13 +101,11 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertEqual(res2["fingerprint"], res1["fingerprint"])
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_ft_03_incremental_write_on_partial_change(self):
-        """FT-03: 目標檔案內容有局部變更時，觸發增量寫入 (僅變更檔案寫入，其餘略過)。"""
+    def test_incremental_write_on_partial_change(self):
+        """驗證目標檔案內容有局部變更時，觸發增量寫入 (僅變更檔案寫入，其餘略過)。"""
         res1 = self.publisher.release_all(force=True)
         self.assertTrue(res1["success"])
 
-        # 取得其中一個已發布檔案並人為修改其內容 (模擬外部內容漂移或部分產物需要更新)
         self.assertTrue(bool(uri and vfs.exists(PROJECT_MANIFEST_CACHE_URI)))
         manifest_data = vfs.read_json(PROJECT_MANIFEST_CACHE_URI)
         target_files = manifest_data.get("published_files", [])
@@ -115,25 +117,20 @@ class TestReleasePublisherDiff(YSCBTestCase):
         with open(modified_file, "w", encoding="utf-8") as f:
             f.write("MODIFIED CONTENT")
 
-        # 透過破壞快取中的 fingerprint 迫使進入 Stage 4 比對，但非 force
         manifest_data["fingerprint"] = "stale_fake_fingerprint"
         vfs.write_json(PROJECT_MANIFEST_CACHE_URI, manifest_data)
 
         res2 = self.publisher.release_all(force=False)
         self.assertTrue(res2["success"])
         self.assertFalse(res2["short_circuited"])
-        # 只有被竄改的檔案被重新寫入，其餘檔案跳過寫入
         self.assertEqual(res2["written_count"], 1)
         self.assertEqual(res2["skipped_count"], len(target_files) - 1)
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_ft_04_forced_release_overwrites_all(self):
-        """FT-04: 傳入 force=True 時強制跳過短路與略過邏輯，執行全量覆寫。"""
-        # 第 1 次發布
+    def test_forced_release_overwrites_all(self):
+        """驗證傳入 force=True 時強制跳過短路與略過邏輯，執行全量覆寫。"""
         self.publisher.release_all(force=True)
 
-        # 第 2 次強制發布
         res_forced = self.publisher.release_all(force=True)
         self.assertTrue(res_forced["success"])
         self.assertFalse(res_forced["short_circuited"])
@@ -141,46 +138,47 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertEqual(res_forced["skipped_count"], 0)
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_ft_05_agents_md_soft_merge_diff(self):
-        """FT-05: AGENTS.md 軟合併在注入內容未變更時維持文字恆等（觸發 Stage 4 跳過磁碟寫入）。"""
+    def test_agents_md_soft_merge_diff(self):
+        """驗證 AGENTS.md 軟合併在注入內容未變更時維持文字恆等。"""
         content_a = "# Custom Header\n\n<!-- YSCB_AGENTS_BEGIN -->\nStandard Body\n<!-- YSCB_AGENTS_END -->\n\n## Custom Footer\n"
 
-        # 第一次注入相同內容 -> 合併結果與現有文字完全一致
         merged_same = self.publisher._soft_merge_agents_text(content_a, "Standard Body")
         self.assertEqual(merged_same, content_a)
 
-        # 第二次注入新內容 -> 合併結果更新且保留外部自訂區段
         merged_new = self.publisher._soft_merge_agents_text(content_a, "New Standard Body")
         self.assertNotEqual(merged_new, content_a)
         self.assertIn("New Standard Body", merged_new)
         self.assertIn("## Custom Footer", merged_new)
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_ft_06_cli_release_with_force_flag(self):
-        """FT-06: CLI release 指令解析 --force 參數並執行。"""
-        # 測試正常發布 (不帶 --force)
-        code1 = cmd_release([])
-        self.assertEqual(code1, 0)
+    def test_cli_release_with_force_flag_and_error_reporting(self):
+        """驗證 CLI release 指令解析 --force 參數與失敗錯誤回報。"""
+        out_buf = io.StringIO()
+        with redirect_stdout(out_buf):
+            self.assertEqual(cmd_release([]), 0)
+            self.assertEqual(cmd_release([]), 0)
+            self.assertEqual(cmd_release(["--force"]), 0)
 
-        # 再次發布 (觸發短路)
-        code2 = cmd_release([])
-        self.assertEqual(code2, 0)
-
-        # 帶 --force 參數
-        code3 = cmd_release(["--force"])
-        self.assertEqual(code3, 0)
+        fail_buf = io.StringIO()
+        with patch.object(
+            ReleasePublisher,
+            "release_all",
+            return_value={
+                "success": False,
+                "error": "Stage 1 content compilation failed",
+                "details": ["Missing template X"],
+            },
+        ), redirect_stdout(fail_buf):
+            self.assertEqual(cmd_release([]), 1)
+        self.assertIn("Stage 1 content compilation failed", fail_buf.getvalue())
+        self.assertIn("Missing template X", fail_buf.getvalue())
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_et_01_short_circuit_invalidated_when_file_missing(self):
-        """ET-01: 已發布檔案遭刪除時，即使指紋未變仍自動失效短路並修復補齊。"""
-        # 第 1 次發布
+    def test_short_circuit_invalidated_when_file_missing(self):
+        """驗證已發布檔案遭刪除時，即使指紋未變仍自動失效短路並修復補齊。"""
         res1 = self.publisher.release_all(force=True)
         self.assertTrue(res1["success"])
 
-        # 人為刪除其中一個已發布檔案
         self.assertTrue(bool(uri and vfs.exists(PROJECT_MANIFEST_CACHE_URI)))
         manifest_data = vfs.read_json(PROJECT_MANIFEST_CACHE_URI)
         target_files = manifest_data.get("published_files", [])
@@ -192,98 +190,83 @@ class TestReleasePublisherDiff(YSCBTestCase):
         if os.path.isfile(deleted_file):
             os.remove(deleted_file)
 
-        # 再次調用 (force=False) -> 應檢測到檔案缺失，短路失效並補齊
         res2 = self.publisher.release_all(force=False)
         self.assertTrue(res2["success"])
         self.assertFalse(res2["short_circuited"])
         self.assertTrue(os.path.isfile(deleted_file))
-        # 只有缺失的檔案被寫入，其餘檔案跳過寫入
         self.assertEqual(res2["written_count"], 1)
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_et_02_target_configuration_change_triggers_republish(self):
-        """ET-02: Target 宣告或指紋計算能敏感反映變更。"""
-        fp1 = self.publisher.compute_source_fingerprint()
-        self.assertIsInstance(fp1, str)
-        self.assertEqual(len(fp1), 64)
+    def test_target_configuration_change_triggers_republish(self):
+        """驗證不同 Target 組合計算出不同指紋，且相同輸入計算結果恆定。"""
+        fp_agy_1 = self.publisher.compute_source_fingerprint(["antigravity"])
+        fp_agy_2 = self.publisher.compute_source_fingerprint(["antigravity"])
+        fp_claude = self.publisher.compute_source_fingerprint(["claude"])
+        fp_both = self.publisher.compute_source_fingerprint(["antigravity", "claude"])
 
-        # 驗證相同環境下兩次計算指紋完全一致
-        fp2 = self.publisher.compute_source_fingerprint()
-        self.assertEqual(fp1, fp2)
+        self.assertEqual(len(fp_agy_1), 64)
+        self.assertEqual(fp_agy_1, fp_agy_2)
+        self.assertNotEqual(fp_agy_1, fp_claude)
+        self.assertNotEqual(fp_agy_1, fp_both)
+        self.assertNotEqual(fp_claude, fp_both)
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_ft_07_custom_agents_md_projection(self):
-        """FT-07: 驗證指定 Target (如 claude) 之 agents_md (project://CLAUDE.md) 正確被發布與軟合併。"""
-        from core import config
+    def test_custom_agents_md_projection(self):
+        """驗證指定 Target (如 claude) 之 agents_md (project://CLAUDE.md) 正確被發布與軟合併。"""
         config.set("agents-workflow", "release_targets", ["claude"], local=True)
         res = self.publisher.release_all(force=True)
         self.assertTrue(res["success"])
 
-        proj_root = os.getcwd()
-        if uri:
-            try:
-                proj_root = uri.resolve("project://", interactive=False)
-            except Exception:
-                pass
+        proj_root = uri.resolve("project://", interactive=False) if uri else os.getcwd()
         claude_md = os.path.join(proj_root, "CLAUDE.md")
         self.assertTrue(os.path.isfile(claude_md))
-        content = open(claude_md, "r", encoding="utf-8").read()
+        with open(claude_md, "r", encoding="utf-8") as f:
+            content = f.read()
         self.assertIn("YSCB_AGENTS_BEGIN", content)
         self.assertIn("YSCB_AGENTS_END", content)
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_ft_08_empty_agents_md_skips_output(self):
-        """FT-08: 驗證 Target 宣告 agents_md: '' 時跳過規範檔輸出。"""
+    def test_empty_agents_md_skips_output(self):
+        """驗證 Target 宣告 agents_md: '' 時跳過規範檔輸出。"""
         temp_target = {
             "name": "custom_no_rules",
             "agents_md": "",
             "projections": {
                 "workflow": {
                     "target_dir": "project://.custom/workflows",
-                    "extension": ".md"
+                    "extension": ".md",
                 }
-            }
+            },
         }
-        dep_map, items = self.publisher.build_deployment_map(temp_target, [])
+        _, items = self.publisher.build_deployment_map(temp_target, [])
         self.assertEqual(len(items), 0)
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_ft_09_multi_target_shared_agents_md(self):
-        """FT-09: 多 Target 共享相同 agents_md 時（如 antigravity 與 codex），軟合併冪等無衝突。"""
-        from core import config
+    def test_multi_target_shared_agents_md(self):
+        """驗證多 Target 共享相同 agents_md 時（如 antigravity 與 codex），軟合併冪等無衝突。"""
         config.set("agents-workflow", "release_targets", ["antigravity", "codex"], local=True)
         res = self.publisher.release_all(force=True)
         self.assertTrue(res["success"])
 
-        proj_root = os.getcwd()
-        if uri:
-            try:
-                proj_root = uri.resolve("project://", interactive=False)
-            except Exception:
-                pass
+        proj_root = uri.resolve("project://", interactive=False) if uri else os.getcwd()
         agents_md = os.path.join(proj_root, "AGENTS.md")
         self.assertTrue(os.path.isfile(agents_md))
-        content = open(agents_md, "r", encoding="utf-8").read()
-        # 確保只有一組 YSCB 標記區間
+        with open(agents_md, "r", encoding="utf-8") as f:
+            content = f.read()
         self.assertEqual(content.count("<!-- YSCB_AGENTS_BEGIN -->"), 1)
         self.assertEqual(content.count("<!-- YSCB_AGENTS_END -->"), 1)
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_ft_10_skill_projection_and_deployment_map(self):
-        """FT-10: 驗證 build_deployment_map 支援 skill 類型與 rel_path 多檔案映射。"""
+    def test_skill_projection_and_deployment_map(self):
+        """驗證 build_deployment_map 支援 skill 類型與 rel_path 多檔案映射。"""
         mock_target = {
             "name": "antigravity",
             "projections": {
                 "skill": {
                     "target_dir": "project://.agents/skills/{export.name}",
-                    "extension": ".md"
+                    "extension": ".md",
                 }
-            }
+            },
         }
         mock_resolved = [
             {
@@ -293,7 +276,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
                 "rel_path": "SKILL.md",
                 "content": "# Main Skill",
                 "is_skill": True,
-                "skill_name": "my-skill"
+                "skill_name": "my-skill",
             },
             {
                 "export": {"type": "skill", "name": "my-skill", "source": "module://test/assets/skills/my-skill"},
@@ -302,61 +285,58 @@ class TestReleasePublisherDiff(YSCBTestCase):
                 "rel_path": "references/guide.md",
                 "content": "# Sub Guide",
                 "is_skill": True,
-                "skill_name": "my-skill"
-            }
+                "skill_name": "my-skill",
+            },
         ]
 
         dep_map, target_items = self.publisher.build_deployment_map(mock_target, mock_resolved)
         self.assertEqual(len(target_items), 2)
-        
+
         main_item = target_items[0]
         guide_item = target_items[1]
 
-        # 斷言路徑結構保留
         self.assertTrue(main_item["target_abs_path"].replace("\\", "/").endswith(".agents/skills/my-skill/SKILL.md"))
         self.assertTrue(guide_item["target_abs_path"].replace("\\", "/").endswith(".agents/skills/my-skill/references/guide.md"))
 
-        # 斷言 deployment_map 包含主入口與子檔案
         self.assertIn("skills/my-skill", dep_map)
         self.assertIn("skills/my-skill/references/guide.md", dep_map)
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_ft_11_stat_first_cache_hit_and_touch_healing(self):
-        """FT-11: 驗證 Stat-First SHA-1 快取持久化、二次查詢快取命中與 touch 變更自愈。"""
-        from agents_workflow.publisher import SHA1_CACHE_URI
-
-        # 首次發布建立基礎
+    def test_stat_first_cache_hit_and_touch_healing(self):
+        """驗證 Stat-First SHA-1 快取持久化、二次查詢快取命中與 touch 變更自癒（並完整還原 mtime）。"""
         res1 = self.publisher.release_all(force=True)
         self.assertTrue(res1["success"])
 
-        # 驗證 SHA-1 快取已持久化至 storage.local://
         if uri:
             self.assertTrue(vfs.exists(SHA1_CACHE_URI))
             cache_data = vfs.read_json(SHA1_CACHE_URI)
             self.assertIsInstance(cache_data, dict)
             self.assertGreater(len(cache_data), 0)
 
-        # 二次發布應直接短路
         res2 = self.publisher.release_all(force=False)
         self.assertTrue(res2["short_circuited"])
 
-        # 模擬 touch: 更新 manifest.json 的 mtime 但保持內容不變
         manifest_p = os.path.join(self.compiler.module_root, "manifest.json")
         if os.path.isfile(manifest_p):
             stat_before = os.stat(manifest_p)
-            new_mtime = stat_before.st_mtime + 5.0
-            os.utime(manifest_p, (new_mtime, new_mtime))
+            try:
+                new_mtime = stat_before.st_mtime + 5.0
+                os.utime(manifest_p, (new_mtime, new_mtime))
+                self.publisher._sources_digest_cache = None
 
-            # 觸發發布：fingerprint 應不變並維持 short_circuited
-            res3 = self.publisher.release_all(force=False)
-            self.assertTrue(res3["success"])
-            self.assertTrue(res3["short_circuited"])
-            self.assertEqual(res3["fingerprint"], res1["fingerprint"])
+                res3 = self.publisher.release_all(force=False)
+                self.assertTrue(res3["success"])
+                self.assertTrue(res3["short_circuited"])
+                self.assertEqual(res3["fingerprint"], res1["fingerprint"])
+            finally:
+                os.utime(manifest_p, (stat_before.st_atime, stat_before.st_mtime))
+                self.publisher._sources_digest_cache = None
+                self.publisher._get_source_file_sha1(manifest_p)
+                self.publisher._save_sha1_cache()
         self.mark_passed()
 
-    def test_ft_13_soft_merge_single_source_and_external_preservation(self):
-        """FT-13: 驗證發布軟合併為單向標準覆寫（杜絕廢棄舊技能殘留），同時 100% 保留外部自定義章節。"""
+    def test_soft_merge_single_source_and_external_preservation(self):
+        """驗證發布軟合併為單向標準覆寫（杜絕廢棄舊技能殘留），同時保留外部自定義章節。"""
         std_content = (
             "# Agent 專案行為準則與防呆紀律規範 (Agents Standards)\n\n"
             "## 2. 條件式技能分流導航矩陣\n\n"
@@ -375,68 +355,51 @@ class TestReleasePublisherDiff(YSCBTestCase):
             "## 4. 專案特化工程規範\n"
             "- 自訂外部規範附錄\n"
         )
-        # 第一次合併：管理區塊由新標準純粹更新（舊廢棄技能不再殘留），外部章節完整保留
         merged_1 = self.publisher._soft_merge_agents_text(existing_text, std_content)
         self.assertIn("**新版系統任務 A**", merged_1)
-        self.assertNotIn("`legacy-skill`", merged_1)  # 杜絕殭屍舊技能復活
-        self.assertIn("## 4. 專案特化工程規範", merged_1)  # 外部章節保留
+        self.assertNotIn("`legacy-skill`", merged_1)
+        self.assertIn("## 4. 專案特化工程規範", merged_1)
         self.assertIn("- 自訂外部規範附錄", merged_1)
 
-        # 第二次合併 (冪等性驗證)
         merged_2 = self.publisher._soft_merge_agents_text(merged_1, std_content)
         self.assertEqual(merged_1, merged_2)
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_ft_14_contextinit_workflow_relative_links(self):
-        """FT-14: 驗證 ContextInit.md 編譯後鏈接解析為相對於目前檔案之相對路徑而非 project_root 裸路徑。"""
-        from core import config
-        orig_docs = config.get("agents-workflow", "paths.docs")
-        try:
-            config.set("agents-workflow", "paths.docs", "project://docs", local=False)
-            res1 = self.compiler.compile_stage1()
-            self.assertTrue(res1.get("success", False))
+    def test_contextinit_workflow_relative_links(self):
+        """驗證 ContextInit 編譯後鏈接解析為相對於目前檔案之相對路徑而非 project_root 裸路徑。"""
+        config.set("agents-workflow", "paths.docs", "project://docs", local=False)
+        res1 = self.compiler.compile_stage1()
+        self.assertTrue(res1.get("success", False))
 
-            context_init_item = None
-            for item in res1.get("resolved_items", []):
-                if item.get("skill_name") == "context-init" or "context-init" in item.get("export", {}).get("name", ""):
-                    context_init_item = item
-                    break
-            self.assertIsNotNone(context_init_item)
+        context_init_item = None
+        for item in res1.get("resolved_items", []):
+            if item.get("skill_name") == "context-init" or "context-init" in item.get("export", {}).get("name", ""):
+                context_init_item = item
+                break
+        self.assertIsNotNone(context_init_item)
 
-            dummy_dest = os.path.join(os.getcwd(), ".agents", "skills", "context-init", "SKILL.md")
-            cur_dir = os.path.dirname(dummy_dest)
-            dep_map = {}
-            stage2_text = self.compiler.resolve_stage2_uri(context_init_item["content"], dummy_dest, dep_map)
+        dummy_dest = os.path.join(os.getcwd(), ".agents", "skills", "context-init", "SKILL.md")
+        cur_dir = os.path.dirname(dummy_dest)
+        dep_map = {}
+        stage2_text = self.compiler.resolve_stage2_uri(context_init_item["content"], dummy_dest, dep_map)
 
-            if uri:
-                expected_agents = os.path.relpath(uri.resolve("project://AGENTS.md", interactive=False), cur_dir).replace("\\", "/")
-                expected_changelog = os.path.relpath(uri.resolve("project://CHANGELOG.md", interactive=False), cur_dir).replace("\\", "/")
-                expected_standards = os.path.relpath(uri.resolve("workflow.docs://_project/STANDARDS.md", interactive=False), cur_dir).replace("\\", "/")
+        if uri:
+            expected_agents = os.path.relpath(uri.resolve("project://AGENTS.md", interactive=False), cur_dir).replace("\\", "/")
+            expected_changelog = os.path.relpath(uri.resolve("project://CHANGELOG.md", interactive=False), cur_dir).replace("\\", "/")
+            expected_standards = os.path.relpath(uri.resolve("workflow.docs://_project/STANDARDS.md", interactive=False), cur_dir).replace("\\", "/")
 
-                self.assertIn(f"[`AGENTS.md`]({expected_agents})", stage2_text)
-                self.assertIn(f"[`CHANGELOG.md`]({expected_changelog})", stage2_text)
-                self.assertIn(f"[`STANDARDS.md`]({expected_standards})", stage2_text)
+            self.assertIn(f"[`AGENTS.md`]({expected_agents})", stage2_text)
+            self.assertIn(f"[`CHANGELOG.md`]({expected_changelog})", stage2_text)
+            self.assertIn(f"[`STANDARDS.md`]({expected_standards})", stage2_text)
 
-            self.assertNotIn("__#{project://AGENTS.md}__", stage2_text)
-            self.assertNotIn("__${project://AGENTS.md}__", stage2_text)
-            self.mark_passed()
-        finally:
-            if orig_docs is not None and not str(orig_docs).startswith("!undefined"):
-                config.set("agents-workflow", "paths.docs", orig_docs, local=False)
-            else:
-                config.delete("agents-workflow", "paths.docs", local=False)
-            config.reload()
+        self.assertNotIn("__#{project://AGENTS.md}__", stage2_text)
+        self.assertNotIn("__${project://AGENTS.md}__", stage2_text)
+        self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft_15_soft_unmerge_agents_text(self):
-        """FT-04: 驗證 _soft_unmerge_agents_text 正確剝離 YSCB 託管標記與空樣板，完整保留自訂內容。"""
-        from agents_workflow.publisher import AGENTS_MD_BEGIN, AGENTS_MD_END
-
-        # 1. 空字串防護
+    def test_soft_unmerge_agents_text(self):
+        """驗證 _soft_unmerge_agents_text 正確剝離 YSCB 託管標記與空樣板，完整保留自訂內容。"""
         self.assertEqual(self.publisher._soft_unmerge_agents_text(""), "")
 
-        # 2. 僅含 YSCB 託管區塊與空自訂樣板 -> 剝離為空
         default_tpl = (
             f"{AGENTS_MD_BEGIN}\n"
             f"# Agent 專案行為準則\n"
@@ -446,7 +409,6 @@ class TestReleasePublisherDiff(YSCBTestCase):
         )
         self.assertEqual(self.publisher._soft_unmerge_agents_text(default_tpl), "")
 
-        # 3. 含使用者自訂章節 -> 剝離 YSCB 區塊，自訂章節完好保留
         custom_tpl = (
             f"{AGENTS_MD_BEGIN}\n"
             f"# Agent 專案行為準則\n"
@@ -461,144 +423,201 @@ class TestReleasePublisherDiff(YSCBTestCase):
         self.assertIn("專案自訂規則 1", unmerged)
         self.assertIn("## 4. 專案特化工程規範", unmerged)
 
-        # 4. 頭部自訂內容 -> 完好保留
         pre_custom = (
             f"# My Company Guidelines\n\n"
             f"{AGENTS_MD_BEGIN}\n# Core Rules\n{AGENTS_MD_END}\n"
         )
         unmerged_pre = self.publisher._soft_unmerge_agents_text(pre_custom)
         self.assertEqual(unmerged_pre, "# My Company Guidelines")
-
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_ft_16_prune_stale_agents_md(self):
-        """FT-05 & FT-06: 整合驗證切換 Target 移除 antigravity 時，AGENTS.md 之軟剝離保護與純淨清理。"""
-        from core import config
-
+    def test_prune_stale_agents_md(self):
+        """整合驗證切換 Target 移除 antigravity 時，AGENTS.md 之軟剝離保護與純淨清理。"""
         proj_root = uri.resolve("project://", interactive=False) if uri else os.getcwd()
         agents_md_path = os.path.join(proj_root, "AGENTS.md")
 
-        try:
-            # 1. 啟用 antigravity 發布 AGENTS.md
-            config.set("agents-workflow", "release_targets", ["antigravity"], local=False)
-            config.reload()
-            res1 = self.publisher.release_all(force=True)
-            self.assertTrue(res1["success"])
-            self.assertTrue(os.path.isfile(agents_md_path))
+        config.set("agents-workflow", "release_targets", ["antigravity"], local=False)
+        config.delete("agents-workflow", "release_targets", local=True)
+        config.reload()
+        res1 = self.publisher.release_all(force=True)
+        self.assertTrue(res1["success"])
+        self.assertTrue(os.path.isfile(agents_md_path))
 
-            # 2. 追加使用者自訂內容 (模擬 FT-05: 使用者編輯過 AGENTS.md)
-            with open(agents_md_path, "a", encoding="utf-8") as f:
-                f.write("\n## 5. 使用者自訂重要守則\n- 嚴禁更動生產資料庫連線\n")
+        with open(agents_md_path, "a", encoding="utf-8") as f:
+            f.write("\n## 5. 使用者自訂重要守則\n- 嚴禁更動生產資料庫連線\n")
 
-            # 3. 切換 Target 為 claude (antigravity 變為陳舊)
-            config.set("agents-workflow", "release_targets", ["claude"], local=False)
-            config.reload()
-            res2 = self.publisher.release_all(force=True)
-            self.assertTrue(res2["success"])
+        config.set("agents-workflow", "release_targets", ["claude"], local=False)
+        config.reload()
+        res2 = self.publisher.release_all(force=True)
+        self.assertTrue(res2["success"])
 
-            # FT-05 斷言：檔案不被刪除，YSCB 區塊被剝離，自訂內容完好保留
-            self.assertTrue(os.path.isfile(agents_md_path))
-            with open(agents_md_path, "r", encoding="utf-8") as f:
-                saved_text = f.read()
-            self.assertNotIn("<!-- YSCB_AGENTS_BEGIN -->", saved_text)
-            self.assertIn("使用者自訂重要守則", saved_text)
-            self.assertIn("嚴禁更動生產資料庫連線", saved_text)
+        self.assertTrue(os.path.isfile(agents_md_path))
+        with open(agents_md_path, "r", encoding="utf-8") as f:
+            saved_text = f.read()
+        self.assertNotIn("<!-- YSCB_AGENTS_BEGIN -->", saved_text)
+        self.assertIn("使用者自訂重要守則", saved_text)
+        self.assertIn("嚴禁更動生產資料庫連線", saved_text)
 
-            # 4. 再次切回 antigravity (恢復官方完整樣板)
-            config.set("agents-workflow", "release_targets", ["antigravity"], local=False)
-            config.reload()
-            res3 = self.publisher.release_all(force=True)
-            self.assertTrue(res3["success"])
+        config.set("agents-workflow", "release_targets", ["antigravity"], local=False)
+        config.reload()
+        res3 = self.publisher.release_all(force=True)
+        self.assertTrue(res3["success"])
 
-            # 人為重設 AGENTS.md 為純粹預設樣板 (模擬 FT-06: 完全無自訂內容)
-            default_content = (
-                "<!-- YSCB_AGENTS_BEGIN -->\n"
-                "# Agent 專案行為準則\n"
-                "<!-- YSCB_AGENTS_END -->\n\n"
-                "## 4. 專案特化工程規範 (Project Specific Standards)\n"
-                "*(專案特化工程規範填寫於此，不受中央標準庫覆蓋)*\n"
-            )
-            with open(agents_md_path, "w", encoding="utf-8") as f:
-                f.write(default_content)
+        default_content = (
+            "<!-- YSCB_AGENTS_BEGIN -->\n"
+            "# Agent 專案行為準則\n"
+            "<!-- YSCB_AGENTS_END -->\n\n"
+            "## 4. 專案特化工程規範 (Project Specific Standards)\n"
+            "*(專案特化工程規範填寫於此，不受中央標準庫覆蓋)*\n"
+        )
+        with open(agents_md_path, "w", encoding="utf-8") as f:
+            f.write(default_content)
 
-            # 5. 切換 Target 為 claude
-            config.set("agents-workflow", "release_targets", ["claude"], local=False)
-            config.reload()
-            res4 = self.publisher.release_all(force=True)
-            self.assertTrue(res4["success"])
+        config.set("agents-workflow", "release_targets", ["claude"], local=False)
+        config.reload()
+        res4 = self.publisher.release_all(force=True)
+        self.assertTrue(res4["success"])
+        self.assertFalse(os.path.isfile(agents_md_path))
+        self.mark_passed()
 
-            # FT-06 斷言：無自訂內容之陳舊 AGENTS.md 被乾淨清理刪除
-            self.assertFalse(os.path.isfile(agents_md_path))
+    def test_empty_project_targets_no_default_revival_and_orphan_warning(self):
+        """驗證清空最後一個專案 Target [] 時不復活預設 antigravity，以及孤兒 Target 警告與 Stage 1 失敗處理。"""
+        config.set("agents-workflow", "release_targets", [], local=False)
+        config.set("agents-workflow", "release_targets", ["claude"], local=True)
+        config.reload()
 
-            self.mark_passed()
-        finally:
-            config.set("agents-workflow", "release_targets", ["antigravity"], local=False)
-            config.reload()
+        cfg_claude_only = self.publisher._get_project_config()
+        self.assertNotIn("antigravity", cfg_claude_only.get("release_targets", []))
+        self.assertEqual(cfg_claude_only.get("release_targets"), ["claude"])
+
+        config.set("agents-workflow", "release_targets", [], local=True)
+        config.reload()
+        cfg_all_empty = self.publisher._get_project_config()
+        self.assertEqual(cfg_all_empty.get("release_targets"), [])
+
+        # 驗證孤兒 Target 警告與回傳
+        err_buf = io.StringIO()
+        with patch.object(
+            self.publisher,
+            "_get_project_config",
+            return_value={"release_targets": ["antigravity", "non_existent_orphan_target"]},
+        ), redirect_stderr(err_buf):
+            res_orphan = self.publisher.release_all(force=True)
+        self.assertTrue(res_orphan["success"])
+        self.assertIn("non_existent_orphan_target", res_orphan["orphan_targets"])
+        self.assertIn("[publisher:warning] Release target 'non_existent_orphan_target' not found", err_buf.getvalue())
+
+        # 驗證 Stage 1 失敗時 release_all 早退回傳失敗結構
+        with patch.object(
+            self.compiler,
+            "compile_stage1",
+            return_value={"success": False, "errors": ["stage1 broken"]},
+        ):
+            res_fail = self.publisher.release_all(force=True)
+        self.assertFalse(res_fail["success"])
+        self.assertEqual(res_fail["error"], "Stage 1 content compilation failed")
+        self.assertEqual(res_fail["details"], ["stage1 broken"])
+        self.mark_passed()
 
 
-class TestJITRelease(YSCBTestCase):
-    """測試 JIT 雜湊偵測與釋出同步。"""
+@require(Requirement.LOGIC | Requirement.ENV)
+class TestJITReleaseAndHooks(YSCBTestCase):
+    """測試 JIT 雜湊偵測、hook.core.py 與 hook.dev.py 生命週期掛鉤。"""
 
-    def test_ft_03_ensure_jit_release_clean(self):
-        """FT-03: 驗證當來源特徵未改變 (Clean) 時，ensure_jit_release 順暢返回且不報錯。"""
+    def test_ensure_jit_release_clean(self):
+        """驗證當來源特徵未改變 (Clean) 時，ensure_jit_release 順暢返回 False。"""
         with patch.object(ReleasePublisher, "release_all", return_value={"success": True, "short_circuited": True, "written_count": 0}):
             result = ensure_jit_release()
             self.assertFalse(result)
             self.mark_passed()
 
-    def test_ft_03_ensure_jit_release_dirty_triggers_materialize(self):
-        """FT-03: 驗證當指紋不一致時，ensure_jit_release 觸發 release 並返回 True。"""
+    def test_ensure_jit_release_dirty_triggers_materialize(self):
+        """驗證當指紋不一致時，ensure_jit_release 觸發 release 並返回 True。"""
         with patch.object(ReleasePublisher, "release_all", return_value={"success": True, "short_circuited": False, "written_count": 3}):
             result = ensure_jit_release()
             self.assertTrue(result)
             self.mark_passed()
 
-    def test_et_05_ensure_jit_release_exception_safety(self):
-        """ET-05: 驗證當 release 過程遭遇任何異常時，ensure_jit_release 安全捕獲返回 False，不中斷 CLI。"""
+    def test_ensure_jit_release_exception_safety(self):
+        """驗證當 release 過程遭遇任何異常時，ensure_jit_release 安全捕獲返回 False。"""
         with patch.object(ReleasePublisher, "release_all", side_effect=PermissionError("File locked")):
             result = ensure_jit_release()
             self.assertFalse(result)
             self.mark_passed()
 
-    def test_agents_workflow_hook_jit_release(self):
-        """FT-04: 驗證 hook.core.py 之 on_pre_cli_dispatch 呼叫 ensure_jit_release。"""
-        hook_path = os.path.join(_pkg_root, "scripts", "hook.core.py")
-        self.assertTrue(os.path.isfile(hook_path), "hook.core.py does not exist")
-        spec = importlib.util.spec_from_file_location("aw_hook_core_pub", hook_path)
-        hook_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(hook_mod)
-        self.assertTrue(hasattr(hook_mod, "on_pre_cli_dispatch"))
+    def test_hook_core_and_hook_dev_lifecycle(self):
+        """驗證 hook.core.py (on_reload / on_pre_cli_dispatch) 與 hook.dev.py (on_test_setup / on_test_teardown) 完整分支。"""
+        hook_core = load_hook_core_module("aw_hook_core_pub")
+        hook_dev = load_hook_dev_module("aw_hook_dev_pub")
+
+        out_buf = io.StringIO()
+        with redirect_stdout(out_buf):
+            with patch("agents_workflow.publisher.ReleasePublisher.release_all") as mock_rel:
+                mock_rel.return_value = {
+                    "success": True,
+                    "short_circuited": False,
+                    "written_count": 5,
+                    "skipped_count": 10,
+                    "removed_count": 1,
+                    "active_targets": ["antigravity"],
+                }
+                hook_core.on_reload(None)
+                mock_rel.assert_called_once_with(force=False)
+
+                mock_rel.return_value = {
+                    "success": True,
+                    "short_circuited": True,
+                    "skipped_count": 15,
+                }
+                hook_core.on_reload(None)
+
+                mock_rel.return_value = {
+                    "success": False,
+                    "error": "mock reload fail",
+                }
+                hook_core.on_reload(None)
+
+                mock_rel.side_effect = RuntimeError("unexpected crash")
+                hook_core.on_reload(None)
+
+        out_text = out_buf.getvalue()
+        self.assertIn("Auto-released on reload", out_text)
+        self.assertIn("Auto-release skipped on reload", out_text)
+        self.assertIn("Auto-release failed on reload: mock reload fail", out_text)
+        self.assertIn("Auto-release on reload failed: unexpected crash", out_text)
 
         with patch("agents_workflow.publisher.ensure_jit_release", return_value=True):
-            res = hook_mod.on_pre_cli_dispatch()
-            self.assertTrue(res)
+            self.assertTrue(hook_core.on_pre_cli_dispatch())
 
         with patch("agents_workflow.publisher.ensure_jit_release", return_value=False):
-            res = hook_mod.on_pre_cli_dispatch()
-            self.assertFalse(res)
+            self.assertFalse(hook_core.on_pre_cli_dispatch())
+
+        err_buf = io.StringIO()
+        with patch("agents_workflow.publisher.ensure_jit_release", side_effect=RuntimeError("jit fail")), redirect_stderr(err_buf):
+            self.assertFalse(hook_core.on_pre_cli_dispatch())
+        self.assertIn("Warning: Failed during on_pre_cli_dispatch", err_buf.getvalue())
+
+        self.assertIsNone(hook_dev.on_test_setup({"sandbox": "mock"}))
+        self.assertIsNone(hook_dev.on_test_teardown({"sandbox": "mock"}))
         self.mark_passed()
 
 
+@require(Requirement.LOGIC | Requirement.ENV)
 class TestManifestPlacementAndDualTrack(YSCBTestCase):
-    """測試發布清單分流 (storage.local://) 與換行符號 LF 歸一化。"""
+    """測試發布清單分流 (storage.local://)、雙軌 gitignore 同步與換行符號 LF 歸一化。"""
 
     def setUp(self):
         super().setUp()
+        self._snapshot = ConfigStateSnapshot()
         self.compiler = ArtifactCompiler()
         self.publisher = ReleasePublisher(compiler=self.compiler)
 
     def tearDown(self):
-        try:
-            ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=True)
-            ReleaseTargetManager.save_tier_targets([], is_project=False)
-        except Exception:
-            pass
+        self._snapshot.restore()
         super().tearDown()
 
-    @require(Requirement.ENV)
-    def test_ft_01_project_target_saves_project_uris_in_cache(self):
-        """FT-01: Project Target 清單寫入 storage.local://（不入 Git 追蹤區），且全部路徑為 project:// 語意格式。"""
+    def test_project_target_saves_project_uris_in_cache(self):
+        """驗證 Project Target 清單寫入 storage.local://，且全部路徑為 project:// 語意格式。"""
         ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=True)
         ReleaseTargetManager.save_tier_targets([], is_project=False)
 
@@ -615,15 +634,14 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
         for p in published:
             self.assertTrue(
                 p.startswith("project://"),
-                f"Expected path in project manifest to start with 'project://', got: '{p}'"
+                f"Expected path in project manifest to start with 'project://', got: '{p}'",
             )
             self.assertNotIn(":", p.replace("project://", ""))
             self.assertNotIn("\\", p)
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_ft_02_local_target_saves_absolute_paths_in_cache(self):
-        """FT-02: Local Target 發布至 storage.local://，且全部路徑為本機實體絕對路徑。"""
+    def test_local_target_saves_absolute_paths_in_cache(self):
+        """驗證 Local Target 發布至 storage.local://，且全部路徑為本機實體絕對路徑。"""
         ReleaseTargetManager.save_tier_targets([], is_project=True)
         ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=False)
 
@@ -640,16 +658,15 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
         for p in published:
             self.assertTrue(
                 os.path.isabs(p),
-                f"Expected path in cache manifest to be an absolute path, got: '{p}'"
+                f"Expected path in cache manifest to be an absolute path, got: '{p}'",
             )
             self.assertFalse(p.startswith("project://"))
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_ft_03_mixed_targets_dual_channel_manifests(self):
-        """FT-03: 混合 Targets (Local + Project) 同步獨立更新各自 Manifest。"""
+    def test_mixed_targets_dual_channel_manifests_and_gitignore_union(self):
+        """驗證混合 Targets (Local + Project) 同步獨立更新各自 Manifest，且 sync_gitignore 合併讀取雙軌清冊。"""
         ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=True)
-        ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=False)
+        ReleaseTargetManager.save_tier_targets(["claude"], is_project=False)
 
         res = self.publisher.release_all(force=True)
         self.assertTrue(res["success"])
@@ -659,11 +676,20 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
         self.assertEqual(proj_data.get("active_targets"), ["antigravity"])
         for p in proj_data.get("published_files", []):
             self.assertTrue(p.startswith("project://"))
+
+        self.assertTrue(vfs.exists(LOCAL_MANIFEST_CACHE_URI))
+        local_data = vfs.read_json(LOCAL_MANIFEST_CACHE_URI)
+        self.assertEqual(local_data.get("active_targets"), ["claude"])
+
+        # 驗證 published_files=None 時 sync_gitignore 能夠合併讀取雙軌 Manifest
+        gi_res = self.publisher.sync_gitignore(active_targets=["antigravity", "claude"], published_files=None)
+        patterns = gi_res.get("patterns", [])
+        self.assertTrue(any(p.startswith("/.agents/") for p in patterns))
+        self.assertTrue(any(p.startswith("/.claude/") for p in patterns))
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_ft_04_legacy_absolute_path_manifest_tolerance(self):
-        """FT-04: 歷史異機絕對路徑 (如 H:\\...) 讀取時不崩潰，安全自癒標準化。"""
+    def test_legacy_absolute_path_manifest_tolerance(self):
+        """驗證歷史異機絕對路徑 (如 H:\\...) 讀取時不崩潰，安全自癒標準化。"""
         ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=True)
         ReleaseTargetManager.save_tier_targets([], is_project=False)
 
@@ -672,9 +698,9 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
             "active_targets": ["antigravity"],
             "published_files": [
                 "H:\\UseFolder\\NonExistent\\legacy_file_01.md",
-                "H:\\UseFolder\\NonExistent\\legacy_file_02.md"
+                "H:\\UseFolder\\NonExistent\\legacy_file_02.md",
             ],
-            "updated_at": "2026-08-01 00:00:00"
+            "updated_at": "2026-08-01 00:00:00",
         }
         vfs.write_json(PROJECT_MANIFEST_CACHE_URI, fake_legacy)
 
@@ -686,9 +712,8 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
             self.assertTrue(p.startswith("project://"))
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_ft_05_line_endings_are_pure_lf(self):
-        """FT-05: 驗證發布物化產物之換行符號 100% 為純 LF (\\n)，無 CRLF (\\r\\n)。"""
+    def test_line_endings_are_pure_lf(self):
+        """驗證發布物化產物之換行符號 100% 為純 LF (\\n)，無 CRLF (\\r\\n)。"""
         ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=True)
         ReleaseTargetManager.save_tier_targets([], is_project=False)
 
@@ -704,28 +729,30 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
                 self.assertNotIn(
                     b"\r\n",
                     raw_bytes,
-                    f"File '{abs_p}' contains CRLF (\\r\\n) but expected pure LF (\\n)."
+                    f"File '{abs_p}' contains CRLF (\\r\\n) but expected pure LF (\\n).",
                 )
         self.mark_passed()
 
 
-@require(Requirement.ENV)
+@require(Requirement.LOGIC | Requirement.ENV)
 class TestPublisherCrossPlatform(YSCBTestCase):
-    """測試發布引擎之跨平台換行符正規化與清單隔離。"""
+    """測試發布引擎之跨平台換行符正規化、遷移腳本與清單隔離。"""
 
     def setUp(self):
         super().setUp()
+        self._snapshot = ConfigStateSnapshot()
         self.compiler = ArtifactCompiler()
         self.publisher = ReleasePublisher(compiler=self.compiler)
         self.temp_dir = tempfile.mkdtemp(prefix="test_aw_cross_")
 
     def tearDown(self):
+        self._snapshot.restore()
         if hasattr(self, "temp_dir") and os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir, ignore_errors=True)
         super().tearDown()
 
     def test_sha1_crlf_normalization(self):
-        """FT-01: 驗證 CRLF 與 LF 文字內容計算出完全相同的 SHA-1 雜湊值。"""
+        """驗證 CRLF 與 LF 文字內容計算出完全相同的 SHA-1 雜湊值。"""
         dir_lf = os.path.join(self.temp_dir, "dir_lf")
         dir_crlf = os.path.join(self.temp_dir, "dir_crlf")
         os.makedirs(dir_lf, exist_ok=True)
@@ -754,7 +781,7 @@ class TestPublisherCrossPlatform(YSCBTestCase):
         self.mark_passed()
 
     def test_binary_file_sha1_fallback(self):
-        """ET-01 (EC-01): 驗證非 UTF-8 二進位檔案安全降級至 raw bytes，不崩潰。"""
+        """驗證非 UTF-8 二進位檔案安全降級至 raw bytes，不崩潰。"""
         bin_dir = os.path.join(self.temp_dir, "bin_dir")
         os.makedirs(bin_dir, exist_ok=True)
 
@@ -768,7 +795,7 @@ class TestPublisherCrossPlatform(YSCBTestCase):
         self.mark_passed()
 
     def test_release_never_writes_tracked_storage(self):
-        """ET-02: 完整發布後，Git 追蹤區 storage://agents-workflow/release_manifest.json 不被寫入，清單僅存於 storage.local://。"""
+        """驗證完整發布後，Git 追蹤區 storage://agents-workflow/release_manifest.json 不被寫入，清單僅存於 storage.local://。"""
         legacy_storage_uri = "storage://agents-workflow/release_manifest.json"
         if vfs and vfs.exists(legacy_storage_uri):
             vfs.remove(legacy_storage_uri)
@@ -786,12 +813,8 @@ class TestPublisherCrossPlatform(YSCBTestCase):
         self.mark_passed()
 
     def test_migration_1_2_4_x_moves_legacy_storage_and_cache_manifests(self):
-        """驗證 scripts/migrations/1.2.4.x.py 之 migrate(context) 能無損將舊 storage:// 及 cache:// 清冊遷移至 storage.local://。"""
-        mig_path = os.path.join(_pkg_root, "scripts", "migrations", "1.2.4.x.py")
-        self.assertTrue(os.path.isfile(mig_path), "1.2.4.x.py migration script must exist")
-        spec = importlib.util.spec_from_file_location("aw_mig_1_2_4_x", mig_path)
-        mig_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mig_mod)
+        """驗證 scripts/migrations/1.2.4.x.py 之 migrate(context) 能無損將舊 storage:// 及 cache:// 清冊遷移至 storage.local:// 並涵蓋邊界情境。"""
+        mig_mod = load_migration_module("1.2.4.x", "aw_mig_1_2_4_x")
 
         yscb_dir = os.path.join(self.temp_dir, "ys_codebase")
         storage_dir = os.path.join(yscb_dir, "storage", "agents-workflow")
@@ -800,7 +823,6 @@ class TestPublisherCrossPlatform(YSCBTestCase):
         os.makedirs(storage_dir, exist_ok=True)
         os.makedirs(cache_dir, exist_ok=True)
 
-        # Case 1: Legacy storage:// release_manifest.json with 'files' list + cache:// local/sha1 files
         legacy_storage_file = os.path.join(storage_dir, "release_manifest.json")
         with open(legacy_storage_file, "w", encoding="utf-8") as f:
             json.dump({"fingerprint": "fp_legacy", "files": ["project://AGENTS.md"]}, f)
@@ -834,8 +856,24 @@ class TestPublisherCrossPlatform(YSCBTestCase):
         self.assertEqual(proj_m.get("published_files"), ["project://AGENTS.md"])
         self.assertEqual(proj_m.get("fingerprint"), "fp_legacy")
 
-        # Case 2: Idempotency when cache:// project_release_manifest.json also exists
+        # 邊界 2: 當 target_proj_manifest 已存在時，遺留之 legacy_storage_manifest 被直接移除且不覆寫現有檔
+        os.makedirs(storage_dir, exist_ok=True)
+        with open(legacy_storage_file, "w", encoding="utf-8") as f:
+            json.dump({"fingerprint": "should_be_discarded", "files": []}, f)
+        self.assertTrue(mig_mod.migrate(ctx))
+        self.assertFalse(os.path.exists(legacy_storage_file))
+        with open(proj_m_path, "r", encoding="utf-8") as f:
+            self.assertEqual(json.load(f).get("fingerprint"), "fp_legacy")
+
+        # 邊界 3: 損毀之 legacy_storage_manifest 降級搬移與 cache:// project_release_manifest.json 遷移
         os.remove(proj_m_path)
+        os.makedirs(storage_dir, exist_ok=True)
+        with open(legacy_storage_file, "w", encoding="utf-8") as f:
+            f.write("{corrupted_json")
+        self.assertTrue(mig_mod.migrate(ctx))
+        self.assertTrue(os.path.isfile(proj_m_path))
+        os.remove(proj_m_path)
+
         with open(os.path.join(cache_dir, "project_release_manifest.json"), "w", encoding="utf-8") as f:
             json.dump({"fingerprint": "fp_cache_proj", "published_files": ["project://.agents/skills/auto/SKILL.md"]}, f)
 
@@ -844,6 +882,12 @@ class TestPublisherCrossPlatform(YSCBTestCase):
         with open(proj_m_path, "r", encoding="utf-8") as f:
             proj_m2 = json.load(f)
         self.assertEqual(proj_m2.get("fingerprint"), "fp_cache_proj")
+
+        # 邊界 4: 無 yscb_dir 且 uri.resolve_yscb_root 拋出異常時安全返回 True
+        with patch("core.uri.resolve_yscb_root", side_effect=RuntimeError("no root")), patch(
+            "core.uri.resolve", side_effect=RuntimeError("no uri")
+        ):
+            self.assertTrue(mig_mod.migrate({}))
         self.mark_passed()
 
     def test_prune_removes_legacy_workflows_and_commands_dirs(self):
@@ -879,6 +923,3 @@ class TestPublisherCrossPlatform(YSCBTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-

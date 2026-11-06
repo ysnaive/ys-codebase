@@ -6,28 +6,24 @@ Unit tests for agents-workflow ReleasePublisher self-healing & fingerprint enhan
 """
 
 import os
-import sys
 import shutil
+import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-_test_dir = os.path.dirname(os.path.abspath(__file__))
-_pkg_root = os.path.dirname(_test_dir)
-if _pkg_root not in sys.path:
-    sys.path.insert(0, _pkg_root)
+if str(Path(__file__).resolve().parent.parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+if getattr(sys.modules.get("tests"), "PKG_ROOT", None) != Path(__file__).resolve().parent.parent:
+    sys.modules.pop("tests", None)
+
+from tests import ConfigStateSnapshot
 
 from agents_workflow.compiler import ArtifactCompiler
 from agents_workflow.publisher import ReleasePublisher
-
-try:
-    from core import uri, vfs
-except ImportError:
-    uri = None
-    vfs = None
-
 from dev.testing.case import YSCBTestCase
-from dev.testing.requirement import require, Requirement
+from dev.testing.requirement import Requirement, require
 
 
 @require(Requirement.LOGIC | Requirement.ENV)
@@ -36,11 +32,13 @@ class TestPublisherSelfHealing(YSCBTestCase):
 
     def setUp(self):
         super().setUp()
-        self.compiler = ArtifactCompiler()
-        self.publisher = ReleasePublisher(compiler=self.compiler)
+        self._snapshot = ConfigStateSnapshot()
         self.temp_dir = tempfile.mkdtemp(prefix="test_aw_self_heal_")
+        self.compiler = ArtifactCompiler(host_dir=self.temp_dir)
+        self.publisher = ReleasePublisher(compiler=self.compiler, host_dir=self.temp_dir)
 
     def tearDown(self):
+        self._snapshot.restore()
         if hasattr(self, "temp_dir") and os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir, ignore_errors=True)
         super().tearDown()
@@ -58,18 +56,15 @@ class TestPublisherSelfHealing(YSCBTestCase):
         with open(f2, "w", encoding="utf-8", newline="\n") as f:
             f.write("# Guide\nReference details\n")
 
-        # 第一次計算：建立快取
         sha1_first = self.publisher._get_source_file_sha1(skill_dir)
         self.assertEqual(len(sha1_first), 40)
         self.assertIn(f1, self.publisher._sha1_cache)
         self.assertIn(f2, self.publisher._sha1_cache)
 
-        # 第二次計算：若觸發 open() 讀檔則拋出異常，驗證 100% 命中 _sha1_cache
         with patch("builtins.open", side_effect=AssertionError("Should not open file on SHA-1 cache hit")):
             sha1_second = self.publisher._get_source_file_sha1(skill_dir)
         self.assertEqual(sha1_first, sha1_second)
 
-        # 修改其中一檔內容與大小 -> 快取失效並算出新雜湊
         with open(f2, "w", encoding="utf-8", newline="\n") as f:
             f.write("# Guide\nUpdated reference details with new content\n")
         sha1_third = self.publisher._get_source_file_sha1(skill_dir)
@@ -90,30 +85,39 @@ class TestPublisherSelfHealing(YSCBTestCase):
         self.mark_passed()
 
     def test_short_circuit_detects_missing_agents_md_markers_and_heals(self):
-        """驗證 AGENTS.md 或 agent_rules 託管標記缺失時，_check_short_circuit 回傳 False 觸發自癒。"""
-        res1 = self.publisher.release_all(force=True)
-        self.assertTrue(res1["success"])
+        """驗證 AGENTS.md 或 agent_rules 託管標記缺失時，_check_short_circuit 回傳 False 觸發自癒（完全隔離於 self.temp_dir）。"""
+        from core import uri as core_uri
 
-        proj_root = uri.resolve("project://", interactive=False) if uri else os.getcwd()
-        agents_md_path = os.path.join(proj_root, "AGENTS.md")
-        self.assertTrue(os.path.isfile(agents_md_path))
+        orig_resolve = core_uri.resolve
 
-        # 破壞 AGENTS.md 內的 YSCB 託管標記但保留檔案存在
-        with open(agents_md_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write("# Corrupted AGENTS.md without markers\n\n## Custom Section\nKeep me.\n")
+        def _isolated_resolve(uri_str: str, *args, **kwargs) -> str:
+            if uri_str == "project://":
+                return self.temp_dir
+            if isinstance(uri_str, str) and uri_str.startswith("project://"):
+                rel = uri_str[len("project://"):].lstrip("/\\")
+                return os.path.normpath(os.path.join(self.temp_dir, rel.replace("/", os.sep)))
+            return orig_resolve(uri_str, *args, **kwargs)
 
-        # 再次執行 release_all(force=False) 應偵測標記缺失、拒絕短路並自動修復託管區塊
-        res2 = self.publisher.release_all(force=False)
-        self.assertTrue(res2["success"])
-        self.assertFalse(res2["short_circuited"])
+        with patch("core.uri.resolve", side_effect=_isolated_resolve):
+            res1 = self.publisher.release_all(force=True)
+            self.assertTrue(res1["success"])
 
-        with open(agents_md_path, "r", encoding="utf-8") as f:
-            healed_text = f.read()
-        self.assertIn("<!-- YSCB_AGENTS_BEGIN -->", healed_text)
-        self.assertIn("<!-- YSCB_AGENTS_END -->", healed_text)
-        self.assertIn("Keep me.", healed_text)
+            agents_md_path = os.path.join(self.temp_dir, "AGENTS.md")
+            self.assertTrue(os.path.isfile(agents_md_path))
 
-        # 同時測試 agent_rules 結構之 inject vs copy 模式
+            with open(agents_md_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write("# Corrupted AGENTS.md without markers\n\n## Custom Section\nKeep me.\n")
+
+            res2 = self.publisher.release_all(force=False)
+            self.assertTrue(res2["success"])
+            self.assertFalse(res2["short_circuited"])
+
+            with open(agents_md_path, "r", encoding="utf-8") as f:
+                healed_text = f.read()
+            self.assertIn("<!-- YSCB_AGENTS_BEGIN -->", healed_text)
+            self.assertIn("<!-- YSCB_AGENTS_END -->", healed_text)
+            self.assertIn("Keep me.", healed_text)
+
         dummy_rule_file = os.path.join(self.temp_dir, "CUSTOM_RULES.md")
         with open(dummy_rule_file, "w", encoding="utf-8") as f:
             f.write("Plain content without custom markers\n")
@@ -148,7 +152,6 @@ class TestPublisherSelfHealing(YSCBTestCase):
         )
         self.assertFalse(can_sc_inject)
 
-        # 若 mode 為 copy，則不要求標記存在即可短路
         mock_targets["custom_t"]["agent_rules"][0]["mode"] = "copy"
         can_sc_copy, _ = self.publisher._check_short_circuit(
             force=False,

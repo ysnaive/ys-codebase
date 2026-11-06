@@ -19,6 +19,7 @@ from core.engine import (
     find_matching_local_source_dir,
     normalize_legacy_provider_url,
     package_local_source_if_exact_match,
+    resolve_local_provider_path,
 )
 from core import semver
 from core import events
@@ -93,10 +94,7 @@ def fetch_and_extract_zip(source_url_or_path: str, dest_dir: str) -> None:
 
     try:
         if source_url_or_path.startswith("file://"):
-            raw_p = urllib.request.url2pathname(source_url_or_path[7:])
-            while raw_p.startswith("//"):
-                raw_p = raw_p[1:]
-            source_url_or_path = raw_p
+            source_url_or_path = resolve_local_provider_path(source_url_or_path) or source_url_or_path
 
         if source_url_or_path.startswith(("http://", "https://")):
             req = urllib.request.Request(source_url_or_path, headers={"User-Agent": "yscb-core/2.0"})
@@ -139,10 +137,15 @@ def _discover_available_versions_for_module(
     candidate_core_version: Optional[str] = None,
 ) -> List[str]:
     """Scans local provider directories/indexes or fetches remote index.json for non-build, environment-compatible versions of a module."""
-    candidate_dirs = [
-        os.path.join(provider_url, "release", mod),
-        os.path.join(provider_url, mod),
-    ]
+    local_prov = resolve_local_provider_path(provider_url)
+    candidate_dirs = (
+        [
+            os.path.join(local_prov, "release", mod),
+            os.path.join(local_prov, mod),
+        ]
+        if local_prov
+        else []
+    )
     found_versions: List[str] = []
     releases_map: Dict[str, Any] = {}
     for c_dir in candidate_dirs:
@@ -198,12 +201,7 @@ def _discover_available_versions_for_module(
 def _discover_remote_modules(engine: AtomicEngine, provider_url: str, installed: Dict[str, Any]) -> Dict[str, str]:
     """Scans local or remote provider for all available modules and their latest versions."""
     available_modules: Dict[str, str] = {}
-    local_base = None
-    if provider_url.startswith("file://"):
-        import urllib.request
-        local_base = urllib.request.url2pathname(provider_url[7:])
-    elif not provider_url.startswith(("http://", "https://")):
-        local_base = os.path.normpath(provider_url)
+    local_base = resolve_local_provider_path(provider_url)
 
     if local_base and os.path.isdir(local_base):
         sub_dirs = [local_base]
@@ -827,7 +825,10 @@ class Installer:
         target_snap = target or snaps[-1]
         print(f"[core:rollback] Rolling back to snapshot '{target_snap}'...")
         try:
-            self.engine.act_restore_snapshot(target_snap)
+            with self.engine.transaction_lock("rollback"):
+                _notify_server_release_handles()
+                self.engine.act_restore_snapshot(target_snap)
+                self.sync_pip_dependencies()
             print(f"[core:rollback] Successfully restored to '{target_snap}'.")
             return 0
         except Exception as e:
@@ -1045,16 +1046,7 @@ class Installer:
                 pass
 
         # 3. 檢查 Provider 路徑 (local folder)
-        if provider_arg.startswith("file://"):
-            import urllib.request
-            raw_p = urllib.request.url2pathname(provider_arg[7:])
-            while raw_p.startswith("//"):
-                raw_p = raw_p[1:]
-            p_abs = os.path.normpath(raw_p)
-        elif not provider_arg.startswith(("http://", "https://")):
-            p_abs = os.path.normpath(os.path.join(base_dir, provider_arg))
-        else:
-            p_abs = None
+        p_abs = resolve_local_provider_path(provider_arg, base_dir=base_dir)
 
         if p_abs and os.path.isdir(p_abs):
             candidates = [

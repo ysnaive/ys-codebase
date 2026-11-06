@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 _test_dir = os.path.dirname(os.path.abspath(__file__))
 _pkg_root = os.path.dirname(_test_dir)
@@ -16,55 +17,20 @@ if _pkg_root not in sys.path:
 
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from knowledge_db import SemanticBundler
+from file_space import FileSpaceConfig
 from knowledge_db.engine import KnowledgeEngine
 from knowledge_db.retrieval import InvertedIndex
 from knowledge_db.schema import UnifiedSymbol
 from knowledge_db.tokenizer import MultilingualTokenizer
-from file_space import FingerprintScanner, ScanDiffDetail, FileSpaceConfig
-from file_space.scanner import BinarySnapshotManager, FileFingerprint, SnapshotState
+from tests import write_text_and_advance_mtime
 
 
 class TestJITHotHealing(YSCBTestCase):
     """JIT 快照檢驗與熱自愈機制測試"""
 
     @require(Requirement.LOGIC)
-    def test_binary_snapshot_codec_perf_and_roundtrip(self):
-        """驗證 file_space.scanner.BinarySnapshotManager (YFP2) 原生二進位快照讀寫耗時與正確反序列化"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            snap_path = Path(temp_dir) / "main.yfp2.bin"
-
-            mock_files = {
-                f"source/module_{i % 5}/file_{i}.py": FileFingerprint(
-                    path=f"source/module_{i % 5}/file_{i}.py",
-                    mtime_ns=(1700000000 + i) * 1_000_000_000,
-                    size=1024 + i,
-                    content_hash=f"{i:040x}",
-                )
-                for i in range(1000)
-            }
-
-            mgr = BinarySnapshotManager(snap_path)
-            mgr.save_state(SnapshotState(head_generation=1, entries=mock_files))
-            self.assertTrue(snap_path.exists())
-
-            t1 = time.perf_counter()
-            loaded_state = mgr.load_state(snap_path)
-            read_time_ms = (time.perf_counter() - t1) * 1000
-
-            self.assertIsNotNone(loaded_state)
-            self.assertEqual(loaded_state.head_generation, 1)
-            self.assertEqual(len(loaded_state.entries), 1000)
-            self.assertIn("source/module_0/file_0.py", loaded_state.entries)
-            fp0 = loaded_state.entries["source/module_0/file_0.py"]
-            self.assertEqual(fp0.size, 1024)
-            self.assertLess(read_time_ms, 50.0)
-
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
-    def test_bundle_union_and_spaces_tagging(self):
-        """驗證全專案空間聯集去重掃描，相同檔案僅解析 1 次並標記多空間標籤"""
+    def test_multi_space_union_indexing_and_space_tags(self):
+        """驗證 KnowledgeEngine 跨空間重疊檔案之單次解析共享與多空間標籤保留"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -72,30 +38,38 @@ class TestJITHotHealing(YSCBTestCase):
             storage_dir = temp_path / "storage"
 
             file_a = src_dir / "common.py"
-            file_a.write_text("class CommonHelper:\n    '''共用輔助工具類別'''\n    def execute(self): pass", encoding="utf-8")
+            file_a.write_text(
+                "class CommonHelper:\n    '''共用輔助工具類別'''\n    def execute(self): pass",
+                encoding="utf-8",
+            )
 
             sp_a = FileSpaceConfig(name="space_a", include=[str(src_dir)])
             sp_b = FileSpaceConfig(name="space_b", include=[str(src_dir)])
 
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
-                contributes_data={"spaces": {"space_a": sp_a.to_dict(), "space_b": sp_b.to_dict()}},
+                contributes_data={
+                    "spaces": {"space_a": sp_a.to_dict(), "space_b": sp_b.to_dict()},
+                    "space_weights": {"space_a": 1.0, "space_b": 1.2},
+                },
             )
 
-            bundler = SemanticBundler(engine.space_manager, engine.ast_engine.parser_registry, storage_dir=storage_dir)
-            bundle = bundler.bundle_union()
-
-            self.assertEqual(bundle.metadata["total_files"], 1)
-            sym = next(s for s in bundle.symbols if s.name == "CommonHelper")
+            idx = engine.build_unified_index(force=True)
+            sym = next(s for s in idx.symbols.values() if s.name == "CommonHelper")
             self.assertEqual(sorted(sym.spaces), ["space_a", "space_b"])
+
+            res_a = engine.search("CommonHelper", space="space_a", auto_rebuild=False)
+            self.assertEqual(len(res_a), 1)
+            self.assertEqual(sorted(res_a[0].spaces), ["space_a", "space_b"])
+
+            res_b = engine.search("CommonHelper", space="space_b", auto_rebuild=False)
+            self.assertEqual(len(res_b), 1)
 
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_single_parse_symbol_sharing_zero_reparse(self):
         """驗證 Single-Parse Symbol Sharing：當 ast_engine 已同步最新快照時，knowledge-db 直接消費快照而不重複解析檔案"""
-        from unittest.mock import patch
-
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -134,10 +108,9 @@ class TestJITHotHealing(YSCBTestCase):
                 self.assertEqual(idx.acked_ast_generation, gen1)
 
             # 3. 驗證當 ast_engine 先感知檔案修改並推進 ast_generation 時，knowledge-db 也能透過雙游標比對自動同步且零重解析
-            time.sleep(0.05)
-            f_shared.write_text(
+            write_text_and_advance_mtime(
+                f_shared,
                 "class SharedServiceV2:\n    def execute_v2(self) -> None:\n        pass\n",
-                encoding="utf-8",
             )
             ast_snap_v2 = engine.ast_engine.ensure_jit_synced()
             self.assertGreater(ast_snap_v2.ast_generation, gen1)
@@ -156,11 +129,16 @@ class TestJITHotHealing(YSCBTestCase):
                 self.assertGreaterEqual(len(res), 1)
                 self.assertEqual(res[0].items[0].symbol.name, "SharedServiceV2")
 
-            # 4. 驗證 EC-02：當 space 差量已被消費為空，但 ast_engine 世代較新 (acked_ast_generation 落後) 時，自動同步對齊世代
+            # 4. 驗證當 space 差量已被消費為空，但 ast_engine 世代較新 (acked_ast_generation 落後) 時，自動同步對齊世代
             engine.pipeline.unified_index.acked_ast_generation = 0
-            engine.pipeline.unified_index.save_binary(engine.pipeline.get_indices_dir() / "unified.index.bin.gz")
+            engine.pipeline.unified_index.save_binary(
+                engine.pipeline.get_indices_dir() / "unified.index.bin.gz"
+            )
             engine.search("SharedServiceV2", auto_rebuild=True)
-            self.assertEqual(engine.pipeline.unified_index.acked_ast_generation, ast_snap_v2.ast_generation)
+            self.assertEqual(
+                engine.pipeline.unified_index.acked_ast_generation,
+                ast_snap_v2.ast_generation,
+            )
 
         self.mark_passed()
 
@@ -175,20 +153,27 @@ class TestJITHotHealing(YSCBTestCase):
             docs_dir.mkdir(parents=True)
             storage_dir = temp_path / "storage"
 
-            (src_dir / "service.py").write_text("class AuthEngine:\n    '''驗證授權引擎'''\n    pass", encoding="utf-8")
-            (docs_dir / "AUTH.md").write_text("# AuthEngine 說明文件\n說明授權流程", encoding="utf-8")
+            (src_dir / "service.py").write_text(
+                "class AuthEngine:\n    '''驗證授權引擎'''\n    pass",
+                encoding="utf-8",
+            )
+            (docs_dir / "AUTH.md").write_text(
+                "# AuthEngine 說明文件\n說明授權流程", encoding="utf-8"
+            )
 
             sp_code = FileSpaceConfig(name="source", include=[str(src_dir)])
             sp_docs = FileSpaceConfig(name="docs", include=[str(docs_dir)])
 
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
-                contributes_data={"spaces": {"source": sp_code.to_dict(), "docs": sp_docs.to_dict()}},
+                contributes_data={
+                    "spaces": {"source": sp_code.to_dict(), "docs": sp_docs.to_dict()}
+                },
             )
 
             idx = engine.build_unified_index(force=True)
             self.assertEqual(idx.space_name, "unified")
-            self.assertTrue(idx.doc_count >= 2)
+            self.assertGreaterEqual(idx.doc_count, 2)
 
             res_all = engine.search("AuthEngine", auto_rebuild=False)
             self.assertEqual(len(res_all), 2)
@@ -201,36 +186,6 @@ class TestJITHotHealing(YSCBTestCase):
             res_doc = engine.search("AuthEngine", space="docs", auto_rebuild=False)
             self.assertEqual(len(res_doc), 1)
             self.assertIn("docs", res_doc[0].spaces)
-
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
-    def test_jit_invalidation_and_hot_healing(self):
-        """驗證檔案修改後，JIT 游標差異檢測精準感知並自動熱自愈"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            src_dir = temp_path / "src"
-            src_dir.mkdir(parents=True)
-            storage_dir = temp_path / "storage"
-
-            app_file = src_dir / "app.py"
-            app_file.write_text("class InitialClass:\n    pass", encoding="utf-8")
-
-            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
-            engine = KnowledgeEngine(
-                storage_dir=storage_dir,
-                contributes_data={"spaces": {"main": sp.to_dict()}},
-            )
-
-            res1 = engine.search("InitialClass", auto_rebuild=True)
-            self.assertEqual(len(res1), 1)
-
-            time.sleep(0.05)
-            app_file.write_text("class InitialClass:\n    pass\nclass NewlyAddedWorker:\n    '''新增的工作者類別'''\n    pass", encoding="utf-8")
-
-            res2 = engine.search("NewlyAddedWorker", auto_rebuild=True)
-            self.assertEqual(len(res2), 1)
-            self.assertEqual(res2[0].items[0].symbol.name, "NewlyAddedWorker")
 
         self.mark_passed()
 
@@ -254,72 +209,16 @@ class TestJITHotHealing(YSCBTestCase):
 
             engine.search("AlphaService", auto_rebuild=True)
 
-            time.sleep(0.05)
-            app_file.write_text("class AlphaService:\n    pass\nclass BetaWorker:\n    pass", encoding="utf-8")
+            write_text_and_advance_mtime(
+                app_file,
+                "class AlphaService:\n    pass\nclass BetaWorker:\n    pass",
+            )
 
             res = engine.search("BetaWorker", auto_rebuild=False)
             self.assertEqual(len(res), 0)
 
             res_healed = engine.search("BetaWorker", auto_rebuild=True)
             self.assertEqual(len(res_healed), 1)
-
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
-    def test_edge_cases_missing_and_corrupted_snapshot(self):
-        """驗證快照或索引缺失或損毀時，自動無縫自愈"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            src_dir = temp_path / "src"
-            src_dir.mkdir(parents=True)
-            storage_dir = temp_path / "storage"
-
-            (src_dir / "module.py").write_text("class EdgeTest:\n    pass", encoding="utf-8")
-            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
-            engine = KnowledgeEngine(
-                storage_dir=storage_dir,
-                contributes_data={"spaces": {"main": sp.to_dict()}},
-            )
-
-            res1 = engine.search("EdgeTest", auto_rebuild=True)
-            self.assertEqual(len(res1), 1)
-
-            snap_file = engine.scanner.get_snapshot_path("main")
-            snap_file.parent.mkdir(parents=True, exist_ok=True)
-            snap_file.write_bytes(b"CORRUPTED_GARBAGE_HEADER")
-
-            res2 = engine.search("EdgeTest", auto_rebuild=True)
-            self.assertEqual(len(res2), 1)
-
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
-    def test_edge_case_deleted_file(self):
-        """驗證檔案刪除後，JIT 變更檢測感知並剔除過期符號"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            src_dir = temp_path / "src"
-            src_dir.mkdir(parents=True)
-            storage_dir = temp_path / "storage"
-
-            file1 = src_dir / "alpha.py"
-            file2 = src_dir / "beta.py"
-            file1.write_text("class UniqueKeeper:\n    pass", encoding="utf-8")
-            file2.write_text("class DestinedToDelete:\n    pass", encoding="utf-8")
-
-            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
-            engine = KnowledgeEngine(
-                storage_dir=storage_dir,
-                contributes_data={"spaces": {"main": sp.to_dict()}},
-            )
-
-            engine.search("UniqueKeeper", auto_rebuild=True)
-            file2.unlink()
-
-            res = engine.search("DestinedToDelete", auto_rebuild=True)
-            self.assertEqual(len(res), 0)
-            res_keep = engine.search("UniqueKeeper", auto_rebuild=True)
-            self.assertEqual(len(res_keep), 1)
 
         self.mark_passed()
 
@@ -365,7 +264,7 @@ class TestIncrementalHotReload(YSCBTestCase):
     """增量檔案變更偵測與差量索引修補測試"""
 
     @require(Requirement.LOGIC)
-    def test_ft_01_consume_diff_full_scan(self):
+    def test_consume_diff_full_scan(self):
         """驗證 consume_diff 在多檔有修改/新增時完整掃描，回傳差量明細並推進游標"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -389,9 +288,8 @@ class TestIncrementalHotReload(YSCBTestCase):
             snap_path = engine.scanner.get_snapshot_path("main")
             self.assertTrue(snap_path.exists())
 
-            time.sleep(0.05)
-            files[0].write_text("class Class0Modified: pass", encoding="utf-8")
-            files[4].write_text("class Class4Modified: pass", encoding="utf-8")
+            write_text_and_advance_mtime(files[0], "class Class0Modified: pass")
+            write_text_and_advance_mtime(files[4], "class Class4Modified: pass")
             f5 = src_dir / "file_5.py"
             f5.write_text("class Class5: pass", encoding="utf-8")
 
@@ -405,8 +303,8 @@ class TestIncrementalHotReload(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_02_per_file_symbol_cache(self):
-        """驗證 SemanticBundler 單檔符號快取：未變更檔案復用記憶體物件，僅重新解析 dirty 檔案"""
+    def test_incremental_hot_patch_preserves_unmodified_file_symbols(self):
+        """驗證 IndexingPipeline.hot_patch_unified_index 僅更新變更檔案符號，未變更檔案之 UnifiedSymbol 實例原封保留"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -422,34 +320,29 @@ class TestIncrementalHotReload(YSCBTestCase):
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
+                embedding_mock_mode=True,
             )
 
-            bundler = engine.bundler
-            bundle = bundler.bundle_union()
-            self.assertEqual(len(bundle.symbols), 4)
+            idx = engine.build_unified_index(force=True)
+            sym1_before = next(s for s in idx.symbols.values() if s.name == "Mod1")
 
-            k1 = str(f1.resolve()).replace("\\", "/")
-            k2 = str(f2.resolve()).replace("\\", "/")
+            write_text_and_advance_mtime(f2, "class Mod2Updated:\n    pass")
+            with engine.scanner.consume_diff(consumer_id="knowledge-db") as diff_res:
+                patch_res = engine.pipeline.hot_patch_unified_index(diff_res.detail)
+                self.assertTrue(patch_res.success)
+                self.assertGreaterEqual(patch_res.patched_count, 1)
 
-            self.assertIn(k1, bundler._file_symbols_cache)
-            self.assertIn(k2, bundler._file_symbols_cache)
-            sym1_orig = bundler._file_symbols_cache[k1][0]
-
-            time.sleep(0.05)
-            f2.write_text("class Mod2Updated:\n    pass", encoding="utf-8")
-            diff = ScanDiffDetail(modified={k2})
-
-            new_symbols_by_file, dirty_keys = bundler.bundle_dirty_files(diff)
-
-            self.assertIn(k2, new_symbols_by_file)
-            self.assertNotIn(k1, new_symbols_by_file)
-            self.assertEqual(new_symbols_by_file[k2][0].name, "Mod2Updated")
-            self.assertIs(bundler._file_symbols_cache[k1][0], sym1_orig)
+            idx_after = engine.pipeline.unified_index
+            sym1_after = next(s for s in idx_after.symbols.values() if s.name == "Mod1")
+            self.assertIs(sym1_after, sym1_before)
+            sym_names = {s.name for s in idx_after.symbols.values()}
+            self.assertIn("Mod2Updated", sym_names)
+            self.assertNotIn("Mod2", sym_names)
 
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_03_inverted_index_patch_incremental(self):
+    def test_inverted_index_patch_incremental(self):
         """驗證 InvertedIndex.patch_incremental 拔除舊 Postings、注入新 Postings 並動態重算 avgdl"""
         idx = InvertedIndex(space_name="unified")
         tok = MultilingualTokenizer()
@@ -507,8 +400,8 @@ class TestIncrementalHotReload(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_04_incremental_hot_reload_search(self):
-        """驗證 KnowledgeEngine.search 觸發增量熱自愈後，檢索結果即刻反映新增/修改/刪除之符號"""
+    def test_incremental_hot_reload_search(self):
+        """驗證 KnowledgeEngine.search 觸發增量熱自愈後，檢索結果與雙水位線即刻反映新增與修改之符號"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -516,33 +409,40 @@ class TestIncrementalHotReload(YSCBTestCase):
             storage_dir = temp_path / "storage"
 
             app_file = src_dir / "app.py"
-            app_file.write_text("class UserQueryEngine:\n    '''用戶查詢引擎'''\n    pass", encoding="utf-8")
+            app_file.write_text(
+                "class UserQueryEngine:\n    '''用戶查詢引擎'''\n    pass",
+                encoding="utf-8",
+            )
 
             sp = FileSpaceConfig(name="main", include=[str(src_dir)])
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
+                embedding_mock_mode=True,
             )
 
             r1 = engine.search("UserQueryEngine", auto_rebuild=True)
             self.assertEqual(len(r1), 1)
+            gen1 = engine.pipeline.unified_index.acked_ast_generation
 
-            time.sleep(0.05)
-            app_file.write_text(
+            write_text_and_advance_mtime(
+                app_file,
                 "class UserQueryEngine:\n    '''用戶查詢引擎'''\n    pass\n"
                 "class PaymentEngine:\n    '''金流支付引擎'''\n    pass",
-                encoding="utf-8",
             )
 
             r2 = engine.search("PaymentEngine", auto_rebuild=True)
             self.assertEqual(len(r2), 1)
             self.assertEqual(r2[0].items[0].symbol.name, "PaymentEngine")
+            self.assertGreater(
+                engine.pipeline.unified_index.acked_ast_generation, gen1
+            )
 
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_et_01_file_deletion_handling(self):
-        """驗證檔案刪除情境，快照中存在但磁碟不存在，正確移除符號、Postings 與快取"""
+    def test_file_deletion_handling(self):
+        """驗證檔案刪除情境，從 symbols、doc_lengths 與 vector_index.doc_ids 徹底移除過期符號"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -558,22 +458,33 @@ class TestIncrementalHotReload(YSCBTestCase):
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={"spaces": {"main": sp.to_dict()}},
+                embedding_mock_mode=True,
             )
 
             engine.search("PermanentKeeper", auto_rebuild=True)
             self.assertEqual(len(engine.search("TemporaryObject", auto_rebuild=False)), 1)
+            temp_sid = next(
+                sid
+                for sid, sym in engine.pipeline.unified_index.symbols.items()
+                if sym.name == "TemporaryObject"
+            )
+            self.assertIn(temp_sid, engine.pipeline.hybrid_engine.vector_index.doc_ids)
 
-            time.sleep(0.05)
             f2.unlink()
 
             r = engine.search("TemporaryObject", auto_rebuild=True)
             self.assertEqual(len(r), 0)
             self.assertEqual(len(engine.search("PermanentKeeper", auto_rebuild=True)), 1)
+            self.assertNotIn(temp_sid, engine.pipeline.unified_index.symbols)
+            self.assertNotIn(temp_sid, engine.pipeline.unified_index.doc_lengths)
+            self.assertNotIn(
+                temp_sid, engine.pipeline.hybrid_engine.vector_index.doc_ids
+            )
 
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_et_02_empty_file_handling(self):
+    def test_empty_file_handling(self):
         """驗證檔案修改為空內容 (Empty/Non-symbol File)：舊符號乾淨移除不拋例外"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -592,8 +503,7 @@ class TestIncrementalHotReload(YSCBTestCase):
 
             engine.search("WillBeEmpty", auto_rebuild=True)
 
-            time.sleep(0.05)
-            f1.write_text("# only comment line\n", encoding="utf-8")
+            write_text_and_advance_mtime(f1, "# only comment line\n")
 
             r = engine.search("WillBeEmpty", auto_rebuild=True)
             self.assertEqual(len(r), 0)
@@ -601,8 +511,8 @@ class TestIncrementalHotReload(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_et_03_corrupted_snapshot_fallback(self):
-        """驗證快照損毀時自動安全降級為重建並恢復正常狀態"""
+    def test_corrupted_snapshot_and_index_fallback(self):
+        """驗證指紋快照或 unified.index.bin.gz 損毀時，自動安全降級重建並恢復正常狀態"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -620,16 +530,29 @@ class TestIncrementalHotReload(YSCBTestCase):
 
             engine.search("SafeFallbackClass", auto_rebuild=True)
 
+            # 1. 損毀 file-space 指紋快照
             snap_path = engine.scanner.get_snapshot_path("main")
             snap_path.write_bytes(b"CORRUPTED_BIN_HEADER_123")
 
-            r = engine.search("SafeFallbackClass", auto_rebuild=True)
-            self.assertEqual(len(r), 1)
+            r1 = engine.search("SafeFallbackClass", auto_rebuild=True)
+            self.assertEqual(len(r1), 1)
+
+            # 2. 損毀 unified.index.bin.gz 並清空記憶體快取，觸發變更時自動退回全量重建
+            bin_file = engine.pipeline.get_indices_dir() / "unified.index.bin.gz"
+            bin_file.write_bytes(b"CORRUPTED_GZIP_INDEX_PAYLOAD")
+            engine.pipeline.unified_index = None
+            write_text_and_advance_mtime(
+                f1, "class SafeFallbackClass: pass\nclass RebuiltAfterCorrupt: pass\n"
+            )
+
+            r2 = engine.search("RebuiltAfterCorrupt", auto_rebuild=True)
+            self.assertEqual(len(r2), 1)
+            self.assertEqual(r2[0].items[0].symbol.name, "RebuiltAfterCorrupt")
 
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_rt_01_no_infinite_hot_reload_loop(self):
+    def test_no_infinite_hot_reload_loop(self):
         """修改 1 檔觸發熱自愈後，游標推進至最新世代，後續查詢絕對不再重複觸發熱重載"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -638,7 +561,9 @@ class TestIncrementalHotReload(YSCBTestCase):
             storage_dir = temp_path / "storage"
 
             for i in range(10):
-                (src_dir / f"file_{i}.py").write_text(f"class FileClass{i}: pass", encoding="utf-8")
+                (src_dir / f"file_{i}.py").write_text(
+                    f"class FileClass{i}: pass", encoding="utf-8"
+                )
 
             sp = FileSpaceConfig(name="main", include=[str(src_dir)])
             engine = KnowledgeEngine(
@@ -648,27 +573,30 @@ class TestIncrementalHotReload(YSCBTestCase):
 
             engine.search("FileClass0", auto_rebuild=True)
 
-            time.sleep(0.05)
-            (src_dir / "file_2.py").write_text("class FileClass2Modified: pass", encoding="utf-8")
+            write_text_and_advance_mtime(
+                src_dir / "file_2.py", "class FileClass2Modified: pass"
+            )
 
             r1 = engine.search("FileClass2Modified", auto_rebuild=True)
-            self.assertTrue(len(r1) >= 1)
-            first_sym = r1[0].items[0].symbol if hasattr(r1[0], "items") else r1[0].symbol
-            self.assertEqual(first_sym.name, "FileClass2Modified")
+            self.assertGreaterEqual(len(r1), 1)
+            self.assertEqual(r1[0].items[0].symbol.name, "FileClass2Modified")
 
             with engine.scanner.consume_diff(consumer_id="knowledge-db") as diff_res:
-                self.assertFalse(diff_res.has_changes, f"Expected clean cursor state but got changes: {diff_res}")
+                self.assertFalse(
+                    diff_res.has_changes,
+                    f"Expected clean cursor state but got changes: {diff_res}",
+                )
                 self.assertEqual(len(diff_res.detail.dirty_files), 0)
                 self.assertEqual(diff_res.total_changed + diff_res.unchanged_count, 10)
 
             for q in ["FileClass0", "FileClass5", "FileClass9"]:
                 res = engine.search(q, auto_rebuild=True)
-                self.assertTrue(len(res) >= 1)
+                self.assertGreaterEqual(len(res), 1)
 
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_pt_01_incremental_latency_benchmark(self):
+    def test_incremental_latency_benchmark(self):
         """模擬 50 檔規模下單檔微小修改觸發之增量熱自愈端到端耗時"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -697,24 +625,22 @@ class TestIncrementalHotReload(YSCBTestCase):
 
             engine.search("ServiceWorker0", auto_rebuild=True)
 
-            time.sleep(0.05)
-            files[25].write_text(
+            write_text_and_advance_mtime(
+                files[25],
                 "class ServiceWorker25:\n"
                 "    '''第 25 號服務背景處理器 (更新版)'''\n"
                 "    def process_25(self, data: str) -> None: pass\n"
                 "class HotHealedClass25:\n"
                 "    '''增量熱自愈新類別'''\n"
                 "    pass\n",
-                encoding="utf-8",
             )
 
             t0 = time.perf_counter()
             res = engine.search("HotHealedClass25", auto_rebuild=True)
             elapsed_ms = (time.perf_counter() - t0) * 1000
 
-            self.assertTrue(len(res) >= 1)
-            first_sym = res[0].items[0].symbol if hasattr(res[0], "items") else res[0].symbol
-            self.assertEqual(first_sym.name, "HotHealedClass25")
+            self.assertGreaterEqual(len(res), 1)
+            self.assertEqual(res[0].items[0].symbol.name, "HotHealedClass25")
 
             self.assertLessEqual(
                 elapsed_ms,

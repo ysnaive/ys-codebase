@@ -7,6 +7,7 @@ Delegates all language-specific rules to `get_dialect(self.language_name)` and u
 import logging
 from pathlib import Path
 import re
+import threading
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 try:
@@ -15,7 +16,7 @@ except ImportError:
     tree_sitter = None
 
 from ..dialects import DialectAdapter, get_dialect
-from ..provisioner import GrammarProvisioner
+from ..provisioner import DEFAULT_GRAMMAR_PACKAGES, GrammarProvisioner
 from ..schema import (
     LanguageConfig,
     MemberInfo,
@@ -398,6 +399,8 @@ class TreeSitterDriver(BaseParser):
         self._language: Optional[Any] = None
         self._parser: Optional[Any] = None
         self._query: Optional[Any] = None
+        self._cache_lock = threading.RLock()
+        self._last_parse_cache: Optional[Tuple[str, int, str, bytes, List[Tuple[int, Dict[str, List[Any]]]]]] = None
         self._init_driver()
 
     def _init_driver(self) -> None:
@@ -523,13 +526,16 @@ class TreeSitterDriver(BaseParser):
                 continue
             def_node = def_nodes[0]
 
+            raw_b = def_node.text
+            nl = raw_b.find(b"\n")
+            first_line = (raw_b[:nl] if nl != -1 else raw_b).decode("utf-8", errors="replace").rstrip("\r").strip()
+
             name = ""
             if "symbol.name" in captures and captures["symbol.name"]:
                 name = captures["symbol.name"][0].text.decode("utf-8", errors="replace").strip()
             if not name:
-                name = def_node.text.decode("utf-8", errors="replace").splitlines()[0][:60].strip()
+                name = first_line[:60].strip()
 
-            first_line = def_node.text.decode("utf-8", errors="replace").splitlines()[0].strip()
             if first_line.endswith("{") or first_line.endswith(":"):
                 first_line = first_line[:-1].strip()
 
@@ -646,11 +652,13 @@ class TreeSitterDriver(BaseParser):
                 item["scope_path"] = []
                 item["fqn"] = item["short_name"]
 
-            _, _, resolved_kind = self.dialect.resolve_out_of_line_scope(
+            resolved_out_of_line = self.dialect.resolve_out_of_line_scope(
                 name=item["short_name"],
                 parent_scope=item["scope_path"][-1] if item["scope_path"] else "",
                 kind=item["kind"],
             )
+            item["_resolved_out_of_line"] = resolved_out_of_line
+            _, _, resolved_kind = resolved_out_of_line
             item["kind"] = resolved_kind
 
             collision_key = (item["start_line"], "method" if item["kind"] == "function" else item["kind"], item["short_name"])
@@ -715,11 +723,15 @@ class TreeSitterDriver(BaseParser):
             short_name_val = item["short_name"]
             parent_scope_val = item["scope_path"][-1] if item["scope_path"] else ""
 
-            short_name_val, parent_scope_val, resolved_kind = self.dialect.resolve_out_of_line_scope(
-                name=short_name_val,
-                parent_scope=parent_scope_val,
-                kind=item["kind"],
-            )
+            cached_resolved = item.get("_resolved_out_of_line")
+            if cached_resolved is not None:
+                short_name_val, parent_scope_val, resolved_kind = cached_resolved
+            else:
+                short_name_val, parent_scope_val, resolved_kind = self.dialect.resolve_out_of_line_scope(
+                    name=short_name_val,
+                    parent_scope=parent_scope_val,
+                    kind=item["kind"],
+                )
             item["kind"] = resolved_kind
 
             sym_vis = self.dialect.extract_visibility(
@@ -781,6 +793,32 @@ class TreeSitterDriver(BaseParser):
             )
         return symbols
 
+    def _get_bytes_and_matches(
+        self,
+        normalized_path: str,
+        content: str,
+    ) -> Optional[Tuple[bytes, List[Tuple[int, Dict[str, List[Any]]]]]]:
+        """Parse `content` or reuse single-entry thread-safe `_last_parse_cache`."""
+        with self._cache_lock:
+            cached = self._last_parse_cache
+            if (
+                cached is not None
+                and cached[0] == normalized_path
+                and cached[1] == len(content)
+                and cached[2] == content
+            ):
+                return cached[3], cached[4]
+            try:
+                content_bytes = content.encode("utf-8", errors="replace")
+                tree = self._parser.parse(content_bytes)
+                cursor = tree_sitter.QueryCursor(self._query)
+                matches = cursor.matches(tree.root_node)
+            except Exception as exc:
+                logger.warning(f"TreeSitterDriver: parse error on '{normalized_path}': {exc}")
+                return None
+            self._last_parse_cache = (normalized_path, len(content), content, content_bytes, matches)
+            return content_bytes, matches
+
     def parse(self, file_path: str, content: str, space: str) -> List[UnifiedSymbol]:
         normalized_path = file_path.replace("\\", "/")
         if not content or not content.strip():
@@ -788,17 +826,17 @@ class TreeSitterDriver(BaseParser):
 
         lines = content.splitlines()
         if self._parser is None or self._query is None:
+            if self._language is None and self.config.mode == "tree_sitter" and self.config.grammar:
+                grammar_str = self.config.grammar
+                mod_name = grammar_str.split(":", 1)[0] if ":" in grammar_str else grammar_str
+                pkg_name = DEFAULT_GRAMMAR_PACKAGES.get(mod_name) or mod_name.replace("_", "-")
+                GrammarProvisioner._emit_warning(pkg_name)
             return self.dialect.fallback_symbols(normalized_path, lines, space)
 
-        try:
-            content_bytes = content.encode("utf-8", errors="replace")
-            tree = self._parser.parse(content_bytes)
-        except Exception as exc:
-            logger.warning(f"TreeSitterDriver: parse error on '{normalized_path}': {exc}")
+        parsed_res = self._get_bytes_and_matches(normalized_path, content)
+        if parsed_res is None:
             return []
-
-        cursor = tree_sitter.QueryCursor(self._query)
-        matches = cursor.matches(tree.root_node)
+        content_bytes, matches = parsed_res
 
         raw_items = self._extract_raw_definition_items(matches, lines)
         if not raw_items:
@@ -825,14 +863,10 @@ class TreeSitterDriver(BaseParser):
         if self._parser is None or self._query is None:
             return []
 
-        try:
-            content_bytes = content.encode("utf-8", errors="replace")
-            tree = self._parser.parse(content_bytes)
-        except Exception:
+        parsed_res = self._get_bytes_and_matches(normalized_path, content)
+        if parsed_res is None:
             return []
-
-        cursor = tree_sitter.QueryCursor(self._query)
-        matches = cursor.matches(tree.root_node)
+        content_bytes, matches = parsed_res
 
         target_symbols = (
             symbols if symbols is not None else self.parse(file_path=file_path, content=content, space=space)

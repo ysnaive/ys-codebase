@@ -11,26 +11,30 @@ import tempfile
 import time
 import unittest
 
-from dev.testing.case import YSCBTestCase
 from core.platform import (
-    spawn_detached,
+    InterProcessLock,
     is_process_alive,
     kill_process_tree,
-    InterProcessLock,
-    LockAcquisitionError,
+    spawn_detached,
 )
+from tests import load_yscb_host_module
+from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import Requirement, require
 
 
+@require(Requirement.ENV)
 class TestCorePlatform(YSCBTestCase):
     def setUp(self):
+        super().setUp()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.lock_path = os.path.join(self.temp_dir.name, "test.lock")
 
     def tearDown(self):
         self.temp_dir.cleanup()
+        super().tearDown()
 
     def test_spawn_and_liveness_and_kill(self):
-        """FT-01 & FT-02: spawn_detached starts background process, is_process_alive detects it, kill_process_tree terminates it."""
+        """spawn_detached starts background process, is_process_alive detects it, kill_process_tree terminates it."""
         cmd = [sys.executable, "-c", "import time; time.sleep(10)"]
         pid = spawn_detached(cmd)
         try:
@@ -47,14 +51,16 @@ class TestCorePlatform(YSCBTestCase):
         self.mark_passed()
 
     def test_is_process_alive_invalid(self):
-        """FT-01: Invalid or non-existent PID returns False."""
+        """Invalid, boolean, or non-existent PID returns False."""
         self.assertFalse(is_process_alive(0))
         self.assertFalse(is_process_alive(-1))
         self.assertFalse(is_process_alive(99999999))
+        self.assertFalse(is_process_alive(True))
+        self.assertFalse(is_process_alive(False))
         self.mark_passed()
 
     def test_inter_process_lock_mutual_exclusion(self):
-        """FT-03: InterProcessLock prevents concurrent acquisition on the same file."""
+        """InterProcessLock prevents concurrent acquisition on the same file."""
         lock1 = InterProcessLock(self.lock_path)
         lock2 = InterProcessLock(self.lock_path)
 
@@ -77,7 +83,7 @@ class TestCorePlatform(YSCBTestCase):
         self.mark_passed()
 
     def test_inter_process_lock_context_manager(self):
-        """FT-03: InterProcessLock context manager auto acquires and releases."""
+        """InterProcessLock context manager auto acquires and releases."""
         with InterProcessLock(self.lock_path) as lock:
             self.assertTrue(lock.is_locked)
             other_lock = InterProcessLock(self.lock_path)
@@ -90,9 +96,9 @@ class TestCorePlatform(YSCBTestCase):
         self.mark_passed()
 
     def test_ensure_private_venv(self):
-        """FT-03: ensure_private_venv injects site-packages and resolves host_venv.pth."""
-        from core.platform import ensure_private_venv
+        """ensure_private_venv injects site-packages, filters comments/imports in host_venv.pth, and preserves order."""
         import platform
+        from core.platform import ensure_private_venv, restore_sys_path
 
         tag = f"py{sys.version_info.major}{sys.version_info.minor}"
         sys_name = platform.system()
@@ -104,33 +110,35 @@ class TestCorePlatform(YSCBTestCase):
         fake_site = os.path.join(self.temp_dir.name, sub)
         os.makedirs(fake_site, exist_ok=True)
 
-        extra_pth_target = os.path.join(self.temp_dir.name, "extra_lib")
-        os.makedirs(extra_pth_target, exist_ok=True)
+        extra_pth_1 = os.path.join(self.temp_dir.name, "extra_lib_1")
+        extra_pth_2 = os.path.join(self.temp_dir.name, "extra_lib_2")
+        os.makedirs(extra_pth_1, exist_ok=True)
+        os.makedirs(extra_pth_2, exist_ok=True)
         pth_file = os.path.join(fake_site, "host_venv.pth")
         with open(pth_file, "w", encoding="utf-8") as f:
-            f.write(extra_pth_target + "\n")
+            f.write("# comment line\nimport sys\n" + extra_pth_1 + "\n" + extra_pth_2 + "\n")
 
-        ensure_private_venv(self.temp_dir.name)
-        self.assertIn(fake_site, sys.path)
-        self.assertIn(extra_pth_target, sys.path)
-
-        # Cleanup sys.path to avoid pollution
-        if fake_site in sys.path:
-            sys.path.remove(fake_site)
-        if extra_pth_target in sys.path:
-            sys.path.remove(extra_pth_target)
+        snap = list(sys.path)
+        try:
+            ensure_private_venv(self.temp_dir.name)
+            self.assertIn(fake_site, sys.path)
+            self.assertIn(extra_pth_1, sys.path)
+            self.assertIn(extra_pth_2, sys.path)
+            self.assertLess(sys.path.index(fake_site), sys.path.index(extra_pth_1))
+            self.assertLess(sys.path.index(extra_pth_1), sys.path.index(extra_pth_2))
+        finally:
+            restore_sys_path(snap)
         self.mark_passed()
 
     def test_set_process_title(self):
-        """FT-04: set_process_title runs cross-platform without raising exceptions."""
+        """set_process_title runs cross-platform without raising exceptions."""
         from core.platform import set_process_title
-        # Should execute cleanly without raising any exceptions
         result = set_process_title("yscb test runner")
         self.assertIsInstance(result, bool)
         self.mark_passed()
 
     def test_can_spawn_background_daemon(self):
-        """FT-05: can_spawn_background_daemon probes environment and caches result."""
+        """can_spawn_background_daemon probes environment and caches result."""
         from core.platform import can_spawn_background_daemon
 
         # 1. Direct call returns bool
@@ -156,14 +164,13 @@ class TestCorePlatform(YSCBTestCase):
 
         self.mark_passed()
 
-
     def _dead_pid(self) -> int:
-        proc = subprocess.Popen([sys.executable, "-c", "pass"])
-        proc.wait()
-        return proc.pid
+        with subprocess.Popen([sys.executable, "-c", "pass"]) as proc:
+            proc.wait()
+            return proc.pid
 
     def test_daemon_probe_reaping_detection(self):
-        """FR-03 / EC-05: 未經 clean exit 之 spawn PID 死亡累計 reaped_count，門檻 2 判不可常駐；clean exit 歸零。"""
+        """EC-05: 未經 clean exit 之 spawn PID 死亡累計 reaped_count，門檻 2 判不可常駐；clean exit 歸零。"""
         from core.platform import daemon_probe
 
         root = self.temp_dir.name
@@ -214,7 +221,7 @@ class TestCorePlatform(YSCBTestCase):
         self.mark_passed()
 
     def test_can_spawn_force_and_posix_probe(self):
-        """FR-04: YSCB_FORCE_DAEMON 優先於 YSCB_NO_DAEMON；POSIX 帶 yscb_root 時依實證偵測，未帶時為 True。"""
+        """YSCB_FORCE_DAEMON 優先於 YSCB_NO_DAEMON；POSIX 帶 yscb_root 時依實證偵測，未帶時為 True。"""
         from unittest.mock import patch
         from core.platform import can_spawn_background_daemon, daemon_probe
 
@@ -236,7 +243,7 @@ class TestCorePlatform(YSCBTestCase):
 
     @unittest.skipIf(sys.platform == "win32", "POSIX process-group semantics")
     def test_terminate_popen_tree_kills_group_and_escalates(self):
-        """FR-11: terminate_popen_tree 終止整個程序群組（含孫進程），忽略 SIGTERM 時升級 SIGKILL，並由 Popen 回收。"""
+        """terminate_popen_tree 終止整個程序群組（含孫進程），忽略 SIGTERM 時升級 SIGKILL，並由 Popen 回收。"""
         from core.platform import terminate_popen_tree
 
         code = (
@@ -254,8 +261,9 @@ class TestCorePlatform(YSCBTestCase):
             self.assertLess(time.time() - t0, 5.0)
             self.assertIsNotNone(proc.returncode)
             deadline = time.time() + 3.0
+            import select
             while is_process_alive(child_pid) and time.time() < deadline:
-                time.sleep(0.05)
+                select.select([], [], [], 0.02)
             self.assertFalse(is_process_alive(child_pid))
             # 已結束之進程再次呼叫直接回傳 True
             self.assertTrue(terminate_popen_tree(proc, timeout_sec=0.5))
@@ -267,7 +275,7 @@ class TestCorePlatform(YSCBTestCase):
         self.mark_passed()
 
     def test_lock_eexist_retry(self):
-        """FR-13 / EC-10: os.open 遇 FileExistsError 重試（不帶 O_CREAT）後成功；持續失敗拋原例外；其他 errno 不重試。"""
+        """os.open 遇 FileExistsError 重試（不帶 O_CREAT）後成功；持續失敗拋原例外；其他 errno 不重試。"""
         from unittest.mock import patch
 
         real_open = os.open
@@ -280,7 +288,8 @@ class TestCorePlatform(YSCBTestCase):
             return real_open(path, flags, *args)
 
         lock = InterProcessLock(self.lock_path)
-        open(self.lock_path, "a").close()
+        with open(self.lock_path, "a", encoding="utf-8"):
+            pass
         with patch("core.platform.lock.os.open", side_effect=flaky_open), patch("core.platform.lock.time.sleep"):
             self.assertTrue(lock.acquire(blocking=False))
         lock.release()
@@ -303,7 +312,7 @@ class TestCorePlatform(YSCBTestCase):
         self.mark_passed()
 
     def test_daemon_probe_lazy_lock_probe(self):
-        """Review#3: 僅於紀錄 pid 已死且無 clean exit 時才探測 daemon 活躍；daemon.json pid 存活優先於 daemon.lock 探測。"""
+        """僅於紀錄 pid 已死且無 clean exit 時才探測 daemon 活躍；daemon.json pid 存活優先於 daemon.lock 探測。"""
         import json
         from unittest.mock import patch
         from core.platform import daemon_probe
@@ -333,7 +342,7 @@ class TestCorePlatform(YSCBTestCase):
         self.mark_passed()
 
     def test_daemon_probe_bind_master_pid(self):
-        """OBS-01: bind_master_pid 將 launcher PID 紀錄改綁 master PID；無紀錄或已 clean_exit 時不動作。"""
+        """bind_master_pid 將 launcher PID 紀錄改綁 master PID；無紀錄或已 clean_exit 時不動作。"""
         import json
         from core.platform import daemon_probe
 
@@ -357,22 +366,12 @@ class TestCorePlatform(YSCBTestCase):
         self.assertTrue(entry["clean_exit"])
         self.mark_passed()
 
-    def test_t22_parse_simple_semver_prerelease(self):
-        """T-22: _parse_simple_semver 預發布標籤不污染主版號數字，且預發布版排序低於同版號正式版。"""
-        import importlib.util
-        from core import engine, semver, uri
+    def test_parse_simple_semver_prerelease(self):
+        """_parse_simple_semver 預發布標籤不污染主版號數字，且預發布版排序低於同版號正式版。"""
+        from core import engine, semver
 
-        yscb_root = uri.resolve_yscb_root()
-        yscb_py_cand = os.path.join(os.path.dirname(yscb_root), "yscb.py")
-        if not os.path.isfile(yscb_py_cand):
-            yscb_py_cand = os.path.join(yscb_root, "yscb.py")
-        parsers = [engine._parse_simple_semver]
-        if os.path.isfile(yscb_py_cand):
-            spec = importlib.util.spec_from_file_location("_yscb_boot_test", yscb_py_cand)
-            if spec and spec.loader:
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                parsers.append(mod._parse_simple_semver)
+        yscb_mod = load_yscb_host_module()
+        parsers = [engine._parse_simple_semver, yscb_mod._parse_simple_semver]
 
         for parse_fn in parsers:
             rc_ver = parse_fn("1.2.0-rc1")
@@ -389,8 +388,8 @@ class TestCorePlatform(YSCBTestCase):
         self.assertEqual(semver.compare_semver("1.2.0-rc1", "1.2.0"), -1)
         self.mark_passed()
 
-    def test_t40_try_lock_fd_raises_on_unsupported_errno(self):
-        """T-40: _try_lock_fd 於鎖競爭 (EAGAIN/EACCES) 回傳 False，於 ENOTSUP/ENOSYS/EBADF 往上拋出 OSError。"""
+    def test_try_lock_fd_raises_on_unsupported_errno(self):
+        """_try_lock_fd 於鎖競爭 (EAGAIN/EACCES) 回傳 False，於 ENOTSUP/ENOSYS/EBADF 往上拋出 OSError。"""
         import errno
         from unittest.mock import patch
 
@@ -548,6 +547,7 @@ class TestCorePlatform(YSCBTestCase):
                  patch("core.platform.process.subprocess.run", return_value=mock_res):
                 self.assertFalse(proc_mod.is_process_alive(99999))
         self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

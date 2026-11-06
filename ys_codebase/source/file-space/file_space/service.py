@@ -15,6 +15,7 @@ from .scanner import (
     FingerprintScanner,
     _adjust_active_watcher_count,
     _atomic_write_bytes,
+    # Re-exported so tests/consumers can patch `file_space.service.is_watcher_active`
     is_watcher_active,
 )
 from .schema import FileSpaceConfig, ScanDiffResult
@@ -188,7 +189,7 @@ class _FileSpaceWatchdogHandler(FileSystemEventHandler):
         is_dir = bool(getattr(event, "is_directory", False))
         ev_type = str(getattr(event, "event_type", "modified"))
         if is_dir:
-            if ev_type in ("moved", "deleted"):
+            if ev_type in ("created", "moved", "deleted"):
                 try:
                     setattr(event, "_yscb_handled", True)
                 except Exception:
@@ -206,6 +207,12 @@ class _FileSpaceWatchdogHandler(FileSystemEventHandler):
             self.worker.notify_file_event(
                 str(dest_path), is_directory=False, event_type=ev_type
             )
+
+    def on_created(self, event: FileSystemEvent) -> None:
+        if getattr(event, "is_directory", False) and not getattr(
+            event, "_yscb_handled", False
+        ):
+            self._forward_dir_event(event, "created")
 
     def on_moved(self, event: FileSystemEvent) -> None:
         if getattr(event, "is_directory", False) and not getattr(
@@ -232,6 +239,19 @@ class _FileSpaceWatchdogHandler(FileSystemEventHandler):
             )
 
 
+def _match_prefix_rel(raw_str: str, prefix: str) -> Optional[str]:
+    clean_prefix = prefix.rstrip("/") + "/"
+    if raw_str.startswith(clean_prefix):
+        return raw_str[len(clean_prefix) :]
+    if os.name == "nt" and raw_str.lower().startswith(clean_prefix.lower()):
+        return raw_str[len(clean_prefix) :]
+    if clean_prefix.startswith("/private/") and raw_str.startswith(clean_prefix[8:]):
+        return raw_str[len(clean_prefix) - 8 :]
+    if raw_str.startswith("/private/") and raw_str[8:].startswith(clean_prefix):
+        return raw_str[8 + len(clean_prefix) :]
+    return None
+
+
 class FileSpaceWatcherServiceWorker(BaseServiceWorker):
     """
     Daemon service worker that watches registered spaces (`watch=True`),
@@ -251,11 +271,17 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
         scanner: Optional[FingerprintScanner] = None,
         debounce_seconds: float = DEFAULT_DEBOUNCE_SECONDS,
     ) -> None:
-        ctx = context or {}
+        ctx = dict(context) if isinstance(context, dict) else {}
+        try:
+            super().__init__(name=name, context=ctx)
+        except TypeError:
+            super().__init__()
         self._name = name
-        self.context = ctx
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self.context = getattr(self, "context", None) or ctx
+        if not hasattr(self, "_stop_event"):
+            self._stop_event = threading.Event()
+        if not hasattr(self, "_thread"):
+            self._thread: Optional[threading.Thread] = None
 
         project_root = ctx.get("project_root") or ctx.get("workspace_root")
         storage_root = ctx.get("storage_root")
@@ -329,6 +355,7 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
             if explicit_lock.exists():
                 try:
                     from core.platform.lock import InterProcessLock
+
                     probe = InterProcessLock(str(explicit_lock))
                     if probe.acquire(blocking=False):
                         probe.release()
@@ -347,6 +374,7 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
         ]
         try:
             from core import uri
+
             resolved_lock = uri.resolve("cache://.yscb.lock", interactive=False)
             if resolved_lock and not str(resolved_lock).startswith("!undefined"):
                 cache_lock_candidates.insert(0, Path(str(resolved_lock)))
@@ -357,6 +385,7 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
             if lock_cand.exists():
                 try:
                     from core.platform.lock import InterProcessLock
+
                     probe = InterProcessLock(str(lock_cand))
                     if probe.acquire(blocking=False):
                         probe.release()
@@ -373,19 +402,39 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
         elif cfg.follow_symlinks:
             candidate = candidate.resolve()
 
+        cand_resolved = candidate.resolve()
         for inc_root in cfg.resolved_include_paths:
+            inc_resolved = inc_root.resolve()
             try:
                 rel = candidate.relative_to(inc_root).as_posix()
             except ValueError:
                 try:
-                    rel = candidate.resolve().relative_to(inc_root.resolve()).as_posix()
+                    rel = cand_resolved.relative_to(inc_resolved).as_posix()
                 except ValueError:
-                    continue
+                    try:
+                        inc_resolved.relative_to(cand_resolved)
+                        return True
+                    except ValueError:
+                        continue
             if rel == ".":
                 return True
             if not cfg.is_dir_excluded(candidate.name, rel):
                 return True
         return False
+
+    def _extract_rel_for_fast_ignore(self, raw_str: str) -> str:
+        rel_check = _match_prefix_rel(
+            raw_str, self.space_manager.project_root.as_posix()
+        )
+        if rel_check is not None:
+            return rel_check
+        for cfg in self.space_manager.get_all_spaces().values():
+            for inc_root in cfg.resolved_include_paths:
+                inc_str = inc_root.as_posix()
+                rel_inc = _match_prefix_rel(raw_str, inc_str)
+                if rel_inc is not None:
+                    return rel_inc
+        return raw_str.rsplit("/", 1)[-1]
 
     def notify_file_event(
         self,
@@ -396,7 +445,7 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
         """
         Record a raw file system event and mark matching watched spaces as dirty.
         Performs fast string-segment filtering prior to path resolution, tracks per-space
-        dirty file paths, and escalates directory move/delete events to full space rescan.
+        dirty file paths, and escalates directory create/move/delete events to full space rescan.
         Returns the list of matched workspace names.
         """
         raw_str = (
@@ -416,17 +465,7 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
         ):
             return []
 
-        proj_prefix = self.space_manager.project_root.as_posix().rstrip("/") + "/"
-        if raw_str.startswith(proj_prefix):
-            rel_check = raw_str[len(proj_prefix) :]
-        elif os.name == "nt" and raw_str.lower().startswith(proj_prefix.lower()):
-            rel_check = raw_str[len(proj_prefix) :]
-        elif proj_prefix.startswith("/private/") and raw_str.startswith(proj_prefix[8:]):
-            rel_check = raw_str[len(proj_prefix) - 8 :]
-        elif raw_str.startswith("/private/") and raw_str[8:].startswith(proj_prefix):
-            rel_check = raw_str[8 + len(proj_prefix) :]
-        else:
-            rel_check = raw_str
+        rel_check = self._extract_rel_for_fast_ignore(raw_str)
         if any(
             seg in _FAST_IGNORED_SEGMENTS
             for seg in rel_check.split("/")
@@ -443,7 +482,7 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
         )
 
         if is_directory:
-            if event_type not in ("moved", "deleted"):
+            if event_type not in ("created", "moved", "deleted"):
                 return matched
             for s_name, cfg in self.space_manager.get_all_spaces().items():
                 if not cfg.watch:
@@ -498,27 +537,39 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
             )
             diff_res = state.last_diff
             if diff_res is None:
-                state, diff_res = self.scanner.scan_space(
-                    s_name, background=True
-                )
-                self.scanner.snapshot_mgr.save_state(state, snap_path)
+                with self.scanner._snapshot_lock():
+                    state, diff_res = self.scanner.scan_space(
+                        s_name, background=True
+                    )
+                    self.scanner.snapshot_mgr.save_state(state, snap_path)
         else:
-            state, diff_res = self.scanner.scan_space(s_name, background=True)
-            self.scanner.snapshot_mgr.save_state(state, snap_path)
+            with self.scanner._snapshot_lock():
+                state, diff_res = self.scanner.scan_space(s_name, background=True)
+                self.scanner.snapshot_mgr.save_state(state, snap_path)
 
         still_pending: Set[Path] = set()
+        proj_root = self.space_manager.project_root
         for fp in state.entries.values():
             if fp.pending_stabilization and not fp.is_deleted:
                 src_root = (
                     Path(fp.source_root)
                     if fp.source_root
-                    else self.space_manager.project_root
+                    else proj_root
                 )
-                still_pending.add(src_root / fp.path)
+                cand_under_src = src_root / fp.path
+                cand_under_proj = proj_root / fp.path
+                if cand_under_src.exists() or cand_under_src.is_symlink():
+                    still_pending.add(cand_under_src)
+                elif cand_under_proj.exists() or cand_under_proj.is_symlink():
+                    still_pending.add(cand_under_proj)
+                else:
+                    still_pending.add(cand_under_src)
 
         if diff_res.has_changes:
-            self._refresh_count += 1
-            self._last_refresh_at = time.time()
+            with self._lock:
+                self._refresh_count += 1
+                self._last_refresh_at = time.time()
+            self.scanner._sync_unified_snapshot_if_exists()
             try:
                 self.touch_activity()
             except Exception:
@@ -527,6 +578,49 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
             _broadcast_file_space_changed(s_name, diff_res)
 
         return diff_res, still_pending
+
+    def _rollback_space_batch(
+        self,
+        space_name: str,
+        dirty_paths: Set[Path],
+        pending_paths: Set[Path],
+        full_rescan: bool,
+    ) -> None:
+        with self._lock:
+            self._dirty_spaces.add(space_name)
+            if dirty_paths:
+                self._dirty_paths_by_space.setdefault(space_name, set()).update(
+                    dirty_paths
+                )
+            if pending_paths:
+                self._pending_paths_by_space.setdefault(
+                    space_name, set()
+                ).update(pending_paths)
+            if full_rescan:
+                self._full_rescan_spaces.add(space_name)
+            if self._last_event_time == 0.0:
+                self._last_event_time = time.monotonic()
+        self.scanner.mark_watcher_dirty(True)
+
+    def _finalize_flush_pending(
+        self, still_pending_by_space: Dict[str, Set[Path]]
+    ) -> None:
+        if still_pending_by_space:
+            with self._lock:
+                for s_name, p_set in still_pending_by_space.items():
+                    if p_set:
+                        self._pending_paths_by_space.setdefault(
+                            s_name, set()
+                        ).update(p_set)
+                        self._dirty_spaces.add(s_name)
+                if self._dirty_spaces and self._last_event_time == 0.0:
+                    self._last_event_time = time.monotonic()
+                has_remaining = bool(self._dirty_spaces)
+        else:
+            with self._lock:
+                has_remaining = bool(self._dirty_spaces)
+
+        self.scanner.mark_watcher_dirty(has_remaining)
 
     def flush_space_now(self, space_name: str) -> Optional[Dict[str, Any]]:
         """
@@ -557,22 +651,14 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
             diff_res, still_pending = self._refresh_or_patch_space(
                 space_name, dirty_paths, pending_paths, full_rescan
             )
-            if still_pending:
-                with self._lock:
-                    self._pending_paths_by_space.setdefault(
-                        space_name, set()
-                    ).update(still_pending)
-                    self._dirty_spaces.add(space_name)
-                    if self._last_event_time == 0.0:
-                        self._last_event_time = time.monotonic()
-                self.scanner.mark_watcher_dirty(True)
-            else:
-                with self._lock:
-                    has_remaining = bool(self._dirty_spaces)
-                if not has_remaining:
-                    self.scanner.mark_watcher_dirty(False)
+            self._finalize_flush_pending(
+                {space_name: still_pending} if still_pending else {}
+            )
             return diff_res.to_dict()
         except Exception as exc:
+            self._rollback_space_batch(
+                space_name, dirty_paths, pending_paths, full_rescan
+            )
             logger.error(
                 "Error flushing space '%s' immediately: %s", space_name, exc
             )
@@ -616,37 +702,26 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
         still_pending_by_space: Dict[str, Set[Path]] = {}
 
         for s_name in target_spaces:
+            s_dirty = dirty_batch.get(s_name, set())
+            s_pending = pending_batch.get(s_name, set())
+            s_full = s_name in full_rescan_batch
             try:
                 diff_res, still_pending = self._refresh_or_patch_space(
                     s_name,
-                    dirty_batch.get(s_name, set()),
-                    pending_batch.get(s_name, set()),
-                    s_name in full_rescan_batch,
+                    s_dirty,
+                    s_pending,
+                    s_full,
                 )
                 results[s_name] = diff_res
                 if still_pending:
                     still_pending_by_space[s_name] = still_pending
             except Exception as exc:
+                self._rollback_space_batch(s_name, s_dirty, s_pending, s_full)
                 logger.error(
                     "Error refreshing dirty space '%s': %s", s_name, exc
                 )
 
-        if still_pending_by_space:
-            with self._lock:
-                for s_name, p_set in still_pending_by_space.items():
-                    self._pending_paths_by_space.setdefault(
-                        s_name, set()
-                    ).update(p_set)
-                    self._dirty_spaces.add(s_name)
-                if self._last_event_time == 0.0:
-                    self._last_event_time = time.monotonic()
-            self.scanner.mark_watcher_dirty(True)
-        else:
-            with self._lock:
-                has_remaining = bool(self._dirty_spaces)
-            if not has_remaining:
-                self.scanner.mark_watcher_dirty(False)
-
+        self._finalize_flush_pending(still_pending_by_space)
         return results
 
     def _resolve_watcher_state_path(self) -> Path:
@@ -736,13 +811,16 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
         _adjust_active_watcher_count(1, worker=self)
         try:
             for s_name, cfg in self.space_manager.get_all_spaces().items():
+                if self._stop_event.is_set():
+                    break
                 if cfg.watch and not self.scanner.get_snapshot_path(s_name).exists():
                     self.scanner.refresh(s_name, background=True)
         except Exception as exc:
             logger.warning("Initial space snapshot warm-up failed: %s", exc)
 
-        self._start_watchdog_observer()
-        self._write_watcher_state_file()
+        if not self._stop_event.is_set():
+            self._start_watchdog_observer()
+            self._write_watcher_state_file()
         poll_interval = min(0.1, max(0.02, self.debounce_seconds / 4.0))
 
         try:
@@ -758,16 +836,20 @@ class FileSpaceWatcherServiceWorker(BaseServiceWorker):
         """Expose runtime telemetry for `yscb server status`."""
         with self._lock:
             pending_count = len(self._dirty_spaces)
+            events_received = self._events_received
+            refresh_count = self._refresh_count
+            deferred_count = self._deferred_by_lock_count
+            last_refresh_at = self._last_refresh_at
         return {
             "watched_spaces": [
                 s
                 for s, cfg in self.space_manager.get_all_spaces().items()
                 if cfg.watch
             ],
-            "events_received": self._events_received,
-            "refresh_count": self._refresh_count,
+            "events_received": events_received,
+            "refresh_count": refresh_count,
             "pending_dirty_spaces": pending_count,
-            "deferred_by_lock_count": self._deferred_by_lock_count,
-            "last_refresh_at": self._last_refresh_at,
+            "deferred_by_lock_count": deferred_count,
+            "last_refresh_at": last_refresh_at,
             "watchdog_active": self._observer is not None,
         }

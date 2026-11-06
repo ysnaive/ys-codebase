@@ -73,6 +73,48 @@ def _dedup_preserve_order(items: List[Any]) -> List[Any]:
     return result
 
 
+def _extract_owner_modules(cfg: Dict[str, Any]) -> List[str]:
+    for key in ("owner_modules", "__providers__"):
+        raw = cfg.get(key)
+        if isinstance(raw, list) and raw:
+            return _dedup_preserve_order([str(p) for p in raw if p])
+    if "__provider__" in cfg and cfg["__provider__"]:
+        return [str(cfg["__provider__"])]
+    return ["module"]
+
+
+def _space_hash_dict(cfg: FileSpaceConfig, *, include_name: bool = False) -> Dict[str, Any]:
+    data: Dict[str, Any] = {
+        "include": sorted(p.as_posix() for p in cfg.resolved_include_paths),
+        "exclude": sorted(cfg.exclude),
+        "file_patterns": sorted(cfg.file_patterns),
+        "hash_policy": (
+            cfg.hash_policy.value
+            if isinstance(cfg.hash_policy, HashPolicy)
+            else str(cfg.hash_policy)
+        ),
+        "large_file_threshold_mb": cfg.large_file_threshold_mb,
+        "follow_symlinks": cfg.follow_symlinks,
+    }
+    if include_name:
+        data["name"] = cfg.name
+    return data
+
+
+def _has_intervening_symlink(child: Path, parent: Path) -> bool:
+    """Return True if any path segment from child up to parent (inclusive of child) is a symlink."""
+    try:
+        rel_parts = child.relative_to(parent).parts
+    except ValueError:
+        return True
+    cur = parent
+    for part in rel_parts:
+        cur = cur / part
+        if cur.is_symlink():
+            return True
+    return False
+
+
 class FileSpaceManager:
     """
     Central workspace registry and path resolution engine.
@@ -120,6 +162,7 @@ class FileSpaceManager:
         self._cached_project_root: Optional[Path] = (
             self._explicit_project_root
         )
+        self._resolving_project_root: bool = False
         self._spaces: Dict[str, FileSpaceConfig] = {}
         self._ephemeral_spaces: Dict[str, FileSpaceConfig] = {}
         self._loaded = False
@@ -133,7 +176,11 @@ class FileSpaceManager:
         if self._explicit_project_root is not None:
             self._cached_project_root = self._explicit_project_root
             return self._cached_project_root
-        resolved = self._resolve_uri("project://")
+        self._resolving_project_root = True
+        try:
+            resolved = self._resolve_uri("project://")
+        finally:
+            self._resolving_project_root = False
         if resolved is not None:
             if resolved.name == "ys_codebase" and (resolved.parent / "ys_codebase").is_dir():
                 self._cached_project_root = resolved.parent.resolve()
@@ -194,11 +241,14 @@ class FileSpaceManager:
         p = Path(raw)
         if p.is_absolute():
             return p.resolve()
-        base = (
-            self._explicit_project_root
-            if self._explicit_project_root is not None
-            else Path.cwd().resolve()
-        )
+        if not getattr(self, "_resolving_project_root", False):
+            base = self.project_root
+        else:
+            base = (
+                self._explicit_project_root
+                if self._explicit_project_root is not None
+                else Path.cwd().resolve()
+            )
         return (base / p).resolve()
 
     def _normalize_include_entries(
@@ -240,15 +290,7 @@ class FileSpaceManager:
                 for s_name, s_cfg in spaces_map.items():
                     if not isinstance(s_cfg, dict):
                         continue
-                    providers_raw = s_cfg.get("__providers__")
-                    if isinstance(providers_raw, list) and providers_raw:
-                        donors = [str(p) for p in providers_raw]
-                    elif "__provider__" in s_cfg:
-                        donors = [str(s_cfg["__provider__"])]
-                    elif isinstance(s_cfg.get("owner_modules"), list) and s_cfg["owner_modules"]:
-                        donors = [str(p) for p in s_cfg["owner_modules"]]
-                    else:
-                        donors = ["module"]
+                    donors = _extract_owner_modules(s_cfg)
 
                     if s_name not in aggregated:
                         copied = dict(s_cfg)
@@ -259,7 +301,7 @@ class FileSpaceManager:
                         copied["file_patterns"] = list(
                             s_cfg.get("file_patterns", DEFAULT_FILE_PATTERNS)
                         )
-                        copied["owner_modules"] = _dedup_preserve_order(donors)
+                        copied["owner_modules"] = donors
                         aggregated[s_name] = copied
                     else:
                         existing = aggregated[s_name]
@@ -326,24 +368,17 @@ class FileSpaceManager:
         owner_modules: Optional[List[str]] = None,
     ) -> FileSpaceConfig:
         raw_includes = list(raw_cfg.get("include", []))
-        if not raw_includes:
+        resolved_paths, raw_uris = self._normalize_include_entries(raw_includes)
+        if not raw_uris:
             raise InvalidFileSpaceConfigError(
                 f"Space '{name}' must define a non-empty 'include' list."
             )
-        resolved_paths, raw_uris = self._normalize_include_entries(raw_includes)
         excludes = _dedup_preserve_order(
             list(raw_cfg.get("exclude", DEFAULT_EXCLUDES))
         )
         file_patterns = _dedup_preserve_order(
             list(raw_cfg.get("file_patterns", DEFAULT_FILE_PATTERNS))
         )
-        hash_policy_val = raw_cfg.get("hash_policy", HashPolicy.ADAPTIVE)
-        threshold_mb = int(raw_cfg.get("large_file_threshold_mb", 10))
-        if threshold_mb <= 0:
-            raise InvalidFileSpaceConfigError(
-                f"Space '{name}' large_file_threshold_mb must be positive, got {threshold_mb}."
-            )
-
         return FileSpaceConfig(
             name=name,
             include=resolved_paths,
@@ -351,11 +386,11 @@ class FileSpaceManager:
             exclude=excludes,
             file_patterns=file_patterns,
             description=str(raw_cfg.get("description", "")),
-            hash_policy=hash_policy_val,
-            large_file_threshold_mb=threshold_mb,
+            hash_policy=raw_cfg.get("hash_policy", HashPolicy.ADAPTIVE),
+            large_file_threshold_mb=raw_cfg.get("large_file_threshold_mb", 10),
             follow_symlinks=bool(raw_cfg.get("follow_symlinks", False)),
             watch=bool(raw_cfg.get("watch", True)),
-            weight=float(raw_cfg.get("weight", 1.0)),
+            weight=raw_cfg.get("weight", 1.0),
             origin=origin,
             owner_modules=list(
                 owner_modules
@@ -369,16 +404,7 @@ class FileSpaceManager:
     ) -> None:
         contributed = self._discover_module_contributed_spaces()
         for name, cfg in contributed.items():
-            raw_owners = cfg.get("owner_modules")
-            if isinstance(raw_owners, list) and raw_owners:
-                owners = _dedup_preserve_order([str(o) for o in raw_owners])
-            elif isinstance(cfg.get("__providers__"), list) and cfg["__providers__"]:
-                owners = _dedup_preserve_order([str(o) for o in cfg["__providers__"]])
-            elif "__provider__" in cfg:
-                owners = [str(cfg["__provider__"])]
-            else:
-                owners = ["module"]
-
+            owners = _extract_owner_modules(cfg)
             if owners == ["project"]:
                 origin = FileSpaceOrigin.PROJECT
             elif "project" in owners:
@@ -410,6 +436,10 @@ class FileSpaceManager:
         resolved_paths, raw_uris = self._normalize_include_entries(
             combined_raw_includes
         )
+        if not raw_uris:
+            raise InvalidFileSpaceConfigError(
+                f"Space '{name}' must define a non-empty 'include' list."
+            )
         if "exclude" in p_cfg:
             combined_excludes = (
                 _dedup_preserve_order(list(p_cfg["exclude"]))
@@ -441,16 +471,14 @@ class FileSpaceManager:
             file_patterns=combined_patterns,
             description=str(p_cfg.get("description", base.description)),
             hash_policy=p_cfg.get("hash_policy", base.hash_policy),
-            large_file_threshold_mb=int(
-                p_cfg.get(
-                    "large_file_threshold_mb", base.large_file_threshold_mb
-                )
+            large_file_threshold_mb=p_cfg.get(
+                "large_file_threshold_mb", base.large_file_threshold_mb
             ),
             follow_symlinks=bool(
                 p_cfg.get("follow_symlinks", base.follow_symlinks)
             ),
             watch=bool(p_cfg.get("watch", base.watch)),
-            weight=float(p_cfg.get("weight", base.weight)),
+            weight=p_cfg.get("weight", base.weight),
             origin=FileSpaceOrigin.MERGED,
             owner_modules=owners,
         )
@@ -535,6 +563,10 @@ class FileSpaceManager:
             resolved_paths, raw_uris = self._normalize_include_entries(
                 list(config.include)
             )
+            if not raw_uris:
+                raise InvalidFileSpaceConfigError(
+                    f"Space '{name}' must define a non-empty 'include' list."
+                )
             space_cfg = FileSpaceConfig(
                 name=name,
                 include=resolved_paths,
@@ -601,35 +633,10 @@ class FileSpaceManager:
         """Compute a deterministic digest of workspace geometry and filter rules."""
         if space_name is not None:
             cfg = self.get_space(space_name)
-            payload = {
-                "name": cfg.name,
-                "include": sorted(p.as_posix() for p in cfg.resolved_include_paths),
-                "exclude": sorted(cfg.exclude),
-                "file_patterns": sorted(cfg.file_patterns),
-                "hash_policy": (
-                    cfg.hash_policy.value
-                    if isinstance(cfg.hash_policy, HashPolicy)
-                    else str(cfg.hash_policy)
-                ),
-                "large_file_threshold_mb": cfg.large_file_threshold_mb,
-                "follow_symlinks": cfg.follow_symlinks,
-            }
+            payload: Dict[str, Any] = _space_hash_dict(cfg, include_name=True)
         else:
             payload = {
-                name: {
-                    "include": sorted(
-                        p.as_posix() for p in cfg.resolved_include_paths
-                    ),
-                    "exclude": sorted(cfg.exclude),
-                    "file_patterns": sorted(cfg.file_patterns),
-                    "hash_policy": (
-                        cfg.hash_policy.value
-                        if isinstance(cfg.hash_policy, HashPolicy)
-                        else str(cfg.hash_policy)
-                    ),
-                    "large_file_threshold_mb": cfg.large_file_threshold_mb,
-                    "follow_symlinks": cfg.follow_symlinks,
-                }
+                name: _space_hash_dict(cfg, include_name=False)
                 for name, cfg in sorted(self.get_all_spaces().items())
             }
         serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -649,27 +656,46 @@ class FileSpaceManager:
             if isinstance(space_cfg, str)
             else space_cfg
         )
-        candidate = Path(file_path)
-        if not candidate.is_absolute():
-            candidate = (self.project_root / candidate).resolve()
-        elif cfg.follow_symlinks:
-            candidate = candidate.resolve()
+        raw_p = Path(file_path)
+        if not raw_p.is_absolute():
+            logical_abs = Path(os.path.abspath(str(self.project_root / raw_p)))
+        else:
+            logical_abs = Path(os.path.abspath(str(raw_p)))
 
+        if not cfg.follow_symlinks and logical_abs.is_symlink():
+            return False
+
+        inc_roots = cfg.resolved_include_paths
+        multi_root = len(inc_roots) > 1
         matched_rel: Optional[str] = None
-        for inc_root in cfg.resolved_include_paths:
+
+        for inc_root in inc_roots:
             if inc_root.is_file():
-                if candidate == inc_root or candidate.resolve() == inc_root.resolve():
-                    return cfg.is_file_included(inc_root.name)
+                if not cfg.follow_symlinks and inc_root.is_symlink():
+                    continue
+                if logical_abs == inc_root or (
+                    cfg.follow_symlinks and logical_abs.resolve() == inc_root.resolve()
+                ):
+                    rel_str = self._compute_rel_path(
+                        logical_abs, inc_root, multi_root, proj_root=self.project_root
+                    )
+                    return cfg.is_file_included(rel_str)
                 continue
+
+            logical_inc = Path(os.path.abspath(str(inc_root)))
             try:
-                rel = candidate.relative_to(inc_root).as_posix()
+                rel = logical_abs.relative_to(logical_inc).as_posix()
                 if rel == ".":
+                    return False
+                if not cfg.follow_symlinks and _has_intervening_symlink(logical_abs, logical_inc):
                     return False
                 matched_rel = rel
                 break
             except ValueError:
+                if not cfg.follow_symlinks:
+                    continue
                 try:
-                    rel = candidate.resolve().relative_to(inc_root.resolve()).as_posix()
+                    rel = logical_abs.resolve().relative_to(inc_root.resolve()).as_posix()
                     if rel == ".":
                         return False
                     matched_rel = rel
@@ -703,24 +729,40 @@ class FileSpaceManager:
         )
 
         for cfg in target_spaces:
-            for inc_root in cfg.resolved_include_paths:
-                root_resolved = inc_root.resolve()
-                candidate = (root_resolved / norm_rel).resolve()
-                try:
-                    candidate.relative_to(root_resolved)
-                except ValueError:
+            inc_roots = cfg.resolved_include_paths
+            multi_root = len(inc_roots) > 1
+            for inc_root in inc_roots:
+                if inc_root.is_file():
+                    comp_rel = self._compute_rel_path(
+                        inc_root, inc_root, multi_root, proj_root=self.project_root
+                    )
+                    if norm_rel in (comp_rel, inc_root.name) and self.file_belongs_to_space(
+                        inc_root, cfg
+                    ):
+                        return inc_root.resolve()
                     continue
-                if candidate.is_file():
-                    return candidate
+
+                raw_cand = inc_root / norm_rel
+                if not cfg.follow_symlinks:
+                    root_resolved = inc_root.resolve()
+                    cand_resolved = raw_cand.resolve()
+                    try:
+                        cand_resolved.relative_to(root_resolved)
+                    except ValueError:
+                        continue
+                if raw_cand.is_file() and self.file_belongs_to_space(raw_cand, cfg):
+                    return raw_cand.resolve()
 
             proj_root = self.project_root.resolve()
-            fallback_candidate = (proj_root / norm_rel).resolve()
-            try:
-                fallback_candidate.relative_to(proj_root)
-            except ValueError:
-                continue
-            if fallback_candidate.is_file() and self.file_belongs_to_space(
-                fallback_candidate, cfg
+            raw_fallback = proj_root / norm_rel
+            fallback_candidate = raw_fallback.resolve()
+            if not cfg.follow_symlinks:
+                try:
+                    fallback_candidate.relative_to(proj_root)
+                except ValueError:
+                    continue
+            if raw_fallback.is_file() and self.file_belongs_to_space(
+                raw_fallback, cfg
             ):
                 return fallback_candidate
 
@@ -730,24 +772,39 @@ class FileSpaceManager:
         self,
         abs_file: Path,
         inc_root: Path,
-        multi_root: bool,
-        proj_root: Optional[Path] = None,
+        multi_root: Optional[Union[bool, Path]] = False,
+        proj_root: Optional[Union[Path, bool]] = None,
     ) -> str:
-        effective_proj_root = (
-            proj_root if proj_root is not None else self.project_root
-        )
-        if not multi_root:
+        # Support both (abs_file, inc_root, multi_root, proj_root) and (abs_file, inc_root, proj_root, multi_root)
+        if isinstance(multi_root, Path):
+            effective_proj_root = multi_root
+            is_multi_root = bool(proj_root) if isinstance(proj_root, bool) else False
+        else:
+            is_multi_root = bool(multi_root)
+            effective_proj_root = (
+                proj_root if isinstance(proj_root, Path) else self.project_root
+            )
+
+        if not is_multi_root:
             try:
-                return abs_file.relative_to(inc_root).as_posix()
+                rel = abs_file.relative_to(inc_root).as_posix()
+                if rel and rel != "." and not rel.startswith(".."):
+                    return rel
             except ValueError:
                 pass
         try:
-            return abs_file.relative_to(effective_proj_root).as_posix()
+            rel_proj = abs_file.relative_to(effective_proj_root).as_posix()
+            if rel_proj and rel_proj != "." and not rel_proj.startswith(".."):
+                return rel_proj
         except ValueError:
-            try:
-                return abs_file.relative_to(inc_root).as_posix()
-            except ValueError:
-                return abs_file.name
+            pass
+        try:
+            rel_inc = abs_file.relative_to(inc_root).as_posix()
+            if rel_inc and rel_inc != "." and not rel_inc.startswith(".."):
+                return rel_inc
+        except ValueError:
+            pass
+        return abs_file.name
 
     def iter_space_files(
         self, space_name: Optional[str] = None
@@ -797,7 +854,7 @@ class FileSpaceManager:
                             multi_root,
                             proj_root=proj_root,
                         )
-                        if cfg.is_file_included(inc_root.name):
+                        if cfg.is_file_included(rel_path):
                             collected.append(
                                 (rel_path, inc_root, inc_root, mtime_ns, ctime_ns, size)
                             )
@@ -843,6 +900,11 @@ class FileSpaceManager:
                     if dir_key in visited_dirs:
                         return
                     visited_dirs.add(dir_key)
+                elif visited_dir_paths is not None:
+                    resolved_dir_key = current_dir.resolve().as_posix()
+                    if resolved_dir_key in visited_dir_paths:
+                        return
+                    visited_dir_paths.add(resolved_dir_key)
             except OSError:
                 return
         elif multi_root and visited_dir_paths is not None:
@@ -914,19 +976,6 @@ class FileSpaceManager:
     ) -> bool:
         if isinstance(exclude_patterns, FileSpaceConfig):
             return exclude_patterns.is_dir_excluded(dir_name, rel_dir_posix)
-
-        import fnmatch
-
-        for pattern in exclude_patterns:
-            norm = pattern.replace("\\", "/").strip("/")
-            if not norm:
-                continue
-            if "/" in norm:
-                if fnmatch.fnmatch(rel_dir_posix, norm) or rel_dir_posix.startswith(
-                    norm + "/"
-                ):
-                    return True
-            else:
-                if dir_name == norm or fnmatch.fnmatch(dir_name, norm):
-                    return True
-        return False
+        return FileSpaceConfig(
+            name="_tmp", include=["."], exclude=list(exclude_patterns)
+        ).is_dir_excluded(dir_name, rel_dir_posix)

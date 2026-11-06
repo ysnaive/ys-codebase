@@ -12,28 +12,34 @@ DEFAULT_URI_FALLBACKS: Dict[str, str] = {
 }
 
 
-def resolve_plan_uri(uri_str: str, default_fallback: Optional[str] = None) -> Optional[Path]:
+def resolve_plan_uri(
+    uri_str: str,
+    default_fallback: Optional[str] = None,
+    host_dir: Optional[Union[str, Path]] = None,
+) -> Optional[Path]:
     """
     安全解析語意 URI；若無 core 上下文或解析失敗，則依 default_fallback 或 DEFAULT_URI_FALLBACKS 退避。
 
     Args:
         uri_str: 語意 URI 字串（如 'workflow.plans://'、'workflow.archived://'、'project://'）
         default_fallback: 選填退避相對路徑；若未指定則查表 DEFAULT_URI_FALLBACKS
+        host_dir: 選填宿主基準目錄；當 host_dir is None 時維持 Path.cwd().resolve()
 
     Returns:
         Optional[Path]: 解析後之絕對路徑，若無對應退避則回傳 None
     """
     try:
         from core.uri import resolve
-        resolved = resolve(uri_str)
-        if resolved and not str(resolved).startswith("!undefined"):
+        resolved = resolve(uri_str, interactive=False)
+        if resolved and not str(resolved).startswith("!"):
             return Path(resolved).resolve()
     except Exception:
         pass
 
     fallback = default_fallback if default_fallback is not None else DEFAULT_URI_FALLBACKS.get(uri_str)
-    if fallback:
-        return (Path.cwd() / fallback).resolve()
+    if fallback is not None:
+        base = Path(host_dir).resolve() if host_dir is not None else Path.cwd().resolve()
+        return (base / fallback).resolve() if fallback else base
     return None
 
 
@@ -79,10 +85,12 @@ def resolve_active_target_projected_path(
     依據當前啟用之 release_targets (local ∪ project) 動態解析 template / standard / skill 的專案相對路徑。
     若無啟用 Target 或讀取失敗，安全退回 .agents/... 預設路徑。
     """
+    norm_type = (artifact_type or "").strip()
+    singular_type = norm_type.rstrip("s")
     default_base = (
         f".agents/skills/{artifact_name}"
-        if artifact_type == "skill"
-        else f".agents/.yscb/{artifact_type}s"
+        if singular_type in ("skill", "workflow")
+        else f".agents/.yscb/{singular_type}s"
     )
     fallback = f"{default_base}/{subpath}".strip("/") if subpath else default_base
 
@@ -114,7 +122,18 @@ def resolve_active_target_projected_path(
             return fallback
 
         projections = t_obj.get("projections", {})
-        proj_cfg = projections.get(artifact_type)
+        if not isinstance(projections, dict):
+            return fallback
+
+        proj_cfg = projections.get(norm_type)
+        if not isinstance(proj_cfg, dict):
+            for k, v in projections.items():
+                if isinstance(v, dict) and k.rstrip("s") == singular_type:
+                    proj_cfg = v
+                    break
+        if not isinstance(proj_cfg, dict) and singular_type in ("skill", "workflow"):
+            proj_cfg = projections.get("workflow") or projections.get("workflows")
+
         if not isinstance(proj_cfg, dict) or "target_dir" not in proj_cfg:
             return fallback
 
@@ -124,11 +143,15 @@ def resolve_active_target_projected_path(
         else:
             rel_dir = raw_dir.lstrip("/")
 
-        if "{export.name}" in rel_dir:
-            rel_dir = rel_dir.replace("{export.name}", artifact_name)
+        export_basename = Path(subpath or artifact_name).stem if (subpath or artifact_name) else ""
+        rel_dir = (
+            rel_dir
+            .replace("{export.name}", artifact_name)
+            .replace("{export.basename}", export_basename)
+            .replace("{target.name}", str(selected_target))
+        )
 
         rel_dir = rel_dir.rstrip("/")
         return f"{rel_dir}/{subpath.lstrip('/')}" if subpath else rel_dir
     except Exception:
         return fallback
-

@@ -11,215 +11,249 @@
     "1.2.1.1",
     "1.2.2.3",
     "1.2.3.5",
-    "1.2.4.3"
+    "1.2.4.2",
+    "1.2.4.3",
+    "1.2.4.4"
   ],
   "releases": {
     "1.0.0.0": {
       "status": "active",
       "dependencies": {
-        "core": ">=1.0.0"
+        "core": ">=1.0.0.0, <1.1.0.0"
       },
       "type": "feature",
       "urgency": "recommended",
       "summary": "初版工作流框架正式發布，建立雙階段語意編譯與多目標原子發布管線、8 大核心工作流、P00~P07 模板體系與 plan 管理工具鏈",
-      "sha256": "25efb18dc3e9d69c17b7e2df8a909130269df0822d267fe22efbdc5456af2379"
+      "sha256": "25efb18dc3e9d69c17b7e2df8a909130269df0822d267fe22efbdc5456af2379",
+      "commit": "eb54a07f4cdca21bbbcd2760bf09e4b02f26e4f4"
     },
     "1.0.1.6": {
       "status": "active",
       "dependencies": {
-        "core": ">=1.0.0"
+        "core": ">=1.0.1.3, <1.1.0.0"
       },
       "type": "feature",
       "urgency": "recommended",
       "summary": "實作發布引擎 Stage 0 來源指紋提前短路 (0 I/O)、Stage 4 記憶體 Diff 增量物化與 release --force 強制覆寫選項",
-      "sha256": "b85303549f99618ae3e180594fc7ef1aad063ddcd6631c9ab54bf0dd9b3b4d4f"
+      "sha256": "b85303549f99618ae3e180594fc7ef1aad063ddcd6631c9ab54bf0dd9b3b4d4f",
+      "commit": "a8328a2fd28580182bda3844837ec104ef8e8f1a"
     },
     "1.0.2.15": {
       "status": "active",
       "dependencies": {
-        "core": ">=1.0.2"
+        "core": ">=1.0.2.5, <1.1.0.0"
       },
       "type": "docs",
       "urgency": "optional",
       "summary": "於 AgentsStandards.md 同步擴充知識庫調用圖譜 (callers/callees/impact) 導航與條件分流規範",
-      "sha256": "6b2dba59aff7f3bb4f5ae6a56f65c5ab3c35389b0cbbf8f795d6f4dd211124cc"
+      "sha256": "6b2dba59aff7f3bb4f5ae6a56f65c5ab3c35389b0cbbf8f795d6f4dd211124cc",
+      "commit": "68ed589a6c708f02afeeada8389d481868652547"
     },
     "1.0.3.9": {
       "status": "active",
       "dependencies": {
-        "core": ">=1.0.2"
+        "core": ">=1.0.3.5, <1.1.0.0"
       },
       "type": "refactor",
       "urgency": "recommended",
       "summary": "重構 scripts/cli.py 遷移至純宣告式 process(args) 進入點並接入 core.guard.guard_dispatch 宿主守門 SDK",
-      "sha256": "f33bb1536c420735757ddd17201540b8c18a2d8fa1a31c17d19d1e8c5324359d"
+      "sha256": "f33bb1536c420735757ddd17201540b8c18a2d8fa1a31c17d19d1e8c5324359d",
+      "commit": "90d692a22446fdb3963e1d77a119e38ea70ac4f2"
     },
     "1.1.0.7": {
       "status": "active",
       "dependencies": {
-        "core": ">=1.1.0"
+        "core": ">=1.1.0.6, <1.2.5.0"
       },
       "type": "refactor",
       "urgency": "recommended",
       "summary": "完善工作流生命週期閉環（handoff.md 消費即毀、Umbrella 主從連動、跨軌道清理、結案 plan verify 最終守門時序）並統一三層 5 列文檔表與提示詞契約",
-      "sha256": "7efb8569ea4ad78f988280eb803c39381e4714921ded6c5b5b1d685ad0c2c9a0"
+      "sha256": "7efb8569ea4ad78f988280eb803c39381e4714921ded6c5b5b1d685ad0c2c9a0",
+      "commit": "d3a36235d50e20919c84da257cd7f3ffaab173ba"
     },
     "1.2.0.2": {
       "status": "active",
       "dependencies": {
-        "core": ">=1.1.0"
+        "core": ">=1.1.1.2, <1.2.5.0"
       },
       "type": "feature",
       "urgency": "recommended",
       "summary": "於 session-trace 新增無推估完整日誌聯集解析、有效/無效 Token 效益拆解與三維高耗能排行，並於 handoff.md 增設上下文交接壓縮區塊",
-      "sha256": "e7668e14e4175e8f9cf05d5136e2137aac092f63d5b465c1892c1d57ce59d6f6"
+      "sha256": "e7668e14e4175e8f9cf05d5136e2137aac092f63d5b465c1892c1d57ce59d6f6",
+      "commit": "fa00a820078b701836b369050f0c94dc678a1a69"
     },
     "1.2.1.1": {
       "status": "active",
       "dependencies": {
-        "core": ">=1.2.0"
+        "core": ">=1.2.0.0, <1.2.5.0"
       },
       "type": "refactor",
       "urgency": "optional",
       "summary": "將 roadmap.md 模板輕量化為 v1.1 三大抽象章節，並將單體 plan_modes.md 拆分為按需單點載入之獨立計畫模式參考手冊",
-      "sha256": "6f4c1550bf874fcedc92971c9a7b8fea0c62c54e9570b897a4775cdaa52f075b"
+      "sha256": "6f4c1550bf874fcedc92971c9a7b8fea0c62c54e9570b897a4775cdaa52f075b",
+      "commit": "d6aba8aaa9b079ecd61e1f03059f8351bd971ba6"
     },
     "1.2.2.0": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.0"
+        "core": ">=1.2.0.1, <1.2.5.0"
       },
       "type": "feature",
       "urgency": "recommended",
-      "summary": "新增 /code-optimizer 技能與三大中央設計標準、完成 plans/ 巨型模組正交拆分與循環依賴破除，並確立 SKILL.md Frontmatter 描述為唯一真理來源"
+      "summary": "新增 /code-optimizer 技能與三大中央設計標準、完成 plans/ 巨型模組正交拆分與循環依賴破除，並確立 SKILL.md Frontmatter 描述為唯一真理來源",
+      "commit": "0916eb2b44ea741908892c659626096715bee52b"
     },
     "1.2.2.1": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.0"
+        "core": ">=1.2.0.2, <1.2.5.0"
       },
       "type": "feature",
       "urgency": "recommended",
-      "summary": "新增 PXX-05_auto.md 綜合模板與恢復膠囊、擴充 8 大 AI 平台 release_target 並聯渲染、建立雙層子代理標準與 /blind-subagent 技能及編譯器 yscb:literal/ignore 區塊語法"
+      "summary": "新增 PXX-05_auto.md 綜合模板與恢復膠囊、擴充 8 大 AI 平台 release_target 並聯渲染、建立雙層子代理標準與 /blind-subagent 技能及編譯器 yscb:literal/ignore 區塊語法",
+      "commit": "e92ed5e4c50e964ef0525d67de8fde8f7054f99b"
     },
     "1.2.2.2": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.0"
+        "core": ">=1.2.0.2, <1.2.5.0"
       },
       "type": "bugfix",
       "urgency": "recommended",
-      "summary": "動態對齊啟用之 release_targets 提示路徑並新增盲眼子代理與雙階防放水護欄 (Issue #8)"
+      "summary": "動態對齊啟用之 release_targets 提示路徑並新增盲眼子代理與雙階防放水護欄 (Issue #8)",
+      "commit": "bb329b339e42a3dc551ed69ebc774932b80b9b6b"
     },
     "1.2.2.3": {
       "status": "active",
       "dependencies": {
-        "core": ">=1.2.0"
+        "core": ">=1.2.1.2, <1.2.5.0"
       },
       "type": "feature",
       "urgency": "recommended",
       "summary": "於 session-audit 技能引入盲眼子代理客觀法醫審計與三軌分流機制",
-      "sha256": "c90ed49b62ec817981958144006beb7a2cff61ca66ed574b9860bcb5bf902485"
+      "sha256": "c90ed49b62ec817981958144006beb7a2cff61ca66ed574b9860bcb5bf902485",
+      "commit": "941ffca8160afd970df19a0630e72ae71c267d8e"
     },
     "1.2.3.0": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.2"
+        "core": ">=1.2.2.0, <1.2.5.0"
       },
       "type": "feature",
       "urgency": "recommended",
       "summary": "遷移 file-space 空間貢獻、新增 yscb ast 結構導航盲讀豁免與 publisher 目錄 SHA-1 快取複用及託管標記自癒",
-      "sha256": "711d77239cadccb3f9b5c2e28500d9c0eac7f8f9238b6926429f894e7e9e50cc"
+      "sha256": "711d77239cadccb3f9b5c2e28500d9c0eac7f8f9238b6926429f894e7e9e50cc",
+      "commit": "00571cffa8e7692b11d14d9abc2d2b8a908c6719"
     },
     "1.2.3.1": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.2"
+        "core": ">=1.2.3.0, <1.2.5.0"
       },
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "同步三層檢索架構指引並啟用 publisher 原子檔案寫入",
-      "sha256": "485de81b4219c1745527534dcae07391c3f7856289dc72d9f78280b78a0b8eea"
+      "sha256": "485de81b4219c1745527534dcae07391c3f7856289dc72d9f78280b78a0b8eea",
+      "commit": "7710f36813f446bc33f6f42d3ee660b74a599c8d"
     },
     "1.2.3.2": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.2"
+        "core": ">=1.2.4.0, <1.2.5.0"
       },
       "sha256": "6cd6dbb94f3e9892a8d4dde23c17eb5adb4e55b4e7a36d5d3db6ca2d1216ce72",
       "type": "refactor",
       "urgency": "optional",
-      "summary": "優化工作流編譯與計畫驗證 Regex 快取並同步 CLI 嚴格熱派發指引"
+      "summary": "優化工作流編譯與計畫驗證 Regex 快取並同步 CLI 嚴格熱派發指引",
+      "commit": "a208bb2553f1bfbcc6201267a920b9f6533a541b"
     },
     "1.2.3.3": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.5"
+        "core": ">=1.2.5.0, <1.2.7.0"
       },
       "sha256": "9413b2608cbe391284f8b5093de8fa92efe05be2aecf98de57ec73ab6cabd752",
       "type": "feature",
       "urgency": "optional",
-      "summary": "新增同構 configurable/_format.json 組態契約並升級 uri/path 與 @desc(...) 欄位說明"
+      "summary": "新增同構 configurable/_format.json 組態契約並升級 uri/path 與 @desc(...) 欄位說明",
+      "commit": "808d156b1412f464de01a52a3be2bd6343821204"
     },
     "1.2.3.4": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.5"
+        "core": ">=1.2.5.1, <1.2.7.0"
       },
       "sha256": "5a5c48fb3d1911e49480310b72d56002e264359f550eaa8c68e8caf8abc7559c",
       "type": "refactor",
       "urgency": "optional",
-      "summary": "實作 _trace_parser JSONL 串流生成器與 2MB 單行安全上限"
+      "summary": "實作 _trace_parser JSONL 串流生成器與 2MB 單行安全上限",
+      "commit": "f3f2ad7ed3bb84cd64ff7babfb3588e9268a5c3c"
     },
     "1.2.3.5": {
       "status": "active",
       "dependencies": {
-        "core": ">=1.2.6"
+        "core": ">=1.2.6.0, <1.2.7.0"
       },
       "sha256": "59a8fe20bd013516e62324256e24db675d37d7e7874bb68f227a6571c0d8b800",
       "type": "refactor",
       "urgency": "optional",
-      "summary": "publisher 對齊 core.gitignore 根目錄統一分組軟合併引擎並更新 manifest.json optional"
+      "summary": "publisher 對齊 core.gitignore 根目錄統一分組軟合併引擎並更新 manifest.json optional",
+      "commit": "f2805bcad3f625369c59ab35be5a863fa725b295"
     },
     "1.2.4.0": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.7"
+        "core": ">=1.2.7.0"
       },
       "sha256": "59de1b7c94aed11a91c51cc17c60d1e3da4210bfb6093d9f9631c2b70ca95708",
       "type": "feature",
       "urgency": "recommended",
-      "summary": "三大持久清冊遷移至 storage.local://、拔除執行期歷史遷移分支並附帶 1.2.4.x 遷移腳本"
+      "summary": "三大持久清冊遷移至 storage.local://、拔除執行期歷史遷移分支並附帶 1.2.4.x 遷移腳本",
+      "commit": "5cf22b3de285edc7c9dd58f82754db1ed8efed5a"
     },
     "1.2.4.1": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.7"
+        "core": ">=1.2.7.0"
       },
       "sha256": "f07bb45b90c47b736d86e6a990682f57573dc174a6c826d6ab34bc8b30e96f65",
       "type": "refactor",
       "urgency": "optional",
-      "summary": "session-trace 軌跡解析支援 kdb 短別名歸一化至 knowledge-db"
+      "summary": "session-trace 軌跡解析支援 kdb 短別名歸一化至 knowledge-db",
+      "commit": "33b896dc1037bd8175b4214b72efa7f8cb358011"
     },
     "1.2.4.2": {
-      "status": "pruned",
+      "status": "active",
       "dependencies": {
-        "core": ">=1.2.7"
+        "core": ">=1.2.7.1"
       },
       "sha256": "6fe76389fb97c8d9296d7bc208f5254474ce80be2a8a9da5a1f33fb7bb1478aa",
       "type": "bugfix",
       "urgency": "recommended",
-      "summary": "補回 workflow 轉 skill 相容轉譯、promote_todos 寫入順序保護與 PXX-05_auto 驗證支援"
+      "summary": "補回 workflow 轉 skill 相容轉譯、promote_todos 寫入順序保護與 PXX-05_auto 驗證支援",
+      "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
     },
     "1.2.4.3": {
       "status": "active",
       "dependencies": {
-        "core": ">=1.2.7"
+        "core": ">=1.2.7.2"
       },
       "sha256": "33f002ec9fe81ebc8ea096eedbd4a08e6836fe8a6d2c5df671e2ef50a9e7bfeb",
       "type": "bugfix",
       "urgency": "recommended",
-      "summary": "verifier 子計畫三步自癒對齊、status 動態 P00 解析、init 選項補齊與 Git UTF-8 防護"
+      "summary": "verifier 子計畫三步自癒對齊、status 動態 P00 解析、init 選項補齊與 Git UTF-8 防護",
+      "commit": "699fd5c166d49aa90021c9381a13f63863d68d58"
+    },
+    "1.2.4.4": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7.3"
+      },
+      "sha256": "a4524faf5b6bfe01cd2f51d8e19f9603fde95fb3db23b3bb30d349fb9b09e21e",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "修正部署路徑後綴邊界比對、新增發布原子回滾、修正 PlanVerifier 箭頭與代碼塊標題誤判",
+      "commit": "310a5df934114720707c5716d4d07dfe912d2b81"
     }
   }
 }

@@ -9,7 +9,8 @@ import logging
 import math
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+import threading
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from .exceptions import SchemaValidationError
 from .io_utils import (
@@ -22,6 +23,47 @@ from .schema import AggregatedFileResult, AggregatedItem, UnifiedSymbol
 from .tokenizer import MultilingualTokenizer
 
 logger = logging.getLogger("knowledge-db.retrieval")
+
+
+def normalize_ftypes(ftypes: Optional[Union[str, Iterable[str]]]) -> Set[str]:
+    """將使用者輸入的副檔名規格化為純小寫且無前置點的集合（支援 `,` 與 `|` 分隔符）。"""
+    if not ftypes:
+        return set()
+    raw_list = [ftypes] if isinstance(ftypes, str) else list(ftypes)
+    result: Set[str] = set()
+    for item in raw_list:
+        for p in re.split(r"[|,]", str(item)):
+            clean = p.strip().lower().lstrip(".")
+            if clean:
+                result.add(clean)
+    return result
+
+
+def _extract_file_ext(file_path: Optional[str]) -> str:
+    """提取正規化無點小寫副檔名，安全處理點目錄下無副檔名檔案（如 `.agents/Makefile`）。"""
+    return Path(file_path).suffix.lstrip(".").lower() if file_path else ""
+
+
+def resolve_space_weight(
+    item_spaces: Optional[Iterable[str]],
+    spaces_filter: Optional[List[str]] = None,
+    space_weights: Optional[Dict[str, float]] = None,
+) -> float:
+    """統一計算符號所屬空間在過濾條件下之最大檢索權重係數。"""
+    if not space_weights or not item_spaces:
+        return 1.0
+    sp_list = list(item_spaces)
+    if not sp_list:
+        return 1.0
+    relevant = [s for s in sp_list if s in spaces_filter] if spaces_filter else sp_list
+    target = relevant or sp_list
+    return max((float(space_weights.get(s, 1.0)) for s in target), default=1.0)
+
+
+def format_symbol_summary(sym: UnifiedSymbol, max_chars: int = 120) -> str:
+    """提取符號之首行 Docstring 或回退至簽名，並截斷至 max_chars 字元。"""
+    raw = sym.docstring.split("\n")[0] if sym.docstring else (sym.signature or "")
+    return (raw[:max_chars] + "...") if len(raw) > max_chars else raw
 
 
 class SparseFieldFreqs(dict):
@@ -162,7 +204,7 @@ class QueryFilter:
 class CodeSnippet:
     """提取之結構化程式碼片段與 Docstring 摘要"""
 
-    lines: List[Tuple[int, str]] = field(default_factory=list)  # [(line_num, text), ...]
+    lines: List[Tuple[int, str]] = field(default_factory=list)
     start_line: int = 1
     end_line: int = 1
     target_line: int = 1
@@ -256,6 +298,7 @@ class SnippetExtractor:
         self.max_lines = max_lines
         self.space_manager = space_manager
         self._file_lines_cache: Dict[str, Tuple[int, List[str]]] = {}
+        self._cache_lock = threading.Lock()
 
     def resolve_file_path(self, file_path: Union[str, Path], space: Optional[str] = None) -> Path:
         """解析檔案為實體絕對路徑"""
@@ -337,16 +380,21 @@ class SnippetExtractor:
         try:
             cache_key = str(real_path)
             st_mtime_ns = real_path.stat().st_mtime_ns
-            cached_entry = self._file_lines_cache.get(cache_key)
-            if cached_entry is not None and cached_entry[0] == st_mtime_ns:
-                all_lines = cached_entry[1]
-            else:
+            with self._cache_lock:
+                cached_entry = self._file_lines_cache.get(cache_key)
+                if cached_entry is not None and cached_entry[0] == st_mtime_ns:
+                    all_lines = cached_entry[1]
+                else:
+                    all_lines = None
+
+            if all_lines is None:
                 with open(real_path, "r", encoding="utf-8", errors="replace") as f:
                     all_lines = f.readlines()
-                if cache_key not in self._file_lines_cache and len(self._file_lines_cache) >= 32:
-                    oldest_key = next(iter(self._file_lines_cache))
-                    del self._file_lines_cache[oldest_key]
-                self._file_lines_cache[cache_key] = (st_mtime_ns, all_lines)
+                with self._cache_lock:
+                    if cache_key not in self._file_lines_cache and len(self._file_lines_cache) >= 32:
+                        oldest_key = next(iter(self._file_lines_cache))
+                        del self._file_lines_cache[oldest_key]
+                    self._file_lines_cache[cache_key] = (st_mtime_ns, all_lines)
         except Exception as e:
             return CodeSnippet(
                 lines=[],
@@ -436,7 +484,7 @@ class InvertedIndex:
         self.acked_ast_generation: int = 0
         self.symbols: Dict[str, UnifiedSymbol] = {}
         self.index: Dict[str, List[Posting]] = defaultdict(list)
-        self.doc_lengths: Dict[str, Dict[str, int]] = {}  # 頂層文檔長度共享池
+        self.doc_lengths: Dict[str, Dict[str, int]] = {}
         self.field_avgdl: Dict[str, float] = {f: 1.0 for f in self.INDEXED_FIELDS}
         self.field_total_lengths: Dict[str, int] = {f: 0 for f in self.INDEXED_FIELDS}
         self._doc_id_table: List[Optional[str]] = []
@@ -505,8 +553,31 @@ class InvertedIndex:
     ) -> None:
         """加入單一 UnifiedSymbol 建立欄位倒排索引與註冊符號池"""
         doc_id = symbol.id
+        if doc_id in self.symbols:
+            old_sym = self.symbols[doc_id]
+            old_fl = self.doc_lengths.get(doc_id)
+            if isinstance(old_fl, dict):
+                for f_name, f_len in old_fl.items():
+                    self.field_total_lengths[f_name] = max(0, self.field_total_lengths.get(f_name, 0) - int(f_len))
+            old_d_idx = self._doc_id_to_idx.get(doc_id, -1)
+            old_terms: Set[str] = set()
+            old_members_text = self._extract_symbol_members_text(old_sym)
+            for t_val in (old_sym.name, old_sym.signature, old_members_text, old_sym.docstring):
+                old_terms.update(tokenizer.tokenize(t_val))
+            for term in old_terms:
+                if term in self.index:
+                    filtered_postings = [
+                        p for p in self.index[term]
+                        if (p.doc_idx != old_d_idx if p.doc_idx >= 0 else p.doc_id != doc_id)
+                    ]
+                    if filtered_postings:
+                        self.index[term] = filtered_postings
+                    else:
+                        del self.index[term]
+        else:
+            self.doc_count += 1
+
         self.symbols[doc_id] = symbol
-        self.doc_count += 1
 
         symbol_spaces = getattr(symbol, "spaces", [])
         effective_spaces = spaces or symbol_spaces or ([space] if space else []) or ([self.space_name] if self.space_name else [])
@@ -788,18 +859,8 @@ class BM25Engine:
         return math.log(1.0 + max(0.0, numerator / denominator))
 
     def _normalize_ftypes(self, ftypes: Optional[Union[str, List[str]]]) -> Set[str]:
-        """將使用者輸入的副檔名規格化為純小寫且無前置點的集合"""
-        if not ftypes:
-            return set()
-        raw_list = [ftypes] if isinstance(ftypes, str) else list(ftypes)
-        result: Set[str] = set()
-        for item in raw_list:
-            parts = re.split(r"[|,]", str(item))
-            for p in parts:
-                clean = p.strip().lower().lstrip(".")
-                if clean:
-                    result.add(clean)
-        return result
+        """委派至公開輔助函式 normalize_ftypes"""
+        return normalize_ftypes(ftypes)
 
     def _score_candidate_documents(
         self,
@@ -816,7 +877,7 @@ class BM25Engine:
             return []
 
         raw_query = query.strip()
-        allowed_ftypes = self._normalize_ftypes(flt.ftypes)
+        allowed_ftypes = normalize_ftypes(flt.ftypes)
         base_tokens = self.tokenizer.tokenize(raw_query)
         if not base_tokens:
             return []
@@ -850,9 +911,7 @@ class BM25Engine:
                             is_eligible = False
                         elif flt.kinds and sym.kind not in flt.kinds:
                             is_eligible = False
-                        elif allowed_ftypes and (
-                            Path(sym.file_path).suffix.lower().lstrip(".") not in allowed_ftypes
-                        ):
+                        elif allowed_ftypes and _extract_file_ext(sym.file_path) not in allowed_ftypes:
                             is_eligible = False
                         else:
                             is_eligible = True
@@ -879,30 +938,23 @@ class BM25Engine:
                 doc_scores[doc_id] += idf * field_scores_sum
 
         clean_raw_query = raw_query.lower()
-        for doc_id, base_score in list(doc_scores.items()):
+        clean_raw_no_punct = re.sub(r"[^a-z0-9]", "", clean_raw_query)
+        candidates: List[Tuple[UnifiedSymbol, float, List[str], List[str], Posting]] = []
+
+        for doc_id, score in doc_scores.items():
             sym = index.get_symbol(doc_id)
             if not sym:
                 continue
+
             sym_name_clean = sym.name.lower()
             last_segment = sym_name_clean.split(".")[-1].split("::")[-1]
             if clean_raw_query == sym_name_clean or clean_raw_query == last_segment:
-                doc_scores[doc_id] = base_score * 2.0
+                score *= 2.0
 
-        candidates: List[Tuple[UnifiedSymbol, float, List[str], List[str], Posting]] = []
-        clean_raw_no_punct = re.sub(r"[^a-z0-9]", "", clean_raw_query)
-
-        for doc_id, score in doc_scores.items():
             posting = doc_postings[doc_id]
             posting_spaces = getattr(posting, "spaces", None) or ([posting.space] if posting.space else [])
             if flt.space_weights and posting_spaces:
-                relevant_spaces = (
-                    [s for s in posting_spaces if s in flt.spaces]
-                    if flt.spaces
-                    else posting_spaces
-                )
-                target_sp_list = relevant_spaces or posting_spaces
-                sp_weight = max((float(flt.space_weights.get(s, 1.0)) for s in target_sp_list), default=1.0)
-                score = score * sp_weight
+                score *= resolve_space_weight(posting_spaces, spaces_filter=flt.spaces, space_weights=flt.space_weights)
 
             if score < flt.min_score:
                 continue
@@ -912,22 +964,6 @@ class BM25Engine:
                 has_exact = (clean_raw_query in matches) or (clean_raw_no_punct in matches)
                 if not has_exact and (len(matches) / len(base_tokens)) < 0.5:
                     continue
-
-            sym = index.get_symbol(doc_id)
-            if not sym:
-                continue
-
-            if allowed_ftypes:
-                file_ext = Path(sym.file_path).suffix.lower().lstrip(".")
-                if file_ext not in allowed_ftypes:
-                    continue
-
-            if flt.spaces and not any(s in flt.spaces for s in posting_spaces):
-                continue
-            if flt.languages and sym.language not in flt.languages:
-                continue
-            if flt.kinds and sym.kind not in flt.kinds:
-                continue
 
             candidates.append(
                 (sym, score, sorted(list(doc_matches[doc_id])), list(posting_spaces), posting)
@@ -950,9 +986,6 @@ class BM25Engine:
 
         results: List[SearchResult] = []
         for sym, score, matched_terms, posting_spaces, posting in candidates[: flt.limit]:
-            snippet = sym.docstring.split("\n")[0] if sym.docstring else sym.signature
-            if len(snippet) > 120:
-                snippet = snippet[:120] + "..."
             sp_display = ", ".join(posting_spaces) if posting_spaces else posting.space
             results.append(
                 SearchResult(
@@ -960,7 +993,7 @@ class BM25Engine:
                     score=score,
                     matched_terms=matched_terms,
                     space=sp_display,
-                    snippet=snippet,
+                    snippet=format_symbol_summary(sym),
                 )
             )
         return results
@@ -988,15 +1021,11 @@ class BM25Engine:
 
         for sym, score, matched_terms, spaces, _ in candidates:
             file_path = sym.file_path
-            snippet = sym.docstring.split("\n")[0] if sym.docstring else sym.signature
-            if len(snippet) > 120:
-                snippet = snippet[:120] + "..."
-
             agg_item = AggregatedItem(
                 symbol=sym,
                 score=score,
                 matched_terms=matched_terms,
-                snippet=snippet,
+                snippet=format_symbol_summary(sym),
             )
 
             if file_path in file_nodes:

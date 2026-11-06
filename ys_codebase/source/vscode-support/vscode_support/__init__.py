@@ -6,7 +6,7 @@ PEP 562 Lazy Loading Architecture. 100% Python Standard Library.
 from typing import TYPE_CHECKING
 import importlib
 
-__version__ = "1.0.0.4"
+__version__ = "1.0.0.5"
 
 if TYPE_CHECKING:
     from vscode_support.projector import SettingsProjector

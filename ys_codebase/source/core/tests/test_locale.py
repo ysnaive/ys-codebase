@@ -1,20 +1,19 @@
 """
 Official test suite for core.locale engine, multi-layer fallback chains,
 recursive proper-noun interpolation, and 'definition' semantic contract validation.
-Covers FT-01 ~ FT-05 and ET-01 ~ ET-05.
 """
 import json
 import os
 import shutil
 import tempfile
+from unittest.mock import patch
 
-from dev.testing import YSCBTestCase, require, Requirement
-from core import contributes
-from core import locale
-from core import uri, vfs
+from core import contributes, locale, uri, vfs
 from core.validator import ContributesValidator
+from dev.testing import Requirement, YSCBTestCase, require
 
 
+@require(Requirement.LOGIC)
 class TestCoreLocaleEngine(YSCBTestCase):
     """Unit and integration tests for core.locale."""
 
@@ -60,8 +59,8 @@ class TestCoreLocaleEngine(YSCBTestCase):
         return locales_decl
 
     @require(Requirement.ENV)
-    def test_ft_01_core_format_schema_accepts_locales_and_rejects_missing_definition(self):
-        """FT-01, EC-01: core/contributes/_format.json validates 'locales' requiring 'definition'."""
+    def test_core_format_schema_accepts_locales_and_rejects_missing_definition(self):
+        """EC-01: core/contributes/_format.json validates 'locales' requiring 'definition'."""
         fmt = contributes.get_format("core")
         self.assertIsNotNone(fmt)
         self.assertIn("locales", fmt)
@@ -90,8 +89,8 @@ class TestCoreLocaleEngine(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.ENV)
-    def test_ft_02_contributes_aggregator_per_module_locales_buckets(self):
-        """FT-02: ContributesAggregator isolates each donor module's locales under locales.__modules__."""
+    def test_contributes_aggregator_per_module_locales_buckets(self):
+        """ContributesAggregator isolates each donor module's locales under locales.__modules__."""
         mod_a_dir = uri.resolve("module://mock_loc_a", interactive=False)
         mod_b_dir = uri.resolve("module://mock_loc_b", interactive=False)
         try:
@@ -127,8 +126,8 @@ class TestCoreLocaleEngine(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_03_explicit_fallback_chain_without_implicit_hyphen_splitting(self):
-        """FT-03 ([P01:DR-02]): Explicit fallback chain strictly follows declared order with zero implicit '-' splitting."""
+    def test_explicit_fallback_chain_without_implicit_hyphen_splitting(self):
+        """Explicit fallback chain strictly follows declared order with zero implicit '-' splitting."""
         chain = locale.parse_locale_chain("custom-dialect-v1, zh-CHT, zh-TW, en")
         self.assertEqual(chain, ["custom-dialect-v1", "zh-CHT", "zh-TW", "en"])
         # Confirm 'custom', 'custom-dialect', and 'zh' were NOT implicitly inserted!
@@ -159,8 +158,8 @@ class TestCoreLocaleEngine(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_04_two_stage_recursive_noun_interpolation(self):
-        """FT-04: Recursive proper-noun interpolation resolves dialect tokens along the same chain."""
+    def test_two_stage_recursive_noun_interpolation(self):
+        """Recursive proper-noun interpolation resolves dialect tokens along the same chain."""
         self._setup_mock_module_locales(
             self.tmp_dir,
             definition_data={
@@ -226,8 +225,8 @@ class TestCoreLocaleEngine(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_05_validate_module_locales_contract_checks(self):
-        """FT-05: validate_module_locales detects orphan keys, placeholder mismatches, and bad definitions."""
+    def test_validate_module_locales_contract_checks(self):
+        """validate_module_locales detects orphan keys, placeholder mismatches, and bad definitions."""
         # Case 1: Clean valid module
         decl_ok = self._setup_mock_module_locales(
             self.tmp_dir,
@@ -269,8 +268,8 @@ class TestCoreLocaleEngine(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_et_01_cycle_and_max_depth_guard(self):
-        """ET-02: Recursive interpolation safely stops on direct/indirect cycles without RecursionError."""
+    def test_cycle_and_max_depth_guard(self):
+        """Recursive interpolation safely stops on direct/indirect cycles without RecursionError."""
         self._setup_mock_module_locales(
             self.tmp_dir,
             definition_data={
@@ -289,8 +288,8 @@ class TestCoreLocaleEngine(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_et_02_escaped_double_braces_and_missing_kwargs_preserved(self):
-        """ET-03: Escaped '{{' / '}}' are rendered as literal '{' / '}' and not treated as placeholders."""
+    def test_escaped_double_braces_and_missing_kwargs_preserved(self):
+        """Escaped '{{' / '}}' are rendered as literal '{' / '}' and not treated as placeholders."""
         decl = self._setup_mock_module_locales(
             self.tmp_dir,
             definition_data={
@@ -315,8 +314,8 @@ class TestCoreLocaleEngine(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_et_03_path_traversal_rejected(self):
-        """ET-05: Locale file paths attempting '..' traversal outside module root are rejected."""
+    def test_path_traversal_rejected(self):
+        """Locale file paths attempting '..' traversal outside module root are rejected."""
         decl = {
             "definition": "../outside_def.json",
             "en": "../../etc/passwd",
@@ -327,8 +326,8 @@ class TestCoreLocaleEngine(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.ENV)
-    def test_pt_01_lazy_import_and_hot_cache_performance(self):
-        """PT-01 (NFR-01, NFR-02): PEP 562 lazy export and <0.5ms hot-path cached resolution."""
+    def test_lazy_import_and_hot_cache_performance(self):
+        """PEP 562 lazy export and <0.5ms hot-path cached resolution."""
         import core
         self.assertIs(core.locale, locale)
 
@@ -355,8 +354,8 @@ class TestCoreLocaleEngine(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC | Requirement.ENV)
-    def test_rev_01_system_primary_locale_detection_and_initial_seeding(self):
-        """REV-01: Primary OS language detection (final fallback ['zh']) and initial config.local.json seeding."""
+    def test_system_primary_locale_detection_and_initial_seeding(self):
+        """Primary OS language detection (final fallback ['zh']) and initial config.local.json seeding."""
         self.assertEqual(locale.DEFAULT_LOCALE_CHAIN, ["zh"])
         self.assertEqual(locale.detect_system_locale_chain("zh_TW.UTF-8"), ["zh"])
         self.assertEqual(locale.detect_system_locale_chain("zh-Hant-HK"), ["zh"])
@@ -377,8 +376,8 @@ class TestCoreLocaleEngine(YSCBTestCase):
         with open(os.path.join(tpl_dir, "config.project.json"), "w", encoding="utf-8") as f:
             json.dump({"project_root": "!undefined", "locale": ["zh"]}, f)
 
-        orig_proj = open(cfg_proj_path, "rb").read() if os.path.exists(cfg_proj_path) else None
-        orig_local = open(cfg_local_path, "rb").read() if os.path.exists(cfg_local_path) else None
+        orig_proj = vfs.read_bytes(cfg_proj_path) if os.path.exists(cfg_proj_path) else None
+        orig_local = vfs.read_bytes(cfg_local_path) if os.path.exists(cfg_local_path) else None
         old_lc_all = os.environ.get("LC_ALL")
         try:
             if os.path.exists(cfg_local_path):
@@ -413,8 +412,8 @@ class TestCoreLocaleEngine(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC | Requirement.ENV)
-    def test_sub02_unqualified_global_lookup_and_host_dialect_sniffing(self):
-        """sub_02 (FR-01, FR-02, EC-01, EC-03): Unqualified global lookup and runtime host dialect env sniffing."""
+    def test_unqualified_global_lookup_and_host_dialect_sniffing(self):
+        """EC-01, EC-03: Unqualified global lookup and runtime host dialect env sniffing."""
         # 1. Verify detect_active_host_dialect across concurrent AI IDE / CLI environments (declarative rules)
         self.assertEqual(locale.detect_active_host_dialect({"CLAUDECODE": "1"}), "nouns-claude")
         self.assertEqual(locale.detect_active_host_dialect({"CLAUDE_CODE_ENTRYPOINT": "cli"}), "nouns-claude")
@@ -484,8 +483,6 @@ class TestCoreLocaleEngine(YSCBTestCase):
 
     def test_module_base_dir_cache_keyed_by_yscb_root(self):
         """驗證 _MODULE_BASE_DIR_CACHE 以 (yscb_root, module) 隔離多工作區快取。"""
-        from core import uri
-
         locale.clear_cache()
         resolved = locale._resolve_module_base_dir("core")
         self.assertIsNotNone(resolved)
@@ -493,6 +490,29 @@ class TestCoreLocaleEngine(YSCBTestCase):
         self.assertIn((root_key, "core"), locale._MODULE_BASE_DIR_CACHE)
         self.mark_passed()
 
+    def test_locale_cache_isolation_against_caller_mutation(self):
+        """驗證 locale.get_definition() 回傳深拷貝而不污染內部快取，並驗證 get_active_chain() 環境變數合成。"""
+        self._setup_mock_module_locales(
+            self.tmp_dir,
+            definition_data={
+                "k1": {"description": "Original Description", "placeholders": ["p1"]},
+            },
+            lang_files={"en": {"k1": "Hello {p1}"}},
+        )
+        d1 = locale.get_definition("mock_mod", base_dir=self.tmp_dir)
+        self.assertEqual(d1["k1"]["description"], "Original Description")
+        d1["k1"]["description"] = "Mutated By Caller"
+        d1["k1"]["placeholders"].append("injected")
 
+        d2 = locale.get_definition("mock_mod", base_dir=self.tmp_dir)
+        self.assertEqual(d2["k1"]["description"], "Original Description")
+        self.assertEqual(d2["k1"]["placeholders"], ["p1"])
 
-
+        with patch.dict(os.environ, {"YSCB_LOCALE": "en, zh"}, clear=True):
+            locale.clear_cache()
+            self.assertEqual(locale.get_active_chain(), ["en", "zh"])
+        with patch.dict(os.environ, {"CLAUDECODE": "1"}, clear=True):
+            locale.clear_cache()
+            active = locale.get_active_chain()
+            self.assertEqual(active[0], "nouns-claude")
+        self.mark_passed()

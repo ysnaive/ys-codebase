@@ -21,6 +21,11 @@ class ConfigManager:
     _cache: Dict[Any, Dict[str, Any]] = {}
     _mtimes: Dict[Any, Tuple[float, float]] = {}
 
+    @staticmethod
+    def _clone_if_container(val: Any) -> Any:
+        """若值為可變容器 (dict, list) 則回傳深拷貝，不可變純量則直接回傳。"""
+        return copy.deepcopy(val) if isinstance(val, (dict, list)) else val
+
     @classmethod
     def _get_yscb_root(cls) -> str:
         """解析 yscb_root 目錄，統一委派至 core.uri.resolve_yscb_root()。"""
@@ -58,15 +63,15 @@ class ConfigManager:
     def _get_by_dot_path(cls, data: Dict[str, Any], dot_path: str, default: Any = None) -> Any:
         """透過點分隔路徑讀取巢狀字典值。"""
         if not dot_path:
-            return data
+            return cls._clone_if_container(data)
         parts = dot_path.split(".")
-        curr = data
+        curr: Any = data
         for part in parts:
             if isinstance(curr, dict) and part in curr:
                 curr = curr[part]
             else:
-                return default
-        return copy.deepcopy(curr)
+                return cls._clone_if_container(default)
+        return cls._clone_if_container(curr)
 
     @classmethod
     def _set_by_dot_path(cls, data: Dict[str, Any], dot_path: str, value: Any) -> None:
@@ -140,7 +145,7 @@ class ConfigManager:
         查詢指定模組之有效設定值（支援點分隔路徑），自動執行 Local > Project 雙層合併與快取自愈。
         """
         if not module:
-            return default
+            return cls._clone_if_container(default)
         merged = cls._check_and_load(module)
         if key is None:
             return copy.deepcopy(merged)
@@ -209,7 +214,7 @@ class ConfigManager:
         若 key 為 None 則回傳該層級完整字典副本。
         """
         if not module:
-            return default
+            return cls._clone_if_container(default)
         target_path = cls.get_config_path(module, local=local)
         raw_data = cls._read_json_file(target_path)
         if key is None:
@@ -265,8 +270,8 @@ class ConfigManager:
             "key": key,
             "effective": effective_val,
             "source": source,
-            "local_value": copy.deepcopy(local_val) if has_local else None,
-            "project_value": copy.deepcopy(proj_val) if has_proj else None,
+            "local_value": cls._clone_if_container(local_val) if has_local else None,
+            "project_value": cls._clone_if_container(proj_val) if has_proj else None,
             "is_overridden": is_overridden,
         }
 
@@ -300,4 +305,3 @@ delete = ConfigManager.delete
 reload = ConfigManager.reload
 list_modules = ConfigManager.list_modules
 get_config_path = ConfigManager.get_config_path
-

@@ -1,10 +1,10 @@
 {
   "name": "agents-workflow",
-  "version": "1.2.4.3",
+  "version": "1.2.4.4",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.7"
+    "core": ">=1.2.7.3"
   },
   "optional": {
     "knowledge-db": {
@@ -24,6 +24,6 @@
   "release": {
     "type": "bugfix",
     "urgency": "recommended",
-    "summary": "verifier 子計畫三步自癒對齊、status 動態 P00 解析、init 選項補齊與 Git UTF-8 防護"
+    "summary": "修正部署路徑後綴邊界比對、新增發布原子回滾、修正 PlanVerifier 箭頭與代碼塊標題誤判"
   }
 }

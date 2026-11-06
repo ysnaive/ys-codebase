@@ -8,15 +8,14 @@ into structured NDJSON packets ("terminal_stream" vs "task_finish").
 import io
 import sys
 import threading
-import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 class DebouncedIOStreamer:
     """
     Thread-safe debounced stream interceptor for stdout & stderr.
     Buffers terminal chunks and flushes every `debounce_ms` (default 500ms),
-    or immediately upon newline / explicit flush / close.
+    or immediately upon reaching `max_buffer_bytes` / explicit flush / close.
     """
 
     def __init__(
@@ -28,11 +27,10 @@ class DebouncedIOStreamer:
         self.emit_chunk = emit_chunk
         self.debounce_sec = debounce_ms / 1000.0
         self.max_buffer_bytes = max_buffer_bytes
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._buffer: List[Dict[str, str]] = []
         self._buffer_bytes: int = 0
         self._timer: Optional[threading.Timer] = None
-        self._last_flush_time = time.time()
         self._is_closed = False
 
         self._orig_stdout = sys.stdout
@@ -68,21 +66,20 @@ class DebouncedIOStreamer:
 
         if not self._buffer:
             self._buffer_bytes = 0
-            self._last_flush_time = time.time()
             return
 
-        consolidated: Dict[str, List[str]] = {}
+        consolidated: List[Tuple[str, List[str]]] = []
         for item in self._buffer:
             s_name = item["stream"]
-            if s_name not in consolidated:
-                consolidated[s_name] = []
-            consolidated[s_name].append(item["text"])
+            if consolidated and consolidated[-1][0] == s_name:
+                consolidated[-1][1].append(item["text"])
+            else:
+                consolidated.append((s_name, [item["text"]]))
 
         self._buffer.clear()
         self._buffer_bytes = 0
-        self._last_flush_time = time.time()
 
-        for s_name, chunks in consolidated.items():
+        for s_name, chunks in consolidated:
             combined_text = "".join(chunks)
             if combined_text:
                 packet = {

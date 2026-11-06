@@ -1,13 +1,15 @@
 """
 Unit and Integration Tests for core.commands Subsystem.
-Covers FT-01~FT-10, ET-01~ET-06, PT-01, RT-01.
-100% Python Standard Library.
 """
 import io
+import json
 import os
+import socket
 import sys
+import tempfile
 import time
 import unittest
+import urllib.error
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import MagicMock, patch
 
@@ -15,14 +17,14 @@ from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
 
 import core
+from core.commands import dispatcher
 from core.commands.bags import CmdBags, CmdOption
-from core.commands.dispatcher import dispatch, dispatch_local, _suggest_command
+from core.commands.dispatcher import dispatch, dispatch_local, _try_hot_dispatch
 from core.commands.help import HelpRenderer
 from core.commands.registry import (
     ArgSpec,
     CommandSpec,
     CommandsRegistry,
-    ModuleSpec,
     OptionSpec,
 )
 from core.commands.resolver import (
@@ -32,25 +34,36 @@ from core.commands.resolver import (
     MutualExclusionError,
     OptionResolver,
 )
+from core.platform import daemon_probe
+from tests import load_core_cli_module
+import yscb
 
 
+@require(Requirement.LOGIC)
 class TestCoreCommandsSubsystem(YSCBTestCase):
     """core.commands 全功能、邊界與效能單元測試集合。"""
 
-    @require(Requirement.LOGIC)
-    def test_ft01_pep562_lazy_loading(self):
-        """FT-01: 驗證 PEP 562 Lazy Loading：引用 core.commands 不載入重型子模組。"""
-        # 驗證 core 模組具備 __getattr__
+    def setUp(self):
+        super().setUp()
+        self._orig_auto_spawn_warned = dispatcher._AUTO_SPAWN_WARNED
+        self._orig_last_error_hint = dispatcher._LAST_DISPATCH_ERROR_HINT
+
+    def tearDown(self):
+        dispatcher._AUTO_SPAWN_WARNED = False
+        dispatcher._LAST_DISPATCH_ERROR_HINT = ""
+        dispatcher.clear_cache()
+        super().tearDown()
+
+    def test_pep562_lazy_loading(self):
+        """驗證 PEP 562 Lazy Loading：引用 core.commands 不載入重型子模組。"""
         self.assertTrue(hasattr(core, "__getattr__"))
         self.assertIn("commands", dir(core))
-        # 存取 commands 屬性
         cmds = core.commands
         self.assertIsNotNone(cmds)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft02_commands_schema_parser(self):
-        """FT-02: 驗證 Contributes Commands Schema 解析 (含 module_alias, tier, server_compatible, args, options, usage)。"""
+    def test_commands_schema_parser(self):
+        """驗證 Contributes Commands Schema 解析 (含 module_alias, tier, server_compatible, args, options, usage)。"""
         raw_schema = {
             "module_alias": ["testmod", "tm"],
             "description": "Test module description",
@@ -112,9 +125,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertIn("[!] 嚴禁未編譯直接執行", cmd.usage_cons)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft03_option_resolver(self):
-        """FT-03: 驗證 OptionResolver 正交群組互斥、別名規範化與 args 帶參解析。"""
+    def test_option_resolver(self):
+        """驗證 OptionResolver 正交群組互斥、別名規範化與 args 帶參解析。"""
         cmd_spec = CommandSpec(
             name="test",
             description="Test cmd",
@@ -134,7 +146,6 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             }
         )
 
-        # 測試別名 -j 轉為規範名 json，帶值 -o path 轉為 out
         args, opts = OptionResolver.resolve(cmd_spec, ["pos1", "-j", "-o", "result.txt", "pos2"])
         self.assertEqual(args, ["pos1", "pos2"])
         self.assertIn("json", opts)
@@ -142,14 +153,12 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertIn("out", opts)
         self.assertEqual(opts["out"].params, "result.txt")
 
-        # 測試 --out=result2.txt
         _, opts2 = OptionResolver.resolve(cmd_spec, ["--out=result2.txt"])
         self.assertEqual(opts2["out"].params, "result2.txt")
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft04_cmdbags_dataclass(self):
-        """FT-04: 驗證強型別 CmdBags 與 CmdOption 屬性完整度與不可變性。"""
+    def test_cmdbags_dataclass(self):
+        """驗證強型別 CmdBags 與 CmdOption 屬性完整度與不可變性。"""
         opt = CmdOption(name="json", params=True)
         bags = CmdBags(
             raw_cmd="status --json",
@@ -164,14 +173,12 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertEqual(bags.get_option_value("json"), True)
         self.assertEqual(bags.get_option_value("missing", "default_val"), "default_val")
 
-        # 斷言不可變性 (frozen=True)
         with self.assertRaises(Exception):
             bags.command = "changed"
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft05_help_renderer(self):
-        """FT-05: 驗證模組級與指令級 --help 渲染格式、choice 格式化與 ARGUMENTS 欄位輸出。"""
+    def test_help_renderer(self):
+        """驗證模組級與指令級 --help 渲染格式、choice 格式化與 ARGUMENTS 欄位輸出。"""
         reg = CommandsRegistry()
         reg.register_module("my-mod", {
             "module_alias": ["mm"],
@@ -222,9 +229,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertIn("嚴禁跳過預檢", cmd_help)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft06_server_compatible_routing(self):
-        """FT-06: 驗證指令級 server_compatible 雙管道分流。"""
+    def test_server_compatible_routing(self):
+        """驗證指令級 server_compatible 雙管道分流。"""
         with patch("core.commands.dispatcher._try_hot_dispatch", return_value=0) as mock_hot:
             with patch("core.commands.dispatcher._load_registry") as mock_reg_loader:
                 reg = CommandsRegistry()
@@ -242,30 +248,22 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
                 })
                 mock_reg_loader.return_value = reg
 
-                # hot_cmd 應觸發 _try_hot_dispatch
                 ret = dispatch(["test-server-mod", "hot_cmd"])
                 self.assertEqual(ret, 0)
                 mock_hot.assert_called_once()
 
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft07_yscb_thin_host_delegation(self):
-        """FT-07: 驗證 yscb.py 薄宿主對外公開介面與 core.commands.dispatcher 轉派。"""
-        import yscb
-        from core.commands.dispatcher import _suggest_command
+    def test_yscb_thin_host_delegation(self):
+        """驗證 yscb.py 薄宿主對外公開介面與 core.commands.dispatcher 轉派。"""
         self.assertTrue(hasattr(yscb, "cmd_init"))
         self.assertTrue(hasattr(yscb, "cmd_self_update"))
         self.assertTrue(hasattr(yscb, "cmd_restore"))
         self.assertTrue(hasattr(yscb, "dispatch_module"))
-
-        sugg = _suggest_command("stauts", ["status", "install"])
-        self.assertEqual(sugg, "status")
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft08_hard_sunset_ec05_enforcement(self):
-        """FT-08: 驗證向後相容過渡層徹底拔除 (Hard Sunset Gate)：未定義精確函式之模組調用嚴格拋出 EC-05 並返回退出碼 127，不再退化至 process。"""
+    def test_hard_sunset_missing_command_function(self):
+        """驗證向後相容過渡層徹底拔除：未定義精確函式之模組調用嚴格輸出 EC-05 並返回退出碼 127，不再退化至 process。"""
         fake_mod = MagicMock(spec=["process"])
         fake_mod.process.return_value = 0
 
@@ -278,20 +276,14 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
                 with patch.dict("core.commands.dispatcher._MODULE_CACHE", {"/fake/cli.py": fake_mod}):
                     ret = dispatch_local("legacy_mod", "my_cmd", ["arg1"], cmd_spec, "/fake/root")
 
-        # 斷言硬性阻斷並返回 EC-05 退出碼 127
         self.assertEqual(ret, 127)
         fake_mod.process.assert_not_called()
         self.assertIn("EC-05", f_out.getvalue())
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft09_all_modules_cli_contract(self):
-        """FT-09: 驗證 core 模組自身無殘留 process(args) 且定義精確命令函式。"""
-        import importlib.util
-        core_cli_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts", "cli.py"))
-        spec_core = importlib.util.spec_from_file_location("core_scripts_cli_test", core_cli_path)
-        core_cli = importlib.util.module_from_spec(spec_core)
-        spec_core.loader.exec_module(core_cli)
+    def test_all_modules_cli_contract(self):
+        """驗證 core 模組自身無殘留 process(args) 且定義精確命令函式。"""
+        core_cli = load_core_cli_module("_test_core_cli_contract")
         self.assertFalse(hasattr(core_cli, "process"), "core cli still defines legacy process()!")
         self.assertTrue(callable(getattr(core_cli, "status", None)))
         self.assertTrue(callable(getattr(core_cli, "install", None)))
@@ -299,10 +291,9 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertTrue(callable(getattr(core_cli, "config_unset", None)))
         self.mark_passed()
 
-
-    @require(Requirement.LOGIC)
-    def test_ft10_symmetric_lifecycle_hooks(self):
-        """FT-10: 驗證 pre_cli_dispatch / post_cli_dispatch Hook 於執行環境內部對稱觸發。"""
+    def test_symmetric_lifecycle_hooks(self):
+        """驗證 pre_cli_dispatch / post_cli_dispatch Hook 於正常與各種提前返回/異常路徑下皆對稱觸發。"""
+        # 1. Normal execution
         with patch("core.events.broadcast") as mock_broadcast:
             with patch("core.commands.dispatcher._find_module_cli", return_value="/fake/cli.py"):
                 fake_mod = MagicMock()
@@ -313,25 +304,64 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
 
             self.assertEqual(ret, 0)
             calls = [c[0][0] for c in mock_broadcast.call_args_list]
-            self.assertIn("pre_cli_dispatch", calls)
-            self.assertIn("post_cli_dispatch", calls)
+            self.assertEqual(calls, ["pre_cli_dispatch", "post_cli_dispatch"])
+
+        # 2. OptionResolutionError early return
+        req_spec = CommandSpec(
+            name="my_cmd",
+            args={"target": ArgSpec(name="target", required=True)},
+        )
+        with patch("core.events.broadcast") as mock_bc_opt, redirect_stdout(io.StringIO()):
+            ret_opt = dispatch_local("fake_mod", "my_cmd", [], req_spec, "/fake/root")
+        self.assertEqual(ret_opt, 1)
+        self.assertEqual([c[0][0] for c in mock_bc_opt.call_args_list], ["pre_cli_dispatch", "post_cli_dispatch"])
+
+        # 3. Missing scripts/cli.py early return
+        with patch("core.events.broadcast") as mock_bc_missing, \
+             patch("core.commands.dispatcher._find_module_cli", return_value=None), \
+             redirect_stdout(io.StringIO()):
+            ret_missing = dispatch_local("fake_mod", "my_cmd", [], CommandSpec(name="my_cmd"), "/fake/root")
+        self.assertEqual(ret_missing, 1)
+        self.assertEqual([c[0][0] for c in mock_bc_missing.call_args_list], ["pre_cli_dispatch", "post_cli_dispatch"])
+
+        # 4. SyntaxError during module load
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cli_dir = os.path.join(tmp_dir, ".modules", "sym-broken", "scripts")
+            os.makedirs(cli_dir, exist_ok=True)
+            with open(os.path.join(cli_dir, "cli.py"), "w", encoding="utf-8") as f:
+                f.write("def broken(:\n")
+            with patch("core.events.broadcast") as mock_bc_syn, redirect_stdout(io.StringIO()):
+                ret_syn = dispatch_local("sym-broken", "run", [], CommandSpec(name="run"), tmp_dir)
+            self.assertEqual(ret_syn, 1)
+            self.assertEqual([c[0][0] for c in mock_bc_syn.call_args_list], ["pre_cli_dispatch", "post_cli_dispatch"])
+
+        # 5. RuntimeError or SystemExit raised by handler
+        for exc_to_raise, expected_rc in ((RuntimeError("boom"), 1), (SystemExit(3), 3)):
+            with patch("core.events.broadcast") as mock_bc_exc, \
+                 patch("core.commands.dispatcher._find_module_cli", return_value="/fake/exc_cli.py"), \
+                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                exc_mod = MagicMock()
+                exc_mod.my_cmd.side_effect = exc_to_raise
+                with patch.dict("core.commands.dispatcher._MODULE_CACHE", {"/fake/exc_cli.py": exc_mod}):
+                    rc_exc = dispatch_local("fake_mod", "my_cmd", [], CommandSpec(name="my_cmd"), "/fake/root")
+            self.assertEqual(rc_exc, expected_rc)
+            self.assertEqual([c[0][0] for c in mock_bc_exc.call_args_list], ["pre_cli_dispatch", "post_cli_dispatch"])
+
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_et01_unknown_cmd_fuzzy_suggest(self):
-        """ET-01: 驗證未知指令返回退出碼 1 並提供模糊拼寫建議。"""
+    def test_unknown_cmd_fuzzy_suggest(self):
+        """驗證未知指令返回退出碼 1 並提供模糊拼寫建議。"""
         f_out = io.StringIO()
         with redirect_stdout(f_out):
-            ret = dispatch(["stauts"])  # status typo
+            ret = dispatch(["stauts"])
         self.assertEqual(ret, 1)
         out = f_out.getvalue()
         self.assertIn("Unknown command or module 'stauts'", out)
         self.assertIn("Did you mean 'status'?", out)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_et02_orthogonal_group_conflict(self):
-        """ET-02: 驗證同正交群組多選衝突：拋出 MutualExclusionError。"""
+    def test_orthogonal_group_conflict(self):
+        """驗證同正交群組多選衝突：拋出 MutualExclusionError。"""
         cmd_spec = CommandSpec(
             name="build",
             groups={"mode": ["fast", "slow"]},
@@ -349,9 +379,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertIn("EC-02", str(ctx.exception))
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_et03_missing_option_value(self):
-        """ET-03: 驗證帶參 Option 缺少參數值時拋出 MissingValueError。"""
+    def test_missing_option_value(self):
+        """驗證帶參 Option 缺少參數值時拋出 MissingValueError。"""
         cmd_spec = CommandSpec(
             name="get",
             canonical_options={
@@ -366,9 +395,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertIn("EC-03", str(ctx.exception))
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_et04_hot_dispatch_fallback(self):
-        """ET-04: 驗證 Server Worker 熱派發通訊異常時透明降級為本地冷派發。"""
+    def test_hot_dispatch_fallback(self):
+        """驗證 Server Worker 熱派發通訊異常時透明降級為本地冷派發。"""
         with patch("core.commands.dispatcher._try_hot_dispatch", return_value=None):
             with patch("core.commands.dispatcher.dispatch_local", return_value=42) as mock_local:
                 with patch("core.commands.dispatcher._load_registry") as mock_reg_loader:
@@ -384,10 +412,9 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
                     mock_local.assert_called_once()
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_et05_missing_entrypoint_contract(self):
-        """ET-05: 驗證目標模組無精確函式亦無 process 接口時返回退出碼 127。"""
-        fake_mod = MagicMock(spec=[])  # 既無 cmd 亦無 process
+    def test_missing_entrypoint_contract(self):
+        """驗證目標模組無精確函式亦無 process 接口時返回退出碼 127。"""
+        fake_mod = MagicMock(spec=[])
         with patch("core.commands.dispatcher._find_module_cli", return_value="/fake/cli.py"):
             with patch.dict("core.commands.dispatcher._MODULE_CACHE", {"/fake/cli.py": fake_mod}):
                 cmd_spec = CommandSpec(name="ghost_cmd")
@@ -398,9 +425,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertIn("EC-05", f_out.getvalue())
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_et06_module_alias_conflict(self):
-        """ET-06: 驗證不同模組宣告重複 module_alias 時拋出衝突異常。"""
+    def test_module_alias_conflict(self):
+        """驗證不同模組宣告重複 module_alias 時拋出衝突異常。"""
         reg = CommandsRegistry()
         reg.register_module("mod_a", {"module_alias": ["shared_alias"]})
         with self.assertRaises(ValueError) as ctx:
@@ -408,9 +434,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertIn("EC-06", str(ctx.exception))
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_et07_invalid_choice_error(self):
-        """ET-07: 驗證傳入非法 choice 值時拋出 InvalidChoiceError。"""
+    def test_invalid_choice_error(self):
+        """驗證傳入非法 choice 值時拋出 InvalidChoiceError。"""
         cmd_spec = CommandSpec(
             name="deploy",
             args={
@@ -423,9 +448,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertIn("dev | prod", str(ctx.exception))
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_et08_missing_required_argument(self):
-        """ET-08: 驗證缺少必填位置參數時拋出 MissingArgumentError。"""
+    def test_missing_required_argument(self):
+        """驗證缺少必填位置參數時拋出 MissingArgumentError。"""
         cmd_spec = CommandSpec(
             name="install",
             args={
@@ -438,21 +462,17 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertIn("module", str(ctx.exception))
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_pt01_dispatch_performance(self):
-        """PT-01: 驗證 core.commands 模組載入效能 <= 5ms。"""
+    def test_dispatch_performance(self):
+        """驗證 core.commands 模組載入效能 <= 5ms。"""
         start_t = time.perf_counter()
-        # 測試重複導入/存取耗時
         _ = core.commands
         _ = core.commands.dispatch
         duration_ms = (time.perf_counter() - start_t) * 1000.0
         self.assertLessEqual(duration_ms, 5.0)
         self.mark_passed()
 
-
-    @require(Requirement.LOGIC)
-    def test_ft11_recursive_subcommand_tree(self):
-        """FT-11: 驗證同構遞迴指令樹解析、走訪與子命令 Help 渲染。"""
+    def test_recursive_subcommand_tree(self):
+        """驗證同構遞迴指令樹解析、走訪與子命令 Help 渲染。"""
         raw_schema = {
             "cmd": {
                 "group": {
@@ -477,14 +497,12 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         reg = CommandsRegistry()
         reg.register_module("test_tree", raw_schema)
 
-        # 走訪至子命令
         path, spec, rem = reg.resolve_command_path("test_tree", ["group", "sub_a", "val_123"])
         self.assertEqual(path, ["group", "sub_a"])
         self.assertIsNotNone(spec)
         self.assertEqual(spec.name, "sub_a")
         self.assertEqual(rem, ["val_123"])
 
-        # 走訪至分支
         path2, spec2, rem2 = reg.resolve_command_path("test_tree", ["group"])
         self.assertEqual(path2, ["group"])
         self.assertIsNotNone(spec2)
@@ -492,19 +510,14 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertIn("sub_a", spec2.cmd)
         self.assertEqual(rem2, [])
 
-        # Help 渲染包含 SUBCOMMANDS
         cmd_help = HelpRenderer.render_cmd_help("test_tree", "group", spec2)
         self.assertIn("AVAILABLE SUBCOMMANDS:", cmd_help)
         self.assertIn("sub_a <param>", cmd_help)
         self.assertIn("sub_b", cmd_help)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft11_maybe_auto_spawn_server_auto_spawn_disabled(self):
-        """FT-11: 驗證 auto_spawn: false 時 _maybe_auto_spawn_server 靜默跳過無輸出且不拉起。"""
-        import tempfile
-        from core.commands import dispatcher
-
+    def test_maybe_auto_spawn_server_auto_spawn_disabled(self):
+        """驗證 auto_spawn: false 時 _maybe_auto_spawn_server 靜默跳過無輸出且不拉起。"""
         with tempfile.TemporaryDirectory() as tmp_dir:
             server_mod = os.path.join(tmp_dir, ".modules", "server")
             os.makedirs(server_mod, exist_ok=True)
@@ -527,12 +540,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
 
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft12_maybe_auto_spawn_server_probe_false_warning(self):
-        """FT-12: 驗證探針判定 False 時輸出 stderr 警告與 IDE Agent 常駐指引，且不拉起。"""
-        import tempfile
-        from core.commands import dispatcher
-
+    def test_maybe_auto_spawn_server_probe_false_warning(self):
+        """驗證探針判定 False 時輸出 stderr 警告與 IDE Agent 常駐指引，且不拉起。"""
         dispatcher._AUTO_SPAWN_WARNED = False
         with tempfile.TemporaryDirectory() as tmp_dir:
             server_mod = os.path.join(tmp_dir, ".modules", "server")
@@ -563,12 +572,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
 
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft13_maybe_auto_spawn_server_warning_debounce(self):
-        """FT-13: 驗證 stderr 警告在單次進程內具備防洗頻抑制，重複調用僅警告一次。"""
-        import tempfile
-        from core.commands import dispatcher
-
+    def test_maybe_auto_spawn_server_warning_debounce(self):
+        """驗證 stderr 警告在單次進程內具備防洗頻抑制，重複調用僅警告一次。"""
         dispatcher._AUTO_SPAWN_WARNED = False
         with tempfile.TemporaryDirectory() as tmp_dir:
             server_mod = os.path.join(tmp_dir, ".modules", "server")
@@ -580,10 +585,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
                 with patch("core.commands.dispatcher.spawn_detached"):
                     with patch("core.commands.dispatcher.can_spawn_background_daemon", return_value=False):
                         with redirect_stderr(stderr_buf):
-                            # 第一次呼叫 -> 產生警告
                             dispatcher._maybe_auto_spawn_server(tmp_dir, tmp_dir)
                             first_out = stderr_buf.getvalue()
-                            # 第二次呼叫 -> 被抑制
                             dispatcher._maybe_auto_spawn_server(tmp_dir, tmp_dir)
                             second_out = stderr_buf.getvalue()
 
@@ -592,12 +595,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
 
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft14_maybe_auto_spawn_server_probe_true_spawns(self):
-        """FT-14: 驗證探針判定 True 時正常呼叫 spawn_detached。"""
-        import tempfile
-        from core.commands import dispatcher
-
+    def test_maybe_auto_spawn_server_probe_true_spawns(self):
+        """驗證探針判定 True 時正常呼叫 spawn_detached。"""
         dispatcher._AUTO_SPAWN_WARNED = False
         with tempfile.TemporaryDirectory() as tmp_dir:
             server_mod = os.path.join(tmp_dir, ".modules", "server")
@@ -613,12 +612,7 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.mark_passed()
 
     def test_hot_dispatch_subcommand_payload_and_stream(self):
-        """T-06 補盲 & FT-03 & EC-03: 驗證 _try_hot_dispatch 傳遞完整子指令路徑 Token 清單、處理串流輸出與斷線降級。"""
-        import tempfile
-        import json
-        import io
-        from core.commands.dispatcher import _try_hot_dispatch
-
+        """驗證 _try_hot_dispatch 傳遞完整子指令路徑 Token 清單、處理串流輸出與斷線降級。"""
         with tempfile.TemporaryDirectory() as tmp_dir:
             cache_srv = os.path.join(tmp_dir, ".cache", "server")
             os.makedirs(cache_srv, exist_ok=True)
@@ -635,8 +629,13 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             class DummyResp:
                 def __init__(self, data: bytes):
                     self._buf = io.BytesIO(data)
-                def __enter__(self): return self
-                def __exit__(self, *args): pass
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    pass
+
                 def read(self, n=1024):
                     return self._buf.read(n)
 
@@ -657,7 +656,6 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
                     self.assertIn("hot_out_ok", out_buf.getvalue())
                     self.assertIn("hot_err_warn", err_buf.getvalue())
 
-            # EC-03: 連線失敗時返回 None 以便透明降級冷派發
             with patch("urllib.request.urlopen", side_effect=OSError("Connection refused")):
                 with patch("core.commands.dispatcher.is_process_alive", return_value=True):
                     res_fallback = _try_hot_dispatch("core", ["uri", "resolve"], ["project://AGENTS.md"], tmp_dir)
@@ -665,9 +663,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
 
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
     def test_group_unknown_subcommand_interception_and_help(self):
-        """C-06 / FT-06 / ET-07: 驗證群組指令無參數時渲染 HelpRenderer，傳入未知子命令時由 Dispatcher 統一攔截並回傳 1。"""
+        """驗證群組指令無參數時渲染 HelpRenderer，傳入未知子命令時由 Dispatcher 統一攔截並回傳 1。"""
         out_buf = io.StringIO()
         with redirect_stdout(out_buf):
             ret_typo = dispatch(["uri", "reslove"])
@@ -683,7 +680,6 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertIn("Unknown subcommand 'lits' for command 'config'", out_cfg_typo.getvalue())
         self.assertIn("Did you mean 'list'?", out_cfg_typo.getvalue())
 
-        # 無參數調用群組指令輸出 AVAILABLE SUBCOMMANDS 並回傳 0
         for grp in ("config", "uri", "event"):
             grp_buf = io.StringIO()
             with redirect_stdout(grp_buf):
@@ -694,9 +690,7 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.mark_passed()
 
     def test_option_resolver_double_dash_and_bool_false(self):
-        """T-06 補盲: 驗證 OptionResolver 正確解析 -- 終止符與 --flag=false 布林反轉。"""
-        from core.commands.resolver import OptionResolver
-        from core.commands.registry import CommandSpec, OptionSpec
+        """驗證 OptionResolver 正確解析 -- 終止符與 --flag=false 布林反轉。"""
         cmd_spec = CommandSpec(
             name="dummy",
             options={
@@ -712,30 +706,32 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertEqual(pos_args, ["--not-an-option", "pos_arg"])
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
     def test_cli_lifecycle_batch_forwarding(self):
-        """驗證 scripts/cli.py 之 install、update、remove 正確支援單一與多模組批次參數解析與轉發。"""
-        import importlib.util
-        core_cli_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts", "cli.py"))
-        spec_core = importlib.util.spec_from_file_location("core_scripts_cli_batch_test", core_cli_path)
-        core_cli = importlib.util.module_from_spec(spec_core)
-        spec_core.loader.exec_module(core_cli)
+        """驗證 scripts/cli.py 之 install、update、remove、list、status、reload、rollback、restore、event 參數解析與轉發。"""
+        core_cli = load_core_cli_module("_test_core_cli_batch")
 
         with patch.object(core_cli, "Installer") as mock_inst_cls:
             mock_inst = MagicMock()
             mock_inst.cmd_install.return_value = 0
             mock_inst.cmd_update.return_value = 0
             mock_inst.cmd_remove.return_value = 0
+            mock_inst.cmd_list.return_value = 0
+            mock_inst.cmd_status.return_value = 0
+            mock_inst.cmd_reload.return_value = 0
+            mock_inst.cmd_rollback.return_value = 0
+            mock_inst.cmd_restore.return_value = 0
             mock_inst_cls.return_value = mock_inst
 
-            # 1. Single module install with @version
+            # Empty install args returns 1
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(core_cli.install(CmdBags(command="install", args=[], options={})), 1)
+
             b_inst_single = CmdBags(command="install", args=["dev@1.2.0.0"], options={"force": CmdOption("force", True)})
             self.assertEqual(core_cli.install(b_inst_single), 0)
             mock_inst.cmd_install.assert_called_with(
                 "dev", version="1.2.0.0", provider=None, force=True, ignore_sha256=False
             )
 
-            # 2. Multi-module batch install
             b_inst_batch = CmdBags(
                 command="install",
                 args=["dev@build", "agents-workflow@build"],
@@ -746,7 +742,6 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
                 ["dev@build", "agents-workflow@build"], version=None, provider=None, force=True, ignore_sha256=True
             )
 
-            # 3. Multi-module batch update & zero-arg update
             b_up_all = CmdBags(command="update", args=[], options={})
             self.assertEqual(core_cli.update(b_up_all), 0)
             mock_inst.cmd_update.assert_called_with(None, provider=None, ignore_sha256=False)
@@ -759,7 +754,6 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             self.assertEqual(core_cli.update(b_up_batch), 0)
             mock_inst.cmd_update.assert_called_with(["dev", "server"], provider=None, ignore_sha256=True)
 
-            # 4. Multi-module batch remove
             b_rm_batch = CmdBags(
                 command="remove",
                 args=["dev", "server"],
@@ -768,17 +762,32 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             self.assertEqual(core_cli.remove(b_rm_batch), 0)
             mock_inst.cmd_remove.assert_called_with(["dev", "server"], clean=False, purge=True, force=False)
 
+            # Verify list, status, reload, rollback, restore, event forwarding
+            self.assertEqual(core_cli.list(CmdBags(command="list", args=[], options={"remote": CmdOption("remote", True)})), 0)
+            mock_inst.cmd_list.assert_called_once_with(remote=True, provider=None)
+
+            self.assertEqual(core_cli.status(CmdBags(command="status", args=[], options={})), 0)
+            mock_inst.cmd_status.assert_called_once()
+
+            self.assertEqual(core_cli.reload(CmdBags(command="reload", args=[], options={})), 0)
+            mock_inst.cmd_reload.assert_called_once()
+
+            self.assertEqual(core_cli.rollback(CmdBags(command="rollback", args=["snap_1"], options={})), 0)
+            mock_inst.cmd_rollback.assert_called_once_with("snap_1")
+
+            self.assertEqual(
+                core_cli.restore(CmdBags(command="restore", args=[], options={"force": CmdOption("force", True)})),
+                0,
+            )
+            mock_inst.cmd_restore.assert_called_once_with(force=True, provider=None, ignore_sha256=False)
+
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(core_cli.event(CmdBags(command="event", args=["unknown_sub"], options={})), 1)
+
         self.mark_passed()
 
-
-
-
-    @require(Requirement.LOGIC)
-    def test_fr07_read_server_spawn_config_strict_layering(self):
-        """FR-07 / NFR-03: _read_server_spawn_config 預設 strict=False，local 覆寫 project，舊組態缺鍵可載入。"""
-        import tempfile
-        from core.commands import dispatcher
-
+    def test_read_server_spawn_config_strict_layering(self):
+        """驗證 _read_server_spawn_config 預設 strict=False，local 覆寫 project，舊組態缺鍵可載入。"""
         with tempfile.TemporaryDirectory() as tmp_dir:
             default_cfg = dispatcher._read_server_spawn_config(tmp_dir)
             self.assertEqual(default_cfg, dispatcher._ServerSpawnConfig(enabled=True, auto_spawn=True, strict_hot_dispatch=False))
@@ -799,11 +808,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             self.assertTrue(layered.enabled)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_fr08_blocker_advisory_vs_strict_wording(self):
-        """FR-08: advisory 文案宣告冷派發兜底；strict 文案宣告已阻斷且不含兜底字樣。"""
-        from core.commands import dispatcher
-
+    def test_blocker_advisory_vs_strict_wording(self):
+        """驗證 advisory 文案宣告冷派發兜底；strict 文案宣告已阻斷且不含兜底字樣。"""
         adv_buf, strict_buf = io.StringIO(), io.StringIO()
         with redirect_stderr(adv_buf):
             dispatcher._print_agent_daemon_blocker()
@@ -820,11 +826,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertNotIn("冷派發兜底完成", strict)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_fr07_strict_mode_blocks_cold_dispatch(self):
-        """FR-07 / EC-06: strict 模式下熱派發失敗回傳 1 且不冷派發；server_compatible=false 指令與 enable=false 照常冷派發。"""
-        from core.commands import dispatcher
-
+    def test_strict_mode_blocks_cold_dispatch(self):
+        """驗證 strict 模式下熱派發失敗回傳 1 且不冷派發；server_compatible=false 指令與 enable=false 照常冷派發。"""
         strict_cfg = dispatcher._ServerSpawnConfig(enabled=True, auto_spawn=True, strict_hot_dispatch=True)
         disabled_cfg = dispatcher._ServerSpawnConfig(enabled=False, auto_spawn=True, strict_hot_dispatch=True)
         reg = CommandsRegistry()
@@ -849,12 +852,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             self.assertEqual(mock_local.call_count, 2)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_fr07_strict_mode_auto_spawn_then_retry_hot(self):
-        """FR-07: strict 模式可常駐時 auto-spawn、記錄 spawn 探針，待 daemon 活躍後重試熱派發一次成功。"""
-        import tempfile
-        from core.commands import dispatcher
-
+    def test_strict_mode_auto_spawn_then_retry_hot(self):
+        """驗證 strict 模式可常駐時 auto-spawn、記錄 spawn 探針，待 daemon 活躍後重試熱派發一次成功。"""
         with tempfile.TemporaryDirectory() as tmp_dir:
             os.makedirs(os.path.join(tmp_dir, ".modules", "server"), exist_ok=True)
             state_dir = os.path.join(tmp_dir, ".cache", "server")
@@ -871,6 +870,7 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
                  patch("core.commands.dispatcher._is_server_daemon_active_or_locked", return_value=False), \
                  patch("core.commands.dispatcher.spawn_detached", side_effect=fake_spawn) as mock_spawn, \
                  patch("core.commands.dispatcher.daemon_probe.record_spawn") as mock_record, \
+                 patch("core.commands.dispatcher.time.sleep"), \
                  patch("core.commands.dispatcher._hot_dispatch_attempt", side_effect=[dispatcher._HotDispatchResult(None, False), dispatcher._HotDispatchResult(0, True)]) as mock_hot:
                 ret = dispatcher._strict_hot_dispatch_or_block("test-mod", ["run"], [], tmp_dir, tmp_dir)
             self.assertEqual(ret, 0)
@@ -878,10 +878,10 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             mock_record.assert_called_once_with(tmp_dir, 4242)
             self.assertEqual(mock_hot.call_count, 2)
 
-            # 重試仍失敗 -> strict BLOCKER 回傳 1
             err_buf = io.StringIO()
             with patch("core.commands.dispatcher._read_server_spawn_config", return_value=cfg), \
                  patch("core.commands.dispatcher._STRICT_SPAWN_WAIT_SEC", 0.05), \
+                 patch("core.commands.dispatcher.time.sleep"), \
                  patch("core.commands.dispatcher.can_spawn_background_daemon", return_value=True), \
                  patch("core.commands.dispatcher._is_server_daemon_active_or_locked", return_value=True), \
                  patch("core.commands.dispatcher.spawn_detached") as mock_spawn2, \
@@ -893,14 +893,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             self.assertIn("strict_hot_dispatch=true", err_buf.getvalue())
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_fr03_auto_spawn_records_probe_and_passes_root(self):
-        """FR-03 / FR-04: auto-spawn 以 yscb_root 呼叫能力判定並將 spawn PID 寫入 spawn_probe.json。"""
-        import json
-        import tempfile
-        from core.commands import dispatcher
-        from core.platform import daemon_probe
-
+    def test_auto_spawn_records_probe_and_passes_root(self):
+        """驗證 auto-spawn 以 yscb_root 呼叫能力判定並將 spawn PID 寫入 spawn_probe.json。"""
         dispatcher._AUTO_SPAWN_WARNED = False
         with tempfile.TemporaryDirectory() as tmp_dir:
             os.makedirs(os.path.join(tmp_dir, ".modules", "server"), exist_ok=True)
@@ -917,12 +911,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             self.assertFalse(entry["clean_exit"])
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_fr12_exec_module_failure_is_reported(self):
-        """FR-12 / EC-09: CLI 載入期 SyntaxError 回傳 1、印出錯誤類型並移除半初始化模組，不寫入快取。"""
-        import tempfile
-        from core.commands import dispatcher
-
+    def test_exec_module_failure_is_reported(self):
+        """驗證 CLI 載入期 SyntaxError 回傳 1、印出錯誤類型並移除半初始化模組，不寫入快取。"""
         with tempfile.TemporaryDirectory() as tmp_dir:
             cli_dir = os.path.join(tmp_dir, ".modules", "broken-mod", "scripts")
             os.makedirs(cli_dir, exist_ok=True)
@@ -942,11 +932,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             self.assertNotIn(os.path.normpath(cli_path), dispatcher._MODULE_CACHE)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_fr07_strict_failed_after_send_never_retries(self):
-        """Review#1: strict 模式請求已送達後失敗（逾時/重置/搶占）回傳 1、不重試、不 spawn、不冷派發，防重複執行。"""
-        from core.commands import dispatcher
-
+    def test_strict_failed_after_send_never_retries(self):
+        """驗證 strict 模式請求已送達後失敗（逾時/重置/搶占）回傳 1、不重試、不 spawn、不冷派發，防重複執行。"""
         cfg = dispatcher._ServerSpawnConfig(enabled=True, auto_spawn=True, strict_hot_dispatch=True)
         err_buf = io.StringIO()
         with patch("core.commands.dispatcher._read_server_spawn_config", return_value=cfg), \
@@ -963,8 +950,6 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertIn("Not retried to avoid double execution", err_buf.getvalue())
         self.assertNotIn("[BLOCKER]", err_buf.getvalue())
 
-        # 重試後才送出失敗：同樣不再重試且回報 1
-        import tempfile
         with tempfile.TemporaryDirectory() as tmp_dir:
             os.makedirs(os.path.join(tmp_dir, ".modules", "server"), exist_ok=True)
             os.makedirs(os.path.join(tmp_dir, ".cache", "server"), exist_ok=True)
@@ -980,14 +965,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         self.assertEqual(mock_hot2.call_count, 2)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
     def test_hot_dispatch_attempt_classifies_unreachable_vs_accepted(self):
-        """Review#1 & DEV-01: 無 state/連線拒絕/HTTP 錯誤判為未送達；串流中途失敗或無 task_finish 判為已送達且 _try_hot_dispatch 回傳 1 不降級冷派發。"""
-        import json
-        import tempfile
-        import urllib.error
-        from core.commands import dispatcher
-
+        """驗證無 state/連線拒絕/HTTP 錯誤判為未送達；串流中途失敗或無 task_finish 判為已送達且 _try_hot_dispatch 回傳 1 不降級冷派發。"""
         with tempfile.TemporaryDirectory() as tmp_dir:
             self.assertEqual(dispatcher._hot_dispatch_attempt("m", ["c"], [], tmp_dir), dispatcher._HotDispatchResult(None, False))
             state_dir = os.path.join(tmp_dir, ".cache", "server")
@@ -1025,12 +1004,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
                 self.assertEqual(dispatcher._hot_dispatch_attempt("m", ["c"], [], tmp_dir), dispatcher._HotDispatchResult(3, True))
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_dev01_try_hot_dispatch_accepted_never_falls_back_to_cold(self):
-        """DEV-01: _try_hot_dispatch 於 accepted=True (含 exit_code=1 或中途 socket.timeout) 時直接回傳退出碼/1，僅於 accepted=False 時回傳 None。"""
-        import socket
-        from core.commands import dispatcher
-
+    def test_try_hot_dispatch_accepted_never_falls_back_to_cold(self):
+        """驗證 _try_hot_dispatch 於 accepted=True (含 exit_code=1 或中途 socket.timeout) 時直接回傳退出碼/1，僅於 accepted=False 時回傳 None。"""
         with patch(
             "core.commands.dispatcher._hot_dispatch_attempt",
             return_value=dispatcher._HotDispatchResult(exit_code=1, accepted=True),
@@ -1049,8 +1024,6 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
         ):
             self.assertIsNone(dispatcher._try_hot_dispatch("m", ["c"], [], "/fake"))
 
-        import json
-        import tempfile
         with tempfile.TemporaryDirectory() as tmp_dir:
             state_dir = os.path.join(tmp_dir, ".cache", "server")
             os.makedirs(state_dir, exist_ok=True)
@@ -1060,13 +1033,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
                 self.assertEqual(dispatcher._try_hot_dispatch("m", ["c"], [], tmp_dir), 1)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
     def test_hot_dispatch_surfaces_task_finish_error(self):
-        """OBS-02: task_finish 非零且帶 error 時輸出 '[yscb] Error: <error>' 至 stderr 並納入 error hint；成功時不輸出。"""
-        import json
-        import tempfile
-        from core.commands import dispatcher
-
+        """驗證 task_finish 非零且帶 error 時輸出 '[yscb] Error: <error>' 至 stderr 並納入 error hint；成功時不輸出。"""
         with tempfile.TemporaryDirectory() as tmp_dir:
             state_dir = os.path.join(tmp_dir, ".cache", "server")
             os.makedirs(state_dir, exist_ok=True)
@@ -1088,15 +1056,8 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             self.assertEqual(ok_buf.getvalue(), "")
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
     def test_negative_number_arguments_and_proxy_bypass(self):
         """驗證 OptionResolver 負數參數支援，以及 _hot_dispatch_attempt 對 URLError 斷線異常之 accepted 判定。"""
-        import tempfile
-        import urllib.error
-        from core.commands import dispatcher
-        from core.commands.registry import CommandSpec, OptionSpec, ArgSpec
-        from core.commands.resolver import OptionResolver
-
         spec = CommandSpec(
             name="calc",
             description="calc test",
@@ -1118,7 +1079,6 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
             state_dir = os.path.join(tmp_dir, ".cache", "server")
             os.makedirs(state_dir, exist_ok=True)
             with open(os.path.join(state_dir, "daemon.json"), "w", encoding="utf-8") as f:
-                import json
                 json.dump({"pid": os.getpid(), "port": 1, "token": "t", "root": tmp_dir}, f)
 
             for err_reason in (ConnectionResetError("reset"), BrokenPipeError("broken")):
@@ -1132,6 +1092,6 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
 
         self.mark_passed()
 
+
 if __name__ == "__main__":
     unittest.main()
-

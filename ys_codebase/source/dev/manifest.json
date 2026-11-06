@@ -1,10 +1,10 @@
 {
   "name": "dev",
-  "version": "1.1.4.5",
+  "version": "1.1.4.6",
   "description": "YS-Codebase Developer Tools (Scaffold, Checker, Builder, Tester, Releaser)",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.7"
+    "core": ">=1.2.7.3"
   },
   "optional": {
     "vscode-support": {
@@ -24,6 +24,6 @@
   "release": {
     "type": "bugfix",
     "urgency": "recommended",
-    "summary": "create_mock_source_module 跳過清單收斂、tester tested_mods 補齊、cleanup_sandbox 順序與 Git UTF-8 防護"
+    "summary": "保留測試 core/dev.testing 免單例分裂、對齊 @require 覆蓋優先序、強制終止逾時子行程樹與分離語法錯誤快取"
   }
 }

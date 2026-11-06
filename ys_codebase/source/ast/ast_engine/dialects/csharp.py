@@ -8,6 +8,15 @@ from typing import Any, Dict, List, Optional
 
 from .base import DialectAdapter
 
+_USING_ALIAS_RE = re.compile(
+    r"^\s*(?:global\s+)?using\s+([a-zA-Z0-9_]+)\s*=\s*([a-zA-Z0-9_.]+)\s*;",
+    re.MULTILINE,
+)
+_USING_RE = re.compile(
+    r"^\s*(?:global\s+)?using\s+(?:static\s+)?([a-zA-Z0-9_.]+)\s*;",
+    re.MULTILINE,
+)
+
 
 class CSharpDialect(DialectAdapter):
     language = "c_sharp"
@@ -68,11 +77,9 @@ class CSharpDialect(DialectAdapter):
         imports: Dict[str, str] = {}
         if not source_text:
             return imports
-        using_alias = re.compile(r"^\s*using\s+([a-zA-Z0-9_]+)\s*=\s*([a-zA-Z0-9_.]+);", re.MULTILINE)
-        for m in using_alias.finditer(source_text):
+        for m in _USING_ALIAS_RE.finditer(source_text):
             imports[m.group(1).strip()] = m.group(2).strip()
-        using_re = re.compile(r"^\s*using\s+(?:static\s+)?([a-zA-Z0-9_.]+);", re.MULTILINE)
-        for m in using_re.finditer(source_text):
+        for m in _USING_RE.finditer(source_text):
             ns = m.group(1).strip()
             if "=" in ns:
                 continue

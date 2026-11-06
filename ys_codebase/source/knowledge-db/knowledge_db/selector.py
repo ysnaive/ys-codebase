@@ -4,9 +4,9 @@ knowledge-db 全方位 AST 符號結構化選擇器 (SymbolSelector)
 100% 採用純 Python 原生標準庫，零外部依賴
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import re
-from typing import Any, Dict, Iterable, List, Optional, Set, Union
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from .schema import SymbolKind, UnifiedSymbol
 

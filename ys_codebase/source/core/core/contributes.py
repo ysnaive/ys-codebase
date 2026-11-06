@@ -213,7 +213,11 @@ def _deep_merge(
                 if eff_strat == "replace":
                     base[k] = copy.deepcopy(v)
                 else:
-                    base[k].extend(x for x in v if x not in base[k])
+                    base[k].extend(
+                        copy.deepcopy(x) if isinstance(x, (dict, list)) else x
+                        for x in v
+                        if x not in base[k]
+                    )
             else:
                 base[k] = copy.deepcopy(v) if isinstance(v, (dict, list)) else v
         else:
@@ -285,7 +289,6 @@ def _safe_file_mtime(file_path: str) -> float:
         return os.stat(file_path).st_mtime
     except OSError:
         return 0.0
-
 
 
 def _record_file_stat(files_snapshot: Dict[str, Tuple[float, int]], file_path: str) -> None:
@@ -590,6 +593,43 @@ class ContributesAggregator:
                 ordered.append(m)
         return ordered
 
+    @staticmethod
+    def _merge_validated_donor_target(
+        donor: str,
+        target: str,
+        c_data: Dict[str, Any],
+        aggregated: Dict[str, Dict[str, Any]],
+        core_modules_commands: Dict[str, Any],
+        core_modules_locales: Dict[str, Any],
+    ) -> None:
+        """驗證單一 donor 對 target 的 contributes 資料並合併至 aggregated[target]。"""
+        aggregated.setdefault(target, {})
+        val_res = validate(target, c_data, donor_module=donor)
+        if not val_res.is_valid:
+            logger.warning(f"Contributes validation failed for donor '{donor}' -> target '{target}':")
+            for err in val_res.errors:
+                logger.warning(f"  [{err.path}] {err.message} ({err.suggestion or ''})")
+        valid_body = val_res.payload if val_res.payload is not None else c_data
+        tagged_body = _tag_payload_body(valid_body, donor)
+
+        if target == "core" and "commands" in tagged_body:
+            core_modules_commands[donor] = copy.deepcopy(tagged_body["commands"])
+        if target == "core" and "locales" in tagged_body and isinstance(tagged_body["locales"], dict):
+            core_modules_locales[donor] = copy.deepcopy(tagged_body["locales"])
+
+        fmt_schema = get_format(target)
+        _deep_merge(
+            aggregated[target],
+            tagged_body,
+            schema=fmt_schema,
+            is_project_override=False,
+            raw_overlay=c_data,
+        )
+        if target == "core" and core_modules_commands:
+            aggregated[target].setdefault("commands", {})["__modules__"] = core_modules_commands
+        if target == "core" and core_modules_locales:
+            aggregated[target].setdefault("locales", {})["__modules__"] = core_modules_locales
+
     def _collect_donor_contributes(
         self,
         donor: str,
@@ -610,31 +650,9 @@ class ContributesAggregator:
                     try:
                         c_data = _read_json_cached(target_file_uri)
                         if isinstance(c_data, dict):
-                            val_res = validate(target, c_data, donor_module=donor)
-                            if not val_res.is_valid:
-                                logger.warning(f"Contributes validation failed for donor '{donor}' -> target '{target}':")
-                                for err in val_res.errors:
-                                    logger.warning(f"  [{err.path}] {err.message} ({err.suggestion or ''})")
-                            valid_body = val_res.payload if val_res.payload is not None else c_data
-                            tagged_body = _tag_payload_body(valid_body, donor)
-
-                            if target == "core" and "commands" in tagged_body:
-                                core_modules_commands[donor] = copy.deepcopy(tagged_body["commands"])
-                            if target == "core" and "locales" in tagged_body and isinstance(tagged_body["locales"], dict):
-                                core_modules_locales[donor] = copy.deepcopy(tagged_body["locales"])
-
-                            fmt_schema = get_format(target)
-                            _deep_merge(
-                                aggregated[target],
-                                tagged_body,
-                                schema=fmt_schema,
-                                is_project_override=False,
-                                raw_overlay=c_data,
+                            self._merge_validated_donor_target(
+                                donor, target, c_data, aggregated, core_modules_commands, core_modules_locales
                             )
-                            if target == "core" and core_modules_commands:
-                                aggregated[target].setdefault("commands", {})["__modules__"] = core_modules_commands
-                            if target == "core" and core_modules_locales:
-                                aggregated[target].setdefault("locales", {})["__modules__"] = core_modules_locales
                     except Exception as e:
                         logger.warning(f"Failed to read contributes file '{target_file_uri}': {e}")
             except Exception as e:
@@ -643,30 +661,13 @@ class ContributesAggregator:
         donor_unified_file = f"module://{donor}/contributes.json"
         if vfs.exists(donor_unified_file):
             try:
-                u_data = vfs.read_json(donor_unified_file)
+                u_data = _read_json_cached(donor_unified_file)
                 if isinstance(u_data, dict):
                     for target, c_body in u_data.items():
                         if isinstance(c_body, dict):
-                            aggregated.setdefault(target, {})
-                            val_res = validate(target, c_body, donor_module=donor)
-                            valid_body = val_res.payload if val_res.payload is not None else c_body
-                            tagged_body = _tag_payload_body(valid_body, donor)
-                            if target == "core" and "commands" in tagged_body:
-                                core_modules_commands[donor] = copy.deepcopy(tagged_body["commands"])
-                            if target == "core" and "locales" in tagged_body and isinstance(tagged_body["locales"], dict):
-                                core_modules_locales[donor] = copy.deepcopy(tagged_body["locales"])
-                            fmt_schema = get_format(target)
-                            _deep_merge(
-                                aggregated[target],
-                                tagged_body,
-                                schema=fmt_schema,
-                                is_project_override=False,
-                                raw_overlay=c_body,
+                            self._merge_validated_donor_target(
+                                donor, target, c_body, aggregated, core_modules_commands, core_modules_locales
                             )
-                            if target == "core" and core_modules_commands:
-                                aggregated[target].setdefault("commands", {})["__modules__"] = core_modules_commands
-                            if target == "core" and core_modules_locales:
-                                aggregated[target].setdefault("locales", {})["__modules__"] = core_modules_locales
             except Exception:
                 pass
 
@@ -694,7 +695,7 @@ class ContributesAggregator:
             proj_contrib_uri = f"config://{target}/contribute.json"
             if vfs.exists(proj_contrib_uri):
                 try:
-                    c_data = vfs.read_json(proj_contrib_uri)
+                    c_data = _read_json_cached(proj_contrib_uri)
                     if isinstance(c_data, dict):
                         target_overlay = c_data.get(target, c_data)
                         if isinstance(target_overlay, dict):
@@ -765,4 +766,3 @@ class ContributesAggregator:
         self._apply_project_overrides_and_persist(aggregated, core_modules_locales)
         invalidate_cache()
         return aggregated
-

@@ -101,7 +101,6 @@ class KnowledgeEngine:
             contributes_data=merged_contributes,
             custom_spaces=custom_spaces,
             explicit_weights=space_weights,
-            core_context=core_context,
         )
 
         self.tokenizer = MultilingualTokenizer()
@@ -186,7 +185,6 @@ class KnowledgeEngine:
         contributes_data: Optional[Dict[str, Any]] = None,
         custom_spaces: Optional[Dict[str, Any]] = None,
         explicit_weights: Optional[Dict[str, float]] = None,
-        core_context: Optional[Any] = None,
     ) -> Dict[str, float]:
         """載入並合併各層級之空間檢索加權係數 (`space_weights`)，僅顯式宣告權重之空間納入資料庫索引。"""
         weights: Dict[str, float] = {}
@@ -364,10 +362,6 @@ class KnowledgeEngine:
 
     def clean(self, space: Optional[str] = None) -> None:
         self.pipeline.clean(space=space)
-        try:
-            self.pipeline._reset_consumer_cursor(space_name=None, consumer_id="knowledge-db")
-        except Exception:
-            pass
 
     # ----------------------------------------------------------------------
     # 生命週期與空間操作
@@ -437,16 +431,7 @@ class KnowledgeEngine:
         unified_size_kb = round(bin_unified.stat().st_size / 1024.0, 1) if has_unified_index else 0.0
         unified_mtime = round(bin_unified.stat().st_mtime, 2) if has_unified_index else None
 
-        ast_gen = 0
-        try:
-            if hasattr(self.ast_engine, "get_persisted_meta"):
-                ast_meta = self.ast_engine.get_persisted_meta()
-                if isinstance(ast_meta, dict):
-                    ast_gen = int(ast_meta.get("ast_generation", 0))
-            elif self.ast_engine._ensure_loaded_from_disk() and self.ast_engine._snapshot is not None:
-                ast_gen = int(self.ast_engine._snapshot.ast_generation)
-        except Exception:
-            ast_gen = 0
+        ast_gen = int(self.pipeline.get_current_ast_generation() or 0)
 
         worker_st = read_worker_state(indices_dir)
         worker_running = is_worker_running(indices_dir)
@@ -630,6 +615,24 @@ class KnowledgeEngine:
         """顯式下載或預熱向量模型權重。"""
         return self.embedding_service.download_model(force=force)
 
+    @staticmethod
+    def _build_unified_semantic_bundle(
+        snapshot: Any, created_at: str, source_count: int
+    ) -> SemanticBundle:
+        all_syms = list(snapshot.symbols.values())
+        return SemanticBundle(
+            version="1.0.0",
+            space_name="unified",
+            created_at=created_at,
+            symbols=all_syms,
+            metadata={
+                "source_count": source_count,
+                "file_count": len({sym.file_path for sym in all_syms if sym.file_path}),
+                "origin": "unified",
+                "ast_generation": snapshot.ast_generation,
+            },
+        )
+
     def bundle(
         self,
         space: Optional[str] = None,
@@ -647,18 +650,7 @@ class KnowledgeEngine:
         created_at = datetime.now(timezone.utc).isoformat()
         bundles: List[SemanticBundle] = []
         if not targets and export_path is not None:
-            b_unified = SemanticBundle(
-                version="1.0.0",
-                space_name="unified",
-                created_at=created_at,
-                symbols=list(snapshot.symbols.values()),
-                metadata={
-                    "source_count": 0,
-                    "file_count": len({sym.file_path for sym in snapshot.symbols.values() if sym.file_path}),
-                    "origin": "unified",
-                    "ast_generation": snapshot.ast_generation,
-                },
-            )
+            b_unified = self._build_unified_semantic_bundle(snapshot, created_at, source_count=0)
             self.bundler.export_bundle(b_unified, target_path=export_path)
             return [b_unified]
         for sp in targets:
@@ -696,17 +688,8 @@ class KnowledgeEngine:
         if export_path is not None and len(targets) > 1:
             exp_p = Path(export_path)
             if exp_p.suffix and not exp_p.exists():
-                b_unified = SemanticBundle(
-                    version="1.0.0",
-                    space_name="unified",
-                    created_at=created_at,
-                    symbols=list(snapshot.symbols.values()),
-                    metadata={
-                        "source_count": sum(len(t.include) for t in targets),
-                        "file_count": len({sym.file_path for sym in snapshot.symbols.values() if sym.file_path}),
-                        "origin": "unified",
-                        "ast_generation": snapshot.ast_generation,
-                    },
+                b_unified = self._build_unified_semantic_bundle(
+                    snapshot, created_at, source_count=sum(len(t.include) for t in targets)
                 )
                 self.bundler.export_bundle(b_unified, target_path=export_path)
         return bundles
@@ -773,18 +756,30 @@ _ENGINE_LOCK = threading.Lock()
 def get_engine() -> KnowledgeEngine:
     """取得進程級唯一 KnowledgeEngine 單例，惰性初始化並全域複用。"""
     global _GLOBAL_ENGINE_INSTANCE
-    if _GLOBAL_ENGINE_INSTANCE is None:
-        with _ENGINE_LOCK:
-            if _GLOBAL_ENGINE_INSTANCE is None:
-                _GLOBAL_ENGINE_INSTANCE = KnowledgeEngine()
-    else:
-        try:
-            from .config import KnowledgeDBConfig
-            _GLOBAL_ENGINE_INSTANCE.config = KnowledgeDBConfig.load()
-            _GLOBAL_ENGINE_INSTANCE.pipeline.config = _GLOBAL_ENGINE_INSTANCE.config
-        except Exception:
-            pass
-    return _GLOBAL_ENGINE_INSTANCE
+    with _ENGINE_LOCK:
+        if _GLOBAL_ENGINE_INSTANCE is None:
+            _GLOBAL_ENGINE_INSTANCE = KnowledgeEngine()
+        else:
+            try:
+                from .config import KnowledgeDBConfig
+                new_cfg = KnowledgeDBConfig.load()
+                _GLOBAL_ENGINE_INSTANCE.config = new_cfg
+                _GLOBAL_ENGINE_INSTANCE.pipeline.config = new_cfg
+                emb_svc = getattr(_GLOBAL_ENGINE_INSTANCE, "embedding_service", None)
+                if emb_svc is not None:
+                    emb_svc.enable_vector_search = bool(getattr(new_cfg, "enable_vector_search", True))
+                    emb_svc.max_threads = new_cfg.resolve_threads()
+                    norm_model = emb_svc.normalize_model_name(new_cfg.embedding_model)
+                    if emb_svc.model_name != norm_model:
+                        emb_svc.model_name = norm_model
+                        emb_svc._dimension = None
+                        if not emb_svc.mock_mode:
+                            emb_svc._model = None
+                            emb_svc._is_available = False
+                            emb_svc._init_attempted = False
+            except Exception:
+                pass
+        return _GLOBAL_ENGINE_INSTANCE
 
 
 __all__ = [

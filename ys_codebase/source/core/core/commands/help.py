@@ -33,6 +33,21 @@ class HelpRenderer:
         return f"<{arg_spec.name}>" if arg_spec.required else f"[{arg_spec.name}]"
 
     @classmethod
+    def _format_option_line(cls, opt_name: str, opt_spec: OptionSpec) -> str:
+        """格式化單一選項之說明行。"""
+        val_suffix = ""
+        if opt_spec.takes_value:
+            first_arg = next(iter(opt_spec.args.values()))
+            val_suffix = f" {cls.format_arg_placeholder(first_arg)}"
+        aliases_part = (
+            f" (alias: {', '.join(['-' + a if len(a) == 1 else '--' + a for a in opt_spec.alias])})"
+            if opt_spec.alias
+            else ""
+        )
+        opt_flag = f"--{opt_name}{val_suffix}"
+        return f"    {opt_flag:<30} {opt_spec.description}{aliases_part}"
+
+    @classmethod
     def render_global_help(cls, registry: CommandsRegistry) -> str:
         """渲染全域 CLI 幫助訊息。"""
         lines = [
@@ -188,24 +203,12 @@ class HelpRenderer:
                     opt_spec = cmd_spec.canonical_options.get(opt_name)
                     if not opt_spec:
                         continue
-                    val_suffix = ""
-                    if opt_spec.takes_value:
-                        first_arg = next(iter(opt_spec.args.values()))
-                        val_suffix = f" {cls.format_arg_placeholder(first_arg)}"
-                    aliases_part = f" (alias: {', '.join(['-' + a if len(a) == 1 else '--' + a for a in opt_spec.alias])})" if opt_spec.alias else ""
-                    opt_flag = f"--{opt_name}{val_suffix}"
-                    lines.append(f"    {opt_flag:<30} {opt_spec.description}{aliases_part}")
+                    lines.append(cls._format_option_line(opt_name, opt_spec))
         elif cmd_spec.canonical_options:
             lines.append("")
             lines.append("OPTIONS:")
             for opt_name, opt_spec in sorted(cmd_spec.canonical_options.items()):
-                val_suffix = ""
-                if opt_spec.takes_value:
-                    first_arg = next(iter(opt_spec.args.values()))
-                    val_suffix = f" {cls.format_arg_placeholder(first_arg)}"
-                aliases_part = f" (alias: {', '.join(['-' + a if len(a) == 1 else '--' + a for a in opt_spec.alias])})" if opt_spec.alias else ""
-                opt_flag = f"--{opt_name}{val_suffix}"
-                lines.append(f"    {opt_flag:<30} {opt_spec.description}{aliases_part}")
+                lines.append(cls._format_option_line(opt_name, opt_spec))
         elif not cmd_spec.cmd:
             lines.append("")
             lines.append("OPTIONS:")

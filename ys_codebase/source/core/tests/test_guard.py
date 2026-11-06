@@ -6,40 +6,41 @@ Covers authorized dispatch, unauthorized bypass rejection, and testing mode exem
 import os
 import sys
 import unittest
-from unittest.mock import patch
 from io import StringIO
+from unittest.mock import patch
 
-from dev.testing.case import YSCBTestCase
 from core.guard import (
-    guard_dispatch,
-    GUARD_ENV_TOKEN,
     GUARD_ENV_HOST,
     GUARD_ENV_TESTING,
+    GUARD_ENV_TOKEN,
+    guard_dispatch,
 )
+from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import Requirement, require
 
 
+@require(Requirement.LOGIC)
 class TestGuardSDK(YSCBTestCase):
     def setUp(self):
+        super().setUp()
         self._orig_env = dict(os.environ)
 
     def tearDown(self):
         os.environ.clear()
         os.environ.update(self._orig_env)
+        super().tearDown()
 
     def test_guard_authorized(self):
-        """FT-01: When both token and host dir are present, guard_dispatch passes silently."""
+        """When both token and host dir are present, guard_dispatch passes silently."""
         os.environ[GUARD_ENV_HOST] = "/mock/workspace"
         os.environ[GUARD_ENV_TOKEN] = "valid_token_123"
         os.environ.pop(GUARD_ENV_TESTING, None)
 
-        try:
-            guard_dispatch("test-mod")
-        except SystemExit:
-            self.fail("guard_dispatch raised SystemExit unexpectedly on authorized dispatch.")
+        self.assertIsNone(guard_dispatch("test-mod"))
         self.mark_passed()
 
     def test_guard_unauthorized_exit(self):
-        """FT-02: When token or host dir is missing, guard_dispatch prints guidance and exits with 126."""
+        """When token or host dir is missing, guard_dispatch prints guidance and exits with 126."""
         os.environ.pop(GUARD_ENV_TOKEN, None)
         os.environ.pop(GUARD_ENV_HOST, None)
         os.environ.pop(GUARD_ENV_TESTING, None)
@@ -57,15 +58,12 @@ class TestGuardSDK(YSCBTestCase):
         self.mark_passed()
 
     def test_guard_testing_mode(self):
-        """FT-03: When YSCB_TESTING is 1, guard_dispatch exempts validation."""
+        """When YSCB_TESTING is 1, guard_dispatch exempts validation."""
         os.environ.pop(GUARD_ENV_TOKEN, None)
         os.environ.pop(GUARD_ENV_HOST, None)
         os.environ[GUARD_ENV_TESTING] = "1"
 
-        try:
-            guard_dispatch("any-module")
-        except SystemExit:
-            self.fail("guard_dispatch raised SystemExit unexpectedly in testing mode.")
+        self.assertIsNone(guard_dispatch("any-module"))
         self.mark_passed()
 
 

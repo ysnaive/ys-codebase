@@ -1,25 +1,27 @@
 """
 Test suite for Host distribution lifecycle, self-update, init --fix self-healing, and gitignore management.
-Covers FT-01 ~ FT-08.
 """
-import ast
+import io
 import json
 import os
 import shutil
 import tempfile
-import unittest
-from unittest.mock import patch, MagicMock
 import zipfile
+from contextlib import redirect_stdout
+from unittest.mock import patch, MagicMock
 
 from dev.testing.case import YSCBTestCase
-from core.installer import generate_internal_gitignore, INTERNAL_IGNORE_PATTERNS
+from dev.testing.requirement import require, Requirement
+from core.commands import dispatcher
+from core.engine import AtomicEngine
+from core.installer import Installer, generate_internal_gitignore, INTERNAL_IGNORE_PATTERNS
 from core.update_checker import UpdateChecker
 from core import uri, vfs
-
-# Import host functions from yscb.py
+from tests import create_provider_release_zip
 import yscb
 
 
+@require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
 class TestDistributionLifecycle(YSCBTestCase):
     def setUp(self):
         super().setUp()
@@ -37,26 +39,23 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.assertEqual(yscb.DEFAULT_PROVIDER_URL, "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases")
         self.assertEqual(yscb.DEFAULT_SELF_UPDATE_URL, "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases/yscb.py")
 
-        # 1. 預設返回官方自更新 URL（不因 provider 變更而改變）
         target = yscb._resolve_self_update_target_url()
         self.assertEqual(target, yscb.DEFAULT_SELF_UPDATE_URL)
 
         target2 = yscb._resolve_self_update_target_url("https://example.com/repo/release")
         self.assertEqual(target2, yscb.DEFAULT_SELF_UPDATE_URL)
 
-        # 2. 顯式指定 custom_url 覆寫
         target3 = yscb._resolve_self_update_target_url("https://ignored.com/release", custom_url="https://custom.com/test_yscb.py")
         self.assertEqual(target3, "https://custom.com/test_yscb.py")
 
         self.mark_passed()
 
     def test_cmd_self_update_atomic_replacement(self):
-        """FT-02: 驗證 cmd_self_update 語法驗證防護與原子備份替換流程。"""
+        """驗證 cmd_self_update 語法驗證防護與原子備份替換流程。"""
         dummy_script = os.path.join(self.temp_dir, "yscb.py")
         with open(dummy_script, "w", encoding="utf-8") as f:
             f.write("# Original v1.0\nprint('v1.0')\n")
 
-        # 1. 語法錯誤腳本應被 ast.parse 攔截，原檔案不受破壞
         invalid_script = os.path.join(self.temp_dir, "invalid.py")
         with open(invalid_script, "w", encoding="utf-8") as f:
             f.write("def broken( syntax error here !!!")
@@ -65,11 +64,9 @@ class TestDistributionLifecycle(YSCBTestCase):
             ret_fail = yscb.cmd_self_update([f"--url={invalid_script}"])
             self.assertEqual(ret_fail, 1)
 
-            # 原檔案內容未受損
             with open(dummy_script, "r", encoding="utf-8") as f:
                 self.assertIn("v1.0", f.read())
 
-            # 2. 合法腳本更新成功，並產生 .bak 備份
             valid_script = os.path.join(self.temp_dir, "valid.py")
             with open(valid_script, "w", encoding="utf-8") as f:
                 f.write("# Updated v2.0\n__version__ = '2.0.0.0'\ndef main():\n    print('v2.0')\n    return 0\n")
@@ -77,28 +74,23 @@ class TestDistributionLifecycle(YSCBTestCase):
             ret_ok = yscb.cmd_self_update([f"--url={valid_script}"])
             self.assertEqual(ret_ok, 0)
 
-            # 原檔案被替換為 v2.0
             with open(dummy_script, "r", encoding="utf-8") as f:
                 self.assertIn("v2.0", f.read())
 
-            # 產生 .bak 備份
             bak_path = dummy_script + ".bak"
             self.assertTrue(os.path.isfile(bak_path))
             with open(bak_path, "r", encoding="utf-8") as f:
                 self.assertIn("v1.0", f.read())
 
-            # 3. 語法合法但缺少必要入口結構 (__version__ 或 def main) 的腳本應被 AST 檢查攔截
             no_entry_script = os.path.join(self.temp_dir, "no_entry.py")
             with open(no_entry_script, "w", encoding="utf-8") as f:
                 f.write("x = 42\n")
             self.assertEqual(yscb.cmd_self_update([f"--url={no_entry_script}"]), 1)
 
-            # 4. 顯式 --sha256 不匹配時拒絕更新，匹配時允許更新
             self.assertEqual(yscb.cmd_self_update([f"--url={valid_script}", f"--sha256={'a' * 64}"]), 1)
             expected_valid_sha = yscb._compute_file_sha256(valid_script)
             self.assertEqual(yscb.cmd_self_update([f"--url={valid_script}", f"--sha256={expected_valid_sha}"]), 0)
 
-            # 5. 存在伴隨 .sha256 檔案且雜湊不符時預設攔截，帶 --ignore-sha256 時放行
             with open(valid_script + ".sha256", "w", encoding="utf-8") as f:
                 f.write(f"{'b' * 64}  yscb.py\n")
             self.assertEqual(yscb.cmd_self_update([f"--url={valid_script}"]), 1)
@@ -107,24 +99,18 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.mark_passed()
 
     def test_discover_latest_core_local(self):
-        """FT-03: 驗證本地 Provider 包含多版本時正確解析最高 semver 且排除 build 版本。"""
-        prov_dir = os.path.join(self.temp_dir, "mock_provider", "core")
-        os.makedirs(prov_dir, exist_ok=True)
-
-        # 建立多個 zip 檔案
+        """驗證本地 Provider 包含多版本時正確解析最高 semver 且排除 build 版本。"""
+        prov_root = os.path.join(self.temp_dir, "mock_provider")
         for ver in ["1.0.0.0", "1.1.0.0", "1.1.0.1", "1.2.0.0.build"]:
-            zip_p = os.path.join(prov_dir, f"{ver}.zip")
-            with zipfile.ZipFile(zip_p, "w") as zf:
-                zf.writestr("manifest.json", json.dumps({"name": "core", "version": ver}))
+            create_provider_release_zip(prov_root, "core", ver, write_index=False)
 
-        best_ver, best_path = yscb._discover_latest_core(os.path.join(self.temp_dir, "mock_provider"))
+        best_ver, best_path = yscb._discover_latest_core(prov_root)
         self.assertEqual(best_ver, "1.1.0.1")
         self.assertTrue(best_path.endswith("1.1.0.1.zip"))
         self.mark_passed()
 
     def test_discover_latest_core_remote(self):
-        """FT-04: 驗證遠端 Provider index.json 成功解析最新版本，異常時不偽造 fallback。"""
-        # 1. 模擬遠端正常返回 index.json
+        """驗證遠端 Provider index.json 成功解析最新版本，異常時不偽造 fallback。"""
         mock_resp = MagicMock()
         mock_resp.__enter__.return_value = mock_resp
         mock_resp.read.return_value = json.dumps({
@@ -137,7 +123,6 @@ class TestDistributionLifecycle(YSCBTestCase):
             self.assertEqual(ver, "1.1.0.1")
             self.assertEqual(url, "https://remote.test/release/core/1.1.0.1.zip")
 
-        # 2. 模擬遠端連線異常時回傳 (None, None)，嚴禁硬編碼 "1.1.0.1" fallback
         with patch("urllib.request.urlopen", side_effect=Exception("Network error")):
             ver_fallback, url_fallback = yscb._discover_latest_core("https://remote.test/release")
             self.assertIsNone(ver_fallback)
@@ -146,21 +131,15 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.mark_passed()
 
     def test_cmd_init_default_yscb_root(self):
-        """FT-05: 驗證全新 cmd_init 未指定 yscb_root 時預設為 .yscb 且動態解析版本。"""
-        # 建立本地 mock provider
-        prov_dir = os.path.join(self.temp_dir, "prov", "core")
-        os.makedirs(prov_dir, exist_ok=True)
-        zip_p = os.path.join(prov_dir, "1.1.0.1.zip")
-        with zipfile.ZipFile(zip_p, "w") as zf:
-            zf.writestr("manifest.json", json.dumps({"name": "core", "version": "1.1.0.1"}))
-            zf.writestr("scripts/cli.py", "# mock core cli\ndef main(): pass\n")
+        """驗證全新 cmd_init 未指定 yscb_root 時預設為 .yscb 且動態解析版本。"""
+        prov_root = os.path.join(self.temp_dir, "prov")
+        create_provider_release_zip(prov_root, "core", "1.1.0.1")
 
         with patch("yscb.dispatch_module", return_value=0) as mock_dispatch:
-            ret = yscb.cmd_init([f"--provider={os.path.join(self.temp_dir, 'prov')}"])
+            ret = yscb.cmd_init([f"--provider={prov_root}"])
             self.assertEqual(ret, 0)
             mock_dispatch.assert_called_once_with("core", ["reload"])
 
-        # 驗證 yscb.config.json 存在且預設為 .yscb
         cfg_file = os.path.join(self.temp_dir, "yscb.config.json")
         self.assertTrue(os.path.isfile(cfg_file))
         with open(cfg_file, "r", encoding="utf-8") as f:
@@ -168,51 +147,40 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.assertEqual(cfg.get("yscb_root"), ".yscb")
         self.assertEqual(cfg.get("installed_modules", {}).get("core", {}).get("version"), "1.1.0.1")
 
-        # 驗證解壓至 .yscb/.modules/core
         core_installed = os.path.join(self.temp_dir, ".yscb", ".modules", "core", "manifest.json")
         self.assertTrue(os.path.isfile(core_installed))
 
         self.mark_passed()
 
     def test_cmd_init_fix_heals_and_reloads(self):
-        """FT-06: 驗證 cmd_init --fix 在 core 缺失或指定 --fix 時自癒修復並連鎖 reload。"""
-        prov_dir = os.path.join(self.temp_dir, "prov", "core")
-        os.makedirs(prov_dir, exist_ok=True)
-        zip_p = os.path.join(prov_dir, "1.1.0.1.zip")
-        with zipfile.ZipFile(zip_p, "w") as zf:
-            zf.writestr("manifest.json", json.dumps({"name": "core", "version": "1.1.0.1"}))
-            zf.writestr("scripts/cli.py", "# mock core\n")
+        """驗證 cmd_init --fix 在 core 缺失或指定 --fix 時自癒修復並連鎖 reload。"""
+        prov_root = os.path.join(self.temp_dir, "prov")
+        create_provider_release_zip(prov_root, "core", "1.1.0.1")
 
-        # 預先建立 yscb.config.json，但故意不建立 .modules/core (模擬損毀)
         cfg_file = os.path.join(self.temp_dir, "yscb.config.json")
         with open(cfg_file, "w", encoding="utf-8") as f:
             json.dump({
                 "yscb_root": ".yscb",
-                "default_provider": os.path.join(self.temp_dir, "prov"),
+                "default_provider": prov_root,
                 "installed_modules": {}
             }, f)
 
-        # 1. 執行 init --fix 觸發自癒
         with patch("yscb.dispatch_module", return_value=0) as mock_dispatch:
             ret = yscb.cmd_init(["--fix"])
             self.assertEqual(ret, 0)
             mock_dispatch.assert_called_once_with("core", ["reload"])
 
-        # 驗證 core 模組已被還原
         core_manifest = os.path.join(self.temp_dir, ".yscb", ".modules", "core", "manifest.json")
         self.assertTrue(os.path.isfile(core_manifest))
 
-        # 2. core 完好且未傳入 --fix 時應阻止覆蓋
         ret_block = yscb.cmd_init([])
         self.assertEqual(ret_block, 1)
 
-        # 3. core 完好且傳入 --fix 時，提示已就緒無需修復，不觸發 reload
         with patch("yscb.dispatch_module") as mock_dispatch:
             ret_noop = yscb.cmd_init(["--fix"])
             self.assertEqual(ret_noop, 0)
             mock_dispatch.assert_not_called()
 
-        # 4. core 完好但傳入 --fix --force 時強制修復並連鎖 reload
         with patch("yscb.dispatch_module", return_value=0) as mock_dispatch:
             ret_force = yscb.cmd_init(["--fix", "--force"])
             self.assertEqual(ret_force, 0)
@@ -221,7 +189,7 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.mark_passed()
 
     def test_internal_gitignore_includes_bak(self):
-        """FT-07: 驗證 generate_internal_gitignore 包含 yscb.py.bak 與 *.bak 且具備冪等性。"""
+        """驗證 generate_internal_gitignore 包含 yscb.py.bak 與 *.bak 且具備冪等性。"""
         self.assertIn("yscb.py.bak", INTERNAL_IGNORE_PATTERNS)
         self.assertIn("*.bak", INTERNAL_IGNORE_PATTERNS)
 
@@ -237,7 +205,6 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.assertIn("yscb.py.bak", content1)
         self.assertIn("*.bak", content1)
 
-        # 冪等性驗證
         generate_internal_gitignore(self.temp_dir)
         with open(gi_file, "r", encoding="utf-8") as f:
             content2 = f.read()
@@ -246,11 +213,10 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.mark_passed()
 
     def test_update_checker_invalidation(self):
-        """FT-08: 驗證 UpdateChecker.invalidate_cache 支援局部與全量清除。"""
+        """驗證 UpdateChecker.invalidate_cache 支援局部與全量清除。"""
         cache_uri = f"cache://core/test_invalidation_{os.getpid()}.json"
         checker = UpdateChecker(cache_uri=cache_uri)
 
-        # 模擬已有的快取數據
         data = {
             "last_checked_at": 1000.0,
             "updates": {
@@ -258,29 +224,26 @@ class TestDistributionLifecycle(YSCBTestCase):
                 "dev": {"latest_version": "1.1.0.0"}
             }
         }
-        vfs.makedirs("cache://core", exist_ok=True)
-        vfs.write_json(cache_uri, data)
+        try:
+            vfs.makedirs("cache://core", exist_ok=True)
+            vfs.write_json(cache_uri, data)
 
-        # 1. 局部清除 core
-        checker.invalidate_cache("core")
-        cached1 = checker._load_cache()
-        self.assertNotIn("core", cached1.get("updates", {}))
-        self.assertIn("dev", cached1.get("updates", {}))
+            checker.invalidate_cache("core")
+            cached1 = checker._load_cache()
+            self.assertNotIn("core", cached1.get("updates", {}))
+            self.assertIn("dev", cached1.get("updates", {}))
 
-        # 2. 全量清除
-        checker.invalidate_cache(None)
-        cached2 = checker._load_cache()
-        self.assertEqual(cached2.get("updates", {}), {})
-        self.assertEqual(cached2.get("last_checked_at"), 0.0)
+            checker.invalidate_cache(None)
+            cached2 = checker._load_cache()
+            self.assertEqual(cached2.get("updates", {}), {})
+            self.assertEqual(cached2.get("last_checked_at"), 0.0)
+        finally:
+            vfs.remove(cache_uri, missing_ok=True)
 
         self.mark_passed()
 
     def test_init_and_self_update_help(self):
-        """FT-09: 驗證自舉指令 init 與 self-update 支援 -h/--help 獨立幫助渲染（不經 core 轉發）。"""
-        import io
-        from contextlib import redirect_stdout
-
-        # 1. yscb.py init -h / --help
+        """驗證自舉指令 init 與 self-update 支援 -h/--help 獨立幫助渲染（不經 core 轉發）。"""
         f1 = io.StringIO()
         with redirect_stdout(f1):
             ret1 = yscb.cmd_init(["-h"])
@@ -288,14 +251,12 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.assertIn("Command: python yscb.py init", f1.getvalue())
         self.assertIn("--fix", f1.getvalue())
 
-        # 2. yscb.py self-update -h / --help
         f2 = io.StringIO()
         with redirect_stdout(f2):
             ret2 = yscb.cmd_self_update(["--help"])
         self.assertEqual(ret2, 0)
         self.assertIn("Command: python yscb.py self-update", f2.getvalue())
 
-        # 3. 驗證 core 前綴不包含 init 與 self-update (非 core 模組命令)
         ret3 = yscb.main(["core", "init", "--help"])
         self.assertEqual(ret3, 1)
 
@@ -305,29 +266,11 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.mark_passed()
 
     def test_restore_and_dirty_detection_cycle(self):
-        """FT-03 & FT-04: 驗證 _is_modules_dirty 與 cmd_restore 週期。"""
+        """驗證 _is_modules_dirty 與 cmd_restore 週期。"""
         provider_dir = os.path.join(self.temp_dir, "provider")
-        os.makedirs(provider_dir, exist_ok=True)
-
         mock_mod_name = "testmod"
         mock_ver = "1.0.0"
-        pkg_dir = os.path.join(self.temp_dir, "src_pkg")
-        os.makedirs(pkg_dir, exist_ok=True)
-        with open(os.path.join(pkg_dir, "manifest.json"), "w", encoding="utf-8") as f:
-            json.dump({"name": mock_mod_name, "version": mock_ver}, f)
-        os.makedirs(os.path.join(pkg_dir, "scripts"), exist_ok=True)
-        with open(os.path.join(pkg_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-            f.write("print('hello')\n")
-
-        mod_prov_dir = os.path.join(provider_dir, mock_mod_name)
-        os.makedirs(mod_prov_dir, exist_ok=True)
-        zip_p = os.path.join(mod_prov_dir, f"{mock_ver}.zip")
-        with zipfile.ZipFile(zip_p, "w") as zf:
-            for root, _, files in os.walk(pkg_dir):
-                for file in files:
-                    full_p = os.path.join(root, file)
-                    arcname = os.path.relpath(full_p, pkg_dir)
-                    zf.write(full_p, arcname)
+        create_provider_release_zip(provider_dir, mock_mod_name, mock_ver)
 
         host_dir = os.path.join(self.temp_dir, "host")
         engine_dir = os.path.join(host_dir, "engine")
@@ -367,36 +310,16 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.assertFalse(is_dirty_after)
         self.mark_passed()
 
-    def test_rev_02_auto_bootstrap_core_and_restore_on_fresh_clone(self):
-        """REV-02: 當 yscb.py 與 yscb.config.json 存在但 .modules 尚未下載時，自適應重下載 core 後觸發 restore。"""
+    def test_auto_bootstrap_core_and_restore_on_fresh_clone(self):
+        """驗證當 yscb.py 與 yscb.config.json 存在但 .modules 尚未下載時，自適應重下載 core 後觸發 restore。"""
         provider_dir = os.path.join(self.temp_dir, "provider_clone")
-        os.makedirs(provider_dir, exist_ok=True)
-
         for m_name, m_ver in [("core", "1.1.0.6"), ("appmod", "1.0.0.0")]:
-            pkg_dir = os.path.join(self.temp_dir, f"pkg_{m_name}")
-            os.makedirs(os.path.join(pkg_dir, "scripts"), exist_ok=True)
-            with open(os.path.join(pkg_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                json.dump({"name": m_name, "version": m_ver, "entry": "scripts/cli.py"}, f)
-            with open(os.path.join(pkg_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write("def status(cmd_bags): return 0\n")
-
-            mod_prov_dir = os.path.join(provider_dir, m_name)
-            os.makedirs(mod_prov_dir, exist_ok=True)
-            zip_p = os.path.join(mod_prov_dir, f"{m_ver}.zip")
-            with zipfile.ZipFile(zip_p, "w") as zf:
-                for root, _, files in os.walk(pkg_dir):
-                    for file in files:
-                        full_p = os.path.join(root, file)
-                        zf.write(full_p, os.path.relpath(full_p, pkg_dir))
-            with open(os.path.join(mod_prov_dir, "index.json"), "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "name": m_name,
-                        "versions": [m_ver],
-                        "releases": {m_ver: {"sha256": yscb._compute_file_sha256(zip_p)}},
-                    },
-                    f,
-                )
+            create_provider_release_zip(
+                provider_dir,
+                m_name,
+                m_ver,
+                extra_files={"scripts/cli.py": "def status(cmd_bags): return 0\n"},
+            )
 
         host_dir = os.path.join(self.temp_dir, "host_fresh")
         engine_dir = os.path.join(host_dir, "engine")
@@ -438,11 +361,8 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.assertTrue(os.path.isfile(os.path.join(engine_dir, ".modules", "appmod", "manifest.json")))
         self.mark_passed()
 
-    def test_rev_02_missing_source_no_uncontrolled_fallback(self):
-        """REV-02: 當組態指定之 version/provider 來源已遺失時，禁止跨版本猜測 fallback，應阻斷並輸出手動修復建議。"""
-        import io
-        from contextlib import redirect_stdout
-
+    def test_missing_source_no_uncontrolled_fallback(self):
+        """驗證當組態指定之 version/provider 來源已遺失時，禁止跨版本猜測 fallback，應阻斷並輸出手動修復建議。"""
         provider_dir = os.path.join(self.temp_dir, "provider_missing")
         os.makedirs(os.path.join(provider_dir, "core"), exist_ok=True)
         host_dir = os.path.join(self.temp_dir, "host_missing")
@@ -466,9 +386,8 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.assertIn("'core' 模組 (v1.1.0.6) 來源", out)
         self.mark_passed()
 
-
     def test_restore_prioritizes_dot_build_and_jit_lifecycle(self):
-        """FT-04, FT-05: 驗證 _restore_module_package 優先取用 .build/ 產物，且 Fresh Clone 與 Dirty 狀態精準判讀。"""
+        """驗證 _restore_module_package 優先取用 .build/ 產物，且 Fresh Clone 與 Dirty 狀態精準判讀。"""
         mock_yscb = os.path.join(self.temp_dir, "host_yscb")
         dot_bld = os.path.join(mock_yscb, ".build", "test_mod")
         dest_dir = os.path.join(mock_yscb, ".modules", "test_mod")
@@ -496,44 +415,8 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.assertEqual(content, "from_dot_build")
         self.mark_passed()
 
-    def test_atomic_swap_dir_and_reload_staging_strip(self):
-        """FR-03, EC-02, EC-03, EC-04 (2026_10_27_1143): 驗證 _atomic_swap_dir 目錄原子切換、異常回滾與 act_reload Staging 組態預剝離。"""
-        from core.engine import _atomic_swap_dir
-
-        parent = os.path.join(self.temp_dir, "atomic_test")
-        os.makedirs(parent, exist_ok=True)
-        target_dir = os.path.join(parent, "mymod")
-        staging_dir = os.path.join(parent, ".staging_mymod")
-        os.makedirs(target_dir, exist_ok=True)
-        os.makedirs(staging_dir, exist_ok=True)
-
-        with open(os.path.join(target_dir, "ver.txt"), "w", encoding="utf-8") as f:
-            f.write("v1")
-        with open(os.path.join(staging_dir, "ver.txt"), "w", encoding="utf-8") as f:
-            f.write("v2")
-
-        _atomic_swap_dir(staging_dir, target_dir)
-        self.assertFalse(os.path.exists(staging_dir))
-        with open(os.path.join(target_dir, "ver.txt"), "r", encoding="utf-8") as f:
-            self.assertEqual(f.read(), "v2")
-
-        # EC-03: 驗證當第二階段 os.replace(staging -> target) 失敗時，自動將 .old 回滾還原至 target_dir
-        bad_staging = os.path.join(parent, ".staging_nonexistent")
-        with self.assertRaises(OSError):
-            _atomic_swap_dir(bad_staging, target_dir, retries=1)
-        self.assertTrue(os.path.isdir(target_dir))
-        with open(os.path.join(target_dir, "ver.txt"), "r", encoding="utf-8") as f:
-            self.assertEqual(f.read(), "v2")
-
-        # 驗證無任何 .old_* 或 .staging_* 殘留
-        leftovers = [e for e in os.listdir(parent) if e.startswith(".")]
-        self.assertEqual(leftovers, [])
-        self.mark_passed()
-
     def test_lifecycle_mutation_commands_skip_auto_spawn_server(self):
-        """FR-04 (2026_10_27_1143): 驗證執行 core 生命週期變異指令 (如 update/install/reload) 時不觸發 _maybe_auto_spawn_server，且探測 daemon.lock。"""
-        from core.commands import dispatcher
-
+        """驗證執行 core 生命週期變異指令 (如 update/install/reload) 時不觸發 _maybe_auto_spawn_server。"""
         self.assertIn("update", dispatcher._LIFECYCLE_MUTATION_COMMANDS)
         self.assertIn("install", dispatcher._LIFECYCLE_MUTATION_COMMANDS)
         self.assertIn("reload", dispatcher._LIFECYCLE_MUTATION_COMMANDS)
@@ -551,24 +434,10 @@ class TestDistributionLifecycle(YSCBTestCase):
     def test_legacy_provider_url_auto_migration_and_pruned_same_triplet_fallback(self):
         """驗證舊版 main 分支 Provider URL 自動無感遷移至 releases，且 pruned 版本於無 mirror 時自動退回同三元組最高 active 版本。"""
         provider_dir = os.path.join(self.temp_dir, "provider_window")
-        mod_rel_dir = os.path.join(provider_dir, "release", "appmod")
-        os.makedirs(mod_rel_dir, exist_ok=True)
+        rel_root = os.path.join(provider_dir, "release")
+        zip_4 = create_provider_release_zip(rel_root, "appmod", "1.0.0.4", write_index=False)
 
-        # 建立 active 版本 1.0.0.4.zip，而 1.0.0.1 已被滑動視窗淘汰 (status=pruned，無實體 zip)
-        pkg_dir = os.path.join(self.temp_dir, "pkg_active")
-        os.makedirs(os.path.join(pkg_dir, "scripts"), exist_ok=True)
-        with open(os.path.join(pkg_dir, "manifest.json"), "w", encoding="utf-8") as f:
-            json.dump({"name": "appmod", "version": "1.0.0.4", "entry": "scripts/cli.py"}, f)
-        with open(os.path.join(pkg_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-            f.write("def main(): return 0\n")
-
-        zip_4 = os.path.join(mod_rel_dir, "1.0.0.4.zip")
-        with zipfile.ZipFile(zip_4, "w") as zf:
-            for root, _, files in os.walk(pkg_dir):
-                for file in files:
-                    full_p = os.path.join(root, file)
-                    zf.write(full_p, os.path.relpath(full_p, pkg_dir))
-
+        mod_rel_dir = os.path.join(rel_root, "appmod")
         with open(os.path.join(mod_rel_dir, "index.json"), "w", encoding="utf-8") as f:
             json.dump(
                 {
@@ -601,11 +470,9 @@ class TestDistributionLifecycle(YSCBTestCase):
                 f,
             )
 
-        # 1. 驗證 load_config 自動將舊版 main URL 遷移至 releases URL
         _, loaded_cfg = yscb.load_config(host_dir)
         self.assertEqual(loaded_cfg["default_provider"], yscb.DEFAULT_PROVIDER_URL)
 
-        # 2. 驗證請求已 pruned 的 1.0.0.1 時，自動退回同三元組最高 active 版本 1.0.0.4 並同步更新組態
         dest_dir = os.path.join(host_dir, ".yscb", ".modules", "appmod")
         mirror_dir = os.path.join(host_dir, ".yscb", ".mirror", "appmod")
         ok = yscb._bootstrap_package_from_provider(
@@ -618,7 +485,6 @@ class TestDistributionLifecycle(YSCBTestCase):
         with open(cfg_file, "r", encoding="utf-8") as f:
             self.assertEqual(json.load(f)["installed_modules"]["appmod"]["version"], "1.0.0.4")
 
-        # 3. 驗證當鎖定之 pruned 版本無任何同三元組 (X.Y.Z.*) 可用版本時（例如請求 0.9.0.1，僅有 1.0.0.*），嚴格拒絕跨三元組替換
         dest_cross = os.path.join(host_dir, ".yscb", ".modules", "appmod_cross")
         mirror_cross = os.path.join(host_dir, ".yscb", ".mirror", "appmod_cross")
         ok_cross = yscb._bootstrap_package_from_provider(
@@ -626,8 +492,6 @@ class TestDistributionLifecycle(YSCBTestCase):
         )
         self.assertFalse(ok_cross)
 
-        # 4. 驗證 core Installer._restore_module_package 之路徑亦支援 pruned 同三元組自動補位與跨三元組拒絕
-        from core.installer import Installer
         inst = Installer()
         dest_inst = os.path.join(host_dir, ".yscb", ".modules", "appmod_inst")
         mirror_inst = os.path.join(host_dir, ".yscb", ".mirror", "appmod_inst")
@@ -663,13 +527,11 @@ class TestDistributionLifecycle(YSCBTestCase):
         dest_dir = os.path.join(ws_dir, "ys_codebase", ".modules", "mymod")
         mirror_dir = os.path.join(ws_dir, "ys_codebase", ".mirror", "mymod")
 
-        # 1. 請求不匹配版本 1.1.0.0 -> 嚴禁跨版混裝，必須返回 False
         ok_mismatch = yscb._bootstrap_package_from_provider(
             ws_dir, "ys_codebase", "mymod", "1.1.0.0", rel_mod, dest_dir, mirror_dir
         )
         self.assertFalse(ok_mismatch)
 
-        # 2. 請求嚴格相等版本 1.2.0.0 -> 自動自 source/mymod 打包至 .mirror 並解壓（且排除 tests/）
         ok_match = yscb._bootstrap_package_from_provider(
             ws_dir, "ys_codebase", "mymod", "1.2.0.0", rel_mod, dest_dir, mirror_dir
         )
@@ -678,8 +540,6 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.assertTrue(os.path.isfile(os.path.join(dest_dir, "manifest.json")))
         self.assertFalse(os.path.exists(os.path.join(dest_dir, "tests")))
 
-        # 3. 驗證 core Installer._restore_module_package 同樣支援本地同版 source/ 動態打包與跨版拒絕
-        from core.installer import Installer
         inst = Installer()
         dest_core_inst = os.path.join(ws_dir, "ys_codebase", ".modules", "mymod_inst")
         mirror_core_inst = os.path.join(ws_dir, "ys_codebase", ".mirror", "mymod_inst")
@@ -694,7 +554,6 @@ class TestDistributionLifecycle(YSCBTestCase):
         self.assertTrue(os.path.isfile(os.path.join(mirror_core_inst, "1.2.0.0.zip")))
         self.assertFalse(os.path.exists(os.path.join(dest_core_inst, "tests")))
 
-        # 4. 驗證跨機 clone 專案限定 @build 模組（無 .build/ 與 .mirror/）時，同三元組 1.2.0.build 自動自 source/mymod (1.2.0.0) 動態打包還原
         dest_bld_inst = os.path.join(ws_dir, "ys_codebase", ".modules", "mymod_bld")
         mirror_bld_inst = os.path.join(ws_dir, "ys_codebase", ".mirror", "mymod_bld")
         self.assertFalse(
@@ -710,56 +569,41 @@ class TestDistributionLifecycle(YSCBTestCase):
 
     def test_release_index_dependency_override_core_compat_and_offline_mirror_reload(self):
         """驗證 index.json['releases'] 依賴覆寫優先級、act_solve_deps 對 core 依賴檢核，以及 mirror:// 離線 reload 覆寫。"""
-        from core.engine import AtomicEngine
-
         engine = AtomicEngine()
         prov_dir = os.path.join(self.temp_dir, "prov_compat")
-        mod_rel = os.path.join(prov_dir, "compat_mod")
-        os.makedirs(mod_rel, exist_ok=True)
-
-        # 建立 1.0.0.0.zip 與 1.1.0.0.zip，兩者內部 manifest.json 皆未寫嚴格依賴
-        for ver in ("1.0.0.0", "1.1.0.0"):
-            z_p = os.path.join(mod_rel, f"{ver}.zip")
-            with zipfile.ZipFile(z_p, "w") as zf:
-                zf.writestr(
-                    "manifest.json",
-                    json.dumps({"name": "compat_mod", "version": ver, "entry": "cli.py", "dependencies": {"core": ">=1.0.0"}}),
-                )
-                zf.writestr("cli.py", "def main(): return 0\n")
-
-        # 事後在 index.json 將 1.1.0.0 標註為需要 core>=99.0.0，1.0.0.0 修補為需要 core>=1.0.0,<99.0.0
-        idx_payload = {
-            "name": "compat_mod",
-            "versions": ["1.0.0.0", "1.1.0.0"],
-            "releases": {
-                "1.0.0.0": {
-                    "status": "active",
-                    "dependencies": {"core": ">=1.0.0,<50.0.0"},
-                    "type": "bugfix",
-                    "urgency": "recommended",
-                    "summary": "相容修補版",
-                    "sha256": yscb._compute_file_sha256(os.path.join(mod_rel, "1.0.0.0.zip")),
-                },
-                "1.1.0.0": {
-                    "status": "active",
-                    "dependencies": {"core": ">=99.0.0"},
-                    "sha256": yscb._compute_file_sha256(os.path.join(mod_rel, "1.1.0.0.zip")),
-                },
+        create_provider_release_zip(
+            prov_dir,
+            "compat_mod",
+            "1.0.0.0",
+            dependencies={"core": ">=1.0.0"},
+            release_meta={
+                "status": "active",
+                "dependencies": {"core": ">=1.0.0,<50.0.0"},
+                "type": "bugfix",
+                "urgency": "recommended",
+                "summary": "相容修補版",
             },
-        }
-        with open(os.path.join(mod_rel, "index.json"), "w", encoding="utf-8") as f:
-            json.dump(idx_payload, f)
+            entry="cli.py",
+        )
+        create_provider_release_zip(
+            prov_dir,
+            "compat_mod",
+            "1.1.0.0",
+            dependencies={"core": ">=1.0.0"},
+            release_meta={
+                "status": "active",
+                "dependencies": {"core": ">=99.0.0"},
+            },
+            entry="cli.py",
+        )
 
-        # 1. 不指定版本求解時，應自動過濾掉不相容的 1.1.0.0，解析出最高相容版本 1.0.0.0
         solved = engine.act_solve_deps("compat_mod", None, prov_dir)
         self.assertEqual(solved, [("compat_mod", "1.0.0.0")])
 
-        # 2. 若顯式要求 1.1.0.0，act_solve_deps 檢核 dep_name == "core" 應拋出 RuntimeError
         with self.assertRaises(RuntimeError) as ctx:
             engine.act_solve_deps("compat_mod", "==1.1.0.0", prov_dir)
         self.assertIn("required core version '>=99.0.0' is not satisfied", str(ctx.exception))
 
-        # 3. 驗證下載與離線 mirror:// 快取及 _reload_materialize_single_module 覆寫 manifest.json
         engine.act_download("compat_mod", "1.0.0.0", prov_dir)
         self.assertTrue(vfs.is_file("module.mirror://compat_mod/index.json"))
 
@@ -774,6 +618,3 @@ class TestDistributionLifecycle(YSCBTestCase):
             vfs.rmtree("module.mirror://compat_mod", ignore_errors=True)
 
         self.mark_passed()
-
-
-

@@ -1,17 +1,23 @@
 """
 Unit tests for core.update_checker UpdateChecker.
 """
-import unittest
-import tempfile
-import shutil
-import os
+import io
 import json
+import os
+import shutil
+import tempfile
 import time
-from unittest.mock import patch, MagicMock
-from core.update_checker import UpdateChecker
+import unittest
+from contextlib import redirect_stdout
+from unittest.mock import patch
+
+from core import vfs
+from core.update_checker import UpdateChecker, normalize_release_metadata
 from dev.testing.case import YSCBTestCase
+from dev.testing.requirement import Requirement, require
 
 
+@require(Requirement.ENV)
 class TestUpdateChecker(YSCBTestCase):
     def setUp(self):
         super().setUp()
@@ -46,11 +52,12 @@ class TestUpdateChecker(YSCBTestCase):
                 f.write('__version__: str = "1.0.0.0"\n')
 
     def tearDown(self):
-        super().tearDown()
+        vfs.remove(self.cache_uri, missing_ok=True)
         shutil.rmtree(self.temp_dir, ignore_errors=True)
+        super().tearDown()
 
     def test_update_detection_and_tips(self):
-        """FT-04: 驗證正確探測到新版本並生成提示字串。"""
+        """驗證正確探測到新版本並生成提示字串。"""
         checker = UpdateChecker(
             cache_uri=self.cache_uri,
             throttle_seconds=10,
@@ -67,7 +74,7 @@ class TestUpdateChecker(YSCBTestCase):
         self.mark_passed()
 
     def test_throttling_within_window(self):
-        """FT-04: 驗證在節流時間內直接返回快取，不重複探測。"""
+        """驗證在節流時間內直接返回快取，不重複探測。"""
         checker = UpdateChecker(
             cache_uri=self.cache_uri,
             throttle_seconds=3600,
@@ -103,7 +110,7 @@ class TestUpdateChecker(YSCBTestCase):
         self.mark_passed()
 
     def test_host_script_update_detection_and_agent_blocker_tip(self):
-        """REV-01: 驗證入口檔 yscb.py __version__ 語意版本比對、特化 AGENT BLOCKER 提示與 self-update 快取清除。"""
+        """驗證入口檔 yscb.py __version__ 語意版本比對、特化 AGENT BLOCKER 提示與 self-update 快取清除。"""
         # 在 temp_dir 建立本機 yscb.py (1.1.0.5) 與來源端 yscb.py (1.1.0.6)
         local_yscb = os.path.join(self.temp_dir, "yscb.py")
         with open(local_yscb, "w", encoding="utf-8") as f:
@@ -138,7 +145,7 @@ class TestUpdateChecker(YSCBTestCase):
         self.mark_passed()
 
     def test_dispatcher_triggers_update_check_on_any_command(self):
-        """REV-01: 驗證 dispatcher.dispatch 在執行任意指令後均會觸發 _maybe_check_and_print_updates。"""
+        """驗證 dispatcher.dispatch 在執行任意指令後均會觸發 _maybe_check_and_print_updates。"""
         from core.commands import dispatcher
         from core.commands.registry import CommandsRegistry
 
@@ -199,8 +206,9 @@ class TestUpdateChecker(YSCBTestCase):
         self.mark_passed()
 
     def test_forward_safe_unknown_metadata_and_incompatible_core_filtering(self):
-        """驗證未知 type/urgency 向前相容解析，以及過濾掉與當前已安裝 core 版本不相容之候選更新版本。"""
+        """驗證未知 type/urgency 向前相容解析、YSCB_NO_UPDATE_CHECK 旁路、@build 跳過、print_tips_if_available，以及過濾不相容之候選更新版本。"""
         self.cfg_data["installed_modules"]["dev"] = {"version": "1.1.0.0", "provider": self.prov_dir}
+        self.cfg_data["installed_modules"]["local_build_mod"] = {"version": "1.0.0.build", "provider": "@build"}
         with open(self.cfg_path, "w", encoding="utf-8") as f:
             json.dump(self.cfg_data, f)
 
@@ -236,7 +244,24 @@ class TestUpdateChecker(YSCBTestCase):
             throttle_seconds=10,
             config_path=self.cfg_path,
         )
+
+        # normalize_release_metadata 邊界驗證
+        self.assertEqual(
+            normalize_release_metadata(None),
+            {"type": "", "urgency": "optional", "summary": "", "is_critical": False, "rank": 1},
+        )
+        norm_bad = normalize_release_metadata({"status": "bad", "dependencies": "bad", "type": 123, "urgency": "bad"})
+        self.assertEqual(norm_bad["type"], "123")
+        self.assertEqual(norm_bad["urgency"], "bad")
+        self.assertEqual(norm_bad["rank"], 2)
+        self.assertFalse(norm_bad["is_critical"])
+
+        # YSCB_NO_UPDATE_CHECK=1 旁路驗證
+        with patch.dict(os.environ, {"YSCB_NO_UPDATE_CHECK": "1"}):
+            self.assertEqual(checker.check_updates(force=True), {})
+
         updates = checker.check_updates(force=True)
+        self.assertNotIn("local_build_mod", updates)
         self.assertIn("dev", updates)
         # 1.1.2.0 requires core>=2.0.0 (installed core is 1.0.0.0), so latest compatible is 1.1.1.0
         self.assertEqual(updates["dev"]["latest_version"], "1.1.1.0")
@@ -246,10 +271,15 @@ class TestUpdateChecker(YSCBTestCase):
         self.assertEqual(len(dev_tips), 1)
         self.assertIn("[SECURITY]", dev_tips[0])
         self.assertIn("加固沙盒權限邊界", dev_tips[0])
+
+        err_buf = io.StringIO()
+        with redirect_stdout(err_buf):
+            checker.print_tips_if_available()
+        self.assertIn("[SECURITY]", err_buf.getvalue())
         self.mark_passed()
 
     def test_host_script_content_drift_detection_and_banner(self):
-        """T-16: 驗證 yscb.py 版本號相同但內容 SHA-256 漂移時偵測 is_drift=True 並輸出內容漂移警告橫幅，且忽略 CRLF 差異。"""
+        """驗證 yscb.py 版本號相同但內容 SHA-256 漂移時偵測 is_drift=True 並輸出內容漂移警告橫幅，且忽略 CRLF 差異。"""
         local_yscb = os.path.join(self.temp_dir, "yscb.py")
         remote_yscb = os.path.join(self.prov_dir, "yscb.py")
 

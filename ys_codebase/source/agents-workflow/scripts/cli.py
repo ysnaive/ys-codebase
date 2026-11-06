@@ -2,27 +2,27 @@
 CLI Entry point for agents-workflow.
 Migrated to core.commands active execution contract with strong-typed CmdBags.
 """
-import sys
-import json
 import builtins
+import json
+import sys
 from typing import Any, Dict, Optional
 
-from core.commands import CmdBags, CmdOption
-from core.guard import guard_dispatch
 from agents_workflow.compiler import ArtifactCompiler
 from agents_workflow.initializer import WorkflowInitializer
-from agents_workflow.publisher import ReleasePublisher
-from agents_workflow.targets import ReleaseTargetManager
 from agents_workflow.plans import (
     PlanArchiver,
     PlanScanner,
     PlanSearcher,
-    PlanVerifier,
     PlanSeverity,
     PlansToolchainError,
+    PlanVerifier,
     SessionTraceEngine,
 )
+from agents_workflow.publisher import ReleasePublisher
 from agents_workflow.roadmap import RoadmapManager, TodoManager
+from agents_workflow.targets import ReleaseTargetManager
+from core.commands import CmdBags, CmdOption
+from core.guard import guard_dispatch
 
 
 def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
@@ -82,6 +82,20 @@ def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
     return CmdBags(raw_cmd="", command=default_cmd, args=[], options={})
 
 
+def _get_str_option(bags: CmdBags, name: str, default: str = "") -> str:
+    """安全提取字串選項值並去除首尾空白；若為布林旗標、空白或未設定則回傳 default。"""
+    val = bags.get_option_value(name)
+    if isinstance(val, str):
+        cleaned = val.strip()
+        if cleaned:
+            return cleaned
+    elif val is not None and not isinstance(val, bool):
+        cleaned = str(val).strip()
+        if cleaned:
+            return cleaned
+    return default
+
+
 def _setup_stream_encodings():
     if hasattr(sys.stdout, "reconfigure"):
         try:
@@ -101,8 +115,7 @@ def roadmap_list(cmd_bags: Any) -> int:
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "roadmap_list")
     mgr = RoadmapManager()
-    opt_status = bags.get_option_value("status")
-    status_filter = str(opt_status).strip() if isinstance(opt_status, str) and opt_status.strip() else None
+    status_filter = _get_str_option(bags, "status") or None
     table_str = mgr.format_summary_table(status_filter=status_filter)
     print(table_str)
     return 0
@@ -117,10 +130,8 @@ def roadmap_promote(cmd_bags: Any) -> int:
         print("[agents-workflow:roadmap] Error: Missing topic to promote. Usage: roadmap promote <topic> [--plan <dir>] [--model <ModelName>]")
         return 1
     topic = bags.args[0]
-    opt_plan = bags.get_option_value("plan")
-    plan_dir = str(opt_plan).strip() if isinstance(opt_plan, str) and opt_plan.strip() else None
-    opt_model = bags.get_option_value("model")
-    model_str = str(opt_model).strip() if isinstance(opt_model, str) and opt_model.strip() else "Unknown"
+    plan_dir = _get_str_option(bags, "plan") or None
+    model_str = _get_str_option(bags, "model", "Unknown")
 
     mgr = RoadmapManager()
     res = mgr.promote_roadmap(topic_or_file=topic, model=model_str, target_plan=plan_dir)
@@ -186,12 +197,9 @@ def todo_add(cmd_bags: Any) -> int:
         print("[agents-workflow:todo] Error: Missing title. Usage: todo add \"<標題>\" [--scope <模組>] [--note \"<備註>\"] [--model <ModelName>]")
         return 1
     title = " ".join(bags.args).strip()
-    opt_scope = bags.get_option_value("scope")
-    scope = str(opt_scope).strip() if isinstance(opt_scope, str) and opt_scope.strip() else "general"
-    opt_note = bags.get_option_value("note")
-    note = str(opt_note).strip() if isinstance(opt_note, str) and opt_note.strip() else "無"
-    opt_model = bags.get_option_value("model")
-    model_str = str(opt_model).strip() if isinstance(opt_model, str) and opt_model.strip() else "Unknown"
+    scope = _get_str_option(bags, "scope", "general")
+    note = _get_str_option(bags, "note", "無")
+    model_str = _get_str_option(bags, "model", "Unknown")
 
     mgr = TodoManager()
     try:
@@ -213,8 +221,7 @@ def todo_list(cmd_bags: Any) -> int:
     guard_dispatch("agents-workflow")
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "todo_list")
-    opt_scope = bags.get_option_value("scope")
-    scope = str(opt_scope).strip() if isinstance(opt_scope, str) and opt_scope.strip() else None
+    scope = _get_str_option(bags, "scope") or None
 
     mgr = TodoManager()
     print(mgr.format_todo_table(scope_keyword=scope))
@@ -229,12 +236,9 @@ def todo_promote(cmd_bags: Any) -> int:
     if not bags.args:
         print("[agents-workflow:todo] Error: Missing TODO ID(s) to promote. Usage: todo promote <TODO-ID> [TODO-ID...] --slug <plan_slug> [--plan <dir>] [--model <ModelName>]")
         return 1
-    opt_slug = bags.get_option_value("slug")
-    slug = str(opt_slug).strip() if isinstance(opt_slug, str) and opt_slug.strip() else None
-    opt_plan = bags.get_option_value("plan")
-    plan_dir = str(opt_plan).strip() if isinstance(opt_plan, str) and opt_plan.strip() else None
-    opt_model = bags.get_option_value("model")
-    model_str = str(opt_model).strip() if isinstance(opt_model, str) and opt_model.strip() else "Unknown"
+    slug = _get_str_option(bags, "slug") or None
+    plan_dir = _get_str_option(bags, "plan") or None
+    model_str = _get_str_option(bags, "model", "Unknown")
 
     mgr = TodoManager()
     res = mgr.promote_todos(todo_ids=bags.args, slug=slug, model=model_str, target_plan=plan_dir)
@@ -280,12 +284,12 @@ def release(cmd_bags: Any) -> int:
     publisher = ReleasePublisher()
     print("[agents-workflow] Starting release transaction...")
     res = publisher.release_all(force=force)
-    
+
     if res.get("success", False):
         if res.get("short_circuited", False):
             print(f"[agents-workflow] Release up to date (no changes detected, skipped {res.get('skipped_count', 0)} files).")
         else:
-            print(f"[agents-workflow] Release completed successfully!")
+            print("[agents-workflow] Release completed successfully!")
             print(f"  * Written files:   {res.get('written_count', 0)}")
             print(f"  * Unchanged files: {res.get('skipped_count', 0)}")
             print(f"  * Total published: {res.get('published_count', 0)}")
@@ -296,7 +300,7 @@ def release(cmd_bags: Any) -> int:
             print(f"  * Warning orphans: {', '.join(res.get('orphan_targets', []))}")
         return 0
     else:
-        print(f"[agents-workflow] Release failed:")
+        print("[agents-workflow] Release failed:")
         print(f"  - {res.get('error', 'Unknown error')}")
         for d in res.get("details", []):
             print(f"    * {d}")
@@ -304,7 +308,7 @@ def release(cmd_bags: Any) -> int:
 
 
 def release_target(cmd_bags: Any) -> int:
-    """管理 release-target 清單與狀態（相容 --add/add 與 --remove/remove，支援 --proj 旗標）。"""
+    """管理 release-target 清單與狀態（相容 --add/add 與 --remove/remove/--rm/rm，支援 --proj 旗標）。"""
     guard_dispatch("agents-workflow")
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "release-target")
@@ -313,17 +317,16 @@ def release_target(cmd_bags: Any) -> int:
     tier_label = "PROJECT" if is_proj else "LOCAL"
 
     # 1. 優先判斷 Add 語法（支援 --add <t> 或 add <t>）
-    is_add = bags.has_option("add") or (bool(bags.args) and bags.args[0] in ("add", "--add"))
+    add_tokens = ("add", "--add")
+    is_add = bags.has_option("add") or (bool(bags.args) and bags.args[0] in add_tokens)
     if is_add:
-        opt_val = bags.get_option_value("add")
+        opt_val = _get_str_option(bags, "add")
         target_name = (
-            opt_val if isinstance(opt_val, str) and opt_val.strip() else None
-        ) or (
-            bags.args[1] if bags.args and bags.args[0] in ("add", "--add") and len(bags.args) > 1 else None
-        ) or (
-            bags.args[0] if bags.args and bags.args[0] not in ("add", "--add") else None
+            opt_val
+            or (bags.args[1].strip() if bags.args and bags.args[0] in add_tokens and len(bags.args) > 1 else "")
+            or (bags.args[0].strip() if bags.args and bags.args[0] not in add_tokens else "")
         )
-        if not target_name or not isinstance(target_name, str) or not target_name.strip():
+        if not target_name:
             print("[agents-workflow] Error: Missing target name for --add. Usage: release-target --add <target> [--proj]")
             return 1
         print(f"[agents-workflow] Adding release target '{target_name}' ({tier_label}) and triggering atomic release...")
@@ -335,18 +338,21 @@ def release_target(cmd_bags: Any) -> int:
             print(f"[agents-workflow] Failed enabling target '{target_name}' ({tier_label}).")
             return 1
 
-    # 2. 優先判斷 Remove 語法（支援 --remove <t> 或 remove <t>）
-    is_remove = bags.has_option("remove") or (bool(bags.args) and bags.args[0] in ("remove", "--remove", "--rm"))
+    # 2. 優先判斷 Remove 語法（支援 --remove <t>、remove <t>、--rm <t> 或 rm <t>）
+    remove_tokens = ("remove", "--remove", "rm", "--rm")
+    is_remove = (
+        bags.has_option("remove")
+        or bags.has_option("rm")
+        or (bool(bags.args) and bags.args[0] in remove_tokens)
+    )
     if is_remove:
-        opt_val = bags.get_option_value("remove")
+        opt_val = _get_str_option(bags, "remove") or _get_str_option(bags, "rm")
         target_name = (
-            opt_val if isinstance(opt_val, str) and opt_val.strip() else None
-        ) or (
-            bags.args[1] if bags.args and bags.args[0] in ("remove", "--remove", "--rm") and len(bags.args) > 1 else None
-        ) or (
-            bags.args[0] if bags.args and bags.args[0] not in ("remove", "--remove", "--rm") else None
+            opt_val
+            or (bags.args[1].strip() if bags.args and bags.args[0] in remove_tokens and len(bags.args) > 1 else "")
+            or (bags.args[0].strip() if bags.args and bags.args[0] not in remove_tokens else "")
         )
-        if not target_name or not isinstance(target_name, str) or not target_name.strip():
+        if not target_name:
             print("[agents-workflow] Error: Missing target name for --remove. Usage: release-target --remove <target> [--proj]")
             return 1
         print(f"[agents-workflow] Removing release target '{target_name}' ({tier_label}) and triggering atomic release...")
@@ -370,7 +376,7 @@ def release_target(cmd_bags: Any) -> int:
         print(f"{'TARGET NAME':<20} {'STATUS':<26} {'DESCRIPTION'}")
         print("-" * 88)
         for t in targets:
-            status_str = t['status']
+            status_str = t["status"]
             print(f"{t['name']:<20} {status_str:<26} {t['description']}")
         print("-" * 88)
         return 0
@@ -383,19 +389,19 @@ def compile(cmd_bags: Any) -> int:
     """執行 Stage 1 中繼工廠編譯管線。"""
     guard_dispatch("agents-workflow")
     _setup_stream_encodings()
-    bags = _normalize_bags(cmd_bags, "compile")
+    _normalize_bags(cmd_bags, "compile")
     compiler = ArtifactCompiler()
     print("[agents-workflow] Starting Stage 1 artifact compilation pipeline...")
     result = compiler.compile_stage1()
-    
+
     if result["success"]:
-        print(f"[agents-workflow] Stage 1 compilation completed successfully!")
+        print("[agents-workflow] Stage 1 compilation completed successfully!")
         print(f"  * Cached files:    {len(result.get('resolved_items', []))}")
         print(f"  * Active inserts:  {result.get('inserted_count', 0)}")
         print(f"  * Known tokens:    {result.get('tokens_count', 0)}")
         return 0
     else:
-        print(f"[agents-workflow] Stage 1 compilation failed with errors:")
+        print("[agents-workflow] Stage 1 compilation failed with errors:")
         for err in result.get("errors", []):
             print(f"  - {err}")
         return 1
@@ -405,14 +411,14 @@ def tokens(cmd_bags: Any) -> int:
     """檢視全系統已註冊之 Token 錨點清單與語意 URI 說明。"""
     guard_dispatch("agents-workflow")
     _setup_stream_encodings()
-    bags = _normalize_bags(cmd_bags, "tokens")
+    _normalize_bags(cmd_bags, "tokens")
     compiler = ArtifactCompiler()
     tokens_list = compiler.get_registered_tokens()
-    
+
     if not tokens_list:
         print("[agents-workflow] No registered tokens found.")
         return 0
-        
+
     print(f"\n[agents-workflow] Registered Token Anchors ({len(tokens_list)}):")
     print("-" * 75)
     print(f"{'TOKEN NAME':<32} {'DESCRIPTION'}")
@@ -429,14 +435,14 @@ def list(cmd_bags: Any) -> int:
     """檢視當前已安裝模組清冊與 agents-workflow 導出規範清單。"""
     guard_dispatch("agents-workflow")
     _setup_stream_encodings()
-    bags = _normalize_bags(cmd_bags, "list")
+    _normalize_bags(cmd_bags, "list")
     compiler = ArtifactCompiler()
     exports = compiler.get_exported_artifacts()
-    
+
     if not exports:
         print("[agents-workflow] No exported artifacts found.")
         return 0
-        
+
     print(f"\n[agents-workflow] Exported Artifacts Catalog ({len(exports)}):")
     print("-" * 80)
     print(f"{'TYPE':<12} {'SOURCE URI / PATH':<45} {'DESCRIPTION'}")
@@ -459,22 +465,23 @@ def init(cmd_bags: Any) -> int:
     bags = _normalize_bags(cmd_bags, "init")
     auto_confirm = bags.has_option("yes") or bags.has_option("y")
     paths_override: Dict[str, str] = {}
-    
-    if bags.get_option_value("path-plans"):
-        paths_override["plans"] = str(bags.get_option_value("path-plans"))
-    if bags.get_option_value("path-archived"):
-        paths_override["archived"] = str(bags.get_option_value("path-archived"))
-    if bags.get_option_value("path-docs"):
-        paths_override["docs"] = str(bags.get_option_value("path-docs"))
-    if bags.get_option_value("path-roadmap"):
-        paths_override["roadmap"] = str(bags.get_option_value("path-roadmap"))
+
+    for opt_key, cfg_key in (
+        ("path-plans", "plans"),
+        ("path-archived", "archived"),
+        ("path-docs", "docs"),
+        ("path-roadmap", "roadmap"),
+    ):
+        opt_val = _get_str_option(bags, opt_key)
+        if opt_val:
+            paths_override[cfg_key] = opt_val
 
     initializer = WorkflowInitializer()
     is_interactive = hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
     res = initializer.run_init_default(
         paths_override=paths_override,
         auto_confirm=auto_confirm,
-        interactive=is_interactive
+        interactive=is_interactive,
     )
     return 0 if res.get("success", False) else 1
 
@@ -494,7 +501,7 @@ def plan_archive(cmd_bags: Any) -> int:
     try:
         res = archiver.archive_plan(plan_name, force=force)
         if res.get("cleaned_handoff"):
-            print(f"  * [CLEANUP] 已清理暫時性交接快照：handoff.md")
+            print("  * [CLEANUP] 已清理暫時性交接快照：handoff.md")
         for w in res.get("warnings", []):
             print(f"  [WARNING] {w}")
         print(f"[agents-workflow:plan] [SUCCESS] 已成功將計畫歸檔至：{res.get('dest_path')}")
@@ -515,23 +522,16 @@ def plan_status(cmd_bags: Any) -> int:
     scanner = PlanScanner()
 
     is_resume = bags.has_option("resume")
-    opt_plan = bags.get_option_value("plan")
-    target_plan = (
-        str(opt_plan).strip()
-        if isinstance(opt_plan, str) and opt_plan.strip()
-        else (bags.args[0] if bags.args else None)
-    )
+    target_plan = _get_str_option(bags, "plan") or (bags.args[0].strip() if bags.args and str(bags.args[0]).strip() else None)
 
     if is_resume or target_plan:
         if not is_resume:
-            # 未加 --resume 但指定了 --plan / plan_name：先印狀態矩陣，再印唯讀領航資訊
             print(scanner.render_matrix_ascii())
         res = scanner.execute_resume(
             plan_name_or_subpath=target_plan,
             consume_handoff=is_resume,
         )
         if not res.get("success", False):
-            # 若存在多個活躍計畫且未指定 --plan，先印出狀態矩陣方便使用者/Agent 確認
             print(scanner.render_matrix_ascii())
             print(res.get("formatted_output", ""))
             return 1
@@ -552,13 +552,13 @@ def plan_search(cmd_bags: Any) -> int:
     is_full = bags.has_option("full")
     is_json = bags.has_option("json")
     limit = 20 if not is_dr else 25
-    year = str(bags.get_option_value("year")) if bags.get_option_value("year") else None
-    month = str(bags.get_option_value("month")) if bags.get_option_value("month") else None
-    
-    l_opt = bags.get_option_value("limit")
+    year = _get_str_option(bags, "year") or None
+    month = _get_str_option(bags, "month") or None
+
+    l_opt = _get_str_option(bags, "limit")
     if l_opt:
         try:
-            limit = int(str(l_opt).strip())
+            limit = int(l_opt)
         except ValueError:
             pass
 
@@ -623,29 +623,21 @@ def plan_verify(cmd_bags: Any) -> int:
     is_json = bags.has_option("json")
     target_name = bags.args[0] if bags.args else None
 
-    opt_phase = bags.get_option_value("phase")
-    phase_str = str(opt_phase).strip() if isinstance(opt_phase, str) and opt_phase.strip() else "all"
-
-    opt_log = bags.get_option_value("log")
-    log_msg = str(opt_log).strip() if isinstance(opt_log, str) and opt_log.strip() else None
-
-    opt_type = bags.get_option_value("type")
-    log_type = str(opt_type).strip() if isinstance(opt_type, str) and opt_type.strip() else "PHASE"
-
-    opt_model = bags.get_option_value("model")
-    model_str = str(opt_model).strip() if isinstance(opt_model, str) and opt_model.strip() else None
+    phase_str = _get_str_option(bags, "phase", "all")
+    log_msg = _get_str_option(bags, "log") or None
+    log_type = _get_str_option(bags, "type", "PHASE")
+    model_str = _get_str_option(bags, "model") or None
 
     verifier = PlanVerifier()
 
-    # 若未指定 target_name 但傳入了 --log 或指定單一 --phase (非 all)，自動透過 PlanScanner 定位單一活躍計畫（含活躍 sub_XX）
     if not target_name and (log_msg or phase_str.upper() not in ("ALL", "")):
         scanner = PlanScanner()
         t_dir, err_msg = scanner.resolve_target_plan_dir(None)
         if err_msg or t_dir is None:
             print(f"[agents-workflow:plan] [ERROR] {err_msg or '無法自動定位單一目標計畫，請明確傳入 <plan_name>。'}")
             return 1
-        # 若為 Umbrella 且未指定子計畫，自動深入活躍 sub_XX
         from agents_workflow.plans.status import PlanStatusResolver
+
         nav = PlanStatusResolver.resolve_next_action(t_dir)
         target_name = str(nav["target_plan_dir"])
 
@@ -685,9 +677,9 @@ def plan_verify(cmd_bags: Any) -> int:
         if r.log_status == "appended":
             print(f"    |-- [CHANGELOG] 已免讀自動追加變更日誌列 (Type: {log_type.upper()})")
         elif r.log_status == "idempotent_skipped":
-            print(f"    |-- [IDEMPOTENT] 變更日誌首列已存在相同 (類型, 摘要)，略過重複寫入")
+            print("    |-- [IDEMPOTENT] 變更日誌首列已存在相同 (類型, 摘要)，略過重複寫入")
         elif r.log_status == "skipped_on_fail":
-            print(f"    |-- [BLOCKED] 因檢核存在 FAIL，已阻斷寫入 changelog.md")
+            print("    |-- [BLOCKED] 因檢核存在 FAIL，已阻斷寫入 changelog.md")
         if r.status != PlanSeverity.PASS:
             for iss in r.issues:
                 loc = f"{iss.file_name}:{iss.line_number}" if iss.line_number else iss.file_name
@@ -710,14 +702,13 @@ def plan(cmd_bags: Any) -> int:
     guard_dispatch("agents-workflow")
     bags = _normalize_bags(cmd_bags, "plan")
     if not bags.args:
-        # 當無子命令時，轉呼叫 plan_status
         return plan_status(bags)
     action = bags.args[0].lower()
     sub_bags = CmdBags(
         raw_cmd=bags.raw_cmd,
         command=f"plan_{action}",
         args=bags.args[1:],
-        options=bags.options
+        options=bags.options,
     )
     if action == "archive":
         return plan_archive(sub_bags)
@@ -738,13 +729,10 @@ def session_trace(cmd_bags: Any) -> int:
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "session_trace")
 
-    opt_plan = bags.get_option_value("plan")
-    plan_arg = str(opt_plan).strip() if isinstance(opt_plan, str) and opt_plan.strip() else (
-        str(bags.args[0]).strip() if bags.args else None
+    plan_arg = _get_str_option(bags, "plan") or (
+        str(bags.args[0]).strip() if bags.args and str(bags.args[0]).strip() else None
     )
-
-    opt_transcript = bags.get_option_value("transcript")
-    transcript_arg = str(opt_transcript).strip() if isinstance(opt_transcript, str) and opt_transcript.strip() else None
+    transcript_arg = _get_str_option(bags, "transcript") or None
 
     opt_since = bags.get_option_value("since")
     since_min: Optional[float] = None
@@ -790,7 +778,6 @@ def session_trace(cmd_bags: Any) -> int:
         limit=limit_val,
     )
 
-    # 若顯式指定了不存在之 --plan，回傳非 0 退出碼
     if plan_arg and report.target_plan is None and "找不到指定的計畫目錄" in report.plan_resolution_note:
         if is_json:
             print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
@@ -803,6 +790,3 @@ def session_trace(cmd_bags: Any) -> int:
     else:
         print(report.render_text())
     return 0
-
-
-

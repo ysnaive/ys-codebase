@@ -37,6 +37,12 @@ LOCALE_NOUN_INNER_REGEX = re.compile(r"__%\{\s*([A-Za-z0-9_.:-]+)\s*\}__")
 LOCAL_URI_EXACT_REGEX = re.compile(r"^__#\{\s*([^}]+)\s*\}__$")
 PROJECT_URI_EXACT_REGEX = re.compile(r"^__\$(?:\(\s*([^)]*?)\s*\))?\{\s*([^}]+)\s*\}__$")
 
+URI_SCHEME_PREFIX_REGEX = re.compile(r"^[a-zA-Z0-9_\+\-]+://")
+DOUBLE_SLASH_CLEAN_REGEX = re.compile(r"(?<![a-zA-Z0-9_\+\-]:)/{2,}")
+MD_LINK_BACKTICK_CLEAN_REGEX = re.compile(r"\]\(`?([^`\r\n\)]+)`?\)")
+FRONTMATTER_BLOCK_REGEX = re.compile(r"\A---\r?\n([\s\S]*?)\r?\n---")
+FRONTMATTER_DESC_LINE_REGEX = re.compile(r"^\s*description\s*:\s*(.+?)\s*$")
+
 
 def _preprocess_directives(
     content: str,
@@ -146,19 +152,10 @@ def check_unenclosed_tags(content: str, doc_name: str = "") -> None:
             print(f"[compiler:warning] Unenclosed placeholder tag '{m}' detected{target_str} (must be enclosed in backticks '`...`')", file=sys.stderr)
 
 
-_STANDALONE_TAG_RE = re.compile(r"[ \t]*`__@\{\s*([A-Za-z0-9_]+)\s*\}__`[ \t]*\r?\n?")
-
-
 @functools.lru_cache(maxsize=128)
 def make_token_tag_regex(token_name: str) -> re.Pattern:
     """構造匹配指定 Token 標籤之正則表達式，支援大括號內部微量空格。"""
     return re.compile(r"__@\{\s*" + re.escape(token_name) + r"\s*\}__")
-
-
-@functools.lru_cache(maxsize=128)
-def make_purge_regex(token_name: str) -> re.Pattern:
-    """構造用於抹除殘留 Token 錨點行之正則表達式，自動吞噬行首縮排與行尾換行。"""
-    return re.compile(r"([ \t]*`__@\{\s*" + re.escape(token_name) + r"\s*\}__`[ \t]*\r?\n?)")
 
 
 @functools.lru_cache(maxsize=128)
@@ -167,19 +164,36 @@ def make_standalone_tag_regex(token_name: str) -> re.Pattern:
     return re.compile(r"[ \t]*`__@\{\s*" + re.escape(token_name) + r"\s*\}__`[ \t]*\r?\n?")
 
 
+@functools.lru_cache(maxsize=128)
+def make_purge_regex(token_name: str) -> re.Pattern:
+    """構造用於抹除殘留 Token 錨點行之正則表達式，自動吞噬行首縮排與行尾換行。"""
+    return make_standalone_tag_regex(token_name)
+
+
+def _is_uri_suffix_match(longer: str, shorter: str) -> bool:
+    """檢查 shorter 是否在路徑分隔邊界上後綴匹配 longer。"""
+    if not longer or not shorter:
+        return False
+    return longer == shorter or longer.endswith("/" + shorter) or longer.endswith("://" + shorter)
+
+
 def _lookup_deployed_abs_path(tag_uri: str, deployment_map: Dict[str, str]) -> Optional[str]:
     """
     於 deployment_map 中查找目標 URI 的絕對路徑：
-    1. 精確鍵值匹配
-    2. 短名後綴匹配（僅限 module://、config:// 或純短名，嚴禁攔截 project://、workflow.* 與 yscb.*）
+    1. 精確鍵值匹配（含移除尾端斜線之正規化匹配）
+    2. 短名後綴邊界匹配（僅限 module://、config:// 或純短名，嚴禁攔截 project://、workflow.* 與 yscb.*）
     """
     if not deployment_map or not tag_uri:
         return None
     if tag_uri in deployment_map:
         return deployment_map[tag_uri]
-    if not tag_uri.startswith(("project://", "workflow.", "yscb.")):
+    norm_uri = tag_uri.rstrip("/")
+    if norm_uri in deployment_map:
+        return deployment_map[norm_uri]
+    if not norm_uri.startswith(("project://", "workflow.", "yscb.")):
         for s_key, cand_abs in deployment_map.items():
-            if tag_uri.endswith(s_key) or s_key.endswith(tag_uri):
+            norm_key = s_key.rstrip("/")
+            if _is_uri_suffix_match(norm_uri, norm_key) or _is_uri_suffix_match(norm_key, norm_uri):
                 return cand_abs
     return None
 
@@ -350,9 +364,50 @@ def _resolve_locale_noun_tag(
 def _clean_md_link_match(match: re.Match) -> str:
     """清理 Markdown 超連結括號內殘留的多餘反引號與連續斜線: [text](`path`) -> [text](path)。"""
     path = match.group(1)
-    if not re.match(r"^[a-zA-Z0-9_\+\-]+://", path):
-        path = re.sub(r"/{2,}", "/", path)
+    if not URI_SCHEME_PREFIX_REGEX.match(path):
+        path = DOUBLE_SLASH_CLEAN_REGEX.sub("/", path)
     return f"]({path})"
+
+
+def _substitute_stage2_tags_in_segment(
+    segment: str,
+    cur_dir: str,
+    project_root: str,
+    deployment_map: Dict[str, str],
+    doc_basename: str,
+    target_name: Optional[Union[str, List[str]]],
+    extra_deployment_maps: Optional[List[Tuple[str, Dict[str, str]]]] = None,
+) -> str:
+    """於單一文字區段（fenced code block 或 inline code span）內展開 Stage 2 標籤並清理連續斜線。"""
+    has_local = "__#{" in segment
+    has_proj = "__${" in segment or "__$(" in segment
+    has_noun = "__%{" in segment
+    if not has_local and not has_proj and not has_noun:
+        return segment
+    if has_local:
+        segment = LOCAL_URI_INNER_REGEX.sub(
+            lambda m: _resolve_local_uri_tag(
+                m.group(1).strip(), cur_dir, deployment_map, doc_basename, extra_deployment_maps
+            ),
+            segment,
+        )
+    if has_proj:
+        segment = PROJECT_URI_INNER_REGEX.sub(
+            lambda m: _resolve_project_uri_tag(
+                m.group(2).strip(),
+                anchor=m.group(1).strip() if m.group(1) else None,
+                project_root=project_root,
+                deployment_map=deployment_map,
+                doc_basename=doc_basename,
+            ),
+            segment,
+        )
+    if has_noun:
+        segment = LOCALE_NOUN_INNER_REGEX.sub(
+            lambda m: _resolve_locale_noun_tag(m.group(1).strip(), target_name, doc_basename),
+            segment,
+        )
+    return DOUBLE_SLASH_CLEAN_REGEX.sub("/", segment)
 
 
 class ArtifactCompiler:
@@ -492,6 +547,43 @@ class ArtifactCompiler:
 
         return aggregated
 
+    def _resolve_insert_value(
+        self,
+        ins: Dict[str, Any],
+        token_name: str,
+        context: Optional[Any] = None,
+        active_cache: Optional[Dict[str, str]] = None,
+    ) -> str:
+        """解析單一 insert 規則之原始字串內容（嚴格確保 active_cache 快取 _preprocess_directives 之前的原始字串）。"""
+        ins_type = ins.get("type", "const")
+        raw_val = ins.get("value", "")
+        cache_key = f"{ins_type}:{token_name}:{raw_val}"
+
+        if active_cache is not None and ins_type in ("uri", "computed") and cache_key in active_cache:
+            val_content = active_cache[cache_key]
+        elif ins_type == "uri":
+            val_content = self._read_file_content(str(raw_val))
+            if active_cache is not None:
+                active_cache[cache_key] = val_content
+        elif ins_type == "computed":
+            try:
+                from core.symbols import resolve_callable
+                target_fn = resolve_callable(str(raw_val), context=context)
+                comp_res = target_fn(context)
+                val_content = "" if comp_res is None else str(comp_res)
+                if active_cache is not None:
+                    active_cache[cache_key] = val_content
+            except Exception as e:
+                print(
+                    f"[compiler:warning] Failed to resolve computed token '{token_name}' ({raw_val}): {e}",
+                    file=sys.stderr,
+                )
+                val_content = ""
+        else:
+            val_content = str(raw_val)
+
+        return "" if val_content is None else val_content
+
     def resolve_single_artifact(
         self,
         content: str,
@@ -554,34 +646,13 @@ class ArtifactCompiler:
 
                 for ins in matched_inserts:
                     matched_tokens_this_pass.add(token_name)
-                    ins_type = ins.get("type", "const")
                     mode = ins.get("mode", "replace")
                     raw_val = ins.get("value", "")
 
-                    cache_key = f"{ins_type}:{token_name}:{raw_val}"
-                    if active_cache is not None and ins_type in ("uri", "computed") and cache_key in active_cache:
-                        val_content = active_cache[cache_key]
-                    elif ins_type == "uri":
-                        val_content = self._read_file_content(str(raw_val))
-                        if active_cache is not None:
-                            active_cache[cache_key] = val_content
-                    elif ins_type == "computed":
-                        try:
-                            from core.symbols import resolve_callable
-                            target_fn = resolve_callable(str(raw_val), context=context)
-                            comp_res = target_fn(context)
-                            val_content = "" if comp_res is None else str(comp_res)
-                            if active_cache is not None:
-                                active_cache[cache_key] = val_content
-                        except Exception as e:
-                            print(f"[compiler:warning] Failed to resolve computed token '{token_name}' ({raw_val}): {e}", file=sys.stderr)
-                            val_content = ""
-                    else:
-                        val_content = str(raw_val)
-
-                    if val_content is None:
-                        val_content = ""
-                    elif val_content:
+                    val_content = self._resolve_insert_value(
+                        ins, token_name, context=context, active_cache=active_cache
+                    )
+                    if val_content:
                         val_content, literal_blocks = _preprocess_directives(
                             val_content,
                             strip_literal_markers=False,
@@ -658,7 +729,7 @@ class ArtifactCompiler:
         return resolved_text
 
     def _write_cache_file(self, cache_uri: str, content: str) -> str:
-        """寫入中繼快取檔案 (支援 vfs/cache URI 與本地 fallback)。"""
+        """寫入中繼快取檔案 (支援 vfs/cache URI 與本地原子寫入 fallback)。"""
         if vfs:
             try:
                 vfs.write_text(cache_uri, content, atomic=True)
@@ -678,8 +749,18 @@ class ArtifactCompiler:
             local_cache = os.path.join(os.path.dirname(os.path.dirname(self.module_root)), ".cache", "agents-workflow", "resolved_contents", sub_rel.replace("/", os.sep))
 
         os.makedirs(os.path.dirname(local_cache), exist_ok=True)
-        with open(local_cache, "w", encoding="utf-8", newline="\n") as f:
-            f.write(content)
+        tmp_path = f"{local_cache}.tmp.{os.getpid()}"
+        try:
+            with open(tmp_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(content)
+            os.replace(tmp_path, local_cache)
+        except Exception:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            raise
         return local_cache
 
     def compile_stage1(self) -> Dict[str, Any]:
@@ -710,6 +791,7 @@ class ArtifactCompiler:
 
         stage1_insert_cache: Dict[str, str] = {}
         self._stage1_insert_cache = stage1_insert_cache
+        ctx = ExecutionContext("agents-workflow", "compile", []) if ExecutionContext else None
         try:
             for exp in exports:
                 if not isinstance(exp, dict):
@@ -737,7 +819,6 @@ class ArtifactCompiler:
                     skill_pkg_name = exp_name or os.path.basename(source_p.rstrip("/\\"))
                     for rel_f, _, raw_text in skill_files:
                         try:
-                            ctx = ExecutionContext("agents-workflow", "compile", []) if ExecutionContext else None
                             if rel_f.endswith((".md", ".txt", ".json", ".yaml", ".yml", ".sh")):
                                 stage1_content = self.resolve_single_artifact(
                                     raw_text, inserts, context=ctx, _insert_cache=stage1_insert_cache
@@ -768,7 +849,6 @@ class ArtifactCompiler:
                         continue
 
                     try:
-                        ctx = ExecutionContext("agents-workflow", "compile", []) if ExecutionContext else None
                         stage1_content = self.resolve_single_artifact(
                             raw_content, inserts, context=ctx, _insert_cache=stage1_insert_cache
                         )
@@ -800,7 +880,7 @@ class ArtifactCompiler:
         }
 
     def _resolve_project_root(self) -> str:
-        """取得 정규化之 project_root 絕對路徑。"""
+        """取得正規化之 project_root 絕對路徑。"""
         if self.host_dir:
             return os.path.normpath(os.path.abspath(self.host_dir))
         if uri:
@@ -835,45 +915,20 @@ class ArtifactCompiler:
         )
 
         def _replace_in_fenced_block(match: re.Match) -> str:
-            block_text = match.group(0)
-            has_local = "__#{" in block_text
-            has_proj = "__${" in block_text or "__$(" in block_text
-            has_noun = "__%{" in block_text
-            if not has_local and not has_proj and not has_noun:
-                return block_text
-            if has_local:
-                block_text = LOCAL_URI_INNER_REGEX.sub(
-                    lambda m: _resolve_local_uri_tag(
-                        m.group(1).strip(), cur_dir, deployment_map, doc_basename, extra_deployment_maps
-                    ),
-                    block_text,
-                )
-            if has_proj:
-                block_text = PROJECT_URI_INNER_REGEX.sub(
-                    lambda m: _resolve_project_uri_tag(
-                        m.group(2).strip(),
-                        anchor=m.group(1).strip() if m.group(1) else None,
-                        project_root=project_root,
-                        deployment_map=deployment_map,
-                        doc_basename=doc_basename,
-                    ),
-                    block_text,
-                )
-            if has_noun:
-                block_text = LOCALE_NOUN_INNER_REGEX.sub(
-                    lambda m: _resolve_locale_noun_tag(m.group(1).strip(), target_name, doc_basename),
-                    block_text,
-                )
-            block_text = re.sub(r"(?<![a-zA-Z0-9_\+\-]:)/{2,}", "/", block_text)
-            return block_text
+            return _substitute_stage2_tags_in_segment(
+                match.group(0),
+                cur_dir=cur_dir,
+                project_root=project_root,
+                deployment_map=deployment_map,
+                doc_basename=doc_basename,
+                target_name=target_name,
+                extra_deployment_maps=extra_deployment_maps,
+            )
 
         def _replace_in_code_span(match: re.Match) -> str:
             span_text = match.group(0)
             inner = span_text[1:-1]
-            has_local = "__#{" in inner
-            has_proj = "__${" in inner or "__$(" in inner
-            has_noun = "__%{" in inner
-            if not has_local and not has_proj and not has_noun:
+            if "__#{" not in inner and "__${" not in inner and "__$(" not in inner and "__%{" not in inner:
                 return span_text
 
             m_local_exact = LOCAL_URI_EXACT_REGEX.fullmatch(inner.strip())
@@ -894,35 +949,20 @@ class ArtifactCompiler:
                 )
                 return resolved if anchor else f"`{resolved or './'}`"
 
-            if has_local:
-                inner = LOCAL_URI_INNER_REGEX.sub(
-                    lambda m: _resolve_local_uri_tag(
-                        m.group(1).strip(), cur_dir, deployment_map, doc_basename, extra_deployment_maps
-                    ),
-                    inner,
-                )
-            if has_proj:
-                inner = PROJECT_URI_INNER_REGEX.sub(
-                    lambda m: _resolve_project_uri_tag(
-                        m.group(2).strip(),
-                        anchor=m.group(1).strip() if m.group(1) else None,
-                        project_root=project_root,
-                        deployment_map=deployment_map,
-                        doc_basename=doc_basename,
-                    ),
-                    inner,
-                )
-            if has_noun:
-                inner = LOCALE_NOUN_INNER_REGEX.sub(
-                    lambda m: _resolve_locale_noun_tag(m.group(1).strip(), target_name, doc_basename),
-                    inner,
-                )
-            inner = re.sub(r"(?<![a-zA-Z0-9_\+\-]:)/{2,}", "/", inner)
-            return f"`{inner}`"
+            new_inner = _substitute_stage2_tags_in_segment(
+                inner,
+                cur_dir=cur_dir,
+                project_root=project_root,
+                deployment_map=deployment_map,
+                doc_basename=doc_basename,
+                target_name=target_name,
+                extra_deployment_maps=extra_deployment_maps,
+            )
+            return f"`{new_inner}`"
 
         res_fenced = FENCED_CODE_BLOCK_REGEX.sub(_replace_in_fenced_block, content)
         res_spans = CODE_SPAN_REGEX.sub(_replace_in_code_span, res_fenced)
-        res_clean = re.sub(r"\]\(`?([^`\r\n\)]+)`?\)", _clean_md_link_match, res_spans)
+        res_clean = MD_LINK_BACKTICK_CLEAN_REGEX.sub(_clean_md_link_match, res_spans)
         for idx, clean_block in enumerate(literal_blocks):
             res_clean = res_clean.replace(f"\x00YSCB_LITERAL_BLOCK_{idx}\x00", clean_block)
         return res_clean
@@ -964,11 +1004,11 @@ class ArtifactCompiler:
             return ""
 
         raw_md = self._read_file_content(skill_md_path)
-        m_fm = re.match(r"\A---\r?\n([\s\S]*?)\r?\n---", raw_md)
+        m_fm = FRONTMATTER_BLOCK_REGEX.match(raw_md)
         if not m_fm:
             return ""
         for line in m_fm.group(1).splitlines():
-            m_desc = re.match(r"^\s*description\s*:\s*(.+?)\s*$", line)
+            m_desc = FRONTMATTER_DESC_LINE_REGEX.match(line)
             if m_desc:
                 val = m_desc.group(1).strip()
                 if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):

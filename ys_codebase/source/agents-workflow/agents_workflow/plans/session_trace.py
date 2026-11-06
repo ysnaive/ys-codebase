@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from ._common import resolve_plan_uri
 from ._trace_parser import (
     EDIT_TOOL_NAMES as _EDIT_TOOL_NAMES,
     GATE_COMMANDS as _GATE_COMMANDS,
@@ -31,15 +32,34 @@ from .status import PlanStatusResolver
 
 def _resolve_uri_safe(uri_str: str, default_rel: str = "") -> Path:
     """安全解析語意 URI，失敗時回退至相對路徑。"""
-    try:
-        from core import uri  # type: ignore
-        res = uri.resolve(uri_str, interactive=False)
-        if res and not str(res).startswith("!"):
-            return Path(res).resolve()
-    except Exception:
-        pass
-    host_dir = os.environ.get("YSCB_HOST_DIR", os.getcwd())
-    return (Path(host_dir) / default_rel).resolve() if default_rel else Path(host_dir).resolve()
+    return resolve_plan_uri(
+        uri_str,
+        default_fallback=default_rel,
+        host_dir=os.environ.get("YSCB_HOST_DIR") or None,
+    )
+
+
+def _make_empty_cli_stats() -> Dict[str, Any]:
+    """建立空白之 Tier 2 CLI 統計字典。"""
+    return {
+        "cli_total_calls": 0,
+        "cli_failed_calls": 0,
+        "cli_total_duration_ms": 0,
+        "cli_avg_duration_ms": 0,
+        "cli_by_mode": {},
+        "cli_by_module": {},
+        "first_cli_ts": None,
+        "last_cli_ts": None,
+    }
+
+
+def _extract_record_epoch(rec: Dict[str, Any]) -> Optional[float]:
+    """安全取得單筆 Telemetry 紀錄之 epoch 秒數，避免重複呼叫 _parse_ts。"""
+    raw_ep = rec.get("epoch")
+    if isinstance(raw_ep, (int, float)):
+        return float(raw_ep)
+    parsed = _parse_ts(str(rec.get("ts", "")))
+    return float(parsed) if isinstance(parsed, (int, float)) else None
 
 
 class SessionTraceEngine:
@@ -77,6 +97,7 @@ class SessionTraceEngine:
         targets: List[str] = []
         try:
             from core import config  # type: ignore
+
             val = config.get("agents-workflow", "release_targets")
             if isinstance(val, list) and val:
                 targets = [str(x).strip().lower() for x in val if str(x).strip()]
@@ -323,7 +344,9 @@ class SessionTraceEngine:
             return None
         return best_dir
 
-    def _parse_changelog_metadata(self, plan_dir: Path) -> Tuple[Optional[str], Dict[str, float], List[Dict[str, str]]]:
+    def _parse_changelog_metadata(
+        self, plan_dir: Path
+    ) -> Tuple[Optional[str], Dict[str, float], List[Dict[str, str]]]:
         """解析計畫 changelog.md：回傳 (最早紀錄時間字串, {階段代碼: 最早完成時間epoch}, 變更紀錄清單)。"""
         cl_path = plan_dir / "changelog.md"
         if not cl_path.is_file():
@@ -337,12 +360,15 @@ class SessionTraceEngine:
         try:
             for line in cl_path.read_text(encoding="utf-8", errors="replace").splitlines():
                 s = line.strip()
-                if not s.startswith("|") or "---" in s or "時間" in s:
+                if not s.startswith("|") or "時間" in s or re.match(r"^\|?\s*[-:]+\s*\|", s):
                     continue
-                parts = [p.strip() for p in s.strip("|").split("|")]
+                parts = [p.strip() for p in re.split(r"(?<!\\)\|", s.strip("|"))]
                 if len(parts) < 3:
                     continue
-                ts_str, l_type, summary = parts[0], parts[1].upper(), parts[2]
+                ts_str = parts[0]
+                l_type = parts[1].strip("`").strip().upper()
+                raw_summary = parts[3] if len(parts) >= 4 else parts[2]
+                summary = raw_summary.replace(r"\|", "|").strip()
                 ep = _parse_ts(ts_str)
                 if ep is None:
                     continue
@@ -444,16 +470,7 @@ class SessionTraceEngine:
         """讀取並切分 cache://core/telemetry.jsonl 當前 Session 時間窗。"""
         from core.telemetry import read_telemetry_records
 
-        empty_stats = {
-            "cli_total_calls": 0,
-            "cli_failed_calls": 0,
-            "cli_total_duration_ms": 0,
-            "cli_avg_duration_ms": 0,
-            "cli_by_mode": {},
-            "cli_by_module": {},
-            "first_cli_ts": None,
-            "last_cli_ts": None,
-        }
+        empty_stats = _make_empty_cli_stats()
         raw_records = read_telemetry_records(
             since_iso=since_iso,
             since_minutes=since_minutes,
@@ -463,28 +480,31 @@ class SessionTraceEngine:
         if not raw_records:
             return since_iso, 0, [], empty_stats
 
+        record_epochs: List[Optional[float]] = [_extract_record_epoch(r) for r in raw_records]
+
         if until_iso:
             until_ep = _parse_ts(until_iso)
             if until_ep is not None:
-                raw_records = [
-                    r for r in raw_records
-                    if isinstance(r.get("epoch") or _parse_ts(str(r.get("ts", ""))), (int, float))
-                    and float(r.get("epoch") or _parse_ts(str(r.get("ts", "")))) <= (until_ep + 60.0)
+                filtered_pairs = [
+                    (r, ep)
+                    for r, ep in zip(raw_records, record_epochs)
+                    if ep is not None and ep <= (until_ep + 60.0)
                 ]
-                if not raw_records:
+                if not filtered_pairs:
                     return since_iso, 0, [], empty_stats
+                raw_records = [r for r, _ in filtered_pairs]
+                record_epochs = [ep for _, ep in filtered_pairs]
 
         session_records = raw_records
         inferred_start_ts = since_iso
         if since_iso is None and since_minutes is None and len(raw_records) > 1:
             cut_idx = 0
             for i in range(len(raw_records) - 1, 0, -1):
-                cur_ep = raw_records[i].get("epoch") or _parse_ts(str(raw_records[i].get("ts", "")))
-                prev_ep = raw_records[i - 1].get("epoch") or _parse_ts(str(raw_records[i - 1].get("ts", "")))
-                if isinstance(cur_ep, (int, float)) and isinstance(prev_ep, (int, float)):
-                    if (float(cur_ep) - float(prev_ep)) > 1800.0:
-                        cut_idx = i
-                        break
+                cur_ep = record_epochs[i]
+                prev_ep = record_epochs[i - 1]
+                if cur_ep is not None and prev_ep is not None and (cur_ep - prev_ep) > 1800.0:
+                    cut_idx = i
+                    break
             session_records = raw_records[cut_idx:]
             inferred_start_ts = str(session_records[0].get("ts", ""))
 
@@ -710,16 +730,7 @@ class SessionTraceEngine:
             session_start_ts = effective_since_iso
             telem_count = 0
             tier2_signals: List[FrictionSignal] = []
-            t2_stats: Dict[str, Any] = {
-                "cli_total_calls": 0,
-                "cli_failed_calls": 0,
-                "cli_total_duration_ms": 0,
-                "cli_avg_duration_ms": 0,
-                "cli_by_mode": {},
-                "cli_by_module": {},
-                "first_cli_ts": None,
-                "last_cli_ts": None,
-            }
+            t2_stats: Dict[str, Any] = _make_empty_cli_stats()
         else:
             session_start_ts, telem_count, tier2_signals, t2_stats = self._analyze_telemetry(
                 since_iso=effective_since_iso if since_minutes is None else None,

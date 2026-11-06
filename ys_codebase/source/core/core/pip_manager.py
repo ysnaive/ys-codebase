@@ -10,7 +10,8 @@ import sys
 import venv
 import platform
 import subprocess
-from typing import Optional, List, Any
+from contextlib import contextmanager
+from typing import Optional, List, Any, Generator
 from core import uri, vfs
 from core.installer import generate_internal_gitignore
 from core.platform.lock import InterProcessLock
@@ -38,6 +39,7 @@ class PipManager:
 
     def __init__(self, yscb_dir: Optional[str] = None):
         self.yscb_dir = os.path.abspath(yscb_dir or self._resolve_yscb_root())
+        self._held_lock: Optional[InterProcessLock] = None
 
     def _resolve_yscb_root(self) -> str:
         """解析當前 yscb_root 目錄，統一委派至 core.uri.resolve_yscb_root()。"""
@@ -87,6 +89,15 @@ class PipManager:
         """回傳當前直譯器的大/小版本標籤，例如 'py310' 或 'py311'。"""
         return f"py{sys.version_info.major}{sys.version_info.minor}"
 
+    def _resolve_py_ver_dirname(self, py_tag: Optional[str] = None) -> str:
+        """解析對應 Python 版本目錄名稱（如 'python3.11'）。"""
+        tag = py_tag or self.get_current_py_tag()
+        if tag.startswith("py") and len(tag) >= 4:
+            major = tag[2]
+            minor = tag[3:]
+            return f"python{major}.{minor}"
+        return f"python{sys.version_info.major}.{sys.version_info.minor}"
+
     def get_venv_dir(self, py_tag: Optional[str] = None) -> str:
         """取得特定 Python 版本標籤之微環境根目錄 (yscb_dir/.venv/py{ver})。"""
         tag = py_tag or self.get_current_py_tag()
@@ -104,14 +115,7 @@ class PipManager:
         venv_dir = self.get_venv_dir(py_tag)
         if platform.system() == "Windows":
             return os.path.join(venv_dir, "Lib", "site-packages")
-        
-        tag = py_tag or self.get_current_py_tag()
-        if tag.startswith("py") and len(tag) >= 4:
-            major = tag[2]
-            minor = tag[3:]
-            py_ver = f"python{major}.{minor}"
-        else:
-            py_ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
+        py_ver = self._resolve_py_ver_dirname(py_tag)
         return os.path.join(venv_dir, "lib", py_ver, "site-packages")
 
     def get_cross_platform_site_packages_dirs(self, py_tag: Optional[str] = None) -> List[str]:
@@ -120,14 +124,7 @@ class PipManager:
         回傳清單順序恆定 (POSIX 優先，次為 Windows)。
         """
         venv_dir = self.get_venv_dir(py_tag)
-        tag = py_tag or self.get_current_py_tag()
-        if tag.startswith("py") and len(tag) >= 4:
-            major = tag[2]
-            minor = tag[3:]
-            py_ver = f"python{major}.{minor}"
-        else:
-            py_ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
-
+        py_ver = self._resolve_py_ver_dirname(py_tag)
         posix_path = os.path.join(venv_dir, "lib", py_ver, "site-packages")
         win_path = os.path.join(venv_dir, "Lib", "site-packages")
         return [posix_path, win_path]
@@ -169,7 +166,7 @@ class PipManager:
         for wheel_dir in candidate_wheel_dirs:
             try:
                 if isinstance(wheel_dir, str) and os.path.isdir(wheel_dir):
-                    for fname in sorted(os.listdir(wheel_dir)):
+                    for fname in sorted(os.listdir(wheel_dir), reverse=True):
                         if fname.startswith("pip-") and fname.endswith(".whl"):
                             whl_path = os.path.join(wheel_dir, fname)
                             with zipfile.ZipFile(whl_path, "r") as zf:
@@ -200,6 +197,21 @@ class PipManager:
         os.makedirs(venv_root, exist_ok=True)
         return os.path.join(venv_root, ".pip_install.lock")
 
+    @contextmanager
+    def _pip_lock(self) -> Generator[None, None, None]:
+        """可重入跨進程微環境排他鎖上下文管理器。"""
+        held = getattr(self, "_held_lock", None)
+        if held is not None and held.is_locked:
+            yield
+            return
+        lock = InterProcessLock(self.get_lock_file())
+        with lock:
+            self._held_lock = lock
+            try:
+                yield
+            finally:
+                self._held_lock = None
+
     def ensure_venv(self, py_tag: Optional[str] = None) -> str:
         """
         若微環境不存在則以純 Python 標準庫 venv 建立。
@@ -210,7 +222,7 @@ class PipManager:
         py_exec = self.get_python_executable(py_tag)
         site_pkg = self.get_site_packages_dir(py_tag)
 
-        with InterProcessLock(self.get_lock_file()):
+        with self._pip_lock():
             pip_ready = False
             if os.path.isfile(py_exec) and os.path.isdir(site_pkg):
                 if os.path.isdir(os.path.join(site_pkg, "pip")):
@@ -270,8 +282,8 @@ class PipManager:
         if not specs:
             return
 
-        self.ensure_venv(py_tag)
-        with InterProcessLock(self.get_lock_file()):
+        with self._pip_lock():
+            self.ensure_venv(py_tag)
             py_exec = self.get_python_executable(py_tag)
 
             cmd = [

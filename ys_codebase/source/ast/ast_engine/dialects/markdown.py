@@ -11,6 +11,12 @@ from typing import Any, Dict, List, Optional
 from ..schema import SymbolCallSite, SymbolKind, UnifiedSymbol
 from .base import DialectAdapter
 
+_FENCE_RE = re.compile(r"^(`{3,}|~{3,})")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
+_LINK_CALL_RE = re.compile(r"\[`?([A-Za-z0-9_$.]+)`?\]\((?:file:///)?([^)#\s]+)(?:#L?\d+(?:-\d+)?)?\)")
+_CODE_CALL_RE = re.compile(r"`([A-Za-z0-9_$]+\.[A-Za-z0-9_$]+)(?:\([^`]*\))?`")
+_IMPORT_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)#\s]+)(?:#[^)]*)?\)")
+
 
 class MarkdownDialect(DialectAdapter):
     language = "markdown"
@@ -88,16 +94,26 @@ class MarkdownDialect(DialectAdapter):
         space: str,
     ) -> Optional[List[SymbolCallSite]]:
         call_sites: List[SymbolCallSite] = []
-        link_re = re.compile(r"\[`?([A-Za-z0-9_$.]+)`?\]\((?:file:///)?([^)#\s]+)(?:#L?\d+(?:-\d+)?)?\)")
-        code_re = re.compile(r"`([A-Za-z0-9_$]+\.[A-Za-z0-9_$]+)(?:\([^`]*\))?`")
         current_heading = "<document>"
-        heading_re = re.compile(r"^(#{1,6})\s+(.+)$")
+        active_fence: Optional[str] = None
         for i, line in enumerate(content.splitlines(), start=1):
-            hm = heading_re.match(line.strip())
+            stripped = line.strip()
+            fm = _FENCE_RE.match(stripped)
+            if fm:
+                fence_marker = fm.group(1)
+                if active_fence is None:
+                    active_fence = fence_marker
+                elif stripped.startswith(active_fence[0] * len(active_fence)):
+                    active_fence = None
+                continue
+            if active_fence is not None:
+                continue
+
+            hm = _HEADING_RE.match(stripped)
             if hm:
                 current_heading = hm.group(2).strip()
                 continue
-            for m in link_re.finditer(line):
+            for m in _LINK_CALL_RE.finditer(line):
                 sym_str = m.group(1)
                 prefix, callee = (
                     (sym_str.rsplit(".", 1)[0], sym_str.rsplit(".", 1)[1])
@@ -114,7 +130,7 @@ class MarkdownDialect(DialectAdapter):
                         space=space,
                     )
                 )
-            for m in code_re.finditer(line):
+            for m in _CODE_CALL_RE.finditer(line):
                 sym_str = m.group(1)
                 prefix, callee = sym_str.rsplit(".", 1)
                 call_sites.append(
@@ -133,8 +149,7 @@ class MarkdownDialect(DialectAdapter):
         imports: Dict[str, str] = {}
         if not source_text:
             return imports
-        link_re = re.compile(r"\[([^\]]+)\]\(([^)#\s]+)(?:#[^)]*)?\)")
-        for match in link_re.finditer(source_text):
+        for match in _IMPORT_LINK_RE.finditer(source_text):
             text = match.group(1).strip()
             target = match.group(2).strip()
             if not target.startswith(("http://", "https://", "mailto:")):

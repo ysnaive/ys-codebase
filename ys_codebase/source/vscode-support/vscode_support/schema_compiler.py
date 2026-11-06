@@ -96,11 +96,6 @@ class SchemaCompiler:
             "defaultSnippets": self._collect_uri_scheme_snippets(),
         }
 
-    def _rule_str_to_json_schema(self, sig_str: str) -> Tuple[Dict[str, Any], bool]:
-        """將 `_format.json` 型別簽名字串轉譯為 `(json_schema_dict, is_required)`。"""
-        parsed = ContributesValidator.parse_type_signature(sig_str)
-        return self._parsed_rule_to_json_schema(parsed)
-
     def _parsed_rule_to_json_schema(self, parsed: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
         required = bool(parsed.get("required", False))
         has_default = bool(parsed.get("has_default", False))
@@ -174,7 +169,7 @@ class SchemaCompiler:
     def _format_node_to_json_schema(self, fmt_node: Any) -> Tuple[Dict[str, Any], bool]:
         """遞迴將 `_format.json` 的結構節點（str / list / dict）轉譯為 JSON Schema。"""
         if isinstance(fmt_node, str):
-            return self._rule_str_to_json_schema(fmt_node)
+            return self._parsed_rule_to_json_schema(ContributesValidator.parse_type_signature(fmt_node))
 
         if isinstance(fmt_node, list):
             if len(fmt_node) > 0:
@@ -216,17 +211,22 @@ class SchemaCompiler:
 
         return {}, False
 
-    def compile_contributes_schema(self, mod_name: str, fmt_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        將指定模組之 `contributes/_format.json` 轉譯為完整 Draft-07 JSON Schema。
-        支援頂層直接放置擴充點鍵或外層包裹 `{"<mod_name>": { ... }}`（相容 `config/<mod>/contribute.json`）。
-        """
+    def _compile_type_defs(self, fmt_data: Dict[str, Any]) -> Dict[str, Any]:
+        """將 `_format.json` 中的 `_types` 區段編譯為 JSON Schema `$defs` 字典。"""
         defs: Dict[str, Any] = {}
         raw_types = fmt_data.get("_types", {})
         if isinstance(raw_types, dict):
             for type_name, type_def in raw_types.items():
                 type_schema, _ = self._format_node_to_json_schema(type_def)
                 defs[type_name] = type_schema
+        return defs
+
+    def compile_contributes_schema(self, mod_name: str, fmt_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        將指定模組之 `contributes/_format.json` 轉譯為完整 Draft-07 JSON Schema。
+        支援頂層直接放置擴充點鍵或外層包裹 `{"<mod_name>": { ... }}`（相容 `config/<mod>/contribute.json`）。
+        """
+        defs = self._compile_type_defs(fmt_data)
 
         ext_properties: Dict[str, Any] = {}
         for ext_key, ext_spec in fmt_data.items():
@@ -269,7 +269,8 @@ class SchemaCompiler:
 
     def _infer_value_schema(self, val: Any, key_name: str = "") -> Dict[str, Any]:
         """根據組態模板範例值推導基本型別 JSON Schema（對 `!undefined` 標註必填檢查，並為路徑欄位注入 URI 協議補全）。"""
-        is_path_key = any(tok in key_name.lower() for tok in ("path", "dir", "root", "uri", "source", "target"))
+        leaf_key = key_name.rsplit(".", 1)[-1] if key_name else ""
+        is_path_key = any(tok in leaf_key.lower() for tok in ("path", "dir", "root", "uri", "source", "target"))
         if val == "!undefined":
             res_undef: Dict[str, Any] = {
                 "type": "string",
@@ -335,16 +336,18 @@ class SchemaCompiler:
         req: List[str] = []
 
         if isinstance(fmt_data, dict) and fmt_data:
-            raw_types = fmt_data.get("_types", {})
-            if isinstance(raw_types, dict):
-                for type_name, type_def in raw_types.items():
-                    type_schema, _ = self._format_node_to_json_schema(type_def)
-                    defs[type_name] = type_schema
+            defs = self._compile_type_defs(fmt_data)
 
             for k, v in fmt_data.items():
                 if k == "_types":
                     continue
-                if isinstance(v, dict) and "format" in v and isinstance(v.get("description"), str):
+                is_rule_wrapper = (
+                    isinstance(v, dict)
+                    and "format" in v
+                    and set(v.keys()).issubset({"format", "description", "merge"})
+                    and isinstance(v.get("description"), (str, type(None)))
+                )
+                if is_rule_wrapper:
                     prop_schema, is_req = self._format_node_to_json_schema(v["format"])
                     desc = v.get("description")
                     if desc and "$ref" not in prop_schema:
@@ -486,8 +489,16 @@ class SchemaCompiler:
         }
 
     def _discover_installed_modules(self) -> List[str]:
-        """自 `module://` 探索目前已安裝之模組名稱清單（按字母排序）。"""
+        """自 `self.yscb_dir/.modules` 與 `module://` 探索目前已安裝之模組名稱清單（按字母排序）。"""
         mods: Set[str] = set()
+        local_modules_dir = os.path.join(self.yscb_dir, ".modules")
+        if os.path.isdir(local_modules_dir):
+            try:
+                for item in os.listdir(local_modules_dir):
+                    if not item.startswith(".") and os.path.isdir(os.path.join(local_modules_dir, item)):
+                        mods.add(item)
+            except Exception:
+                pass
         try:
             if vfs.exists("module://"):
                 for item in vfs.listdir("module://"):
@@ -506,33 +517,38 @@ class SchemaCompiler:
         if not zip_files:
             return None
 
+        def _is_valid_semver(s: str) -> bool:
+            try:
+                parse_semver(s)
+                return True
+            except Exception:
+                return False
+
         def _cmp_zip_paths(p1: str, p2: str) -> int:
             s1 = os.path.splitext(os.path.basename(p1))[0]
             s2 = os.path.splitext(os.path.basename(p2))[0]
-            v1_ok = True
-            v2_ok = True
-            try:
-                parse_semver(s1)
-            except Exception:
-                v1_ok = False
-            try:
-                parse_semver(s2)
-            except Exception:
-                v2_ok = False
+            v1_ok, v2_ok = _is_valid_semver(s1), _is_valid_semver(s2)
             if v1_ok and v2_ok:
                 return compare_semver(s1, s2)
-            if v1_ok and not v2_ok:
-                return 1
-            if not v1_ok and v2_ok:
-                return -1
+            if v1_ok != v2_ok:
+                return 1 if v1_ok else -1
             return 1 if s1 > s2 else (-1 if s1 < s2 else 0)
 
         return sorted(zip_files, key=functools.cmp_to_key(_cmp_zip_paths))[-1]
 
-    def _load_module_config_format(self, mod_name: str) -> Optional[Dict[str, Any]]:
-        """
-        優先自 `module://<mod>/configurable/_format.json` 或 `module.mirror://<mod>/*.zip` 讀取組態 `_format.json` 契約。
-        """
+    def _load_module_config_format(self, mod_name: str, latest_zip: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """優先自 `self.yscb_dir/.modules/<mod>/configurable/_format.json`、`module://<mod>/configurable/_format.json` 或 `module.mirror://<mod>/*.zip` 讀取組態 `_format.json` 契約。"""
+        local_modules_dir = os.path.join(self.yscb_dir, ".modules")
+        if os.path.isdir(local_modules_dir):
+            local_fmt = os.path.join(local_modules_dir, mod_name, "configurable", "_format.json")
+            if vfs.is_file(local_fmt):
+                try:
+                    data = vfs.read_json(local_fmt)
+                    if isinstance(data, dict):
+                        return data
+                except Exception:
+                    pass
+
         fmt_uri = f"module://{mod_name}/configurable/_format.json"
         if vfs.exists(fmt_uri):
             try:
@@ -542,30 +558,25 @@ class SchemaCompiler:
             except Exception:
                 pass
 
-        mirror_dir = os.path.join(self.yscb_dir, ".mirror", mod_name)
-        latest_zip = self._select_latest_mirror_zip(mirror_dir)
+        if latest_zip is None:
+            latest_zip = self._select_latest_mirror_zip(os.path.join(self.yscb_dir, ".mirror", mod_name))
         if not latest_zip:
             return None
         try:
             with zipfile.ZipFile(latest_zip, "r") as zf:
                 for member in sorted(zf.namelist()):
-                    norm_m = member.replace("\\", "/")
-                    if norm_m == "configurable/_format.json":
-                        raw_bytes = zf.read(member)
-                        data = json.loads(raw_bytes.decode("utf-8"))
+                    if member.replace("\\", "/") == "configurable/_format.json":
+                        data = json.loads(zf.read(member).decode("utf-8"))
                         if isinstance(data, dict):
                             return data
         except Exception:
             pass
         return None
 
-    def _load_module_config_template(self, mod_name: str) -> Optional[Dict[str, Any]]:
-        """
-        嚴守 Zero-Probing：自 `module.mirror://<mod>/*.zip` 記憶體讀取 `configurable/config.*.json` 原始組態模板並合併。
-        若模組無 `configurable/` 則回傳 `None`。
-        """
-        mirror_dir = os.path.join(self.yscb_dir, ".mirror", mod_name)
-        latest_zip = self._select_latest_mirror_zip(mirror_dir)
+    def _load_module_config_template(self, mod_name: str, latest_zip: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """嚴守 Zero-Probing：自 `module.mirror://<mod>/*.zip` 記憶體讀取 `configurable/config.*.json` 原始組態模板並合併。"""
+        if latest_zip is None:
+            latest_zip = self._select_latest_mirror_zip(os.path.join(self.yscb_dir, ".mirror", mod_name))
         if not latest_zip:
             return None
 
@@ -577,8 +588,7 @@ class SchemaCompiler:
                     norm_m = member.replace("\\", "/")
                     base_m = os.path.basename(norm_m)
                     if norm_m.startswith("configurable/") and norm_m.endswith(".json") and not base_m.startswith("_"):
-                        raw_bytes = zf.read(member)
-                        data = json.loads(raw_bytes.decode("utf-8"))
+                        data = json.loads(zf.read(member).decode("utf-8"))
                         if isinstance(data, dict):
                             merged_tpl.update(data)
                             found_any = True
@@ -591,15 +601,95 @@ class SchemaCompiler:
         """Zero-Touch JSON 寫入：若既有檔案內容完全一致則略過寫盤，避免變更 mtime。"""
         if vfs.is_file(file_path):
             try:
-                existing = vfs.read_json(file_path)
-                if existing == data:
+                if vfs.read_json(file_path) == data:
                     return False
             except Exception:
                 pass
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        content = json.dumps(data, indent=2, ensure_ascii=False)
-        vfs.write_text(file_path, content, encoding="utf-8", atomic=True)
+        vfs.write_text(file_path, json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8", atomic=True)
         return True
+
+    def _write_and_track_schema(
+        self,
+        schemas_root: str,
+        rel_schema_path: str,
+        schema_data: Dict[str, Any],
+        active_schema_files: Set[str],
+        bindings: Optional[List[Dict[str, Any]]] = None,
+        file_match: Optional[List[str]] = None,
+    ) -> None:
+        """寫入單檔 JSON Schema 並記錄至活躍清單，若提供 `file_match` 則一併附加 `json.schemas` 綁定。"""
+        abs_schema_path = os.path.join(schemas_root, *rel_schema_path.split("/"))
+        self._write_json_zero_touch(abs_schema_path, schema_data)
+        active_schema_files.add(os.path.normcase(os.path.abspath(abs_schema_path)))
+        if bindings is not None and file_match:
+            bindings.append({"fileMatch": file_match, "url": f"./.vscode/schemas/{rel_schema_path}"})
+
+    def _append_contributed_schema_bindings(self, bindings: List[Dict[str, Any]]) -> None:
+        """讀取 `vscode-support.json_schemas` 擴充點（或預設保底規則）並附加至 `bindings`。"""
+        contributed_rules: Dict[str, Any] = {}
+        try:
+            raw_rules = contributes.get("vscode-support", "json_schemas")
+            if isinstance(raw_rules, dict):
+                contributed_rules = raw_rules
+        except Exception:
+            pass
+
+        if not contributed_rules:
+            contributed_rules = {
+                "format-meta": {
+                    "file_match": ["**/contributes/_format.json", "**/configurable/_format.json"],
+                    "schema_source": "static_file",
+                    "schema_path": "meta/format-meta.schema.json",
+                },
+                "manifest": {
+                    "file_match": [
+                        "**/source/*/manifest.json",
+                        "**/modules/*/manifest.json",
+                        "**/.modules/*/manifest.json",
+                    ],
+                    "schema_source": "static_file",
+                    "schema_path": "meta/manifest.schema.json",
+                },
+            }
+
+        source_subdir_map = {"contributes_format": "contributes", "configurable_template": "config"}
+        for rule_id in sorted(contributed_rules.keys()):
+            if rule_id.startswith("__"):
+                continue
+            rule = contributed_rules[rule_id]
+            if not isinstance(rule, dict):
+                continue
+            f_match = rule.get("file_match", [])
+            s_source = rule.get("schema_source", "static_file")
+            s_path = rule.get("schema_path", "")
+            if not isinstance(f_match, list) or not f_match:
+                continue
+            if s_source == "static_file":
+                if not s_path:
+                    continue
+                clean_rel = s_path.lstrip("./").replace("\\", "/")
+                bindings.append({"fileMatch": list(f_match), "url": f"./.vscode/schemas/{clean_rel}"})
+            elif s_source in source_subdir_map:
+                subdir = source_subdir_map[s_source]
+                target_mod = s_path.strip() if s_path else rule_id
+                rel_url = target_mod if target_mod.endswith(".json") else f"{subdir}/{target_mod}.schema.json"
+                bindings.append({"fileMatch": list(f_match), "url": f"./.vscode/schemas/{rel_url.lstrip('./')}"})
+
+    @staticmethod
+    def _cleanup_orphan_schemas(schemas_root: str, active_schema_files: Set[str]) -> None:
+        """清理 `.vscode/schemas/` 下已不再使用之孤兒 `.schema.json`。"""
+        for sub in ("contributes", "config", "meta"):
+            sub_dir = os.path.join(schemas_root, sub)
+            if os.path.isdir(sub_dir):
+                for fname in os.listdir(sub_dir):
+                    if fname.endswith(".json"):
+                        fpath = os.path.join(sub_dir, fname)
+                        if os.path.normcase(os.path.abspath(fpath)) not in active_schema_files:
+                            try:
+                                os.remove(fpath)
+                            except OSError:
+                                pass
 
     def sync_all_schemas(self, proj_root: str) -> List[Dict[str, Any]]:
         """
@@ -618,7 +708,6 @@ class SchemaCompiler:
         schemas_root = os.path.join(proj_root, ".vscode", "schemas")
         os.makedirs(schemas_root, exist_ok=True)
 
-        # 移除舊版子目錄 .vscode/schemas/.gitignore（改由 core.gitignore 統一於根目錄 .gitignore 忽略）
         gi_path = os.path.join(schemas_root, ".gitignore")
         if vfs.is_file(gi_path):
             try:
@@ -628,154 +717,70 @@ class SchemaCompiler:
 
         active_schema_files: Set[str] = set()
         bindings: List[Dict[str, Any]] = []
-
         installed_mods = self._discover_installed_modules()
+        local_modules_dir = os.path.join(self.yscb_dir, ".modules")
+        has_local_modules = os.path.isdir(local_modules_dir)
 
-        # 為每個擁有 contributes/_format.json 的已安裝模組編譯 Contributes Schema
         for mod in installed_mods:
-            fmt_uri = f"module://{mod}/contributes/_format.json"
-            if vfs.exists(fmt_uri):
+            fmt_data: Optional[Dict[str, Any]] = None
+            if has_local_modules:
+                local_fmt = os.path.join(local_modules_dir, mod, "contributes", "_format.json")
+                if vfs.is_file(local_fmt):
+                    try:
+                        loaded = vfs.read_json(local_fmt)
+                        if isinstance(loaded, dict):
+                            fmt_data = loaded
+                    except Exception:
+                        pass
+            if fmt_data is None:
+                fmt_uri = f"module://{mod}/contributes/_format.json"
+                if vfs.exists(fmt_uri):
+                    try:
+                        loaded = vfs.read_json(fmt_uri)
+                        if isinstance(loaded, dict):
+                            fmt_data = loaded
+                    except Exception:
+                        pass
+            if isinstance(fmt_data, dict):
                 try:
-                    fmt_data = vfs.read_json(fmt_uri)
-                    if isinstance(fmt_data, dict):
-                        c_schema = self.compile_contributes_schema(mod, fmt_data)
-                        rel_schema_path = f"contributes/{mod}.schema.json"
-                        abs_schema_path = os.path.join(schemas_root, "contributes", f"{mod}.schema.json")
-                        self._write_json_zero_touch(abs_schema_path, c_schema)
-                        active_schema_files.add(os.path.normcase(os.path.abspath(abs_schema_path)))
-                        bindings.append(
-                            {
-                                "fileMatch": [
-                                    f"**/contributes/{mod}.json",
-                                    f"**/config/{mod}/contribute.json",
-                                ],
-                                "url": f"./.vscode/schemas/{rel_schema_path}",
-                            }
-                        )
+                    c_schema = self.compile_contributes_schema(mod, fmt_data)
+                    self._write_and_track_schema(
+                        schemas_root,
+                        f"contributes/{mod}.schema.json",
+                        c_schema,
+                        active_schema_files,
+                        bindings=bindings,
+                        file_match=[f"**/contributes/{mod}.json", f"**/config/{mod}/contribute.json"],
+                    )
                 except Exception:
                     pass
 
-        # 為每個擁有 configurable/ (_format.json 或 config.*.json) 的已安裝模組編譯 Config Schema
         for mod in installed_mods:
-            cfg_fmt = self._load_module_config_format(mod)
-            tpl_data = self._load_module_config_template(mod)
+            latest_zip = self._select_latest_mirror_zip(os.path.join(self.yscb_dir, ".mirror", mod)) or ""
+            cfg_fmt = self._load_module_config_format(mod, latest_zip=latest_zip)
+            tpl_data = self._load_module_config_template(mod, latest_zip=latest_zip)
             if cfg_fmt is not None or tpl_data is not None:
                 cfg_schema = self.compile_config_schema(mod, template_data=tpl_data, fmt_data=cfg_fmt)
-                rel_schema_path = f"config/{mod}.schema.json"
-                abs_schema_path = os.path.join(schemas_root, "config", f"{mod}.schema.json")
-                self._write_json_zero_touch(abs_schema_path, cfg_schema)
-                active_schema_files.add(os.path.normcase(os.path.abspath(abs_schema_path)))
-                bindings.append(
-                    {
-                        "fileMatch": [
-                            f"**/config/{mod}/config.*.json",
-                            f"**/.config.local/{mod}/config.*.json",
-                            f"**/source/{mod}/configurable/config.*.json",
-                            f"**/{mod}/configurable/config.*.json",
-                        ],
-                        "url": f"./.vscode/schemas/{rel_schema_path}",
-                    }
-                )
-
-        # 編譯元 Schema（format-meta 與 manifest）並支援透過 contributes.get("vscode-support", "json_schemas") 擴充
-        meta_format_path = os.path.join(schemas_root, "meta", "format-meta.schema.json")
-        self._write_json_zero_touch(meta_format_path, self.build_format_meta_schema())
-        active_schema_files.add(os.path.normcase(os.path.abspath(meta_format_path)))
-
-        meta_manifest_path = os.path.join(schemas_root, "meta", "manifest.schema.json")
-        self._write_json_zero_touch(meta_manifest_path, self.build_manifest_meta_schema())
-        active_schema_files.add(os.path.normcase(os.path.abspath(meta_manifest_path)))
-
-        contributed_rules: Dict[str, Any] = {}
-        try:
-            raw_rules = contributes.get("vscode-support", "json_schemas")
-            if isinstance(raw_rules, dict):
-                contributed_rules = raw_rules
-        except Exception:
-            pass
-
-        if not contributed_rules:
-            # 預設保底元 Schema 綁定（當 vscode-support 尚未完成首次 contributes 合併時）
-            contributed_rules = {
-                "format-meta": {
-                    "file_match": [
-                        "**/contributes/_format.json",
-                        "**/configurable/_format.json",
+                self._write_and_track_schema(
+                    schemas_root,
+                    f"config/{mod}.schema.json",
+                    cfg_schema,
+                    active_schema_files,
+                    bindings=bindings,
+                    file_match=[
+                        f"**/config/{mod}/config.*.json",
+                        f"**/.config.local/{mod}/config.*.json",
+                        f"**/source/{mod}/configurable/config.*.json",
+                        f"**/{mod}/configurable/config.*.json",
                     ],
-                    "schema_source": "static_file",
-                    "schema_path": "meta/format-meta.schema.json",
-                },
-                "manifest": {
-                    "file_match": [
-                        "**/source/*/manifest.json",
-                        "**/modules/*/manifest.json",
-                        "**/.modules/*/manifest.json",
-                    ],
-                    "schema_source": "static_file",
-                    "schema_path": "meta/manifest.schema.json",
-                },
-            }
-
-        for rule_id in sorted(contributed_rules.keys()):
-            if rule_id.startswith("__"):
-                continue
-            rule = contributed_rules[rule_id]
-            if not isinstance(rule, dict):
-                continue
-            f_match = rule.get("file_match", [])
-            s_source = rule.get("schema_source", "static_file")
-            s_path = rule.get("schema_path", "")
-            if not isinstance(f_match, list) or not f_match:
-                continue
-            if s_source == "static_file":
-                if not s_path:
-                    continue
-                clean_rel = s_path.lstrip("./").replace("\\", "/")
-                bindings.append(
-                    {
-                        "fileMatch": list(f_match),
-                        "url": f"./.vscode/schemas/{clean_rel}",
-                    }
-                )
-            elif s_source == "contributes_format":
-                target_mod = s_path.strip() if s_path else rule_id
-                rel_url = (
-                    target_mod
-                    if target_mod.endswith(".json")
-                    else f"contributes/{target_mod}.schema.json"
-                )
-                bindings.append(
-                    {
-                        "fileMatch": list(f_match),
-                        "url": f"./.vscode/schemas/{rel_url.lstrip('./')}",
-                    }
-                )
-            elif s_source == "configurable_template":
-                target_mod = s_path.strip() if s_path else rule_id
-                rel_url = (
-                    target_mod
-                    if target_mod.endswith(".json")
-                    else f"config/{target_mod}.schema.json"
-                )
-                bindings.append(
-                    {
-                        "fileMatch": list(f_match),
-                        "url": f"./.vscode/schemas/{rel_url.lstrip('./')}",
-                    }
                 )
 
-        # 清理 .vscode/schemas/ 下已不再使用之孤兒 .schema.json
-        for sub in ("contributes", "config", "meta"):
-            sub_dir = os.path.join(schemas_root, sub)
-            if os.path.isdir(sub_dir):
-                for fname in os.listdir(sub_dir):
-                    if fname.endswith(".json"):
-                        fpath = os.path.join(sub_dir, fname)
-                        if os.path.normcase(os.path.abspath(fpath)) not in active_schema_files:
-                            try:
-                                os.remove(fpath)
-                            except OSError:
-                                pass
-
+        self._write_and_track_schema(
+            schemas_root, "meta/format-meta.schema.json", self.build_format_meta_schema(), active_schema_files
+        )
+        self._write_and_track_schema(
+            schemas_root, "meta/manifest.schema.json", self.build_manifest_meta_schema(), active_schema_files
+        )
+        self._append_contributed_schema_bindings(bindings)
+        self._cleanup_orphan_schemas(schemas_root, active_schema_files)
         return bindings
-

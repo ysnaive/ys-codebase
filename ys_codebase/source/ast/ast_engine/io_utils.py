@@ -37,29 +37,27 @@ def compute_project_relpath(
     except OSError:
         resolved_file = file_path
 
-    candidates: list[Path] = []
     if project_root is not None:
         try:
-            candidates.append(Path(project_root).resolve())
-        except OSError:
-            pass
-    try:
-        candidates.append(resolve_project_root())
-    except Exception:
-        pass
-
-    for root in candidates:
-        try:
+            root = Path(project_root).resolve()
             rel = os.path.relpath(str(resolved_file), str(root)).replace("\\", "/")
-            if not rel.startswith(".."):
+            if rel != ".." and not rel.startswith("../"):
                 return rel
         except Exception:
             pass
 
+    try:
+        default_root = resolve_project_root()
+        rel = os.path.relpath(str(resolved_file), str(default_root)).replace("\\", "/")
+        if rel != ".." and not rel.startswith("../"):
+            return rel
+    except Exception:
+        pass
+
     if fallback_base is not None:
         try:
             rel = os.path.relpath(str(file_path), str(fallback_base)).replace("\\", "/")
-            if not rel.startswith(".."):
+            if rel != ".." and not rel.startswith("../"):
                 base_name = Path(fallback_base).name
                 return f"{base_name}/{rel}" if base_name else rel
         except Exception:

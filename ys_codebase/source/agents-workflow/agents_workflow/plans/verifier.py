@@ -18,12 +18,18 @@ from ._verifier_healer import (
     resolve_companion_model as _resolve_companion_model,
 )
 from ._verifier_specs import (
+    HEADER_DATE_KEYS,
+    HEADER_MODEL_KEYS,
+    HEADER_NAME_KEYS,
+    HEADER_PARENT_KEYS,
+    HEADER_STATUS_KEYS,
     ORIGIN_SEED_FILES as _ORIGIN_SEED_FILES,
     PHASE_CANONICAL_FILES,
     PHASE_PREFIX_MAP,
     PLACEHOLDER_PATTERNS as _PLACEHOLDER_PATTERNS,
     VALID_STATUSES as _VALID_STATUSES,
     extract_dynamic_placeholders,
+    extract_markdown_headers,
     extract_requirement_ids as _extract_requirement_ids,
     is_header_match,
     load_template_header_specs,
@@ -149,7 +155,6 @@ class PlanVerifier:
                 res_tmpl = cand if cand.exists() else None
             self.templates_dir = res_tmpl
 
-        self._template_headers_cache: Dict[str, List[str]] = {}
         self._template_header_specs_cache: Dict[str, List[Tuple[str, str]]] = {}
         self._dynamic_placeholders_cache: Optional[List[str]] = None
         self._compiled_placeholder_patterns: Optional[List[Tuple[str, re.Pattern]]] = None
@@ -189,8 +194,6 @@ class PlanVerifier:
 
         specs = load_template_header_specs(template_name, self.templates_dir, min_phase=min_phase)
         self._template_header_specs_cache[cache_key] = specs
-        if min_phase == 1:
-            self._template_headers_cache[template_name] = [n for n, _ in specs]
         return specs
 
     def _check_nested_depth_and_structure(
@@ -230,11 +233,12 @@ class PlanVerifier:
                 and not PlanStatusResolver.resolve_phase_file(plan_dir, "P01").is_file()
                 and not PlanStatusResolver.resolve_phase_file(plan_dir, "P07").is_file()
             )
+            umb_rel_name = f"{rel_path}/umbrella_overview.md" if rel_path != "." else "umbrella_overview.md"
             if not umbrella_md.exists() and not is_revision_root:
                 report.issues.append(
                     PlanIssue(
                         severity=PlanSeverity.FAIL,
-                        file_name=f"{rel_path}/umbrella_overview.md" if rel_path != "." else "umbrella_overview.md",
+                        file_name=umb_rel_name,
                         category="STRUCTURE",
                         message="分類型主計畫目錄包含子計畫，但缺少 'umbrella_overview.md' 總覽說明書。 [Fix Hint: 請讀取 umbrella_overview.md 模板於主計畫根目錄建立總覽檔]",
                     )
@@ -247,7 +251,7 @@ class PlanVerifier:
                             report.issues.append(
                                 PlanIssue(
                                     severity=PlanSeverity.WARN,
-                                    file_name="umbrella_overview.md",
+                                    file_name=umb_rel_name,
                                     category="STRUCTURE",
                                     message=f"實體子計畫目錄 '{sub.name}' 尚未登記於 'umbrella_overview.md' 清冊中。 [Fix Hint: 請於 umbrella_overview.md §2 子計畫矩陣補登 '{sub.name}']",
                                 )
@@ -324,43 +328,28 @@ class PlanVerifier:
                 )
             )
 
-    def _verify_markdown_file(
-        self,
-        file_path: Path,
-        rel_file_name: str,
-        is_sub_plan: bool,
-        report: PlanReport,
-        enable_auto_heal: bool = False,
-    ) -> None:
-        """Stage 4: 稽核單一 Markdown 文件的 Header、佔位符、動態模板鏡像與 ID 格式。"""
-        try:
-            content = file_path.read_text(encoding="utf-8", errors="ignore")
-        except Exception as e:
-            report.issues.append(
-                PlanIssue(
-                    severity=PlanSeverity.FAIL,
-                    file_name=rel_file_name,
-                    category="IO",
-                    message=f"無法讀取 Markdown 檔案：{e} [Fix Hint: 請確認 '{rel_file_name}' 存在且具備 UTF-8 讀取權限]",
-                )
-            )
-            return
-
-        lines = content.splitlines()
-
-        non_code_lines = []
+    @staticmethod
+    def _extract_non_code_lines(lines: List[str]) -> List[str]:
+        """剝除 fenced code blocks 與行內反引號片段，回傳純文字行清單。"""
+        non_code_lines: List[str] = []
         in_code_block = False
         for l in lines:
             if l.strip().startswith("```"):
                 in_code_block = not in_code_block
                 continue
             if not in_code_block:
-                cleaned_l = re.sub(r"`+[^`]*`+", "", l)
-                non_code_lines.append(cleaned_l)
+                non_code_lines.append(re.sub(r"`+[^`]*`+", "", l))
+        return non_code_lines
 
+    def _check_comments_and_placeholders(
+        self,
+        non_code_lines: List[str],
+        rel_file_name: str,
+        report: PlanReport,
+    ) -> None:
+        """檢查 HTML 註解殘留、未替換佔位符與本機絕對路徑可攜性告警。"""
         non_code_text = "\n".join(non_code_lines)
-
-        if "<!--" in non_code_text or "-->" in non_code_text or re.search(r"<!--[\s\S]*?-->", non_code_text):
+        if "<!--" in non_code_text:
             report.issues.append(
                 PlanIssue(
                     severity=PlanSeverity.FAIL,
@@ -386,28 +375,6 @@ class PlanVerifier:
                     )
                     break
 
-        tmpl_name = map_file_to_template(rel_file_name, self.templates_dir)
-        expected_specs: List[Tuple[str, str]] = []
-        missing_specs: List[Tuple[str, str]] = []
-        if tmpl_name:
-            base_for_min = os.path.basename(rel_file_name)
-            m_auto_range = re.match(r"^P0([1-5])-05_auto\.md$", base_for_min, re.IGNORECASE)
-            min_phase = int(m_auto_range.group(1)) if m_auto_range else 1
-            expected_specs = self.get_resolved_template_header_specs(tmpl_name, min_phase=min_phase)
-            if expected_specs:
-                doc_headers = []
-                for line in lines:
-                    line_s = line.strip()
-                    if line_s.startswith("##") or line_s.startswith("###"):
-                        norm = _normalize_header_title(line_s)
-                        if norm:
-                            doc_headers.append(norm)
-
-                for exp_norm, exp_raw in expected_specs:
-                    matched = any(is_header_match(exp_norm, dh) for dh in doc_headers)
-                    if not matched:
-                        missing_specs.append((exp_norm, exp_raw))
-
         for idx, line in enumerate(non_code_lines, 1):
             m_port = re.search(r"(?:file:///|\b[a-zA-Z]:[/\\][^\s\)\]`\"\'\>]+)", line)
             if m_port:
@@ -426,24 +393,48 @@ class PlanVerifier:
                 )
                 break
 
+    def _compute_missing_template_specs(
+        self,
+        lines: List[str],
+        rel_file_name: str,
+    ) -> Tuple[Optional[str], List[Tuple[str, str]], List[Tuple[str, str]]]:
+        """計算檔案對應之標準模板與缺失章節清單 (tmpl_name, expected_specs, missing_specs)。"""
+        tmpl_name = map_file_to_template(rel_file_name, self.templates_dir)
+        expected_specs: List[Tuple[str, str]] = []
+        missing_specs: List[Tuple[str, str]] = []
+        if tmpl_name:
+            base_for_min = os.path.basename(rel_file_name)
+            m_auto_range = re.match(r"^P0([1-5])-05_auto\.md$", base_for_min, re.IGNORECASE)
+            min_phase = int(m_auto_range.group(1)) if m_auto_range else 1
+            expected_specs = self.get_resolved_template_header_specs(tmpl_name, min_phase=min_phase)
+            if expected_specs:
+                doc_headers = extract_markdown_headers(lines)
+                for exp_norm, exp_raw in expected_specs:
+                    if not any(is_header_match(exp_norm, dh) for dh in doc_headers):
+                        missing_specs.append((exp_norm, exp_raw))
+        return tmpl_name, expected_specs, missing_specs
+
+    def _check_and_heal_headers(
+        self,
+        file_path: Path,
+        rel_file_name: str,
+        lines: List[str],
+        non_code_lines: List[str],
+        is_sub_plan: bool,
+        missing_specs: List[Tuple[str, str]],
+        enable_auto_heal: bool,
+        report: PlanReport,
+    ) -> None:
+        """檢核並按條件自癒 Markdown 頂部 Blockquote 標頭與結案 Checkbox 狀態。"""
         base_fname = os.path.basename(rel_file_name)
         is_handoff = base_fname == "handoff.md"
         is_seed_asset = base_fname.lower() in self.ORIGIN_SEED_FILES
         headers = parse_markdown_blockquote_headers(lines, max_lines=35)
-        has_name = any(k in headers for k in [
-            "功能名稱", "計畫名稱", "所屬計畫", "name", "title", "調研主題", "topic", "subject", "主題"
-        ])
-        has_date = any(k in headers for k in [
-            "建立日期", "完成日期", "暫停時間", "歸檔日期", "更新日期",
-            "date", "created_at", "updated_at", "archived_at", "日期", "time", "timestamp"
-        ])
-        has_status = any(k in headers for k in [
-            "狀態", "status", "調研狀態", "research_status", "plan_status", "計畫狀態", "進度", "當前所在階段"
-        ])
-        has_parent = any(k in headers for k in ["所屬主計畫", "所屬計畫", "parent_plan", "主計畫", "parent"])
-        has_model = any(k in headers for k in [
-            "模型", "model", "ai_model", "ai-model", "模型名稱", "model_name"
-        ])
+        has_name = any(k in headers for k in HEADER_NAME_KEYS)
+        has_date = any(k in headers for k in HEADER_DATE_KEYS)
+        has_status = any(k in headers for k in HEADER_STATUS_KEYS)
+        has_parent = any(k in headers for k in HEADER_PARENT_KEYS)
+        has_model = any(k in headers for k in HEADER_MODEL_KEYS)
 
         has_prior_file_issues = any(i.file_name == rel_file_name for i in report.issues)
         if (
@@ -461,14 +452,9 @@ class PlanVerifier:
             )
             if healed_keys:
                 report.header_healed.append(f"{rel_file_name} ({', '.join(healed_keys)})")
-                has_name = any(k in headers for k in [
-                    "功能名稱", "計畫名稱", "所屬計畫", "name", "title", "調研主題", "topic", "subject", "主題"
-                ])
-                has_date = any(k in headers for k in [
-                    "建立日期", "完成日期", "暫停時間", "歸檔日期", "更新日期",
-                    "date", "created_at", "updated_at", "archived_at", "日期", "time", "timestamp"
-                ])
-                has_parent = any(k in headers for k in ["所屬主計畫", "所屬計畫", "parent_plan", "主計畫", "parent"])
+                has_name = any(k in headers for k in HEADER_NAME_KEYS)
+                has_date = any(k in headers for k in HEADER_DATE_KEYS)
+                has_parent = any(k in headers for k in HEADER_PARENT_KEYS)
 
         inferred_hdr = _infer_deterministic_header_values(file_path, is_sub_plan)
         inferred_name = inferred_hdr["功能名稱"]
@@ -556,6 +542,16 @@ class PlanVerifier:
                 )
             )
 
+    @staticmethod
+    def _check_template_and_id_matrix(
+        lines: List[str],
+        rel_file_name: str,
+        tmpl_name: Optional[str],
+        expected_specs: List[Tuple[str, str]],
+        missing_specs: List[Tuple[str, str]],
+        report: PlanReport,
+    ) -> None:
+        """輸出模板章節缺失診斷 (TEMPLATE) 與測試/修訂 ID 矩陣檢核 (ID_MATRIX)。"""
         if tmpl_name and expected_specs and missing_specs:
             m_cnt = len(missing_specs)
             n_cnt = len(expected_specs)
@@ -607,6 +603,54 @@ class PlanVerifier:
                         message="'revision_log.md' 修訂紀錄清單缺少具備 '[REV-XX]' 前綴之修訂條目。 [Fix Hint: 請於 revision_log.md §1 補入至少一項 '### [REV-01] <修訂主題>' 條目]",
                     )
                 )
+
+    def _verify_markdown_file(
+        self,
+        file_path: Path,
+        rel_file_name: str,
+        is_sub_plan: bool,
+        report: PlanReport,
+        enable_auto_heal: bool = False,
+    ) -> None:
+        """Stage 4: 稽核單一 Markdown 文件的 Header、佔位符、動態模板鏡像與 ID 格式。"""
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception as e:
+            report.issues.append(
+                PlanIssue(
+                    severity=PlanSeverity.FAIL,
+                    file_name=rel_file_name,
+                    category="IO",
+                    message=f"無法讀取 Markdown 檔案：{e} [Fix Hint: 請確認 '{rel_file_name}' 存在且具備 UTF-8 讀取權限]",
+                )
+            )
+            return
+
+        lines = content.splitlines()
+        non_code_lines = self._extract_non_code_lines(lines)
+
+        self._check_comments_and_placeholders(non_code_lines, rel_file_name, report)
+        tmpl_name, expected_specs, missing_specs = self._compute_missing_template_specs(
+            lines, rel_file_name
+        )
+        self._check_and_heal_headers(
+            file_path=file_path,
+            rel_file_name=rel_file_name,
+            lines=lines,
+            non_code_lines=non_code_lines,
+            is_sub_plan=is_sub_plan,
+            missing_specs=missing_specs,
+            enable_auto_heal=enable_auto_heal,
+            report=report,
+        )
+        self._check_template_and_id_matrix(
+            lines=lines,
+            rel_file_name=rel_file_name,
+            tmpl_name=tmpl_name,
+            expected_specs=expected_specs,
+            missing_specs=missing_specs,
+            report=report,
+        )
 
     def _check_cross_file_and_traceability(
         self,
@@ -684,10 +728,8 @@ class PlanVerifier:
                 p06_text = p06_path.read_text(encoding="utf-8", errors="ignore")
                 p01_ids = _extract_requirement_ids(p01_text)
                 if p01_ids:
-                    p06_upper = p06_text.upper()
-                    missing_ids = sorted(
-                        [rid for rid in p01_ids if not re.search(r"\b" + re.escape(rid) + r"\b", p06_upper)]
-                    )
+                    p06_ids = _extract_requirement_ids(p06_text)
+                    missing_ids = sorted(p01_ids - p06_ids)
                     if missing_ids:
                         missing_str = ", ".join(missing_ids)
                         report.issues.append(
@@ -824,6 +866,51 @@ class PlanVerifier:
                 matched.append(p06_f)
         return matched
 
+    def _verify_single_plan_directory(
+        self,
+        target_dir: Path,
+        rel_dir: str,
+        is_sub: bool,
+        phase_norm: str,
+        enable_auto_heal: bool,
+        model: Optional[str],
+        report: PlanReport,
+        require_non_seed_for_companions: bool = False,
+    ) -> None:
+        """統一執行單一計畫目錄（主計畫或 sub_* 子計畫）之主體檔檢核、伴隨檔自癒與跨檔追溯檢查。"""
+        fails_before = sum(1 for i in report.issues if i.severity == PlanSeverity.FAIL)
+        if rel_dir == ".":
+            target_mds = self._filter_files_by_phase(target_dir, phase_norm)
+        else:
+            target_mds = [m for m in sorted(target_dir.glob("*.md")) if m.name != "changelog.md"]
+
+        prefix = f"{rel_dir}/" if rel_dir != "." else ""
+        for md in target_mds:
+            self._verify_markdown_file(
+                md, f"{prefix}{md.name}", is_sub, report, enable_auto_heal=enable_auto_heal
+            )
+
+        has_new_fails = sum(1 for i in report.issues if i.severity == PlanSeverity.FAIL) > fails_before
+        has_eligible_md = (
+            any(m.name not in self.ORIGIN_SEED_FILES for m in target_mds)
+            if require_non_seed_for_companions
+            else True
+        )
+        if not has_new_fails and enable_auto_heal and has_eligible_md:
+            _auto_heal_companions(target_dir, phase_norm, model, report)
+            p06_rel = f"{prefix}P06_test_plan.md"
+            if p06_rel in report.companion_created:
+                p06_new = target_dir / "P06_test_plan.md"
+                if p06_new.is_file() and p06_new not in target_mds:
+                    self._verify_markdown_file(
+                        p06_new, p06_rel, is_sub, report, enable_auto_heal=enable_auto_heal
+                    )
+
+        self._check_nested_depth_and_structure(target_dir, rel_dir, report)
+        changelog_path = target_dir / "changelog.md"
+        self._check_changelog_content(changelog_path, f"{prefix}changelog.md", report)
+        self._check_cross_file_and_traceability(target_dir, rel_dir, phase_norm, report)
+
     def verify_plan(
         self,
         plan_path_or_name: Union[str, Path],
@@ -900,61 +987,30 @@ class PlanVerifier:
                     )
                 )
 
-        # Step 1: 檢核目標階段主體 Markdown 檔案本體合規性
-        target_mds = self._filter_files_by_phase(p, phase_norm)
-        for md in target_mds:
-            self._verify_markdown_file(
-                md, md.name, is_sub, report, enable_auto_heal=enable_auto_heal
-            )
-
-        # Step 2: 若 Step 1 主體檔合規 (0 FAIL) 且提供 --log，自動補齊伴隨檔
-        if not report.has_fails and enable_auto_heal:
-            _auto_heal_companions(p, phase_norm, model, report)
-            if "P06_test_plan.md" in report.companion_created:
-                p06_new = p / "P06_test_plan.md"
-                if p06_new.is_file() and p06_new not in target_mds:
-                    self._verify_markdown_file(
-                        p06_new, p06_new.name, is_sub, report, enable_auto_heal=enable_auto_heal
-                    )
-
-        # Step 3: 結構、changelog、雙檔協同 (P02/P04 <-> P06) 與 P01<->P06 追溯差集檢核
-        self._check_nested_depth_and_structure(p, ".", report)
-        changelog_path = p / "changelog.md"
-        self._check_changelog_content(changelog_path, "changelog.md", report)
-        self._check_cross_file_and_traceability(p, ".", phase_norm, report)
+        self._verify_single_plan_directory(
+            target_dir=p,
+            rel_dir=".",
+            is_sub=is_sub,
+            phase_norm=phase_norm,
+            enable_auto_heal=enable_auto_heal,
+            model=model,
+            report=report,
+            require_non_seed_for_companions=False,
+        )
 
         if phase_norm in ("ALL", "CURRENT"):
             for sub in sorted(p.iterdir(), key=lambda x: x.name):
                 if sub.is_dir() and sub.name.startswith("sub_"):
-                    sub_fails_before = sum(1 for i in report.issues if i.severity == PlanSeverity.FAIL)
-                    sub_mds = [m for m in sorted(sub.glob("*.md")) if m.name != "changelog.md"]
-                    for sub_md in sub_mds:
-                        self._verify_markdown_file(
-                            sub_md,
-                            f"{sub.name}/{sub_md.name}",
-                            True,
-                            report,
-                            enable_auto_heal=enable_auto_heal,
-                        )
-                    sub_has_new_fails = sum(1 for i in report.issues if i.severity == PlanSeverity.FAIL) > sub_fails_before
-                    has_non_seed_md = any(m.name not in _ORIGIN_SEED_FILES for m in sub_mds)
-                    if not sub_has_new_fails and enable_auto_heal and has_non_seed_md:
-                        _auto_heal_companions(sub, phase_norm, model, report)
-                        sub_p06_rel = f"{sub.name}/P06_test_plan.md"
-                        if sub_p06_rel in report.companion_created:
-                            sub_p06 = sub / "P06_test_plan.md"
-                            if sub_p06.is_file() and sub_p06 not in sub_mds:
-                                self._verify_markdown_file(
-                                    sub_p06,
-                                    sub_p06_rel,
-                                    True,
-                                    report,
-                                    enable_auto_heal=enable_auto_heal,
-                                )
-                    self._check_nested_depth_and_structure(sub, sub.name, report)
-                    sub_changelog = sub / "changelog.md"
-                    self._check_changelog_content(sub_changelog, f"{sub.name}/changelog.md", report)
-                    self._check_cross_file_and_traceability(sub, sub.name, phase_norm, report)
+                    self._verify_single_plan_directory(
+                        target_dir=sub,
+                        rel_dir=sub.name,
+                        is_sub=True,
+                        phase_norm=phase_norm,
+                        enable_auto_heal=enable_auto_heal,
+                        model=model,
+                        report=report,
+                        require_non_seed_for_companions=True,
+                    )
 
         # Step 4: 彙總狀態
         if report.has_fails:

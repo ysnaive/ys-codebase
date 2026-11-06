@@ -17,18 +17,35 @@ from typing import Optional, List, Dict, Any, Union, IO, Generator
 
 from core.vfs.base import VFSBackend
 
+_CONTRIB_CACHE_TRIGGER_FILES = frozenset({
+    "contribute.json",
+    "contributes.json",
+    "contributes.merged.json",
+    "contributes.meta.json",
+    "core.json",
+    "_format.json",
+    "yscb.config.json",
+    "config.project.json",
+    "config.local.json",
+})
 
-def _maybe_invalidate_uri_cache(norm_path: str) -> None:
-    """When contribute.json or contributes cache files are mutated via VFS, invalidate URI and contributes scan caches."""
-    base = os.path.basename(norm_path)
-    if base in ("contribute.json", "contributes.merged.json", "contributes.meta.json", "core.json"):
-        try:
-            from core import uri, contributes
-            uri._TOKEN_MAP_CACHE.clear()
-            contributes._LAST_CLEAN_SCAN_TS.clear()
-            contributes._JSON_FILE_CACHE.pop(norm_path, None)
-        except Exception:
-            pass
+
+def _maybe_invalidate_uri_cache(norm_path: str, is_dir_op: bool = False) -> None:
+    """When contribute.json, config files, or directories are mutated via VFS, invalidate URI and contributes caches."""
+    try:
+        from core import uri, contributes
+        contributes._JSON_FILE_CACHE.pop(norm_path, None)
+        base = os.path.basename(norm_path)
+        parent_base = os.path.basename(os.path.dirname(norm_path))
+        if (
+            is_dir_op
+            or base in _CONTRIB_CACHE_TRIGGER_FILES
+            or parent_base == "contributes"
+            or base == "contributes"
+        ):
+            uri.invalidate_uri_cache()
+    except Exception:
+        pass
 
 
 def robust_rmtree(path: str, ignore_errors: bool = False, max_retries: int = 5) -> None:
@@ -232,6 +249,7 @@ class OSBackend(VFSBackend):
             os.makedirs(os.path.dirname(norm_path), exist_ok=True)
             with open(norm_path, "wb") as f:
                 f.write(data)
+        _maybe_invalidate_uri_cache(norm_path)
 
     def read_json(self, path: str, encoding: str = "utf-8") -> Any:
         """讀取並解析 JSON 檔案。"""
@@ -302,7 +320,8 @@ class OSBackend(VFSBackend):
                 raise FileNotFoundError(f"Target path not found: '{norm_path}'")
             return
 
-        if os.path.isdir(norm_path):
+        is_dir = os.path.isdir(norm_path)
+        if is_dir:
             robust_rmtree(norm_path, ignore_errors=False)
         else:
             try:
@@ -314,13 +333,14 @@ class OSBackend(VFSBackend):
             except FileNotFoundError:
                 if not missing_ok:
                     raise
-        _maybe_invalidate_uri_cache(norm_path)
+        _maybe_invalidate_uri_cache(norm_path, is_dir_op=is_dir)
 
     def rmtree(self, path: str, ignore_errors: bool = False) -> None:
         """遞迴刪除目錄樹。"""
         norm_path = self.assert_safe_path(path)
         if os.path.exists(norm_path) or os.path.lexists(norm_path):
             robust_rmtree(norm_path, ignore_errors=ignore_errors)
+        _maybe_invalidate_uri_cache(norm_path, is_dir_op=True)
 
     def _safe_copytree(self, src: str, dst: str) -> None:
         """跨平台大小寫不敏感安全複製目錄樹，忽略暫態點目錄 (.old_* / .staging_*) 與過期句柄。"""
@@ -351,12 +371,13 @@ class OSBackend(VFSBackend):
         dst_real = os.path.normcase(os.path.realpath(dst_norm))
         if src_real == dst_real:
             return
+        is_dir = os.path.isdir(src_norm) and not os.path.islink(src_norm)
         if os.path.islink(src_norm):
             os.makedirs(os.path.dirname(dst_norm), exist_ok=True)
             if os.path.lexists(dst_norm):
                 os.remove(dst_norm)
             os.symlink(os.readlink(src_norm), dst_norm)
-        elif os.path.isdir(src_norm):
+        elif is_dir:
             if dst_real.startswith(src_real + os.sep):
                 raise ValueError(f"Cannot copy directory '{src_norm}' into its own subdirectory '{dst_norm}'.")
             if os.path.exists(dst_norm):
@@ -365,6 +386,7 @@ class OSBackend(VFSBackend):
         else:
             os.makedirs(os.path.dirname(dst_norm), exist_ok=True)
             shutil.copy2(src_norm, dst_norm)
+        _maybe_invalidate_uri_cache(dst_norm, is_dir_op=is_dir)
 
     def move(self, src: str, dst: str) -> None:
         """移動檔案或目錄至目標路徑。"""
@@ -375,6 +397,9 @@ class OSBackend(VFSBackend):
             robust_replace(src_norm, dst_norm)
         except OSError:
             shutil.move(src_norm, dst_norm)
+        is_dir = os.path.isdir(dst_norm)
+        _maybe_invalidate_uri_cache(src_norm, is_dir_op=is_dir)
+        _maybe_invalidate_uri_cache(dst_norm, is_dir_op=is_dir)
 
     @contextmanager
     def atomic_write(
@@ -422,6 +447,7 @@ class OSBackend(VFSBackend):
             # 原子替換 (針對 Windows 檔案鎖/索引競態提供漸進重試；若耗盡重試直接拋出異常以保護原檔並清理暫存檔)
             robust_replace(tmp_path, norm_target, max_retries=10)
             success = True
+            _maybe_invalidate_uri_cache(norm_target)
         finally:
             if file_obj is not None and not file_obj.closed:
                 try:

@@ -21,13 +21,14 @@ class WorkflowInitializer:
         "plans": "project://plans",
         "archived": "project://plans/archived",
         "docs": "project://docs",
-        "roadmap": "workflow.plans://roadmap"
+        "roadmap": "workflow.plans://roadmap",
     }
 
     def __init__(self, host_dir: Optional[str] = None):
         self.host_dir = host_dir
 
-    def check_project_protocol(self) -> Tuple[bool, str]:
+    @staticmethod
+    def check_project_protocol() -> Tuple[bool, str]:
         """
         前置驗證依賴之 project:// 協議是否已正確定義 (core.project_root)。
         回傳 (is_valid, error_or_path)。
@@ -36,27 +37,50 @@ class WorkflowInitializer:
             return True, ""
         try:
             proj_path = uri.resolve("project://", interactive=False)
-            if proj_path and not str(proj_path).startswith("!undefined"):
-                return True, proj_path
+            if proj_path and not str(proj_path).strip().startswith("!"):
+                return True, str(proj_path)
             return False, "project_root is not configured or is !undefined"
         except Exception as e:
             return False, str(e)
 
-    def _resolve_physical_path(self, raw_path: str) -> str:
+    def _resolve_physical_path(
+        self,
+        raw_path: str,
+        target_paths: Optional[Dict[str, str]] = None,
+    ) -> str:
         """安全嘗試將語意 URI 或相對路徑解析為實體絕對路徑。"""
-        if not raw_path or raw_path == "!undefined":
+        if not raw_path or str(raw_path).strip().startswith("!"):
             return ""
 
-        if uri and "://" in raw_path:
-            try:
-                return uri.resolve(raw_path, interactive=False)
-            except Exception:
-                return ""
+        raw_str = str(raw_path).strip()
+        if raw_str.startswith("workflow.plans://") and target_paths and "plans" in target_paths:
+            sub_rel = raw_str[len("workflow.plans://"):].lstrip("/\\")
+            plans_target = target_paths.get("plans", "")
+            if plans_target and not str(plans_target).strip().startswith("workflow.plans://"):
+                plans_phys = self._resolve_physical_path(plans_target)
+                if plans_phys:
+                    return os.path.normpath(os.path.join(plans_phys, sub_rel.replace("/", os.sep))) if sub_rel else plans_phys
 
-        # 一般相對/絕對路徑
-        if self.host_dir and not os.path.isabs(raw_path):
-            return os.path.abspath(os.path.join(self.host_dir, raw_path))
-        return os.path.abspath(raw_path)
+        if uri and "://" in raw_str:
+            try:
+                resolved = uri.resolve(raw_str, interactive=False)
+                if resolved and not str(resolved).strip().startswith("!"):
+                    return str(resolved)
+            except Exception:
+                pass
+
+            if raw_str.startswith("workflow.plans://"):
+                sub_rel = raw_str[len("workflow.plans://"):].lstrip("/\\")
+                fallback_plans = (target_paths or {}).get("plans") or self.DEFAULT_RECOMMENDED_PATHS.get("plans", "project://plans")
+                if fallback_plans and not str(fallback_plans).strip().startswith("workflow.plans://"):
+                    plans_phys = self._resolve_physical_path(fallback_plans)
+                    if plans_phys:
+                        return os.path.normpath(os.path.join(plans_phys, sub_rel.replace("/", os.sep))) if sub_rel else plans_phys
+            return ""
+
+        if self.host_dir and not os.path.isabs(raw_str):
+            return os.path.abspath(os.path.join(self.host_dir, raw_str))
+        return os.path.abspath(raw_str)
 
     def sync_gitignore(self, host_dir: Optional[str] = None) -> Dict[str, Any]:
         """委託 ReleasePublisher 同步更新 .gitignore 受託管區塊。"""
@@ -72,17 +96,18 @@ class WorkflowInitializer:
         """
         results = []
         for key, val in target_paths.items():
-            real_p = self._resolve_physical_path(val)
+            real_p = self._resolve_physical_path(val, target_paths=target_paths)
             exists = bool(real_p and os.path.exists(real_p))
             results.append({
                 "key": key,
                 "uri_or_path": val,
                 "real_path": real_p,
-                "exists": exists
+                "exists": exists,
             })
         return results
 
-    def _write_project_config(self, bound_paths: Dict[str, str]) -> bool:
+    @staticmethod
+    def _write_project_config(bound_paths: Dict[str, str]) -> bool:
         """原子增量寫入 config/agents-workflow/config.project.json。"""
         try:
             from core import config
@@ -92,39 +117,59 @@ class WorkflowInitializer:
         except Exception:
             return False
 
+    @staticmethod
+    def _print_undefined_project_error() -> None:
+        """輸出 project:// 協議未定義之錯誤引導訊息。"""
+        print("\n" + "=" * 75, file=sys.stderr)
+        print("[agents-workflow:init] [!] 錯誤：依賴協議 'project://' 尚未定義！", file=sys.stderr)
+        print("=" * 75, file=sys.stderr)
+        print("agents-workflow 依賴專案根目錄協議 'project://' 來定位 plans 與 docs 目錄。", file=sys.stderr)
+        print("當前 core.project_root 未配置或為 !undefined。\n", file=sys.stderr)
+        print("[*] 建議解決步驟：", file=sys.stderr)
+        print("  1. 請先執行以下指令設定專案根目錄 (例如指定當前目錄或專案路徑)：", file=sys.stderr)
+        print("     python yscb.py config set core project_root .\n", file=sys.stderr)
+        print("  2. 或於終端執行協議解析以進行及時熱更新補齊：", file=sys.stderr)
+        print("     python yscb.py uri resolve project://\n", file=sys.stderr)
+        print("  3. 設定完成後，請重新執行 agents-workflow 一鍵初始化。", file=sys.stderr)
+        print("=" * 75 + "\n", file=sys.stderr)
+
+    @staticmethod
+    def _prompt_init_confirmation(auto_confirm: bool, interactive: bool) -> bool:
+        """處理初始化前之互動確認或非互動環境防呆攔截。"""
+        if auto_confirm:
+            return True
+        if interactive:
+            try:
+                choice = input("\n確認要建立上述資料夾並寫入設定檔嗎? [-y / -n]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                choice = "n"
+            if choice not in ("y", "yes", "-y"):
+                print("[agents-workflow] 操作已由使用者取消。")
+                return False
+            return True
+        print("[agents-workflow] 非互動模式需要 -y / --yes 參數確認，操作已取消。")
+        return False
+
     def run_init_default(
         self,
         paths_override: Optional[Dict[str, str]] = None,
         auto_confirm: bool = False,
-        interactive: bool = True
+        interactive: bool = True,
     ) -> Dict[str, Any]:
         """
         執行 --init-default 完整流程。
         """
-        # 1. 前置依賴協議 project:// 防呆驗證
-        is_project_defined, proj_err = self.check_project_protocol()
+        is_project_defined, _ = self.check_project_protocol()
         if not is_project_defined:
-            print("\n" + "=" * 75, file=sys.stderr)
-            print("[agents-workflow:init] [!] 錯誤：依賴協議 'project://' 尚未定義！", file=sys.stderr)
-            print("=" * 75, file=sys.stderr)
-            print("agents-workflow 依賴專案根目錄協議 'project://' 來定位 plans 與 docs 目錄。", file=sys.stderr)
-            print("當前 core.project_root 未配置或為 !undefined。\n", file=sys.stderr)
-            print("[*] 建議解決步驟：", file=sys.stderr)
-            print("  1. 請先執行以下指令設定專案根目錄 (例如指定當前目錄或專案路徑)：", file=sys.stderr)
-            print("     python yscb.py config set core project_root .\n", file=sys.stderr)
-            print("  2. 或於終端執行協議解析以進行及時熱更新補齊：", file=sys.stderr)
-            print("     python yscb.py uri resolve project://\n", file=sys.stderr)
-            print("  3. 設定完成後，請重新執行 agents-workflow 一鍵初始化。", file=sys.stderr)
-            print("=" * 75 + "\n", file=sys.stderr)
+            self._print_undefined_project_error()
             return {
                 "success": False,
                 "cancelled": False,
                 "error": "project:// protocol is undefined",
                 "created_dirs": [],
-                "bound_paths": {}
+                "bound_paths": {},
             }
 
-        # 合併推薦路徑與使用者覆蓋參數
         target_paths = dict(self.DEFAULT_RECOMMENDED_PATHS)
         if paths_override:
             for k, v in paths_override.items():
@@ -133,7 +178,6 @@ class WorkflowInitializer:
 
         probed = self.probe_paths(target_paths)
 
-        # 呈遞清單與提醒
         print("\n[agents-workflow] 將初始化以下 Workflow URI 協議與目錄結構:")
         print("-" * 75)
         print(f"{'KEY':<12} {'TARGET URI / PATH':<45} {'STATUS'}")
@@ -156,32 +200,14 @@ class WorkflowInitializer:
             for w in existing_warnings:
                 print(f"  • {w['key']}: {w['real_path']}")
 
-        # 互動確認
-        if not auto_confirm:
-            if interactive:
-                try:
-                    choice = input("\n確認要建立上述資料夾並寫入設定檔嗎? [-y / -n]: ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    choice = "n"
-                if choice not in ("y", "yes", "-y"):
-                    print("[agents-workflow] 操作已由使用者取消。")
-                    return {
-                        "success": True,
-                        "cancelled": True,
-                        "created_dirs": [],
-                        "bound_paths": {}
-                    }
-            else:
-                # 非互動環境且未帶 -y / --yes，安全取消防止非預期變更
-                print("[agents-workflow] 非互動模式需要 -y / --yes 參數確認，操作已取消。")
-                return {
-                    "success": True,
-                    "cancelled": True,
-                    "created_dirs": [],
-                    "bound_paths": {}
-                }
+        if not self._prompt_init_confirmation(auto_confirm=auto_confirm, interactive=interactive):
+            return {
+                "success": True,
+                "cancelled": True,
+                "created_dirs": [],
+                "bound_paths": {},
+            }
 
-        # 建立目錄
         created_dirs = []
         for item in to_create:
             r_path = item["real_path"]
@@ -192,22 +218,21 @@ class WorkflowInitializer:
                 except Exception as e:
                     print(f"[agents-workflow] Warning: Failed to create directory '{r_path}': {e}", file=sys.stderr)
 
-        # 寫入設定檔
         bound_paths = {item["key"]: item["uri_or_path"] for item in probed}
         write_ok = self._write_project_config(bound_paths)
 
         if write_ok:
-            print(f"\n[agents-workflow] 一鍵初始化成功！")
+            print("\n[agents-workflow] 一鍵初始化成功！")
             print(f"  • 建立目錄數量: {len(created_dirs)}")
             print(f"  • 綁定協議數量: {len(bound_paths)}")
             for k, v in bound_paths.items():
                 print(f"    - workflow.{k}:// -> {v}")
         else:
-            print(f"\n[agents-workflow] Warning: Directory created, but failed to update config.project.json.", file=sys.stderr)
+            print("\n[agents-workflow] Warning: Directory created, but failed to update config.project.json.", file=sys.stderr)
 
         return {
             "success": write_ok,
             "cancelled": False,
             "created_dirs": created_dirs,
-            "bound_paths": bound_paths
+            "bound_paths": bound_paths,
         }

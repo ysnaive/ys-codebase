@@ -48,7 +48,8 @@ def make_contract_suite(module_name: str) -> unittest.TestSuite:
     Auto-Contract Suite Factory:
     Dynamically synthesizes a contract test suite for target module.
     """
-    class_name = f"{module_name.capitalize()}AutoContractTestCase"
+    pascal_prefix = "".join(part.capitalize() for part in module_name.replace("-", "_").split("_") if part)
+    class_name = f"{pascal_prefix or 'Module'}AutoContractTestCase"
     dynamic_case_cls = type(
         class_name,
         (BaseModuleContractTestCase,),

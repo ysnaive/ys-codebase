@@ -12,7 +12,7 @@ import urllib.request
 from core import uri
 from core import vfs
 from core import semver
-from core.engine import normalize_legacy_provider_url
+from core.engine import normalize_legacy_provider_url, resolve_local_provider_path
 
 DEFAULT_CACHE_URI: str = "cache://core/update_check.json"
 DEFAULT_THROTTLE_SECONDS: int = 43200  # 12 小時
@@ -98,7 +98,7 @@ class UpdateChecker:
 
     def _save_cache(self, data: Dict[str, Any]) -> None:
         try:
-            vfs.makedirs("cache://core", exist_ok=True)
+            vfs.makedirs(str(vfs.path(self.cache_uri).parent), exist_ok=True)
             vfs.write_json(self.cache_uri, data)
         except Exception:
             pass
@@ -235,34 +235,34 @@ class UpdateChecker:
         self_update_url = cfg.get("self_update_url") if isinstance(cfg, dict) else None
         default_provider = cfg.get("default_provider", "") if isinstance(cfg, dict) else ""
 
-        if not self_update_url and default_provider and not str(default_provider).startswith(("http://", "https://")):
-            resolved_p = str(default_provider)
-            if not os.path.isabs(resolved_p):
-                base_d = (
-                    os.path.dirname(os.path.abspath(self.config_path))
-                    if self.config_path
-                    else os.environ.get("YSCB_HOST_DIR", os.getcwd())
-                )
-                resolved_p = os.path.normpath(os.path.join(base_d, resolved_p))
-            for cand in (
-                os.path.join(resolved_p, "yscb.py"),
-                os.path.join(os.path.dirname(resolved_p), "yscb.py"),
-                os.path.join(os.path.dirname(os.path.dirname(resolved_p)), "yscb.py"),
-            ):
-                if vfs.is_file(cand):
-                    try:
-                        text = vfs.read_text(cand)
-                        ver = self._extract_script_version(text)
-                        if ver:
-                            return ver, self._compute_script_sha256(text)
-                    except Exception:
-                        pass
+        if not self_update_url and default_provider:
+            base_d = (
+                os.path.dirname(os.path.abspath(self.config_path))
+                if self.config_path
+                else os.environ.get("YSCB_HOST_DIR")
+            )
+            resolved_p = resolve_local_provider_path(str(default_provider), base_dir=base_d)
+            if resolved_p:
+                for cand in (
+                    os.path.join(resolved_p, "yscb.py"),
+                    os.path.join(os.path.dirname(resolved_p), "yscb.py"),
+                    os.path.join(os.path.dirname(os.path.dirname(resolved_p)), "yscb.py"),
+                ):
+                    if vfs.is_file(cand):
+                        try:
+                            text = vfs.read_text(cand)
+                            ver = self._extract_script_version(text)
+                            if ver:
+                                return ver, self._compute_script_sha256(text)
+                        except Exception:
+                            pass
 
         target_url = str(self_update_url or DEFAULT_SELF_UPDATE_URL).strip()
-        if not target_url.startswith(("http://", "https://")):
-            if vfs.is_file(target_url):
+        local_self_p = resolve_local_provider_path(target_url)
+        if local_self_p is not None:
+            if vfs.is_file(local_self_p):
                 try:
-                    text = vfs.read_text(target_url)
+                    text = vfs.read_text(local_self_p)
                     ver = self._extract_script_version(text)
                     return ver, (self._compute_script_sha256(text) if ver else None)
                 except Exception:
@@ -347,17 +347,18 @@ class UpdateChecker:
             return None
 
         if not provider_url.startswith(("http://", "https://")):
-            resolved_p = provider_url
-            if not os.path.isabs(resolved_p):
+            base_d: Optional[str] = None
+            if not provider_url.startswith("file://") and not os.path.isabs(provider_url):
                 try:
-                    host_root = uri.resolve("yscb.host://", interactive=False)
-                    resolved_p = os.path.normpath(os.path.join(host_root, provider_url))
+                    base_d = uri.resolve("yscb.host://", interactive=False)
                 except Exception:
                     try:
-                        proj_root = uri.resolve("project://", interactive=False)
-                        resolved_p = os.path.normpath(os.path.join(proj_root, provider_url))
+                        base_d = uri.resolve("project://", interactive=False)
                     except Exception:
-                        resolved_p = os.path.abspath(provider_url)
+                        base_d = None
+            resolved_p = resolve_local_provider_path(provider_url, base_dir=base_d)
+            if not resolved_p:
+                return None
 
             cand_paths = [
                 os.path.join(resolved_p, module_name, "index.json"),
@@ -468,14 +469,10 @@ class UpdateChecker:
                 m_info = normalize_release_metadata(releases_map.get(r_ver))
                 if m_info["is_critical"]:
                     agg_critical = True
-                if m_info["rank"] > agg_rank or (m_info["rank"] == agg_rank and m_info["is_critical"]):
-                    agg_rank = m_info["rank"]
-                    agg_urgency = m_info["urgency"]
-                    if m_info["type"]:
-                        agg_type = m_info["type"]
-                    if m_info["summary"]:
-                        agg_summary = m_info["summary"]
-                elif m_info["rank"] == agg_rank:
+                if m_info["rank"] >= agg_rank:
+                    if m_info["rank"] > agg_rank or m_info["is_critical"]:
+                        agg_rank = m_info["rank"]
+                        agg_urgency = m_info["urgency"]
                     if m_info["type"]:
                         agg_type = m_info["type"]
                     if m_info["summary"]:

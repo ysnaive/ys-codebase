@@ -1,21 +1,20 @@
 """
 Unit and Integration Tests for Server Real-time Logging & Crash Recovery System.
-Covers FT-01 ~ FT-08: Immediate Flush, Start Banner, Rolling Retention,
-Crash Recovery (Header & mtime), Archive Collisions, Graceful Shutdown, Master Integration, and IPC Logging.
+Covers immediate flush, start banner, rolling retention, crash recovery (header & mtime),
+archive collisions, graceful shutdown, master integration, IPC logging, and file rotation.
 """
 
 from datetime import datetime
+import io
 import json
 import os
-import re
 import tempfile
-import time
 import unittest
+from unittest.mock import MagicMock, patch
 
 from dev.testing.case import YSCBTestCase
-from server.logger import ServerLogger
+from server.logger import ServerLogger, _safe_replace_file
 from server.master import MasterSupervisor
-from server.worker import WarmWorker
 
 
 class TestServerLogging(YSCBTestCase):
@@ -27,12 +26,29 @@ class TestServerLogging(YSCBTestCase):
         os.makedirs(self.cache_dir, exist_ok=True)
 
     def tearDown(self):
+        self.doCleanups()
         self.temp_dir.cleanup()
         super().tearDown()
 
+    def _make_logger(self, **kwargs) -> ServerLogger:
+        kwargs.setdefault("yscb_root", self.root_dir)
+        kwargs.setdefault("log_dir", self.cache_dir)
+        logger = ServerLogger(**kwargs)
+        self.addCleanup(logger.archive_and_close)
+        return logger
+
+    def _make_supervisor(self, **kwargs) -> MasterSupervisor:
+        kwargs.setdefault("yscb_root", self.root_dir)
+        kwargs.setdefault("idle_timeout_sec", 0.0)
+        kwargs.setdefault("enable_watcher", False)
+        sup = MasterSupervisor(**kwargs)
+        self.addCleanup(sup.logger.archive_and_close)
+        self.addCleanup(sup.stop)
+        return sup
+
     def test_logger_write_and_flush(self):
-        """FT-01: ServerLogger writes start banner, formatted lines, and flushes immediately."""
-        logger = ServerLogger(yscb_root=self.root_dir, log_dir=self.cache_dir)
+        """ServerLogger writes start banner, formatted lines, and flushes immediately."""
+        logger = self._make_logger()
         start_ts = logger.recover_and_open()
 
         log_path = logger.log_file_path
@@ -63,8 +79,6 @@ class TestServerLogging(YSCBTestCase):
         self.assertTrue(any("ValueError: Test error exception" in l for l in lines))
 
         # Verify echo_console=True mirrors output to sys.stdout without raising NameError
-        import io
-        from unittest.mock import patch
         logger.echo_console = True
         fake_out = io.StringIO()
         with patch("sys.stdout", fake_out):
@@ -76,8 +90,8 @@ class TestServerLogging(YSCBTestCase):
         self.mark_passed()
 
     def test_rolling_retention(self):
-        """FT-02: History log rolling keeps newest 5 files and ignores non-matching assets."""
-        logger = ServerLogger(yscb_root=self.root_dir, log_dir=self.cache_dir)
+        """History log rolling keeps newest 5 files and ignores non-matching assets."""
+        logger = self._make_logger()
 
         # Create 7 history files with distinct timestamps
         history_files = [
@@ -114,14 +128,14 @@ class TestServerLogging(YSCBTestCase):
         self.mark_passed()
 
     def test_crash_recovery_with_header(self):
-        """FT-03: Startup detects un-archived legacy log and archives by header start timestamp."""
+        """Startup detects un-archived legacy log and archives by header start timestamp."""
         active_log = os.path.join(self.cache_dir, "log")
         header_ts = "2026_09_07_10.15.30"
         with open(active_log, "w", encoding="utf-8") as f:
             f.write(f'server start at time "{header_ts}"\n')
             f.write("[2026-09-07 10:15:30.123] [1234] [INFO] [master] Previous crash occurred\n")
 
-        logger = ServerLogger(yscb_root=self.root_dir, log_dir=self.cache_dir)
+        logger = self._make_logger()
         new_start_ts = logger.recover_and_open()
 
         # Previous log should have been renamed to {header_ts}_log
@@ -141,7 +155,7 @@ class TestServerLogging(YSCBTestCase):
         self.mark_passed()
 
     def test_crash_recovery_corrupted_header(self):
-        """FT-04: Startup falls back to file mtime if header start banner is missing or corrupted."""
+        """Startup falls back to file mtime if header start banner is missing or corrupted."""
         active_log = os.path.join(self.cache_dir, "log")
         with open(active_log, "w", encoding="utf-8") as f:
             f.write("Corrupted first line with no banner\nSecond line\n")
@@ -149,7 +163,7 @@ class TestServerLogging(YSCBTestCase):
         mtime = os.path.getmtime(active_log)
         expected_ts = datetime.fromtimestamp(mtime).strftime(ServerLogger.TIME_FORMAT)
 
-        logger = ServerLogger(yscb_root=self.root_dir, log_dir=self.cache_dir)
+        logger = self._make_logger()
         logger.recover_and_open()
 
         expected_hist = os.path.join(self.cache_dir, f"{expected_ts}_log")
@@ -162,8 +176,8 @@ class TestServerLogging(YSCBTestCase):
         self.mark_passed()
 
     def test_archive_collision_handling(self):
-        """FT-05: Archiving handles filename collisions by appending suffix index."""
-        logger = ServerLogger(yscb_root=self.root_dir, log_dir=self.cache_dir)
+        """Archiving handles filename collisions by appending suffix index and falls back to copy2+remove on rename OSError."""
+        logger = self._make_logger()
         ts = "2026_09_07_12.00.00"
 
         # Pre-create conflicting history file
@@ -187,12 +201,41 @@ class TestServerLogging(YSCBTestCase):
             self.assertIn("New crash content", f.read())
 
         logger.archive_and_close()
+
+        # Verify _safe_replace_file fallback to copy2 + remove when os.rename raises OSError
+        src_file = os.path.join(self.cache_dir, "fallback_src.log")
+        dst_file = os.path.join(self.cache_dir, "fallback_dst.log")
+        with open(src_file, "w", encoding="utf-8") as f:
+            f.write("cross-device fallback payload\n")
+
+        with patch("server.logger.os.rename", side_effect=OSError("EXDEV cross-device link")):
+            _safe_replace_file(src_file, dst_file)
+
+        self.assertFalse(os.path.exists(src_file))
+        self.assertTrue(os.path.exists(dst_file))
+        with open(dst_file, "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "cross-device fallback payload\n")
+
+        # Verify _safe_replace_file tolerates os.remove OSError during fallback
+        src_locked = os.path.join(self.cache_dir, "fallback_src_locked.log")
+        dst_locked = os.path.join(self.cache_dir, "fallback_dst_locked.log")
+        with open(src_locked, "w", encoding="utf-8") as f:
+            f.write("locked remove payload\n")
+
+        with patch("server.logger.os.rename", side_effect=OSError("rename locked")), \
+             patch("server.logger.os.remove", side_effect=OSError("remove locked")):
+            _safe_replace_file(src_locked, dst_locked)
+
+        self.assertTrue(os.path.exists(dst_locked))
+        with open(dst_locked, "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "locked remove payload\n")
+
         self.mark_passed()
 
     def test_graceful_stop_archival(self):
-        """FT-06: archive_and_close writes graceful stop banner and renames log to history."""
-        logger = ServerLogger(yscb_root=self.root_dir, log_dir=self.cache_dir)
-        start_ts = logger.recover_and_open()
+        """archive_and_close writes graceful stop banner and renames log to history."""
+        logger = self._make_logger()
+        logger.recover_and_open()
         logger.info("Running tasks before shutdown")
 
         arch_path = logger.archive_and_close()
@@ -207,8 +250,8 @@ class TestServerLogging(YSCBTestCase):
         self.mark_passed()
 
     def test_master_logging_integration(self):
-        """FT-07: MasterSupervisor initializes logger, records startup, and archives on stop."""
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=0.0, enable_watcher=False)
+        """MasterSupervisor initializes logger, records startup, and archives on stop."""
+        sup = self._make_supervisor(idle_timeout_sec=0.0, enable_watcher=False)
         self.assertIsNotNone(sup.logger)
 
         # Simulate start without launching full daemon threads
@@ -230,15 +273,12 @@ class TestServerLogging(YSCBTestCase):
         self.mark_passed()
 
     def test_worker_ipc_logging_stream(self):
-        """FT-06, FT-08: Master intercepts IPC log packets from Worker stream without leaking to task chunks via real dispatch_task."""
-        import json
-        import io
-        from unittest.mock import MagicMock
-
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=0.0, enable_watcher=False)
+        """Master intercepts IPC log packets from Worker stream without leaking to task chunks via real dispatch_task."""
+        sup = self._make_supervisor(idle_timeout_sec=0.0, enable_watcher=False)
         sup.logger.recover_and_open()
 
         emitted_chunks = []
+
         def mock_chunk_emitter(pkt):
             emitted_chunks.append(pkt)
 
@@ -255,7 +295,7 @@ class TestServerLogging(YSCBTestCase):
         mock_proc.poll.return_value = None
 
         sup._worker_proc = mock_proc
-        # FR-09 (2026_11_03): injected worker is treated as having completed the worker_ready handshake
+        # Injected worker is treated as having completed the worker_ready handshake
         sup._worker_ready_event.set()
 
         with unittest.mock.patch("server.master.is_process_alive", return_value=True):
@@ -277,7 +317,7 @@ class TestServerLogging(YSCBTestCase):
         self.mark_passed()
 
     def test_non_inheritable_lock_fd_and_log_tail_rotation_reset(self):
-        """驗證 InterProcessLock 檔案描述符設定為不可繼承，且 ServerLogger.read_tail_chunks 在日誌輪替/截斷時重置偏移量。"""
+        """驗證 InterProcessLock 與 ServerLogger 檔案描述符不可繼承，且 read_tail_chunks 在日誌輪替/截斷與 inode 變更時重置偏移量。"""
         from core.platform.lock import InterProcessLock
 
         lock_path = os.path.join(self.cache_dir, "test_non_inheritable.lock")
@@ -289,8 +329,14 @@ class TestServerLogging(YSCBTestCase):
         finally:
             lock.release()
 
-        logger = ServerLogger(yscb_root=self.root_dir, log_dir=self.cache_dir)
+        logger = self._make_logger()
+        # 當日誌檔尚未存在時，read_tail_chunks 應安全回傳空字串與 0 偏移
+        self.assertEqual(logger.read_tail_chunks(10, 123), ("", 0, None))
+
         logger.recover_and_open()
+        self.assertIsNotNone(logger._file)
+        self.assertFalse(os.get_inheritable(logger._file.fileno()))
+
         logger.info("Line one Long Message For Offset")
         chunk1, off1, ino1 = logger.read_tail_chunks(0, None)
         self.assertIn("Line one Long Message For Offset", chunk1)
@@ -299,10 +345,22 @@ class TestServerLogging(YSCBTestCase):
         # 模擬日誌輪替重啟後檔案變短，read_tail_chunks 應自動從 0 重新讀取新內容
         logger.archive_and_close()
         logger.recover_and_open()
+        self.assertIsNotNone(logger._file)
+        self.assertFalse(os.get_inheritable(logger._file.fileno()))
+
         logger.info("Short line")
         chunk2, off2, ino2 = logger.read_tail_chunks(off1 + 5000, ino1)
         self.assertIn("Short line", chunk2)
         self.assertGreater(off2, 0)
+
+        # 模擬檔案大小未小於 last_offset，但 last_inode 發生變化時，應重置從 0 完整讀取
+        self.assertIsNotNone(ino2)
+        chunk3, off3, ino3 = logger.read_tail_chunks(10, (ino2 or 1) + 999999)
+        self.assertTrue(chunk3.startswith('server start at time "'))
+        self.assertIn("Short line", chunk3)
+        self.assertEqual(off3, off2)
+        self.assertEqual(ino3, ino2)
+
         logger.archive_and_close()
         self.mark_passed()
 

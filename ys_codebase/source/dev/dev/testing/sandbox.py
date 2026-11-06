@@ -21,6 +21,7 @@ class SandboxContext:
     """Sandbox operational context facade passed to module test hooks."""
     def __init__(self, sandbox_dir: str):
         self.sandbox_dir = os.path.abspath(sandbox_dir)
+        self.root_dir = self.sandbox_dir
         self.host_dir = os.path.join(self.sandbox_dir, "host_env")
         self.engine_dir = os.path.join(self.host_dir, "engine")
         self.project_dir = os.path.join(self.sandbox_dir, "mock_downstream_project")
@@ -210,12 +211,13 @@ class SandboxProvisioner:
                     return 0
                 entries = entries[:len(entries) - max_keep]
 
-            deleted_count = 0
-            for item in entries:
-                full_p = os.path.join(sandbox_parent, item)
-                if SandboxProvisioner.cleanup_sandbox(full_p, force=True, is_harness_cleanup=is_harness_cleanup):
-                    deleted_count += 1
-            return deleted_count
+            to_delete = [os.path.join(sandbox_parent, item) for item in entries]
+
+        deleted_count = 0
+        for full_p in to_delete:
+            if SandboxProvisioner.cleanup_sandbox(full_p, force=True, is_harness_cleanup=is_harness_cleanup):
+                deleted_count += 1
+        return deleted_count
 
     @staticmethod
     def prune_sandboxes(
@@ -401,10 +403,10 @@ class SandboxProvisioner:
 
     @staticmethod
     def _allocate_sandbox_root(target_dir: Optional[str]) -> SandboxContext:
+        if not target_dir and os.environ.get("YSCB_TEST_SANDBOX") != "1":
+            SandboxProvisioner.prune_sandboxes(max_keep=8)
         with SandboxProvisioner._SANDBOX_LOCK:
             if not target_dir:
-                if os.environ.get("YSCB_TEST_SANDBOX") != "1":
-                    SandboxProvisioner.prune_sandboxes(max_keep=8)
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                 unique_hex = uuid.uuid4().hex[:6]
                 sandbox_id = f"sandbox_{ts}_{unique_hex}"
@@ -429,7 +431,7 @@ class SandboxProvisioner:
 
     @staticmethod
     def _deploy_target_and_dependency_modules(ctx: SandboxContext, copy_source: bool) -> Dict[str, Any]:
-        prov_uri = f"file:///{ctx.provider_dir.replace(os.sep, '/')}"
+        prov_uri = f"file:///{ctx.provider_dir.replace(os.sep, '/').lstrip('/')}"
         host_config: Dict[str, Any] = {
             "yscb_root": "./engine",
             "default_provider": prov_uri,

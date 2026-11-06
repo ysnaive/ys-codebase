@@ -5,19 +5,25 @@ Subscribes to `on_env_synced`, `on_reload`, and `on_remove` emitted by `core`.
 
 import os
 import sys
-from typing import Any
+from typing import Any, Optional, Tuple
 
 from core import uri
 
 
+def _get_workspace_projector() -> Tuple[Optional[str], Any]:
+    from vscode_support.projector import SettingsProjector
+
+    proj_root = uri.resolve("project://", interactive=False)
+    if not proj_root or not os.path.isdir(proj_root):
+        return None, None
+    return proj_root, SettingsProjector()
+
+
 def _sync_workspace() -> bool:
     try:
-        from vscode_support.projector import SettingsProjector
-
-        proj_root = uri.resolve("project://", interactive=False)
-        if not proj_root or not os.path.isdir(proj_root):
+        proj_root, projector = _get_workspace_projector()
+        if not proj_root or projector is None:
             return False
-        projector = SettingsProjector()
         return projector.sync_vscode_settings(proj_root)
     except Exception as e:
         print(f"[vscode-support:hook] Warning: Failed to sync VS Code workspace: {e}", file=sys.stderr)
@@ -40,14 +46,10 @@ def on_remove(ctx: Any = None) -> bool:
         targets = getattr(ctx, "args", None) if ctx is not None else None
         if not isinstance(targets, (list, tuple)) or not ({"vscode-support", "vsc"} & set(targets)):
             return False
-        from vscode_support.projector import SettingsProjector
-
-        proj_root = uri.resolve("project://", interactive=False)
-        if not proj_root or not os.path.isdir(proj_root):
+        proj_root, projector = _get_workspace_projector()
+        if not proj_root or projector is None:
             return False
-        projector = SettingsProjector()
         return projector.revert_vscode_settings(proj_root)
     except Exception as e:
         print(f"[vscode-support:hook] Warning: Failed during on_remove revert: {e}", file=sys.stderr)
         return False
-

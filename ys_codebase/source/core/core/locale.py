@@ -6,6 +6,7 @@ and deterministic static contract validation based on 'definition' semantic file
 100% Python Standard Library, Zero Third-Party Dependencies.
 """
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
+import copy
 import difflib
 import json
 import locale as _py_locale
@@ -422,7 +423,7 @@ def get_definition(module: str, base_dir: Optional[str] = None) -> Dict[str, Dic
         logger.warning(f"Unsafe locale definition path '{def_rel}' in module '{module}'.")
         return {}
     data = _load_json_cached(abs_p)
-    return data if isinstance(data, dict) else {}
+    return copy.deepcopy(data) if isinstance(data, dict) else {}
 
 
 def _split_module_key(raw_key: str, explicit_module: Optional[str] = None) -> Tuple[str, str]:

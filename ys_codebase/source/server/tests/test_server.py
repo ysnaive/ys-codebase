@@ -1,16 +1,18 @@
 """
 Unit & Integration Tests for Server Module.
-Covers FT-05 ~ FT-12: Debounced Streamer, WarmWorker pre-warm events & lazy loading,
+Covers DebouncedIOStreamer, WarmWorker pre-warm events & lazy loading,
 SystemExit interception, ServiceManager, MasterSupervisor HTTP dispatch, and ModulesWatcher.
 """
 
+from contextlib import redirect_stderr, redirect_stdout
+import importlib.util
 import io
 import json
 import os
 import subprocess
 import sys
-import threading
 import tempfile
+import threading
 import time
 import unittest
 import urllib.error
@@ -18,11 +20,22 @@ import urllib.request
 
 from dev.testing.case import YSCBTestCase
 from core import events
+from core.commands import dispatcher as core_dispatcher
+from server import service as server_service
+from server.master import MasterSupervisor, ServerDaemonState, WorkerSpawnError, read_daemon_state
+from server.service import BaseServiceWorker, ServiceManager, _load_service_class_from_uri
 from server.streamer import DebouncedIOStreamer
-from server.service import BaseServiceWorker, ServiceManager
+from server.watcher import ModulesWatcher, _scan_modules_dir
 from server.worker import WarmWorker
-from server.watcher import ModulesWatcher
-from server.master import MasterSupervisor, ServerDaemonState, WorkerSpawnError
+
+
+def _load_server_cli():
+    """Loads server/scripts/cli.py dynamically for CLI handler unit tests."""
+    cli_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "cli.py")
+    spec = importlib.util.spec_from_file_location("_server_cli_test", cli_path)
+    server_cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(server_cli)
+    return server_cli
 
 
 class MockService(BaseServiceWorker):
@@ -45,6 +58,24 @@ class MockService(BaseServiceWorker):
         return self.started and not self.stopped
 
 
+class FaultyService(BaseServiceWorker):
+    def __init__(self, name: str = "faulty-service") -> None:
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def start(self, context) -> None:
+        raise RuntimeError("start failure")
+
+    def stop(self) -> None:
+        raise RuntimeError("stop failure")
+
+    def health_check(self) -> bool:
+        raise RuntimeError("health_check failure")
+
+
 class TestServerModule(YSCBTestCase):
     def setUp(self):
         super().setUp()
@@ -52,23 +83,59 @@ class TestServerModule(YSCBTestCase):
         self.root_dir = self.temp_dir.name
         self.cache_dir = os.path.join(self.root_dir, ".cache", "server")
         os.makedirs(self.cache_dir, exist_ok=True)
+        server_service._LAST_TOUCH_TS = 0.0
+        server_service._LAST_TOUCH_BY_ROOT.clear()
 
     def tearDown(self):
+        self.doCleanups()
+        for mod_key in [
+            k for k in list(sys.modules.keys())
+            if k == "mock_kdb_service" or k.startswith("mock_kdb_service.")
+        ]:
+            sys.modules.pop(mod_key, None)
+
+        root_prefix = os.path.normcase(os.path.abspath(self.root_dir))
+        for cache_key in [
+            k for k in list(core_dispatcher._MODULE_CACHE.keys())
+            if os.path.normcase(os.path.abspath(k)).startswith(root_prefix)
+        ]:
+            core_dispatcher._MODULE_CACHE.pop(cache_key, None)
+        if core_dispatcher._GLOBAL_REGISTRY_ROOT == root_prefix:
+            core_dispatcher._GLOBAL_REGISTRY = None
+            core_dispatcher._GLOBAL_REGISTRY_ROOT = None
+
+        server_service._LAST_TOUCH_TS = 0.0
+        server_service._LAST_TOUCH_BY_ROOT.clear()
         self.temp_dir.cleanup()
         super().tearDown()
 
+    def _make_supervisor(self, **kwargs) -> MasterSupervisor:
+        kwargs.setdefault("yscb_root", self.root_dir)
+        kwargs.setdefault("idle_timeout_sec", 300.0)
+        kwargs.setdefault("enable_watcher", False)
+        sup = MasterSupervisor(**kwargs)
+        self.addCleanup(sup.logger.archive_and_close)
+        self.addCleanup(sup.stop)
+        return sup
+
     def test_debounced_streamer(self):
-        """FT-05: DebouncedIOStreamer captures output, debounces, and emits structured packets."""
+        """DebouncedIOStreamer captures output, preserves alternating stdout/stderr order, prevents re-entrancy deadlock, and emits structured packets."""
         packets = []
+        streamer_ref = None
 
         def emit_cb(pkt):
             packets.append(pkt)
+            # Verify re-entrant flush inside emit_chunk does not deadlock RLock
+            if len(packets) == 1 and streamer_ref is not None:
+                streamer_ref.flush()
 
         streamer = DebouncedIOStreamer(emit_chunk=emit_cb, debounce_ms=100)
+        streamer_ref = streamer
         with streamer:
             sys.stdout.write("Hello ")
             sys.stdout.write("World!\n")
             sys.stderr.write("Warn 1\n")
+            sys.stdout.write("After warn\n")
 
         # After exiting context manager, all streams are flushed
         streamer.send_task_finish(exit_code=0, duration_ms=15.0)
@@ -78,15 +145,22 @@ class TestServerModule(YSCBTestCase):
         self.assertIn("terminal_stream", types)
         self.assertIn("task_finish", types)
 
-        stdout_chunks = [p["text"] for p in packets if p.get("stream") == "stdout"]
-        self.assertIn("Hello World!\n", "".join(stdout_chunks))
+        stream_seq = [(p["stream"], p["text"]) for p in packets if p["type"] == "terminal_stream"]
+        self.assertEqual(
+            stream_seq,
+            [
+                ("stdout", "Hello World!\n"),
+                ("stderr", "Warn 1\n"),
+                ("stdout", "After warn\n"),
+            ],
+        )
 
         finish_pkt = [p for p in packets if p["type"] == "task_finish"][0]
         self.assertEqual(finish_pkt["exit_code"], 0)
         self.mark_passed()
 
     def test_warm_worker_pre_warm_events(self):
-        """FT-06: WarmWorker emits warming and ready events via core.events."""
+        """WarmWorker emits warming and ready events via core.events."""
         captured_events = []
 
         from unittest.mock import patch
@@ -104,13 +178,12 @@ class TestServerModule(YSCBTestCase):
         self.assertIn("server_worker_ready", event_names)
         self.mark_passed()
 
-
     def test_warm_worker_system_exit_interception(self):
-        """FT-07: WarmWorker intercepts SystemExit without crashing."""
+        """WarmWorker intercepts SystemExit(int), SystemExit(None), SystemExit(str), and os.getcwd() OSError without crashing."""
         packets = []
         worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: packets.append(p))
 
-        # Create a mock module that raises SystemExit(42)
+        # 1. SystemExit(42) -> exit_code 42
         mock_mod_dir = os.path.join(self.root_dir, ".modules", "mock_exit", "scripts")
         os.makedirs(mock_mod_dir, exist_ok=True)
         with open(os.path.join(mock_mod_dir, "cli.py"), "w", encoding="utf-8") as f:
@@ -122,50 +195,136 @@ class TestServerModule(YSCBTestCase):
         finish_packets = [p for p in packets if p.get("type") == "task_finish"]
         self.assertEqual(len(finish_packets), 1)
         self.assertEqual(finish_packets[0]["exit_code"], 42)
+
+        # 2. SystemExit(None) -> exit_code 0
+        packets.clear()
+        mock_none_dir = os.path.join(self.root_dir, ".modules", "mock_exit_none", "scripts")
+        os.makedirs(mock_none_dir, exist_ok=True)
+        with open(os.path.join(mock_none_dir, "cli.py"), "w", encoding="utf-8") as f:
+            f.write("def help(cmd_bags):\n    raise SystemExit(None)\n")
+
+        exit_code_none = worker.execute_task(module="mock_exit_none", args=[], cwd=self.root_dir)
+        self.assertEqual(exit_code_none, 0)
+        self.assertEqual([p for p in packets if p.get("type") == "task_finish"][0]["exit_code"], 0)
+
+        # 3. SystemExit("err") -> exit_code 1
+        packets.clear()
+        mock_str_dir = os.path.join(self.root_dir, ".modules", "mock_exit_str", "scripts")
+        os.makedirs(mock_str_dir, exist_ok=True)
+        with open(os.path.join(mock_str_dir, "cli.py"), "w", encoding="utf-8") as f:
+            f.write("def help(cmd_bags):\n    raise SystemExit('err')\n")
+
+        exit_code_str = worker.execute_task(module="mock_exit_str", args=[], cwd=self.root_dir)
+        self.assertEqual(exit_code_str, 1)
+        self.assertEqual([p for p in packets if p.get("type") == "task_finish"][0]["exit_code"], 1)
+
+        # 4. os.getcwd() raising OSError falls back to self.yscb_root and still emits task_finish
+        packets.clear()
+        with unittest.mock.patch("server.worker.os.getcwd", side_effect=OSError("cwd deleted")):
+            exit_code_cwd = worker.execute_task(module="mock_exit_none", args=[], cwd=self.root_dir)
+        self.assertEqual(exit_code_cwd, 0)
+        self.assertEqual(len([p for p in packets if p.get("type") == "task_finish"]), 1)
         self.mark_passed()
 
     def test_service_manager_lifecycle(self):
-        """FT-08: ServiceManager unifies service lifecycle, metadata, and status with server."""
+        """ServiceManager unifies service lifecycle, metadata, status, and isolates single-service exceptions."""
         mgr = ServiceManager()
         svc = MockService("test-kdb-watcher")
+        faulty = FaultyService("faulty-watcher")
         mgr.register(svc, provider="knowledge-db", description="Test file watcher")
+        mgr.register(faulty, provider="faulty-mod", description="Faulty service")
 
         self.assertFalse(svc.started)
-        st_init = mgr.get_status()
-        self.assertEqual(len(st_init), 1)
-        self.assertEqual(st_init[0]["name"], "test-kdb-watcher")
-        self.assertEqual(st_init[0]["provider"], "knowledge-db")
-        self.assertEqual(st_init[0]["description"], "Test file watcher")
-        self.assertFalse(st_init[0]["alive"])
+        st_init = {s["name"]: s for s in mgr.get_status()}
+        self.assertEqual(len(st_init), 2)
+        self.assertEqual(st_init["test-kdb-watcher"]["provider"], "knowledge-db")
+        self.assertEqual(st_init["test-kdb-watcher"]["description"], "Test file watcher")
+        self.assertFalse(st_init["test-kdb-watcher"]["alive"])
+        self.assertFalse(st_init["faulty-watcher"]["alive"])
 
-        mgr.start_all({"root": self.root_dir})
-        self.assertTrue(svc.started)
-        self.assertTrue(mgr.get_status()[0]["alive"])
-
-        mgr.stop_all()
+        # Faulty service raising in start/health_check/stop must not block healthy service
+        with unittest.mock.patch("server.service.logging.error"):
+            mgr.start_all({"root": self.root_dir})
+            self.assertTrue(svc.started)
+            st_running = {s["name"]: s["alive"] for s in mgr.get_status()}
+            self.assertTrue(st_running["test-kdb-watcher"])
+            self.assertFalse(st_running["faulty-watcher"])
+            mgr.stop_all()
         self.assertTrue(svc.stopped)
-        self.assertFalse(mgr.get_status()[0]["alive"])
+        st_stopped = {s["name"]: s["alive"] for s in mgr.get_status()}
+        self.assertFalse(st_stopped["test-kdb-watcher"])
+        self.assertFalse(st_stopped["faulty-watcher"])
         self.mark_passed()
 
     def test_modules_watcher_detection(self):
-        """FT-10: ModulesWatcher detects file changes under .modules and extracts affected module names."""
+        """ModulesWatcher filters watched file extensions, scans .dist-info directory contents, detects changes and deletions, and extracts affected module names."""
         modules_dir = os.path.join(self.root_dir, ".modules")
         kdb_dir = os.path.join(modules_dir, "knowledge-db")
-        os.makedirs(kdb_dir, exist_ok=True)
+        dist_info_dir = os.path.join(kdb_dir, "pkg-1.0.dist-info")
+        hidden_dir = os.path.join(modules_dir, ".staging_temp")
+        os.makedirs(dist_info_dir, exist_ok=True)
+        os.makedirs(hidden_dir, exist_ok=True)
+
+        # Verify _scan_modules_dir filters (.py, .json, .zip, .dist-info) and includes files inside .dist-info/
+        py_file = os.path.join(kdb_dir, "mod.py")
+        txt_file = os.path.join(kdb_dir, "readme.txt")
+        tmp_file = os.path.join(kdb_dir, "cache.tmp")
+        dist_meta = os.path.join(dist_info_dir, "METADATA")
+        dist_record = os.path.join(dist_info_dir, "RECORD")
+        with open(py_file, "w", encoding="utf-8") as f:
+            f.write("x = 1\n")
+        with open(txt_file, "w", encoding="utf-8") as f:
+            f.write("ignored text\n")
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write("ignored tmp\n")
+        with open(dist_meta, "w", encoding="utf-8") as f:
+            f.write("Name: pkg\nVersion: 1.0\n")
+        with open(dist_record, "w", encoding="utf-8") as f:
+            f.write("pkg/__init__.py,,\n")
+
+        snap = _scan_modules_dir(modules_dir)
+        self.assertIn(py_file, snap)
+        self.assertIn(dist_meta, snap)
+        self.assertIn(dist_record, snap)
+        self.assertNotIn(txt_file, snap)
+        self.assertNotIn(tmp_file, snap)
+        self.assertEqual(_scan_modules_dir(os.path.join(self.root_dir, "nonexistent_modules")), {})
 
         notified_modules = []
 
         def on_change(affected):
             notified_modules.append(affected)
 
-        watcher = ModulesWatcher(modules_dir=modules_dir, on_change_callback=on_change, poll_interval_sec=0.05, debounce_sec=0.05)
-        watcher.start()
+        watcher = ModulesWatcher(
+            modules_dir=modules_dir,
+            on_change_callback=on_change,
+            poll_interval_sec=0.05,
+            debounce_sec=0.05,
+        )
 
+        # Verify _extract_affected_modules detects file deletion and ignores hidden .staging directories
+        hidden_json = os.path.join(hidden_dir, "manifest.json")
+        prev_snap = {py_file: 100.0, hidden_json: 100.0}
+        curr_snap = {}
+        affected_del = watcher._extract_affected_modules(prev_snap, curr_snap)
+        self.assertEqual(affected_del, {"knowledge-db"})
+
+        watcher.start()
         try:
-            with open(os.path.join(kdb_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            manifest_path = os.path.join(kdb_dir, "manifest.json")
+            with open(manifest_path, "w", encoding="utf-8") as f:
                 f.write('{"name": "knowledge-db"}')
             deadline = time.monotonic() + 3.0
             while not notified_modules and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertGreater(len(notified_modules), 0)
+            self.assertIn("knowledge-db", notified_modules[0])
+
+            # Verify live deletion triggers notification
+            notified_modules.clear()
+            os.remove(manifest_path)
+            deadline_del = time.monotonic() + 3.0
+            while not notified_modules and time.monotonic() < deadline_del:
                 time.sleep(0.02)
             self.assertGreater(len(notified_modules), 0)
             self.assertIn("knowledge-db", notified_modules[0])
@@ -174,9 +333,10 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_master_supervisor_http_and_lifecycle(self):
-        """FT-07, FT-09, FT-11: MasterSupervisor initializes dynamic port, writes state, responds to HTTP endpoints (/api/status, /api/reload, /api/shutdown, /api/dispatch), and stops cleanly."""
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
-        pid = sup.start(foreground=False)
+        """MasterSupervisor initializes dynamic port, writes state, responds to HTTP endpoints (/api/status, /api/reload, /api/shutdown, /api/dispatch), and stops cleanly."""
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
+        with unittest.mock.patch.object(sup, "_spawn_worker_locked", return_value=0):
+            sup.start(foreground=False)
 
         try:
             self.assertGreater(sup.port, 0)
@@ -208,7 +368,7 @@ class TestServerModule(YSCBTestCase):
                     self.assertEqual(body["status"], "worker_restarted")
                     self.assertEqual(body["new_worker_pid"], 88888)
 
-            # 4. Test POST /api/dispatch (EC-05: yscb_root mismatch -> 400 Bad Request)
+            # 4. Test POST /api/dispatch (yscb_root mismatch -> 400 Bad Request)
             url_dispatch = f"http://127.0.0.1:{sup.port}/api/dispatch"
             bad_payload = json.dumps({"module": "dummy", "args": [], "yscb_root": "/mismatched/root"}).encode("utf-8")
             req_dispatch_bad = urllib.request.Request(url_dispatch, data=bad_payload, headers=auth_headers, method="POST")
@@ -216,7 +376,7 @@ class TestServerModule(YSCBTestCase):
                 urllib.request.urlopen(req_dispatch_bad)
             self.assertEqual(cm.exception.code, 400)
 
-            # 5. Test POST /api/shutdown (Regression test for Defect 1: no AttributeError on supervisor.service_manager)
+            # 5. Test POST /api/shutdown
             url_shutdown = f"http://127.0.0.1:{sup.port}/api/shutdown"
             req_shutdown = urllib.request.Request(url_shutdown, data=b"{}", headers=auth_headers, method="POST")
             with urllib.request.urlopen(req_shutdown) as resp:
@@ -233,7 +393,7 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_worker_module_cache(self):
-        """FT-01: Verify WarmWorker.execute_task reuses dispatcher _MODULE_CACHE across calls."""
+        """Verify WarmWorker.execute_task reuses dispatcher _MODULE_CACHE across calls."""
         from core.commands.dispatcher import _MODULE_CACHE
 
         worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: None)
@@ -243,11 +403,13 @@ class TestServerModule(YSCBTestCase):
         cli_path = os.path.normpath(os.path.join(mod_dir, "cli.py"))
         os.makedirs(mod_dir, exist_ok=True)
         with open(cli_path, "w", encoding="utf-8") as f:
-            f.write("EXEC_COUNT = 0\n"
-                    "def help(cmd_bags):\n"
-                    "    global EXEC_COUNT\n"
-                    "    EXEC_COUNT += 1\n"
-                    "    return EXEC_COUNT\n")
+            f.write(
+                "EXEC_COUNT = 0\n"
+                "def help(cmd_bags):\n"
+                "    global EXEC_COUNT\n"
+                "    EXEC_COUNT += 1\n"
+                "    return EXEC_COUNT\n"
+            )
 
         # First call: loads module into dispatcher _MODULE_CACHE
         res1 = worker.execute_task("test_cache", [], cwd=self.root_dir)
@@ -260,8 +422,8 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_watcher_reload_dispatch_worker(self):
-        """FT-02: Non-server module change dispatches to restart_worker."""
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        """Non-server module change dispatches to restart_worker."""
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         with unittest.mock.patch.object(sup, "restart_worker") as mock_worker, \
              unittest.mock.patch.object(sup, "restart_server") as mock_server:
             sup.on_modules_changed({"knowledge-db", "dev"})
@@ -270,8 +432,8 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_watcher_reload_dispatch_server(self):
-        """FT-03: server or core module change dispatches to restart_server."""
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        """server or core module change dispatches to restart_server."""
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         with unittest.mock.patch.object(sup, "restart_worker") as mock_worker, \
              unittest.mock.patch.object(sup, "restart_server") as mock_server:
             sup.on_modules_changed({"server"})
@@ -286,8 +448,8 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_watcher_observability_status_payload(self):
-        """FT-04: MasterSupervisor get_status_dict includes ModulesWatcher observability."""
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=True)
+        """MasterSupervisor get_status_dict includes ModulesWatcher observability."""
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=True)
         try:
             modules_dir = os.path.join(self.root_dir, ".modules")
             os.makedirs(modules_dir, exist_ok=True)
@@ -304,7 +466,7 @@ class TestServerModule(YSCBTestCase):
                 sup.watcher.stop()
 
         # Watcher disabled case
-        sup_disabled = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        sup_disabled = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         status_disabled = sup_disabled.get_status_dict()
         watcher_disabled = status_disabled["watcher"]
         self.assertFalse(watcher_disabled["enabled"])
@@ -313,7 +475,7 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_format_startup_banner_and_shutdown_summary(self):
-        """FT-15: Verify startup banner and shutdown summary formatting functions."""
+        """Verify startup banner and shutdown summary formatting functions."""
         from server.master import format_startup_banner, format_shutdown_summary
 
         mock_info = {
@@ -358,8 +520,8 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_status_and_shutdown_api_payloads(self):
-        """FT-16: Verify MasterSupervisor get_status_dict and shutdown summary enrichment."""
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0)
+        """Verify MasterSupervisor get_status_dict and shutdown summary enrichment."""
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=True)
         status_dict = sup.get_status_dict()
         self.assertIn("start_time", status_dict)
         self.assertIn("uptime_seconds", status_dict)
@@ -368,7 +530,7 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_service_manager_load_from_contributes_and_auto_start(self):
-        """FT-01, ET-01, ET-02: load_from_contributes handles hyphenated module names, injects sys.path, and respects auto_start."""
+        """load_from_contributes handles hyphenated module names, colon and dotted URIs, injects sys.path, and respects auto_start."""
         from core import contributes
         from unittest.mock import patch
 
@@ -390,6 +552,15 @@ class TestServerModule(YSCBTestCase):
             "        self.stopped = True\n"
             "    def health_check(self):\n"
             "        return self.started and not self.stopped\n"
+            "class BrokenInitWorker(BaseServiceWorker):\n"
+            "    def __init__(self):\n"
+            "        raise RuntimeError('cannot instantiate')\n"
+            "    @property\n"
+            "    def name(self):\n"
+            "        return 'broken'\n"
+            "    def start(self, ctx): pass\n"
+            "    def stop(self): pass\n"
+            "    def health_check(self): return False\n"
         )
         with open(os.path.join(pkg_dir, "__init__.py"), "w", encoding="utf-8") as f:
             f.write("")
@@ -407,19 +578,30 @@ class TestServerModule(YSCBTestCase):
             {
                 "_provider": "mock-kdb-service",
                 "name": "manual-dummy",
-                "worker_class": "code.class://mock-kdb-service/mock_kdb_service.worker.DummyWorker",
-                "description": "Manual start service",
+                "worker_class": "code.class://mock-kdb-service/mock_kdb_service.worker:DummyWorker",
+                "description": "Manual start service via colon URI",
                 "auto_start": False,
+            },
+            {
+                "_provider": "mock-kdb-service",
+                "name": "broken-init",
+                "worker_class": "code.class://mock-kdb-service/mock_kdb_service.worker:BrokenInitWorker",
+                "description": "Broken init service isolated from healthy services",
+                "auto_start": True,
             },
         ]
 
         mgr = ServiceManager()
         try:
-            with patch.object(contributes, "get", return_value=mock_contrib):
+            with patch.object(contributes, "get", return_value=mock_contrib), \
+                 patch("server.service.logging.error"):
                 mgr.load_from_contributes(yscb_root=self.root_dir)
 
             # Ensure .modules/mock-kdb-service was injected into sys.path
             self.assertIn(os.path.abspath(mod_dir), [os.path.abspath(p) for p in sys.path])
+
+            # Verify invalid URI without ':' or '.' returns None safely
+            self.assertIsNone(_load_service_class_from_uri("InvalidUriWithoutSeparator"))
 
             status = mgr.get_status()
             self.assertEqual(len(status), 2)
@@ -442,58 +624,63 @@ class TestServerModule(YSCBTestCase):
                 sys.path.remove(mod_dir)
             if os.path.abspath(mod_dir) in sys.path:
                 sys.path.remove(os.path.abspath(mod_dir))
+            for mod_key in [
+                k for k in list(sys.modules.keys())
+                if k == "mock_kdb_service" or k.startswith("mock_kdb_service.")
+            ]:
+                sys.modules.pop(mod_key, None)
         self.mark_passed()
 
     def test_worker_main_ipc_isolation_and_exit_handshake(self):
-        """FT-02, ET-03: worker_main isolates IPC stdout via private handle, redirects sys.stdout to stderr, and handles exit."""
-        import threading
+        """worker_main isolates IPC stdout via private handle, redirects sys.stdout to stderr, recovers from bad JSON lines, and handles exit."""
         from server.worker import worker_main
 
-        # We simulate stdin with two commands: an echo/log command with background print, followed by exit
         in_stream = io.BytesIO()
-        in_stream.write(json.dumps({"action": "ping"}).encode("utf-8") + b"\n")
+        in_stream.write(b"{corrupted_json_line\n")
         in_stream.write(json.dumps({"action": "exit"}).encode("utf-8") + b"\n")
         in_stream.seek(0)
 
-        # Intercept real sys.stdout and sys.stderr during worker_main execution
         orig_stdout = sys.stdout
         orig_stderr = sys.stderr
-        fake_stdout = io.StringIO()
         fake_stderr = io.StringIO()
-        sys.stdout = fake_stdout
+        raw_ipc_out = io.BytesIO()
+        fake_raw_stdout = io.TextIOWrapper(raw_ipc_out, encoding="utf-8")
+        sys.stdout = fake_raw_stdout
         sys.stderr = fake_stderr
 
         try:
-            # Run worker_main with out_stream=None so it wraps sys.stdout.buffer into _ipc_stdout
-            # To capture its binary IPC output, we can redirect sys.stdout to a TextIOWrapper with a BytesIO buffer
-            raw_ipc_out = io.BytesIO()
-            fake_raw_stdout = io.TextIOWrapper(raw_ipc_out, encoding="utf-8")
-            sys.stdout = fake_raw_stdout
-
-            # Simulate background stdout prints right after worker_main starts
-            def background_noise():
-                time.sleep(0.01)
-                print("BACKGROUND UNSTRUCTURED LOGGING", flush=True)
-
-            t = threading.Thread(target=background_noise)
-            t.start()
-
-            worker_main(yscb_root=self.root_dir, in_stream=in_stream, out_stream=None)
-            t.join()
+            with unittest.mock.patch.object(
+                WarmWorker,
+                "pre_warm",
+                side_effect=lambda: print("BACKGROUND UNSTRUCTURED LOGGING", flush=True),
+            ):
+                worker_main(yscb_root=self.root_dir, in_stream=in_stream, out_stream=None)
 
             fake_raw_stdout.flush()
             raw_ipc_out.seek(0)
             ipc_lines = [line.strip() for line in raw_ipc_out if line.strip()]
 
             # Every line in raw_ipc_out MUST be a valid JSON packet from IPC
+            parsed_packets = []
             for line in ipc_lines:
                 pkt = json.loads(line.decode("utf-8"))
                 self.assertIn("type", pkt)
+                parsed_packets.append(pkt)
 
-            # The background noise MUST have gone to fake_stderr, NOT raw_ipc_out
+            pkt_types = [p["type"] for p in parsed_packets]
+            self.assertIn("worker_alive", pkt_types)
+            self.assertIn("worker_ready", pkt_types)
+            self.assertLess(pkt_types.index("worker_alive"), pkt_types.index("worker_ready"))
+
+            # Malformed JSON line must emit a failing task_finish packet and continue to exit cleanly
+            finish_pkts = [p for p in parsed_packets if p["type"] == "task_finish"]
+            self.assertEqual(len(finish_pkts), 1)
+            self.assertEqual(finish_pkts[0]["exit_code"], 1)
+            self.assertTrue(bool(finish_pkts[0].get("error")))
+
+            # Unstructured print during pre_warm MUST have gone to fake_stderr, NOT raw_ipc_out
             stderr_val = fake_stderr.getvalue()
             self.assertIn("BACKGROUND UNSTRUCTURED LOGGING", stderr_val)
-
         finally:
             sys.stdout = orig_stdout
             sys.stderr = orig_stderr
@@ -501,24 +688,29 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_master_supervisor_start_time_persistence(self):
-        """FT-03: MasterSupervisor preserves start_time across restart_worker."""
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        """MasterSupervisor preserves start_time and updates worker_pid on disk across restart_worker."""
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         initial_start_time = 1700000000.0
         sup._start_time = initial_start_time
 
-        # Mock worker process and restart
+        def _fake_spawn():
+            sup._worker_proc = unittest.mock.MagicMock(pid=12345, poll=lambda: None)
+            return 12345
+
         with unittest.mock.patch.object(sup, "_kill_worker_locked"), \
-             unittest.mock.patch.object(sup, "_spawn_worker_locked", return_value=12345), \
-             unittest.mock.patch.object(sup, "_write_state") as mock_write_state:
+             unittest.mock.patch.object(sup, "_spawn_worker_locked", side_effect=_fake_spawn):
             sup.restart_worker()
-            mock_write_state.assert_called()
 
         self.assertEqual(sup._start_time, initial_start_time)
+        persisted = read_daemon_state(self.root_dir)
+        self.assertIsNotNone(persisted)
+        self.assertEqual(persisted.start_time, initial_start_time)
+        self.assertEqual(persisted.worker_pid, 12345)
         self.mark_passed()
 
     def test_worker_and_master_zero_source_path_injection(self):
-        """FT-04: Worker and Master supervisor execution paths contain zero source/ in sys.path or env."""
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        """Worker and Master supervisor execution paths contain zero source/ in sys.path or env."""
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         captured_env = {}
 
         def mock_popen(cmd, **kwargs):
@@ -535,7 +727,7 @@ class TestServerModule(YSCBTestCase):
             ret_pid = sup._spawn_worker_locked()
             self.assertEqual(ret_pid, 77777)
 
-        # Verify handshake failure (EOF before worker_alive) cleans up worker and raises WorkerSpawnError (EC-08)
+        # Verify handshake failure (EOF before worker_alive) cleans up worker and raises WorkerSpawnError
         def mock_popen_unready(cmd, **kwargs):
             fake_proc = unittest.mock.MagicMock()
             fake_proc.pid = 77778
@@ -560,25 +752,25 @@ class TestServerModule(YSCBTestCase):
             )
 
         # Verify WarmWorker sys.path initialization does not inject source/
-        worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: None)
+        WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: None)
         for p in sys.path:
             norm_p = p.replace("\\", "/")
-            # sys.path should not have this root's source/ directory
             self.assertFalse(f"{self.root_dir}/source" in norm_p)
         self.mark_passed()
 
     def test_master_two_stage_kill_fallback(self):
-        """ET-04 / FR-11: MasterSupervisor _kill_worker_locked sends exit and falls back to terminate_popen_tree on timeout."""
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        """MasterSupervisor _kill_worker_locked sends exit, falls back to terminate_popen_tree on timeout, and resets _worker_services."""
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         mock_proc = unittest.mock.MagicMock()
         mock_proc.pid = 99999
         mock_proc.poll.return_value = None  # Process doesn't exit on its own
         mock_proc.wait.side_effect = subprocess.TimeoutExpired(cmd="worker", timeout=1.5)
         mock_proc.stdin = unittest.mock.MagicMock()
         sup._worker_proc = mock_proc
+        sup._worker_services = [{"name": "stale-svc", "provider": "kdb", "alive": True}]
 
         with unittest.mock.patch("server.master.terminate_popen_tree", return_value=True) as mock_kill, \
-             unittest.mock.patch("time.sleep") as mock_sleep:
+             unittest.mock.patch("time.sleep"):
             sup._kill_worker_locked(timeout_sec=1.5)
 
             # Verify Stage 1 sent exit NDJSON
@@ -588,11 +780,13 @@ class TestServerModule(YSCBTestCase):
             # Verify Stage 2 fallback to terminate_popen_tree (Popen-owned reaping)
             mock_kill.assert_called_once_with(mock_proc, timeout_sec=1.5)
             self.assertIsNone(sup._worker_proc)
+            self.assertEqual(sup._worker_services, [])
+            self.assertEqual(sup.get_status_dict()["services"], [])
 
         self.mark_passed()
 
     def test_prewarm_load_order_and_master_stop_idempotency(self):
-        """FT-02 (2026_10_25_1103): Verify WarmWorker loads service contributes before broadcasting warming event, and MasterSupervisor.stop is idempotent."""
+        """Verify WarmWorker loads service contributes before broadcasting warming event, and MasterSupervisor.stop is idempotent."""
         worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: None)
         call_order = []
 
@@ -618,7 +812,7 @@ class TestServerModule(YSCBTestCase):
         )
 
         # Verify MasterSupervisor.stop() idempotency when called twice
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         sup._is_running = True
         with unittest.mock.patch.object(sup.logger, "archive_and_close") as mock_archive:
             sup.stop()
@@ -628,7 +822,7 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_master_start_lock_contention_never_falls_through(self):
-        """FR-01 & EC-01 (2026_10_27_1143): Verify MasterSupervisor.start() immediately exits without spawning HTTP/Worker when daemon.lock is held, even if daemon.json is missing."""
+        """Verify MasterSupervisor.start() immediately exits without spawning HTTP/Worker when daemon.lock is held, even if daemon.json is missing."""
         from core.platform import InterProcessLock
 
         lock_path = os.path.join(self.root_dir, ".cache", "server", "daemon.lock")
@@ -640,7 +834,7 @@ class TestServerModule(YSCBTestCase):
             if os.path.exists(state_path):
                 os.remove(state_path)
 
-            sup2 = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+            sup2 = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
             with unittest.mock.patch.object(sup2, "_spawn_worker_locked") as mock_spawn, \
                  unittest.mock.patch("server.master._create_http_server") as mock_http:
                 ret_pid = sup2.start(foreground=False)
@@ -652,7 +846,7 @@ class TestServerModule(YSCBTestCase):
             held_lock.release()
 
         # Verify startup failure after lock acquisition triggers self.stop() and releases lock
-        sup3 = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        sup3 = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         with unittest.mock.patch("server.master._create_http_server", side_effect=RuntimeError("bind failed")):
             with self.assertRaises(RuntimeError):
                 sup3.start(foreground=False)
@@ -662,21 +856,34 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_master_restart_server_reentrancy_guard_and_watcher_transaction_lock(self):
-        """FR-02 & FR-05 (2026_10_27_1143): Verify restart_server() only spawns once under concurrent calls, and ModulesWatcher defers polling while .yscb.lock is held."""
+        """Verify restart_server() only spawns once under concurrent calls, foreground loop joins _restart_thread when restarting, and ModulesWatcher defers polling while .yscb.lock is held or .modules/core lacks manifest.json."""
         from core.platform import InterProcessLock
 
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         spawn_calls = []
+        exit_called = threading.Event()
 
         with unittest.mock.patch.object(sup, "stop"), \
              unittest.mock.patch("server.master.spawn_detached", side_effect=lambda cmd, **kw: spawn_calls.append(cmd) or 12345), \
-             unittest.mock.patch("os._exit"):
+             unittest.mock.patch("os._exit", side_effect=lambda code: exit_called.set()):
             sup.restart_server()
             sup.restart_server()
             sup.restart_server()
-            time.sleep(0.1)
+            self.assertTrue(exit_called.wait(timeout=2.0))
 
         self.assertEqual(len(spawn_calls), 1)
+        self.assertIsNotNone(sup._restart_thread)
+
+        # Verify foreground _run_supervisor_main_loop joins _restart_thread instead of calling stop() when _restarting is True
+        fg_sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
+        fg_sup._httpd = unittest.mock.MagicMock()
+        mock_restart_th = unittest.mock.MagicMock()
+        fg_sup._restarting = True
+        fg_sup._restart_thread = mock_restart_th
+        with unittest.mock.patch.object(fg_sup, "stop") as mock_fg_stop, redirect_stdout(io.StringIO()):
+            fg_sup._run_supervisor_main_loop(foreground=True)
+            mock_fg_stop.assert_not_called()
+            mock_restart_th.join.assert_called_once_with(timeout=5.0)
 
         # Verify ModulesWatcher._is_core_transaction_locked() detects held .yscb.lock
         modules_dir = os.path.join(self.root_dir, ".modules")
@@ -688,25 +895,28 @@ class TestServerModule(YSCBTestCase):
         core_lock = InterProcessLock(core_lock_path)
         self.assertTrue(core_lock.acquire(blocking=False))
         try:
-            with unittest.mock.patch.object(InterProcessLock, "acquire", return_value=False):
-                self.assertTrue(watcher._is_core_transaction_locked())
+            self.assertTrue(watcher._is_core_transaction_locked())
         finally:
             core_lock.release()
+        self.assertFalse(watcher._is_core_transaction_locked())
+
+        # Verify .modules/core directory without manifest.json is treated as transaction-locked
+        core_mod_dir = os.path.join(modules_dir, "core")
+        os.makedirs(core_mod_dir, exist_ok=True)
+        self.assertTrue(watcher._is_core_transaction_locked())
+        with open(os.path.join(core_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            f.write('{"name": "core", "version": "1.0.0.0"}')
+        self.assertFalse(watcher._is_core_transaction_locked())
 
         self.mark_passed()
 
     def test_daemon_state_roundtrip_and_stop_lock_protection(self):
         """Verify read_daemon_state round-trip via vfs.read_json and cli.stop preserving daemon.json when daemon.lock is held."""
-        import importlib.util
         from core.commands.bags import CmdBags
         from core.platform import InterProcessLock
         from core import vfs
-        from server.master import read_daemon_state
 
-        cli_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "cli.py")
-        spec = importlib.util.spec_from_file_location("_server_cli_test", cli_path)
-        server_cli = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(server_cli)
+        server_cli = _load_server_cli()
         empty_bags = CmdBags()
 
         # 1. Missing daemon.json returns None without error
@@ -740,8 +950,9 @@ class TestServerModule(YSCBTestCase):
         held_lock = InterProcessLock(lock_file)
         self.assertTrue(held_lock.acquire(blocking=False))
         try:
-            with unittest.mock.patch.object(InterProcessLock, "acquire", return_value=False), \
-                 unittest.mock.patch.object(server_cli, "_get_yscb_root", return_value=self.root_dir):
+            with unittest.mock.patch.object(server_cli, "guard_dispatch"), \
+                 unittest.mock.patch.object(server_cli, "_get_yscb_root", return_value=self.root_dir), \
+                 redirect_stdout(io.StringIO()):
                 rc = server_cli.stop(empty_bags)
                 self.assertEqual(rc, 0)
                 self.assertTrue(os.path.exists(state_file), "daemon.json must NOT be deleted when daemon.lock is held")
@@ -749,7 +960,9 @@ class TestServerModule(YSCBTestCase):
             held_lock.release()
 
         # 4. When daemon.lock is NOT held and daemon is dead, stale daemon.json is cleaned up
-        with unittest.mock.patch.object(server_cli, "_get_yscb_root", return_value=self.root_dir):
+        with unittest.mock.patch.object(server_cli, "guard_dispatch"), \
+             unittest.mock.patch.object(server_cli, "_get_yscb_root", return_value=self.root_dir), \
+             redirect_stdout(io.StringIO()):
             rc2 = server_cli.stop(empty_bags)
             self.assertEqual(rc2, 0)
             self.assertFalse(os.path.exists(state_file), "Stale daemon.json should be cleaned up when lock is free")
@@ -757,7 +970,7 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_spawn_detached_master_quote_safe_args_and_restart_worker_lock_order(self):
-        """FR-02, EC-02 (AUD-02, AUD-03) / FR-01 (2026_11_03): Verify spawn_detached_master quote safety; restart_worker kills without _dispatch_lock, then spawns under it."""
+        """Verify spawn_detached_master quote safety; restart_worker kills without _dispatch_lock, then spawns under it."""
         from server import master as master_mod
 
         captured_cmd = []
@@ -771,7 +984,7 @@ class TestServerModule(YSCBTestCase):
             self.assertEqual(captured_cmd[6], "120.0")
             self.assertEqual(captured_cmd[7], "0")
 
-        sup = MasterSupervisor(self.root_dir, idle_timeout_sec=60.0, enable_watcher=False)
+        sup = self._make_supervisor(yscb_root=self.root_dir, idle_timeout_sec=60.0, enable_watcher=False)
         dispatch_held_during_kill = []
         dispatch_held_during_spawn = []
 
@@ -789,7 +1002,6 @@ class TestServerModule(YSCBTestCase):
             self.assertEqual(dispatch_held_during_spawn, [True])
 
         self.mark_passed()
-
 
     def _write_fake_worker(self, body: str) -> str:
         path = os.path.join(self.root_dir, "fake_worker.py")
@@ -810,7 +1022,7 @@ class TestServerModule(YSCBTestCase):
                 return sup._spawn_worker_locked()
 
     def test_worker_main_emits_alive_before_ready(self):
-        """FR-09: worker_main 於 pre_warm 前送出 worker_alive，之後才送 worker_ready。"""
+        """worker_main 於 pre_warm 前送出 worker_alive，之後才送 worker_ready。"""
         out = io.StringIO()
         with unittest.mock.patch.object(WarmWorker, "pre_warm"):
             from server.worker import worker_main
@@ -823,7 +1035,7 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_two_stage_handshake_warming_then_ready(self):
-        """FR-09 / FR-10: alive 後狀態 warming（含 warming_elapsed_sec），ready 後轉 ready；dispatch 於 warming 期間等待 ready。"""
+        """alive 後狀態 warming（含 warming_elapsed_sec），ready 後轉 ready；dispatch 於 warming 期間等待 ready。"""
         script = self._write_fake_worker(
             "emit({'type': 'worker_alive'})\n"
             "time.sleep(1.0)\n"
@@ -833,7 +1045,7 @@ class TestServerModule(YSCBTestCase):
             "    if req.get('action') == 'exit':\n        break\n"
             "    emit({'type': 'task_finish', 'exit_code': 7, 'duration_ms': 1.0})\n"
         )
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         try:
             pid = self._spawn_fake_worker(sup, script)
             self.assertGreater(pid, 0)
@@ -856,9 +1068,9 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_alive_timeout_and_death_during_warming(self):
-        """EC-07 / EC-08: 未送 alive 即逾時拋 WorkerSpawnError；warming 中死亡時等待之 dispatch 回傳 1。"""
+        """未送 alive 即逾時拋 WorkerSpawnError；warming 中死亡時等待之 dispatch 回傳 1。"""
         silent = self._write_fake_worker("time.sleep(30)\n")
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         sup._worker_alive_timeout_sec = 0.5
         t0 = time.time()
         with self.assertRaises(WorkerSpawnError) as ctx:
@@ -870,14 +1082,16 @@ class TestServerModule(YSCBTestCase):
         dying = self._write_fake_worker("emit({'type': 'worker_alive'})\ntime.sleep(0.5)\nsys.exit(3)\n")
         sup._worker_alive_timeout_sec = 5.0
         self._spawn_fake_worker(sup, dying)
-        packets = []
-        rc = sup.dispatch_task({"module": "dummy", "args": []}, packets.append)
-        self.assertEqual(rc, 1)
-        self.assertEqual(packets[-1]["error"], "Worker exited before becoming ready")
-        with sup._worker_lock:
-            sup._kill_worker_locked(timeout_sec=1.0)
+        try:
+            packets = []
+            rc = sup.dispatch_task({"module": "dummy", "args": []}, packets.append)
+            self.assertEqual(rc, 1)
+            self.assertEqual(packets[-1]["error"], "Worker exited before becoming ready")
+        finally:
+            with sup._worker_lock:
+                sup._kill_worker_locked(timeout_sec=1.0)
 
-        # EC-08: respawn failure inside dispatch is reported, not masked as PID 0
+        # Respawn failure inside dispatch is reported, not masked as PID 0
         with unittest.mock.patch.object(sup, "_spawn_worker_locked", side_effect=WorkerSpawnError("boom")):
             packets2 = []
             rc2 = sup.dispatch_task({"module": "dummy", "args": []}, packets2.append)
@@ -886,7 +1100,7 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_restart_worker_preempts_stuck_dispatch(self):
-        """FR-01 / FR-02 / EC-02: 卡住之 dispatch 期間 status 回報 current_task；restart_worker 搶占後 dispatch 回傳 1 並於時限內完成重啟。"""
+        """卡住之 dispatch 期間 status 回報 current_task；restart_worker 搶占後 dispatch 回傳 1 並於時限內完成重啟。"""
         stuck = self._write_fake_worker(
             "emit({'type': 'worker_alive'})\n"
             "emit({'type': 'worker_ready', 'services': []})\n"
@@ -896,7 +1110,7 @@ class TestServerModule(YSCBTestCase):
             "    if 'hang' in req.get('args', []):\n        time.sleep(60)\n"
             "    emit({'type': 'task_finish', 'exit_code': 0, 'duration_ms': 1.0})\n"
         )
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         real_popen = subprocess.Popen
         with unittest.mock.patch("server.master.subprocess.Popen", side_effect=lambda cmd, **kw: real_popen([sys.executable, stuck], **kw)), \
              unittest.mock.patch.object(sup, "_write_state"):
@@ -941,7 +1155,7 @@ class TestServerModule(YSCBTestCase):
 
     def test_restart_worker_spawn_failure_raises_and_reload_returns_500(self):
         """Error contract: restart_worker 不再以 PID 0 冒充成功，改拋 WorkerSpawnError；/api/reload 轉 HTTP 500。"""
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         with unittest.mock.patch.object(sup, "_spawn_worker_locked", side_effect=WorkerSpawnError("no alive")), \
              unittest.mock.patch.object(sup, "_write_state") as mock_write:
             with self.assertRaises(WorkerSpawnError):
@@ -964,12 +1178,12 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_stop_keeps_lock_file_and_marks_clean_exit(self):
-        """FR-13 / FR-03: stop() 僅移除 daemon.json、保留 daemon.lock 且鎖可再取得，並寫入 clean exit 歸零回收計數。"""
+        """stop() 僅移除 daemon.json、保留 daemon.lock 且鎖可再取得，並寫入 clean exit 歸零回收計數。"""
         import json as _json
         from core.platform import InterProcessLock, daemon_probe
 
         daemon_probe.record_spawn(self.root_dir, 1)
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         with unittest.mock.patch.object(sup, "_spawn_worker_locked", return_value=0):
             sup.start(foreground=False)
         self.assertTrue(os.path.exists(sup.state_file))
@@ -986,26 +1200,41 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_cli_status_dashboard_and_start_readiness_exit_code(self):
-        """FR-02 / FR-06 / FR-10: 儀表板顯示 Current Task 與預熱秒數；start -d 逾時依 spawn PID 存活決定回傳 0/1。"""
-        import importlib.util
-        from contextlib import redirect_stdout, redirect_stderr
+        """儀表板顯示 Current Task、預熱秒數與背景服務清單；start -d 依就緒狀態或 spawn PID 存活決定回傳 0/1。"""
         from core.commands.bags import CmdBags, CmdOption
 
-        cli_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "cli.py")
-        spec = importlib.util.spec_from_file_location("server_cli_fr06", cli_path)
-        server_cli = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(server_cli)
+        server_cli = _load_server_cli()
 
-        state = ServerDaemonState(pid=1, worker_pid=0, port=1, token="t", root=self.root_dir, start_time=time.time(), idle_timeout_sec=0.0)
-        info = {"state": "warming", "warming_elapsed_sec": 2.5, "idle_seconds_left": 0.0, "current_task": {"module": "dev", "args": ["test", "core"], "started_at": 0.0, "elapsed_sec": 12.0}}
+        state = ServerDaemonState(
+            pid=1,
+            worker_pid=0,
+            port=1,
+            token="t",
+            root=self.root_dir,
+            start_time=time.time(),
+            idle_timeout_sec=0.0,
+        )
+        info = {
+            "state": "warming",
+            "warming_elapsed_sec": 2.5,
+            "idle_seconds_left": 0.0,
+            "current_task": {"module": "dev", "args": ["test", "core"], "started_at": 0.0, "elapsed_sec": 12.0},
+            "services": [{"name": "kdb-sync", "provider": "knowledge-db", "alive": True}],
+            "watcher": {"enabled": True, "active": True, "monitored_dir": os.path.join(self.root_dir, ".modules")},
+        }
         buf = io.StringIO()
         with redirect_stdout(buf):
             server_cli._render_status_dashboard(info, state)
         self.assertIn("WARMING (pre-warming 2.5s)", buf.getvalue())
         self.assertIn("Current Task  : dev test core (running 12.0s)", buf.getvalue())
+        self.assertIn("[kdb-sync] (module: knowledge-db) : RUNNING", buf.getvalue())
+
         idle_buf = io.StringIO()
         with redirect_stdout(idle_buf):
-            server_cli._render_status_dashboard(dict(info, state="ready", warming_elapsed_sec=None, current_task=None), state)
+            server_cli._render_status_dashboard(
+                dict(info, state="ready", warming_elapsed_sec=None, current_task=None, services=[]),
+                state,
+            )
         self.assertIn("Current Task  : Idle", idle_buf.getvalue())
         self.assertNotIn("pre-warming", idle_buf.getvalue())
 
@@ -1025,29 +1254,52 @@ class TestServerModule(YSCBTestCase):
                 self.assertIn("still starting up", out.getvalue())
             else:
                 self.assertIn("exited before becoming ready", err.getvalue())
+
+        # Verify background daemon start succeeds immediately when read_daemon_state becomes ready during polling
+        out_ready = io.StringIO()
+        with unittest.mock.patch.object(server_cli, "guard_dispatch"), \
+             unittest.mock.patch.object(server_cli, "_get_yscb_root", return_value=self.root_dir), \
+             unittest.mock.patch.object(server_cli, "read_daemon_state", side_effect=[None, state]), \
+             unittest.mock.patch.object(server_cli, "spawn_detached_master", return_value=424242), \
+             unittest.mock.patch.object(server_cli, "is_process_alive", return_value=True), \
+             unittest.mock.patch.object(server_cli, "_http_request", return_value=info), \
+             unittest.mock.patch.object(server_cli.time, "sleep"), \
+             redirect_stdout(out_ready):
+            self.assertEqual(server_cli.start(bags), 0)
+        self.assertIn("Daemon successfully started!", out_ready.getvalue())
         self.mark_passed()
 
     def test_cli_forced_stop_marks_clean_exit(self):
-        """Review#2: server stop --force 與優雅關閉逾時之強制終止路徑於 kill 後寫入 clean exit，不累計回收計數。"""
-        import importlib.util
+        """server stop --force 與優雅關閉逾時之強制終止路徑於 kill 後清理孤兒 daemon.json 並寫入 clean exit，不累計回收計數。"""
         import json as _json
-        from contextlib import redirect_stdout
         from core.commands.bags import CmdBags, CmdOption
         from core.platform import daemon_probe
+        from core import vfs
 
-        cli_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "cli.py")
-        spec = importlib.util.spec_from_file_location("server_cli_force_stop", cli_path)
-        server_cli = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(server_cli)
+        server_cli = _load_server_cli()
 
-        state = ServerDaemonState(pid=424242, worker_pid=0, port=1, token="t", root=self.root_dir, start_time=time.time(), idle_timeout_sec=0.0)
+        state = ServerDaemonState(
+            pid=424242,
+            worker_pid=0,
+            port=1,
+            token="t",
+            root=self.root_dir,
+            start_time=time.time(),
+            idle_timeout_sec=0.0,
+        )
         force_bags = CmdBags(raw_cmd="stop --force", command="stop", args=[], options={"force": CmdOption(name="force", params=True)})
         graceful_bags = CmdBags(raw_cmd="stop", command="stop", args=[], options={})
         probe_file = os.path.join(self.root_dir, daemon_probe.PROBE_REL_PATH)
+        state_file = os.path.join(self.root_dir, ".cache", "server", "daemon.json")
         real_mark = daemon_probe.mark_clean_exit
         for bags in (force_bags, graceful_bags):
             daemon_probe.record_spawn(self.root_dir, 424242)
+            vfs.write_json(state_file, {"pid": 424242, "port": 1, "token": "t"})
+            active_log = os.path.join(self.root_dir, ".cache", "server", "log")
+            vfs.write_text(active_log, 'server start at time "2026_11_06_05.00.00"\n', encoding="utf-8", atomic=True)
+            self.assertTrue(os.path.exists(state_file))
             order = []
+            out_buf = io.StringIO()
             with unittest.mock.patch.object(server_cli, "guard_dispatch"), \
                  unittest.mock.patch.object(server_cli, "_get_yscb_root", return_value=self.root_dir), \
                  unittest.mock.patch.object(server_cli, "read_daemon_state", return_value=state), \
@@ -1055,9 +1307,12 @@ class TestServerModule(YSCBTestCase):
                  unittest.mock.patch.object(server_cli, "_http_request", return_value=None), \
                  unittest.mock.patch.object(server_cli, "kill_process_tree", side_effect=lambda *a, **k: order.append("kill")), \
                  unittest.mock.patch.object(server_cli.daemon_probe, "mark_clean_exit", side_effect=lambda root: (order.append("mark"), real_mark(root))), \
-                 redirect_stdout(io.StringIO()):
+                 redirect_stdout(out_buf):
                 self.assertEqual(server_cli.stop(bags), 0)
             self.assertEqual(order, ["kill", "mark"])
+            self.assertFalse(os.path.exists(state_file), "Forced stop must clean up orphaned daemon.json")
+            self.assertFalse(os.path.exists(active_log), "Forced stop must immediately archive active log")
+            self.assertRegex(out_buf.getvalue(), r"2026_11_06_05\.00\.00(?:_\d+)?_log")
             with open(probe_file, "r", encoding="utf-8") as f:
                 entry = _json.load(f)[daemon_probe.env_fingerprint()]
             self.assertTrue(entry["clean_exit"])
@@ -1066,10 +1321,10 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_master_start_retries_transient_lock_contention(self):
-        """Review#3: 無活躍 daemon 時鎖短暫被探針持有，start 以短暫阻塞重試取得鎖而非直接放棄。"""
+        """無活躍 daemon 時鎖短暫被探針持有，start 以短暫阻塞重試取得鎖而非直接放棄。"""
         from core.platform import InterProcessLock
 
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         prober = InterProcessLock(sup.lock_file)
         self.assertTrue(prober.acquire(blocking=False))
         timer = threading.Timer(0.15, prober.release)
@@ -1086,8 +1341,8 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_restart_worker_config_error_is_non_destructive(self):
-        """Review#4: restart_worker 先載入組態；組態載入失敗時於任何破壞性動作前拋出，現役 worker 保留。"""
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        """restart_worker 先載入組態；組態載入失敗時於任何破壞性動作前拋出，現役 worker 保留。"""
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         with unittest.mock.patch("server.config.ServerConfig.load", side_effect=RuntimeError("bad config")), \
              unittest.mock.patch.object(sup, "_kill_worker_locked") as mock_kill, \
              unittest.mock.patch.object(sup, "_spawn_worker_locked") as mock_spawn:
@@ -1098,12 +1353,12 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_master_start_binds_master_pid(self):
-        """OBS-01: MasterSupervisor.start 取得單例鎖後將 auto-spawn 紀錄之 launcher PID 改綁為 master PID。"""
+        """MasterSupervisor.start 取得單例鎖後將 auto-spawn 紀錄之 launcher PID 改綁為 master PID。"""
         import json as _json
         from core.platform import daemon_probe
 
         daemon_probe.record_spawn(self.root_dir, 111)
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         try:
             with unittest.mock.patch.object(sup, "_spawn_worker_locked", return_value=0):
                 sup.start(foreground=False)
@@ -1116,7 +1371,7 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_worker_restore_env_diff_without_clearing_os_environ(self):
-        """TASK-05: _restore_env_diff and WarmWorker.execute_task restore modified, added, and deleted env keys without ever emptying os.environ."""
+        """_restore_env_diff and WarmWorker.execute_task restore modified, added, and deleted env keys without ever emptying os.environ."""
         from server.worker import _restore_env_diff
 
         baseline_key = "YSCB_TEST_BASELINE_CONTINUOUS_KEY"
@@ -1185,8 +1440,8 @@ class TestServerModule(YSCBTestCase):
         self.assertEqual(observed_missing_baseline, [], "os.environ was emptied or lost baseline keys during execute_task!")
         self.mark_passed()
 
-    def test_t39_debounced_streamer_max_buffer_bytes(self):
-        """T-39: DebouncedIOStreamer 不因單純換行立即 flush，而是於累積達 max_buffer_bytes 或 flush/timer 時才送出。"""
+    def test_debounced_streamer_max_buffer_bytes(self):
+        """DebouncedIOStreamer 不因單純換行立即 flush，而是於累積達 max_buffer_bytes、計時器觸發或顯式 flush 時送出，並在 stop_capture 後拒絕新寫入。"""
         packets = []
         streamer = DebouncedIOStreamer(
             emit_chunk=lambda pkt: packets.append(pkt),
@@ -1194,6 +1449,7 @@ class TestServerModule(YSCBTestCase):
             max_buffer_bytes=64,
         )
         try:
+            streamer.write("stdout", "")
             streamer.write("stdout", "line1\n")
             streamer.write("stdout", "line2\n")
             # Accumulated 12 bytes < 64 bytes -> still buffered despite newlines
@@ -1212,6 +1468,29 @@ class TestServerModule(YSCBTestCase):
             self.assertEqual(packets[1]["text"], "tail\n")
         finally:
             streamer.stop_capture()
+
+        # Verify write after stop_capture() is ignored by _is_closed guard
+        streamer.write("stdout", "after_close\n")
+        streamer.flush()
+        self.assertEqual(len(packets), 2)
+
+        # Verify background _on_timer automatically flushes buffered output within debounce window
+        timer_packets = []
+        timer_streamer = DebouncedIOStreamer(
+            emit_chunk=timer_packets.append,
+            debounce_ms=30,
+            max_buffer_bytes=4096,
+        )
+        try:
+            timer_streamer.write("stdout", "auto_timer_flush\n")
+            deadline = time.monotonic() + 2.0
+            while not timer_packets and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(len(timer_packets), 1)
+            self.assertEqual(timer_packets[0]["text"], "auto_timer_flush\n")
+        finally:
+            timer_streamer.stop_capture()
+
         self.mark_passed()
 
     def test_handshake_ignores_non_json_noise_and_sets_utf8_env(self):
@@ -1228,7 +1507,7 @@ class TestServerModule(YSCBTestCase):
             "    req = json.loads(line)\n"
             "    if req.get('action') == 'exit':\n        break\n"
         )
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         captured_env = {}
         real_popen = subprocess.Popen
 
@@ -1271,10 +1550,10 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_dispatch_payload_validation_root_normalization_and_touch_throttling(self):
-        """Verify /api/dispatch rejects invalid payloads with 400, normalizes yscb_root across symlinks/case, and throttles touch_activity."""
+        """Verify /api/dispatch rejects invalid payloads with 400, normalizes yscb_root across relative/parent/symlink paths, and throttles touch_activity."""
         from server.service import touch_activity
 
-        sup = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=300.0, enable_watcher=False)
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
         with unittest.mock.patch.object(sup, "_spawn_worker_locked", return_value=0):
             sup.start(foreground=False)
 
@@ -1282,14 +1561,39 @@ class TestServerModule(YSCBTestCase):
             auth_headers = {"Authorization": f"Bearer {sup.token}", "Content-Type": "application/json"}
             url_dispatch = f"http://127.0.0.1:{sup.port}/api/dispatch"
 
-            for bad_body in (b"[]", b'{"args": []}', b'{"module": "  "}', b'{"module": "core", "args": "not-a-list"}'):
+            for bad_body in (
+                b"[]",
+                b'{"args": []}',
+                b'{"module": "  "}',
+                b'{"module": "core", "args": "not-a-list"}',
+                b'{"module": "core", "args": [], "yscb_root": 123}',
+            ):
                 req_bad = urllib.request.Request(url_dispatch, data=bad_body, headers=auth_headers, method="POST")
                 with self.assertRaises(urllib.error.HTTPError) as cm:
                     urllib.request.urlopen(req_bad)
                 self.assertEqual(cm.exception.code, 400)
                 cm.exception.close()
 
-            # Symlinked workspace root should be accepted after realpath/normcase normalization
+            def _fake_dispatch_task(req_data, chunk_emitter):
+                chunk_emitter({"type": "terminal_stream", "stream": "stdout", "text": "dispatched ok\n"})
+                chunk_emitter({"type": "task_finish", "exit_code": 0, "duration_ms": 1.0, "error": None})
+                return 0
+
+            # Unconditionally verify 200 OK chunked response with '..' relative path and parent root path
+            rel_dotdot_root = os.path.join(self.root_dir, ".cache", "..")
+            parent_root = os.path.dirname(self.root_dir)
+            with unittest.mock.patch.object(sup, "dispatch_task", side_effect=_fake_dispatch_task) as mock_disp:
+                for valid_root in (rel_dotdot_root, parent_root):
+                    payload = json.dumps({"module": "core", "args": ["status"], "yscb_root": valid_root}).encode("utf-8")
+                    req_ok = urllib.request.Request(url_dispatch, data=payload, headers=auth_headers, method="POST")
+                    with urllib.request.urlopen(req_ok) as resp:
+                        self.assertEqual(resp.status, 200)
+                        raw_chunked = resp.read().decode("utf-8", errors="replace")
+                        self.assertIn("dispatched ok", raw_chunked)
+                        self.assertIn("task_finish", raw_chunked)
+                self.assertEqual(mock_disp.call_count, 2)
+
+            # Symlinked workspace root should also be accepted when filesystem supports symlinks
             link_root = os.path.join(self.root_dir, "symlink_ws")
             has_symlink = False
             try:
@@ -1299,12 +1603,13 @@ class TestServerModule(YSCBTestCase):
                 has_symlink = False
 
             if has_symlink:
-                with unittest.mock.patch.object(sup, "dispatch_task", return_value=0) as mock_disp:
+                with unittest.mock.patch.object(sup, "dispatch_task", side_effect=_fake_dispatch_task) as mock_disp_sym:
                     payload = json.dumps({"module": "core", "args": ["status"], "yscb_root": link_root}).encode("utf-8")
                     req_ok = urllib.request.Request(url_dispatch, data=payload, headers=auth_headers, method="POST")
                     with urllib.request.urlopen(req_ok) as resp:
                         self.assertEqual(resp.status, 200)
-                    mock_disp.assert_called_once()
+                        self.assertIn("task_finish", resp.read().decode("utf-8", errors="replace"))
+                    mock_disp_sym.assert_called_once()
 
             # touch_activity throttling with explicit yscb_root
             self.assertTrue(touch_activity(self.root_dir, force=True))

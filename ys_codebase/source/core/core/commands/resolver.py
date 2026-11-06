@@ -51,6 +51,22 @@ class OptionResolver:
             return False
         return True
 
+    @staticmethod
+    def _store_resolved_option(
+        resolved_options: Dict[str, CmdOption],
+        canonical: str,
+        val: Any,
+    ) -> None:
+        """寫入已解析之選項，若為重複出現的 dep 選項則以分號串接。"""
+        if (
+            canonical == "dep"
+            and "dep" in resolved_options
+            and isinstance(resolved_options["dep"].params, str)
+            and isinstance(val, str)
+        ):
+            val = f"{resolved_options['dep'].params};{val}"
+        resolved_options[canonical] = CmdOption(name=canonical, params=val)
+
     @classmethod
     def resolve(
         cls,
@@ -140,9 +156,7 @@ class OptionResolver:
                         else:
                             val = True
 
-                    if canonical == "dep" and "dep" in resolved_options and isinstance(resolved_options["dep"].params, str) and isinstance(val, str):
-                        val = f"{resolved_options['dep'].params};{val}"
-                    resolved_options[canonical] = CmdOption(name=canonical, params=val)
+                    cls._store_resolved_option(resolved_options, canonical, val)
 
                 else:
                     # 未在 spec 定義之通用或未遷移選項
@@ -151,9 +165,7 @@ class OptionResolver:
                         val = raw_val
                     else:
                         val = True
-                    if canonical == "dep" and "dep" in resolved_options and isinstance(resolved_options["dep"].params, str) and isinstance(val, str):
-                        val = f"{resolved_options['dep'].params};{val}"
-                    resolved_options[canonical] = CmdOption(name=canonical, params=val)
+                    cls._store_resolved_option(resolved_options, canonical, val)
 
             else:
                 positional_args.append(token)

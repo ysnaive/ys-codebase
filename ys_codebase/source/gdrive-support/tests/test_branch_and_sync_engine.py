@@ -1386,19 +1386,21 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
         )
         self.assertIsNotNone(self.transport.get_entry("repo/main"))
 
-        # 3b. Pre-existing empty remote directory shells are pruned even when deleted_remote is empty
-        self.transport.mkdir("repo/main/docs/2026_11_05_archived_shell/sub_shell")
+        # 3b. Pre-existing empty remote directory shells are NOT trashed when deleted_remote is empty
+        # (protects newly mkdir'd cloud folders while external agents are still uploading files into them!)
+        self.transport.mkdir("repo/main/docs/2026_11_05_new_cloud_dir/sub_shell")
         self.assertIsNotNone(
-            self.transport.get_entry("repo/main/docs/2026_11_05_archived_shell/sub_shell")
+            self.transport.get_entry("repo/main/docs/2026_11_05_new_cloud_dir/sub_shell")
         )
-        rep_shell_prune = self.coord.run_sync(mode="sync")
-        self.assertEqual(rep_shell_prune.deleted_remote, [])
-        self.assertIsNone(
-            self.transport.get_entry("repo/main/docs/2026_11_05_archived_shell/sub_shell")
+        rep_shell_keep = self.coord.run_sync(mode="sync")
+        self.assertEqual(rep_shell_keep.deleted_remote, [])
+        self.assertIsNotNone(
+            self.transport.get_entry("repo/main/docs/2026_11_05_new_cloud_dir/sub_shell")
         )
-        self.assertIsNone(
-            self.transport.get_entry("repo/main/docs/2026_11_05_archived_shell")
+        self.assertIsNotNone(
+            self.transport.get_entry("repo/main/docs/2026_11_05_new_cloud_dir")
         )
+        self.transport.trash_file("repo/main/docs/2026_11_05_new_cloud_dir")
 
         # 3c. Auto-discovered branch forces live remote scan during .history/ GC
         hist_src = self.tmp_root / "frozen_hist_target.md"
@@ -1628,6 +1630,151 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
         self.assertIn("`custom_vault/`", dl_root_readme.read_text(encoding="utf-8"))
         res_noop = custom_root_coord.reconcile_root_readme()
         self.assertFalse(res_noop["changed"])
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_ft_15_untracked_delete_guard_restored_folder_scan_and_wal_journal_replay(
+        self,
+    ) -> None:
+        """
+        Verify sub_09 remediations:
+        1. [FR-01 / TODO-24] Unidirectional push --delete and pull --delete preserve untracked new files
+           (base is None) unless --force is explicitly passed; tracked deletions (base is not None) still delete.
+        2. [FR-02 / TODO-25] Restoring a trashed folder (or moving a pre-populated folder into a branch)
+           when changes.list only reports the folder change record falls back to Level 2 scan and pulls child files.
+        3. [FR-03] Stage 3 writes per-file WAL entries to sync_state.journal.jsonl (only 1 atomic sync_state.json
+           write in finally), and _load_local_state() automatically replays uncommitted journal records (ignoring
+           any truncated trailing line from simulated power loss) and compacts them into sync_state.json.
+        """
+        from gdrive_support.transport import ChangeRecord, FOLDER_MIME_TYPE, RemoteEntry
+
+        self.coord.init_repo()
+
+        # --- 1. [FR-01] push --delete & pull --delete guard untracked (base is None) files ---
+        rem_untracked = self.tmp_root / "cloud_created_untracked.md"
+        rem_untracked.write_text("Created directly on Cloud before pull\n", encoding="utf-8")
+        self.transport.upload_file(rem_untracked, "repo/main/docs/cloud_new.md")
+
+        loc_untracked = self.docs_dir / "local_new.md"
+        loc_untracked.write_text("Created locally before push\n", encoding="utf-8")
+
+        # (a) push --delete (without --force) pushes local_new.md and MUST NOT delete cloud_new.md!
+        rep_push_del = self.coord.run_sync(mode="push", delete=True, force=False)
+        self.assertIn("docs/local_new.md", rep_push_del.pushed)
+        self.assertEqual(rep_push_del.deleted_remote, [])
+        self.assertIsNotNone(self.transport.get_entry("repo/main/docs/cloud_new.md"))
+
+        # (b) Create another local untracked file; pull --delete (without --force) pulls cloud_new.md
+        #     and MUST NOT delete local_untracked_2.md!
+        loc_untracked_2 = self.docs_dir / "local_untracked_2.md"
+        loc_untracked_2.write_text("Second local untracked file\n", encoding="utf-8")
+        rep_pull_del = self.coord.run_sync(mode="pull", delete=True, force=False)
+        self.assertIn("docs/cloud_new.md", rep_pull_del.pulled)
+        self.assertEqual(rep_pull_del.deleted_local, [])
+        self.assertTrue(loc_untracked_2.is_file())
+
+        # (c) With --force AND --delete, untracked files on the target side ARE deleted
+        rep_pull_force_del = self.coord.run_sync(mode="pull", delete=True, force=True)
+        self.assertIn("docs/local_untracked_2.md", rep_pull_force_del.deleted_local)
+        self.assertFalse(loc_untracked_2.exists())
+
+        # --- 2. [FR-02] Folder untrash / move-in with only folder ChangeRecord falls back to Level 2 ---
+        self.coord.run_sync(mode="sync")
+        # Upload a folder with a child file on remote
+        restored_child = self.tmp_root / "restored_child.md"
+        restored_child.write_text("Restored from Trash Content\n", encoding="utf-8")
+        self.transport.upload_file(
+            restored_child, "repo/main/docs/restored_plan/P00_discuss.md"
+        )
+        restored_dir_ent = self.transport.get_entry("repo/main/docs/restored_plan")
+        assert restored_dir_ent is not None
+
+        # Simulate Google Drive changes.list emitting ONLY the folder change record (as happens on untrash)
+        orig_list_changes = self.transport.list_changes
+        self.transport.list_changes = lambda _tok: (  # type: ignore[method-assign]
+            [
+                ChangeRecord(
+                    file_id=restored_dir_ent.file_id,
+                    removed=False,
+                    entry=restored_dir_ent,
+                    parent_id=restored_dir_ent.parent_id,
+                    name=restored_dir_ent.name,
+                    mime_type=FOLDER_MIME_TYPE,
+                )
+            ],
+            "sbx_untrashed_folder_only",
+        )
+        try:
+            rep_untrash = self.coord.run_sync(mode="pull")
+            self.assertEqual(rep_untrash.cache_hit_level, 2)
+            self.assertIn("docs/restored_plan/P00_discuss.md", rep_untrash.pulled)
+            self.assertEqual(
+                (self.docs_dir / "restored_plan" / "P00_discuss.md").read_text(
+                    encoding="utf-8"
+                ),
+                "Restored from Trash Content\n",
+            )
+        finally:
+            self.transport.list_changes = orig_list_changes  # type: ignore[method-assign]
+
+        # --- 3. [FR-03 & EC-01] WAL Journal single final snapshot write & crash recovery replay ---
+        for i in range(5):
+            (self.docs_dir / f"batch_{i}.md").write_text(f"Batch {i}\n", encoding="utf-8")
+
+        save_calls = {"n": 0}
+        orig_save = self.coord._save_local_state
+
+        def _counting_save(st):
+            save_calls["n"] += 1
+            return orig_save(st)
+
+        self.coord._save_local_state = _counting_save  # type: ignore[method-assign]
+        try:
+            rep_batch = self.coord.run_sync(mode="push")
+            self.assertEqual(len(rep_batch.pushed), 5)
+            # Stage 1 snapshot + Stage 3 finally = at most 2 full JSON writes (NOT 5+ per-file writes!)
+            self.assertLessEqual(save_calls["n"], 2)
+            self.assertFalse(self.coord.state_journal_path.exists())
+        finally:
+            self.coord._save_local_state = orig_save  # type: ignore[method-assign]
+
+        # Simulate crash leaving sync_state.journal.jsonl with 1 valid upsert, 1 valid delete, and 1 truncated line
+        fake_entry = FileEntry(
+            rel_path="docs/journal_recovered.md",
+            md5="m_rec",
+            sha256="s_rec",
+            size=12,
+            mtime_ns=12345,
+            file_id="fid_rec_99",
+        ).to_dict()
+        journal_lines = [
+            json.dumps(
+                {
+                    "op": "upsert_file",
+                    "branch": "main",
+                    "rel_path": "docs/journal_recovered.md",
+                    "base_entry": fake_entry,
+                    "cache_entry": None,
+                }
+            ),
+            json.dumps(
+                {
+                    "op": "delete_file",
+                    "branch": "main",
+                    "rel_path": "docs/batch_0.md",
+                    "remove_from_cache": True,
+                }
+            ),
+            '{"op": "upsert_file", "branch": "main", "truncated_json_on_power_loss',
+        ]
+        self.coord.state_journal_path.write_text(
+            "\n".join(journal_lines) + "\n", encoding="utf-8"
+        )
+        reloaded = self.coord._load_local_state()
+        main_tracked = reloaded["branches"]["main"]["files"]
+        self.assertIn("docs/journal_recovered.md", main_tracked)
+        self.assertNotIn("docs/batch_0.md", main_tracked)
+        self.assertFalse(self.coord.state_journal_path.exists())
         self.mark_passed()
 
 

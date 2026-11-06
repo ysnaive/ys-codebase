@@ -210,7 +210,7 @@ def _reconcile_local_only(
                 baseline_entry=None,
                 reason="added_local",
             )
-        if norm_mode == "pull" and allow_pull_delete:
+        if norm_mode == "pull" and allow_pull_delete and force:
             return SyncAction(
                 rel_path=rel_p,
                 action=SyncActionType.DELETE_LOCAL,
@@ -273,7 +273,7 @@ def _reconcile_remote_only(
                 baseline_entry=None,
                 reason="added_remote",
             )
-        if norm_mode == "push" and allow_push_delete:
+        if norm_mode == "push" and allow_push_delete and force:
             return SyncAction(
                 rel_path=rel_p,
                 action=SyncActionType.DELETE_REMOTE,

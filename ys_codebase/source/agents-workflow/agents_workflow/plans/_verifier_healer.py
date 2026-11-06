@@ -2,20 +2,76 @@
 agents_workflow.plans._verifier_healer — PlanVerifier 確定性標頭自癒、伴隨檔初始化與變更日誌追加服務。
 """
 
+import os
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ._common import parse_markdown_blockquote_headers
-from ._verifier_specs import extract_requirement_ids
+from ._verifier_specs import (
+    HEADER_DATE_KEYS,
+    HEADER_NAME_KEYS,
+    HEADER_PARENT_KEYS,
+    extract_requirement_ids,
+)
+
+_UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
+_TABLE_SEP_LINE_RE = re.compile(r"^\|?\s*[-:]+\s*\|")
+_DIR_DATE_PREFIX_RE = re.compile(r"^(\d{4})_(\d{2})_(\d{2})")
+_SLUG_STRIP_PREFIX_RE = re.compile(r"^(?:\d{4}_\d{2}_\d{2}_(?:\d{4}_)?|sub_\d+_)")
+
+
+def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -> None:
+    """透過同目錄暫存檔與 os.replace 執行原子文字寫入。"""
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = file_path.with_name(f"{file_path.name}.tmp.{os.getpid()}")
+    try:
+        tmp_path.write_text(content, encoding=encoding)
+        os.replace(tmp_path, file_path)
+    except Exception:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        raise
+
+
+def _render_initial_changelog(
+    target_dir: Path,
+    model: str,
+    summary: str,
+    log_type: str = "PHASE",
+    today_str: Optional[str] = None,
+    now_str: Optional[str] = None,
+) -> str:
+    """渲染標準初始化之 changelog.md 完整文本。"""
+    eff_today = today_str or datetime.now().strftime("%Y-%m-%d")
+    eff_now = now_str or datetime.now().strftime("%Y-%m-%d %H:%M")
+    is_sub = target_dir.name.startswith("sub_")
+    parent_name = target_dir.parent.name if is_sub else "N/A (Root Plan)"
+    return (
+        f"# 計畫變更紀錄 (Changelog)\n\n"
+        f"> 功能名稱：{target_dir.name}  \n"
+        f"> 建立日期：{eff_today}  \n"
+        f"> 所屬主計畫：{parent_name}  \n"
+        f"> 狀態：In Progress  \n"
+        f"> 模型：{model}  \n\n"
+        f"> 模板版本：v1.1  \n\n"
+        f"---\n\n"
+        f"## 變更紀錄\n\n"
+        f"| 日期時間 | 類型 | 模型 | 摘要 |\n"
+        f"| :--- | :---: | :--- | :--- |\n"
+        f"| {eff_now} | `{log_type}` | {model} | {summary} |\n"
+    )
 
 
 def infer_deterministic_header_values(file_path: Path, is_sub_plan: bool) -> Dict[str, str]:
     """推導檔案之 100% 確定性標頭欄位值 (功能名稱、建立日期、所屬主計畫)。"""
     target_dir = file_path.parent
-    dir_date_m = re.match(r"^(\d{4})_(\d{2})_(\d{2})", target_dir.name) or re.match(
-        r"^(\d{4})_(\d{2})_(\d{2})", target_dir.parent.name
+    dir_date_m = _DIR_DATE_PREFIX_RE.match(target_dir.name) or _DIR_DATE_PREFIX_RE.match(
+        target_dir.parent.name
     )
     today_str = (
         f"{dir_date_m.group(1)}-{dir_date_m.group(2)}-{dir_date_m.group(3)}"
@@ -23,7 +79,7 @@ def infer_deterministic_header_values(file_path: Path, is_sub_plan: bool) -> Dic
         else datetime.now().strftime("%Y-%m-%d")
     )
     parent_name = target_dir.parent.name if is_sub_plan else "N/A (Root Plan)"
-    slug = re.sub(r"^(?:\d{4}_\d{2}_\d{2}_(?:\d{4}_)?|sub_\d+_)", "", target_dir.name)
+    slug = _SLUG_STRIP_PREFIX_RE.sub("", target_dir.name)
     func_name = slug.replace("_", " ").title() if slug else target_dir.name
     try:
         for cand in sorted(target_dir.glob("P0[01]_*.md")):
@@ -59,14 +115,9 @@ def auto_heal_deterministic_headers(
     後置契約：絕不新增或修改 [狀態] 與 [模型]；回傳更新後之 (lines, headers, healed_keys)。
     """
     inferred = infer_deterministic_header_values(md_file, is_sub_plan)
-    has_name = any(k in headers for k in [
-        "功能名稱", "計畫名稱", "所屬計畫", "name", "title", "調研主題", "topic", "subject", "主題"
-    ])
-    has_date = any(k in headers for k in [
-        "建立日期", "完成日期", "暫停時間", "歸檔日期", "更新日期",
-        "date", "created_at", "updated_at", "archived_at", "日期", "time", "timestamp"
-    ])
-    has_parent = any(k in headers for k in ["所屬主計畫", "所屬計畫", "parent_plan", "主計畫", "parent"])
+    has_name = any(k in headers for k in HEADER_NAME_KEYS)
+    has_date = any(k in headers for k in HEADER_DATE_KEYS)
+    has_parent = any(k in headers for k in HEADER_PARENT_KEYS)
 
     missing_pairs: List[Tuple[str, str]] = []
     if not has_name:
@@ -103,7 +154,7 @@ def auto_heal_deterministic_headers(
         new_lines.insert(insert_idx, f"> {key}：{val}  ")
 
     try:
-        md_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        _atomic_write_text(md_file, "\n".join(new_lines) + "\n")
     except Exception:
         return lines, headers, []
 
@@ -173,22 +224,14 @@ def auto_heal_companions(
 
     changelog_path = target_dir / "changelog.md"
     if not changelog_path.exists():
-        now_min = datetime.now().strftime("%Y-%m-%d %H:%M")
-        cl_content = (
-            f"# 計畫變更紀錄 (Changelog)\n\n"
-            f"> 功能名稱：{target_dir.name}  \n"
-            f"> 建立日期：{today_str}  \n"
-            f"> 所屬主計畫：{parent_name}  \n"
-            f"> 狀態：In Progress  \n"
-            f"> 模型：{model_val}  \n\n"
-            f"> 模板版本：v1.1  \n\n"
-            f"---\n\n"
-            f"## 變更紀錄\n\n"
-            f"| 日期時間 | 類型 | 模型 | 摘要 |\n"
-            f"| :--- | :---: | :--- | :--- |\n"
-            f"| {now_min} | `PHASE` | {model_val} | 自動初始化變更日誌 (changelog.md) |\n"
+        cl_content = _render_initial_changelog(
+            target_dir,
+            model=model_val,
+            summary="自動初始化變更日誌 (changelog.md)",
+            log_type="PHASE",
+            today_str=today_str,
         )
-        changelog_path.write_text(cl_content, encoding="utf-8")
+        _atomic_write_text(changelog_path, cl_content)
         created_rel = f"{rel_prefix}changelog.md"
         if created_rel not in report.companion_created:
             report.companion_created.append(created_rel)
@@ -235,7 +278,7 @@ def auto_heal_companions(
             + "\n\n---\n\n"
             f"## 2. 測試執行紀錄表 (Test Execution Log)\n\n"
             f"| 測試編號 | 執行狀態 | 實機測試日誌摘要 / 失敗根因 | 驗證時間 |\n"
-            f"| :--- | :---: | :--- | :---: |\n"
+            f"| :--- | :---: | :--- | :--- |\n"
             + "\n".join(exec_rows)
             + "\n\n---\n\n"
             f"## 3. 人工 / UX 驗證 Checkpoint (UX Verification Matrix)\n\n"
@@ -243,7 +286,7 @@ def auto_heal_companions(
             f"| :--- | :--- | :---: | :--- |\n"
             f"| **UX-01** | 待於 Phase 4 定稿確認 | `Pending` | 待驗收 |\n"
         )
-        p06_path.write_text(p06_content, encoding="utf-8")
+        _atomic_write_text(p06_path, p06_content)
         created_rel = f"{rel_prefix}P06_test_plan.md"
         if created_rel not in report.companion_created:
             report.companion_created.append(created_rel)
@@ -260,29 +303,21 @@ def append_changelog_entry(
     """
     changelog_path = target_dir / "changelog.md"
     clean_type = log_type.strip().upper().strip("`") or "PHASE"
-    clean_summary = summary.strip().replace("\r", " ").replace("\n", " ")
-    clean_model = model.strip() if model and model.strip() else "Unknown"
+    raw_summary = summary.strip().replace("\r", " ").replace("\n", " ")
+    clean_summary = _UNESCAPED_PIPE_RE.sub(r"\\|", raw_summary)
+    raw_model = model.strip() if model and model.strip() else "Unknown"
+    clean_model = _UNESCAPED_PIPE_RE.sub(r"\\|", raw_model)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     if not changelog_path.exists():
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        is_sub = target_dir.name.startswith("sub_")
-        parent_name = target_dir.parent.name if is_sub else "N/A (Root Plan)"
-        cl_content = (
-            f"# 計畫變更紀錄 (Changelog)\n\n"
-            f"> 功能名稱：{target_dir.name}  \n"
-            f"> 建立日期：{today_str}  \n"
-            f"> 所屬主計畫：{parent_name}  \n"
-            f"> 狀態：In Progress  \n"
-            f"> 模型：{clean_model}  \n\n"
-            f"> 模板版本：v1.1  \n\n"
-            f"---\n\n"
-            f"## 變更紀錄\n\n"
-            f"| 日期時間 | 類型 | 模型 | 摘要 |\n"
-            f"| :--- | :---: | :--- | :--- |\n"
-            f"| {now_str} | `{clean_type}` | {clean_model} | {clean_summary} |\n"
+        cl_content = _render_initial_changelog(
+            target_dir,
+            model=clean_model,
+            summary=clean_summary,
+            log_type=clean_type,
+            now_str=now_str,
         )
-        changelog_path.write_text(cl_content, encoding="utf-8")
+        _atomic_write_text(changelog_path, cl_content)
         return True, "appended"
 
     content = changelog_path.read_text(encoding="utf-8", errors="ignore")
@@ -290,12 +325,12 @@ def append_changelog_entry(
 
     sep_idx = -1
     for idx, line in enumerate(lines):
-        if "|" in line and re.match(r"^\|?\s*[-:]+\s*\|", line.strip()):
+        if "|" in line and _TABLE_SEP_LINE_RE.match(line.strip()):
             sep_idx = idx
             break
 
+    new_row = f"| {now_str} | `{clean_type}` | {clean_model} | {clean_summary} |"
     if sep_idx == -1:
-        new_row = f"| {now_str} | `{clean_type}` | {clean_model} | {clean_summary} |"
         lines.extend([
             "",
             "## 變更紀錄",
@@ -304,7 +339,7 @@ def append_changelog_entry(
             "| :--- | :---: | :--- | :--- |",
             new_row,
         ])
-        changelog_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        _atomic_write_text(changelog_path, "\n".join(lines) + "\n")
         return True, "appended"
 
     first_data_idx = sep_idx + 1
@@ -312,14 +347,16 @@ def append_changelog_entry(
         first_data_idx += 1
 
     if first_data_idx < len(lines) and "|" in lines[first_data_idx]:
-        cells = [c.strip() for c in lines[first_data_idx].strip().strip("|").split("|")]
+        cells = [
+            c.strip()
+            for c in _UNESCAPED_PIPE_RE.split(lines[first_data_idx].strip().strip("|"))
+        ]
         if len(cells) >= 3:
             existing_type = cells[1].strip().strip("`").upper()
-            existing_summary = cells[-1].strip()
-            if existing_type == clean_type and existing_summary == clean_summary:
+            existing_summary = cells[3].strip() if len(cells) >= 4 else cells[2].strip()
+            if existing_type == clean_type and existing_summary in (clean_summary, raw_summary):
                 return False, "idempotent_skipped"
 
-    new_row = f"| {now_str} | `{clean_type}` | {clean_model} | {clean_summary} |"
     lines.insert(sep_idx + 1, new_row)
-    changelog_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _atomic_write_text(changelog_path, "\n".join(lines) + "\n")
     return True, "appended"

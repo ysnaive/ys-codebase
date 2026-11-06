@@ -273,12 +273,20 @@ class ContributesValidator:
             if not isinstance(data, dict):
                 issues.append(ValidationIssue(path=path, message=f"Expected dict, got {type(data).__name__}.", severity="ERROR"))
                 return data, issues
+            if "value_type" not in rule:
+                return copy.copy(data), issues
+            key_rule_raw = rule["key_type"]["raw"] if "key_type" in rule and isinstance(rule["key_type"], dict) else None
+            val_rule_raw = rule["value_type"]["raw"]
             out_dict = {}
             for k, v in data.items():
                 if isinstance(k, str) and k.startswith("__") and k.endswith("__"):
                     out_dict[k] = v
                     continue
-                out_v, sub_issues = cls.validate_node(v, rule["value_type"]["raw"], f"{path}.{k}", types_map, depth + 1)
+                k_path = f"{path}.{k}" if path else str(k)
+                if key_rule_raw is not None:
+                    _, key_issues = cls.validate_node(k, key_rule_raw, k_path, types_map, depth + 1)
+                    issues.extend(key_issues)
+                out_v, sub_issues = cls.validate_node(v, val_rule_raw, k_path, types_map, depth + 1)
                 issues.extend(sub_issues)
                 out_dict[k] = out_v
             return out_dict, issues
@@ -311,10 +319,13 @@ class ContributesValidator:
         out_dict = copy.copy(data)
         has_wildcard = "*" in schema
         wildcard_schema = schema.get("*")
-        defined_keys = {k for k in schema.keys() if k != "*"}
+        defined_keys = {
+            k for k in schema.keys()
+            if k not in ("*", "_merge") and not (k == "required" and isinstance(schema.get(k), bool))
+        }
 
         for k, v in data.items():
-            if k.startswith("__") and k.endswith("__"):
+            if isinstance(k, str) and k.startswith("__") and k.endswith("__"):
                 out_dict[k] = v
                 continue
             k_path = f"{path}.{k}" if path else k
@@ -450,6 +461,29 @@ class ContributesValidator:
         return ValidationResult(is_valid=is_valid, issues=issues, payload=validated_payload)
 
     @classmethod
+    def _check_merge_strategy_value(
+        cls,
+        strat_val: Any,
+        path: str,
+        issues: List[ValidationIssue],
+    ) -> None:
+        if not isinstance(strat_val, str) or strat_val not in cls.VALID_MERGE_STRATEGIES:
+            matches = difflib.get_close_matches(str(strat_val), cls.VALID_MERGE_STRATEGIES, n=1)
+            hint = (
+                f"Did you mean '{matches[0]}'?"
+                if matches
+                else f"Allowed merge strategies: {list(cls.VALID_MERGE_STRATEGIES)}"
+            )
+            issues.append(
+                ValidationIssue(
+                    path=path,
+                    message=f"Invalid merge strategy '{strat_val}'.",
+                    severity="ERROR",
+                    suggestion=hint,
+                )
+            )
+
+    @classmethod
     def _validate_schema_merge_strategies(
         cls,
         schema_node: Any,
@@ -460,24 +494,15 @@ class ContributesValidator:
         if isinstance(schema_node, str):
             rule = cls.parse_type_signature(schema_node)
             strat = rule.get("merge_strategy")
-            if strat is not None and strat not in cls.VALID_MERGE_STRATEGIES:
-                matches = difflib.get_close_matches(strat, cls.VALID_MERGE_STRATEGIES, n=1)
-                hint = (
-                    f"Did you mean '{matches[0]}'?"
-                    if matches
-                    else f"Allowed merge strategies: {list(cls.VALID_MERGE_STRATEGIES)}"
-                )
-                issues.append(
-                    ValidationIssue(
-                        path=path,
-                        message=f"Invalid merge strategy '{strat}'.",
-                        severity="ERROR",
-                        suggestion=hint,
-                    )
-                )
+            if strat is not None:
+                cls._check_merge_strategy_value(strat, path, issues)
         elif isinstance(schema_node, dict):
             for k, v in schema_node.items():
-                cls._validate_schema_merge_strategies(v, f"{path}.{k}" if path else k, issues)
+                k_path = f"{path}.{k}" if path else k
+                if k == "_merge":
+                    cls._check_merge_strategy_value(v, k_path, issues)
+                else:
+                    cls._validate_schema_merge_strategies(v, k_path, issues)
         elif isinstance(schema_node, list):
             for idx, item in enumerate(schema_node):
                 cls._validate_schema_merge_strategies(item, f"{path}[{idx}]", issues)
@@ -512,22 +537,7 @@ class ContributesValidator:
             if "description" not in p_def or not isinstance(p_def["description"], str):
                 issues.append(ValidationIssue(path=f"{pt}.description", message="Missing or non-string 'description'.", severity="ERROR"))
             if "merge" in p_def:
-                pt_merge = p_def["merge"]
-                if not isinstance(pt_merge, str) or pt_merge not in cls.VALID_MERGE_STRATEGIES:
-                    matches = difflib.get_close_matches(str(pt_merge), cls.VALID_MERGE_STRATEGIES, n=1)
-                    hint = (
-                        f"Did you mean '{matches[0]}'?"
-                        if matches
-                        else f"Allowed merge strategies: {list(cls.VALID_MERGE_STRATEGIES)}"
-                    )
-                    issues.append(
-                        ValidationIssue(
-                            path=f"{pt}.merge",
-                            message=f"Invalid merge strategy '{pt_merge}'.",
-                            severity="ERROR",
-                            suggestion=hint,
-                        )
-                    )
+                cls._check_merge_strategy_value(p_def["merge"], f"{pt}.merge", issues)
             if "format" not in p_def:
                 issues.append(ValidationIssue(path=f"{pt}.format", message="Missing 'format' specification.", severity="ERROR"))
             else:

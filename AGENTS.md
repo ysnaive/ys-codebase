@@ -46,6 +46,7 @@
 | **執行任何 CLI 命令列指令**<br/>*(調用各環境之終端機/命令列執行工具時)* | `yscb-cli-guide` |
 | **編寫代碼註解 / 撰寫或維護專案文檔 / Phase 7 (P07 / FP-03) 三層文檔對齊**<br/>*(撰寫 Docstring、維護 `docs/`、更新 README 或結案審查前)* | `documentation` |
 | **規劃或撰寫自動化測試 / 執行 Phase 6 (P06 / FP-02) 測試驗證與回歸 / 既有測試集體檢純化**<br/>*(定稿 P06、撰寫或修改測試代碼、執行單元/邊界/回歸測試、或審查純化 tests/ 目錄前)* | `testing-sop` |
+| **操作 Google Drive 雲端檔案 / 執行 `yscb gdrive` 單檔原子讀寫或 `repo_sync` 分支與雙向同步**<br/>*(調用 `yscb.py gdrive` / `gdrive-support`、存取純雲端單檔資產、或配置 `config/gdrive-support/` 前)* | `gdrive-local-ops` |
 | **生態系模組開發 / 多模組熱調試 (Dogfooding)**<br/>*(修改 project://source/ 源碼、沙盒測試、@build 安裝或發布前)* | `yscb-module-dev` |
 | **操作 Google Drive 雲端檔案 / 執行 `yscb gdrive` 單檔原子讀寫或 `repo_sync` 分支與雙向同步**<br/>*(調用 `yscb.py gdrive` / `gdrive-support`、存取純雲端單檔資產、或配置 `config/gdrive-support/` 前)* | `gdrive-local-ops` |
 | **代碼檢索 / 閱讀探索 / 單檔結構大綱 (`ast outline`) / 架構調研 / 調用圖譜與影響面評估 (`ast callers/callees/impact`)**<br/>*(調用各環境之檔案讀取/檢視或文字搜尋/走訪工具進行探索前；[!] 探索非明確知悉路徑之文檔強制以 search --ftype=md 為唯一第一反射取得精確路徑，嚴禁未檢索直接逐檔翻讀或盲猜讀取)* | `knowledge-db-search` |

@@ -674,12 +674,19 @@ class Tester:
                     print(f"[dev:test] Sandbox preserved at: {sandbox_dir}")
 
         if ret_code == 0 and not cfg.is_nested:
-            if cfg.target_mod and cfg.target_mod != "--all":
+            rep_mods = (
+                [m["name"] for m in report_data.get("modules", []) if isinstance(m, dict) and m.get("name")]
+                if isinstance(report_data, dict)
+                else []
+            )
+            if rep_mods:
+                tested_mods = rep_mods
+            elif cfg.target_mod and cfg.target_mod != "--all":
                 tested_mods = [cfg.target_mod]
-            elif cfg.is_all or not cfg.target_param:
+            elif cfg.is_all:
                 tested_mods = TestDiscovery.discover_modules(None)
             else:
-                tested_mods = []
+                tested_mods = ["core"]
             self._handle_post_test_sync(tested_mods, cfg.sync_requested, quiet=cfg.quiet_mode)
 
         return ret_code
@@ -839,6 +846,7 @@ class Tester:
             op_test_args=op_test_args,
             report_filename=f"report_{mod_name}.json",
             sandbox_idx=worker_idx,
+            target_modules=[mod_name],
             quiet_mode=quiet_mode,
             is_nested=is_nested,
             mod_label=mod_name,

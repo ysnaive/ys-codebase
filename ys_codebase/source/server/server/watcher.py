@@ -22,13 +22,16 @@ def _scan_modules_dir(modules_dir: str) -> Dict[str, float]:
 
     try:
         for root, _, files in os.walk(modules_dir):
+            rel_root = os.path.relpath(root, modules_dir)
+            in_dist_info = any(part.endswith(".dist-info") for part in rel_root.split(os.sep))
             for f in files:
-                if f.endswith((".py", ".json", ".zip", ".dist-info")):
-                    p = os.path.join(root, f)
-                    try:
-                        snapshot[p] = os.path.getmtime(p)
-                    except OSError:
-                        pass
+                if not in_dist_info and not f.endswith((".py", ".json", ".zip", ".dist-info")):
+                    continue
+                p = os.path.join(root, f)
+                try:
+                    snapshot[p] = os.path.getmtime(p)
+                except OSError:
+                    pass
     except OSError:
         pass
 
@@ -102,23 +105,22 @@ class ModulesWatcher:
                 break
 
             current_snapshot = _scan_modules_dir(self.modules_dir)
-            if self._last_snapshot != current_snapshot:
-                if self._is_core_transaction_locked():
+            if self._last_snapshot == current_snapshot or self._is_core_transaction_locked():
+                continue
+            if self.debounce_sec > 0:
+                time.sleep(self.debounce_sec)
+                if not self._is_running or self._is_core_transaction_locked():
                     continue
-                if self.debounce_sec > 0:
-                    time.sleep(self.debounce_sec)
-                    if not self._is_running or self._is_core_transaction_locked():
-                        continue
-                    current_snapshot = _scan_modules_dir(self.modules_dir)
+                current_snapshot = _scan_modules_dir(self.modules_dir)
 
-                affected_modules = self._extract_affected_modules(self._last_snapshot, current_snapshot)
-                self._last_snapshot = current_snapshot
-                if not affected_modules:
-                    continue
-                try:
-                    self.on_change_callback(affected_modules)
-                except Exception as exc:
-                    logging.warning(f"[ModulesWatcher] Error in on_change_callback for {affected_modules}: {exc}")
+            affected_modules = self._extract_affected_modules(self._last_snapshot, current_snapshot)
+            self._last_snapshot = current_snapshot
+            if not affected_modules:
+                continue
+            try:
+                self.on_change_callback(affected_modules)
+            except Exception as exc:
+                logging.warning(f"[ModulesWatcher] Error in on_change_callback for {affected_modules}: {exc}")
 
     def _extract_affected_modules(self, prev: Dict[str, float], curr: Dict[str, float]) -> Set[str]:
         """

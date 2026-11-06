@@ -10,7 +10,6 @@ import logging
 import os
 from pathlib import Path
 import re
-import shutil
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple, Union
@@ -76,7 +75,7 @@ class EmbeddingService:
         self._is_available: bool = False
         self._verified_onnx_path: Optional[Path] = None
         self._init_attempted: bool = False
-        self._init_lock = threading.Lock()
+        self._init_lock = threading.RLock()
         self._dimension: Optional[int] = None
         self.last_error: Optional[Dict[str, Any]] = None
         self.suppress_guard_prompt: bool = False
@@ -159,14 +158,29 @@ class EmbeddingService:
 
         return False
 
-    def download_model(self, force: bool = False) -> bool:
-        """
-        顯式下載 FastEmbed 模型權重至本地快取，具備暫存目錄與失敗回滾保護。
-        """
-        self._suppress_hf_warnings()
-        if not force and self.is_model_downloaded():
-            self._ensure_model()
-            return True
+    def _load_fastembed_instance(self, validate_supported: bool = False) -> int:
+        """在鎖保護下實例化 FastEmbed TextEmbedding 並解析模型維度 (SSOT)。"""
+        from fastembed import TextEmbedding
+
+        self.model_name = self.normalize_model_name(self.model_name)
+        if validate_supported:
+            try:
+                supported_models = [m["model"] for m in TextEmbedding.list_supported_models()]
+                if self.model_name not in supported_models:
+                    matched = next(
+                        (sm for sm in supported_models if sm.split("/")[-1].lower() == self.model_name.lower()),
+                        None,
+                    )
+                    if matched:
+                        self.model_name = matched
+                    else:
+                        logger.warning(
+                            f"Requested model '{self.model_name}' is not in FastEmbed supported list. "
+                            f"Falling back to default '{DEFAULT_EMBEDDING_MODEL}'."
+                        )
+                        self.model_name = DEFAULT_EMBEDDING_MODEL
+            except Exception as e:
+                logger.debug(f"Failed to check supported models list: {e}")
 
         threads_count = resolve_threads(self.max_threads)
         os.environ.setdefault("OMP_NUM_THREADS", str(threads_count))
@@ -174,40 +188,53 @@ class EmbeddingService:
         os.makedirs(self.cache_dir, exist_ok=True)
 
         try:
-            from fastembed import TextEmbedding
-            self.model_name = self.normalize_model_name(self.model_name)
+            self._model = TextEmbedding(
+                model_name=self.model_name,
+                cache_dir=str(self.cache_dir),
+                threads=threads_count,
+            )
+        except TypeError:
+            self._model = TextEmbedding(
+                model_name=self.model_name,
+                cache_dir=str(self.cache_dir),
+            )
+
+        dim = getattr(self._model, "embedding_size", None)
+        if dim is None or not isinstance(dim, int) or dim <= 0:
             try:
-                self._model = TextEmbedding(
-                    model_name=self.model_name,
-                    cache_dir=str(self.cache_dir),
-                    threads=threads_count,
-                )
-            except TypeError:
-                self._model = TextEmbedding(
-                    model_name=self.model_name,
-                    cache_dir=str(self.cache_dir),
-                )
-            dim = getattr(self._model, "embedding_size", None)
-            if dim is None or not isinstance(dim, int) or dim <= 0:
-                try:
-                    sample_vec = next(self._model.embed(["probe"]))
-                    dim = int(len(sample_vec))
-                except Exception:
-                    dim = TextEmbedding.get_embedding_size(self.model_name)
-            self._dimension = int(dim)
-            self._is_available = True
-            self._init_attempted = True
-            self.last_error = None
-            logger.info(f"Successfully downloaded/loaded FastEmbed model '{self.model_name}' (dim={self._dimension})")
-            return True
-        except Exception as e:
-            self._is_available = False
-            self.last_error = {
-                "error_type": type(e).__name__,
-                "message": str(e),
-                "timestamp": time.time(),
-            }
-            raise KnowledgeDBError(f"Failed to download FastEmbed model '{self.model_name}': {e}") from e
+                sample_vec = next(self._model.embed(["probe"]))
+                dim = int(len(sample_vec))
+            except Exception:
+                dim = TextEmbedding.get_embedding_size(self.model_name)
+        self._dimension = int(dim)
+        self._is_available = True
+        self._init_attempted = True
+        self.last_error = None
+        return threads_count
+
+    def download_model(self, force: bool = False) -> bool:
+        """
+        顯式下載 FastEmbed 模型權重至本地快取，具備執行緒鎖保護與異常封裝。
+        """
+        self._suppress_hf_warnings()
+        with self._init_lock:
+            if not force and self.is_model_downloaded():
+                self._ensure_model()
+                return True
+
+            try:
+                self._load_fastembed_instance(validate_supported=False)
+                logger.info(f"Successfully downloaded/loaded FastEmbed model '{self.model_name}' (dim={self._dimension})")
+                return True
+            except Exception as e:
+                self._is_available = False
+                self._model = None
+                self.last_error = {
+                    "error_type": type(e).__name__,
+                    "message": str(e),
+                    "timestamp": time.time(),
+                }
+                raise KnowledgeDBError(f"Failed to download FastEmbed model '{self.model_name}': {e}") from e
 
     def _init_model(self) -> None:
         """嘗試加載 FastEmbed ONNX 模型；本地探針先行，若未下載則平滑降級為 BM25 模式。"""
@@ -229,55 +256,7 @@ class EmbeddingService:
             return
 
         try:
-            from fastembed import TextEmbedding
-
-            try:
-                self.model_name = self.normalize_model_name(self.model_name)
-                supported_models = [m["model"] for m in TextEmbedding.list_supported_models()]
-                if self.model_name not in supported_models:
-                    matched = None
-                    for sm in supported_models:
-                        if sm.split("/")[-1].lower() == self.model_name.lower():
-                            matched = sm
-                            break
-                    if matched:
-                        self.model_name = matched
-                    else:
-                        logger.warning(
-                            f"Requested model '{self.model_name}' is not in FastEmbed supported list. "
-                            f"Falling back to default '{DEFAULT_EMBEDDING_MODEL}'."
-                        )
-                        self.model_name = DEFAULT_EMBEDDING_MODEL
-            except Exception as e:
-                logger.debug(f"Failed to check supported models list: {e}")
-
-            threads_count = resolve_threads(self.max_threads)
-            os.environ.setdefault("OMP_NUM_THREADS", str(threads_count))
-            os.environ.setdefault("ONNXRUNTIME_INTRA_OP_NUM_THREADS", str(threads_count))
-
-            os.makedirs(self.cache_dir, exist_ok=True)
-            try:
-                self._model = TextEmbedding(
-                    model_name=self.model_name,
-                    cache_dir=str(self.cache_dir),
-                    threads=threads_count,
-                )
-            except TypeError:
-                self._model = TextEmbedding(
-                    model_name=self.model_name,
-                    cache_dir=str(self.cache_dir),
-                )
-
-            dim = getattr(self._model, "embedding_size", None)
-            if dim is None or not isinstance(dim, int) or dim <= 0:
-                try:
-                    sample_vec = next(self._model.embed(["probe"]))
-                    dim = int(len(sample_vec))
-                except Exception:
-                    dim = TextEmbedding.get_embedding_size(self.model_name)
-            self._dimension = int(dim)
-            self._is_available = True
-            self.last_error = None
+            threads_count = self._load_fastembed_instance(validate_supported=True)
             logger.debug(f"EmbeddingService initialized with model '{self.model_name}' (dim={self._dimension}, threads={threads_count})")
         except Exception as e:
             self._is_available = False
@@ -310,7 +289,6 @@ class EmbeddingService:
         if self.mock_mode or self._model is not None:
             return
         if self._init_attempted:
-            # 若先前因模型未下載而未初始化，但背景 Worker 已下載完成，允許重新加載
             if self.last_error and self.last_error.get("error_type") == "ModelNotFoundLocally" and self.is_model_downloaded():
                 with self._init_lock:
                     if self._model is None and self.is_model_downloaded():
@@ -334,6 +312,7 @@ class EmbeddingService:
                 self._is_available = False
                 self._model = None
                 self._verified_onnx_path = None
+                self._init_attempted = False
         if not self._is_available:
             self._ensure_model()
         return self._is_available
@@ -376,6 +355,11 @@ class EmbeddingService:
         if not texts:
             return np.empty((0, self.dimension), dtype=np.float32)
 
+        try:
+            eff_batch_size = max(1, int(batch_size)) if batch_size and int(batch_size) > 0 else 64
+        except (TypeError, ValueError):
+            eff_batch_size = 64
+
         preprocessed = [self._preprocess_text(t) for t in texts]
 
         if self.mock_mode:
@@ -388,11 +372,11 @@ class EmbeddingService:
         try:
             embeddings_list: List[np.ndarray] = []
             total_items = len(preprocessed)
-            for i in range(0, total_items, batch_size):
-                chunk = preprocessed[i : i + batch_size]
-                chunk_gen = self._model.embed(chunk, batch_size=batch_size)
+            for i in range(0, total_items, eff_batch_size):
+                chunk = preprocessed[i : i + eff_batch_size]
+                chunk_gen = self._model.embed(chunk, batch_size=eff_batch_size)
                 embeddings_list.extend(list(chunk_gen))
-                if i + batch_size < total_items:
+                if i + eff_batch_size < total_items:
                     time.sleep(0.005)
 
             mat = np.vstack(embeddings_list).astype(np.float32)
@@ -401,9 +385,6 @@ class EmbeddingService:
             return mat / norms
         except Exception as e:
             logger.warning(f"Error during embed_texts: {e}.")
-            if self.mock_mode:
-                vectors = [self._generate_mock_vector(t) for t in preprocessed]
-                return np.vstack(vectors).astype(np.float32)
             return np.empty((0, self.dimension), dtype=np.float32)
 
     def embed_texts_probe(
@@ -495,15 +476,16 @@ class VectorIndex:
 
         if self.vectors is None or len(self.doc_ids) == 0:
             if new_doc_ids and new_vectors is not None and len(new_vectors) > 0:
-                self.build(new_doc_ids, new_vectors)
+                self.build(new_doc_ids, new_vectors, model_name=self.model_name, dim=self.dim)
             return
 
         dim = self.vectors.shape[1] if (self.vectors is not None and self.vectors.ndim > 1) else (self.dim or 0)
+        exclude_ids = set(removed_doc_ids) | set(new_doc_ids or ())
 
         keep_indices = []
         keep_doc_ids = []
         for i, doc_id in enumerate(self.doc_ids):
-            if doc_id not in removed_doc_ids:
+            if doc_id not in exclude_ids:
                 keep_indices.append(i)
                 keep_doc_ids.append(doc_id)
 
@@ -528,13 +510,18 @@ class VectorIndex:
         """執行頂點餘弦相似度 Top-K 檢索。"""
         import numpy as np
 
-        if self.vectors is None or len(self.doc_ids) == 0:
+        if self.vectors is None or len(self.doc_ids) == 0 or self.vectors.ndim != 2:
             return []
 
         if query_vec.ndim == 1:
             query_vec = query_vec.reshape(1, -1)
+        elif query_vec.ndim != 2:
+            return []
 
-        sims = np.dot(self.vectors, query_vec.T).squeeze(axis=-1)
+        if query_vec.shape[-1] != self.vectors.shape[1]:
+            return []
+
+        sims = np.dot(self.vectors, query_vec.T).reshape(-1)
         k = min(top_k, len(self.doc_ids))
         if k <= 0:
             return []

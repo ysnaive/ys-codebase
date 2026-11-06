@@ -4,6 +4,7 @@ Provides standard config retrieval via core.config, default constants, and type 
 """
 
 from dataclasses import dataclass
+import math
 from typing import Any, Dict, Optional
 
 try:
@@ -34,6 +35,24 @@ def _parse_bool(val: Any, default: bool = False) -> bool:
         if normalized in ("false", "0", "no", "off"):
             return False
     return default
+
+
+def _parse_float(val: Any, default: float, allow_zero: bool = True) -> float:
+    """浮點數防禦解析 (攔截 None、bool、NaN、inf 與負數或非正數)。"""
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f_val = float(val)
+    except (ValueError, TypeError):
+        return default
+    if not math.isfinite(f_val):
+        return default
+    if allow_zero:
+        if f_val < 0:
+            return default
+    elif f_val <= 0:
+        return default
+    return f_val
 
 
 @dataclass
@@ -69,19 +88,17 @@ class ServerConfig:
         enable_val = _parse_bool(raw_cfg.get("enable"), DEFAULT_ENABLE)
         enable_console_val = _parse_bool(raw_cfg.get("enable_console"), DEFAULT_ENABLE_CONSOLE)
         auto_spawn_val = _parse_bool(raw_cfg.get("auto_spawn"), DEFAULT_AUTO_SPAWN)
-        raw_ttl = raw_cfg.get("idle_timeout_sec", DEFAULT_IDLE_TIMEOUT_SEC)
-        try:
-            idle_timeout_sec_val = float(raw_ttl)
-        except (ValueError, TypeError):
-            idle_timeout_sec_val = DEFAULT_IDLE_TIMEOUT_SEC
+        idle_timeout_sec_val = _parse_float(
+            raw_cfg.get("idle_timeout_sec", DEFAULT_IDLE_TIMEOUT_SEC),
+            DEFAULT_IDLE_TIMEOUT_SEC,
+            allow_zero=True,
+        )
         strict_val = _parse_bool(raw_cfg.get("strict_hot_dispatch"), DEFAULT_STRICT_HOT_DISPATCH)
-        raw_alive = raw_cfg.get("worker_alive_timeout_sec", DEFAULT_WORKER_ALIVE_TIMEOUT_SEC)
-        try:
-            alive_timeout_val = float(raw_alive)
-        except (ValueError, TypeError):
-            alive_timeout_val = DEFAULT_WORKER_ALIVE_TIMEOUT_SEC
-        if alive_timeout_val <= 0:
-            alive_timeout_val = DEFAULT_WORKER_ALIVE_TIMEOUT_SEC
+        alive_timeout_val = _parse_float(
+            raw_cfg.get("worker_alive_timeout_sec", DEFAULT_WORKER_ALIVE_TIMEOUT_SEC),
+            DEFAULT_WORKER_ALIVE_TIMEOUT_SEC,
+            allow_zero=False,
+        )
 
         return cls(
             enable=enable_val,

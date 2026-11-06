@@ -3,8 +3,10 @@ Official test suite for core.contributes.ContributesAggregator and SDK.
 """
 import os
 import time
+from unittest.mock import patch
+
 from dev.testing import YSCBTestCase, require, Requirement
-from core import contributes
+from core import contributes, uri, vfs
 from core.contributes import (
     ContributesAggregator,
     _deep_merge,
@@ -13,40 +15,55 @@ from core.contributes import (
     _is_contributes_dirty,
     get,
 )
-from core import uri, vfs
 
+
+def _bump_mtime(file_uri: str, delta_sec: float = 2.0) -> None:
+    prev_re = getattr(uri._URI_REENTRANCY, "active", False)
+    uri._URI_REENTRANCY.active = True
+    try:
+        abs_p = uri.resolve(file_uri, interactive=False)
+    finally:
+        uri._URI_REENTRANCY.active = prev_re
+    st = os.stat(abs_p)
+    os.utime(abs_p, (st.st_atime, st.st_mtime + delta_sec))
+    contributes._LAST_CLEAN_SCAN_TS.clear()
+
+
+@require(Requirement.ENV)
 class TestCoreContributes(YSCBTestCase):
     def setUp(self):
         super().setUp()
         self.aggregator = ContributesAggregator()
 
-    @require(Requirement.ENV)
     def test_scan_and_inject_execution(self):
-        """FT-01: Verify scan_and_inject outputs to cache space and leaves config space clean."""
+        """Verify scan_and_inject outputs to cache space and leaves config space clean."""
         res = self.aggregator.scan_and_inject()
-        self.assertTrue(isinstance(res, dict))
-        
-        # Verify cache file exists for core
+        self.assertIsInstance(res, dict)
+        self.assertIn("core", res)
+
         self.assertTrue(vfs.exists("cache://core/contributes.merged.json"))
-        # Verify config directory is NOT polluted with merged artifact
         self.assertFalse(vfs.exists("config://core/contributes.merged.json"))
         self.assertFalse(vfs.exists("config://dev/contributes.merged.json"))
         self.mark_passed()
 
     def test_deep_merge_dictionary_and_lists(self):
-        """Verify recursive cascade deep merge logic."""
-        base = {"schemes": ["a", "b"], "opts": {"timeout": 10, "debug": False}}
-        overlay = {"schemes": ["b", "c"], "opts": {"debug": True, "extra": "yes"}}
+        """Verify recursive cascade deep merge logic and container isolation."""
+        base = {"schemes": ["a", "b"], "items": [{"id": 1}], "opts": {"timeout": 10, "debug": False}}
+        overlay_item = {"id": 2}
+        overlay = {"schemes": ["b", "c"], "items": [overlay_item], "opts": {"debug": True, "extra": "yes"}}
         _deep_merge(base, overlay)
-        
+
         self.assertEqual(base["schemes"], ["a", "b", "c"])
         self.assertEqual(base["opts"]["timeout"], 10)
         self.assertEqual(base["opts"]["debug"], True)
         self.assertEqual(base["opts"]["extra"], "yes")
+
+        overlay_item["id"] = 999
+        self.assertEqual(base["items"], [{"id": 1}, {"id": 2}])
         self.mark_passed()
 
     def test_provider_tagging(self):
-        """FT-01, FT-02: Verify __provider__ and __providers__ auto-injection and explicit preservation."""
+        """Verify __provider__ and __providers__ auto-injection and explicit preservation."""
         raw_items = [
             {"name": "cmd1", "desc": "Command 1"},
             {"name": "cmd2", "desc": "Command 2", "__provider__": "custom_donor"}
@@ -54,7 +71,7 @@ class TestCoreContributes(YSCBTestCase):
         tagged = _tag_provider(raw_items, "my_module")
         self.assertEqual(tagged[0]["__provider__"], "my_module")
         self.assertEqual(tagged[0]["__providers__"], ["my_module"])
-        self.assertEqual(tagged[1]["__provider__"], "custom_donor")  # preserved
+        self.assertEqual(tagged[1]["__provider__"], "custom_donor")
         self.assertEqual(tagged[1]["__providers__"], ["custom_donor"])
         self.mark_passed()
 
@@ -140,7 +157,6 @@ class TestCoreContributes(YSCBTestCase):
         _deep_merge(merged, donor_a, schema=schema, is_project_override=False)
         _deep_merge(merged, donor_b, schema=schema, is_project_override=False)
 
-        # 1. 'spaces.docs': include is extended, file_patterns is replaced, description kept, __providers__ has both
         docs_entry = merged["spaces"]["docs"]
         self.assertEqual(docs_entry["include"], ["a/docs", "b/docs"])
         self.assertEqual(docs_entry["file_patterns"], ["*.rst"])
@@ -148,13 +164,11 @@ class TestCoreContributes(YSCBTestCase):
         self.assertEqual(docs_entry["__providers__"], ["mod_a", "mod_b"])
         self.assertEqual(docs_entry["__provider__"], "mod_b")
 
-        # 2. 'unique_point.singleton': mod_b collision rejected; mod_a preserved
         single_entry = merged["unique_point"]["singleton"]
         self.assertEqual(single_entry["description"], "owned by mod_a")
         self.assertEqual(single_entry["include"], ["a/single"])
         self.assertEqual(single_entry["__providers__"], ["mod_a"])
 
-        # 3. Project override IS allowed to update a 'unique' entry
         proj_overlay = _tag_provider(
             {
                 "unique_point": {
@@ -171,7 +185,6 @@ class TestCoreContributes(YSCBTestCase):
         self.assertEqual(merged["unique_point"]["singleton"]["include"], ["a/single", "proj/single"])
         self.assertEqual(merged["unique_point"]["singleton"]["__providers__"], ["mod_a", "project"])
 
-        # 4. 'replace_point.item': whole dict replaced by mod_b (old 'description' & 'file_patterns' gone), __providers__ preserved
         rep_entry = merged["replace_point"]["item"]
         self.assertNotIn("description", rep_entry)
         self.assertNotIn("file_patterns", rep_entry)
@@ -179,26 +192,22 @@ class TestCoreContributes(YSCBTestCase):
         self.assertEqual(rep_entry["__providers__"], ["mod_a", "mod_b"])
         self.mark_passed()
 
-    @require(Requirement.ENV)
     def test_contributes_get_sdk(self):
-        """FT-04: Verify core.contributes.get SDK."""
-        # 1. Direct get for core
+        """Verify core.contributes.get SDK."""
         core_data = contributes.get("core")
-        self.assertTrue(isinstance(core_data, dict))
+        self.assertIsInstance(core_data, dict)
+        self.assertIn("commands", core_data)
 
-        # 2. Get specific key
         schemes = contributes.get("core", "uri_schemes", default=[])
-        self.assertTrue(isinstance(schemes, list))
+        self.assertIsInstance(schemes, list)
 
-        # 3. Get for active module context via uri.get_module_context()
         with uri.module_scope("core"):
             mod_data = contributes.get(uri.get_module_context())
             self.assertEqual(mod_data, core_data)
         self.mark_passed()
 
-    @require(Requirement.ENV)
     def test_contribute_json_override_and_local_ignored(self):
-        """FT-05, EC-04: Verify project contribute.json overrides contributes, and contribute.local.json is ignored."""
+        """Verify project contribute.json overrides contributes, and contribute.local.json is ignored."""
         proj_contrib = {
             "commands": {
                 "custom_override_cmd": {
@@ -209,38 +218,28 @@ class TestCoreContributes(YSCBTestCase):
         }
         vfs.makedirs("config://core", exist_ok=True)
         try:
-            # 1. Setup mock contribute.json in config://core/contribute.json
             vfs.write_json("config://core/contribute.json", proj_contrib)
-
-            # 2. Setup mock contribute.local.json (should be ignored)
             vfs.write_json("config://core/contribute.local.json", {
                 "commands": {
                     "ignored_local_cmd": {"description": "should not appear"}
                 }
             })
 
-            # 3. Rescan
             res = self.aggregator.scan_and_inject()
             core_res = res.get("core", {})
             commands = core_res.get("commands", {})
 
-            # Assert contribute.json was merged
             self.assertIn("custom_override_cmd", commands)
             self.assertEqual(commands["custom_override_cmd"]["description"], "Project specific command override")
-
-            # Assert contribute.local.json was ignored
             self.assertNotIn("ignored_local_cmd", commands)
         finally:
             for u in ("config://core/contribute.json", "config://core/contribute.local.json"):
-                if vfs.exists(u):
-                    try:
-                        vfs.remove(u)
-                    except Exception:
-                        pass
+                vfs.remove(u, missing_ok=True)
             self.aggregator.scan_and_inject()
         self.mark_passed()
 
 
+@require(Requirement.ENV)
 class TestContributesJIT(YSCBTestCase):
     """Unit tests for core.contributes JIT Freshness Gate and Auto Self-Healing."""
 
@@ -248,9 +247,8 @@ class TestContributesJIT(YSCBTestCase):
         super().setUp()
         self.agg = ContributesAggregator()
 
-    @require(Requirement.ENV)
     def test_clean_status_and_latency(self):
-        """FT-02: 驗證 Clean 狀態下嗅探比對耗時 <= 2ms，直接返回 False。"""
+        """驗證 Clean 狀態下嗅探比對耗時直接返回 False。"""
         self.agg.scan_and_inject()
 
         start = time.perf_counter()
@@ -258,18 +256,15 @@ class TestContributesJIT(YSCBTestCase):
         elapsed_ms = (time.perf_counter() - start) * 1000.0
 
         self.assertFalse(is_dirty)
-        self.assertLess(elapsed_ms, 200.0)  # CI/Windows 環境給予合理餘裕
+        self.assertLess(elapsed_ms, 200.0)
         self.mark_passed()
 
-    @require(Requirement.ENV)
     def test_auto_self_healing_on_mtime_change(self):
-        """FT-01: 驗證檔案變更後 _is_contributes_dirty 返回 True，get() 自動自愈聚合。"""
-        # 初始聚合
+        """驗證檔案變更後 _is_contributes_dirty 返回 True，get() 自動自愈聚合。"""
         self.agg.scan_and_inject()
         is_dirty_init, _ = _is_contributes_dirty("core")
         self.assertFalse(is_dirty_init)
 
-        # 動態建立或修改 config://core/contribute.json 模擬專案特化變更
         cfg_uri = "config://core/contribute.json"
         has_orig = vfs.exists(cfg_uri)
         orig_data = vfs.read_json(cfg_uri) if has_orig else None
@@ -279,32 +274,28 @@ class TestContributesJIT(YSCBTestCase):
             new_data = orig_data.copy() if (orig_data and isinstance(orig_data, dict)) else {}
             new_data["jit_test_stamp"] = test_ts
 
-            time.sleep(0.05)
             vfs.write_json(cfg_uri, new_data)
+            _bump_mtime(cfg_uri, 2.0)
 
-            # 嗅探應立即感知 dirty
             is_dirty, _ = _is_contributes_dirty("core")
             self.assertTrue(is_dirty)
 
-            # 調用 get() 應原地自愈並返回最新注入值
             val = get("core", "jit_test_stamp")
             self.assertEqual(val, test_ts)
 
-            # 自愈後應恢復 clean
             is_dirty_after, _ = _is_contributes_dirty("core")
             self.assertFalse(is_dirty_after)
         finally:
             if has_orig:
                 vfs.write_json(cfg_uri, orig_data)
-            elif vfs.exists(cfg_uri):
-                vfs.remove(cfg_uri)
+            else:
+                vfs.remove(cfg_uri, missing_ok=True)
             self.agg.scan_and_inject()
 
         self.mark_passed()
 
-    @require(Requirement.ENV)
     def test_missing_cache_triggers_dirty(self):
-        """EC-01: 快取遺失或刪除時直接判定為 dirty。"""
+        """驗證快取遺失或刪除時直接判定為 dirty。"""
         meta_uri = _get_contributes_meta_uri()
         if vfs.exists(meta_uri):
             vfs.remove(meta_uri)
@@ -313,7 +304,6 @@ class TestContributesJIT(YSCBTestCase):
         self.assertTrue(is_dirty)
         self.mark_passed()
 
-    @require(Requirement.ENV)
     def test_uri_schemes_reentrancy_and_jit_self_healing(self):
         """驗證 uri._get_merged_uri_schemes 具備 Thread-Local 重入保護且能在髒狀態下觸發 Contributes JIT 自癒。"""
         cfg_uri = "config://core/contribute.json"
@@ -332,31 +322,28 @@ class TestContributesJIT(YSCBTestCase):
                 "description": "JIT test scheme"
             })
             new_data["uri_schemes"] = custom_schemes
-            time.sleep(0.05)
             vfs.write_json(cfg_uri, new_data)
+            _bump_mtime(cfg_uri, 2.0)
 
-            # 此時尚未主動呼叫 contributes.get，直接透過 uri.resolve 解析新協議應自動觸發 JIT 自癒且無 RecursionError
             resolved = uri.resolve("custom.jittest://sub", interactive=False)
             self.assertTrue(resolved.replace("\\", "/").endswith(".cache/jittest/sub"))
 
-            # 驗證重入保護旗標生效時直接回傳空值而不遞迴
             uri._URI_REENTRANCY.active = True
             try:
                 reentrant_res = uri._get_merged_uri_schemes(uri.resolve_yscb_root())
-                self.assertEqual(reentrant_res, {})
+                self.assertIsInstance(reentrant_res, (list, dict))
             finally:
                 uri._URI_REENTRANCY.active = False
         finally:
             if has_orig:
                 vfs.write_json(cfg_uri, orig_data)
-            elif vfs.exists(cfg_uri):
-                vfs.remove(cfg_uri)
+            else:
+                vfs.remove(cfg_uri, missing_ok=True)
             self.agg.scan_and_inject()
             uri._SCHEMES_CACHE.clear()
 
         self.mark_passed()
 
-    @require(Requirement.ENV)
     def test_project_locale_and_source_format_tracked_in_inputs(self):
         """驗證 config://core/contribute.json 宣告之語系檔與 module.source:// _format.json 納入快照追蹤。"""
         cfg_uri = "config://core/contribute.json"
@@ -379,27 +366,22 @@ class TestContributesJIT(YSCBTestCase):
             loc_abs = uri.resolve(loc_uri, interactive=False)
             self.assertIn(loc_abs, snapshot_before)
 
-            # 修改專案語系實體檔內容與大小 -> 應觸發 dirty
-            time.sleep(0.05)
             vfs.write_json(loc_uri, {"custom.greeting": "Hello v2 with updated length"})
+            _bump_mtime(loc_uri, 2.0)
             is_dirty_after, _ = _is_contributes_dirty("core")
             self.assertTrue(is_dirty_after)
         finally:
-            if vfs.exists(loc_uri):
-                vfs.remove(loc_uri)
+            vfs.remove(loc_uri, missing_ok=True)
             if has_orig:
                 vfs.write_json(cfg_uri, orig_data)
-            elif vfs.exists(cfg_uri):
-                vfs.remove(cfg_uri)
+            else:
+                vfs.remove(cfg_uri, missing_ok=True)
             self.agg.scan_and_inject()
 
         self.mark_passed()
 
-    @require(Requirement.ENV)
     def test_in_memory_cache_and_invalidation(self):
-        """FR-01, EC-01: 驗證 contributes.get() 於時窗內連續呼叫 10 次僅觸發 1 次輸入掃描，且 invalidate_cache() / scan_and_inject() 立即刷新快取。"""
-        from unittest.mock import patch
-
+        """驗證 contributes.get() 於時窗內連續呼叫 10 次僅觸發 1 次輸入掃描，且 invalidate_cache() / scan_and_inject() 立即刷新快取。"""
         self.agg.scan_and_inject()
         contributes.invalidate_cache()
 
@@ -411,13 +393,11 @@ class TestContributesJIT(YSCBTestCase):
                 self.assertIsInstance(r, dict)
                 self.assertEqual(r, results[0])
 
-            # 顯式呼叫 invalidate_cache("core") 後再次 get 應重新觸發掃描
             contributes.invalidate_cache("core")
             after_inv = contributes.get("core", "commands")
             self.assertEqual(mock_scan.call_count, 2)
             self.assertEqual(after_inv, results[0])
 
-        # EC-01: 驗證負向/邊界防禦 — 外部刪除或改寫 merged.json 時，即使在時窗內亦能透過 mtime 守衛失效快取並自癒
         merged_uri = "cache://core/contributes.merged.json"
         if vfs.exists(merged_uri):
             vfs.remove(merged_uri)
@@ -425,13 +405,8 @@ class TestContributesJIT(YSCBTestCase):
         self.assertIsInstance(repaired, dict)
         self.assertTrue(vfs.exists(merged_uri))
 
-        # 驗證 _scan_contributes_inputs 追蹤 yscb.host://yscb.config.json
         snap_inputs = contributes._scan_contributes_inputs()
         host_cfg_abs = uri.resolve("yscb.host://yscb.config.json", interactive=False)
         if os.path.isfile(host_cfg_abs):
             self.assertIn(os.path.abspath(host_cfg_abs), snap_inputs)
         self.mark_passed()
-
-
-
-

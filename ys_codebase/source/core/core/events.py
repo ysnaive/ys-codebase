@@ -12,6 +12,22 @@ from core import vfs
 from core.context import ExecutionContext
 
 
+def _is_meta_key(k: Any) -> bool:
+    """判斷鍵名是否為雙底線包夾之內部元數據鍵（如 __provider__、__providers__）。"""
+    return isinstance(k, str) and k.startswith("__") and k.endswith("__")
+
+
+def _append_unique_event(bucket: List[Dict[str, str]], name: Any, description: Any) -> None:
+    """以事件名稱去重追加事件描述字典至模組清單。"""
+    name_str = str(name)
+    if any(ev.get("name") == name_str for ev in bucket):
+        return
+    bucket.append({
+        "name": name_str,
+        "description": str(description),
+    })
+
+
 def broadcast(
     event_name: str,
     context: Optional[Any] = None,
@@ -97,7 +113,11 @@ def broadcast(
                 if spec and spec.loader:
                     hook_mod = importlib.util.module_from_spec(spec)
                     sys.modules[mod_key] = hook_mod
-                    spec.loader.exec_module(hook_mod)
+                    try:
+                        spec.loader.exec_module(hook_mod)
+                    except Exception:
+                        sys.modules.pop(mod_key, None)
+                        raise
 
                     hook_func = None
                     for fname in candidate_funcs:
@@ -143,38 +163,30 @@ def get_contributed_events() -> Dict[str, List[Dict[str, str]]]:
         for item in events_raw:
             if not isinstance(item, dict):
                 continue
-            provider = item.get("__provider__", "core")
+            provider = str(item.get("__provider__", "core"))
             if provider not in result:
                 result[provider] = []
 
             if "name" in item and "description" in item:
-                result[provider].append({
-                    "name": str(item["name"]),
-                    "description": str(item["description"])
-                })
+                if not _is_meta_key(item["name"]):
+                    _append_unique_event(result[provider], item["name"], item["description"])
             else:
                 for k, v in item.items():
-                    if k == "__provider__":
+                    if _is_meta_key(k):
                         continue
-                    result[provider].append({
-                        "name": str(k),
-                        "description": str(v)
-                    })
+                    _append_unique_event(result[provider], k, v)
     elif isinstance(events_raw, dict):
         for k, v in events_raw.items():
-            if k == "__provider__":
+            if _is_meta_key(k):
                 continue
             provider = "core"
             if isinstance(v, dict):
-                provider = v.get("__provider__", "core")
+                provider = str(v.get("__provider__", "core"))
                 desc = v.get("description", str(v))
             else:
                 desc = str(v)
             if provider not in result:
                 result[provider] = []
-            result[provider].append({
-                "name": str(k),
-                "description": desc
-            })
+            _append_unique_event(result[provider], k, desc)
 
     return result

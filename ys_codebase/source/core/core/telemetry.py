@@ -13,6 +13,26 @@ MAX_TELEMETRY_BYTES: int = 512 * 1024
 KEEP_TELEMETRY_LINES: int = 1500
 
 
+def _safe_getcwd() -> str:
+    """安全取得當前工作目錄，若目錄已被刪除則回傳空字串。"""
+    try:
+        return os.getcwd()
+    except OSError:
+        return ""
+
+
+def _parse_jsonl_dict_line(line: str) -> Optional[Dict[str, Any]]:
+    """解析單行 JSONL 字串，若為合法 JSON 物件 (dict) 則回傳，否則回傳 None。"""
+    s = line.strip()
+    if not s:
+        return None
+    try:
+        item = json.loads(s)
+        return item if isinstance(item, dict) else None
+    except Exception:
+        return None
+
+
 def _discover_yscb_root(yscb_abs: Optional[str] = None) -> Path:
     """探索 yscb 根目錄路徑，統一委派至 core.uri.resolve_yscb_root()。"""
     if yscb_abs:
@@ -136,7 +156,7 @@ def record_cli_event(
             "exit_code": int(exit_code),
             "duration_ms": round(float(duration_ms), 2),
             "mode": str(mode or "local"),
-            "cwd": str(cwd or os.getcwd()),
+            "cwd": str(cwd or _safe_getcwd()),
             "error_hint": extract_error_hint(error_hint, max_len=200),
         }
 
@@ -159,16 +179,10 @@ def _rotate_telemetry_file(target_path: Path, keep_lines: int = KEEP_TELEMETRY_L
         target_keep = max(1, keep_lines)
         kept_reversed: List[str] = []
         for ln in reversed(raw_lines):
-            s = ln.strip()
-            if not s:
-                continue
-            try:
-                json.loads(s)
-                kept_reversed.append(s)
+            if _parse_jsonl_dict_line(ln) is not None:
+                kept_reversed.append(ln.strip())
                 if len(kept_reversed) >= target_keep:
                     break
-            except Exception:
-                continue
 
         kept_reversed.reverse()
         kept = kept_reversed
@@ -214,14 +228,8 @@ def read_telemetry_records(
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 raw_lines = f.readlines()
             for line in reversed(raw_lines):
-                s = line.strip()
-                if not s:
-                    continue
-                try:
-                    item = json.loads(s)
-                    if not isinstance(item, dict):
-                        continue
-                except Exception:
+                item = _parse_jsonl_dict_line(line)
+                if item is None:
                     continue
                 records.append(item)
                 if len(records) >= limit:
@@ -231,14 +239,8 @@ def read_telemetry_records(
 
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
-                s = line.strip()
-                if not s:
-                    continue
-                try:
-                    item = json.loads(s)
-                    if not isinstance(item, dict):
-                        continue
-                except Exception:
+                item = _parse_jsonl_dict_line(line)
+                if item is None:
                     continue
 
                 if cutoff_epoch is not None:
@@ -255,4 +257,3 @@ def read_telemetry_records(
         return records
     except Exception:
         return []
-

@@ -7,6 +7,13 @@ from typing import Any, Dict, Optional
 
 from .base import DialectAdapter
 
+_IMPORT_RE = re.compile(r"^\s*import\s+([^\n]+)", re.MULTILINE)
+_FROM_PARENS_RE = re.compile(
+    r"^\s*from\s+([a-zA-Z0-9_.]+)\s+import\s*\(([^)]*)\)",
+    re.MULTILINE | re.DOTALL,
+)
+_FROM_IMPORT_RE = re.compile(r"^\s*from\s+([a-zA-Z0-9_.]+)\s+import\s+([^\n]+)", re.MULTILINE)
+
 
 class PythonDialect(DialectAdapter):
     language = "python"
@@ -29,9 +36,24 @@ class PythonDialect(DialectAdapter):
         name: str = "",
         def_kind: str = "",
     ) -> str:
-        if "def " in first_line or "class " in first_line:
+        if "def " in first_line:
+            if "(" in first_line and first_line.count("(") <= first_line.count(")"):
+                return first_line
+            if captured_signature:
+                prefix = first_line.split("(", 1)[0].strip()
+                norm_params = " ".join(captured_signature.split())
+                norm_params = re.sub(r"\(\s+", "(", re.sub(r",?\s+\)", ")", norm_params))
+                return f"{prefix}{norm_params}"
+            return first_line
+        if "class " in first_line:
             return first_line
         return captured_signature or first_line
+
+    def post_process_raw_item(self, item: Dict[str, Any], def_node: Any) -> None:
+        ret_t = item.get("return_type", "")
+        sig = item.get("signature", "")
+        if ret_t and sig and "->" not in sig and item.get("kind") in ("function", "method"):
+            item["signature"] = f"{sig} -> {ret_t}"
 
     def extract_visibility(
         self,
@@ -63,20 +85,36 @@ class PythonDialect(DialectAdapter):
         imports: Dict[str, str] = {}
         if not source_text:
             return imports
-        import_re = re.compile(r"^\s*import\s+([^\n]+)", re.MULTILINE)
-        from_re = re.compile(r"^\s*from\s+([a-zA-Z0-9_.]+)\s+import\s+([^\n]+)", re.MULTILINE)
-        for m in import_re.finditer(source_text):
-            for mod_item in m.group(1).split(","):
+        for m in _IMPORT_RE.finditer(source_text):
+            clause = m.group(1).split("#", 1)[0].strip().strip("()")
+            for mod_item in clause.split(","):
                 mod_item = mod_item.strip()
                 if " as " in mod_item:
                     orig, alias = mod_item.split(" as ", 1)
                     imports[alias.strip()] = orig.strip()
                 elif mod_item:
                     imports[mod_item] = mod_item
-        for m in from_re.finditer(source_text):
+
+        for m in _FROM_PARENS_RE.finditer(source_text):
             base_mod = m.group(1).strip()
-            for t in m.group(2).split(","):
-                t = t.strip()
+            cleaned_lines = [ln.split("#", 1)[0].strip() for ln in m.group(2).splitlines()]
+            clause = " ".join(cleaned_lines)
+            for t in clause.split(","):
+                t = t.strip().strip("()")
+                if " as " in t:
+                    orig, alias = t.split(" as ", 1)
+                    imports[alias.strip()] = f"{base_mod}.{orig.strip()}"
+                elif t:
+                    imports[t] = f"{base_mod}.{t}"
+
+        for m in _FROM_IMPORT_RE.finditer(source_text):
+            base_mod = m.group(1).strip()
+            raw_clause = m.group(2).split("#", 1)[0].strip()
+            if raw_clause.startswith("(") and ")" not in raw_clause:
+                continue
+            clause = raw_clause.strip("()")
+            for t in clause.split(","):
+                t = t.strip().strip("()")
                 if " as " in t:
                     orig, alias = t.split(" as ", 1)
                     imports[alias.strip()] = f"{base_mod}.{orig.strip()}"

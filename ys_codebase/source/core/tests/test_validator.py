@@ -1,15 +1,15 @@
 """
 Unit tests for ContributesValidator and Schema DSL Engine.
-Covers FT-01 ~ FT-05.
 """
-from dev.testing import YSCBTestCase, require, Requirement
-from core.validator import ContributesValidator, ValidationResult, ValidationIssue
+from core.validator import ContributesValidator
+from dev.testing import Requirement, YSCBTestCase, require
 
 
+@require(Requirement.LOGIC)
 class TestContributesValidator(YSCBTestCase):
     @require(Requirement.ENV)
     def test_validator_types(self):
-        """FT-01: 型別表達式解析與基礎型別校驗"""
+        """型別表達式解析與基礎型別校驗"""
         p_str = ContributesValidator.parse_type_signature("str!")
         self.assertEqual(p_str["type"], "str")
         self.assertTrue(p_str["required"])
@@ -85,7 +85,7 @@ class TestContributesValidator(YSCBTestCase):
 
     @require(Requirement.ENV)
     def test_validator_containers(self):
-        """FT-02: 物件陣列清單與通配符 * 字典映射"""
+        """物件陣列清單與通配符 * 字典映射"""
         schema = {
             "uri_schemes": {
                 "description": "URI schemes",
@@ -121,7 +121,7 @@ class TestContributesValidator(YSCBTestCase):
 
     @require(Requirement.ENV)
     def test_validator_recursive(self):
-        """FT-03: 遞迴結構 ($CommandNode) 與 _types 別名參照"""
+        """遞迴結構 ($CommandNode) 與 _types 別名參照"""
         schema = {
             "_types": {
                 "CommandNode": {
@@ -164,7 +164,7 @@ class TestContributesValidator(YSCBTestCase):
 
     @require(Requirement.ENV)
     def test_validator_did_you_mean(self):
-        """FT-04: 未知欄位 Levenshtein 近似拼寫診斷 (Did you mean)"""
+        """未知欄位 Levenshtein 近似拼寫診斷 (Did you mean)"""
         schema = {
             "commands": {
                 "description": "commands",
@@ -199,7 +199,7 @@ class TestContributesValidator(YSCBTestCase):
 
     @require(Requirement.ENV)
     def test_validator_cross_target(self):
-        """FT-05: 跨目標越權注入阻斷"""
+        """跨目標越權注入阻斷"""
         schema = {
             "commands": {
                 "description": "commands",
@@ -285,8 +285,8 @@ class TestContributesValidator(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.ENV)
-    def test_validator_dict_primitive_skips_dunder_metadata_keys(self):
-        """驗證 dict[K, V] 容器型別校驗跳過 __comment__ 等雙底線元資料鍵。"""
+    def test_validator_dict_key_type_and_nested_merge_strategy(self):
+        """驗證 dict[K, V] 鍵型別校驗、跳過雙底線元資料鍵、uri/path/$Ref 錯誤攔截，以及巢狀 _merge 策略校驗。"""
         schema = {
             "_types": {
                 "Entry": {"title": "str!"}
@@ -294,14 +294,68 @@ class TestContributesValidator(YSCBTestCase):
             "registry": {
                 "description": "dict container with dunder comment",
                 "format": "dict[str, $Entry]!"
+            },
+            "i18n_map": {
+                "description": "enum-keyed dict",
+                "format": "dict[enum(zh, en), str]?"
+            },
+            "target_uri": {
+                "description": "uri field",
+                "format": "uri?"
+            },
+            "target_path": {
+                "description": "path field",
+                "format": "path?"
+            },
+            "broken_ref": {
+                "description": "unknown ref",
+                "format": "$UnknownTypeRef?"
             }
         }
         payload = {
             "registry": {
                 "__comment__": "human note inside dict container",
+                "__provider__": "core",
                 "item_a": {"title": "Valid Title"}
+            },
+            "i18n_map": {
+                "__provider__": "core",
+                "zh": "你好",
+                "en": "Hello"
             }
         }
         res = ContributesValidator.validate("core", payload, format_schema=schema)
         self.assertTrue(res.is_valid, f"Unexpected errors: {res.errors}")
+
+        # 非法 enum 鍵 'fr'、空 uri、空 path 與未定義 $UnknownTypeRef 均應報錯
+        bad_payload = {
+            "registry": {"item_a": {"title": "Valid"}},
+            "i18n_map": {"fr": "Bonjour"},
+            "target_uri": "   ",
+            "target_path": "",
+            "broken_ref": {"x": 1},
+        }
+        res_bad = ContributesValidator.validate("core", bad_payload, format_schema=schema)
+        self.assertFalse(res_bad.is_valid)
+        bad_paths = [e.path for e in res_bad.errors]
+        self.assertTrue(any("i18n_map.fr" in p for p in bad_paths))
+        self.assertIn("target_uri", bad_paths)
+        self.assertIn("target_path", bad_paths)
+        self.assertIn("broken_ref", bad_paths)
+
+        # 驗證 validate_format_schema 遞迴檢查巢狀 dict 內之 _merge
+        nested_merge_meta = {
+            "my_point": {
+                "description": "nested merge test",
+                "format": {
+                    "sub_obj": {
+                        "_merge": "invalid_nested_strategy",
+                        "name": "str!"
+                    }
+                }
+            }
+        }
+        res_nested = ContributesValidator.validate_format_schema(nested_merge_meta)
+        self.assertFalse(res_nested.is_valid)
+        self.assertTrue(any("_merge" in e.path for e in res_nested.errors))
         self.mark_passed()

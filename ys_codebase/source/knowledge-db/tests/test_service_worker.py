@@ -3,7 +3,9 @@ Tests for Knowledge-DB Space Event Hook (`scripts/hook.file-space.py`), Server P
 and mtime Cache Synchronization.
 """
 
-import importlib.util
+import contextlib
+import io
+import json
 import os
 from pathlib import Path
 import sys
@@ -20,26 +22,22 @@ if _pkg_root not in sys.path:
 
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from knowledge_db.engine import KnowledgeEngine
+from file_space import FileSpaceConfig
+import knowledge_db.engine as kdb_engine
+import knowledge_db.pipeline as kdb_pipeline
+from knowledge_db import service as svc_mod
+from knowledge_db.engine import KnowledgeEngine, get_engine
 from knowledge_db.pipeline import HotPatchResult, IndexingPipeline, _GLOBAL_INDEX_CACHE
 from knowledge_db.retrieval import InvertedIndex
 from knowledge_db.schema import SymbolKind, UnifiedSymbol
+from knowledge_db.service import (
+    KnowledgeDBServiceWorker,
+    clear_worker_state,
+    get_worker_busy_ms,
+    write_worker_state,
+)
 from knowledge_db.tokenizer import MultilingualTokenizer
-from scripts.cli import get_engine
-from file_space import FileSpaceConfig
-
-
-def process(args: list) -> int:
-    from core.commands.dispatcher import dispatch
-    return dispatch(["knowledge-db"] + list(args))
-
-
-def _load_hook_module(script_name: str):
-    hook_path = Path(_pkg_root) / "scripts" / script_name
-    spec = importlib.util.spec_from_file_location(script_name.replace(".", "_"), hook_path)
-    hook_mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(hook_mod)
-    return hook_mod
+from tests import advance_mtime, load_script_module, process, write_text_and_advance_mtime
 
 
 class TestSpaceEventHookAndCacheSync(YSCBTestCase):
@@ -49,25 +47,31 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         super().setUp()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root_path = Path(self.temp_dir.name)
+        self._old_global_engine = kdb_engine._GLOBAL_ENGINE_INSTANCE
+        self._old_global_cache = dict(kdb_pipeline._GLOBAL_INDEX_CACHE)
 
     def tearDown(self):
-        try:
-            self.temp_dir.cleanup()
-        except Exception:
-            pass
+        svc_mod._IDLE_EVENT.set()
+        kdb_engine._GLOBAL_ENGINE_INSTANCE = self._old_global_engine
+        with kdb_pipeline._CACHE_LOCK:
+            kdb_pipeline._GLOBAL_INDEX_CACHE.clear()
+            kdb_pipeline._GLOBAL_INDEX_CACHE.update(self._old_global_cache)
+        self.temp_dir.cleanup()
         super().tearDown()
 
     @require(Requirement.LOGIC)
     def test_hook_file_space_on_file_space_changed_end_to_end(self):
         """驗證 scripts/hook.file-space.py 接收 on_file_space_changed 事件時透過 consume_diff 觸發熱修補與游標推進"""
-        hook_file_space = _load_hook_module("hook.file-space.py")
+        hook_file_space = load_script_module("hook.file-space.py")
 
         src_dir = self.root_path / "src"
         src_dir.mkdir(parents=True, exist_ok=True)
         storage_dir = self.root_path / "storage"
 
         f1 = src_dir / "alpha.py"
-        f1.write_text("class AlphaComponent:\n    def execute(self): pass\n", encoding="utf-8")
+        f1.write_text(
+            "class AlphaComponent:\n    def execute(self): pass\n", encoding="utf-8"
+        )
 
         sp = FileSpaceConfig(name="main", include=[str(src_dir)])
         engine = KnowledgeEngine(
@@ -77,23 +81,28 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         )
 
         # 1. 當基礎索引尚未建立時，收到 on_file_space_changed 自動觸發初次建置並對齊游標
-        res_init = hook_file_space.on_file_space_changed({"engine": engine, "space_name": "main"})
+        res_init = hook_file_space.on_file_space_changed(
+            {"engine": engine, "space_name": "main"}
+        )
         self.assertIn(res_init["status"], ("rebuilt", "patched"))
         self.assertEqual(len(engine.search("AlphaComponent", auto_rebuild=False)), 1)
 
         # 2. 無變更時再次觸發 on_file_space_changed -> noop
-        res_noop = hook_file_space.on_file_space_changed({"engine": engine, "space_name": "main"})
+        res_noop = hook_file_space.on_file_space_changed(
+            {"engine": engine, "space_name": "main"}
+        )
         self.assertEqual(res_noop["status"], "noop")
         self.assertEqual(res_noop["patched_count"], 0)
 
         # 3. 修改檔案並新增符號後，觸發 on_file_space_changed -> 執行 4 階段增量熱修補
-        time.sleep(0.05)
-        f1.write_text(
+        write_text_and_advance_mtime(
+            f1,
             "class AlphaComponent:\n    def execute(self): pass\n"
             "class BetaHotPatched:\n    def run_hot(self): pass\n",
-            encoding="utf-8",
         )
-        res_patch = hook_file_space.on_file_space_changed({"engine": engine, "space_name": "main"})
+        res_patch = hook_file_space.on_file_space_changed(
+            {"engine": engine, "space_name": "main"}
+        )
         self.assertEqual(res_patch["status"], "patched")
         self.assertGreaterEqual(res_patch["patched_count"], 1)
 
@@ -104,14 +113,16 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         self.assertIn("BetaHotPatched", sym_names)
 
         # 4. 驗證游標已於 with consume_diff 區塊結束後自動 ack，再次呼叫為 noop
-        res_after = hook_file_space.on_file_space_changed({"engine": engine, "space_name": "main"})
+        res_after = hook_file_space.on_file_space_changed(
+            {"engine": engine, "space_name": "main"}
+        )
         self.assertEqual(res_after["status"], "noop")
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_hook_file_space_fallback_to_rebuild_when_hot_patch_fails(self):
         """驗證當 hot_patch_unified_index 返回失敗時，hook.file-space.py 安全退回 build_unified_index(allow_parallel=False)"""
-        hook_file_space = _load_hook_module("hook.file-space.py")
+        hook_file_space = load_script_module("hook.file-space.py")
 
         src_dir = self.root_path / "src"
         src_dir.mkdir(parents=True, exist_ok=True)
@@ -128,8 +139,10 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         )
         engine.build_unified_index(force=True)
 
-        time.sleep(0.05)
-        f1.write_text("class BaseService:\n    pass\nclass FallbackRebuiltService:\n    pass\n", encoding="utf-8")
+        write_text_and_advance_mtime(
+            f1,
+            "class BaseService:\n    pass\nclass FallbackRebuiltService:\n    pass\n",
+        )
 
         with patch.object(
             engine.pipeline,
@@ -140,32 +153,74 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
             "build_unified_index",
             wraps=engine.pipeline.build_unified_index,
         ) as spy_rebuild:
-            res = hook_file_space.on_file_space_changed({"engine": engine, "space_name": "main"})
+            res = hook_file_space.on_file_space_changed(
+                {"engine": engine, "space_name": "main"}
+            )
             self.assertEqual(res["status"], "rebuilt")
             spy_rebuild.assert_called_once_with(force=True, allow_parallel=False)
 
-        self.assertEqual(len(engine.search("FallbackRebuiltService", auto_rebuild=False)), 1)
+        self.assertEqual(
+            len(engine.search("FallbackRebuiltService", auto_rebuild=False)), 1
+        )
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_hook_file_space_queued_to_active_worker_and_diff_summary(self):
+        """驗證常駐 Worker 存活時 O(1) 轉發 queued_to_worker，以及傳入 diff_summary 時傳遞 auto_refresh=False"""
+        hook_file_space = load_script_module("hook.file-space.py")
+
+        fake_worker = MagicMock()
+        fake_worker.name = "knowledge-db-worker"
+        fake_worker.is_alive.return_value = True
+
+        with patch.object(hook_file_space, "get_active_worker", return_value=fake_worker):
+            res_q = hook_file_space.on_file_space_changed(
+                {"space_name": "main"}, spaces=["main"]
+            )
+        self.assertEqual(res_q["status"], "queued_to_worker")
+        self.assertEqual(res_q["worker"], "knowledge-db-worker")
+        fake_worker.notify_space_changed.assert_called_once()
+
+        # 驗證傳入 diff_summary 時，scanner.consume_diff 收到 auto_refresh=False
+        src_dir = self.root_path / "src_diff_sum"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        (src_dir / "item.py").write_text("class DiffSumNode: pass\n", encoding="utf-8")
+        sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+        engine = KnowledgeEngine(
+            storage_dir=self.root_path / "storage_diff_sum",
+            contributes_data={"spaces": {"main": sp.to_dict()}},
+            embedding_mock_mode=True,
+        )
+        engine.build_unified_index(force=True)
+
+        with patch.object(
+            engine.scanner, "consume_diff", wraps=engine.scanner.consume_diff
+        ) as spy_consume:
+            res_ds = hook_file_space.on_file_space_changed(
+                {"engine": engine, "space_name": "main"},
+                diff_summary={"main": 0},
+            )
+        self.assertEqual(res_ds["status"], "noop")
+        spy_consume.assert_called_once_with(
+            space_name="main", consumer_id="knowledge-db", auto_refresh=False
+        )
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_cli_no_daemon(self):
         """驗證 scripts/cli.py 無 daemon 子命令且 --help 中無殘留"""
-        import io
-        from contextlib import redirect_stderr, redirect_stdout
-
         f_out = io.StringIO()
-        with redirect_stdout(f_out):
+        with contextlib.redirect_stdout(f_out):
             ret = process(["--help"])
         self.assertEqual(ret, 0)
         out_text = f_out.getvalue()
         self.assertNotIn("knowledge-db daemon", out_text)
 
         f_err = io.StringIO()
-        with redirect_stderr(f_err):
-            try:
-                ret2 = process(["daemon", "status"])
-            except Exception:
-                ret2 = 1
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+            f_err
+        ):
+            ret2 = process(["daemon", "status"])
         self.assertNotEqual(ret2, 0)
         self.mark_passed()
 
@@ -200,18 +255,19 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
             storage_dir=self.root_path,
         )
 
-        pipeline._ensure_indices_loaded(load_graph=False, load_vectors=False)
+        pipeline._ensure_indices_loaded(load_vectors=False)
         self.assertIsNotNone(pipeline.unified_index)
         self.assertEqual(_GLOBAL_INDEX_CACHE["unified_mtime"], mtime1)
 
-        time.sleep(0.01)
+        old_ns = bin_file.stat().st_mtime_ns
         idx2 = InvertedIndex()
         idx2.doc_count = 42
         idx2.save_binary(bin_file)
+        advance_mtime(bin_file, old_mtime_ns=old_ns)
         mtime2 = bin_file.stat().st_mtime
         self.assertGreater(mtime2, mtime1)
 
-        pipeline._ensure_indices_loaded(load_graph=False, load_vectors=False)
+        pipeline._ensure_indices_loaded(load_vectors=False)
         self.assertEqual(pipeline.unified_index.doc_count, 42)
         self.assertEqual(_GLOBAL_INDEX_CACHE["unified_mtime"], mtime2)
         self.mark_passed()
@@ -219,6 +275,7 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_singleton_engine(self):
         """驗證 KnowledgeEngine 單例化：get_engine() 多次調用返回同一實例物件"""
+        kdb_engine._GLOBAL_ENGINE_INSTANCE = None
         e1 = get_engine()
         e2 = get_engine()
         self.assertIs(e1, e2)
@@ -227,20 +284,38 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_hook_server_no_duplicate_watcher(self):
-        """驗證 scripts/hook.server.py 僅執行 pre_warm，不啟動私有 watcher 實例，且支援 on_server_worker_warming"""
-        hook_mod = _load_hook_module("hook.server.py")
+        """驗證 scripts/hook.server.py 透過背景執行緒呼叫 KnowledgeEngine.pre_warm 且異常時安全降級不崩潰"""
+        hook_mod = load_script_module("hook.server.py")
         self.assertFalse(hasattr(hook_mod, "_watcher_instance"))
-        ret = hook_mod.on_worker_warming({"workspace_root": str(self.root_path)})
-        self.assertEqual(ret, "warming_started")
-        ret2 = hook_mod.on_server_worker_warming({"workspace_root": str(self.root_path)})
-        self.assertEqual(ret2, "warming_started")
+
+        done_evt = threading.Event()
+        with patch.object(
+            KnowledgeEngine, "pre_warm", side_effect=lambda *a, **kw: done_evt.set()
+        ) as mock_pw:
+            ret = hook_mod.on_worker_warming({"workspace_root": str(self.root_path)})
+            self.assertEqual(ret, "warming_started")
+            self.assertTrue(done_evt.wait(timeout=2.0))
+            self.assertTrue(mock_pw.called)
+
+        # 驗證 pre_warm 拋出例外時背景執行緒捕獲並記錄 warning，不向外崩潰
+        err_evt = threading.Event()
+
+        def _fail_pre_warm(*_a, **_kw):
+            err_evt.set()
+            raise RuntimeError("Simulated pre_warm failure")
+
+        with patch.object(KnowledgeEngine, "pre_warm", side_effect=_fail_pre_warm):
+            ret2 = hook_mod.on_server_worker_warming(
+                {"workspace_root": str(self.root_path)}
+            )
+            self.assertEqual(ret2, "warming_started")
+            self.assertTrue(err_evt.wait(timeout=2.0))
+
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_wait_until_worker_idle_cross_process_does_not_busy_spin(self):
-        """FR-04, EC-05, NFR-01 (AUD-10): Verify wait_until_worker_idle sleeps instead of busy-spinning when _IDLE_EVENT is set locally."""
-        from knowledge_db import service as svc_mod
-
+        """驗證 wait_until_worker_idle 於跨進程忙碌且本地 _IDLE_EVENT 已 set 時不會 busy-spin"""
         indices_dir = self.root_path / "indices_spin_test"
         indices_dir.mkdir(parents=True, exist_ok=True)
         svc_mod._IDLE_EVENT.set()
@@ -323,14 +398,6 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_is_worker_busy_probe_and_dynamic_tolerance_degradation(self):
         """驗證 is_worker_busy() -> int (已運行 ms) 探針、>= timeout_ms 0ms 瞬時降級、< timeout_ms 剩餘時間等待與陳舊 PID 清理"""
-        import contextlib
-        import io
-        from knowledge_db.service import (
-            clear_worker_state,
-            get_worker_busy_ms,
-            write_worker_state,
-        )
-
         src_dir = self.root_path / "src"
         src_dir.mkdir(parents=True, exist_ok=True)
         storage_dir = self.root_path / "storage"
@@ -341,7 +408,12 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         sp = FileSpaceConfig(name="main", include=[str(src_dir)])
         engine = KnowledgeEngine(
             storage_dir=storage_dir,
-            local_config={"knowledge-db": {"jit_vector_timeout_ms": 500, "enable_vector_search": True}},
+            local_config={
+                "knowledge-db": {
+                    "jit_vector_timeout_ms": 500,
+                    "enable_vector_search": True,
+                }
+            },
             contributes_data={"spaces": {"main": sp.to_dict()}},
             embedding_mock_mode=True,
         )
@@ -369,8 +441,14 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
             hits = engine.search("VectorTargetNode", auto_rebuild=False)
         elapsed_wait_ms = (time.perf_counter() - t0) * 1000.0
         self.assertEqual(len(hits), 1)
-        self.assertLess(elapsed_wait_ms, 150.0, "Should degrade immediately without waiting full timeout")
-        self.assertIn("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", err_buf.getvalue())
+        self.assertLess(
+            elapsed_wait_ms,
+            150.0,
+            "Should degrade immediately without waiting full timeout",
+        )
+        self.assertIn(
+            "[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", err_buf.getvalue()
+        )
 
         # 3. 當 0 < elapsed_ms < timeout_ms 且後台在剩餘時間內完成，前台等待至完成後不降級
         write_worker_state(
@@ -391,20 +469,23 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         with contextlib.redirect_stderr(err_buf2):
             hits2 = engine.search("VectorTargetNode", auto_rebuild=False)
         self.assertEqual(len(hits2), 1)
-        self.assertNotIn("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", err_buf2.getvalue())
+        self.assertNotIn(
+            "[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", err_buf2.getvalue()
+        )
         self.assertEqual(engine.is_worker_busy(), 0)
 
-        # 4. EC-01: 若狀態檔內 PID 已不存在 (死進程殘留)，自動視為空閒 0ms 並清理
+        # 4. 若狀態檔內 PID 已不存在 (死進程殘留)，自動視為空閒 0ms 並清理
         state_file = indices_dir / ".kdb_worker_state.json"
-        import json
         state_file.write_text(
-            json.dumps({
-                "worker_running": True,
-                "busy": True,
-                "start_ts": time.time() - 0.1,
-                "pid": 99999999,
-                "phase": "stage2",
-            }),
+            json.dumps(
+                {
+                    "worker_running": True,
+                    "busy": True,
+                    "start_ts": time.time() - 0.1,
+                    "pid": 99999999,
+                    "phase": "stage2",
+                }
+            ),
             encoding="utf-8",
         )
         self.assertEqual(get_worker_busy_ms(indices_dir), 0)
@@ -414,10 +495,6 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_knowledge_db_service_worker_two_stage_and_auto_model_download(self):
         """驗證 KnowledgeDBServiceWorker 兩階段背景管線 (Stage 1 快篩 + Stage 2 微批次向量差集補齊) 與背景自動下載模型"""
-        import contextlib
-        import io
-        from knowledge_db.service import KnowledgeDBServiceWorker
-
         src_dir = self.root_path / "src_worker"
         src_dir.mkdir(parents=True, exist_ok=True)
         storage_dir = self.root_path / "storage_worker"
@@ -431,7 +508,13 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         sp = FileSpaceConfig(name="w_space", include=[str(src_dir)])
         engine = KnowledgeEngine(
             storage_dir=storage_dir,
-            local_config={"knowledge-db": {"enable_vector_search": True, "vector_batch_size": 4, "jit_vector_timeout_ms": 2000}},
+            local_config={
+                "knowledge-db": {
+                    "enable_vector_search": True,
+                    "vector_batch_size": 4,
+                    "jit_vector_timeout_ms": 2000,
+                }
+            },
             contributes_data={"spaces": {"w_space": sp.to_dict()}},
             embedding_mock_mode=True,
         )
@@ -449,14 +532,20 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
             deadline = time.time() + 5.0
             while time.time() < deadline:
                 info = engine.pipeline.get_vector_deficit_info()
-                if info["missing_count"] == 0 and info["embedded_count"] > 0 and engine.is_worker_busy() == 0:
+                if (
+                    info["missing_count"] == 0
+                    and info["embedded_count"] > 0
+                    and engine.is_worker_busy() == 0
+                ):
                     break
                 time.sleep(0.05)
 
             deficit_after = engine.pipeline.get_vector_deficit_info()
             self.assertEqual(deficit_after["missing_count"], 0)
             self.assertEqual(deficit_after["coverage_pct"], 100.0)
-            self.assertGreaterEqual(worker.get_custom_metrics()["vector_batches_processed"], 2)
+            self.assertGreaterEqual(
+                worker.get_custom_metrics()["vector_batches_processed"], 2
+            )
 
             # 驗證若運行中途刪除 unified.vectors.bin.gz，_ensure_indices_loaded 與 get_vector_deficit_info 能即時感知並清空舊記憶體向量
             worker.stop()
@@ -480,7 +569,11 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
                 engine.embedding_service.mock_mode = True
                 return True
 
-            with patch.object(engine.embedding_service, "is_model_downloaded", side_effect=_fake_is_downloaded), patch.object(
+            with patch.object(
+                engine.embedding_service,
+                "is_model_downloaded",
+                side_effect=_fake_is_downloaded,
+            ), patch.object(
                 engine.embedding_service, "download_model", side_effect=_fake_download
             ) as mock_dl:
                 err_buf = io.StringIO()
@@ -496,8 +589,10 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_vector_deficit_step_lock_splitting_persist_throttling_and_removed_terms(self):
-        """FR-04, FR-05, EC-04, EC-05: Verify sync_vector_deficit_step releases _index_lock during embed_texts, filters deleted symbols on re-entry, supports persist=False + flush_vector_index, and InvertedIndex.patch_incremental prunes via removed_terms."""
+    def test_vector_deficit_step_lock_splitting_persist_throttling_and_removed_terms(
+        self,
+    ):
+        """驗證 sync_vector_deficit_step 於 embed_texts 期間釋放 _index_lock、重入過濾已刪符號、支援 persist=False + flush_vector_index 與 removed_terms 精確清理"""
         src_dir = self.root_path / "src_lock_test"
         src_dir.mkdir(parents=True, exist_ok=True)
         storage_dir = self.root_path / "storage_lock_test"
@@ -511,7 +606,9 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         sp = FileSpaceConfig(name="l_space", include=[str(src_dir)])
         engine = KnowledgeEngine(
             storage_dir=storage_dir,
-            local_config={"knowledge-db": {"enable_vector_search": True, "vector_batch_size": 2}},
+            local_config={
+                "knowledge-db": {"enable_vector_search": True, "vector_batch_size": 2}
+            },
             contributes_data={"spaces": {"l_space": sp.to_dict()}},
             embedding_mock_mode=True,
         )
@@ -531,8 +628,7 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         self.assertFalse(engine.pipeline._vector_index_dirty)
         self.assertTrue(vec_file.exists())
 
-        # 2. Verify _index_lock is released during embed_texts (another thread can acquire _index_lock)
-        #    AND if a symbol in the current batch is deleted while unlocked, it is filtered out (EC-04)
+        # 2. Verify _index_lock is released during embed_texts and deleted symbols are filtered on re-entry
         orig_embed = engine.embedding_service.embed_texts
         lock_acquired_in_other_thread = {"ok": False}
         evicted_sid_holder = {"sid": None}
@@ -543,10 +639,11 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
                 if acquired:
                     try:
                         lock_acquired_in_other_thread["ok"] = True
-                        # Simulate foreground deleting one of the remaining unembedded symbols while unlocked
                         vec_ids = set(engine.hybrid_engine.vector_index.doc_ids)
                         remaining_sids = [
-                            sid for sid in engine.pipeline.unified_index.symbols if sid not in vec_ids
+                            sid
+                            for sid in engine.pipeline.unified_index.symbols
+                            if sid not in vec_ids
                         ]
                         if remaining_sids:
                             victim = remaining_sids[0]
@@ -560,16 +657,23 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
             t.join(timeout=1.0)
             return orig_embed(texts, batch_size=batch_size)
 
-        with patch.object(engine.embedding_service, "embed_texts", side_effect=_hooked_embed_texts):
+        with patch.object(
+            engine.embedding_service, "embed_texts", side_effect=_hooked_embed_texts
+        ):
             res2 = engine.pipeline.sync_vector_deficit_step(batch_size=2, persist=True)
 
-        self.assertTrue(lock_acquired_in_other_thread["ok"], "_index_lock must not be held during embed_texts()")
+        self.assertTrue(
+            lock_acquired_in_other_thread["ok"],
+            "_index_lock must not be held during embed_texts()",
+        )
         self.assertIsNotNone(evicted_sid_holder["sid"])
-        self.assertNotIn(evicted_sid_holder["sid"], engine.hybrid_engine.vector_index.doc_ids)
+        self.assertNotIn(
+            evicted_sid_holder["sid"], engine.hybrid_engine.vector_index.doc_ids
+        )
         self.assertEqual(res2["embedded_in_step"], 1)
         self.assertEqual(res2["remaining"], 0)
 
-        # 3. Verify InvertedIndex.patch_incremental accurately prunes postings via removed_terms (FR-05)
+        # 3. Verify InvertedIndex.patch_incremental accurately prunes postings via removed_terms
         idx = engine.pipeline.unified_index
         self.assertIn("uniquetoken0", idx.index)
         idx.patch_incremental(

@@ -28,7 +28,7 @@ def _extract_opt(bags: Any, name: str, default: Any = None) -> Any:
                 return True
     args_pos = getattr(bags, "args", None)
     if clean_name == "space" and isinstance(args_pos, list) and args_pos:
-        return str(args_pos[0])
+        return str(getattr(args_pos[0], "val", args_pos[0]))
     return default
 
 
@@ -51,6 +51,23 @@ def _create_scanner(bags: Any = None) -> Any:
 
     mgr = FileSpaceManager()
     return FingerprintScanner(space_manager=mgr)
+
+
+def _print_json(payload: Dict[str, Any]) -> None:
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _handle_cli_error(exc: Exception, as_json: bool) -> int:
+    if as_json:
+        print(
+            json.dumps(
+                {"status": "error", "error": str(exc)},
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(f"[Error] {exc}")
+    return 1
 
 
 def status(bags: Any = None) -> int:
@@ -128,7 +145,7 @@ def status(bags: Any = None) -> int:
         }
 
         if as_json:
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            _print_json(payload)
         else:
             print(f"=== File-Space Status ({len(spaces_report)} workspaces) ===")
             for s_name, info in spaces_report.items():
@@ -139,16 +156,7 @@ def status(bags: Any = None) -> int:
                 )
         return 0
     except FileSpaceError as exc:
-        if as_json:
-            print(
-                json.dumps(
-                    {"status": "error", "error": str(exc)},
-                    ensure_ascii=False,
-                )
-            )
-        else:
-            print(f"[Error] {exc}")
-        return 1
+        return _handle_cli_error(exc, as_json)
 
 
 def scan(bags: Any = None) -> int:
@@ -172,7 +180,7 @@ def scan(bags: Any = None) -> int:
             **diff_res.to_dict(),
         }
         if as_json:
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            _print_json(payload)
         else:
             target_label = space_name or "all spaces"
             print(
@@ -182,16 +190,7 @@ def scan(bags: Any = None) -> int:
             )
         return 0
     except FileSpaceError as exc:
-        if as_json:
-            print(
-                json.dumps(
-                    {"status": "error", "error": str(exc)},
-                    ensure_ascii=False,
-                )
-            )
-        else:
-            print(f"[Error] {exc}")
-        return 1
+        return _handle_cli_error(exc, as_json)
 
 
 def files(bags: Any = None) -> int:
@@ -224,7 +223,7 @@ def files(bags: Any = None) -> int:
             "files": records,
         }
         if as_json:
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            _print_json(payload)
         else:
             print(
                 f"=== Managed Files ({len(records)} files in {space_name or 'all'}) ==="
@@ -235,16 +234,7 @@ def files(bags: Any = None) -> int:
                 )
         return 0
     except FileSpaceError as exc:
-        if as_json:
-            print(
-                json.dumps(
-                    {"status": "error", "error": str(exc)},
-                    ensure_ascii=False,
-                )
-            )
-        else:
-            print(f"[Error] {exc}")
-        return 1
+        return _handle_cli_error(exc, as_json)
 
 
 def diff(bags: Any = None) -> int:
@@ -280,7 +270,7 @@ def diff(bags: Any = None) -> int:
             **diff_res.to_dict(),
         }
         if as_json:
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            _print_json(payload)
         else:
             print(
                 f"[File-Space Diff] space={space_name or 'all'} consumer={consumer_id} "
@@ -290,16 +280,7 @@ def diff(bags: Any = None) -> int:
             )
         return 0
     except FileSpaceError as exc:
-        if as_json:
-            print(
-                json.dumps(
-                    {"status": "error", "error": str(exc)},
-                    ensure_ascii=False,
-                )
-            )
-        else:
-            print(f"[Error] {exc}")
-        return 1
+        return _handle_cli_error(exc, as_json)
 
 
 def clean(bags: Any = None) -> int:
@@ -329,6 +310,7 @@ def clean(bags: Any = None) -> int:
             if snap_path.exists():
                 snap_path.unlink()
                 removed_snapshots.append(snap_path.name)
+            scanner._sync_unified_snapshot_if_exists()
             for cid in scanner.cursor_store.list_consumers():
                 scanner.reset_cursor(space_name=space_name, consumer_id=cid)
                 reset_consumers.append(cid)
@@ -337,6 +319,7 @@ def clean(bags: Any = None) -> int:
                 for p in sorted(scanner.snapshots_dir.glob("*.yfp2.bin")):
                     removed_snapshots.append(p.name)
                     p.unlink()
+            scanner.mark_watcher_dirty(False)
             if scanner.cursor_store.cursors_dir.exists():
                 for cid in scanner.cursor_store.list_consumers():
                     reset_consumers.append(cid)
@@ -355,7 +338,7 @@ def clean(bags: Any = None) -> int:
             "reset_consumers": reset_consumers,
         }
         if as_json:
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            _print_json(payload)
         else:
             print(
                 f"[File-Space Clean] removed_snapshots={len(removed_snapshots)}, "
@@ -363,13 +346,4 @@ def clean(bags: Any = None) -> int:
             )
         return 0
     except FileSpaceError as exc:
-        if as_json:
-            print(
-                json.dumps(
-                    {"status": "error", "error": str(exc)},
-                    ensure_ascii=False,
-                )
-            )
-        else:
-            print(f"[Error] {exc}")
-        return 1
+        return _handle_cli_error(exc, as_json)

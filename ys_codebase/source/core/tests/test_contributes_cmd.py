@@ -1,17 +1,24 @@
 """
 Integration tests for contributes CLI and SDK functions.
-Covers FT-06 ~ FT-07.
 """
+import contextlib
+import io
+import json
+import os
+import tempfile
+from contextlib import redirect_stdout
+
 from dev.testing import YSCBTestCase, require, Requirement
-from core import contributes
+from core import contributes, uri, vfs
 from core.commands import contributes_cmd
-from core.commands.bags import CmdBags
+from core.commands.bags import CmdBags, CmdOption
+from tests import load_core_cli_module
 
 
+@require(Requirement.ENV)
 class TestContributesCmdAndSDK(YSCBTestCase):
-    @require(Requirement.ENV)
     def test_sdk_get_format_and_list_points(self):
-        """FT-06: SDK get_format 與 list_points 正確讀取"""
+        """驗證 SDK get_format 與 list_points 正確讀取。"""
         core_fmt = contributes.get_format("core")
         self.assertIsNotNone(core_fmt, "core _format.json should be readable")
         self.assertIn("commands", core_fmt)
@@ -19,76 +26,54 @@ class TestContributesCmdAndSDK(YSCBTestCase):
         self.assertIn("events", core_fmt)
 
         points = contributes.list_points("core")
-        self.assertTrue(len(points) >= 3)
+        self.assertGreaterEqual(len(points), 3)
         pts = [p["point"] for p in points]
         self.assertIn("commands", pts)
         self.assertIn("uri_schemes", pts)
         self.assertIn("events", pts)
         self.mark_passed()
 
-    @require(Requirement.ENV)
     def test_contributes_cli_list(self):
-        """FT-06: CLI contributes list 執行"""
+        """驗證 CLI contributes list 執行。"""
         ret = contributes_cmd.list_contributes("core")
         self.assertEqual(ret, 0)
         self.mark_passed()
 
-    @require(Requirement.ENV)
     def test_contributes_cli_check_self(self):
-        """FT-06: CLI contributes check 執行檢驗 core.json"""
+        """驗證 CLI contributes check 執行檢驗 core.json。"""
         ret = contributes_cmd.check_contributes("core")
         self.assertEqual(ret, 0)
         self.mark_passed()
 
-    @require(Requirement.ENV)
     def test_contributes_cli_format_check(self):
-        """FT-06: CLI contributes check --format 執行"""
+        """驗證 CLI contributes check --format 執行。"""
         ret = contributes_cmd.check_contributes("core", is_format_check=True)
         self.assertEqual(ret, 0)
         self.mark_passed()
 
-    @require(Requirement.ENV)
     def test_contributes_aggregator_ignores_special_files(self):
-        """FT-07: Aggregator 聚合時排除 _ 開頭特殊檔案"""
+        """驗證 Aggregator 聚合時排除 _ 開頭特殊檔案。"""
         aggregator = contributes.ContributesAggregator()
         merged = aggregator.scan_and_inject()
-        # _format 不應作為 target 模組存在於聚合根鍵中
         self.assertNotIn("_format", merged)
         self.assertNotIn("_manifest", merged)
         self.assertIn("core", merged)
         self.mark_passed()
 
-    @require(Requirement.ENV)
     def test_contributes_cli_dispatcher(self):
-        """FT-08: 驗證 core scripts.cli:contributes() 分發器與未知子指令防呆 (ISSUE-02)"""
-        import io
-        import os
-        import importlib.util
-        import contextlib
-
-        test_dir = os.path.dirname(os.path.abspath(__file__))
-        cli_path = os.path.join(os.path.dirname(test_dir), "scripts", "cli.py")
-        if not os.path.isfile(cli_path):
-            from core import uri
-            cli_path = os.path.join(uri.resolve_yscb_root(), ".modules", "core", "scripts", "cli.py")
-        spec = importlib.util.spec_from_file_location("core_cli", cli_path)
-        core_cli = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(core_cli)
+        """驗證 core scripts.cli:contributes() 分發器與未知子指令防呆。"""
+        core_cli = load_core_cli_module("_test_core_cli_contributes")
         cli_contributes = core_cli.contributes
 
-        # 1. 預設無參數分發 -> list
         ret = cli_contributes(CmdBags(args=[]))
         self.assertEqual(ret, 0)
 
-        # 2. list 帶 module 參數
         ret = cli_contributes(CmdBags(args=["list", "core"]))
         self.assertEqual(ret, 0)
 
-        # 3. check 帶 module 參數
         ret = cli_contributes(CmdBags(args=["check", "core"]))
         self.assertEqual(ret, 0)
 
-        # 4. 未知子指令防呆 (ISSUE-02: 確保不拋出 NameError 或 AttributeError，且輸出可用提示)
         err_buf = io.StringIO()
         with contextlib.redirect_stderr(err_buf):
             ret = cli_contributes(CmdBags(args=["get", "knowledge-db", "spaces"]))
@@ -97,23 +82,13 @@ class TestContributesCmdAndSDK(YSCBTestCase):
         self.assertIn("Unknown subcommand 'get'", err_msg)
         self.assertIn("Available: list, check", err_msg)
 
-        # 5. list 帶 --module 選項參數 (FR-02)
-        from core.commands.bags import CmdOption
         ret = cli_contributes(CmdBags(args=["list"], options={"module": CmdOption(name="module", params="core")}))
         self.assertEqual(ret, 0)
 
         self.mark_passed()
 
-    @require(Requirement.ENV)
     def test_contributes_check_invalid_payload_returns_error(self):
-        """T-06 補盲: 驗證傳入含未知擴充點與型別錯誤的貢獻檔至 check_contributes 時回傳 1 且輸出包含 [FAIL]。"""
-        import io
-        import os
-        import json
-        import tempfile
-        from contextlib import redirect_stdout
-        from core.commands import contributes_cmd
-
+        """驗證傳入含未知擴充點與型別錯誤的貢獻檔至 check_contributes 時回傳 1 且輸出包含 [FAIL]。"""
         with tempfile.TemporaryDirectory() as tmp_dir:
             bad_core_json = os.path.join(tmp_dir, "core.json")
             with open(bad_core_json, "w", encoding="utf-8") as f:
@@ -128,24 +103,16 @@ class TestContributesCmdAndSDK(YSCBTestCase):
             self.assertEqual(ret, 1)
             self.assertIn("[FAIL]", buf.getvalue())
 
-        # EC-02: 指定不存在的檔案或模組名稱時回傳 1
         self.assertEqual(contributes_cmd.check_contributes("nonexistent_module_xyz_999"), 1)
         self.assertEqual(contributes_cmd.check_contributes("config://nonexistent_mod/contribute.json"), 1)
         self.mark_passed()
 
-    @require(Requirement.ENV)
     def test_contributes_check_project_override_file(self):
-        """T-06 補盲 & FT-02 & EC-01: 驗證 check_contributes 支援 config://core/contribute.json (含包裹與未包裹兩種格式) 與模組級掃描。"""
-        import os
-        import json
-        from core import uri, vfs
-        from core.commands import contributes_cmd
-
+        """驗證 check_contributes 支援 config://core/contribute.json (含包裹與未包裹兩種格式) 與模組級掃描。"""
         cfg_core_dir = uri.resolve("config://core")
         vfs.makedirs("config://core", exist_ok=True)
         cfg_path = os.path.join(cfg_core_dir, "contribute.json")
         try:
-            # 1. 包裹於 {"core": ...} 頂層鍵之標準格式
             wrapped_cfg = {
                 "core": {
                     "commands": {
@@ -161,13 +128,10 @@ class TestContributesCmdAndSDK(YSCBTestCase):
             with open(cfg_path, "w", encoding="utf-8") as f:
                 json.dump(wrapped_cfg, f, indent=2)
 
-            # 驗證 URI 形式與實體路徑形式皆正確推導 target_mod="core" 並通過 (0)
             self.assertEqual(contributes_cmd.check_contributes("config://core/contribute.json"), 0)
             self.assertEqual(contributes_cmd.check_contributes(cfg_path), 0)
-            # 驗證模組級掃描亦納管 config://core/contribute.json
             self.assertEqual(contributes_cmd.check_contributes("core"), 0)
 
-            # 2. EC-01: 未包裹頂層 "core" 鍵（直接為擴充點 dict）亦正常校驗通過
             unwrapped_cfg = {
                 "commands": {
                     "cmd": {
@@ -182,7 +146,6 @@ class TestContributesCmdAndSDK(YSCBTestCase):
                 json.dump(unwrapped_cfg, f, indent=2)
             self.assertEqual(contributes_cmd.check_contributes("config://core/contribute.json"), 0)
 
-            # 3. 寫入非法型別 Payload 時單檔與模組級掃描皆返回 1
             invalid_cfg = {"core": {"commands": "invalid_type"}}
             with open(cfg_path, "w", encoding="utf-8") as f:
                 json.dump(invalid_cfg, f, indent=2)
@@ -194,5 +157,49 @@ class TestContributesCmdAndSDK(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_contributes_check_corrupted_single_file_and_format_file(self):
+        """驗證單檔模式傳入損毀 JSON、損毀 _format.json 及分片路徑 donor_mod 語系連動校驗時優雅回傳 1。"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            corrupt_core = os.path.join(tmp_dir, "core.json")
+            with open(corrupt_core, "w", encoding="utf-8") as f:
+                f.write("{corrupted json syntax")
 
+            buf_c1 = io.StringIO()
+            with redirect_stdout(buf_c1):
+                ret_c1 = contributes_cmd.check_contributes(corrupt_core)
+            self.assertEqual(ret_c1, 1)
+            self.assertIn("[FAIL]", buf_c1.getvalue())
 
+            corrupt_fmt = os.path.join(tmp_dir, "_format.json")
+            with open(corrupt_fmt, "w", encoding="utf-8") as f:
+                f.write("{corrupted format json")
+
+            buf_c2 = io.StringIO()
+            with redirect_stdout(buf_c2):
+                ret_c2 = contributes_cmd.check_contributes(corrupt_fmt)
+            self.assertEqual(ret_c2, 1)
+            self.assertIn("[FAIL]", buf_c2.getvalue())
+
+            valid_fmt = uri.resolve("module://core/contributes/_format.json")
+            buf_v = io.StringIO()
+            with redirect_stdout(buf_v):
+                self.assertEqual(contributes_cmd.check_contributes(valid_fmt), 0)
+
+        # Verify shard path <donor>/contributes/core.json derives donor_mod and checks locale contract
+        donor_name = "mock_donor_loc_err"
+        donor_contrib_dir = uri.resolve(f"module://{donor_name}/contributes")
+        os.makedirs(donor_contrib_dir, exist_ok=True)
+        shard_file = os.path.join(donor_contrib_dir, "core.json")
+        try:
+            with open(shard_file, "w", encoding="utf-8") as f:
+                json.dump({"locales": {"definition": "locales/missing_def.json"}}, f)
+            buf_loc = io.StringIO()
+            with redirect_stdout(buf_loc):
+                ret_loc = contributes_cmd.check_contributes(shard_file)
+            self.assertEqual(ret_loc, 1)
+            self.assertIn("[FAIL]", buf_loc.getvalue())
+        finally:
+            if vfs.exists(f"module://{donor_name}"):
+                vfs.rmtree(f"module://{donor_name}", ignore_errors=True)
+
+        self.mark_passed()

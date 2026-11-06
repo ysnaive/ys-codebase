@@ -4,7 +4,6 @@ Aligned with `core.commands.CmdBags` contract and `contributes/core.json`.
 """
 
 import json
-import os
 import sys
 from typing import Any, Dict, List, Optional, Union
 
@@ -21,20 +20,29 @@ def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
         raw_cmd = " ".join(str(a) for a in args)
         opts: Dict[str, CmdOption] = {}
         pos: List[str] = []
-        for a in args:
-            a_str = str(a)
+        idx = 0
+        while idx < len(args):
+            a_str = str(args[idx])
             if a_str.startswith("--"):
                 k = a_str[2:]
                 v: Any = True
                 if "=" in k:
                     k, val = k.split("=", 1)
                     v = val
+                elif (
+                    k in ("space", "ftype", "depth", "limit")
+                    and idx + 1 < len(args)
+                    and not str(args[idx + 1]).startswith("-")
+                ):
+                    idx += 1
+                    v = str(args[idx])
                 opts[k] = CmdOption(name=k, params=v)
             elif a_str.startswith("-") and len(a_str) > 1:
                 k = a_str[1:]
                 opts[k] = CmdOption(name=k, params=True)
             else:
                 pos.append(a_str)
+            idx += 1
         return CmdBags(raw_cmd=raw_cmd, command=default_cmd, args=pos, options=opts)
     if isinstance(cmd_bags, dict):
         # Support dict-style test bags `{"file": "...", "merged": True, "json": True}`
@@ -179,7 +187,10 @@ def outline(cmd_bags: Any) -> int:
 
     try:
         if not bags.args:
-            print("[ast] 錯誤: 請指定目標檔案路徑或語意 URI。例如: python yscb.py ast outline 'project://foo.py'", file=sys.stderr)
+            if bags.has_option("json"):
+                print(json.dumps({"status": "error", "error": "Missing target file path"}, ensure_ascii=False))
+            else:
+                print("[ast] 錯誤: 請指定目標檔案路徑或語意 URI。例如: python yscb.py ast outline 'project://foo.py'", file=sys.stderr)
             return 1
         file_target = bags.args[0]
         merged = bags.has_option("merged") or bags.has_option("m")
@@ -213,6 +224,8 @@ def outline(cmd_bags: Any) -> int:
         is_detail = bags.has_option("detail") or bags.has_option("d") or bags.has_option("verbose")
         file_uri = bags.has_option("file-uri") or bags.has_option("file_uri")
         print(engine.formatter.format_outline_output(res, as_json=is_json, detail=is_detail, file_uri=file_uri))
+        if isinstance(res, dict) and res.get("error"):
+            return 1
         return 0
     except FileNotFoundError as exc:
         if bags.has_option("json"):
@@ -335,7 +348,10 @@ def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) 
     try:
         targets = bags.args
         if not targets:
-            print(f"[ast] 錯誤: 請指定目標符號名稱。例如: {example_usage}", file=sys.stderr)
+            if bags.has_option("json"):
+                print(json.dumps({"status": "error", "error": "Missing target symbol query"}, ensure_ascii=False))
+            else:
+                print(f"[ast] 錯誤: 請指定目標符號名稱。例如: {example_usage}", file=sys.stderr)
             return 1
         query_str = " ".join(targets) if len(targets) > 1 else targets[0]
         space_target = bags.get_option_value("space")
@@ -392,13 +408,22 @@ def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) 
         )
         return 0
     except FileSpaceNotFoundError as exc:
-        print(f"[ast] 空間不存在: {exc}", file=sys.stderr)
+        if bags.has_option("json"):
+            print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
+        else:
+            print(f"[ast] 空間不存在: {exc}", file=sys.stderr)
         return 1
     except ASTError as exc:
-        print(f"[ast] 操作失敗: {exc}", file=sys.stderr)
+        if bags.has_option("json"):
+            print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
+        else:
+            print(f"[ast] 操作失敗: {exc}", file=sys.stderr)
         return 1
     except Exception as exc:
-        print(f"[ast] 執行異常: {exc}", file=sys.stderr)
+        if bags.has_option("json"):
+            print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
+        else:
+            print(f"[ast] 執行異常: {exc}", file=sys.stderr)
         return 1
 
 
@@ -443,7 +468,10 @@ def status(cmd_bags: Any) -> int:
         print(engine.formatter.format_status_output(st, as_json=bags.has_option("json")))
         return 0
     except Exception as exc:
-        print(f"[ast] 執行異常: {exc}", file=sys.stderr)
+        if bags.has_option("json"):
+            print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
+        else:
+            print(f"[ast] 執行異常: {exc}", file=sys.stderr)
         return 1
 
 
@@ -465,7 +493,10 @@ def clean(cmd_bags: Any) -> int:
             print(f"[ast] 成功清理 {target_str} 之 AST 符號快照與呼叫圖譜快取。")
         return 0
     except Exception as exc:
-        print(f"[ast] 執行異常: {exc}", file=sys.stderr)
+        if bags.has_option("json"):
+            print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
+        else:
+            print(f"[ast] 執行異常: {exc}", file=sys.stderr)
         return 1
 
 

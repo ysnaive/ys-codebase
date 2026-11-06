@@ -1,19 +1,18 @@
 """
 Comprehensive test suite for dev.testing.sandbox (SandboxProvisioner, SandboxContext, and VFS projection).
 """
-import os
-import sys
 import json
+import os
 import shutil
 import tempfile
+import threading
 import zipfile
-import unittest
 from unittest.mock import patch
 
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import require, Requirement
 from dev.testing.sandbox import SandboxProvisioner, SandboxContext
-from core import uri, vfs, PipManager
+from core import uri, vfs, events, PipManager
 
 
 class TestSandboxArchitecture(YSCBTestCase):
@@ -40,7 +39,7 @@ class TestSandboxArchitecture(YSCBTestCase):
 
     @require(Requirement.WORKFLOW)
     def test_op_mksb_atomic_provisioning(self):
-        """FT-01: Verify dev op-mksb creates full micro virtual environment with core hook setup."""
+        """Verify dev op-mksb creates full micro virtual environment with core hook setup."""
         ctx = SandboxProvisioner.create_sandbox()
         try:
             self.assertTrue(os.path.isdir(ctx.sandbox_dir))
@@ -48,15 +47,13 @@ class TestSandboxArchitecture(YSCBTestCase):
             self.assertTrue(os.path.isdir(ctx.host_dir))
             self.assertTrue(os.path.isdir(ctx.engine_dir))
             self.assertTrue(os.path.isdir(ctx.provider_dir))
-            
-            # Verify host yscb.config.json
+
             host_cfg_file = os.path.join(ctx.host_dir, "yscb.config.json")
             self.assertTrue(os.path.isfile(host_cfg_file))
             with open(host_cfg_file, "r", encoding="utf-8") as f:
                 h_data = json.load(f)
             self.assertEqual(h_data.get("yscb_root"), "./engine")
 
-            # Verify core's hook.dev.py auto-configured config.project.json
             core_project_cfg = os.path.join(ctx.engine_dir, "config", "core", "config.project.json")
             self.assertTrue(os.path.isfile(core_project_cfg))
             with open(core_project_cfg, "r", encoding="utf-8") as f:
@@ -68,42 +65,86 @@ class TestSandboxArchitecture(YSCBTestCase):
 
     @require(Requirement.ENV)
     def test_sandbox_vfs_natural_constant_self_locating(self):
-        """FT-02: Verify constant self-locating operates deterministically in sandbox without code hacks."""
+        """Verify VFS and URI resolution inside sandbox host_scope and yscb_scope."""
         ctx = SandboxProvisioner.create_sandbox()
         try:
-            sandbox_uri_file = os.path.join(ctx.engine_dir, "source", "core", "core", "uri.py")
-            curr = os.path.dirname(sandbox_uri_file)
-            calc_root = os.path.dirname(os.path.dirname(os.path.dirname(curr)))
-            self.assertEqual(os.path.abspath(calc_root), os.path.abspath(ctx.engine_dir))
+            with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):
+                self.assertEqual(os.path.abspath(uri.resolve("yscb.host://")), os.path.abspath(ctx.host_dir))
+                self.assertEqual(os.path.abspath(uri.resolve("yscb://")), os.path.abspath(ctx.engine_dir))
+                self.assertEqual(
+                    os.path.abspath(uri.resolve("module.source://core")),
+                    os.path.abspath(os.path.join(ctx.engine_dir, "source", "core")),
+                )
+                self.assertEqual(
+                    os.path.abspath(uri.resolve("module://core")),
+                    os.path.abspath(os.path.join(ctx.engine_dir, ".modules", "core")),
+                )
+                self.assertTrue(vfs.exists("module.source://core/manifest.json"))
         finally:
             SandboxProvisioner.cleanup_sandbox(ctx.sandbox_dir, force=True)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
+    def test_sandbox_context_set_module_config(self):
+        """Verify SandboxContext.set_module_config routes project vs local config files accurately."""
+        sb_dir = self._mkdtemp()
+        ctx = SandboxContext(sb_dir)
+        proj_cfg_path = ctx.set_module_config("core", "config.project.json", {"project_root": "../proj"})
+        local_cfg_path = ctx.set_module_config("core", "config.local.json", {"debug": True})
+        named_local_path = ctx.set_module_config("server", "config.dev.local.json", {"port": 9000})
+
+        self.assertEqual(
+            os.path.abspath(proj_cfg_path),
+            os.path.abspath(os.path.join(ctx.engine_dir, "config", "core", "config.project.json")),
+        )
+        self.assertEqual(
+            os.path.abspath(local_cfg_path),
+            os.path.abspath(os.path.join(ctx.engine_dir, ".config.local", "core", "config.local.json")),
+        )
+        self.assertEqual(
+            os.path.abspath(named_local_path),
+            os.path.abspath(os.path.join(ctx.engine_dir, ".config.local", "server", "config.dev.local.json")),
+        )
+        with open(proj_cfg_path, "r", encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"project_root": "../proj"})
+        with open(local_cfg_path, "r", encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"debug": True})
+        with open(named_local_path, "r", encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"port": 9000})
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
     def test_dual_source_provider_resolution(self):
-        """FT-05: Verify mock provider package creation, CmdBags entrypoint, and index tracking."""
-        pkg_dir = self.create_mock_package("mock_demo_pkg", "1.0.0.0", deps={"core": ">=1.0.0.0"})
+        """Verify mock provider package creation, CmdBags entrypoint, and multi-version index sorting."""
+        pkg_dir_1 = self.create_mock_package("mock_demo_pkg", "1.0.0.0", deps={"core": ">=1.0.0.0"})
+        pkg_dir_2 = self.create_mock_package("mock_demo_pkg", "1.2.0.0", deps={"core": ">=1.0.0.0"})
         try:
-            self.assertTrue(os.path.isdir(pkg_dir))
-            manifest_file = os.path.join(pkg_dir, "manifest.json")
+            self.assertTrue(os.path.isdir(pkg_dir_1))
+            self.assertTrue(os.path.isdir(pkg_dir_2))
+            manifest_file = os.path.join(pkg_dir_1, "manifest.json")
             self.assertTrue(os.path.isfile(manifest_file))
             with open(manifest_file, "r", encoding="utf-8") as f:
                 m = json.load(f)
             self.assertEqual(m["name"], "mock_demo_pkg")
-            cli_file = os.path.join(pkg_dir, "scripts", "cli.py")
+            cli_file = os.path.join(pkg_dir_1, "scripts", "cli.py")
             with open(cli_file, "r", encoding="utf-8") as f:
                 cli_content = f.read()
             self.assertIn("def hello(cmd_bags", cli_content)
             self.assertNotIn("def process(args", cli_content)
+
+            idx_file = os.path.join(os.path.dirname(pkg_dir_1), "index.json")
+            with open(idx_file, "r", encoding="utf-8") as f:
+                idx_data = json.load(f)
+            self.assertEqual(idx_data.get("versions"), ["1.0.0.0", "1.2.0.0"])
         finally:
-            rel_mod = os.path.dirname(pkg_dir)
+            rel_mod = os.path.dirname(pkg_dir_1)
             if os.path.isdir(rel_mod):
                 shutil.rmtree(rel_mod, ignore_errors=True)
         self.mark_passed()
 
     @require(Requirement.WORKFLOW)
     def test_dev_sandbox_hook_convergence(self):
-        """FT-06: Verify SandboxProvisioner dispatches on_test_setup via core.events.broadcast."""
+        """Verify SandboxProvisioner dispatches on_test_setup via core.events.broadcast."""
         ctx = SandboxProvisioner.create_sandbox()
         try:
             flag_file = os.path.join(ctx.sandbox_dir, "setup_fired.flag")
@@ -111,12 +152,15 @@ class TestSandboxArchitecture(YSCBTestCase):
             mod_dir = os.path.join(ctx.engine_dir, "source", "mock_hook_mod", "scripts")
             os.makedirs(mod_dir, exist_ok=True)
             with open(os.path.join(mod_dir, "hook.dev.py"), "w", encoding="utf-8") as f:
-                f.write(f"def on_test_setup(context):\n    with open('{flag_file_escaped}', 'w') as f: f.write('OK')\n    return 'OK'\n")
-            
-            from core import events, uri
+                f.write(
+                    f"def on_test_setup(context):\n"
+                    f"    with open('{flag_file_escaped}', 'w') as f: f.write('OK')\n"
+                    f"    return 'OK'\n"
+                )
+
             scanned_roots = [
                 os.path.join(ctx.engine_dir, "source"),
-                os.path.join(ctx.engine_dir, ".modules")
+                os.path.join(ctx.engine_dir, ".modules"),
             ]
             with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):
                 res = events.broadcast("on_test_setup", context=ctx, emit_module="dev", search_roots=scanned_roots)
@@ -140,8 +184,43 @@ class TestSandboxArchitecture(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
+    def test_create_sandbox_rollback_on_failure_and_active_guard(self):
+        """Verify create_sandbox rolls back allocated directory on failure and cleanup_sandbox guards active sandbox."""
+        target_sb = os.path.join(self._mkdtemp(), "sandbox_rollback_test")
+        with patch.object(
+            SandboxProvisioner,
+            "_provision_core_and_config",
+            side_effect=RuntimeError("simulated provisioning error"),
+        ):
+            with self.assertRaises(RuntimeError):
+                SandboxProvisioner.create_sandbox(target_dir=target_sb, copy_source=False)
+
+        self.assertFalse(os.path.exists(target_sb))
+        self.assertNotIn(os.path.abspath(target_sb), SandboxProvisioner._ACTIVE_SANDBOXES)
+
+        # Active sandbox guardrail: when YSCB_SANDBOX_DIR matches target and is_harness_cleanup=False, do not delete
+        guard_sb = os.path.join(self._mkdtemp(), "sandbox_active_guard")
+        os.makedirs(os.path.join(guard_sb, "host_env", "engine"), exist_ok=True)
+        old_sb_env = os.environ.get("YSCB_SANDBOX_DIR")
+        try:
+            os.environ["YSCB_SANDBOX_DIR"] = guard_sb
+            res_guarded = SandboxProvisioner.cleanup_sandbox(guard_sb, force=True, is_harness_cleanup=False)
+            self.assertTrue(res_guarded)
+            self.assertTrue(os.path.isdir(guard_sb), "Active sandbox must not be deleted when is_harness_cleanup=False")
+
+            res_harness = SandboxProvisioner.cleanup_sandbox(guard_sb, force=True, is_harness_cleanup=True)
+            self.assertTrue(res_harness)
+            self.assertFalse(os.path.exists(guard_sb), "Sandbox must be deleted when is_harness_cleanup=True")
+        finally:
+            if old_sb_env is not None:
+                os.environ["YSCB_SANDBOX_DIR"] = old_sb_env
+            else:
+                os.environ.pop("YSCB_SANDBOX_DIR", None)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
     def test_prune_sandboxes_limit(self):
-        """FT-01: Verify prune_sandboxes deletes oldest sandboxes when total count exceeds max_keep."""
+        """Verify prune_sandboxes deletes oldest sandboxes when total count exceeds max_keep."""
         sandbox_parent = os.path.join(self.sandbox_dir, "test_prune_scope")
         os.makedirs(sandbox_parent, exist_ok=True)
         created_dirs = []
@@ -168,7 +247,7 @@ class TestSandboxArchitecture(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_cleanup_all_sandboxes(self):
-        """FT-02: Verify cleanup_all_sandboxes deletes all sandbox_* directories."""
+        """Verify cleanup_all_sandboxes deletes all sandbox_* directories."""
         sandbox_parent = os.path.join(self.sandbox_dir, "test_cleanup_scope")
         os.makedirs(sandbox_parent, exist_ok=True)
         created_dirs = []
@@ -192,7 +271,7 @@ class TestSandboxArchitecture(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_sandbox_cleanup_empty_or_missing(self):
-        """ET-01: Verify prune_sandboxes and cleanup_all_sandboxes return 0 when no sandboxes exist."""
+        """Verify prune_sandboxes and cleanup_all_sandboxes return 0 when no sandboxes exist."""
         empty_scope = os.path.join(self.sandbox_dir, "test_empty_scope")
         os.makedirs(empty_scope, exist_ok=True)
         cnt1 = SandboxProvisioner.prune_sandboxes(max_keep=3, sandbox_parent_dir=empty_scope)
@@ -203,7 +282,7 @@ class TestSandboxArchitecture(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_sandbox_cleanup_ignores_non_sandbox(self):
-        """ET-02: Verify cleanup_all_sandboxes does not delete non-sandbox directories."""
+        """Verify cleanup_all_sandboxes does not delete non-sandbox directories."""
         sandbox_parent = os.path.join(self.sandbox_dir, "test_ignore_scope")
         os.makedirs(sandbox_parent, exist_ok=True)
         non_sandbox_dir = os.path.join(sandbox_parent, "other_cache_dir_do_not_delete")
@@ -218,7 +297,7 @@ class TestSandboxArchitecture(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_adapt_build_pip_dependencies(self):
-        """FT-07: Verify adapt_build_pip_dependencies extracts specs from build zip and manifest."""
+        """Verify adapt_build_pip_dependencies extracts specs from build zip and manifest."""
         temp_dir = self._mkdtemp()
         mod_name = "test_pip_mod"
         build_mod_dir = os.path.join(temp_dir, mod_name)
@@ -231,8 +310,8 @@ class TestSandboxArchitecture(YSCBTestCase):
             "dependencies": ["core"],
             "pip_dependencies": {
                 "mock-pkg-a": ">=1.0.0",
-                "mock-pkg-b": ""
-            }
+                "mock-pkg-b": "",
+            },
         }
         zip_path = os.path.join(build_mod_dir, "1.0.0.build.zip")
         with zipfile.ZipFile(zip_path, "w") as zf:
@@ -257,7 +336,6 @@ class TestSandboxArchitecture(YSCBTestCase):
             with patch("core.vfs.exists", side_effect=mock_exists), \
                  patch("core.uri.resolve", side_effect=mock_resolve), \
                  patch.object(PipManager, "install_packages") as mock_install:
-
                 specs = SandboxProvisioner.adapt_build_pip_dependencies(target_modules=[mod_name])
                 self.assertEqual(specs, ["mock-pkg-a>=1.0.0", "mock-pkg-b"])
                 mock_install.assert_called_once_with(["mock-pkg-a>=1.0.0", "mock-pkg-b"])
@@ -271,7 +349,7 @@ class TestSandboxArchitecture(YSCBTestCase):
 
     @require(Requirement.ENV)
     def test_sandbox_venv_projection_and_cleanup(self):
-        """FT-08: Verify _project_venv creates projection and cleanup_sandbox protects host venv."""
+        """Verify _project_venv symlink/junction projection, .pth fallback when symlink fails, and host venv protection."""
         host_dir = self._mkdtemp()
         host_venv = os.path.join(host_dir, ".venv")
         os.makedirs(host_venv, exist_ok=True)
@@ -290,7 +368,7 @@ class TestSandboxArchitecture(YSCBTestCase):
         sb_venv = os.path.join(sb_engine, ".venv")
         self.assertTrue(os.path.exists(sb_venv))
 
-        cleaned = SandboxProvisioner.cleanup_sandbox(sb_dir, force=True)
+        cleaned = SandboxProvisioner.cleanup_sandbox(sb_dir, force=True, is_harness_cleanup=True)
         self.assertTrue(cleaned)
         self.assertFalse(os.path.exists(sb_dir))
 
@@ -298,51 +376,71 @@ class TestSandboxArchitecture(YSCBTestCase):
         self.assertTrue(os.path.isfile(canary_file))
         with open(canary_file, "r", encoding="utf-8") as f:
             self.assertEqual(f.read(), "host_data_alive")
+
+        # Verify .pth fallback when os.symlink raises OSError
+        sb_dir_pth = self._mkdtemp()
+        sb_engine_pth = os.path.join(sb_dir_pth, "host_env", "engine")
+        os.makedirs(sb_engine_pth, exist_ok=True)
+        with patch("os.symlink", side_effect=OSError("symlink disabled")):
+            res_pth = SandboxProvisioner._project_venv(host_dir, sb_engine_pth)
+        self.assertTrue(res_pth)
+        sb_site_pkg = PipManager(sb_engine_pth).get_site_packages_dir()
+        pth_file = os.path.join(sb_site_pkg, "host_venv.pth")
+        self.assertTrue(os.path.isfile(pth_file))
+        with open(pth_file, "r", encoding="utf-8") as f:
+            self.assertEqual(f.read().strip(), PipManager(host_dir).get_site_packages_dir())
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_sort_zip_filenames_by_semver_and_bad_zip(self):
-        """FR-06, EC-07: Verify _sort_zip_filenames_by_semver sorts multi-digit versions and handles bad zips."""
+    def test_sort_zip_filenames_and_find_latest_build_zip(self):
+        """Verify _sort_zip_filenames_by_semver handles invalid version fallback, tie-breaking, and _find_latest_build_zip."""
         filenames = [
+            "invalid_ver.zip",
+            "alpha.build.zip",
             "1.2.0.build.zip",
             "1.10.0.build.zip",
             "1.9.0.build.zip",
             "1.10.1.build.zip",
-            "0.9.9.build.zip"
+            "0.9.9.build.zip",
         ]
         sorted_fns = SandboxProvisioner._sort_zip_filenames_by_semver(filenames)
         expected = [
+            "alpha.build.zip",
+            "invalid_ver.zip",
             "0.9.9.build.zip",
             "1.2.0.build.zip",
             "1.9.0.build.zip",
             "1.10.0.build.zip",
-            "1.10.1.build.zip"
+            "1.10.1.build.zip",
         ]
         self.assertEqual(sorted_fns, expected)
-        self.assertEqual(sorted_fns[-1], "1.10.1.build.zip")
 
-        # Test corrupt zip handling during sandbox extraction
-        temp_dir = self._mkdtemp()
-        bad_zip = os.path.join(temp_dir, "corrupt.build.zip")
-        with open(bad_zip, "w") as f:
-            f.write("not a zip file content")
+        temp_build_root = self._mkdtemp()
+        mod_build_dir = os.path.join(temp_build_root, "mock_ver_mod")
+        os.makedirs(mod_build_dir, exist_ok=True)
+        for fname in ("1.2.0.build.zip", "1.10.0.build.zip", "bad_ver.build.zip"):
+            with open(os.path.join(mod_build_dir, fname), "wb") as f:
+                f.write(b"PK")
 
-        with self.assertRaises(zipfile.BadZipFile):
-            with zipfile.ZipFile(bad_zip, "r") as zf:
-                zf.namelist()
-
+        orig_exists = vfs.exists
+        orig_resolve = uri.resolve
+        with patch("core.vfs.exists", side_effect=lambda u: True if u == "module.build://" else orig_exists(u)), \
+             patch("core.uri.resolve", side_effect=lambda u: temp_build_root if u == "module.build://" else orig_resolve(u)):
+            latest = SandboxProvisioner._find_latest_build_zip("mock_ver_mod")
+            self.assertIsNotNone(latest)
+            self.assertEqual(os.path.basename(latest), "1.10.0.build.zip")
+            self.assertIsNone(SandboxProvisioner._find_latest_build_zip("nonexistent_mod"))
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_deploy_modules_build_zip_skips_copytree_and_falls_back_on_corrupt_zip(self):
-        """FR-07, EC-06: Verify valid .build.zip skips host copytree, and corrupt .build.zip falls back to host copytree."""
+        """Verify valid .build.zip skips host copytree, and corrupt .build.zip falls back to host copytree."""
         fake_root = self._mkdtemp()
         fake_host_modules = os.path.join(fake_root, ".modules")
         fake_build_root = os.path.join(fake_root, ".build")
         os.makedirs(fake_host_modules, exist_ok=True)
         os.makedirs(fake_build_root, exist_ok=True)
 
-        # Module 'mod_valid' has both host .modules/mod_valid and valid .build/mod_valid/1.0.0.build.zip
         host_mod_valid = os.path.join(fake_host_modules, "mod_valid")
         os.makedirs(host_mod_valid, exist_ok=True)
         with open(os.path.join(host_mod_valid, "from_host.txt"), "w", encoding="utf-8") as f:
@@ -355,7 +453,6 @@ class TestSandboxArchitecture(YSCBTestCase):
             zf.writestr("manifest.json", json.dumps({"name": "mod_valid", "version": "1.0.0.1"}))
             zf.writestr("from_build.txt", "build_version")
 
-        # Module 'mod_corrupt' has both host .modules/mod_corrupt and a corrupted .build/mod_corrupt/1.0.0.build.zip
         host_mod_corrupt = os.path.join(fake_host_modules, "mod_corrupt")
         os.makedirs(host_mod_corrupt, exist_ok=True)
         with open(os.path.join(host_mod_corrupt, "manifest.json"), "w", encoding="utf-8") as f:
@@ -377,8 +474,6 @@ class TestSandboxArchitecture(YSCBTestCase):
         def mock_exists(u: str) -> bool:
             if u in ("module://", "module.build://"):
                 return True
-            if u == "module.source://":
-                return False
             return False
 
         def mock_resolve(u: str) -> str:
@@ -386,8 +481,6 @@ class TestSandboxArchitecture(YSCBTestCase):
                 return fake_host_modules
             if u == "module.build://":
                 return fake_build_root
-            if u == "yscb://":
-                return fake_root
             return fake_root
 
         orig_copytree = shutil.copytree
@@ -402,14 +495,12 @@ class TestSandboxArchitecture(YSCBTestCase):
              patch("shutil.copytree", side_effect=tracking_copytree):
             host_cfg = SandboxProvisioner._deploy_target_and_dependency_modules(ctx, copy_source=False)
 
-        # 1. 'mod_valid' was extracted from .build.zip and NEVER passed to shutil.copytree
         self.assertNotIn("mod_valid", copied_srcs)
         sb_valid_dir = os.path.join(ctx.engine_dir, ".modules", "mod_valid")
         self.assertTrue(os.path.isfile(os.path.join(sb_valid_dir, "from_build.txt")))
         self.assertFalse(os.path.exists(os.path.join(sb_valid_dir, "from_host.txt")))
         self.assertEqual(host_cfg["installed_modules"]["mod_valid"]["version"], "1.0.0.1")
 
-        # 2. EC-06: 'mod_corrupt' failed zip extraction, cleaned up empty dir, and fell back to shutil.copytree
         self.assertIn("mod_corrupt", copied_srcs)
         sb_corrupt_dir = os.path.join(ctx.engine_dir, ".modules", "mod_corrupt")
         self.assertTrue(os.path.isfile(os.path.join(sb_corrupt_dir, "fallback_ok.txt")))
@@ -419,8 +510,6 @@ class TestSandboxArchitecture(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_cleanup_sandbox_releases_lock_before_teardown_and_rmtree(self):
         """Verify cleanup_sandbox does not hold _SANDBOX_LOCK during on_test_teardown broadcast or robust_rmtree."""
-        import threading
-
         sb_dir = self._mkdtemp()
         ctx = SandboxContext(sb_dir)
         for d in (ctx.sandbox_dir, ctx.project_dir, ctx.host_dir, ctx.engine_dir, ctx.provider_dir):
@@ -461,5 +550,3 @@ class TestSandboxArchitecture(YSCBTestCase):
         self.assertNotIn(os.path.abspath(sb_dir), SandboxProvisioner._ACTIVE_SANDBOXES)
         self.assertEqual(lock_held_states, [("broadcast", False), ("rmtree", False)])
         self.mark_passed()
-
-

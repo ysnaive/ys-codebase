@@ -10,7 +10,7 @@ import json
 import os
 from pathlib import Path
 import sys
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from .schema import OutlineResult
 
@@ -206,6 +206,8 @@ class ASTResultFormatter:
                 compact_payload["filters"] = data["filters"]
             if data.get("warnings"):
                 compact_payload["warnings"] = data["warnings"]
+            if data.get("error"):
+                compact_payload["error"] = data["error"]
             return format_json(compact_payload, indent=None)
 
         file_path = data.get("file_path", "")
@@ -224,6 +226,9 @@ class ASTResultFormatter:
             "-" * 85,
         ]
 
+        if data.get("error"):
+            lines.append(f"  {self.styler.err(str(data['error']))}")
+
         symbols = data.get("symbols") or []
         partial_siblings_map: Dict[str, List[Dict[str, Any]]] = data.get("partial_siblings") or {}
 
@@ -232,12 +237,22 @@ class ASTResultFormatter:
         else:
             self._render_outline_nodes(symbols, partial_siblings_map, lines, indent=0)
 
-        # If partial_siblings_map has entries not yet rendered under a node, render at bottom
-        rendered_fqns = {
-            (s.get("fqn") or s.get("name", ""))
-            for s in symbols
-            if isinstance(s, dict) and s.get("is_partial")
-        }
+        # Recursively collect all rendered `is_partial` FQNs/names so nested partial nodes are not duplicated at bottom
+        rendered_fqns: Set[str] = set()
+
+        def _collect_rendered_partial_fqns(node_list: List[Any]) -> None:
+            for item in node_list:
+                d = item.to_dict() if hasattr(item, "to_dict") else (item if isinstance(item, dict) else {})
+                if d.get("is_partial"):
+                    if d.get("fqn"):
+                        rendered_fqns.add(str(d["fqn"]))
+                    if d.get("name"):
+                        rendered_fqns.add(str(d["name"]))
+                children = d.get("members") or d.get("children") or []
+                if children:
+                    _collect_rendered_partial_fqns(children)
+
+        _collect_rendered_partial_fqns(symbols)
         unrendered_siblings = {
             k: v for k, v in partial_siblings_map.items() if k not in rendered_fqns and v
         }
@@ -563,6 +578,10 @@ class ASTResultFormatter:
             return f"[ast] 查無相符目標符號: '{q}'"
 
         target = self._coerce_symbol_dict(raw_target)
+        mode = detail_mode.lower() if isinstance(detail_mode, str) else "auto"
+        if mode not in ("simple", "detail"):
+            mode = "auto"
+
         target_link = self.format_file_link(target["file_path"], line=target["line_number"], end_line=target.get("end_line"), file_uri=eff_file_uri)
         depth = result.get("max_depth", result.get("depth", 2))
         total_syms = result.get("total_impacted_symbols", result.get("total_affected_symbols", 0))
@@ -573,6 +592,8 @@ class ASTResultFormatter:
         if is_md:
             header = f"###  重構影響面擴散拓撲 (Impact Analysis): `{target['name']}`{overload_tag}\n\n"
             header += f"- ** 目標核心符號**: `{target['name']}` ({target['kind']}) 檔案: {target_link}\n"
+            if mode == "detail" and target.get("signature"):
+                header += f"  - **簽名**: `{target['signature']}`\n"
             header += f"- ** 影響半徑**: 擴散深度 `{depth}` 階，波及 `{total_syms}` 個符號 / `{total_files}` 個實體檔案"
             lines = [header, ""]
         else:
@@ -590,6 +611,8 @@ class ASTResultFormatter:
                 for ov in overloads:
                     ov_d = self._coerce_symbol_dict(ov)
                     lines.append(f"   * {ov_d.get('signature') or ov_d.get('name')} ({ov_d.get('file_path')}:L{ov_d.get('line_number', 1)})")
+            elif mode == "detail" and target.get("signature"):
+                lines.append(f"   簽名: {target['signature']}")
             lines.append("")
 
         layers = result.get("layers", {})
@@ -599,10 +622,29 @@ class ASTResultFormatter:
             return "\n".join(lines)
 
         sorted_depths = sorted(layers.keys(), key=lambda x: int(x))
+        max_items = limit_mode if (isinstance(limit_mode, int) and limit_mode > 0) else None
+        effective_layers: List[Tuple[Any, List[Any]]] = []
+        remaining = max_items
+        for d in sorted_depths:
+            syms_list = list(layers[d] or [])
+            if not syms_list:
+                continue
+            if remaining is not None:
+                if remaining <= 0:
+                    break
+                syms_list = syms_list[:remaining]
+                remaining -= len(syms_list)
+            if syms_list:
+                effective_layers.append((d, syms_list))
+
+        if not effective_layers:
+            empty_msg = "  (未發現上游依賴影響點，修改安全)" if not is_md else "> *(未發現上游依賴影響點，修改安全)*"
+            lines.append(empty_msg)
+            return "\n".join(lines)
+
         rendered_nodes = 0
-        for d_idx, d in enumerate(sorted_depths):
-            syms = layers[d]
-            is_last_depth = d_idx == len(sorted_depths) - 1
+        for d_idx, (d, syms) in enumerate(effective_layers):
+            is_last_depth = d_idx == len(effective_layers) - 1
             depth_branch = "└──" if is_last_depth else "├──"
             hop_int = int(d)
             tag_name = f"{hop_int} 階直接影響 (Direct Callers)" if hop_int == 1 else f"{hop_int} 階間接影響 (Transitive Callers Level {hop_int})"
@@ -618,15 +660,19 @@ class ASTResultFormatter:
                 s = self._coerce_symbol_dict(raw_s)
                 is_last_sym = s_idx == len(syms) - 1
                 sub_branch = "└──" if is_last_sym else "├──"
+                sym_pipe = "   " if is_last_sym else "│  "
                 link_str = self.format_file_link(s["file_path"], line=s["line_number"], end_line=s.get("end_line"), file_uri=eff_file_uri)
                 rendered_nodes += 1
                 if is_md:
-                    lines.append(f"- **#{rendered_nodes:02d}** 檔案: {link_str} (`{s['kind']}`: **{s['name']}**)")
+                    sig_suffix = f" — `{s['signature']}`" if (mode == "detail" and s.get("signature")) else ""
+                    lines.append(f"- **#{rendered_nodes:02d}** 檔案: {link_str} (`{s['kind']}`: **{s['name']}**){sig_suffix}")
                 else:
                     lines.append(
                         f"{sub_prefix}{sub_branch} #{rendered_nodes:02d} 檔案: {self.styler.path(link_str)} "
                         f"({self.styler.kind(s['kind'])}:{self.styler.symbol(s['name'])})"
                     )
+                    if mode == "detail" and s.get("signature"):
+                        lines.append(f"{sub_prefix}{sym_pipe}   簽名: {s['signature']}")
 
         return "\n".join(lines)
 
@@ -655,4 +701,3 @@ __all__ = [
     "TerminalStyler",
     "format_json",
 ]
-

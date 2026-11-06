@@ -32,7 +32,15 @@ from .embedding import EmbeddingService, VectorIndex, format_symbol_embedding_te
 from .exceptions import KnowledgeDBError
 from .hybrid import HybridSearchEngine
 from .io_utils import is_dirty_file_match, normalize_dirty_paths
-from .retrieval import BM25Engine, InvertedIndex, QueryFilter, SearchResult, SnippetExtractor
+from .retrieval import (
+    BM25Engine,
+    InvertedIndex,
+    QueryFilter,
+    SearchResult,
+    SnippetExtractor,
+    format_symbol_summary,
+    normalize_ftypes,
+)
 from .schema import AggregatedFileResult, AggregatedItem, UnifiedSymbol
 from .service import (
     clear_worker_state,
@@ -71,16 +79,8 @@ def _resolve_default_knowledge_storage_dir(project_root: Optional[Path] = None) 
 
 
 def _normalize_ftypes(ftypes: Optional[Union[str, List[str]]]) -> Optional[List[str]]:
-    if not ftypes:
-        return None
-    raw_list = [ftypes] if isinstance(ftypes, str) else list(ftypes)
-    result: List[str] = []
-    for item in raw_list:
-        for p in re.split(r"[|,]", str(item)):
-            clean = p.strip().lower().lstrip(".")
-            if clean and clean not in result:
-                result.append(clean)
-    return result or None
+    norm = sorted(normalize_ftypes(ftypes))
+    return norm or None
 
 
 _GLOBAL_INDEX_CACHE: Dict[str, Any] = {
@@ -259,6 +259,12 @@ class IndexingPipeline:
                     self._unified_index = _GLOBAL_INDEX_CACHE["unified_index"]
             except Exception as e:
                 logger.warning(f"Failed loading unified index cache: {e}")
+        else:
+            with _CACHE_LOCK:
+                if _GLOBAL_INDEX_CACHE["unified_mtime"] > 0.0:
+                    _GLOBAL_INDEX_CACHE["unified_index"] = None
+                    _GLOBAL_INDEX_CACHE["unified_mtime"] = 0.0
+                    self._unified_index = None
 
         if load_vectors:
             if vector_file.exists():
@@ -279,6 +285,35 @@ class IndexingPipeline:
                         _GLOBAL_INDEX_CACHE["vector_mtime"] = 0.0
                         self.hybrid_engine.vector_index = VectorIndex()
 
+    def _sync_ast_snapshot(self, force: bool = False) -> Any:
+        """同步並取得最新 ASTSnapshot（僅於無磁碟快取或存在未消費變更時才強制重建）。"""
+        ast_has_disk = (
+            self.ast_engine._ensure_symbols_loaded()
+            if hasattr(self.ast_engine, "_ensure_symbols_loaded")
+            else self.ast_engine._ensure_loaded_from_disk()
+        )
+        has_ast_diff = False
+        try:
+            if self.scanner is not None and hasattr(self.scanner, "diff"):
+                has_ast_diff = bool(self.scanner.diff(consumer_id="ast", auto_refresh=False).has_changes)
+        except Exception:
+            has_ast_diff = True
+        ast_force = bool(force and (not ast_has_disk or has_ast_diff))
+        return self.ast_engine.ensure_jit_synced(force=ast_force)
+
+    def get_current_ast_generation(self) -> Optional[int]:
+        """優先透過輕量 get_persisted_meta() 讀取當前 AST 快照世代水位，回退至 _ensure_loaded_from_disk()。"""
+        try:
+            if hasattr(self.ast_engine, "get_persisted_meta"):
+                meta = self.ast_engine.get_persisted_meta()
+                if isinstance(meta, dict) and "ast_generation" in meta:
+                    return int(meta.get("ast_generation", 0) or 0)
+            if self.ast_engine is not None and self.ast_engine._ensure_loaded_from_disk() and self.ast_engine._snapshot is not None:
+                return int(self.ast_engine._snapshot.ast_generation)
+        except Exception:
+            pass
+        return None
+
     def build_unified_index(
         self,
         force: bool = False,
@@ -292,20 +327,16 @@ class IndexingPipeline:
         with self._index_lock:
             return self._build_unified_index_locked(
                 force=force,
-                current_files=current_files,
                 interactive=interactive,
                 progress_callback=progress_callback,
-                allow_parallel=allow_parallel,
                 skip_vectors=skip_vectors,
             )
 
     def _build_unified_index_locked(
         self,
         force: bool = False,
-        current_files: Optional[Dict[str, Tuple[float, int]]] = None,
         interactive: bool = False,
         progress_callback: Optional[Any] = None,
-        allow_parallel: bool = True,
         skip_vectors: bool = False,
     ) -> InvertedIndex:
         indices_dir = self.get_indices_dir()
@@ -338,15 +369,7 @@ class IndexingPipeline:
 
         # Stage 1: Single-Parse Symbol Sharing via ASTEngine
         t0 = time.time()
-        ast_has_disk = self.ast_engine._ensure_symbols_loaded() if hasattr(self.ast_engine, "_ensure_symbols_loaded") else self.ast_engine._ensure_loaded_from_disk()
-        has_ast_diff = False
-        try:
-            if self.scanner is not None and hasattr(self.scanner, "diff"):
-                has_ast_diff = bool(self.scanner.diff(consumer_id="ast", auto_refresh=False).has_changes)
-        except Exception:
-            has_ast_diff = True
-        ast_force = bool(force and (not ast_has_disk or has_ast_diff))
-        snapshot = self.ast_engine.ensure_jit_synced(force=ast_force)
+        snapshot = self._sync_ast_snapshot(force=force)
         _report(1, f"AST 快照同步與符號共享 (gen={snapshot.ast_generation})", (time.time() - t0) * 1000)
 
         # Stage 2: Build BM25 InvertedIndex directly from ASTSnapshot.symbols (filtered to weighted spaces)
@@ -487,7 +510,6 @@ class IndexingPipeline:
         with self._index_lock:
             return self._hot_patch_unified_index_locked(
                 diff_detail=diff_detail,
-                full_files_map=full_files_map,
                 timeout_seconds=timeout_seconds,
                 skip_vectors=skip_vectors,
             )
@@ -693,7 +715,6 @@ class IndexingPipeline:
     def _hot_patch_unified_index_locked(
         self,
         diff_detail: ScanDiffDetail,
-        full_files_map: Optional[Dict[str, Tuple[float, int]]] = None,
         timeout_seconds: Optional[float] = None,
         skip_vectors: bool = False,
     ) -> HotPatchResult:
@@ -1000,15 +1021,7 @@ class IndexingPipeline:
             except Exception as e:
                 logger.warning(f"Failed loading binary cached index for '{sp_name}', rebuilding: {e}")
 
-        ast_has_disk = self.ast_engine._ensure_symbols_loaded() if hasattr(self.ast_engine, "_ensure_symbols_loaded") else self.ast_engine._ensure_loaded_from_disk()
-        has_ast_diff = False
-        try:
-            if self.scanner is not None and hasattr(self.scanner, "diff"):
-                has_ast_diff = bool(self.scanner.diff(consumer_id="ast", auto_refresh=False).has_changes)
-        except Exception:
-            has_ast_diff = True
-        ast_force = bool(force and (not ast_has_disk or has_ast_diff))
-        snapshot = self.ast_engine.ensure_jit_synced(force=ast_force)
+        snapshot = self._sync_ast_snapshot(force=force)
         space_symbols = [
             sym for sym in snapshot.symbols.values()
             if not sym.spaces or sp_name in sym.spaces
@@ -1033,6 +1046,10 @@ class IndexingPipeline:
 
     def clean(self, space: Optional[str] = None) -> None:
         """清理指定空間或全空間之 Bundle 檔案與倒排索引快取。"""
+        with self._index_lock:
+            self._clean_locked(space=space)
+
+    def _clean_locked(self, space: Optional[str] = None) -> None:
         if space is not None:
             targets = [self.space_manager.get_space(space)]
         else:
@@ -1083,6 +1100,18 @@ class IndexingPipeline:
             _GLOBAL_INDEX_CACHE["unified_mtime"] = 0.0
             _GLOBAL_INDEX_CACHE["vector_index"] = None
             _GLOBAL_INDEX_CACHE["vector_mtime"] = 0.0
+        try:
+            if space is not None:
+                self._reset_consumer_cursor(space_name=space, consumer_id="knowledge-db")
+            self._reset_consumer_cursor(space_name=None, consumer_id="knowledge-db")
+        except Exception:
+            pass
+        try:
+            if space is not None:
+                self._reset_consumer_cursor(space_name=space, consumer_id="knowledge-db")
+            self._reset_consumer_cursor(space_name=None, consumer_id="knowledge-db")
+        except Exception:
+            pass
 
     # ----------------------------------------------------------------------
     # 3 階段檢索編排
@@ -1130,13 +1159,7 @@ class IndexingPipeline:
                 if not diff_res.has_changes:
                     self._ensure_indices_loaded(load_vectors=require_vectors)
                     if self._unified_index is not None:
-                        ast_gen_now: Optional[int] = None
-                        if hasattr(self.ast_engine, "get_persisted_meta"):
-                            meta = self.ast_engine.get_persisted_meta()
-                            if isinstance(meta, dict):
-                                ast_gen_now = int(meta.get("ast_generation", 0))
-                        elif self.ast_engine._ensure_loaded_from_disk() and self.ast_engine._snapshot is not None:
-                            ast_gen_now = int(self.ast_engine._snapshot.ast_generation)
+                        ast_gen_now = self.get_current_ast_generation()
                         if (
                             ast_gen_now is not None
                             and int(getattr(self._unified_index, "acked_ast_generation", 0) or 0) != ast_gen_now
@@ -1348,7 +1371,7 @@ class IndexingPipeline:
                             score=h["score"],
                             matched_terms=h.get("matched_terms", []),
                             space=sym.spaces[0] if getattr(sym, "spaces", None) else "",
-                            snippet=sym.docstring or "",
+                            snippet=format_symbol_summary(sym),
                         )
                     )
                 return raw_results
@@ -1383,7 +1406,7 @@ class IndexingPipeline:
                             symbol=sym,
                             score=h["score"],
                             matched_terms=h.get("matched_terms", []),
-                            snippet=sym.docstring or "",
+                            snippet=format_symbol_summary(sym),
                         )
                     )
                 for sp in getattr(sym, "spaces", []):

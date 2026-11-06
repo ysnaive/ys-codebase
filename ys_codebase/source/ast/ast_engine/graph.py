@@ -233,26 +233,42 @@ class CallGraphIndex:
             raise SchemaValidationError("CallGraphIndex data must be a dictionary.")
 
         idx = cls()
-        int_to_id: List[str] = list(data.get("int_to_id", []))
-        raw_fwd = data.get("forward_graph", {})
-        raw_sites = data.get("call_sites_map", {})
+        raw_ids = data.get("int_to_id") or []
+        int_to_id: List[str] = [str(x) for x in raw_ids] if isinstance(raw_ids, (list, tuple)) else []
+        raw_fwd = data.get("forward_graph")
+        fwd_dict = raw_fwd if isinstance(raw_fwd, dict) else {}
+        raw_sites = data.get("call_sites_map")
+        sites_dict = raw_sites if isinstance(raw_sites, dict) else {}
 
         parsed_sites: Dict[Tuple[int, int], List[SymbolCallSite]] = defaultdict(list)
-        for key_str, sites in raw_sites.items():
-            if ":" in key_str:
+        for key_str, sites in sites_dict.items():
+            if isinstance(key_str, str) and ":" in key_str and isinstance(sites, (list, tuple)):
                 u_s, v_s = key_str.split(":", 1)
-                u_int, v_int = int(u_s), int(v_s)
+                try:
+                    u_int, v_int = int(u_s), int(v_s)
+                except ValueError:
+                    continue
                 parsed_sites[(u_int, v_int)] = [
                     SymbolCallSite.from_dict(s) if isinstance(s, dict) else s
                     for s in sites
+                    if s is not None
                 ]
 
-        for u_str, vs in raw_fwd.items():
-            u_int = int(u_str)
-            if u_int < len(int_to_id):
+        for u_str, vs in fwd_dict.items():
+            if not isinstance(vs, (list, tuple)):
+                continue
+            try:
+                u_int = int(u_str)
+            except (ValueError, TypeError):
+                continue
+            if 0 <= u_int < len(int_to_id):
                 u_id = int_to_id[u_int]
-                for v_int in vs:
-                    if v_int < len(int_to_id):
+                for v_raw in vs:
+                    try:
+                        v_int = int(v_raw)
+                    except (ValueError, TypeError):
+                        continue
+                    if 0 <= v_int < len(int_to_id):
                         v_id = int_to_id[v_int]
                         sites_for_edge = parsed_sites.get((u_int, v_int), [])
                         if sites_for_edge:

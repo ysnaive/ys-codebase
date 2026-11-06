@@ -93,19 +93,22 @@ class MemberInfo:
             raise SchemaValidationError("MemberInfo data must be a dict.")
         if "name" not in data or "kind" not in data:
             raise SchemaValidationError("MemberInfo requires 'name' and 'kind'.")
-        params_raw = data.get("parameters", [])
+        params_raw = data.get("parameters") or []
         params = tuple(dict(p) for p in params_raw if isinstance(p, dict)) if isinstance(params_raw, (list, tuple)) else ()
+        raw_ln = data.get("line_number")
+        if raw_ln is None:
+            raw_ln = data.get("line")
         return cls(
             name=str(data["name"]),
             kind=str(data["kind"]),
-            signature=str(data.get("signature", "")),
-            docstring=str(data.get("docstring", "")),
-            visibility=str(data.get("visibility", "public")),
-            line_number=int(data.get("line_number", data.get("line", 0))),
+            signature=str(data.get("signature") or ""),
+            docstring=str(data.get("docstring") or ""),
+            visibility=str(data.get("visibility") or "public"),
+            line_number=int(raw_ln or 0),
             is_static=bool(data.get("is_static", False)),
-            fqn=str(data.get("fqn", "")),
-            parent_id=str(data.get("parent_id", "")),
-            return_type=str(data.get("return_type", "")),
+            fqn=str(data.get("fqn") or ""),
+            parent_id=str(data.get("parent_id") or ""),
+            return_type=str(data.get("return_type") or ""),
             parameters=params,
         )
 
@@ -141,15 +144,17 @@ class LanguageConfig:
             raise SchemaValidationError("LanguageConfig data must be a dict.")
         if "id" not in data or "extensions" not in data:
             raise SchemaValidationError("LanguageConfig requires 'id' and 'extensions'.")
+        raw_exts = data.get("extensions") or []
+        raw_kinds = data.get("custom_kinds") or []
         return cls(
             id=str(data["id"]),
-            name=str(data.get("name", data["id"])),
-            extensions=tuple(str(e) for e in data.get("extensions", [])),
-            mode=str(data.get("mode", "tree_sitter")),
+            name=str(data.get("name") or data["id"]),
+            extensions=tuple(str(e) for e in raw_exts) if isinstance(raw_exts, (list, tuple, set)) else (),
+            mode=str(data.get("mode") or "tree_sitter"),
             grammar=data.get("grammar"),
             query_file=data.get("query_file"),
             parser_entry=data.get("parser_entry"),
-            custom_kinds=tuple(dict(k) for k in data.get("custom_kinds", [])),
+            custom_kinds=tuple(dict(k) for k in raw_kinds if isinstance(k, dict)) if isinstance(raw_kinds, (list, tuple)) else (),
         )
 
 
@@ -269,7 +274,7 @@ class UnifiedSymbol:
                             line_number=m.line_number,
                             is_static=bool((m.metadata or {}).get("is_static", False)),
                             fqn=m.fqn,
-                            parent_id=m.parent_id,
+                            parent_id=m.parent_id or "",
                             return_type=m.return_type,
                             parameters=m.parameters,
                         )
@@ -277,26 +282,29 @@ class UnifiedSymbol:
                 elif isinstance(m, dict):
                     if "name" in m and "kind" in m:
                         meta_d = m.get("metadata") if isinstance(m.get("metadata"), dict) else {}
-                        p_raw = m.get("parameters", [])
+                        p_raw = m.get("parameters") or []
                         p_tup = tuple(dict(p) for p in p_raw if isinstance(p, dict)) if isinstance(p_raw, (list, tuple)) else ()
+                        m_ln = m.get("line_number")
+                        if m_ln is None:
+                            m_ln = m.get("line")
                         out.append(
                             MemberInfo(
                                 name=str(m["name"]),
                                 kind=str(m["kind"]),
-                                signature=str(m.get("signature", "")),
-                                docstring=str(m.get("docstring", "")),
-                                visibility=str(m.get("visibility", "public")),
-                                line_number=int(m.get("line_number", m.get("line", 0))),
+                                signature=str(m.get("signature") or ""),
+                                docstring=str(m.get("docstring") or ""),
+                                visibility=str(m.get("visibility") or "public"),
+                                line_number=int(m_ln or 0),
                                 is_static=bool(m.get("is_static", meta_d.get("is_static", False))),
-                                fqn=str(m.get("fqn", "")),
-                                parent_id=str(m.get("parent_id", "")),
-                                return_type=str(m.get("return_type", "")),
+                                fqn=str(m.get("fqn") or ""),
+                                parent_id=str(m.get("parent_id") or ""),
+                                return_type=str(m.get("return_type") or ""),
                                 parameters=p_tup,
                             )
                         )
             return out
 
-        children_raw = data.get("children", [])
+        children_raw = data.get("children") or []
         members_raw = data.get("members")
         children_list = _coerce_member_list(children_raw)
         children_tuple: Tuple[MemberInfo, ...] = tuple(children_list)
@@ -306,9 +314,10 @@ class UnifiedSymbol:
             members_list = _coerce_member_list(members_raw)
             members_tuple = children_tuple if members_list == children_list else tuple(members_list)
 
-        params_raw = data.get("parameters", [])
-        parameters = tuple(dict(p) for p in params_raw if isinstance(p, dict))
-        metadata = dict(data.get("metadata", {}))
+        params_raw = data.get("parameters") or []
+        parameters = tuple(dict(p) for p in params_raw if isinstance(p, dict)) if isinstance(params_raw, (list, tuple)) else ()
+        raw_metadata = data.get("metadata")
+        metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
         if "_own_members" in metadata and isinstance(metadata["_own_members"], (list, tuple)):
             metadata["_own_members"] = [
                 MemberInfo.from_dict(m) if isinstance(m, dict) else m
@@ -319,24 +328,28 @@ class UnifiedSymbol:
             if "spaces" not in metadata and single_sp:
                 metadata["spaces"] = [single_sp]
 
+        line_num = int(data["line_number"] or 0)
+        raw_end = data.get("end_line")
+        end_ln = int(raw_end if raw_end is not None else line_num)
+
         return cls(
             id=str(data["id"]),
             name=str(data["name"]),
             kind=str(data["kind"]),
             file_path=str(data["file_path"]),
-            line_number=int(data["line_number"]),
-            end_line=int(data.get("end_line", data.get("line_number", 0))),
+            line_number=line_num,
+            end_line=end_ln,
             language=str(data["language"]),
-            docstring=str(data.get("docstring", "")),
-            signature=str(data.get("signature", "")),
-            fqn=str(data.get("fqn", "")),
-            scope_path=str(data.get("scope_path", "")),
+            docstring=str(data.get("docstring") or ""),
+            signature=str(data.get("signature") or ""),
+            fqn=str(data.get("fqn") or ""),
+            scope_path=str(data.get("scope_path") or ""),
             parent_id=data.get("parent_id"),
             children=children_tuple,
             parameters=parameters,
-            return_type=str(data.get("return_type", "")),
-            search_payload=str(data.get("search_payload", "")),
-            visibility=str(data.get("visibility", "public")),
+            return_type=str(data.get("return_type") or ""),
+            search_payload=str(data.get("search_payload") or ""),
+            visibility=str(data.get("visibility") or "public"),
             members=members_tuple,
             metadata=metadata,
         )
@@ -370,13 +383,13 @@ class SymbolCallSite:
         if not isinstance(data, dict):
             raise SchemaValidationError("SymbolCallSite data must be a dict.")
         return cls(
-            callee_name=str(data.get("callee_name", "")),
-            line_number=int(data.get("line_number", 0)),
-            caller_symbol_id=str(data.get("caller_symbol_id", "")),
-            caller_member_name=str(data.get("caller_member_name", "")),
-            context_prefix=str(data.get("context_prefix", "")),
-            file_path=str(data.get("file_path", "")),
-            space=str(data.get("space", "")),
+            callee_name=str(data.get("callee_name") or ""),
+            line_number=int(data.get("line_number") or 0),
+            caller_symbol_id=str(data.get("caller_symbol_id") or ""),
+            caller_member_name=str(data.get("caller_member_name") or ""),
+            context_prefix=str(data.get("context_prefix") or ""),
+            file_path=str(data.get("file_path") or ""),
+            space=str(data.get("space") or ""),
         )
 
 
@@ -405,16 +418,17 @@ class SemanticBundle:
         if not isinstance(data, dict):
             raise SchemaValidationError("SemanticBundle data must be a dictionary.")
 
-        version = str(data.get("version", "1.0.0"))
-        space_name = str(data.get("space_name", "unknown"))
-        created_at = str(data.get("created_at", datetime.now(timezone.utc).isoformat()))
+        version = str(data.get("version") or "1.0.0")
+        space_name = str(data.get("space_name") or "unknown")
+        created_at = str(data.get("created_at") or datetime.now(timezone.utc).isoformat())
 
-        symbols_raw = data.get("symbols", [])
+        symbols_raw = data.get("symbols") or []
         symbols = [
             UnifiedSymbol.from_dict(s) if isinstance(s, dict) else s
-            for s in symbols_raw
+            for s in (symbols_raw if isinstance(symbols_raw, (list, tuple)) else [])
         ]
-        metadata = dict(data.get("metadata", {}))
+        raw_meta = data.get("metadata")
+        metadata = dict(raw_meta) if isinstance(raw_meta, dict) else {}
         return cls(
             version=version,
             space_name=space_name,
@@ -444,6 +458,10 @@ class ASTSnapshot:
                 lst = mapping.setdefault(sym.file_path, [])
                 if sid not in lst:
                     lst.append(sid)
+                for pf in (sym.metadata or {}).get("partial_files") or []:
+                    pf_lst = mapping.setdefault(str(pf), [])
+                    if sid not in pf_lst:
+                        pf_lst.append(sid)
             self.file_to_symbol_ids = mapping
 
     def list_symbols(self) -> List[UnifiedSymbol]:
@@ -469,7 +487,7 @@ class ASTSnapshot:
     def from_dict(cls, data: Dict[str, Any]) -> "ASTSnapshot":
         if not isinstance(data, dict):
             raise SchemaValidationError("ASTSnapshot data must be a dictionary.")
-        raw_syms = data.get("symbols", {})
+        raw_syms = data.get("symbols") or {}
         symbols: Dict[str, UnifiedSymbol] = {}
         if isinstance(raw_syms, dict):
             for sid, s_val in raw_syms.items():
@@ -486,21 +504,27 @@ class ASTSnapshot:
                     sym_obj = UnifiedSymbol.from_dict(item)
                     if sym_obj.id:
                         symbols[str(sym_obj.id)] = sym_obj
+        raw_space_gens = data.get("space_generations")
+        space_gens_dict = raw_space_gens if isinstance(raw_space_gens, dict) else {}
+        raw_f2s = data.get("file_to_symbol_ids")
+        f2s_dict = raw_f2s if isinstance(raw_f2s, dict) else {}
+        raw_fmap = data.get("files_map")
+        fmap_dict = raw_fmap if isinstance(raw_fmap, dict) else {}
         return cls(
-            ast_generation=int(data.get("ast_generation", 0)),
-            space_generations={str(k): int(v) for k, v in data.get("space_generations", {}).items()},
+            ast_generation=int(data.get("ast_generation") or 0),
+            space_generations={str(k): int(v) for k, v in space_gens_dict.items() if v is not None},
             symbols=symbols,
             file_to_symbol_ids={
                 str(k): [str(x) for x in v]
-                for k, v in data.get("file_to_symbol_ids", {}).items()
+                for k, v in f2s_dict.items()
                 if isinstance(v, (list, tuple))
             },
             files_map={
                 str(k): [str(x) for x in v]
-                for k, v in data.get("files_map", {}).items()
+                for k, v in fmap_dict.items()
                 if isinstance(v, (list, tuple))
             },
-            created_at=float(data.get("created_at", 0.0)),
+            created_at=float(data.get("created_at") or 0.0),
         )
 
 
@@ -542,24 +566,29 @@ class OutlineNode:
     def from_dict(cls, data: Dict[str, Any]) -> "OutlineNode":
         if not isinstance(data, dict):
             raise SchemaValidationError("OutlineNode data must be a dictionary.")
-        raw_children = data.get("members") or data.get("children", [])
+        raw_children = data.get("members") or data.get("children") or []
         children = [
             cls.from_dict(c) if isinstance(c, dict) and "line_number" in c else c
-            for c in raw_children
+            for c in (raw_children if isinstance(raw_children, (list, tuple)) else [])
         ]
+        raw_meta = data.get("metadata")
+        metadata = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+        line_num = int(data.get("line_number") or 0)
+        raw_end = data.get("end_line")
+        end_ln = int(raw_end if raw_end is not None else line_num)
         return cls(
-            name=str(data.get("name", "")),
-            kind=str(data.get("kind", "")),
-            line_number=int(data.get("line_number", 0)),
-            end_line=int(data.get("end_line", data.get("line_number", 0))),
-            signature=str(data.get("signature", "")),
-            visibility=str(data.get("visibility", "public")),
-            docstring=str(data.get("docstring", "")),
-            fqn=str(data.get("fqn", "")),
+            name=str(data.get("name") or ""),
+            kind=str(data.get("kind") or ""),
+            line_number=line_num,
+            end_line=end_ln,
+            signature=str(data.get("signature") or ""),
+            visibility=str(data.get("visibility") or "public"),
+            docstring=str(data.get("docstring") or ""),
+            fqn=str(data.get("fqn") or ""),
             is_partial=bool(data.get("is_partial", False)),
             is_static=bool(data.get("is_static", False)),
             children=children,
-            metadata=dict(data.get("metadata", {})),
+            metadata=metadata,
         )
 
 
@@ -574,6 +603,7 @@ class OutlineResult:
     partial_siblings: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
     filters: Dict[str, Any] = field(default_factory=dict)
+    error: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {
@@ -595,24 +625,37 @@ class OutlineResult:
         }
         if self.filters:
             out["filters"] = dict(self.filters)
+        if self.error is not None:
+            out["error"] = self.error
         return out
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "OutlineResult":
         if not isinstance(data, dict):
             raise SchemaValidationError("OutlineResult data must be a dictionary.")
+        raw_symbols = data.get("symbols") or []
+        raw_siblings = data.get("partial_siblings")
+        siblings_dict = raw_siblings if isinstance(raw_siblings, dict) else {}
+        raw_warnings = data.get("warnings") or []
+        raw_filters = data.get("filters")
+        filters = dict(raw_filters) if isinstance(raw_filters, dict) else {}
+        err_val = data.get("error")
         return cls(
-            file_path=str(data.get("file_path", "")),
-            language=str(data.get("language", "unknown")),
+            file_path=str(data.get("file_path") or ""),
+            language=str(data.get("language") or "unknown"),
             merged=bool(data.get("merged", False)),
-            symbols=[dict(s) if isinstance(s, dict) else s for s in data.get("symbols", [])],
+            symbols=[
+                dict(s) if isinstance(s, dict) else s
+                for s in (raw_symbols if isinstance(raw_symbols, (list, tuple)) else [])
+            ],
             partial_siblings={
                 str(k): [dict(x) if isinstance(x, dict) else x for x in v]
-                for k, v in data.get("partial_siblings", {}).items()
+                for k, v in siblings_dict.items()
                 if isinstance(v, (list, tuple))
             },
-            warnings=[str(w) for w in data.get("warnings", [])],
-            filters=dict(data.get("filters", {})),
+            warnings=[str(w) for w in (raw_warnings if isinstance(raw_warnings, (list, tuple)) else [])],
+            filters=filters,
+            error=str(err_val) if err_val is not None else None,
         )
 
 

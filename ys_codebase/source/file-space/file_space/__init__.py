@@ -3,7 +3,8 @@ Public SDK entry point for the file-space module.
 """
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
+import threading
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 from .exceptions import (
     FingerprintCorruptedError,
@@ -29,16 +30,18 @@ from .schema import (
 )
 from .service import FileSpaceWatcherServiceWorker, clear_subscribers, subscribe
 
+_SINGLETON_LOCK = threading.RLock()
 _DEFAULT_MANAGER: Optional[FileSpaceManager] = None
 _DEFAULT_SCANNER: Optional[FingerprintScanner] = None
 
 
 def _get_default_scanner() -> FingerprintScanner:
     global _DEFAULT_MANAGER, _DEFAULT_SCANNER
-    if _DEFAULT_SCANNER is None:
-        _DEFAULT_MANAGER = FileSpaceManager()
-        _DEFAULT_SCANNER = FingerprintScanner(space_manager=_DEFAULT_MANAGER)
-    return _DEFAULT_SCANNER
+    with _SINGLETON_LOCK:
+        if _DEFAULT_SCANNER is None:
+            _DEFAULT_MANAGER = FileSpaceManager()
+            _DEFAULT_SCANNER = FingerprintScanner(space_manager=_DEFAULT_MANAGER)
+        return _DEFAULT_SCANNER
 
 
 def configure_default_file_space(
@@ -51,17 +54,18 @@ def configure_default_file_space(
     Configure or reset the default module-level FileSpaceManager and FingerprintScanner singletons.
     """
     global _DEFAULT_MANAGER, _DEFAULT_SCANNER
-    _DEFAULT_MANAGER = FileSpaceManager(
-        project_root=project_root,
-        storage_root=storage_root,
-        spaces_config=spaces_config,
-        contributed_spaces=contributed_spaces,
-    )
-    _DEFAULT_SCANNER = FingerprintScanner(
-        space_manager=_DEFAULT_MANAGER,
-        storage_root=_DEFAULT_MANAGER.storage_root,
-    )
-    return _DEFAULT_MANAGER, _DEFAULT_SCANNER
+    with _SINGLETON_LOCK:
+        _DEFAULT_MANAGER = FileSpaceManager(
+            project_root=project_root,
+            storage_root=storage_root,
+            spaces_config=spaces_config,
+            contributed_spaces=contributed_spaces,
+        )
+        _DEFAULT_SCANNER = FingerprintScanner(
+            space_manager=_DEFAULT_MANAGER,
+            storage_root=_DEFAULT_MANAGER.storage_root,
+        )
+        return _DEFAULT_MANAGER, _DEFAULT_SCANNER
 
 
 # ----------------------------------------------------------------------
@@ -158,12 +162,14 @@ def ack(
     space_name: Optional[str] = None,
     consumer_id: str = "default",
     generation: Optional[int] = None,
-) -> None:
-    """Advance a consumer's watermark cursor to the specified (or latest) generation."""
-    _get_default_scanner().ack(
+    space_generations: Optional[Dict[str, int]] = None,
+) -> int:
+    """確認消費者已處理完畢，推進游標世代號。"""
+    return _get_default_scanner().ack(
         space_name=space_name,
         consumer_id=consumer_id,
         generation=generation,
+        space_generations=space_generations,
     )
 
 

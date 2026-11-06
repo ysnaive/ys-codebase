@@ -11,6 +11,9 @@ from ..dialects.markdown import MarkdownDialect
 from ..schema import LanguageType, SymbolCallSite, SymbolKind, UnifiedSymbol
 from .base import BaseParser
 
+_FENCE_RE = re.compile(r"^(`{3,}|~{3,})")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
+
 
 class MarkdownParser(BaseParser):
     """Markdown heading, table, and reference parser."""
@@ -30,13 +33,24 @@ class MarkdownParser(BaseParser):
             return []
 
         lines = content.splitlines()
-        heading_re = re.compile(r"^(#{1,6})\s+(.+)$")
         symbols: List[UnifiedSymbol] = []
         raw_headings: List[Dict[str, Union[int, str]]] = []
 
+        active_fence: Optional[str] = None
         for idx, line in enumerate(lines, start=1):
             stripped = line.strip()
-            hm = heading_re.match(stripped)
+            fm = _FENCE_RE.match(stripped)
+            if fm:
+                fence_marker = fm.group(1)
+                if active_fence is None:
+                    active_fence = fence_marker
+                elif stripped.startswith(active_fence[0] * len(active_fence)):
+                    active_fence = None
+                continue
+            if active_fence is not None:
+                continue
+
+            hm = _HEADING_RE.match(stripped)
             if hm:
                 level = len(hm.group(1))
                 title = hm.group(2).strip()
@@ -85,12 +99,57 @@ class MarkdownParser(BaseParser):
                 )
             )
 
-        # Extract pipe tables
+        # Extract pipe tables (ignoring fenced code blocks)
         in_table = False
         table_start = 0
         table_lines: List[str] = []
+        active_fence = None
+
+        def _flush_table(end_idx: int) -> None:
+            nonlocal in_table, table_lines
+            if in_table and len(table_lines) >= 2:
+                t_name = f"Table: {table_lines[0].strip('|').strip()[:50]}"
+                t_doc = "\n".join(table_lines)
+                t_id = UnifiedSymbol.compute_id(
+                    space=space,
+                    file_path=normalized_path,
+                    name=t_name,
+                    kind=SymbolKind.DOC_TABLE.value,
+                    line_number=table_start,
+                )
+                symbols.append(
+                    UnifiedSymbol(
+                        id=t_id,
+                        name=t_name,
+                        kind=SymbolKind.DOC_TABLE.value,
+                        file_path=normalized_path,
+                        line_number=table_start,
+                        end_line=end_idx,
+                        language=LanguageType.MARKDOWN.value,
+                        docstring=t_doc,
+                        signature="markdown_table",
+                        fqn=t_name,
+                        search_payload=f"{t_name} {t_doc}".strip(),
+                        metadata={"short_name": t_name, "end_line": end_idx},
+                    )
+                )
+            in_table = False
+            table_lines = []
+
         for idx, line in enumerate(lines, start=1):
             stripped = line.strip()
+            fm = _FENCE_RE.match(stripped)
+            if fm:
+                _flush_table(idx - 1)
+                fence_marker = fm.group(1)
+                if active_fence is None:
+                    active_fence = fence_marker
+                elif stripped.startswith(active_fence[0] * len(active_fence)):
+                    active_fence = None
+                continue
+            if active_fence is not None:
+                continue
+
             if stripped.startswith("|") and stripped.endswith("|"):
                 if not in_table:
                     in_table = True
@@ -99,63 +158,9 @@ class MarkdownParser(BaseParser):
                 else:
                     table_lines.append(stripped)
             else:
-                if in_table and len(table_lines) >= 2:
-                    t_name = f"Table: {table_lines[0].strip('|').strip()[:50]}"
-                    t_doc = "\n".join(table_lines)
-                    t_end = idx - 1
-                    t_id = UnifiedSymbol.compute_id(
-                        space=space,
-                        file_path=normalized_path,
-                        name=t_name,
-                        kind=SymbolKind.DOC_TABLE.value,
-                        line_number=table_start,
-                    )
-                    symbols.append(
-                        UnifiedSymbol(
-                            id=t_id,
-                            name=t_name,
-                            kind=SymbolKind.DOC_TABLE.value,
-                            file_path=normalized_path,
-                            line_number=table_start,
-                            end_line=t_end,
-                            language=LanguageType.MARKDOWN.value,
-                            docstring=t_doc,
-                            signature="markdown_table",
-                            fqn=t_name,
-                            search_payload=f"{t_name} {t_doc}".strip(),
-                            metadata={"short_name": t_name, "end_line": t_end},
-                        )
-                    )
-                in_table = False
-                table_lines = []
+                _flush_table(idx - 1)
 
-        if in_table and len(table_lines) >= 2:
-            t_name = f"Table: {table_lines[0].strip('|').strip()[:50]}"
-            t_doc = "\n".join(table_lines)
-            t_end = len(lines)
-            t_id = UnifiedSymbol.compute_id(
-                space=space,
-                file_path=normalized_path,
-                name=t_name,
-                kind=SymbolKind.DOC_TABLE.value,
-                line_number=table_start,
-            )
-            symbols.append(
-                UnifiedSymbol(
-                    id=t_id,
-                    name=t_name,
-                    kind=SymbolKind.DOC_TABLE.value,
-                    file_path=normalized_path,
-                    line_number=table_start,
-                    end_line=t_end,
-                    language=LanguageType.MARKDOWN.value,
-                    docstring=t_doc,
-                    signature="markdown_table",
-                    fqn=t_name,
-                    search_payload=f"{t_name} {t_doc}".strip(),
-                    metadata={"short_name": t_name, "end_line": t_end},
-                )
-            )
+        _flush_table(len(lines))
 
         if not symbols and lines:
             return self._dialect.fallback_symbols(normalized_path, lines, space)

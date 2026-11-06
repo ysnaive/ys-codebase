@@ -225,16 +225,21 @@ def _method_calls_mark_passed(item: ast.AST) -> bool:
     return False
 
 
-def _verify_test_class_isolation_and_marks(class_node: ast.ClassDef, t_file: str, report: CheckReport) -> None:
-    """Validate that a Test* class inherits from YSCBTestCase and calls self.mark_passed() in test_* methods."""
-    if not class_node.name.startswith("Test"):
-        return
-
+def _verify_test_class_isolation_and_marks(
+    class_node: ast.ClassDef,
+    t_file: str,
+    report: CheckReport,
+    is_top_level: bool = False,
+) -> None:
+    """Validate that a Test* class (or top-level TestCase class) inherits from YSCBTestCase and calls self.mark_passed() in test_* methods."""
     base_names = [
         b.id if isinstance(b, ast.Name) else b.attr
         for b in class_node.bases
         if isinstance(b, (ast.Name, ast.Attribute))
     ]
+    if not (class_node.name.startswith("Test") or (is_top_level and any(b in ("TestCase", "YSCBTestCase") for b in base_names))):
+        return
+
     if "TestCase" in base_names and "YSCBTestCase" not in base_names:
         report.issues.append(
             CheckIssue(
@@ -270,23 +275,79 @@ def _verify_test_class_isolation_and_marks(class_node: ast.ClassDef, t_file: str
             )
 
 
+def _is_core_spec_at_least_1_2_0(core_spec: Any) -> bool:
+    """Verify via multi-point probing and literal inspection that core_spec requires core >= 1.2.0."""
+    if not isinstance(core_spec, str) or not core_spec.strip():
+        return False
+    min_required = semver.parse_semver("1.2.0.0")
+    low_probes = ["0.1.0.0", "1.0.0.0", "1.1.0.0", "1.1.99.99"]
+    high_probes = ["1.2.0.0", "1.2.7.0", "1.3.0.0", "2.0.0.0"]
+    for token in core_spec.replace(",", " ").replace(";", " ").split():
+        ver_str = token.lstrip("><=!~^vV").strip()
+        if not ver_str:
+            continue
+        try:
+            vt = semver.parse_semver(ver_str)
+            if semver.compare_semver(vt, min_required) < 0:
+                low_probes.append(ver_str)
+            else:
+                high_probes.append(ver_str)
+        except Exception:
+            pass
+    try:
+        if any(semver.match_constraint(p, core_spec) for p in low_probes):
+            return False
+        return any(semver.match_constraint(p, core_spec) for p in high_probes)
+    except Exception:
+        return False
+
+
 class Checker:
     def __init__(self) -> None:
-        self._parsed_py_cache: Dict[str, Tuple[str, ast.Module]] = {}
+        self._parsed_py_cache: Dict[str, Any] = {}
+        self._syntax_reported_files: Set[str] = set()
 
     def _get_parsed_py(self, full_path: str, filename: Optional[str] = None) -> Tuple[str, ast.Module]:
         """Reads and parses a Python file into (content, ast.Module), caching per check_module run."""
         norm_p = os.path.abspath(full_path)
         if norm_p in self._parsed_py_cache:
-            return self._parsed_py_cache[norm_p]
-        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
-        tree = ast.parse(content, filename=filename or full_path)
-        self._parsed_py_cache[norm_p] = (content, tree)
-        return content, tree
+            cached = self._parsed_py_cache[norm_p]
+            if isinstance(cached, BaseException):
+                raise cached
+            return cached
+        try:
+            with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            tree = ast.parse(content, filename=filename or full_path)
+            self._parsed_py_cache[norm_p] = (content, tree)
+            return content, tree
+        except Exception as exc:
+            self._parsed_py_cache[norm_p] = exc
+            raise
+
+    def _record_syntax_issue(self, report: CheckReport, norm_p: str, rel_p: str, exc: Exception) -> None:
+        if norm_p in self._syntax_reported_files:
+            return
+        self._syntax_reported_files.add(norm_p)
+        if isinstance(exc, SyntaxError):
+            msg = f"SyntaxError in {rel_p}:{exc.lineno}: {exc.msg}"
+            lineno = exc.lineno
+        else:
+            msg = f"Error parsing {rel_p}: {exc}"
+            lineno = None
+        report.issues.append(
+            CheckIssue(
+                severity=CheckSeverity.FAIL,
+                category="SYNTAX",
+                message=msg,
+                file_path=rel_p,
+                line_number=lineno,
+            )
+        )
 
     def check_module(self, name: str) -> CheckReport:
         self._parsed_py_cache = {}
+        self._syntax_reported_files = set()
         report = CheckReport(module=name)
         src_uri = f"module.source://{name}"
         if not vfs.exists(src_uri):
@@ -297,43 +358,17 @@ class Checker:
                     message=f"Module source not found at {src_uri}.",
                 )
             )
-            if report.agent_directive:
-                report.issues.append(
-                    CheckIssue(
-                        severity=CheckSeverity.FAIL,
-                        category="DIRECTIVE",
-                        message=report.agent_directive,
-                    )
-                )
-            return report
+        else:
+            real_dir = uri.resolve(src_uri)
+            m_data = self._check_manifest(name, real_dir, report)
+            self._check_core_injection(name, real_dir, report, m_data=m_data)
+            self._check_file_structure(name, real_dir, report)
+            self._check_source_files(name, real_dir, report)
+            self._check_test_classes(name, real_dir, report)
+            self._check_sandbox_hooks(name, real_dir, report)
+            self._check_docs_pollution(name, real_dir, report)
+            self._check_custom_rules(name, real_dir, report)
 
-        real_dir = uri.resolve(src_uri)
-
-        # 1. Check manifest.json
-        self._check_manifest(name, real_dir, report)
-
-        # 2. Check Core injection (contributes/core.json)
-        self._check_core_injection(name, real_dir, report)
-
-        # 3. Check File Structure & Configurable templates
-        self._check_file_structure(name, real_dir, report)
-
-        # 4. Check AST Syntax, Zero Probing & Anti-patterns in Python files
-        self._check_source_files(name, real_dir, report)
-
-        # 5. Check Test Classes (YSCBTestCase inheritance & mark_passed)
-        self._check_test_classes(name, real_dir, report)
-
-        # 6. Check Sandbox Lifecycle Hooks (scripts/hook.dev.py)
-        self._check_sandbox_hooks(name, real_dir, report)
-
-        # 7. Check Documentation Path Pollution
-        self._check_docs_pollution(name, real_dir, report)
-
-        # 8. Check Custom Contributed Rules
-        self._check_custom_rules(name, real_dir, report)
-
-        # 9. Append [Agent Directive] on failure so CLI report output always includes skill routing guidance
         if report.has_fails and report.agent_directive:
             report.issues.append(
                 CheckIssue(
@@ -342,10 +377,9 @@ class Checker:
                     message=report.agent_directive,
                 )
             )
-
         return report
 
-    def _check_manifest(self, name: str, real_dir: str, report: CheckReport) -> None:
+    def _check_manifest(self, name: str, real_dir: str, report: CheckReport) -> Optional[Dict[str, Any]]:
         manifest_path = os.path.join(real_dir, "manifest.json")
         if not os.path.exists(manifest_path):
             report.issues.append(
@@ -356,11 +390,21 @@ class Checker:
                     file_path="manifest.json",
                 )
             )
-            return
+            return None
 
         try:
             with open(manifest_path, "r", encoding="utf-8") as f:
                 m_data = json.load(f)
+            if not isinstance(m_data, dict):
+                report.issues.append(
+                    CheckIssue(
+                        severity=CheckSeverity.FAIL,
+                        category="MANIFEST",
+                        message="Invalid JSON in manifest.json: root must be an object.",
+                        file_path="manifest.json",
+                    )
+                )
+                return None
 
             for field_name in ("name", "version", "entry", "dependencies"):
                 if field_name not in m_data:
@@ -501,6 +545,7 @@ class Checker:
             self._check_pip_dependencies(name, m_data, report)
             if isinstance(m_ver, str) and m_ver.strip():
                 self._check_package_dunder_version(name, real_dir, m_ver.strip(), report)
+            return m_data
         except Exception as e:
             report.issues.append(
                 CheckIssue(
@@ -510,6 +555,7 @@ class Checker:
                     file_path="manifest.json",
                 )
             )
+            return None
 
     def _check_package_dunder_version(self, name: str, real_dir: str, manifest_ver: str, report: CheckReport) -> None:
         """Verify that top-level package `__init__.py` `__version__` string literal (if present) matches `manifest.json` version."""
@@ -525,7 +571,7 @@ class Checker:
                 continue
             rel_init = f"{entry}/__init__.py"
             try:
-                _, tree = self._get_parsed_py(init_path, filename=init_path)
+                _, tree = self._get_parsed_py(init_path, filename=rel_init)
             except Exception:
                 continue
             for node in tree.body:
@@ -589,7 +635,13 @@ class Checker:
                     )
                 )
 
-    def _check_core_injection(self, name: str, real_dir: str, report: CheckReport) -> None:
+    def _check_core_injection(
+        self,
+        name: str,
+        real_dir: str,
+        report: CheckReport,
+        m_data: Optional[Dict[str, Any]] = None,
+    ) -> None:
         core_contribute_path = os.path.join(real_dir, "contributes", "core.json")
         if name != "core" and not os.path.exists(core_contribute_path):
             report.issues.append(
@@ -644,7 +696,7 @@ class Checker:
 
         # 2. Ingress & Egress Boundary Check on <target>.json
         try:
-            files = [f for f in os.listdir(contrib_dir) if f.endswith(".json")]
+            files = sorted(f for f in os.listdir(contrib_dir) if f.endswith(".json"))
         except OSError:
             files = []
 
@@ -682,28 +734,33 @@ class Checker:
             val_res = ContributesValidator.validate(target, c_data, donor_mod=name, format_schema=target_fmt, strict_points=True)
             if target == "core" and isinstance(c_data, dict) and "locales" in c_data and isinstance(c_data["locales"], dict):
                 if name != "core":
-                    manifest_path = os.path.join(real_dir, "manifest.json")
-                    if os.path.exists(manifest_path):
-                        try:
-                            with open(manifest_path, "r", encoding="utf-8") as mf:
-                                m_data = json.load(mf)
-                            deps = m_data.get("dependencies")
-                            core_spec = deps.get("core") if isinstance(deps, dict) else None
-                            if not isinstance(core_spec, str) or semver.match_constraint("1.1.0.0", core_spec):
-                                report.issues.append(
-                                    CheckIssue(
-                                        severity=CheckSeverity.FAIL,
-                                        category="MANIFEST",
-                                        message=(
-                                            f"Module '{name}' declares 'locales' in 'contributes/core.json' "
-                                            f"which requires 'core' >= 1.2.0 in 'manifest.json' dependencies "
-                                            f"(found: {core_spec!r})."
-                                        ),
-                                        file_path="manifest.json",
-                                    )
+                    manifest_obj = m_data
+                    if manifest_obj is None:
+                        manifest_path = os.path.join(real_dir, "manifest.json")
+                        if os.path.exists(manifest_path):
+                            try:
+                                with open(manifest_path, "r", encoding="utf-8") as mf:
+                                    loaded_mf = json.load(mf)
+                                if isinstance(loaded_mf, dict):
+                                    manifest_obj = loaded_mf
+                            except (OSError, json.JSONDecodeError):
+                                manifest_obj = None
+                    if isinstance(manifest_obj, dict):
+                        deps = manifest_obj.get("dependencies")
+                        core_spec = deps.get("core") if isinstance(deps, dict) else None
+                        if not _is_core_spec_at_least_1_2_0(core_spec):
+                            report.issues.append(
+                                CheckIssue(
+                                    severity=CheckSeverity.FAIL,
+                                    category="MANIFEST",
+                                    message=(
+                                        f"Module '{name}' declares 'locales' in 'contributes/core.json' "
+                                        f"which requires 'core' >= 1.2.0 in 'manifest.json' dependencies "
+                                        f"(found: {core_spec!r})."
+                                    ),
+                                    file_path="manifest.json",
                                 )
-                        except (OSError, json.JSONDecodeError):
-                            pass
+                            )
                 try:
                     from core import locale as core_locale
                     loc_res = core_locale.validate_module_locales(name, c_data["locales"], base_dir=real_dir)
@@ -755,7 +812,7 @@ class Checker:
             self._check_cli_compliance(name, cli_path, report)
 
         # 2. Check for scattered config.*.json at root
-        for item in os.listdir(real_dir):
+        for item in sorted(os.listdir(real_dir)):
             if item.startswith("config.") and item.endswith(".json"):
                 report.issues.append(
                     CheckIssue(
@@ -769,7 +826,7 @@ class Checker:
         # 3. Check configurable/ templates validity if present
         cfg_dir = os.path.join(real_dir, "configurable")
         if os.path.isdir(cfg_dir):
-            for cfg_f in os.listdir(cfg_dir):
+            for cfg_f in sorted(os.listdir(cfg_dir)):
                 if not ((cfg_f.startswith("config.") and cfg_f.endswith(".json")) or cfg_f == "_format.json"):
                     report.issues.append(
                         CheckIssue(
@@ -795,10 +852,9 @@ class Checker:
                         )
 
         # 4. Check for leftover temp files
-        for root, _, files in os.walk(real_dir):
-            if "__pycache__" in root or ".pytest_cache" in root or ".git" in root:
-                continue
-            for f in files:
+        for root, dirs, files in os.walk(real_dir):
+            dirs[:] = sorted(d for d in dirs if d not in ("__pycache__", ".pytest_cache", ".git"))
+            for f in sorted(files):
                 if f.endswith((".tmp", ".bak", ".DS_Store")) or f.endswith("~"):
                     rel_p = os.path.relpath(os.path.join(root, f), real_dir).replace("\\", "/")
                     report.issues.append(
@@ -843,16 +899,9 @@ class Checker:
         4. 頂層節點除 Docstring、Import、ImportFrom、FunctionDef、ClassDef 外，嚴禁任何未包覆在 func/class 內的執行陳述式。
         """
         try:
-            content, tree = self._get_parsed_py(cli_path, filename=cli_path)
+            _, tree = self._get_parsed_py(cli_path, filename="scripts/cli.py")
         except Exception as e:
-            report.issues.append(
-                CheckIssue(
-                    severity=CheckSeverity.FAIL,
-                    category="SYNTAX",
-                    message=f"Syntax error in 'scripts/cli.py': {e}",
-                    file_path="scripts/cli.py",
-                )
-            )
+            self._record_syntax_issue(report, os.path.abspath(cli_path), "scripts/cli.py", e)
             return
 
         declared_funcs, has_main_func, has_if_name_main, invalid_top_level_nodes = _audit_cli_script_ast(tree)
@@ -996,10 +1045,9 @@ class Checker:
         return violations
 
     def _check_source_files(self, name: str, real_dir: str, report: CheckReport) -> None:
-        for root, _, files in os.walk(real_dir):
-            if "__pycache__" in root or ".pytest_cache" in root:
-                continue
-            for f in files:
+        for root, dirs, files in os.walk(real_dir):
+            dirs[:] = sorted(d for d in dirs if d not in ("__pycache__", ".pytest_cache", ".git"))
+            for f in sorted(files):
                 if not f.endswith(".py"):
                     continue
 
@@ -1008,27 +1056,9 @@ class Checker:
                 is_test_file = rel_p.startswith("tests/")
 
                 try:
-                    content, tree = self._get_parsed_py(full_p, filename=rel_p)
-                except SyntaxError as se:
-                    report.issues.append(
-                        CheckIssue(
-                            severity=CheckSeverity.FAIL,
-                            category="SYNTAX",
-                            message=f"SyntaxError in {rel_p}:{se.lineno}: {se.msg}",
-                            file_path=rel_p,
-                            line_number=se.lineno,
-                        )
-                    )
-                    continue
+                    _, tree = self._get_parsed_py(full_p, filename=rel_p)
                 except Exception as e:
-                    report.issues.append(
-                        CheckIssue(
-                            severity=CheckSeverity.FAIL,
-                            category="SYNTAX",
-                            message=f"Error parsing {rel_p}: {e}",
-                            file_path=rel_p,
-                        )
-                    )
+                    self._record_syntax_issue(report, os.path.abspath(full_p), rel_p, e)
                     continue
 
                 doc_nodes = set()
@@ -1107,26 +1137,23 @@ class Checker:
         if not os.path.isdir(tests_dir):
             return
 
-        for t_file in os.listdir(tests_dir):
+        for t_file in sorted(os.listdir(tests_dir)):
             if not (t_file.startswith("test_") and t_file.endswith(".py")):
                 continue
             t_full = os.path.join(tests_dir, t_file)
+            rel_p = f"tests/{t_file}"
             try:
-                _, tree = self._get_parsed_py(t_full, filename=t_file)
+                _, tree = self._get_parsed_py(t_full, filename=rel_p)
             except Exception as e:
-                report.issues.append(
-                    CheckIssue(
-                        severity=CheckSeverity.FAIL,
-                        category="SYNTAX",
-                        message=f"Error parsing test file tests/{t_file}: {e}",
-                        file_path=f"tests/{t_file}",
-                    )
-                )
+                self._record_syntax_issue(report, os.path.abspath(t_full), rel_p, e)
                 continue
 
+            top_level_classes = {n for n in tree.body if isinstance(n, ast.ClassDef)}
             for node in ast.walk(tree):
                 if isinstance(node, ast.ClassDef):
-                    _verify_test_class_isolation_and_marks(node, t_file, report)
+                    _verify_test_class_isolation_and_marks(
+                        node, t_file, report, is_top_level=(node in top_level_classes)
+                    )
                     _check_require_decorator_node(node, t_file, report)
                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     _check_require_decorator_node(node, t_file, report)
@@ -1138,27 +1165,9 @@ class Checker:
 
         rel_p = "scripts/hook.dev.py"
         try:
-            content, tree = self._get_parsed_py(hook_path, filename=hook_path)
-        except SyntaxError as se:
-            report.issues.append(
-                CheckIssue(
-                    severity=CheckSeverity.FAIL,
-                    category="SYNTAX",
-                    message=f"SyntaxError in {rel_p}:{se.lineno}: {se.msg}",
-                    file_path=rel_p,
-                    line_number=se.lineno,
-                )
-            )
-            return
+            _, tree = self._get_parsed_py(hook_path, filename=rel_p)
         except Exception as e:
-            report.issues.append(
-                CheckIssue(
-                    severity=CheckSeverity.FAIL,
-                    category="SYNTAX",
-                    message=f"Error parsing {rel_p}: {e}",
-                    file_path=rel_p,
-                )
-            )
+            self._record_syntax_issue(report, os.path.abspath(hook_path), rel_p, e)
             return
 
         for node in tree.body:
@@ -1198,8 +1207,9 @@ class Checker:
         if not os.path.isdir(docs_dir):
             return
 
-        for root, _, files in os.walk(docs_dir):
-            for f in files:
+        for root, dirs, files in os.walk(docs_dir):
+            dirs[:] = sorted(d for d in dirs if d not in ("__pycache__", ".pytest_cache", ".git"))
+            for f in sorted(files):
                 if not f.endswith(".md"):
                     continue
                 full_p = os.path.join(root, f)

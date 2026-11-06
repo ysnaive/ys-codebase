@@ -175,27 +175,19 @@ def read_worker_state(indices_dir: Union[str, Path]) -> Dict[str, Any]:
                         p.unlink()
                     except OSError:
                         pass
+                else:
+                    busy = bool(raw.get("busy", False))
+                    start_ts = float(raw.get("start_ts", 0.0) or 0.0)
+                    elapsed_ms = max(1, int((time.time() - start_ts) * 1000)) if (busy and start_ts > 0.0) else 0
                     return {
-                        "worker_running": False,
-                        "busy": False,
-                        "start_ts": 0.0,
-                        "elapsed_ms": 0,
-                        "phase": "idle",
-                        "progress": "",
-                        "pid": 0,
+                        "worker_running": bool(raw.get("worker_running", True)),
+                        "busy": busy,
+                        "start_ts": start_ts,
+                        "elapsed_ms": elapsed_ms,
+                        "phase": str(raw.get("phase", "idle") or "idle"),
+                        "progress": str(raw.get("progress", "") or ""),
+                        "pid": pid,
                     }
-                busy = bool(raw.get("busy", False))
-                start_ts = float(raw.get("start_ts", 0.0) or 0.0)
-                elapsed_ms = max(1, int((time.time() - start_ts) * 1000)) if (busy and start_ts > 0.0) else 0
-                return {
-                    "worker_running": bool(raw.get("worker_running", True)),
-                    "busy": busy,
-                    "start_ts": start_ts,
-                    "elapsed_ms": elapsed_ms,
-                    "phase": str(raw.get("phase", "idle") or "idle"),
-                    "progress": str(raw.get("progress", "") or ""),
-                    "pid": pid,
-                }
         except Exception:
             pass
 
@@ -309,20 +301,20 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
 
     def start(self, context: Optional[Dict[str, Any]] = None) -> None:
         global _ACTIVE_WORKER
-        if isinstance(context, dict):
-            self.context.update(context)
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop_event.clear()
-        self._wake_event.set()
         with _WORKER_LOCK:
+            if isinstance(context, dict):
+                self.context.update(context)
+            if self._thread and self._thread.is_alive():
+                return
+            self._stop_event.clear()
+            self._wake_event.set()
             _ACTIVE_WORKER = self
-        self._thread = threading.Thread(
-            target=self.run,
-            name=f"Worker-{self.name}",
-            daemon=True,
-        )
-        self._thread.start()
+            self._thread = threading.Thread(
+                target=self.run,
+                name=f"Worker-{self.name}",
+                daemon=True,
+            )
+            self._thread.start()
 
     def stop(self, timeout: float = 5.0) -> None:
         global _ACTIVE_WORKER
@@ -440,6 +432,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             batch_size = max(1, int(getattr(engine.config, "vector_batch_size", 32) or 32))
             batches_since_persist = 0
             last_persist_ts = time.monotonic()
+            step_info = deficit_info
             while not self._stop_event.is_set():
                 # If new code changes arrived during Stage 2, immediately prioritize Stage 1!
                 if self._wake_event.is_set() and self._has_pending_space_work(engine, indices_dir):
@@ -451,13 +444,16 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                     _mark_busy("stage1_ast_bm25_graph", "插隊同步最新變更之 AST / BM25 / 圖譜")
                     self._sync_stage1_lexical_and_graph(engine, indices_dir)
                     self._space_diffs_processed += 1
+                    step_info = engine.pipeline.get_vector_deficit_info()
 
-                step_info = engine.pipeline.get_vector_deficit_info()
-                total_syms = step_info["total_symbols"]
-                embedded_before = max(0, total_syms - step_info["missing_count"])
-                if step_info["missing_count"] == 0 and step_info["stale_count"] == 0 and step_info["compatible"]:
+                total_syms = int(step_info.get("total_symbols", 0))
+                missing_cnt = int(step_info.get("missing_count", 0))
+                stale_cnt = int(step_info.get("stale_count", 0))
+                is_compat = bool(step_info.get("compatible", True))
+                if missing_cnt == 0 and stale_cnt == 0 and is_compat:
                     break
 
+                embedded_before = max(0, total_syms - missing_cnt)
                 _mark_busy(
                     "stage2_vector_microbatch",
                     f"向量增量嵌入 ({embedded_before}/{total_syms})",
@@ -472,15 +468,23 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 )
                 embedded_step = int(res.get("embedded_in_step", 0))
                 removed_step = int(res.get("removed_stale", 0))
+                remaining_after = int(res.get("remaining", 0))
+                total_after = int(res.get("total_symbols", total_syms))
                 if embedded_step > 0 or removed_step > 0:
                     self._vector_batches_processed += 1
                     self._last_sync_at = time.time()
                     batches_since_persist += 1
-                if should_persist or res.get("remaining", 0) <= 0:
+                if should_persist or remaining_after <= 0:
                     batches_since_persist = 0
                     last_persist_ts = time.monotonic()
-                if res.get("remaining", 0) <= 0 or (embedded_step == 0 and removed_step == 0):
+                if remaining_after <= 0 or (embedded_step == 0 and removed_step == 0):
                     break
+                step_info = {
+                    "total_symbols": total_after,
+                    "missing_count": remaining_after,
+                    "stale_count": 0,
+                    "compatible": True,
+                }
                 # Brief yield between micro-batches
                 time.sleep(0.005)
         except Exception as exc:
@@ -504,13 +508,12 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 diff_res = scanner.diff(consumer_id="knowledge-db", auto_refresh=False)
                 if diff_res.has_changes:
                     return True
-            ast_eng = getattr(engine, "ast_engine", None)
             if hasattr(engine.pipeline, "_ensure_indices_loaded"):
                 engine.pipeline._ensure_indices_loaded(load_vectors=False)
             idx = getattr(engine.pipeline, "unified_index", None)
-            if ast_eng is not None and idx is not None and ast_eng._ensure_loaded_from_disk():
-                snap = ast_eng._snapshot
-                if snap is not None and int(getattr(idx, "acked_ast_generation", 0) or 0) != int(snap.ast_generation):
+            if idx is not None and hasattr(engine.pipeline, "get_current_ast_generation"):
+                ast_gen = engine.pipeline.get_current_ast_generation()
+                if ast_gen is not None and int(getattr(idx, "acked_ast_generation", 0) or 0) != ast_gen:
                     return True
         except Exception:
             pass
@@ -530,11 +533,10 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 )
                 return
             if not diff_res.has_changes:
-                ast_eng = getattr(engine, "ast_engine", None)
                 idx = getattr(engine.pipeline, "unified_index", None)
-                if ast_eng is not None and idx is not None and ast_eng._ensure_loaded_from_disk():
-                    snap = ast_eng._snapshot
-                    if snap is not None and int(getattr(idx, "acked_ast_generation", 0) or 0) != int(snap.ast_generation):
+                if idx is not None and hasattr(engine.pipeline, "get_current_ast_generation"):
+                    ast_gen = engine.pipeline.get_current_ast_generation()
+                    if ast_gen is not None and int(getattr(idx, "acked_ast_generation", 0) or 0) != ast_gen:
                         engine.pipeline.build_unified_index(
                             force=True,
                             allow_parallel=False,

@@ -4,9 +4,8 @@ Aligned with `core.commands.CmdBags` contract and `contributes/core.json`.
 """
 
 import json
-import os
 import sys
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from core import uri
 from core.commands import CmdBags, CmdOption
@@ -45,14 +44,18 @@ def _is_json_mode(bags: CmdBags) -> bool:
     return "json" in getattr(bags, "options", {})
 
 
-def status(cmd_bags: Any) -> int:
-    """檢視 `.vscode/settings.json` 託管狀態、`current-site-packages` 連結與已編譯 Schema 清單。"""
+def _init_cli_context(cmd_bags: Any, default_cmd: str) -> Tuple[CmdBags, str, Any]:
     guard_dispatch("vscode-support")
-    bags = _normalize_bags(cmd_bags, "status")
+    bags = _normalize_bags(cmd_bags, default_cmd)
     from vscode_support.projector import SettingsProjector
 
     proj_root = uri.resolve("project://", interactive=False)
-    projector = SettingsProjector()
+    return bags, proj_root, SettingsProjector()
+
+
+def status(cmd_bags: Any) -> int:
+    """檢視 `.vscode/settings.json` 託管狀態、`current-site-packages` 連結與已編譯 Schema 清單。"""
+    bags, proj_root, projector = _init_cli_context(cmd_bags, "status")
     info = projector.get_status(proj_root)
 
     if _is_json_mode(bags):
@@ -78,12 +81,7 @@ def status(cmd_bags: Any) -> int:
 
 def sync(cmd_bags: Any) -> int:
     """重新建立穩定 `site-packages` 連結、編譯全模組單檔 JSON Schema 並軟合併 `.vscode/settings.json`。"""
-    guard_dispatch("vscode-support")
-    bags = _normalize_bags(cmd_bags, "sync")
-    from vscode_support.projector import SettingsProjector
-
-    proj_root = uri.resolve("project://", interactive=False)
-    projector = SettingsProjector()
+    bags, proj_root, projector = _init_cli_context(cmd_bags, "sync")
     ok = projector.sync_vscode_settings(proj_root)
     info = projector.get_status(proj_root)
     info["synced"] = ok
@@ -103,21 +101,22 @@ def sync(cmd_bags: Any) -> int:
 
 def revert(cmd_bags: Any) -> int:
     """依據 `_yscb_managed` 乾淨剔除所有 YSCB 注入之 VS Code 設定，並移除 `.vscode/schemas/` 與穩定連結。"""
-    guard_dispatch("vscode-support")
-    bags = _normalize_bags(cmd_bags, "revert")
-    from vscode_support.projector import SettingsProjector
-
-    proj_root = uri.resolve("project://", interactive=False)
-    projector = SettingsProjector()
+    bags, proj_root, projector = _init_cli_context(cmd_bags, "revert")
     ok = projector.revert_vscode_settings(proj_root)
+    err_msg = getattr(projector, "last_revert_error", None)
 
     if _is_json_mode(bags):
-        print(json.dumps({"project_root": proj_root, "reverted": ok}, indent=2, ensure_ascii=False))
-        return 0
+        payload: Dict[str, Any] = {"project_root": proj_root, "reverted": ok}
+        if err_msg:
+            payload["error"] = err_msg
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 1 if err_msg else 0
 
     if ok:
         print(f"[vscode-support] Reverted YSCB managed VS Code settings and removed schemas at '{proj_root}'.")
-    else:
-        print(f"[vscode-support] No active _yscb_managed settings found to revert at '{proj_root}'.")
+        return 0
+    if err_msg:
+        print(f"[vscode-support] {err_msg}", file=sys.stderr)
+        return 1
+    print(f"[vscode-support] No active _yscb_managed settings found to revert at '{proj_root}'.")
     return 0
-

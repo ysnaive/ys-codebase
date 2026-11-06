@@ -55,48 +55,46 @@ def can_spawn_background_daemon(force_reprobe: bool = False, yscb_root: Optional
     if _CAN_SPAWN_DAEMON_CACHE is not None and not force_reprobe:
         return _CAN_SPAWN_DAEMON_CACHE
 
-    if sys.platform == "win32":
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+        k32.IsProcessInJob.restype = wintypes.BOOL
+
+        in_job = wintypes.BOOL(0)
+        res = k32.IsProcessInJob(k32.GetCurrentProcess(), None, ctypes.byref(in_job))
+        if res and not bool(in_job.value):
+            _CAN_SPAWN_DAEMON_CACHE = True
+            return True
+
+        CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+        creationflags = 0
+        if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+            creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+        if hasattr(subprocess, "DETACHED_PROCESS"):
+            creationflags |= subprocess.DETACHED_PROCESS
+        flags_with_breakaway = creationflags | CREATE_BREAKAWAY_FROM_JOB
+
         try:
-            import ctypes
-            from ctypes import wintypes
-            k32 = ctypes.windll.kernel32
-            k32.GetCurrentProcess.restype = wintypes.HANDLE
-            k32.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
-            k32.IsProcessInJob.restype = wintypes.BOOL
-
-            in_job = wintypes.BOOL(0)
-            res = k32.IsProcessInJob(k32.GetCurrentProcess(), None, ctypes.byref(in_job))
-            if res and not bool(in_job.value):
-                _CAN_SPAWN_DAEMON_CACHE = True
-                return True
-
-            CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-            creationflags = 0
-            if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-                creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
-            if hasattr(subprocess, "DETACHED_PROCESS"):
-                creationflags |= subprocess.DETACHED_PROCESS
-            flags_with_breakaway = creationflags | CREATE_BREAKAWAY_FROM_JOB
-
-            try:
-                probe_proc = subprocess.Popen(
-                    [sys.executable, "-c", "pass"],
-                    creationflags=flags_with_breakaway,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    stdin=subprocess.DEVNULL,
-                    close_fds=True,
-                )
-                probe_proc.wait(timeout=2.0)
-                _CAN_SPAWN_DAEMON_CACHE = True
-                return True
-            except OSError:
-                _CAN_SPAWN_DAEMON_CACHE = False
-                return False
-        except Exception:
+            probe_proc = subprocess.Popen(
+                [sys.executable, "-c", "pass"],
+                creationflags=flags_with_breakaway,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                close_fds=True,
+            )
+            probe_proc.wait(timeout=2.0)
+            _CAN_SPAWN_DAEMON_CACHE = True
+            return True
+        except OSError:
             _CAN_SPAWN_DAEMON_CACHE = False
             return False
-    return True
+    except Exception:
+        _CAN_SPAWN_DAEMON_CACHE = False
+        return False
 
 
 def spawn_detached(
@@ -164,6 +162,7 @@ def spawn_detached(
             close_fds=True,
         )
 
+    proc._child_created = False
     return proc.pid
 
 
@@ -245,7 +244,7 @@ def is_process_alive(pid: int) -> bool:
     Returns:
         bool: True if process is active and running, False if terminated or zombie.
     """
-    if pid <= 0:
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
         return False
 
     if sys.platform == "win32":
@@ -393,7 +392,6 @@ def kill_process_tree(pid: int, timeout_sec: float = 3.0) -> bool:
             time.sleep(0.05)
 
         return not is_process_alive(pid)
-
 
 
 def terminate_popen_tree(proc: subprocess.Popen, timeout_sec: float = 2.0) -> bool:

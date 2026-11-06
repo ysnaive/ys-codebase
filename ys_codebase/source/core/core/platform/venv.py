@@ -105,6 +105,25 @@ def get_venv_site_packages(yscb_root: str) -> str:
     return os.path.join(yscb_root, sub)
 
 
+def _read_host_venv_pth(site_pkg: str) -> List[str]:
+    """Reads valid directory entries from ``<site_pkg>/host_venv.pth``, ignoring comments and import statements."""
+    pth = os.path.join(site_pkg, "host_venv.pth")
+    if not os.path.isfile(pth):
+        return []
+    entries: List[str] = []
+    try:
+        with open(pth, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                t = line.strip()
+                if not t or t.startswith("#") or t.startswith(("import ", "import\t")):
+                    continue
+                if os.path.isdir(t) and t not in entries:
+                    entries.append(t)
+    except Exception:
+        pass
+    return entries
+
+
 def ensure_private_venv(yscb_root: str) -> None:
     """
     Ensures that the private virtual environment for the current Python interpreter
@@ -115,17 +134,10 @@ def ensure_private_venv(yscb_root: str) -> None:
     """
     site_pkg = get_venv_site_packages(yscb_root)
     if os.path.isdir(site_pkg) and site_pkg not in sys.path:
+        for t in reversed(_read_host_venv_pth(site_pkg)):
+            if t not in sys.path:
+                sys.path.insert(0, t)
         sys.path.insert(0, site_pkg)
-        pth = os.path.join(site_pkg, "host_venv.pth")
-        if os.path.isfile(pth):
-            try:
-                with open(pth, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        t = line.strip()
-                        if t and os.path.isdir(t) and t not in sys.path:
-                            sys.path.insert(0, t)
-            except Exception:
-                pass
 
 
 def list_installed_module_roots(
@@ -340,16 +352,8 @@ def build_runtime_pythonpath(
         site_pkg = get_venv_site_packages(root)
         if os.path.isdir(site_pkg):
             candidates.append(_norm_abs(site_pkg))
-            pth = os.path.join(site_pkg, "host_venv.pth")
-            if os.path.isfile(pth):
-                try:
-                    with open(pth, "r", encoding="utf-8", errors="ignore") as f:
-                        for line in f:
-                            t = line.strip()
-                            if t and os.path.isdir(t):
-                                candidates.append(_norm_abs(t))
-                except Exception:
-                    pass
+            for t in _read_host_venv_pth(site_pkg):
+                candidates.append(_norm_abs(t))
 
     candidates.extend(list_installed_module_roots(root, priority_module=priority_module))
 

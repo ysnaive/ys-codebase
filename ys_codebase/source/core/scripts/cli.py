@@ -23,6 +23,9 @@ def _render_subcommand_group_help(cmd_name: str) -> int:
     _, yscb_abs = _get_yscb_root()
     reg = _load_registry(yscb_abs)
     spec = reg.get_command("core", cmd_name)
+    if spec is None:
+        print(f"YS-Codebase Core Command Group: {cmd_name}\n(Run 'python yscb.py {cmd_name} --help' for details)")
+        return 0
     print(HelpRenderer.render_cmd_help("core", cmd_name, spec))
     return 0
 
@@ -99,7 +102,6 @@ def config_list(cmd_bags: CmdBags) -> int:
         }
 
     if json_output:
-        import json
         print(json.dumps(summary, indent=2, ensure_ascii=False))
         return 0
 
@@ -134,7 +136,6 @@ def config_inspect(cmd_bags: CmdBags) -> int:
 
     res = core_config.inspect(mod_name, key)
     if json_output:
-        import json
         print(json.dumps(res, indent=2, ensure_ascii=False))
         return 0
 
@@ -174,7 +175,6 @@ def config_unset(cmd_bags: CmdBags) -> int:
         return 1
 
 
-
 def config_get(cmd_bags: CmdBags) -> int:
     """Get effective configuration value."""
     guard_dispatch("core")
@@ -188,7 +188,6 @@ def config_get(cmd_bags: CmdBags) -> int:
 
     val = core_config.get(mod_name, key)
     if json_output or isinstance(val, (dict, builtins.list)):
-        import json
         print(json.dumps(val, indent=2, ensure_ascii=False))
     else:
         print(val)
@@ -359,7 +358,6 @@ def uri(cmd_bags: CmdBags) -> int:
         return 1
 
 
-
 def install(cmd_bags: CmdBags) -> int:
     """Install one or more modules from provider or local build package (@build)."""
     guard_dispatch("core")
@@ -498,8 +496,14 @@ def event(cmd_bags: CmdBags) -> int:
     if not cmd_bags.args:
         return _render_subcommand_group_help("event")
     sub_cmd = cmd_bags.args[0]
+    sub_bags = CmdBags(
+        raw_cmd=cmd_bags.raw_cmd,
+        command=sub_cmd,
+        args=cmd_bags.args[1:],
+        options=cmd_bags.options,
+    )
     if sub_cmd == "list":
-        return event_list(cmd_bags)
+        return event_list(sub_bags)
     else:
         print(f"[core:event] Unknown subcommand '{sub_cmd}'. Available: list")
         return 1

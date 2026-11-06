@@ -369,6 +369,7 @@ class _IncrementalPatchContext:
     history_folder_id: str
     trash_folder_id: str
     folder_patched: bool = False
+    new_folder_registered: bool = False
 
 
 class _BackgroundYieldRequested(Exception):
@@ -413,6 +414,9 @@ class SyncCoordinator:
             Path(state_path).resolve()
             if state_path is not None
             else Path(uri.resolve("storage.local://gdrive-support/sync_state.json")).resolve()
+        )
+        self.state_journal_path = self.state_path.with_name(
+            f"{self.state_path.stem}.journal.jsonl"
         )
         self.lock_path = (
             Path(lock_path).resolve()
@@ -592,24 +596,130 @@ class SyncCoordinator:
             pass
 
     # ------------------------------------------------------------------
-    # Local Ledger (sync_state.json & FingerprintCache)
+    # Local Ledger (sync_state.json, sync_state.journal.jsonl & FingerprintCache)
     # ------------------------------------------------------------------
 
     def _load_local_state(self) -> Dict[str, Any]:
+        state: Dict[str, Any] = {"branches": {}, "fingerprint_cache": {}}
         if self.state_path.is_file():
             try:
                 data = vfs.read_json(self.state_path)
                 if isinstance(data, dict):
                     data.setdefault("branches", {})
                     data.setdefault("fingerprint_cache", {})
-                    return data
+                    state = data
             except (OSError, ValueError):
                 pass
-        return {"branches": {}, "fingerprint_cache": {}}
+        if self._replay_state_journal(state):
+            self._save_local_state(state)
+        return state
 
     def _save_local_state(self, state: Dict[str, Any]) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         vfs.write_json(self.state_path, state, indent=2, encoding="utf-8", atomic=True)
+        try:
+            self.state_journal_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _append_state_journal(self, record: Dict[str, Any]) -> None:
+        try:
+            self.state_journal_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.state_journal_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                f.flush()
+        except OSError:
+            pass
+
+    def _replay_state_journal(self, state: Dict[str, Any]) -> bool:
+        if not self.state_journal_path.is_file():
+            return False
+        replayed = False
+        try:
+            raw_text = self.state_journal_path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+
+        branches_dict = state.setdefault("branches", {})
+        for raw_line in raw_text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            op = rec.get("op")
+            branch = str(rec.get("branch") or "")
+            rel_path = str(rec.get("rel_path") or "")
+            if not branch or not rel_path:
+                continue
+            b_files = branches_dict.setdefault(branch, {}).setdefault("files", {})
+            if op == "upsert_file":
+                base_entry = rec.get("base_entry")
+                if isinstance(base_entry, dict):
+                    b_files[rel_path] = base_entry
+                    replayed = True
+                cache_entry = rec.get("cache_entry")
+                if isinstance(cache_entry, dict):
+                    try:
+                        self._update_cache_branch_entry(
+                            state, branch, rel_path, RemoteEntry.from_dict(cache_entry)
+                        )
+                    except Exception:
+                        pass
+            elif op == "delete_file":
+                b_files.pop(rel_path, None)
+                if rec.get("remove_from_cache"):
+                    self._update_cache_branch_entry(state, branch, rel_path, None)
+                replayed = True
+        return replayed
+
+    def _record_branch_file_upsert(
+        self,
+        state: Dict[str, Any],
+        branch: str,
+        rel_path: str,
+        base_entry_dict: Dict[str, Any],
+        cache_entry: Optional[RemoteEntry] = None,
+    ) -> None:
+        state.setdefault("branches", {}).setdefault(branch, {}).setdefault("files", {})[
+            rel_path
+        ] = base_entry_dict
+        if cache_entry is not None:
+            self._update_cache_branch_entry(state, branch, rel_path, cache_entry)
+        self._append_state_journal(
+            {
+                "op": "upsert_file",
+                "branch": branch,
+                "rel_path": rel_path,
+                "base_entry": base_entry_dict,
+                "cache_entry": cache_entry.to_dict() if cache_entry is not None else None,
+            }
+        )
+
+    def _record_branch_file_delete(
+        self,
+        state: Dict[str, Any],
+        branch: str,
+        rel_path: str,
+        remove_from_cache: bool = False,
+    ) -> None:
+        state.setdefault("branches", {}).setdefault(branch, {}).setdefault(
+            "files", {}
+        ).pop(rel_path, None)
+        if remove_from_cache:
+            self._update_cache_branch_entry(state, branch, rel_path, None)
+        self._append_state_journal(
+            {
+                "op": "delete_file",
+                "branch": branch,
+                "rel_path": rel_path,
+                "remove_from_cache": bool(remove_from_cache),
+            }
+        )
 
     # ------------------------------------------------------------------
     # Cloud repo_sync/.yscb_gdrive.json Metadata Management
@@ -1367,6 +1477,7 @@ class SyncCoordinator:
             if pull_tasks and not report.yielded:
                 first_pull_err = self._execute_pull_batch(
                     state=state,
+                    branch=branch,
                     branch_state_dict=branch_state_dict,
                     raw_remote_entries=rem_stage.raw_remote_entries,
                     pull_tasks=pull_tasks,
@@ -1377,7 +1488,7 @@ class SyncCoordinator:
                     raise first_pull_err
 
             if not report.yielded:
-                if report.deleted_remote or rem_stage.branch_dir_ids_current:
+                if report.deleted_remote:
                     self._prune_empty_remote_branch_dirs(
                         state=state,
                         branch=branch,
@@ -1477,12 +1588,12 @@ class SyncCoordinator:
                     and act.remote_entry is None
                     and act.baseline_entry is not None
                 ):
-                    branch_state_dict.pop(rel_p, None)
                     if rel_p in curr_branch_files:
                         curr_branch_files.pop(rel_p, None)
                         meta_dirty = True
-                    self._update_cache_branch_entry(state, branch, rel_p, None)
-                    self._save_local_state(state)
+                    self._record_branch_file_delete(
+                        state, branch, rel_p, remove_from_cache=True
+                    )
                 continue
 
             if act.action == SyncActionType.CONFLICT:
@@ -1545,8 +1656,9 @@ class SyncCoordinator:
                     if backup:
                         _create_conflict_backup(abs_local)
                     abs_local.unlink()
-                branch_state_dict.pop(rel_p, None)
-                self._save_local_state(state)
+                self._record_branch_file_delete(
+                    state, branch, rel_p, remove_from_cache=False
+                )
                 report.deleted_local.append(rel_p)
                 continue
 
@@ -1575,9 +1687,9 @@ class SyncCoordinator:
                 with self._meta_lock:
                     curr_branch_files.pop(rel_p, None)
                     meta_dirty = True
-                branch_state_dict.pop(rel_p, None)
-                self._update_cache_branch_entry(state, branch, rel_p, None)
-                self._save_local_state(state)
+                self._record_branch_file_delete(
+                    state, branch, rel_p, remove_from_cache=True
+                )
                 report.deleted_remote.append(rel_p)
 
         return push_tasks, pull_tasks, meta_dirty
@@ -1727,9 +1839,13 @@ class SyncCoordinator:
                     is_shortcut=False,
                     target_file_id="",
                 )
-                branch_state_dict[task.rel_path] = new_base.to_dict()
-                self._update_cache_branch_entry(state, branch, task.rel_path, uploaded)
-                self._save_local_state(state)
+                self._record_branch_file_upsert(
+                    state,
+                    branch,
+                    task.rel_path,
+                    new_base.to_dict(),
+                    cache_entry=uploaded,
+                )
                 report.pushed.append(task.rel_path)
                 if background_worker and self.should_yield_background():
                     report.yielded = True
@@ -1762,6 +1878,7 @@ class SyncCoordinator:
     def _execute_pull_batch(
         self,
         state: Dict[str, Any],
+        branch: str,
         branch_state_dict: Dict[str, Any],
         raw_remote_entries: Dict[str, RemoteEntry],
         pull_tasks: List[_PullTask],
@@ -1808,8 +1925,13 @@ class SyncCoordinator:
                     is_shortcut=task.remote_entry.is_shortcut,
                     target_file_id=task.remote_entry.target_file_id,
                 )
-                branch_state_dict[task.rel_path] = new_base.to_dict()
-                self._save_local_state(state)
+                self._record_branch_file_upsert(
+                    state,
+                    branch,
+                    task.rel_path,
+                    new_base.to_dict(),
+                    cache_entry=None,
+                )
                 report.pulled.append(task.rel_path)
                 if background_worker and self.should_yield_background():
                     report.yielded = True
@@ -1857,8 +1979,6 @@ class SyncCoordinator:
             while curr_parent not in ("", "."):
                 candidate_dirs.add(curr_parent)
                 curr_parent = Path(curr_parent).parent.as_posix()
-        for d_rel in rel_to_dir_fids.keys():
-            candidate_dirs.add(d_rel)
 
         if not candidate_dirs:
             return []
@@ -2329,6 +2449,9 @@ class SyncCoordinator:
         if unresolved_folder_ids is None:
             return None
 
+        if ctx.new_folder_registered and not non_folder_changes:
+            return None
+
         level1_ops = self._validate_incremental_file_changes(
             ctx, non_folder_changes, unresolved_folder_ids
         )
@@ -2649,6 +2772,7 @@ class SyncCoordinator:
                 "parent_id": ch.parent_id,
             }
             ctx.folder_patched = True
+            ctx.new_folder_registered = True
         return True
 
     def _validate_incremental_file_changes(

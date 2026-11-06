@@ -23,18 +23,16 @@ class ReleaseTargetManager:
     @classmethod
     def get_tier_targets(cls, is_project: bool = False) -> List[str]:
         """讀取特定層級 (Local 或 Project) 的 release_targets 清單。"""
+        default_val = list(cls.DEFAULT_PROJECT_TARGETS) if is_project else []
         if config is None:
-            return cls.DEFAULT_PROJECT_TARGETS if is_project else []
+            return default_val
         try:
-            default_val = cls.DEFAULT_PROJECT_TARGETS if is_project else []
             raw = config.get_raw("agents-workflow", "release_targets", local=not is_project, default=None)
-            if raw is None:
-                return list(default_val)
             if isinstance(raw, list):
-                return list(raw)
-            return list(default_val)
+                return [str(x).strip() for x in raw if str(x).strip()]
+            return default_val
         except Exception:
-            return cls.DEFAULT_PROJECT_TARGETS if is_project else []
+            return list(cls.DEFAULT_PROJECT_TARGETS) if is_project else []
 
     @classmethod
     def get_classified_targets(cls) -> Dict[str, List[str]]:
@@ -52,7 +50,7 @@ class ReleaseTargetManager:
         return {
             "project": proj_targets,
             "local": local_targets,
-            "union": union_targets
+            "union": union_targets,
         }
 
     @classmethod
@@ -124,16 +122,21 @@ class ReleaseTargetManager:
         return result
 
     @classmethod
-    def add_target(cls, target_name: str, is_project: bool = False) -> bool:
-        """
-        啟用 Target，預設寫入 config.local.json (is_project=False)，加 --proj 寫入 config.project.json。
-        自動觸發 ReleasePublisher.release_all()。
-        """
-        active_targets = cls.get_tier_targets(is_project=is_project)
+    def _mutate_tier_target(cls, target_name: str, is_project: bool, add: bool) -> bool:
+        """新增或移除指定層級之 Target 設定，並觸發 ReleasePublisher.release_all()。"""
+        clean_name = str(target_name or "").strip() if target_name is not None else ""
+        if not clean_name:
+            return False
 
-        if target_name not in active_targets:
-            active_targets.append(target_name)
-            cls.save_tier_targets(active_targets, is_project=is_project)
+        active_targets = cls.get_tier_targets(is_project=is_project)
+        if add:
+            if clean_name not in active_targets:
+                active_targets.append(clean_name)
+                cls.save_tier_targets(active_targets, is_project=is_project)
+        else:
+            if clean_name in active_targets:
+                active_targets.remove(clean_name)
+                cls.save_tier_targets(active_targets, is_project=is_project)
 
         from agents_workflow.publisher import ReleasePublisher
         publisher = ReleasePublisher()
@@ -141,18 +144,17 @@ class ReleaseTargetManager:
         return res.get("success", False)
 
     @classmethod
+    def add_target(cls, target_name: str, is_project: bool = False) -> bool:
+        """
+        啟用 Target，預設寫入 config.local.json (is_project=False)，加 --proj 寫入 config.project.json。
+        自動觸發 ReleasePublisher.release_all()。
+        """
+        return cls._mutate_tier_target(target_name, is_project=is_project, add=True)
+
+    @classmethod
     def remove_target(cls, target_name: str, is_project: bool = False) -> bool:
         """
         停用 Target，預設從 config.local.json 移除，加 --proj 從 config.project.json 移除。
         自動觸發 ReleasePublisher.release_all()（清理檔案）。
         """
-        active_targets = cls.get_tier_targets(is_project=is_project)
-
-        if target_name in active_targets:
-            active_targets.remove(target_name)
-            cls.save_tier_targets(active_targets, is_project=is_project)
-
-        from agents_workflow.publisher import ReleasePublisher
-        publisher = ReleasePublisher()
-        res = publisher.release_all()
-        return res.get("success", False)
+        return cls._mutate_tier_target(target_name, is_project=is_project, add=False)

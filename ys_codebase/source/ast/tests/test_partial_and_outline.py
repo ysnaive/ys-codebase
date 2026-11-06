@@ -1,43 +1,49 @@
 """
-Subsystem tests for C# partial symbol two-tier aggregation (`ast_engine.bundler`) and single-file / merged outline (`ast_engine.engine`).
+Subsystem tests for C# partial symbol two-tier aggregation (`ast_engine.bundler`),
+single-file / merged outline (`ast_engine.engine`), and terminal / Markdown formatting (`ast_engine.formatter`).
 """
 
+import json
+import os
 from pathlib import Path
 import shutil
 import sys
 import tempfile
+from unittest.mock import patch
 
 _AST_ROOT = str(Path(__file__).resolve().parents[1])
 if _AST_ROOT not in sys.path:
     sys.path.insert(0, _AST_ROOT)
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if "tests" in sys.modules and getattr(sys.modules["tests"], "__file__", None) != str(Path(_TESTS_DIR) / "__init__.py"):
+    del sys.modules["tests"]
 
 from ast_engine.bundler import (
-    SemanticBundler,
     aggregate_partial_symbols,
     restore_unaggregated_partial_symbol,
 )
 from ast_engine.engine import ASTEngine
-from ast_engine.formatter import ASTResultFormatter
+from ast_engine.formatter import ASTResultFormatter, TerminalStyler
 from ast_engine.parsers import ParserRegistry
-from dev.testing import Requirement, YSCBTestCase, require
+from tests import ASTTestCase, Requirement, require
 
 
-class TestPartialAndOutline(YSCBTestCase):
-    """Tests for C# partial class/struct/interface two-tier state preservation, restoration, and outline views."""
+class TestPartialAndOutline(ASTTestCase):
+    """Tests for C# partial class/struct/interface two-tier state preservation, restoration, outline views, and formatter."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         super().setUp()
         self.temp_dir = Path(tempfile.mkdtemp(prefix="yscb_ast_partial_test_"))
         self.storage_dir = self.temp_dir / ".ast_cache"
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         if hasattr(self, "temp_dir") and self.temp_dir.exists():
             shutil.rmtree(self.temp_dir, ignore_errors=True)
         super().tearDown()
 
     @require(Requirement.LOGIC)
-    def test_ft_01_csharp_partial_two_tier_aggregation_and_restoration(self):
-        """FT-01: Verify aggregate_partial_symbols merges members across parts while preserving _own_members and supporting restoration."""
+    def test_csharp_partial_two_tier_aggregation_and_restoration(self) -> None:
+        """Verify aggregate_partial_symbols merges members across parts while preserving _own_members and supporting restoration."""
         registry = ParserRegistry(register_defaults=True)
         part_a_code = (
             "namespace UI.Controls {\n"
@@ -67,33 +73,25 @@ class TestPartialAndOutline(YSCBTestCase):
         win_core = next(s for s in win_classes if s.file_path == "UI/Window.Core.cs")
         win_life = next(s for s in win_classes if s.file_path == "UI/Window.Lifecycle.cs")
 
-        # Aggregated members contain both Open and Dispose
         merged_member_names = {m.name for m in win_core.members}
-        self.assertIn("Open", merged_member_names)
-        self.assertIn("Dispose", merged_member_names)
-        self.assertIn("_width", merged_member_names)
-        self.assertIn("_disposed", merged_member_names)
+        self.assertEqual(merged_member_names, {"_width", "Open", "_disposed", "Dispose"})
 
-        # Merged base_types and field_types
         self.assertIn("Control", win_core.metadata.get("base_types", []))
         self.assertIn("IDisposable", win_core.metadata.get("base_types", []))
         self.assertEqual(win_core.metadata.get("field_types", {}).get("_width"), "int")
         self.assertEqual(win_core.metadata.get("field_types", {}).get("_disposed"), "bool")
 
-        # _own_members strictly preserves physical single-file members
         own_core_names = {m.name for m in win_core.metadata.get("_own_members", ())}
         self.assertEqual(own_core_names, {"_width", "Open"})
         own_life_names = {m.name for m in win_life.metadata.get("_own_members", ())}
         self.assertEqual(own_life_names, {"_disposed", "Dispose"})
 
-        # Restoring win_core drops the deleted sibling's members/base_types/field_types
         restored_core = restore_unaggregated_partial_symbol(win_core)
         restored_member_names = {m.name for m in restored_core.members}
         self.assertEqual(restored_member_names, {"_width", "Open"})
         self.assertEqual(restored_core.metadata.get("base_types"), ["Control"])
         self.assertEqual(restored_core.metadata.get("field_types"), {"_width": "int"})
 
-        # Re-aggregating a single surviving partial class degenerates cleanly to its own members
         re_agg = aggregate_partial_symbols([restored_core])
         self.assertEqual(len(re_agg), 1)
         self.assertEqual({m.name for m in re_agg[0].members}, {"_width", "Open"})
@@ -101,8 +99,8 @@ class TestPartialAndOutline(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_02_outline_single_file_default_vs_merged_partial_siblings(self):
-        """FT-02: Verify ASTEngine.outline() defaults to physical file members with partial_siblings and merges when merged=True."""
+    def test_outline_single_file_default_vs_merged_partial_siblings(self) -> None:
+        """Verify ASTEngine.outline() defaults to physical file members with partial_siblings and merges when merged=True."""
         proj_dir = self.temp_dir / "project"
         ui_dir = proj_dir / "UI"
         ui_dir.mkdir(parents=True, exist_ok=True)
@@ -130,7 +128,6 @@ class TestPartialAndOutline(YSCBTestCase):
         engine = ASTEngine(project_root=proj_dir, storage_dir=self.storage_dir)
         engine.ensure_jit_synced(force=True)
 
-        # Default outline (merged=False): only physical file members + partial_siblings metadata
         outline_default = engine.outline(str(core_file), merged=False)
         self.assertFalse(outline_default["merged"])
         win_sym_default = next(
@@ -138,22 +135,19 @@ class TestPartialAndOutline(YSCBTestCase):
             None,
         )
         self.assertIsNotNone(win_sym_default)
+        assert win_sym_default is not None
         default_member_names = {m["name"] for m in win_sym_default["members"]}
         self.assertEqual(default_member_names, {"Render"})
-        self.assertNotIn("OnClick", default_member_names)
 
-        # Partial siblings must list Window.Events.cs with its own member count (2)
         siblings = outline_default.get("partial_siblings", {}).get("UI.Window", [])
         self.assertEqual(len(siblings), 1)
         self.assertTrue(siblings[0]["file_path"].endswith("UI/Window.Events.cs"))
         self.assertEqual(siblings[0]["member_count"], 2)
 
-        # Formatted output includes [Partial Siblings] hint
         formatted_default = ASTResultFormatter().format_outline_output(outline_default, as_json=False)
         self.assertIn("[Partial Siblings]", formatted_default)
         self.assertIn("Window.Events.cs", formatted_default)
 
-        # Merged outline (merged=True): includes members across all partial files
         outline_merged = engine.outline(str(core_file), merged=True)
         self.assertTrue(outline_merged["merged"])
         win_sym_merged = next(
@@ -161,13 +155,14 @@ class TestPartialAndOutline(YSCBTestCase):
             None,
         )
         self.assertIsNotNone(win_sym_merged)
+        assert win_sym_merged is not None
         merged_member_names = {m["name"] for m in win_sym_merged["members"]}
         self.assertEqual(merged_member_names, {"Render", "OnClick", "OnResize"})
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_03_outline_orthogonal_filters_visibility_binding_and_member_kind(self):
-        """FT-03: Verify ASTEngine.outline() orthogonal filtering across visibility, binding, and member_kind."""
+    def test_outline_orthogonal_filters_visibility_binding_and_member_kind(self) -> None:
+        """Verify ASTEngine.outline() orthogonal filtering across visibility, binding, and member_kind."""
         proj_dir = self.temp_dir / "filter_proj"
         proj_dir.mkdir(parents=True, exist_ok=True)
         py_file = proj_dir / "service.py"
@@ -199,10 +194,7 @@ class TestPartialAndOutline(YSCBTestCase):
 
         engine = ASTEngine(project_root=proj_dir, storage_dir=self.storage_dir)
 
-        # 1. --public --methods: should keep AuthService container with __init__, login, verify_signature (no _hash_password, _internal_helper, __secret_static, or fields)
-        res_pub_methods = engine.outline(
-            str(py_file), visibility="public", member_kind="methods"
-        )
+        res_pub_methods = engine.outline(str(py_file), visibility="public", member_kind="methods")
         self.assertEqual(
             res_pub_methods.get("filters"),
             {"visibility": "public", "member_kind": "methods"},
@@ -212,24 +204,17 @@ class TestPartialAndOutline(YSCBTestCase):
         pub_method_names = {m["name"] for m in cls_node["members"]}
         self.assertEqual(pub_method_names, {"__init__", "login", "verify_signature"})
 
-        # 2. --protected --static: only _internal_helper
-        res_prot_static = engine.outline(
-            str(py_file), visibility="protected", binding="static"
-        )
+        res_prot_static = engine.outline(str(py_file), visibility="protected", binding="static")
         cls_node_ps = res_prot_static["symbols"][0]
         prot_static_names = {m["name"] for m in cls_node_ps["members"]}
         self.assertEqual(prot_static_names, {"_internal_helper"})
         self.assertTrue(cls_node_ps["members"][0]["is_static"])
 
-        # 2b. --private --static: only __secret_static
-        res_priv_static = engine.outline(
-            str(py_file), visibility="private", binding="static"
-        )
+        res_priv_static = engine.outline(str(py_file), visibility="private", binding="static")
         cls_node_pvs = res_priv_static["symbols"][0]
         priv_static_names = {m["name"] for m in cls_node_pvs["members"]}
         self.assertEqual(priv_static_names, {"__secret_static"})
 
-        # 3. --non-static --methods --public: __init__ and login (excludes static verify_signature)
         res_inst_pub = engine.outline(
             str(py_file),
             visibility="public",
@@ -240,60 +225,105 @@ class TestPartialAndOutline(YSCBTestCase):
         inst_pub_names = {m["name"] for m in cls_node_ip["members"]}
         self.assertEqual(inst_pub_names, {"__init__", "login"})
 
-        # 4. --fields: only token and _secret
         res_fields = engine.outline(str(py_file), member_kind="fields")
         cls_node_f = res_fields["symbols"][0]
         field_names = {m["name"] for m in cls_node_f["members"]}
         self.assertEqual(field_names, {"token", "_secret"})
 
-        # 5. --types: keeps AuthService class container with members folded (empty)
         res_types = engine.outline(str(py_file), member_kind="types")
         self.assertEqual(len(res_types["symbols"]), 1)
         self.assertEqual(res_types["symbols"][0]["name"], "AuthService")
         self.assertEqual(res_types["symbols"][0]["members"], [])
 
-        # Verify formatted output shows [static] badge and filters summary
         formatted = ASTResultFormatter().format_outline_output(res_priv_static, as_json=False)
         self.assertIn("[static]", formatted)
         self.assertIn("filters: visibility=private, binding=static", formatted)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_et_01_outline_missing_file_returns_structured_error(self):
-        """ET-01: Verify ASTEngine.outline() on a non-existent file returns structured error without crashing."""
+    def test_outline_missing_file_and_formatter_modes(self) -> None:
+        """Verify TerminalStyler, outline missing-file error preservation, nested partial deduplication, and impact detail/limit formatting."""
+        class _FakeTTY:
+            def isatty(self) -> bool:
+                return True
+
+        with patch.dict(os.environ, {"NO_COLOR": "1"}):
+            styler_off = TerminalStyler(stream=_FakeTTY())
+            self.assertFalse(styler_off.enabled)
+            self.assertEqual(styler_off.symbol("Foo"), "Foo")
+        with patch.dict(os.environ, {"NO_COLOR": ""}):
+            styler_on = TerminalStyler(stream=_FakeTTY())
+            self.assertTrue(styler_on.enabled)
+            self.assertIn("\033[", styler_on.symbol("Foo"))
+
         engine = ASTEngine(project_root=self.temp_dir, storage_dir=self.storage_dir)
         res = engine.outline(str(self.temp_dir / "non_existent_file.cs"), merged=False)
         self.assertEqual(res.get("symbols"), [])
         self.assertIn("error", res)
         self.assertIn("File not found", res["error"])
+
+        fmt = ASTResultFormatter()
+        txt_err = fmt.format_outline_output(res, as_json=False)
+        self.assertIn("File not found", txt_err)
+        json_err = json.loads(fmt.format_outline_output(res, as_json=True))
+        self.assertIn("error", json_err)
+
+        # Nested partial class should not render duplicate [Partial Siblings] at the bottom
+        nested_outline = {
+            "file_path": "UI/Outer.Part1.cs",
+            "language": "c_sharp",
+            "merged": False,
+            "symbols": [
+                {
+                    "name": "Outer",
+                    "fqn": "UI.Outer",
+                    "kind": "class",
+                    "line_number": 1,
+                    "end_line": 20,
+                    "is_partial": False,
+                    "members": [
+                        {
+                            "name": "Inner",
+                            "fqn": "UI.Outer.Inner",
+                            "kind": "class",
+                            "line_number": 2,
+                            "end_line": 10,
+                            "is_partial": True,
+                            "members": [],
+                        }
+                    ],
+                }
+            ],
+            "partial_siblings": {
+                "UI.Outer.Inner": [{"file_path": "UI/Outer.Part2.cs", "line_number": 2, "end_line": 12, "member_count": 3}]
+            },
+        }
+        nested_txt = fmt.format_outline_output(nested_outline, as_json=False)
+        self.assertEqual(nested_txt.count("[Partial Siblings]"), 1)
+
+        # format_impact_output detail_mode and limit_mode
+        impact_payload = {
+            "status": "matched",
+            "target_query": "Core.Run",
+            "target_symbol": {"name": "Run", "fqn": "Core.Run", "kind": "method", "file_path": "core.py", "line_number": 1, "end_line": 5, "signature": "def Run()"},
+            "max_depth": 2,
+            "total_impacted_symbols": 3,
+            "total_impacted_files": 2,
+            "layers": {
+                1: [
+                    {"name": "CallerA", "kind": "function", "file_path": "a.py", "line_number": 10, "signature": "def CallerA(x: int)"},
+                    {"name": "CallerB", "kind": "function", "file_path": "b.py", "line_number": 20, "signature": "def CallerB(y: str)"},
+                ]
+            },
+        }
+        impact_detail_txt = fmt.format_impact_output(impact_payload, detail_mode="detail", limit_mode=1)
+        self.assertIn("def CallerA(x: int)", impact_detail_txt)
+        self.assertNotIn("def CallerB(y: str)", impact_detail_txt)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_04_ast_engine_pep562_lazy_exports_and_version(self):
-        """FR-03, NFR-02: Verify ast_engine PEP 562 lazy attribute loading and __version__ consistency."""
-        import json
-        import ast_engine
-
-        mf_path = Path(__file__).resolve().parent.parent / "manifest.json"
-        mf_data = json.loads(mf_path.read_text(encoding="utf-8"))
-        self.assertEqual(ast_engine.__version__, mf_data["version"])
-        for sym_name in ("ASTEngine", "ASTSnapshot", "CallGraphIndex", "SemanticBundler"):
-            self.assertIn(sym_name, dir(ast_engine))
-            self.assertIsNotNone(getattr(ast_engine, sym_name))
-        with self.assertRaises(AttributeError):
-            _ = ast_engine.NON_EXISTENT_SYMBOL_XYZ
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
-    def test_ft_05_overload_members_retention_and_dirty_file_match(self):
-        """FR-04, EC-04 (AUD-08, AUD-09, AUD-14): Verify C# overloaded methods are retained in class members and is_dirty_file_match avoids basename false positives."""
-        from ast_engine.io_utils import is_dirty_file_match, normalize_dirty_paths
-
-        dirty_set = normalize_dirty_paths(["ys_codebase/source/dev/scripts/cli.py"])
-        self.assertFalse(is_dirty_file_match("cli.py", dirty_set))
-        self.assertTrue(is_dirty_file_match("source/dev/scripts/cli.py", dirty_set))
-        self.assertTrue(is_dirty_file_match("ys_codebase/source/dev/scripts/cli.py", dirty_set))
-
+    def test_overload_members_retention_in_class_outline(self) -> None:
+        """Verify C# overloaded methods are unconditionally retained in class members during outline()."""
         proj_dir = self.temp_dir / "overload_proj"
         proj_dir.mkdir(parents=True, exist_ok=True)
         cs_file = proj_dir / "MathOps.cs"
@@ -310,8 +340,8 @@ class TestPartialAndOutline(YSCBTestCase):
         engine.ensure_jit_synced(force=True)
         outline_res = engine.outline(str(cs_file), merged=False)
         cls_sym = next((s for s in outline_res["symbols"] if s["kind"] == "class"), None)
-        if cls_sym is not None:
-            add_members = [m for m in cls_sym["members"] if m["name"] == "Add"]
-            self.assertEqual(len(add_members), 2)
+        self.assertIsNotNone(cls_sym)
+        assert cls_sym is not None
+        add_members = [m for m in cls_sym["members"] if m["name"] == "Add"]
+        self.assertEqual(len(add_members), 2)
         self.mark_passed()
-

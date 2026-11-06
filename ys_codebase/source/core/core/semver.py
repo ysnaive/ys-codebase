@@ -36,6 +36,31 @@ _SEMVER_FOUR_SEGMENT_REGEX = re.compile(
     r"(?:-(?P<prerelease>[0-9A-Za-z.-]+))?$"
 )
 
+@functools.lru_cache(maxsize=512)
+def _parse_semver_str(clean_v: str) -> VersionTuple:
+    if not clean_v:
+        raise ValueError("Version string cannot be empty")
+
+    match = _SEMVER_FOUR_SEGMENT_REGEX.match(clean_v)
+    if not match:
+        raise ValueError(f"Invalid SemVer string format: '{clean_v}'")
+
+    major = int(match.group("major"))
+    minor = int(match.group("minor"))
+    patch = int(match.group("patch"))
+    raw_rev = match.group("revision")
+    prerelease = match.group("prerelease") or ""
+
+    if raw_rev is None or raw_rev == "":
+        revision: Union[int, str] = 0
+    elif raw_rev.isdigit():
+        revision = int(raw_rev)
+    else:
+        revision = raw_rev
+
+    return VersionTuple(major, minor, patch, revision, prerelease)
+
+
 def parse_semver(version_str: Union[str, VersionTuple]) -> VersionTuple:
     """
     解析版本字串為 VersionTuple：
@@ -49,29 +74,8 @@ def parse_semver(version_str: Union[str, VersionTuple]) -> VersionTuple:
         return version_str
     if not isinstance(version_str, str):
         raise ValueError(f"Version must be a string, got {type(version_str).__name__}")
-    
-    clean_v = version_str.strip()
-    if not clean_v:
-        raise ValueError("Version string cannot be empty")
-        
-    match = _SEMVER_FOUR_SEGMENT_REGEX.match(clean_v)
-    if not match:
-        raise ValueError(f"Invalid SemVer string format: '{version_str}'")
-    
-    major = int(match.group("major"))
-    minor = int(match.group("minor"))
-    patch = int(match.group("patch"))
-    raw_rev = match.group("revision")
-    prerelease = match.group("prerelease") or ""
-    
-    if raw_rev is None or raw_rev == "":
-        revision: Union[int, str] = 0
-    elif raw_rev.isdigit():
-        revision = int(raw_rev)
-    else:
-        revision = raw_rev
-        
-    return VersionTuple(major, minor, patch, revision, prerelease)
+    return _parse_semver_str(version_str.strip())
+
 
 def normalize_version(version_str: str) -> str:
     """將任意合法版本字串標準化為四段式字串 (例 '1.0.0' -> '1.0.0.0')"""
@@ -225,7 +229,8 @@ def _match_single_clause(version: str, clause: str) -> bool:
         if v_target.major == 0:
             return v_curr.major == 0 and v_curr.minor == v_target.minor
         return v_curr.major == v_target.major
-    
+    return False
+
 def match_constraint(version: Union[str, VersionTuple], constraint: Optional[str]) -> bool:
     v_str = str(version)
     if not constraint or constraint.strip() == "" or constraint.strip() == "*":

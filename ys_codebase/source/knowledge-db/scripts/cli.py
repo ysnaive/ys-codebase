@@ -5,67 +5,203 @@ Migrated to core.commands active execution contract with strong-typed CmdBags.
 
 import json
 import sys
-from typing import Any, Dict, Union
+from typing import Any, Callable, Dict, List, Tuple, Union
 
 from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
-import knowledge_db  # noqa: F401
 import knowledge_db.config as kdb_config
-from knowledge_db.engine import get_engine
+from knowledge_db.engine import KnowledgeEngine, get_engine
 from knowledge_db.exceptions import KnowledgeDBError
 from knowledge_db.formatter import TerminalStyler
 from file_space import FileSpaceNotFoundError
 
 
 def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
-    """容錯正規化：若傳入 List[str] 則包裝為 CmdBags，支援內部測試直呼。"""
+    """容錯正規化：若傳入 List[str] 則包裝為 CmdBags，支援內部測試直呼與雙 token 帶值選項。"""
     if isinstance(cmd_bags, CmdBags):
         return cmd_bags
     if isinstance(cmd_bags, (list, tuple)):
-        args = list(cmd_bags)
+        args = [str(x) for x in cmd_bags]
         raw_cmd = " ".join(args)
-        opts = {}
-        pos = []
-        for a in args:
+        opts: Dict[str, CmdOption] = {}
+        pos: List[str] = []
+        value_options = {
+            "space",
+            "kind",
+            "lang",
+            "ftype",
+            "limit",
+            "max-snippet-lines",
+            "export",
+        }
+        i = 0
+        while i < len(args):
+            a = args[i]
             if a.startswith("--"):
                 k = a[2:]
-                v = True
+                v: Any = True
                 if "=" in k:
                     k, val = k.split("=", 1)
                     v = val
+                elif k in value_options and (i + 1) < len(args) and not args[i + 1].startswith("-"):
+                    i += 1
+                    v = args[i]
                 opts[k] = CmdOption(name=k, params=v)
             elif a.startswith("-") and len(a) > 1:
                 k = a[1:]
                 opts[k] = CmdOption(name=k, params=True)
             else:
                 pos.append(a)
+            i += 1
         return CmdBags(raw_cmd=raw_cmd, command=default_cmd, args=pos, options=opts)
     return CmdBags(raw_cmd="", command=default_cmd, args=[], options={})
 
 
-def _setup_stream_encodings():
-    if hasattr(sys.stdout, "reconfigure"):
-        try:
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
-    if hasattr(sys.stderr, "reconfigure"):
-        try:
-            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
+def _setup_stream_encodings() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+def _prepare_command(cmd_bags: Any, default_cmd: str) -> Tuple[CmdBags, KnowledgeEngine]:
+    """統一處理 CLI 路由守門、編碼設定、CmdBags 正規化與 Engine 單例取得。"""
+    guard_dispatch("knowledge-db")
+    _setup_stream_encodings()
+    return _normalize_bags(cmd_bags, default_cmd), get_engine()
+
+
+def _handle_cli_exception(exc: Exception, action_label: str = "操作失敗") -> int:
+    """統一格式化 CLI 例外錯誤並輸出至 stderr。"""
+    if isinstance(exc, FileSpaceNotFoundError):
+        print(f"[knowledge-db] 空間不存在: {exc}", file=sys.stderr)
+    elif isinstance(exc, KnowledgeDBError):
+        print(f"[knowledge-db] {action_label}: {exc}", file=sys.stderr)
+    else:
+        print(f"[knowledge-db] 執行異常: {exc}", file=sys.stderr)
+    return 1
+
+
+def _serialize_search_json(
+    query_str: str,
+    tier: str,
+    filtered_results: List[Any],
+    engine: KnowledgeEngine,
+    file_uri: bool,
+    cap_json_snippet_fn: Callable[[Any], Dict[str, Any]],
+) -> str:
+    """統一序列化 search 命令之三層級 JSON 輸出。"""
+    data: List[Dict[str, Any]] = []
+    for res in filtered_results:
+        first_line = res.items[0].symbol.line_number if res.items else None
+        norm_path = engine.normalize_workspace_path(res.file_path)
+        if tier == "detail":
+            items_payload = [
+                {
+                    "id": itm.symbol.id,
+                    "name": itm.symbol.name,
+                    "kind": itm.symbol.kind,
+                    "line_number": itm.symbol.line_number,
+                    "end_line": itm.symbol.end_line,
+                    "score": round(itm.score, 2),
+                    "matched_terms": getattr(itm, "matched_terms", []),
+                    "signature": itm.symbol.signature,
+                    "summary": itm.snippet or (itm.code_snippet.docstring_summary if itm.code_snippet else ""),
+                    **(
+                        {
+                            "code": itm.code_snippet.get_raw_code(),
+                            "code_lines": [itm.code_snippet.start_line, itm.code_snippet.end_line],
+                        }
+                        if (itm.code_snippet and itm.code_snippet.lines)
+                        else {}
+                    ),
+                }
+                for itm in res.items
+            ]
+            data.append(
+                {
+                    "file_path": norm_path,
+                    "file_uri": engine.to_file_uri(res.file_path, line=first_line),
+                    "total_score": round(res.total_score, 2),
+                    "language": res.language,
+                    "spaces": getattr(res, "spaces", []),
+                    "items": items_payload,
+                }
+            )
+        elif tier == "snippet":
+            items_payload = [
+                {
+                    "name": itm.symbol.name,
+                    "kind": itm.symbol.kind,
+                    "line_number": itm.symbol.line_number,
+                    "end_line": itm.symbol.end_line,
+                    "score": round(itm.score, 2),
+                    **({"signature": itm.symbol.signature} if itm.symbol.signature else {}),
+                    **(
+                        {"summary": itm.snippet or (itm.code_snippet.docstring_summary if itm.code_snippet else "")}
+                        if (itm.snippet or (itm.code_snippet and itm.code_snippet.docstring_summary))
+                        else {}
+                    ),
+                    **cap_json_snippet_fn(itm.code_snippet),
+                }
+                for itm in res.items
+            ]
+            data.append(
+                {
+                    "file_path": norm_path,
+                    **({"file_uri": engine.to_file_uri(res.file_path, line=first_line)} if file_uri else {}),
+                    "total_score": round(res.total_score, 2),
+                    "language": res.language,
+                    "items": items_payload,
+                }
+            )
+        else:
+            items_payload = [
+                {
+                    "name": itm.symbol.name,
+                    "kind": itm.symbol.kind,
+                    "line_number": itm.symbol.line_number,
+                    "end_line": itm.symbol.end_line,
+                    "score": round(itm.score, 2),
+                    **({"signature": itm.symbol.signature} if itm.symbol.signature else {}),
+                }
+                for itm in res.items
+            ]
+            data.append(
+                {
+                    "file_path": norm_path,
+                    **({"file_uri": engine.to_file_uri(res.file_path, line=first_line)} if file_uri else {}),
+                    "total_score": round(res.total_score, 2),
+                    "language": res.language,
+                    "items": items_payload,
+                }
+            )
+
+    if tier == "detail":
+        return json.dumps(
+            {"query": query_str, "tier": "detail", "total": len(data), "results": data},
+            indent=2,
+            ensure_ascii=False,
+        )
+    out_tier = "preview" if tier == "snippet" else "simple"
+    return json.dumps(
+        {"query": query_str, "tier": out_tier, "total": len(data), "results": data},
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
 
 
 def status(cmd_bags: Any) -> int:
     """查看知識庫後台服務、核心索引、AST 水位線、檢索模式、組態與空間游標同步詳盡統計。"""
-    guard_dispatch("knowledge-db")
-    _setup_stream_encodings()
-    bags = _normalize_bags(cmd_bags, "status")
-    engine = get_engine()
+    bags, engine = _prepare_command(cmd_bags, "status")
 
     try:
         targets = bags.args
-        space_target = bags.get_option_value("space") or (targets[0] if targets and not (bags.has_option("all") or bags.has_option("a")) else None)
+        space_target = bags.get_option_value("space") or (
+            targets[0] if targets and not (bags.has_option("all") or bags.has_option("a")) else None
+        )
 
         st = engine.status(space=space_target)
         if bags.has_option("json"):
@@ -178,23 +314,13 @@ def status(cmd_bags: Any) -> int:
             )
         print("-" * 80)
         return 0
-    except FileSpaceNotFoundError as e:
-        print(f"[knowledge-db] 空間不存在: {e}", file=sys.stderr)
-        return 1
-    except KnowledgeDBError as e:
-        print(f"[knowledge-db] 操作失敗: {e}", file=sys.stderr)
-        return 1
     except Exception as e:
-        print(f"[knowledge-db] 執行異常: {e}", file=sys.stderr)
-        return 1
+        return _handle_cli_exception(e)
 
 
 def index(cmd_bags: Any) -> int:
     """建置與快取指定空間或全空間聯集之多欄位倒排索引。"""
-    guard_dispatch("knowledge-db")
-    _setup_stream_encodings()
-    bags = _normalize_bags(cmd_bags, "index")
-    engine = get_engine()
+    bags, engine = _prepare_command(cmd_bags, "index")
 
     try:
         force = bags.has_option("force") or bags.has_option("f")
@@ -209,15 +335,8 @@ def index(cmd_bags: Any) -> int:
         if export_arg:
             print(f"  - 語意 Bundle 已導出至: {export_arg}")
         return 0
-    except FileSpaceNotFoundError as e:
-        print(f"[knowledge-db] 空間不存在: {e}", file=sys.stderr)
-        return 1
-    except KnowledgeDBError as e:
-        print(f"[knowledge-db] 操作失敗: {e}", file=sys.stderr)
-        return 1
     except Exception as e:
-        print(f"[knowledge-db] 執行異常: {e}", file=sys.stderr)
-        return 1
+        return _handle_cli_exception(e)
 
 
 def model(cmd_bags: Any) -> int:
@@ -239,10 +358,7 @@ def model(cmd_bags: Any) -> int:
 
 def model_status(cmd_bags: Any) -> int:
     """檢視本地向量模型權重快取目錄、檔案狀態與維度。"""
-    guard_dispatch("knowledge-db")
-    _setup_stream_encodings()
-    bags = _normalize_bags(cmd_bags, "model status")
-    engine = get_engine()
+    bags, engine = _prepare_command(cmd_bags, "model status")
     try:
         st = engine.model_status()
         if bags.has_option("json"):
@@ -259,20 +375,13 @@ def model_status(cmd_bags: Any) -> int:
         print(f"  - 服務狀態: {av_str}")
         print(f"  - 向量維度: {st['dimension']}")
         return 0
-    except KnowledgeDBError as e:
-        print(f"[knowledge-db] 操作失敗: {e}", file=sys.stderr)
-        return 1
     except Exception as e:
-        print(f"[knowledge-db] 執行異常: {e}", file=sys.stderr)
-        return 1
+        return _handle_cli_exception(e)
 
 
 def model_download(cmd_bags: Any) -> int:
     """顯式下載 FastEmbed 向量模型權重至本地快取。"""
-    guard_dispatch("knowledge-db")
-    _setup_stream_encodings()
-    bags = _normalize_bags(cmd_bags, "model download")
-    engine = get_engine()
+    bags, engine = _prepare_command(cmd_bags, "model download")
     try:
         force = bags.has_option("force") or bags.has_option("f")
         print(f"[knowledge-db] 開始準備下載/載入向量模型 '{engine.embedding_service.model_name}' (force={force})...")
@@ -284,20 +393,13 @@ def model_download(cmd_bags: Any) -> int:
         else:
             print("[knowledge-db] 向量模型下載未完成。", file=sys.stderr)
             return 1
-    except KnowledgeDBError as e:
-        print(f"[knowledge-db] 下載失敗: {e}", file=sys.stderr)
-        return 1
     except Exception as e:
-        print(f"[knowledge-db] 執行異常: {e}", file=sys.stderr)
-        return 1
+        return _handle_cli_exception(e, action_label="下載失敗")
 
 
 def search(cmd_bags: Any) -> int:
     """對全空間或指定空間符號進行多欄位加權 BM25 與向量混合語意檢索。"""
-    guard_dispatch("knowledge-db")
-    _setup_stream_encodings()
-    bags = _normalize_bags(cmd_bags, "search")
-    engine = get_engine()
+    bags, engine = _prepare_command(cmd_bags, "search")
 
     try:
         queries = bags.args
@@ -399,79 +501,16 @@ def search(cmd_bags: Any) -> int:
 
         if is_json:
             filtered_results = [res for res in results if res.items]
-            if tier == "detail":
-                data = [
-                    {
-                        "file_path": engine.normalize_workspace_path(res.file_path),
-                        "file_uri": engine.to_file_uri(res.file_path, line=res.items[0].symbol.line_number if res.items else None),
-                        "total_score": round(res.total_score, 2),
-                        "language": res.language,
-                        "spaces": getattr(res, "spaces", []),
-                        "items": [
-                            {
-                                "id": itm.symbol.id,
-                                "name": itm.symbol.name,
-                                "kind": itm.symbol.kind,
-                                "line_number": itm.symbol.line_number,
-                                "end_line": itm.symbol.end_line,
-                                "score": round(itm.score, 2),
-                                "matched_terms": getattr(itm, "matched_terms", []),
-                                "signature": itm.symbol.signature,
-                                "summary": itm.snippet or (itm.code_snippet.docstring_summary if itm.code_snippet else ""),
-                                **({"code": itm.code_snippet.get_raw_code(), "code_lines": [itm.code_snippet.start_line, itm.code_snippet.end_line]} if (itm.code_snippet and itm.code_snippet.lines) else {}),
-                            }
-                            for itm in res.items
-                        ],
-                    }
-                    for res in filtered_results
-                ]
-                print(json.dumps({"query": query_str, "tier": "detail", "total": len(data), "results": data}, indent=2, ensure_ascii=False))
-            elif tier == "snippet":
-                data = [
-                    {
-                        "file_path": engine.normalize_workspace_path(res.file_path),
-                        **({"file_uri": engine.to_file_uri(res.file_path, line=res.items[0].symbol.line_number if res.items else None)} if file_uri else {}),
-                        "total_score": round(res.total_score, 2),
-                        "language": res.language,
-                        "items": [
-                            {
-                                "name": itm.symbol.name,
-                                "kind": itm.symbol.kind,
-                                "line_number": itm.symbol.line_number,
-                                "end_line": itm.symbol.end_line,
-                                "score": round(itm.score, 2),
-                                **({"signature": itm.symbol.signature} if itm.symbol.signature else {}),
-                                **({"summary": itm.snippet or (itm.code_snippet.docstring_summary if itm.code_snippet else "")} if (itm.snippet or (itm.code_snippet and itm.code_snippet.docstring_summary)) else {}),
-                                **_cap_json_snippet(itm.code_snippet),
-                            }
-                            for itm in res.items
-                        ],
-                    }
-                    for res in filtered_results
-                ]
-                print(json.dumps({"query": query_str, "tier": "preview", "total": len(data), "results": data}, separators=(',', ':'), ensure_ascii=False))
-            else:
-                data = [
-                    {
-                        "file_path": engine.normalize_workspace_path(res.file_path),
-                        **({"file_uri": engine.to_file_uri(res.file_path, line=res.items[0].symbol.line_number if res.items else None)} if file_uri else {}),
-                        "total_score": round(res.total_score, 2),
-                        "language": res.language,
-                        "items": [
-                            {
-                                "name": itm.symbol.name,
-                                "kind": itm.symbol.kind,
-                                "line_number": itm.symbol.line_number,
-                                "end_line": itm.symbol.end_line,
-                                "score": round(itm.score, 2),
-                                **({"signature": itm.symbol.signature} if itm.symbol.signature else {}),
-                            }
-                            for itm in res.items
-                        ],
-                    }
-                    for res in filtered_results
-                ]
-                print(json.dumps({"query": query_str, "tier": "simple", "total": len(data), "results": data}, separators=(',', ':'), ensure_ascii=False))
+            print(
+                _serialize_search_json(
+                    query_str=query_str,
+                    tier=tier,
+                    filtered_results=filtered_results,
+                    engine=engine,
+                    file_uri=file_uri,
+                    cap_json_snippet_fn=_cap_json_snippet,
+                )
+            )
             return 0
 
         fmt_type = "md" if is_md else "text"
@@ -486,15 +525,8 @@ def search(cmd_bags: Any) -> int:
         )
         print(formatted_output)
         return 0
-    except FileSpaceNotFoundError as e:
-        print(f"[knowledge-db] 空間不存在: {e}", file=sys.stderr)
-        return 1
-    except KnowledgeDBError as e:
-        print(f"[knowledge-db] 操作失敗: {e}", file=sys.stderr)
-        return 1
     except Exception as e:
-        print(f"[knowledge-db] 執行異常: {e}", file=sys.stderr)
-        return 1
+        return _handle_cli_exception(e)
 
 
 def _parse_common_display_options(bags: CmdBags) -> Dict[str, Any]:
@@ -537,10 +569,7 @@ def _parse_common_display_options(bags: CmdBags) -> Dict[str, Any]:
 
 def clean(cmd_bags: Any) -> int:
     """清理指定空間或全空間之指紋、Bundle 與倒排索引快取。"""
-    guard_dispatch("knowledge-db")
-    _setup_stream_encodings()
-    bags = _normalize_bags(cmd_bags, "clean")
-    engine = get_engine()
+    bags, engine = _prepare_command(cmd_bags, "clean")
 
     try:
         targets = bags.args
@@ -550,12 +579,5 @@ def clean(cmd_bags: Any) -> int:
         target_str = f"空間 '{space_target}'" if space_target else "全空間"
         print(f"[knowledge-db] 成功清理 {target_str} 之指紋、Bundle 與倒排索引快取。")
         return 0
-    except FileSpaceNotFoundError as e:
-        print(f"[knowledge-db] 空間不存在: {e}", file=sys.stderr)
-        return 1
-    except KnowledgeDBError as e:
-        print(f"[knowledge-db] 操作失敗: {e}", file=sys.stderr)
-        return 1
     except Exception as e:
-        print(f"[knowledge-db] 執行異常: {e}", file=sys.stderr)
-        return 1
+        return _handle_cli_exception(e)

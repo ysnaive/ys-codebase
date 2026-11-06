@@ -11,16 +11,31 @@ from typing import Any, Dict
 def _migrate_dir_contents(src_dir: str, dst_dir: str) -> None:
     if not os.path.isdir(src_dir):
         return
-    os.makedirs(dst_dir, exist_ok=True)
-    for entry in sorted(os.listdir(src_dir)):
+    try:
+        os.makedirs(dst_dir, exist_ok=True)
+        entries = sorted(os.listdir(src_dir))
+    except OSError:
+        return
+    for entry in entries:
         src_path = os.path.join(src_dir, entry)
         dst_path = os.path.join(dst_dir, entry)
-        if os.path.isdir(src_path):
+        if os.path.islink(src_path):
+            try:
+                if os.path.exists(src_path) and not os.path.exists(dst_path):
+                    shutil.move(src_path, dst_path)
+                else:
+                    os.unlink(src_path)
+            except OSError:
+                pass
+        elif os.path.isdir(src_path):
             _migrate_dir_contents(src_path, dst_path)
         elif os.path.isfile(src_path):
             if not os.path.exists(dst_path):
-                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-                shutil.move(src_path, dst_path)
+                try:
+                    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                    shutil.move(src_path, dst_path)
+                except OSError:
+                    pass
             else:
                 try:
                     os.remove(src_path)

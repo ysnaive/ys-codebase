@@ -2,19 +2,20 @@
 Unit tests for core.semver (Four-Segment SemVer Parser, Comparator, Constraint Solver and Version Bumper).
 """
 import unittest
-from core import semver
+
 from core.semver import (
-    VersionTuple,
-    parse_semver,
+    bump_version,
     compare_semver,
-    match_constraint,
     find_best_version,
-    bump_version
+    match_constraint,
+    normalize_version,
+    parse_semver,
 )
 from dev.testing.case import YSCBTestCase
-from dev.testing.requirement import require, Requirement
+from dev.testing.requirement import Requirement, require
 
 
+@require(Requirement.LOGIC)
 class SemVerCoreTest(YSCBTestCase):
     """標準四段式語意版本 (Major.Minor.Patch.Revision) 與約束解析單元測試。"""
 
@@ -27,13 +28,14 @@ class SemVerCoreTest(YSCBTestCase):
         self.assertEqual(v4.revision, 4)
         self.assertEqual(str(v4), "1.2.3.4")
 
-        # 三段式正規化 (預設補 0)
+        # 三段式正規化 (預設補 0) 與 normalize_version
         v3 = parse_semver("1.2.3")
         self.assertEqual(v3.major, 1)
         self.assertEqual(v3.minor, 2)
         self.assertEqual(v3.patch, 3)
         self.assertEqual(v3.revision, 0)
         self.assertEqual(str(v3), "1.2.3.0")
+        self.assertEqual(normalize_version("1.2.3"), "1.2.3.0")
 
         # Prerelease 標籤
         v_pre = parse_semver("2.0.0-beta.1")
@@ -63,6 +65,8 @@ class SemVerCoreTest(YSCBTestCase):
         for bad in malformed:
             with self.assertRaises(ValueError, msg=f"Should raise on '{bad}'"):
                 parse_semver(bad)
+        with self.assertRaises(ValueError):
+            parse_semver([1, 2, 3])  # type: ignore[arg-type]
         self.mark_passed()
 
     def test_numerical_ordering_and_comparison(self):
@@ -96,6 +100,10 @@ class SemVerCoreTest(YSCBTestCase):
         self.assertEqual(bump_version("1.2.3.4", "patch"), "1.2.4.0")
         # Revision 升級 (日常微調)
         self.assertEqual(bump_version("1.2.3.4", "revision"), "1.2.3.5")
+        # 顯式目標版本號升級與降級攔截
+        self.assertEqual(bump_version("1.2.3.4", "1.5.0.0"), "1.5.0.0")
+        with self.assertRaises(ValueError):
+            bump_version("1.2.3.4", "1.1.0.0")
         self.mark_passed()
 
     def test_sorted_list_and_find_best(self):
@@ -110,10 +118,14 @@ class SemVerCoreTest(YSCBTestCase):
         self.mark_passed()
 
     def test_constraint_matching(self):
-        # 大於 / 等於
+        # 大於 / 等於 / 小於等於 / 不等於
         self.assertTrue(match_constraint("1.10.0.0", ">=1.0.0"))
         self.assertTrue(match_constraint("1.0.0.0", ">=1.0.0"))
         self.assertFalse(match_constraint("0.9.0.0", ">=1.0.0"))
+        self.assertTrue(match_constraint("1.2.3.0", "<=1.2.3.0"))
+        self.assertFalse(match_constraint("1.2.3.1", "<=1.2.3.0"))
+        self.assertTrue(match_constraint("1.2.4.0", "!=1.2.3.0"))
+        self.assertFalse(match_constraint("1.2.3.0", "!=1.2.3.0"))
 
         # 嚴格大於 / 小於
         self.assertTrue(match_constraint("1.0.1.0", ">1.0.0"))
@@ -121,15 +133,29 @@ class SemVerCoreTest(YSCBTestCase):
         self.assertTrue(match_constraint("0.9.9.0", "<1.0.0"))
         self.assertFalse(match_constraint("1.0.0.0", "<1.0.0"))
 
-        # 等於與萬用字元
+        # 等於與萬用字元 (*, 1.*, 1.2.*, 1.2.3.*)
         self.assertTrue(match_constraint("1.2.3.0", "==1.2.3.0"))
         self.assertTrue(match_constraint("1.2.3.0", "1.2.3.0"))
         self.assertTrue(match_constraint("1.2.3.0", "*"))
         self.assertTrue(match_constraint("1.2.3.0", None))
+        self.assertTrue(match_constraint("1.9.0.0", "1.*"))
+        self.assertFalse(match_constraint("2.0.0.0", "1.*"))
+        self.assertTrue(match_constraint("1.2.9.0", "1.2.*"))
+        self.assertFalse(match_constraint("1.3.0.0", "1.2.*"))
+        self.assertTrue(match_constraint("1.2.3.9", "1.2.3.*"))
+        self.assertFalse(match_constraint("1.2.4.0", "1.2.3.*"))
 
-        # 相容版本 ~=
+        # 相容版本 ~= / ^ (含 1.x 與 0.x 邊界)
         self.assertTrue(match_constraint("1.2.5.0", "~=1.2.0"))
         self.assertFalse(match_constraint("2.0.0.0", "~=1.2.0"))
+        self.assertTrue(match_constraint("0.2.5.0", "^0.2.1"))
+        self.assertFalse(match_constraint("0.3.0.0", "^0.2.1"))
+        self.assertTrue(match_constraint("0.2.5.0", "~=0.2.1"))
+        self.assertFalse(match_constraint("0.3.0.0", "~=0.2.1"))
+
+        # build 特殊約束
+        self.assertTrue(match_constraint("1.0.1.build", "build"))
+        self.assertFalse(match_constraint("1.0.1.0", "build"))
         self.mark_passed()
 
 

@@ -5,13 +5,13 @@ PlanArchiver — 開發計畫安全歸檔服務。
 import re
 import shutil
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Dict, Optional
 
 from . import (
-    PlanNotFoundError,
+    PlanDestinationExistsError,
     PlanFormatError,
     PlanIncompleteError,
-    PlanDestinationExistsError,
+    PlanNotFoundError,
 )
 from ._common import resolve_plan_uri
 
@@ -28,7 +28,7 @@ class PlanArchiver:
     ):
         """
         初始化 PlanArchiver。
-        
+
         Args:
             plans_dir: 進行中計畫目錄。若為 None 則透過 workflow.plans:// 解析。
             archive_dir: 歷史歸檔目錄。若為 None 則透過 workflow.archived:// 解析。
@@ -56,16 +56,30 @@ class PlanArchiver:
     def archive_plan(self, plan_name: str, force: bool = False) -> Dict:
         """
         執行計畫安全歸檔操作。
-        
+
         Args:
             plan_name: 計畫目錄名稱 (例如 2026_08_23_1505_feature_name)
             force: 若為 True，跳過完成狀態與 CHANGELOG 記載檢查
-            
+
         Returns:
             Dict: 執行結果彙總
         """
-        src_dir = self.plans_dir / plan_name
-        if not src_dir.exists() or not src_dir.is_dir():
+        plan_name = (plan_name or "").strip().rstrip("/\\")
+        if (
+            not plan_name
+            or "/" in plan_name
+            or "\\" in plan_name
+            or ".." in Path(plan_name).parts
+        ):
+            raise PlanNotFoundError(f"找不到指定的計畫目錄：{self.plans_dir / plan_name}")
+
+        plans_root = self.plans_dir.resolve()
+        src_dir = (plans_root / plan_name).resolve()
+        if (
+            src_dir.parent != plans_root
+            or not src_dir.exists()
+            or not src_dir.is_dir()
+        ):
             raise PlanNotFoundError(f"找不到指定的計畫目錄：{src_dir}")
 
         # 解析時間戳前綴 YYYY_MM_
@@ -78,6 +92,7 @@ class PlanArchiver:
 
         # 1. 執行 PlanVerifier 剛性合規檢核
         from .verifier import PlanVerifier
+
         verifier = self.verifier or PlanVerifier(
             self.plans_dir, self.archive_dir, self.templates_dir
         )

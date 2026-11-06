@@ -50,8 +50,10 @@ def require(requirement: Requirement) -> Callable[[Any], Any]:
         @functools.wraps(target)
         def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
             net_available = globals().get("is_network_available", is_network_available)
-            req_val = requirement.value if hasattr(requirement, "value") else int(requirement)
-            if bool(req_val & Requirement.NETWORK.value) and not net_available():
+            method_val = requirement.value if hasattr(requirement, "value") else int(requirement)
+            cls_req = getattr(self.__class__, "__requirement__", None)
+            cls_val = (cls_req.value if hasattr(cls_req, "value") else int(cls_req)) if cls_req is not None else 0
+            if bool((method_val | cls_val) & Requirement.NETWORK.value) and not net_available():
                 raise unittest.SkipTest("[Auto-Skipped] Test requires active Network connection.")
             return target(self, *args, **kwargs)
 

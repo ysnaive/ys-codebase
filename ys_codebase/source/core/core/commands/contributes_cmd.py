@@ -82,7 +82,11 @@ def _check_single_file_mode(file_uri: str) -> int:
     fname = os.path.basename(p)
     if fname.startswith("_"):
         print(f"[core:contributes] Checking special metadata file '{fname}' as format schema...")
-        data = vfs.read_json(p) if "://" not in file_uri else vfs.read_json(file_uri)
+        try:
+            data = vfs.read_json(p) if "://" not in file_uri else vfs.read_json(file_uri)
+        except Exception as e:
+            print(f"[core:contributes] [FAIL] Error reading '{file_uri}': {e}")
+            return 1
         res = ContributesValidator.validate_format_schema(data)
         print(res.format_report(file_label=file_uri))
         return 0 if res.is_valid else 1
@@ -90,21 +94,28 @@ def _check_single_file_mode(file_uri: str) -> int:
     parent_dir = os.path.dirname(p.rstrip("/\\"))
     if fname == "contribute.json":
         target_mod = os.path.basename(parent_dir)
-        donor_mod = "project"
+        donor_mod: Optional[str] = "project"
     else:
         target_mod = fname[:-5]
-        donor_mod = None
+        if os.path.basename(parent_dir) == "contributes":
+            donor_mod = os.path.basename(os.path.dirname(parent_dir)) or None
+        else:
+            donor_mod = None
 
     target_format = contributes.get_format(target_mod)
     if target_format is None:
         print(f"[core:contributes] [WARN] Target module '{target_mod}' does not define a _format.json schema. Skipping validation.")
         return 0
 
-    data = vfs.read_json(file_uri) if "://" in file_uri else vfs.read_json(p)
+    try:
+        data = vfs.read_json(file_uri) if "://" in file_uri else vfs.read_json(p)
+    except Exception as e:
+        print(f"[core:contributes] [FAIL] Error reading '{file_uri}': {e}")
+        return 1
     if isinstance(data, dict) and target_mod in data and isinstance(data[target_mod], dict):
         data = data[target_mod]
 
-    res = ContributesValidator.validate(target_mod, data, donor_mod=donor_mod, format_schema=target_format, strict_points=True)
+    res = ContributesValidator.validate(target_mod, data, donor_mod=donor_mod or "", format_schema=target_format, strict_points=True)
     if target_mod == "core":
         inferred_base = parent_dir if fname == "contribute.json" else os.path.dirname(os.path.dirname(p))
         _append_locale_validation_errors(res, donor_mod or target_mod, data, inferred_base)

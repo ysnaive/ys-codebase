@@ -6,7 +6,6 @@ import os
 import sys
 import json
 import time
-import subprocess
 import unittest
 from contextlib import contextmanager
 from typing import List, Optional, Dict, Any, Tuple, Iterator
@@ -49,12 +48,13 @@ class YSCBTestCase(unittest.TestCase):
     @classmethod
     def cleanup_shared_sandbox(cls) -> None:
         """Session-level teardown: cleanup shared sandbox when test suite finishes."""
-        if YSCBTestCase._shared_sandbox_ctx is not None:
+        ctx = YSCBTestCase._shared_sandbox_ctx
+        if ctx is not None:
+            YSCBTestCase._shared_sandbox_ctx = None
             is_harness_managed = os.environ.get("YSCB_TEST_SANDBOX") == "1"
             keep_all = os.environ.get("YSCB_TEST_KEEP_SANDBOX", "0") == "1"
             if not keep_all and not is_harness_managed:
-                SandboxProvisioner.cleanup_sandbox(YSCBTestCase._shared_sandbox_ctx.sandbox_dir, force=True)
-            YSCBTestCase._shared_sandbox_ctx = None
+                SandboxProvisioner.cleanup_sandbox(ctx.sandbox_dir, force=True)
 
     def _callTestMethod(self, method: Any) -> Any:
         """Wrap test method execution to reliably capture unhandled exceptions and per-test output slice."""
@@ -71,6 +71,25 @@ class YSCBTestCase(unittest.TestCase):
         finally:
             if active_cap is not None and start_offsets is not None:
                 self._yscb_captured_output = active_cap.get_slice(start_offsets)
+
+    def _restore_saved_env(self) -> None:
+        from core.platform import restore_sys_path
+
+        restore_sys_path(self._orig_sys_path)
+        for env_key in list(os.environ.keys()):
+            if env_key not in self._orig_env:
+                os.environ.pop(env_key, None)
+        for env_key, env_val in self._orig_env.items():
+            if os.environ.get(env_key) != env_val:
+                os.environ[env_key] = env_val
+        uri.set_host_dir(getattr(self, "_orig_uri_host", None))
+        uri.set_yscb_root(getattr(self, "_orig_uri_yscb", None))
+        uri.set_module_context(getattr(self, "_orig_uri_mod", None))
+        if hasattr(self, "_orig_cwd") and self._orig_cwd:
+            try:
+                os.chdir(self._orig_cwd)
+            except OSError:
+                pass
 
     def setUp(self) -> None:
         """Test setup: create or reuse virtual environment and backup environment."""
@@ -92,65 +111,73 @@ class YSCBTestCase(unittest.TestCase):
 
         method_name = getattr(self, "_testMethodName", "")
         method = getattr(self, method_name, None)
-        req = getattr(method, "__requirement__", None) if method else None
-        if req is None:
-            req = getattr(self.__class__, "__requirement__", None)
+        method_req = getattr(method, "__requirement__", None) if method else None
+        class_req = getattr(self.__class__, "__requirement__", None)
 
-        req_val = req.value if hasattr(req, "value") else (int(req) if req is not None else 0)
-        if req and bool(req_val & Requirement.ISOLATED_SANDBOX.value):
-            self._is_isolated_sandbox = True
-            self.ctx = SandboxProvisioner.create_sandbox()
-        else:
-            self._is_isolated_sandbox = False
-            if YSCBTestCase._shared_sandbox_ctx is None:
-                sb_dir = None
+        method_val = (method_req.value if hasattr(method_req, "value") else int(method_req)) if method_req is not None else 0
+        class_val = (class_req.value if hasattr(class_req, "value") else int(class_req)) if class_req is not None else 0
+        effective_val = method_val if method_req is not None else class_val
+
+        created_isolated_ctx: Optional[SandboxContext] = None
+        try:
+            if bool((method_val | class_val) & Requirement.NETWORK.value):
+                from dev.testing import requirement as _req_mod
+                if not _req_mod.is_network_available():
+                    raise unittest.SkipTest("[Auto-Skipped] Test requires active Network connection.")
+
+            if bool(effective_val & Requirement.ISOLATED_SANDBOX.value):
+                self._is_isolated_sandbox = True
+                created_isolated_ctx = SandboxProvisioner.create_sandbox()
+                self.ctx = created_isolated_ctx
+            else:
+                self._is_isolated_sandbox = False
                 env_sb = os.environ.get("YSCB_SANDBOX_DIR")
-                if env_sb and os.path.isdir(env_sb) and os.path.isdir(os.path.join(env_sb, "host_env")):
-                    sb_dir = os.path.abspath(env_sb)
-                else:
-                    curr = os.path.abspath(os.getcwd())
-                    while curr and curr != os.path.dirname(curr):
-                        if (
-                            (os.path.basename(curr).startswith("sandbox_") and os.path.isdir(os.path.join(curr, "host_env")))
-                            or (os.path.isdir(os.path.join(curr, "host_env")) and os.path.isdir(os.path.join(curr, "mock_provider")))
-                        ):
-                            sb_dir = curr
-                            break
-                        curr = os.path.dirname(curr)
-                if not sb_dir or not os.path.isdir(os.path.join(sb_dir, "host_env")):
-                    raise SecurityError(
-                        f"[dev:test] Security Guard Blocked: Unable to resolve an authentic virtual sandbox directory from '{os.getcwd()}'. "
-                        "Running tests directly on the host workspace is strictly forbidden to prevent environment contamination."
+                env_sb_valid = bool(env_sb and os.path.isdir(env_sb) and os.path.isdir(os.path.join(env_sb, "host_env")))
+                shared_ctx = YSCBTestCase._shared_sandbox_ctx
+                if (
+                    shared_ctx is None
+                    or not os.path.isdir(shared_ctx.host_dir)
+                    or (
+                        env_sb_valid
+                        and os.path.abspath(getattr(shared_ctx, "root_dir", shared_ctx.sandbox_dir)) != os.path.abspath(env_sb)
                     )
-                YSCBTestCase._shared_sandbox_ctx = SandboxContext(sb_dir)
-            self.ctx = YSCBTestCase._shared_sandbox_ctx
+                ):
+                    sb_dir = None
+                    if env_sb_valid and env_sb:
+                        sb_dir = os.path.abspath(env_sb)
+                    else:
+                        curr = os.path.abspath(os.getcwd())
+                        while curr and curr != os.path.dirname(curr):
+                            if (
+                                (os.path.basename(curr).startswith("sandbox_") and os.path.isdir(os.path.join(curr, "host_env")))
+                                or (os.path.isdir(os.path.join(curr, "host_env")) and os.path.isdir(os.path.join(curr, "mock_provider")))
+                            ):
+                                sb_dir = curr
+                                break
+                            curr = os.path.dirname(curr)
+                    if not sb_dir or not os.path.isdir(os.path.join(sb_dir, "host_env")):
+                        raise SecurityError(
+                            f"[dev:test] Security Guard Blocked: Unable to resolve an authentic virtual sandbox directory from '{os.getcwd()}'. "
+                            "Running tests directly on the host workspace is strictly forbidden to prevent environment contamination."
+                        )
+                    YSCBTestCase._shared_sandbox_ctx = SandboxContext(sb_dir)
+                self.ctx = YSCBTestCase._shared_sandbox_ctx
 
-        self.sandbox_dir = self.ctx.sandbox_dir
-        self.sandbox_host_dir = self.ctx.host_dir
-        self.sandbox_project_dir = self.ctx.project_dir
-        self.sandbox_provider_dir = self.ctx.provider_dir
-        self.sandbox_id = os.path.basename(self.sandbox_dir)
-        self.sandbox_uri = f"cache://dev/sandbox/{self.sandbox_id}"
+            self.sandbox_dir = self.ctx.sandbox_dir
+            self.sandbox_host_dir = self.ctx.host_dir
+            self.sandbox_project_dir = self.ctx.project_dir
+            self.sandbox_provider_dir = self.ctx.provider_dir
+            self.sandbox_id = os.path.basename(self.sandbox_dir)
+            self.sandbox_uri = f"cache://dev/sandbox/{self.sandbox_id}"
+        except BaseException:
+            self._restore_saved_env()
+            if created_isolated_ctx is not None:
+                SandboxProvisioner.cleanup_sandbox(created_isolated_ctx.sandbox_dir, force=True)
+            raise
 
     def tearDown(self) -> None:
         """Test teardown: restore environment and classify execution status (Passed / Failed / Unknown)."""
-        from core.platform import restore_sys_path
-
-        restore_sys_path(self._orig_sys_path)
-        for env_key in list(os.environ.keys()):
-            if env_key not in self._orig_env:
-                os.environ.pop(env_key, None)
-        for env_key, env_val in self._orig_env.items():
-            if os.environ.get(env_key) != env_val:
-                os.environ[env_key] = env_val
-        uri.set_host_dir(getattr(self, "_orig_uri_host", None))
-        uri.set_yscb_root(getattr(self, "_orig_uri_yscb", None))
-        uri.set_module_context(getattr(self, "_orig_uri_mod", None))
-        if hasattr(self, "_orig_cwd") and self._orig_cwd:
-            try:
-                os.chdir(self._orig_cwd)
-            except OSError:
-                pass
+        self._restore_saved_env()
 
         if self._has_exception:
             self._execution_status = "FAILED"
@@ -200,70 +227,57 @@ class YSCBTestCase(unittest.TestCase):
         with standard manifest.json and boilerplate entry points.
         Returns the resolved source directory path.
         """
-        src_root = uri.resolve("module.source://")
-        src_dir = os.path.join(src_root, name)
-        os.makedirs(src_dir, exist_ok=True)
+        src_dir = os.path.join(uri.resolve("module.source://"), name)
         if deps is None:
             deps = {"core": ">=1.0.0"} if name != "core" else {}
 
-        if files and "manifest.json" in files:
-            with open(os.path.join(src_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write(files["manifest.json"])
-        else:
-            manifest = {
-                "name": name,
-                "version": version,
-                "description": f"Mock Source Module {name}",
-                "dependencies": deps,
-                "entry": "scripts/cli.py",
-            }
-            with open(os.path.join(src_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                json.dump(manifest, f, indent=2)
-
-        scripts_dir = os.path.join(src_dir, "scripts")
-        os.makedirs(scripts_dir, exist_ok=True)
-        cli_content = files.get("scripts/cli.py") if files and "scripts/cli.py" in files else (
-            f"from typing import Any\nfrom core.guard import guard_dispatch\nfrom core.commands import CmdBags\n\ndef hello(cmd_bags: Any) -> int:\n    guard_dispatch('{name}')\n    return 0\n"
-        )
-        with open(os.path.join(scripts_dir, "cli.py"), "w", encoding="utf-8") as f:
-            f.write(cli_content)
-
-        contrib_dir = os.path.join(src_dir, "contributes")
-        os.makedirs(contrib_dir, exist_ok=True)
-        if not files or "contributes/_manifest.md" not in files:
-            with open(os.path.join(contrib_dir, "_manifest.md"), "w", encoding="utf-8") as f:
-                f.write(f"# {name} Contributes Manifest\n\n## 1. Commands\n- hello\n")
-        if not files or "contributes/core.json" not in files:
-            core_json = {
-                "commands": {
+        default_files: Dict[str, str] = {
+            "manifest.json": json.dumps(
+                {
+                    "name": name,
+                    "version": version,
                     "description": f"Mock Source Module {name}",
-                    "cmd": {
-                        "hello": {
-                            "description": f"Say hello from {name}",
-                            "tier": "safe",
-                            "server_compatible": True,
-                        }
-                    },
-                }
-            }
-            with open(os.path.join(contrib_dir, "core.json"), "w", encoding="utf-8") as f:
-                json.dump(core_json, f, indent=2)
-
-        tests_dir = os.path.join(src_dir, "tests")
-        os.makedirs(tests_dir, exist_ok=True)
-        with open(os.path.join(tests_dir, "__init__.py"), "w", encoding="utf-8") as f:
-            f.write('"""Mock test package."""\n')
-        with open(os.path.join(tests_dir, "test_dummy.py"), "w", encoding="utf-8") as f:
-            f.write("from dev.testing.case import YSCBTestCase\nclass DummyMockTest(YSCBTestCase):\n    def test_mock_pass(self):\n        self.mark_passed()\n")
-
+                    "dependencies": deps,
+                    "entry": "scripts/cli.py",
+                },
+                indent=2,
+            ),
+            "scripts/cli.py": (
+                f"from typing import Any\nfrom core.guard import guard_dispatch\nfrom core.commands import CmdBags\n\n"
+                f"def hello(cmd_bags: Any) -> int:\n    guard_dispatch('{name}')\n    return 0\n"
+            ),
+            "contributes/_manifest.md": f"# {name} Contributes Manifest\n\n## 1. Commands\n- hello\n",
+            "contributes/core.json": json.dumps(
+                {
+                    "commands": {
+                        "description": f"Mock Source Module {name}",
+                        "cmd": {
+                            "hello": {
+                                "description": f"Say hello from {name}",
+                                "tier": "safe",
+                                "server_compatible": True,
+                            }
+                        },
+                    }
+                },
+                indent=2,
+            ),
+            "tests/__init__.py": '"""Mock test package."""\n',
+            "tests/test_dummy.py": (
+                "from dev.testing.case import YSCBTestCase\n"
+                "class DummyMockTest(YSCBTestCase):\n"
+                "    def test_mock_pass(self):\n"
+                "        self.mark_passed()\n"
+            ),
+        }
         if files:
-            for rel_p, content in files.items():
-                if rel_p in ("manifest.json", "scripts/cli.py"):
-                    continue
-                full_p = os.path.join(src_dir, rel_p)
-                os.makedirs(os.path.dirname(full_p), exist_ok=True)
-                with open(full_p, "w", encoding="utf-8") as f:
-                    f.write(content)
+            default_files.update(files)
+
+        for rel_p, content in default_files.items():
+            full_p = os.path.join(src_dir, rel_p)
+            os.makedirs(os.path.dirname(full_p), exist_ok=True)
+            with open(full_p, "w", encoding="utf-8") as f:
+                f.write(content)
 
         return src_dir
 

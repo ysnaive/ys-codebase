@@ -73,30 +73,48 @@ class CssParser(BaseParser):
         for i, line in enumerate(lines, start=1):
             stripped = line.strip()
 
-            if "/*" in stripped:
-                in_comment = True
-                comment_part = stripped.split("/*", 1)[1]
-                if "*/" in comment_part:
-                    comment_text = comment_part.split("*/", 1)[0].strip()
-                    if comment_text:
-                        css_comments.append(comment_text)
-                    in_comment = False
-                    continue
-                else:
-                    if comment_part.strip():
-                        css_comments.append(comment_part.strip())
-                    continue
-
             if in_comment:
                 if "*/" in stripped:
-                    comment_text = stripped.split("*/", 1)[0].strip()
-                    if comment_text:
-                        css_comments.append(comment_text)
+                    comment_text, after_close = stripped.split("*/", 1)
+                    if comment_text.strip():
+                        css_comments.append(comment_text.strip())
                     in_comment = False
+                    stripped = after_close.strip()
+                    if not stripped:
+                        continue
                 else:
                     if stripped:
                         css_comments.append(stripped)
-                continue
+                    continue
+
+            if "/*" in stripped:
+                before_comment, comment_part = stripped.split("/*", 1)
+                if not before_comment.strip():
+                    if "*/" in comment_part:
+                        comment_text, after_close = comment_part.split("*/", 1)
+                        if comment_text.strip():
+                            css_comments.append(comment_text.strip())
+                        in_comment = False
+                        stripped = after_close.strip()
+                        if not stripped:
+                            continue
+                    else:
+                        in_comment = True
+                        if comment_part.strip():
+                            css_comments.append(comment_part.strip())
+                        continue
+                else:
+                    while "/*" in stripped:
+                        b_part, c_part = stripped.split("/*", 1)
+                        if "*/" in c_part:
+                            _, rest_part = c_part.split("*/", 1)
+                            stripped = f"{b_part.rstrip()} {rest_part.lstrip()}".strip()
+                        else:
+                            in_comment = True
+                            stripped = b_part.strip()
+                            break
+                    if not stripped:
+                        continue
 
             if not stripped:
                 continue

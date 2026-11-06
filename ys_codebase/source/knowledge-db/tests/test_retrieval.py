@@ -1,6 +1,6 @@
 """
 Unit and Integration Tests for knowledge-db InvertedIndex, BM25Engine, Tokenizer, HybridSearchEngine, and Aggregation.
-Unified Suite consolidating test_retrieval.py, test_search_aggregation.py, test_tokenizer.py, and test_hybrid.py.
+Unified Suite consolidating retrieval, search aggregation, tokenizer, embedding, and hybrid search tests.
 """
 
 import gzip
@@ -8,7 +8,9 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 _test_dir = os.path.dirname(os.path.abspath(__file__))
 _pkg_root = os.path.dirname(_test_dir)
@@ -20,7 +22,8 @@ import numpy as np
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
 from knowledge_db.embedding import EmbeddingService, VectorIndex
-from knowledge_db.hybrid import DEFAULT_RRF_K, HybridSearchEngine
+from knowledge_db.exceptions import KnowledgeDBError, SchemaValidationError
+from knowledge_db.hybrid import HybridSearchEngine
 from knowledge_db.retrieval import (
     BM25Engine,
     CodeSnippet,
@@ -31,13 +34,13 @@ from knowledge_db.retrieval import (
     SnippetExtractor,
 )
 from knowledge_db.schema import (
-    AggregatedFileResult,
     LanguageType,
     MemberInfo,
     SymbolKind,
     UnifiedSymbol,
 )
 from knowledge_db.tokenizer import MultilingualTokenizer
+from tests import write_text_and_advance_mtime
 
 
 class DummyIndex:
@@ -54,14 +57,20 @@ class DummyIndex:
         kinds = getattr(filter_cfg, "kinds", None) if filter_cfg else None
         languages = getattr(filter_cfg, "languages", None) if filter_cfg else None
 
-        norm_ftypes = {f.strip().lstrip(".").lower() for f in ftypes} if ftypes else None
+        norm_ftypes = (
+            {f.strip().lstrip(".").lower() for f in ftypes} if ftypes else None
+        )
         out = []
         for h in self.hits:
             sym = self.symbols.get(h["doc_id"])
             if not sym:
                 continue
             if norm_ftypes:
-                ext = Path(sym.file_path).suffix.lstrip(".").lower() if sym.file_path else ""
+                ext = (
+                    Path(sym.file_path).suffix.lstrip(".").lower()
+                    if sym.file_path
+                    else ""
+                )
                 if ext not in norm_ftypes:
                     continue
             if spaces and not any(s in spaces for s in getattr(sym, "spaces", [])):
@@ -98,7 +107,12 @@ class TestRetrieval(YSCBTestCase):
             docstring="PID 閉迴路控制器實作，支援速度與位置控制",
             signature="class PIDController : public BaseController",
             members=[
-                MemberInfo("Calculate", "method", "float Calculate(float target, float current)", "計算控制輸出")
+                MemberInfo(
+                    "Calculate",
+                    "method",
+                    "float Calculate(float target, float current)",
+                    "計算控制輸出",
+                )
             ],
         )
 
@@ -112,7 +126,9 @@ class TestRetrieval(YSCBTestCase):
             docstring="多馬達驅動群組控制模組",
             signature="class MotorGroup",
             members=[
-                MemberInfo("SetVelocity", "method", "void SetVelocity(int rpm)", "設定馬達轉速")
+                MemberInfo(
+                    "SetVelocity", "method", "void SetVelocity(int rpm)", "設定馬達轉速"
+                )
             ],
         )
 
@@ -131,7 +147,7 @@ class TestRetrieval(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_inverted_index_building_and_idf(self):
-        """FT-04: 驗證倒排索引建立、平均長度計算與 IDF 平滑計算 (EC-03)"""
+        """驗證倒排索引建立、平均長度計算與 IDF 平滑計算"""
         index = InvertedIndex(space_name="test_space")
         index.build(self.symbols, tokenizer=self.tokenizer)
 
@@ -149,7 +165,7 @@ class TestRetrieval(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_bm25_multi_field_scoring_and_boost(self):
-        """FT-05: 驗證多欄位加權評分與 Exact Match 2.0x 置頂加權"""
+        """驗證多欄位加權評分與 Exact Match 2.0x 置頂加權"""
         index = InvertedIndex(space_name="test_space")
         index.build(self.symbols, tokenizer=self.tokenizer)
 
@@ -173,7 +189,7 @@ class TestRetrieval(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_query_filtering_and_top_k(self):
-        """FT-06: 驗證 QueryFilter 語言、類型過濾與 limit 限制"""
+        """驗證 QueryFilter 語言、類型過濾與 limit 限制"""
         index = InvertedIndex(space_name="test_space")
         index.build(self.symbols, tokenizer=self.tokenizer)
         engine = BM25Engine(tokenizer=self.tokenizer)
@@ -199,7 +215,7 @@ class TestRetrieval(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_inverted_index_serialization(self):
-        """FT-07: 驗證 InvertedIndex 序列化與反序列化無損一致"""
+        """驗證 InvertedIndex 序列化與反序列化無損一致"""
         index = InvertedIndex(space_name="test_space")
         index.build(self.symbols, tokenizer=self.tokenizer)
 
@@ -216,26 +232,26 @@ class TestRetrieval(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_edge_cases_empty_and_special_chars(self):
-        """ET-01: 驗證空 Query、未命中詞條與特殊字元檢索安全防禦 (EC-01, EC-02, EC-06)"""
+        """驗證空 Query、未命中詞條與特殊字元檢索安全防禦"""
         index = InvertedIndex(space_name="test_space")
         index.build(self.symbols, tokenizer=self.tokenizer)
         engine = BM25Engine(tokenizer=self.tokenizer)
 
-        # 空 Query (EC-01)
+        # 空 Query
         self.assertEqual(engine.search("", index), [])
         self.assertEqual(engine.search("   ", index), [])
 
-        # 未命中詞 (EC-02)
+        # 未命中詞
         self.assertEqual(engine.search("quantum_flux_nonexistent_xyz", index), [])
 
-        # 特殊正則字元防禦 (EC-06)
+        # 特殊正則字元防禦
         self.assertEqual(engine.search(".*+?^${}()|[]\\", index), [])
 
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_symbol_pool_normalization_and_binary_gzip_io(self):
-        """FT-01, FT-02: 驗證 InvertedIndex 符號池去重與二進位 Gzip 讀寫無損還原"""
+        """驗證 InvertedIndex 符號池去重與二進位 Gzip 讀寫無損還原"""
         index = InvertedIndex(space_name="test_space")
         index.build(self.symbols, tokenizer=self.tokenizer)
 
@@ -276,19 +292,22 @@ class TestRetrieval(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_corrupted_binary_cache_fallback(self):
-        """ET-01: 驗證損毀之二進位檔案讀取拋錯 (EC-01)"""
+        """驗證損毀之二進位檔案讀取與非字典結構拋出明確異常"""
         with tempfile.TemporaryDirectory() as temp_dir:
             corrupt_path = Path(temp_dir) / "corrupt.index.bin.gz"
             corrupt_path.write_bytes(b"not a valid gzip or pickle data 123456789")
 
-            with self.assertRaises(Exception):
+            with self.assertRaises((OSError, EOFError, SchemaValidationError)):
                 InvertedIndex.load_binary(corrupt_path)
+
+        with self.assertRaises(SchemaValidationError):
+            InvertedIndex.from_dict("not_a_dict")  # type: ignore[arg-type]
 
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_snippet_extractor_and_code_snippet(self):
-        """FT-01, FT-02, ET-01~04: 驗證 SnippetExtractor 安全讀取、截斷與編碼容錯"""
+        """驗證 SnippetExtractor 安全讀取、截斷與編碼容錯"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             code_file = temp_path / "sample.py"
@@ -308,7 +327,7 @@ class TestRetrieval(YSCBTestCase):
 
             extractor = SnippetExtractor(workspace_root=temp_path, max_lines=6)
 
-            # 1. 正常提取 (FT-01)
+            # 1. 正常提取
             snip = extractor.extract(
                 file_path="sample.py",
                 line_number=4,
@@ -325,33 +344,36 @@ class TestRetrieval(YSCBTestCase):
             self.assertIn("target_func", formatted)
             self.assertIn(">", formatted)
 
-            # 2. 序列化測試 (FR-05)
+            # 2. 序列化測試
             s_dict = snip.to_dict()
             self.assertEqual(s_dict["target_line"], 4)
             self.assertIn("raw_code", s_dict)
             self.assertIn("target_func", s_dict["raw_code"])
 
-            # 3. 檔案不存在測試 (ET-01, EC-01)
+            # 3. 檔案不存在測試
             snip_missing = extractor.extract("non_existent.py", line_number=10)
             self.assertIsNotNone(snip_missing.error)
             self.assertEqual(snip_missing.error, "File not found")
             self.assertIn("[Snippet Unavailable", snip_missing.format_text())
 
-            # 4. 行號超界測試 (ET-02, EC-02)
+            # 4. 行號超界測試
             snip_oob = extractor.extract("sample.py", line_number=999)
             self.assertIsNone(snip_oob.error)
             self.assertLessEqual(snip_oob.end_line, 10)
 
-            # 5. 超出行數截斷 (ET-03, EC-03)
-            snip_trunc = extractor.extract("sample.py", line_number=1, context_before=0, context_after=9)
+            # 5. 超出行數截斷
+            snip_trunc = extractor.extract(
+                "sample.py", line_number=1, context_before=0, context_after=9
+            )
             self.assertTrue(snip_trunc.is_truncated)
             self.assertLessEqual(len(snip_trunc.lines), 6)
 
-            # 6. 二進位/非 UTF-8 容錯 (ET-04, EC-04)
+            # 6. 二進位/非 UTF-8 容錯與行數斷言
             bin_file = temp_path / "binary.dat"
             bin_file.write_bytes(b"\xff\xfe\x00\x12\x34\x56\x78\x90")
             snip_bin = extractor.extract("binary.dat", line_number=1)
             self.assertIsNone(snip_bin.error)
+            self.assertGreaterEqual(len(snip_bin.lines), 1)
 
         self.mark_passed()
 
@@ -435,15 +457,17 @@ class TestSearchAggregation(YSCBTestCase):
         self.index.build(symbols, space="test")
 
     @require(Requirement.LOGIC)
-    def test_ft_05_ftype_filtering(self):
-        """FT-05: --ftype 檔案類型過濾"""
+    def test_ftype_filtering(self):
+        """驗證 --ftype 檔案類型過濾"""
         flt_py = QueryFilter(ftypes=["py"], limit=10)
         res_py = self.engine.search_aggregated("parse", self.index, filter_cfg=flt_py)
         self.assertTrue(all(r.file_path.endswith(".py") for r in res_py))
         self.assertEqual(len(res_py), 1)
 
         flt_cpp = QueryFilter(ftypes=["c|cpp|h"], limit=10)
-        res_cpp = self.engine.search_aggregated("parse", self.index, filter_cfg=flt_cpp)
+        res_cpp = self.engine.search_aggregated(
+            "parse", self.index, filter_cfg=flt_cpp
+        )
         self.assertTrue(all(r.file_path.endswith(".cpp") for r in res_cpp))
         self.assertEqual(len(res_cpp), 1)
 
@@ -455,11 +479,13 @@ class TestSearchAggregation(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_06_score_aggregation_and_top3_cap(self):
-        """FT-06: 同檔案積分累加 (Max + 0.2*Rest) 與內部 Top-3 限制"""
+    def test_score_aggregation_and_top3_cap(self):
+        """驗證同檔案積分累加 (Max + 0.2*Rest) 與內部 Top-3 限制"""
         flt = QueryFilter(limit=10)
-        results = self.engine.search_aggregated("parse token stream", self.index, filter_cfg=flt, alpha=0.2)
-        self.assertTrue(len(results) >= 2)
+        results = self.engine.search_aggregated(
+            "parse token stream", self.index, filter_cfg=flt, alpha=0.2
+        )
+        self.assertGreaterEqual(len(results), 2)
 
         py_node = next((r for r in results if r.file_path == "src/engine.py"), None)
         self.assertIsNotNone(py_node)
@@ -474,8 +500,8 @@ class TestSearchAggregation(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_07_top_n_refill_pipeline(self):
-        """FT-07: Top-N 動態聚合回填管線"""
+    def test_top_n_refill_pipeline(self):
+        """驗證 Top-N 動態聚合回填管線"""
         flt = QueryFilter(limit=2)
         results = self.engine.search_aggregated("parse", self.index, filter_cfg=flt)
         self.assertEqual(len(results), 2)
@@ -485,8 +511,8 @@ class TestSearchAggregation(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_08_json_and_model_serialization(self):
-        """FT-08: 結構化模型序列化"""
+    def test_json_and_model_serialization(self):
+        """驗證結構化模型序列化"""
         flt = QueryFilter(limit=5)
         results = self.engine.search_aggregated("parser", self.index, filter_cfg=flt)
         for r in results:
@@ -499,18 +525,21 @@ class TestSearchAggregation(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_et_01_compound_token_coverage_filter_in_aggregated(self):
-        """ET-01: 驗證 >= 3 sub-tokens 複合字查詢於 search_aggregated 強制過濾覆蓋率 < 50% 之單一子詞噪音"""
+    def test_compound_token_coverage_filter_in_aggregated(self):
+        """驗證 >= 3 sub-tokens 複合字查詢於 search_aggregated 強制過濾覆蓋率 < 50% 之單一子詞噪音"""
         flt = QueryFilter(limit=10)
-        # "parse token stream" 含 3 個子詞 (parse, token, stream)：
-        # - src/engine.py: parse_tokens 命中 parse, token, stream (3/3 = 100% >= 50%)
-        # - src/native_parser.cpp: ParseASTNode 命中 parse, token (2/3 = 66.7% >= 50%)
-        # - docs/parser_guide.md: 僅命中 engine 相關單一詞，若查詢 "parse token stream" 則 0/3，
-        #   若查詢 "parse unknown1 unknown2" (3 子詞)，src/engine.py 僅命中 "parse" (1/3 = 33.3% < 50%) 應被過濾！
-        noise_results = self.engine.search_aggregated("parse unknownalpha unknownbeta", self.index, filter_cfg=flt)
-        self.assertEqual(noise_results, [], "僅命中 1/3 子詞 (< 50%) 之候選符號應於 search_aggregated 被強制過濾")
+        noise_results = self.engine.search_aggregated(
+            "parse unknownalpha unknownbeta", self.index, filter_cfg=flt
+        )
+        self.assertEqual(
+            noise_results,
+            [],
+            "僅命中 1/3 子詞 (< 50%) 之候選符號應於 search_aggregated 被強制過濾",
+        )
 
-        valid_results = self.engine.search_aggregated("parse token stream", self.index, filter_cfg=flt)
+        valid_results = self.engine.search_aggregated(
+            "parse token stream", self.index, filter_cfg=flt
+        )
         hit_files = {r.file_path for r in valid_results}
         self.assertIn("src/engine.py", hit_files)
         self.assertIn("src/native_parser.cpp", hit_files)
@@ -580,7 +609,7 @@ class TestTokenizer(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_multilingual_tokenizer_advanced(self):
-        """FT-01: 驗證 MultilingualTokenizer 中英混排無縫切分與分詞輔助函式。"""
+        """驗證 MultilingualTokenizer 中英混排無縫切分、tokenize_unique 與 keep_original_identifier=False"""
         tok = MultilingualTokenizer()
 
         res1 = tok.tokenize("解析InvertedIndex倒排索引")
@@ -595,11 +624,25 @@ class TestTokenizer(YSCBTestCase):
         self.assertIn("tree", parts)
         self.assertIn("imports", parts)
 
+        # 驗證 tokenize_unique 保序去重
+        dup_tokens = tok.tokenize("PIDController PIDController pid")
+        uniq_tokens = tok.tokenize_unique("PIDController PIDController pid")
+        self.assertGreater(len(dup_tokens), len(uniq_tokens))
+        self.assertEqual(len(uniq_tokens), len(set(uniq_tokens)))
+        self.assertEqual(uniq_tokens[0], "pid")
+
+        # 驗證 keep_original_identifier=False 不保留完整複合詞
+        tok_no_orig = MultilingualTokenizer(keep_original_identifier=False)
+        no_orig_res = tok_no_orig.tokenize("PIDController")
+        self.assertIn("pid", no_orig_res)
+        self.assertIn("controller", no_orig_res)
+        self.assertNotIn("pidcontroller", no_orig_res)
+
         self.mark_passed()
 
 
 class TestEmbeddingServiceAndVectorIndex(YSCBTestCase):
-    """FT-02: 驗證 EmbeddingService 與 VectorIndex"""
+    """驗證 EmbeddingService 與 VectorIndex"""
 
     def setUp(self):
         super().setUp()
@@ -613,7 +656,7 @@ class TestEmbeddingServiceAndVectorIndex(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_embedding(self):
-        """FT-02: 驗證向量生成、餘弦相似度與二進位快取持久化"""
+        """驗證向量生成、餘弦相似度與二進位快取持久化"""
         self.assertTrue(self.service.is_available)
         texts = ["hello world", "inverted index search", "中文倒排索引檢索"]
         embeddings = self.service.embed_texts(texts)
@@ -644,7 +687,7 @@ class TestEmbeddingServiceAndVectorIndex(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_corrupted_cache(self):
-        """ET-03: 本地向量快取損毀時捕獲驗證失敗並安全降級"""
+        """本地向量快取損毀時捕獲驗證失敗並安全降級"""
         corrupted_file = self.cache_dir / "bad_vectors.bin.gz"
         with gzip.open(corrupted_file, "wb") as f:
             f.write(b"NOT_A_VALID_PICKLE_DATA")
@@ -657,7 +700,7 @@ class TestEmbeddingServiceAndVectorIndex(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_long_content(self):
-        """ET-02: 512+ tokens 超長內容之安全切片與特徵提煉"""
+        """512+ tokens 超長內容之安全切片與特徵提煉"""
         long_text = "token " * 1000
         vec = self.service.embed_query(long_text)
         self.assertEqual(vec.shape, (self.service.dimension,))
@@ -667,67 +710,200 @@ class TestEmbeddingServiceAndVectorIndex(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_batching_and_thread_capping(self):
-        """FT-09: 驗證 EmbeddingService 之分批推論切片與 ONNX 執行緒上限保護"""
+        """驗證 EmbeddingService 於 mock_mode=False 下之真实 batch_size=32 切分 ([32, 32, 6]) 與 L2 正規化"""
+        real_cache = self.cache_dir / "real_batch_cache"
+        model_dir = real_cache / "models--BAAI--bge-small-zh-v1.5"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        (model_dir / "model.onnx").write_bytes(b"FAKE_ONNX_WEIGHTS")
+
+        svc = EmbeddingService(
+            cache_dir=real_cache,
+            mock_mode=False,
+            max_threads=2,
+            enable_vector_search=False,
+        )
+        self.assertTrue(svc.is_model_downloaded())
+
+        recorded_chunk_sizes = []
+
+        class _FakeModel:
+            embedding_size = 512
+
+            def embed(self, chunk, batch_size=32):
+                recorded_chunk_sizes.append(len(chunk))
+                for idx in range(len(chunk)):
+                    vec = np.ones(512, dtype=np.float32) * float(idx + 1)
+                    yield vec
+
+        svc._model = _FakeModel()
+        svc._dimension = 512
+        svc._is_available = True
+        svc._init_attempted = True
+
         texts = [f"test text {i}" for i in range(70)]
-        embeddings = self.service.embed_texts(texts, batch_size=32)
-        self.assertEqual(embeddings.shape, (70, self.service.dimension))
+        with patch("knowledge_db.embedding.time.sleep"):
+            embeddings = svc.embed_texts(texts, batch_size=32)
+
+        self.assertEqual(recorded_chunk_sizes, [32, 32, 6])
+        self.assertEqual(embeddings.shape, (70, 512))
+        norms = np.linalg.norm(embeddings, axis=1)
+        np.testing.assert_allclose(norms, np.ones(70, dtype=np.float32), rtol=1e-5)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_dynamic_dimension_without_constant(self):
-        """FT-10: 驗證 DEFAULT_EMBEDDING_DIM 徹底淘汰，dimension 動態解析為 512 (SSOT)"""
+        """驗證 DEFAULT_EMBEDDING_DIM 徹底淘汰，dimension 動態解析為 512 (SSOT)"""
         import knowledge_db.embedding as emb_mod
-        # 剛性保證無 DEFAULT_EMBEDDING_DIM 殘留
+
         self.assertFalse(hasattr(emb_mod, "DEFAULT_EMBEDDING_DIM"))
-        # 驗證預設模型為 512 維
         self.assertEqual(self.service.dimension, 512)
-        # 驗證自訂不同規格模型
-        minilm_svc = EmbeddingService(model_name="sentence-transformers/all-MiniLM-L6-v2", mock_mode=True)
+        minilm_svc = EmbeddingService(
+            model_name="sentence-transformers/all-MiniLM-L6-v2", mock_mode=True
+        )
         self.assertEqual(minilm_svc.dimension, 384)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_embedding_last_error_capture(self):
-        """FT-11: 驗證 FastEmbed 載入失敗時 last_error 結構化封裝與安全降級"""
-        # 透過無效模型路徑強制引發初始化失敗
-        failing_svc = EmbeddingService(model_name="invalid/non-existent-model", mock_mode=False)
-        # 模擬 _init_model 捕獲異常
-        failing_svc._init_attempted = True
-        failing_svc._is_available = False
-        failing_svc.last_error = {
-            "error_type": "ImportError",
-            "message": "Fake FastEmbed missing DLL (WinError 1114)",
-            "timestamp": 12345.0,
-        }
-        self.assertFalse(failing_svc.is_available)
+        """驗證真實觸發 _init_model() 時捕獲載入異常寫入 last_error，且模型權重移除後自動重置 _init_attempted"""
+        err_cache = self.cache_dir / "err_model_cache"
+        model_dir = err_cache / "models--BAAI--bge-small-zh-v1.5"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        fake_onnx = model_dir / "model.onnx"
+        fake_onnx.write_bytes(b"CORRUPT_ONNX_HEADER")
+
+        class _BrokenTextEmbedding:
+            @staticmethod
+            def list_supported_models():
+                return [{"model": "BAAI/bge-small-zh-v1.5"}]
+
+            def __init__(self, *args, **kwargs):
+                raise RuntimeError("Fake FastEmbed missing DLL (WinError 1114)")
+
+        fake_fastembed = SimpleNamespace(TextEmbedding=_BrokenTextEmbedding)
+        failing_svc = EmbeddingService(
+            cache_dir=err_cache,
+            mock_mode=False,
+            enable_vector_search=False,
+        )
+        with patch.dict(sys.modules, {"fastembed": fake_fastembed}):
+            self.assertFalse(failing_svc.is_available)
+
+        self.assertTrue(failing_svc._init_attempted)
         self.assertIsNotNone(failing_svc.last_error)
-        self.assertEqual(failing_svc.last_error["error_type"], "ImportError")
+        self.assertEqual(failing_svc.last_error["error_type"], "RuntimeError")
         self.assertIn("WinError 1114", failing_svc.last_error["message"])
+
+        # 驗證當權重先載入成功、後續磁碟權重檔被刪除時，is_available 重置 _init_attempted 並更新為 ModelNotFoundLocally
+        failing_svc._is_available = True
+        failing_svc._verified_onnx_path = fake_onnx
+        fake_onnx.unlink()
+        self.assertFalse(failing_svc.is_available)
+        self.assertEqual(failing_svc.last_error["error_type"], "ModelNotFoundLocally")
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_model_download_and_embed_texts_probe(self):
+        """驗證 download_model 成功與失敗拋出 KnowledgeDBError，以及 embed_texts_probe 三種回傳模式"""
+        dl_cache = self.cache_dir / "dl_cache"
+
+        class _MockTextEmbedding:
+            embedding_size = 512
+
+            def __init__(self, model_name="", cache_dir="", **kwargs):
+                p = Path(cache_dir) / "models--BAAI--bge-small-zh-v1.5"
+                p.mkdir(parents=True, exist_ok=True)
+                (p / "model.onnx").write_bytes(b"DOWNLOADED_ONNX")
+
+            def embed(self, texts, batch_size=32):
+                for _ in texts:
+                    yield np.ones(512, dtype=np.float32)
+
+        fake_fastembed = SimpleNamespace(TextEmbedding=_MockTextEmbedding)
+        svc = EmbeddingService(
+            cache_dir=dl_cache, mock_mode=False, enable_vector_search=False
+        )
+        with patch.dict(sys.modules, {"fastembed": fake_fastembed}):
+            self.assertTrue(svc.download_model(force=True))
+            self.assertTrue(svc.is_available)
+            self.assertEqual(svc.dimension, 512)
+
+        # 驗證 download_model 失敗時拋出 KnowledgeDBError 並記錄 last_error
+        class _FailingDownloadEmbedding:
+            def __init__(self, *args, **kwargs):
+                raise OSError("Network unreachable during model download")
+
+        svc_fail = EmbeddingService(
+            cache_dir=self.cache_dir / "dl_fail",
+            mock_mode=False,
+            enable_vector_search=False,
+        )
+        with patch.dict(
+            sys.modules,
+            {"fastembed": SimpleNamespace(TextEmbedding=_FailingDownloadEmbedding)},
+        ):
+            with self.assertRaises(KnowledgeDBError):
+                svc_fail.download_model(force=True)
+        self.assertIsNotNone(svc_fail.last_error)
+        self.assertEqual(svc_fail.last_error["error_type"], "OSError")
+
+        # 驗證 embed_texts_probe 空輸入、指定 total_count 與未指定 total_count
+        empty_vecs, empty_est = self.service.embed_texts_probe([], total_count=20)
+        self.assertEqual(empty_vecs.shape, (0, 512))
+        self.assertEqual(empty_est, 0.0)
+
+        empty_vecs3, e_elapsed, e_unit = self.service.embed_texts_probe([])
+        self.assertEqual(empty_vecs3.shape, (0, 512))
+        self.assertEqual(e_elapsed, 0.0)
+        self.assertEqual(e_unit, 0.0)
+
+        sample_texts = [f"probe item {i}" for i in range(12)]
+        p_vecs, est_total = self.service.embed_texts_probe(
+            sample_texts, probe_size=5, total_count=50
+        )
+        self.assertEqual(p_vecs.shape, (5, 512))
+        self.assertGreaterEqual(est_total, 0.0)
+
+        p_vecs2, elapsed, unit_sec = self.service.embed_texts_probe(
+            sample_texts, probe_size=4
+        )
+        self.assertEqual(p_vecs2.shape, (4, 512))
+        self.assertGreaterEqual(elapsed, 0.0)
+        self.assertGreaterEqual(unit_sec, 0.0)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_model_name_normalization(self):
-        """FT-12: 驗證 normalize_model_name 自動補齊前綴與容錯"""
-        self.assertEqual(EmbeddingService.normalize_model_name("bge-small-zh-v1.5"), "BAAI/bge-small-zh-v1.5")
-        self.assertEqual(EmbeddingService.normalize_model_name("all-MiniLM-L6-v2"), "sentence-transformers/all-MiniLM-L6-v2")
-        self.assertEqual(EmbeddingService.normalize_model_name("BAAI/bge-small-zh-v1.5"), "BAAI/bge-small-zh-v1.5")
+        """驗證 normalize_model_name 自動補齊前綴與容錯"""
+        self.assertEqual(
+            EmbeddingService.normalize_model_name("bge-small-zh-v1.5"),
+            "BAAI/bge-small-zh-v1.5",
+        )
+        self.assertEqual(
+            EmbeddingService.normalize_model_name("all-MiniLM-L6-v2"),
+            "sentence-transformers/all-MiniLM-L6-v2",
+        )
+        self.assertEqual(
+            EmbeddingService.normalize_model_name("BAAI/bge-small-zh-v1.5"),
+            "BAAI/bge-small-zh-v1.5",
+        )
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_vector_index_dimension_compatibility(self):
-        """FT-13: 驗證 VectorIndex.is_compatible_with 維度動態相容檢核"""
+        """驗證 VectorIndex.is_compatible_with 維度動態相容檢核"""
         idx = VectorIndex(model_name="BAAI/bge-small-zh-v1.5", dim=512)
         idx.build(["doc_1"], np.ones((1, 512), dtype=np.float32))
         self.assertTrue(idx.is_compatible_with("BAAI/bge-small-zh-v1.5", 512))
-        # 維度不相容檢核阻斷 (如舊 384 vs 當前 512)
         self.assertFalse(idx.is_compatible_with("BAAI/bge-small-zh-v1.5", 384))
-        # 模型不相容檢核阻斷
-        self.assertFalse(idx.is_compatible_with("sentence-transformers/all-MiniLM-L6-v2", 512))
+        self.assertFalse(
+            idx.is_compatible_with("sentence-transformers/all-MiniLM-L6-v2", 512)
+        )
         self.mark_passed()
 
 
 class TestHybridSearchEngine(YSCBTestCase):
-    """FT-03 & FT-04: 驗證 HybridSearchEngine 與剛性降級"""
+    """驗證 HybridSearchEngine 與剛性降級"""
 
     def setUp(self):
         super().setUp()
@@ -774,7 +950,7 @@ class TestHybridSearchEngine(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_rrf_fusion(self):
-        """FT-03: 驗證 HybridSearchEngine RRF 融合排序邏輯與權重計算"""
+        """驗證 HybridSearchEngine RRF 融合排序邏輯與權重計算"""
         bm25_hits = [
             {"doc_id": "sym_a", "score": 10.5, "matched_terms": ["index"]},
             {"doc_id": "sym_b", "score": 8.0, "matched_terms": ["engine"]},
@@ -812,7 +988,7 @@ class TestHybridSearchEngine(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_fallback(self):
-        """FT-04: 驗證雙軌剛性降級守門：lexical_only=True 或向量未就緒時退化純 BM25"""
+        """驗證雙軌剛性降級守門：lexical_only=True 或向量未就緒時退化純 BM25"""
         bm25_hits = [
             {"doc_id": "sym_a", "score": 10.5, "matched_terms": ["index"]},
         ]
@@ -851,7 +1027,7 @@ class TestHybridSearchEngine(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_empty_query(self):
-        """ET-01: 驗證空字串、純空白與無效輸入安全防護"""
+        """驗證空字串、純空白與無效輸入安全防護"""
         dummy_empty = DummyIndex(symbols=self.symbols, hits=[])
         engine = HybridSearchEngine(
             inverted_index=dummy_empty,
@@ -861,44 +1037,92 @@ class TestHybridSearchEngine(YSCBTestCase):
         )
         self.assertEqual(engine.search(""), [])
         self.assertEqual(engine.search("   "), [])
-        self.assertEqual(engine.search(None), [])
+        self.assertEqual(engine.search(None), [])  # type: ignore[arg-type]
 
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_hybrid_search_multi_extension_filtering(self):
-        """FT-REG: 驗證多副檔名逗號/清單過濾在 HybridSearchEngine 正常運作"""
+        """驗證真實 InvertedIndex + BM25Engine + VectorIndex 下多副檔名清單、逗號與直線分隔過濾"""
+        tok = MultilingualTokenizer()
+        real_idx = InvertedIndex(space_name="unified")
+
+        sym_py = UnifiedSymbol(
+            id="sym_py",
+            name="IndexProcessor",
+            kind=SymbolKind.CLASS.value,
+            file_path="src/processor.py",
+            line_number=1,
+            language="python",
+            docstring="Shared index processor unit",
+        )
         sym_cs = UnifiedSymbol(
             id="sym_cs",
-            name="CsClass",
-            kind=SymbolKind.CLASS,
-            file_path="src/logic.cs",
+            name="IndexProcessorCs",
+            kind=SymbolKind.CLASS.value,
+            file_path="src/Processor.cs",
             line_number=1,
-            language="csharp",
+            language="c_sharp",
+            docstring="Shared index processor unit",
         )
-        symbols = dict(self.symbols)
-        symbols["sym_cs"] = sym_cs
-        dummy_multi = DummyIndex(symbols=symbols, hits=[{"doc_id": "sym_a", "score": 1.0}, {"doc_id": "sym_cs", "score": 1.0}])
+        sym_md = UnifiedSymbol(
+            id="sym_md",
+            name="IndexProcessorDoc",
+            kind=SymbolKind.DOC_HEADING_1.value,
+            file_path="docs/processor.md",
+            line_number=1,
+            language="markdown",
+            docstring="Shared index processor unit",
+        )
+        real_idx.build([sym_py, sym_cs, sym_md], tokenizer=tok)
+
+        bm25 = BM25Engine(tokenizer=tok)
+        vec_idx = VectorIndex(model_name="mock-model", dim=self.service.dimension)
+        vecs = self.service.embed_texts(
+            [
+                "IndexProcessor processor",
+                "IndexProcessorCs processor",
+                "IndexProcessorDoc processor",
+            ]
+        )
+        vec_idx.build(["sym_py", "sym_cs", "sym_md"], vecs)
+
         engine = HybridSearchEngine(
-            inverted_index=dummy_multi,
-            vector_index=VectorIndex(),
+            inverted_index=real_idx,
+            vector_index=vec_idx,
             embedding_service=self.service,
-            bm25_engine=dummy_multi,
+            bm25_engine=bm25,
         )
-        hits = engine.search("test", file_types=["py", "cs"], lexical_only=True)
-        self.assertGreaterEqual(len(hits), 1)
 
-        hits_str = engine.search("test", file_types="py,cs", lexical_only=True)
-        self.assertGreaterEqual(len(hits_str), 1)
+        # 1. 清單形式 ["py", "cs"]
+        hits_list = engine.search(
+            "processor", file_types=["py", "cs"], lexical_only=False
+        )
+        self.assertEqual({h["symbol"].id for h in hits_list}, {"sym_py", "sym_cs"})
 
-        hits_none = engine.search("test", file_types="cpp,md", lexical_only=True)
+        # 2. 逗號分隔字串 "py,cs"
+        hits_comma = engine.search(
+            "processor", file_types="py,cs", lexical_only=False  # type: ignore[arg-type]
+        )
+        self.assertEqual({h["symbol"].id for h in hits_comma}, {"sym_py", "sym_cs"})
+
+        # 3. 直線分隔字串 "py|md"
+        hits_pipe = engine.search(
+            "processor", file_types="py|md", lexical_only=False  # type: ignore[arg-type]
+        )
+        self.assertEqual({h["symbol"].id for h in hits_pipe}, {"sym_py", "sym_md"})
+
+        # 4. 不存在之副檔名 "cpp"
+        hits_none = engine.search(
+            "processor", file_types="cpp", lexical_only=False  # type: ignore[arg-type]
+        )
         self.assertEqual(len(hits_none), 0)
 
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_posting_slots_and_memory_savings(self):
-        """FT-PERF-01 (OPT-07): 驗證 Posting __slots__、SparseFieldFreqs 稀疏化與 InvertedIndex 0..n doc_idx 映射"""
+        """驗證 Posting __slots__、SparseFieldFreqs 稀疏化與 InvertedIndex 0..n doc_idx 映射"""
         p = Posting(
             doc_id="doc_1",
             field_freqs={"name": 2, "signature": 0, "docstring": 0},
@@ -920,8 +1144,22 @@ class TestHybridSearchEngine(YSCBTestCase):
         # 驗證 InvertedIndex 0..n 整數文檔碼映射與增量刪除之 free_doc_indices 回收
         idx = InvertedIndex(space_name="core")
         tok = MultilingualTokenizer()
-        s1 = UnifiedSymbol(id="sym_a", name="Alpha", kind="class", file_path="a.py", line_number=1, language="python")
-        s2 = UnifiedSymbol(id="sym_b", name="Beta", kind="class", file_path="b.py", line_number=1, language="python")
+        s1 = UnifiedSymbol(
+            id="sym_a",
+            name="Alpha",
+            kind="class",
+            file_path="a.py",
+            line_number=1,
+            language="python",
+        )
+        s2 = UnifiedSymbol(
+            id="sym_b",
+            name="Beta",
+            kind="class",
+            file_path="b.py",
+            line_number=1,
+            language="python",
+        )
         idx.build([s1, s2], tokenizer=tok, space="core")
         self.assertEqual(idx._doc_id_table, ["sym_a", "sym_b"])
         p_alpha = idx.index["alpha"][0]
@@ -930,8 +1168,17 @@ class TestHybridSearchEngine(YSCBTestCase):
         self.assertEqual(p_alpha.doc_id, "sym_a")
 
         # 增量替換 a.py -> 釋放 idx 0 並由新符號重用，且 b.py 之 doc_idx=1 不偏移
-        s1_new = UnifiedSymbol(id="sym_a2", name="AlphaV2", kind="class", file_path="a.py", line_number=1, language="python")
-        idx.patch_incremental(dirty_file_paths={"a.py"}, new_symbols=[s1_new], tokenizer=tok)
+        s1_new = UnifiedSymbol(
+            id="sym_a2",
+            name="AlphaV2",
+            kind="class",
+            file_path="a.py",
+            line_number=1,
+            language="python",
+        )
+        idx.patch_incremental(
+            dirty_file_paths={"a.py"}, new_symbols=[s1_new], tokenizer=tok
+        )
         self.assertEqual(idx._doc_id_table[0], "sym_a2")
         self.assertEqual(idx._doc_id_table[1], "sym_b")
         self.assertEqual(idx.index["beta"][0].doc_id, "sym_b")
@@ -941,7 +1188,7 @@ class TestHybridSearchEngine(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_inverted_index_doc_lengths_top_level(self):
-        """FT-PERF-02: 驗證 InvertedIndex 頂層 doc_lengths 共享池與增量同步"""
+        """驗證 InvertedIndex 頂層 doc_lengths 共享池與增量同步"""
         idx = InvertedIndex(space_name="test")
         tok = MultilingualTokenizer()
 
@@ -966,7 +1213,9 @@ class TestHybridSearchEngine(YSCBTestCase):
             line_number=10,
             language="python",
         )
-        idx.patch_incremental(dirty_file_paths={"src/pid.py"}, new_symbols=[sym3], tokenizer=tok)
+        idx.patch_incremental(
+            dirty_file_paths={"src/pid.py"}, new_symbols=[sym3], tokenizer=tok
+        )
         self.assertNotIn("sym_1", idx.doc_lengths)
         self.assertIn("sym_3", idx.doc_lengths)
         self.assertEqual(idx.doc_count, 1)
@@ -975,7 +1224,7 @@ class TestHybridSearchEngine(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_space_weights_in_bm25_and_hybrid_search(self):
-        """FT-14 (FR-03): 驗證 BM25Engine 與 HybridSearchEngine 空間權重乘算 (docs 1.2 > default 1.0 > plans 0.85)"""
+        """驗證 BM25Engine 與 HybridSearchEngine 空間權重乘算 (docs 1.2 > default 1.0 > plans 0.85)"""
         tok = MultilingualTokenizer()
         idx = InvertedIndex(space_name="unified")
 
@@ -994,7 +1243,7 @@ class TestHybridSearchEngine(YSCBTestCase):
             id="plan_arch",
             name="PrecisionGuide",
             kind=SymbolKind.DOC_HEADING_1.value,
-            file_path="plans/sub_01/precision.md",
+            file_path="plans/architecture/precision.md",
             line_number=1,
             language="markdown",
             signature="# PrecisionGuide",
@@ -1008,15 +1257,22 @@ class TestHybridSearchEngine(YSCBTestCase):
 
         # 1. BM25 空間權重乘算驗證
         flt_unweighted = QueryFilter(limit=10)
-        res_unweighted = {r.symbol.id: r.score for r in bm25.search("PrecisionGuide", idx, filter_cfg=flt_unweighted)}
-        self.assertAlmostEqual(res_unweighted["doc_arch"], res_unweighted["plan_arch"], places=4)
+        res_unweighted = {
+            r.symbol.id: r.score
+            for r in bm25.search("PrecisionGuide", idx, filter_cfg=flt_unweighted)
+        }
+        self.assertAlmostEqual(
+            res_unweighted["doc_arch"], res_unweighted["plan_arch"], places=4
+        )
 
         flt_weighted = QueryFilter(limit=10, space_weights=weights)
         res_weighted = bm25.search("PrecisionGuide", idx, filter_cfg=flt_weighted)
         self.assertEqual(len(res_weighted), 2)
         self.assertEqual(res_weighted[0].symbol.id, "doc_arch")
         self.assertEqual(res_weighted[1].symbol.id, "plan_arch")
-        self.assertAlmostEqual(res_weighted[0].score / res_weighted[1].score, 1.2 / 0.85, places=4)
+        self.assertAlmostEqual(
+            res_weighted[0].score / res_weighted[1].score, 1.2 / 0.85, places=4
+        )
 
         # 2. HybridSearchEngine RRF 空間權重乘算驗證
         vec_idx = VectorIndex()
@@ -1039,8 +1295,8 @@ class TestHybridSearchEngine(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_t33_bm25_prefilter_before_scoring(self):
-        """T-33: 驗證 BM25Engine._score_candidate_documents 於計分迴圈前即依 space/language/kind/ftype 過濾候選文件"""
+    def test_bm25_prefilter_before_scoring(self):
+        """驗證 BM25Engine._score_candidate_documents 於計分迴圈前即依 space/language/kind/ftype 過濾候選文件"""
         tok = MultilingualTokenizer()
         idx = InvertedIndex(space_name="code")
 
@@ -1068,6 +1324,9 @@ class TestHybridSearchEngine(YSCBTestCase):
         )
         idx.build([sym_py, sym_cs], tokenizer=tok)
 
+        # 注入毒丸值：若 sym_cs_cls 未在計分前被預先過濾，讀取 doc_lengths["sym_cs_cls"].get(...) 將拋出 AttributeError
+        idx.doc_lengths["sym_cs_cls"] = 0  # type: ignore[assignment]
+
         bm25 = BM25Engine(tokenizer=tok)
         flt = QueryFilter(
             spaces=["code"],
@@ -1082,21 +1341,23 @@ class TestHybridSearchEngine(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_t34_snippet_extractor_mtime_ns_cache_invalidation(self):
-        """T-34: 驗證 knowledge_db SnippetExtractor 基於 mtime_ns 快取檔案行並在檔案更新後自動讀取新內容"""
+    def test_snippet_extractor_mtime_ns_cache_invalidation(self):
+        """驗證 knowledge_db SnippetExtractor 基於 mtime_ns 快取檔案行並在檔案更新後自動讀取新內容"""
         sample_file = self.cache_dir / "snippet_target.py"
         sample_file.write_text("alpha = 1\nbeta = 2\ngamma = 3\n", encoding="utf-8")
 
         extractor = SnippetExtractor(workspace_root=self.cache_dir)
-        s1 = extractor.extract(sample_file, line_number=2, end_line=2, context_before=0, context_after=0)
+        s1 = extractor.extract(
+            sample_file, line_number=2, end_line=2, context_before=0, context_after=0
+        )
         self.assertEqual(s1.lines[0], (2, "beta = 2"))
         self.assertEqual(len(extractor._file_lines_cache), 1)
 
-        st_old = sample_file.stat()
-        sample_file.write_text("alpha = 1\nbeta = 999\ngamma = 3\n", encoding="utf-8")
-        os.utime(sample_file, ns=(st_old.st_atime_ns, st_old.st_mtime_ns + 1_000_000))
+        write_text_and_advance_mtime(sample_file, "alpha = 1\nbeta = 999\ngamma = 3\n")
 
-        s2 = extractor.extract(sample_file, line_number=2, end_line=2, context_before=0, context_after=0)
+        s2 = extractor.extract(
+            sample_file, line_number=2, end_line=2, context_before=0, context_after=0
+        )
         self.assertEqual(s2.lines[0], (2, "beta = 999"))
         self.mark_passed()
 
@@ -1128,7 +1389,9 @@ class TestHybridSearchEngine(YSCBTestCase):
             ],
         )
         vec_idx = VectorIndex(model_name="mock-model", dim=self.service.dimension)
-        vecs = self.service.embed_texts(["build_target makefile", "build_target runner"])
+        vecs = self.service.embed_texts(
+            ["build_target makefile", "build_target runner"]
+        )
         vec_idx.build(["sym_makefile", "sym_py_ok"], vecs)
         engine = HybridSearchEngine(
             inverted_index=dummy_idx,
@@ -1137,7 +1400,9 @@ class TestHybridSearchEngine(YSCBTestCase):
             bm25_engine=dummy_idx,
         )
         # 過濾 file_types=["skills/makefile"] 不應誤將 .agents/skills/Makefile 當成副檔名匹配
-        res_fake_ext = engine.search("build_target", file_types=["skills/makefile"], lexical_only=False)
+        res_fake_ext = engine.search(
+            "build_target", file_types=["skills/makefile"], lexical_only=False
+        )
         self.assertEqual(len(res_fake_ext), 0)
 
         res_py = engine.search("build_target", file_types=["py"], lexical_only=False)

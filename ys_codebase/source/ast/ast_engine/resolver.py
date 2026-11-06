@@ -14,6 +14,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
+import threading
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from .graph import CallGraphIndex
@@ -63,41 +64,62 @@ CALLABLE_KINDS: Set[str] = {
 }
 
 
+def _split_top_level_comma(text: str) -> List[str]:
+    """Split `text` by top-level commas while ignoring commas inside `<...>`, `(...)`, `[...]`, or `{...}`."""
+    if not text:
+        return []
+    parts: List[str] = []
+    depth = 0
+    current: List[str] = []
+    for ch in text:
+        if ch in "<([{":
+            depth += 1
+            current.append(ch)
+        elif ch in ">)]}":
+            depth = max(0, depth - 1)
+            current.append(ch)
+        elif ch == "," and depth == 0:
+            tok = "".join(current).strip()
+            if tok:
+                parts.append(tok)
+            current = []
+        else:
+            current.append(ch)
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
 def extract_signature_params(signature: str) -> List[str]:
     """Extract parameter declarations inside `(...)` of a symbol signature."""
     if not signature or "(" not in signature or ")" not in signature:
         return []
     start = signature.find("(")
-    end = signature.rfind(")")
+    depth = 0
+    end = -1
+    for idx in range(start, len(signature)):
+        ch = signature[idx]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                end = idx
+                break
     if end <= start:
         return []
     inner = signature[start + 1 : end].strip()
     if not inner:
         return []
 
-    params: List[str] = []
-    depth = 0
-    current: List[str] = []
-    for ch in inner:
-        if ch in "<([":
-            depth += 1
-            current.append(ch)
-        elif ch in ">)]":
-            depth = max(0, depth - 1)
-            current.append(ch)
-        elif ch == "," and depth == 0:
-            tok = "".join(current).strip()
-            if tok:
-                params.append(tok)
-            current = []
-        else:
-            current.append(ch)
-    tail = "".join(current).strip()
-    if tail:
-        params.append(tail)
-
-    if params and params[0].split()[0] in ("self", "cls", "this"):
-        params = params[1:]
+    params = _split_top_level_comma(inner)
+    if params:
+        head_part = params[0].split(":", 1)[0].strip()
+        first_tok = head_part.split()[0] if head_part else ""
+        if first_tok in ("self", "cls", "this"):
+            params = params[1:]
+    params = [p for p in params if p not in ("/", "*")]
     return params
 
 
@@ -240,7 +262,7 @@ class SymbolSelector:
                 base = clean_expr[:p_start].strip()
                 p_inner = clean_expr[p_start + 1 : -1].strip()
                 if p_inner:
-                    params_tuple = tuple(p.strip() for p in p_inner.split(",") if p.strip())
+                    params_tuple = tuple(_split_top_level_comma(p_inner))
             else:
                 base = clean_expr
 
@@ -272,7 +294,7 @@ class SymbolSelector:
         has_parens = params_raw is not None
         param_types: Optional[Tuple[str, ...]] = None
         if params_raw is not None and params_raw.strip():
-            param_types = tuple(p.strip() for p in params_raw.split(",") if p.strip())
+            param_types = tuple(_split_top_level_comma(params_raw))
 
         is_callable = has_parens
         if target_kinds and target_kinds.issubset(CALLABLE_KINDS):
@@ -422,6 +444,13 @@ class DeterministicSymbolResolver:
         for s in matched:
             dedup_map[s.id] = s
         deduped = sorted(dedup_map.values(), key=lambda s: (s.file_path, s.line_number, s.id))
+
+        if len(deduped) > 1 and query.strip().endswith("()"):
+            zero_param = [
+                s for s in deduped if len(extract_signature_params(s.signature or "")) == 0
+            ]
+            if zero_param:
+                deduped = zero_param
 
         if len(deduped) == 1:
             return SymbolResolutionResult(status="matched", targets=deduped, candidates=[], query=query)
@@ -592,6 +621,7 @@ class SnippetExtractor:
         self.space_manager = space_manager
         self.project_root = Path(project_root).resolve() if project_root else None
         self._file_lines_cache: Dict[str, Tuple[int, List[str]]] = {}
+        self._lock = threading.RLock()
 
     def _resolve_abs_path(self, file_path: str) -> Optional[Path]:
         if not file_path:
@@ -662,15 +692,16 @@ class SnippetExtractor:
         try:
             cache_key = str(real_path)
             st_mtime_ns = real_path.stat().st_mtime_ns
-            cached_entry = self._file_lines_cache.get(cache_key)
-            if cached_entry is not None and cached_entry[0] == st_mtime_ns:
-                all_lines = cached_entry[1]
-            else:
-                all_lines = real_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                if cache_key not in self._file_lines_cache and len(self._file_lines_cache) >= 32:
-                    oldest_key = next(iter(self._file_lines_cache))
-                    del self._file_lines_cache[oldest_key]
-                self._file_lines_cache[cache_key] = (st_mtime_ns, all_lines)
+            with self._lock:
+                cached_entry = self._file_lines_cache.get(cache_key)
+                if cached_entry is not None and cached_entry[0] == st_mtime_ns:
+                    all_lines = cached_entry[1]
+                else:
+                    all_lines = real_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                    if cache_key not in self._file_lines_cache and len(self._file_lines_cache) >= 32:
+                        oldest_key = next(iter(self._file_lines_cache))
+                        del self._file_lines_cache[oldest_key]
+                    self._file_lines_cache[cache_key] = (st_mtime_ns, all_lines)
             if not all_lines:
                 return None
             total = len(all_lines)
@@ -1030,6 +1061,7 @@ __all__ = [
     "SnippetExtractor",
     "SymbolResolutionResult",
     "SymbolSelector",
+    "_split_top_level_comma",
     "extract_signature_params",
     "get_symbol_parent_fqn",
     "query_callees",

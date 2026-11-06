@@ -4,7 +4,7 @@ Data models and schema contracts for the file-space module.
 from dataclasses import dataclass, field
 from enum import Enum
 import fnmatch
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 from typing import Any, Dict, FrozenSet, List, Optional, Pattern, Set, Tuple, Union
 
@@ -87,7 +87,7 @@ class FileSpaceConfig:
     follow_symlinks: bool = False
     watch: bool = True
     weight: float = 1.0
-    origin: FileSpaceOrigin = FileSpaceOrigin.PROJECT
+    origin: Union[FileSpaceOrigin, str] = FileSpaceOrigin.PROJECT
     owner_modules: List[str] = field(default_factory=list)
     raw_include_uris: List[str] = field(default_factory=list)
 
@@ -106,20 +106,43 @@ class FileSpaceConfig:
     )
 
     def __post_init__(self) -> None:
+        from .exceptions import InvalidFileSpaceConfigError
+
         if isinstance(self.hash_policy, str):
             try:
                 self.hash_policy = HashPolicy(self.hash_policy)
-            except ValueError:
-                from .exceptions import InvalidFileSpaceConfigError
-
+            except ValueError as exc:
                 raise InvalidFileSpaceConfigError(
                     f"Invalid hash_policy '{self.hash_policy}' for space '{self.name}'"
-                )
+                ) from exc
         if isinstance(self.origin, str) and not isinstance(self.origin, FileSpaceOrigin):
             try:
                 self.origin = FileSpaceOrigin(self.origin)
             except ValueError:
                 self.origin = FileSpaceOrigin.PROJECT
+
+        try:
+            if isinstance(self.large_file_threshold_mb, bool):
+                raise TypeError("boolean is not a valid threshold")
+            self.large_file_threshold_mb = int(self.large_file_threshold_mb)
+        except (TypeError, ValueError) as exc:
+            raise InvalidFileSpaceConfigError(
+                f"Invalid large_file_threshold_mb '{self.large_file_threshold_mb}' for space '{self.name}'"
+            ) from exc
+        if self.large_file_threshold_mb <= 0:
+            raise InvalidFileSpaceConfigError(
+                f"Space '{self.name}' large_file_threshold_mb must be positive, got {self.large_file_threshold_mb}."
+            )
+
+        try:
+            if isinstance(self.weight, bool):
+                raise TypeError("boolean is not a valid weight")
+            self.weight = float(self.weight)
+        except (TypeError, ValueError) as exc:
+            raise InvalidFileSpaceConfigError(
+                f"Invalid weight '{self.weight}' for space '{self.name}'"
+            ) from exc
+
         if not self.raw_include_uris and self.include:
             self.raw_include_uris = [str(p) for p in self.include]
         self._compile_filter_rules()
@@ -223,13 +246,33 @@ class FileSpaceConfig:
     @property
     def resolved_include_paths(self) -> List[Path]:
         """Return include entries normalized as Path objects."""
-        result: List[Path] = []
-        for item in self.include:
-            if isinstance(item, Path):
-                result.append(item)
-            else:
-                result.append(Path(str(item)))
-        return result
+        return [
+            item if isinstance(item, Path) else Path(str(item))
+            for item in self.include
+        ]
+
+    def _matches_exclude(self, norm_rel: str, parts: List[str]) -> bool:
+        if self._exclude_exact_segments and any(
+            part in self._exclude_exact_segments for part in parts
+        ):
+            return True
+        if self._exclude_rel_exact and norm_rel in self._exclude_rel_exact:
+            return True
+        if self._exclude_rel_prefixes and norm_rel.startswith(self._exclude_rel_prefixes):
+            return True
+        if self._exclude_ext_suffixes and any(
+            part.endswith(self._exclude_ext_suffixes) for part in parts
+        ):
+            return True
+        if self._exclude_seg_regexes and any(
+            rx.match(part) for rx in self._exclude_seg_regexes for part in parts
+        ):
+            return True
+        if self._exclude_rel_regexes and any(
+            rx.match(norm_rel) for rx in self._exclude_rel_regexes
+        ):
+            return True
+        return False
 
     def is_dir_excluded(self, dir_name: str, rel_dir_posix: str) -> bool:
         """
@@ -242,22 +285,10 @@ class FileSpaceConfig:
         if not norm_rel or norm_rel == ".":
             return False
 
-        if dir_name in self._exclude_exact_segments:
-            return True
-        if "/" in norm_rel and self._exclude_exact_segments:
-            if any(part in self._exclude_exact_segments for part in norm_rel.split("/") if part):
-                return True
-        if self._exclude_rel_exact and norm_rel in self._exclude_rel_exact:
-            return True
-        if self._exclude_rel_prefixes and norm_rel.startswith(self._exclude_rel_prefixes):
-            return True
-        if self._exclude_ext_suffixes and dir_name.endswith(self._exclude_ext_suffixes):
-            return True
-        if self._exclude_seg_regexes and any(rx.match(dir_name) for rx in self._exclude_seg_regexes):
-            return True
-        if self._exclude_rel_regexes and any(rx.match(norm_rel) for rx in self._exclude_rel_regexes):
-            return True
-        return False
+        parts = [p for p in norm_rel.split("/") if p] if norm_rel else [dir_name]
+        if dir_name and dir_name not in parts:
+            parts.append(dir_name)
+        return self._matches_exclude(norm_rel, parts)
 
     def is_file_included(self, rel_path: Union[str, Path]) -> bool:
         """
@@ -284,25 +315,7 @@ class FileSpaceConfig:
             parts = [posix_str]
             filename = posix_str
 
-        if self._exclude_exact_segments and any(
-            part in self._exclude_exact_segments for part in parts
-        ):
-            return False
-        if self._exclude_rel_exact and posix_str in self._exclude_rel_exact:
-            return False
-        if self._exclude_rel_prefixes and posix_str.startswith(self._exclude_rel_prefixes):
-            return False
-        if self._exclude_ext_suffixes and any(
-            part.endswith(self._exclude_ext_suffixes) for part in parts
-        ):
-            return False
-        if self._exclude_seg_regexes and any(
-            rx.match(part) for rx in self._exclude_seg_regexes for part in parts
-        ):
-            return False
-        if self._exclude_rel_regexes and any(
-            rx.match(posix_str) for rx in self._exclude_rel_regexes
-        ):
+        if self._matches_exclude(posix_str, parts):
             return False
 
         if self._include_all:
@@ -357,11 +370,11 @@ class FileSpaceConfig:
             file_patterns=list(data.get("file_patterns", [])),
             description=str(data.get("description", "")),
             hash_policy=data.get("hash_policy", HashPolicy.ADAPTIVE),
-            large_file_threshold_mb=int(data.get("large_file_threshold_mb", 10)),
+            large_file_threshold_mb=data.get("large_file_threshold_mb", 10),
             follow_symlinks=bool(data.get("follow_symlinks", False)),
             watch=bool(data.get("watch", True)),
-            weight=float(data.get("weight", 1.0)),
-            origin=FileSpaceOrigin(data.get("origin", FileSpaceOrigin.PROJECT.value)),
+            weight=data.get("weight", 1.0),
+            origin=data.get("origin", FileSpaceOrigin.PROJECT),
             owner_modules=list(data.get("owner_modules", [])),
             raw_include_uris=[str(u) for u in raw_inc],
         )
@@ -461,12 +474,17 @@ class ScanDiffResult:
     def __post_init__(self) -> None:
         if self.detail is None:
             self.detail = ScanDiffDetail()
-        self.added_count = int(self.added_count) if self.added_count else len(self.detail.added)
-        self.modified_count = int(self.modified_count) if self.modified_count else len(self.detail.modified)
-        self.deleted_count = int(self.deleted_count) if self.deleted_count else len(self.detail.deleted)
-        self.unchanged_count = int(self.unchanged_count) if self.unchanged_count else len(self.detail.unchanged)
-        self.from_generation = int(self.from_generation)
-        self.to_generation = int(self.to_generation)
+        for count_attr, set_attr in (
+            ("added_count", "added"),
+            ("modified_count", "modified"),
+            ("deleted_count", "deleted"),
+            ("unchanged_count", "unchanged"),
+        ):
+            raw_val = getattr(self, count_attr)
+            norm_val = max(0, int(raw_val)) if raw_val else len(getattr(self.detail, set_attr))
+            setattr(self, count_attr, norm_val)
+        self.from_generation = max(0, int(self.from_generation))
+        self.to_generation = max(0, int(self.to_generation))
         self.merkle_root = str(self.merkle_root)
         self.space_generations = dict(self.space_generations) if self.space_generations else {}
 

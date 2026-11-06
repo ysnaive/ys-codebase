@@ -5,11 +5,11 @@ and `cache://agents-workflow/` into `storage.local://agents-workflow/`, keeping 
 publisher code free of legacy fallback branches.
 """
 
-from typing import Any, Dict
 import datetime
 import json
 import os
 import shutil
+from typing import Any, Dict, Optional
 
 
 def _move_or_discard(src_path: str, dst_path: str) -> None:
@@ -26,27 +26,50 @@ def _move_or_discard(src_path: str, dst_path: str) -> None:
             pass
 
 
-def migrate(context: Dict[str, Any]) -> bool:
+def _resolve_migration_yscb_dir(context: Dict[str, Any]) -> Optional[str]:
     """
-    Idempotently migrates legacy `<storage_dir>/release_manifest.json` and
-    `<yscb_dir>/.cache/agents-workflow/{project_release_manifest,release_manifest,source_sha1_cache}.json`
-    into `<storage_local_dir>/` and cleans up legacy files and empty `<storage_dir>`.
+    Resolves `yscb_dir` by trying `context['yscb_dir']`, `uri.resolve_yscb_root`,
+    `uri._get_yscb_root`, and `__file__` path derivation in order.
     """
-    yscb_dir = context.get("yscb_dir")
-    if not yscb_dir:
-        try:
-            from core import uri
-            yscb_dir = uri.resolve_yscb_root()
-        except Exception:
-            return True
+    raw_dir = context.get("yscb_dir")
+    if isinstance(raw_dir, str) and raw_dir.strip():
+        return raw_dir.strip()
 
-    storage_dir = context.get("storage_dir") or os.path.join(yscb_dir, "storage", "agents-workflow")
-    storage_local_dir = context.get("storage_local_dir") or os.path.join(
-        yscb_dir, ".storage.local", "agents-workflow"
-    )
-    cache_dir = os.path.join(yscb_dir, ".cache", "agents-workflow")
+    try:
+        from core import uri  # type: ignore
 
-    # 1. Migrate legacy storage://agents-workflow/release_manifest.json -> project_release_manifest.json
+        for fn_name in ("resolve_yscb_root", "_get_yscb_root"):
+            fn = getattr(uri, fn_name, None)
+            if callable(fn):
+                resolved = fn()
+                if resolved:
+                    return str(resolved)
+    except Exception:
+        pass
+
+    try:
+        cur = os.path.abspath(__file__)
+        parent = os.path.dirname(cur)
+        for _ in range(6):
+            if os.path.basename(parent) == "ys_codebase" or os.path.isdir(os.path.join(parent, ".modules")):
+                return parent
+            nxt = os.path.dirname(parent)
+            if nxt == parent:
+                break
+            parent = nxt
+        fallback_dir = os.path.abspath(os.path.join(os.path.dirname(cur), "..", "..", "..", ".."))
+        if os.path.isdir(fallback_dir):
+            return fallback_dir
+    except Exception:
+        pass
+    return None
+
+
+def _migrate_legacy_storage_manifest(storage_dir: str, storage_local_dir: str) -> None:
+    """
+    Migrates legacy `storage://agents-workflow/release_manifest.json` into
+    `storage.local://agents-workflow/project_release_manifest.json` and removes empty `storage_dir`.
+    """
     legacy_storage_manifest = os.path.join(storage_dir, "release_manifest.json")
     target_proj_manifest = os.path.join(storage_local_dir, "project_release_manifest.json")
     if os.path.isfile(legacy_storage_manifest):
@@ -73,7 +96,7 @@ def migrate(context: Dict[str, Any]) -> bool:
                 converted_payload = None
 
             if converted_payload is not None:
-                tmp_path = f"{target_proj_manifest}.tmp"
+                tmp_path = f"{target_proj_manifest}.tmp.{os.getpid()}"
                 with open(tmp_path, "w", encoding="utf-8", newline="\n") as f:
                     json.dump(converted_payload, f, indent=2, ensure_ascii=False)
                     f.write("\n")
@@ -96,6 +119,26 @@ def migrate(context: Dict[str, Any]) -> bool:
                 os.rmdir(storage_dir)
         except OSError:
             pass
+
+
+def migrate(context: Dict[str, Any]) -> bool:
+    """
+    Idempotently migrates legacy `<storage_dir>/release_manifest.json` and
+    `<yscb_dir>/.cache/agents-workflow/{project_release_manifest,release_manifest,source_sha1_cache}.json`
+    into `<storage_local_dir>/` and cleans up legacy files and empty `<storage_dir>`.
+    """
+    yscb_dir = _resolve_migration_yscb_dir(context)
+    if not yscb_dir:
+        return True
+
+    storage_dir = context.get("storage_dir") or os.path.join(yscb_dir, "storage", "agents-workflow")
+    storage_local_dir = context.get("storage_local_dir") or os.path.join(
+        yscb_dir, ".storage.local", "agents-workflow"
+    )
+    cache_dir = os.path.join(yscb_dir, ".cache", "agents-workflow")
+
+    # 1. Migrate legacy storage://agents-workflow/release_manifest.json -> project_release_manifest.json
+    _migrate_legacy_storage_manifest(storage_dir, storage_local_dir)
 
     # 2. Migrate cache://agents-workflow/{project_release_manifest,release_manifest,source_sha1_cache}.json
     for fname in ("project_release_manifest.json", "release_manifest.json", "source_sha1_cache.json"):

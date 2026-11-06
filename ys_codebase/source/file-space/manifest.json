@@ -1,12 +1,12 @@
 {
   "id": "file-space",
   "name": "file-space",
-  "version": "1.0.1.3",
+  "version": "1.0.1.4",
   "description": "YS-Codebase 多工作空間幾何路由、雙階段單調世代指紋掃描、多消費者獨立游標與檔案變動監聽引擎",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.7"
+    "core": ">=1.2.7.3"
   },
   "optional": {
     "server": {
@@ -28,6 +28,6 @@
   "release": {
     "type": "bugfix",
     "urgency": "recommended",
-    "summary": "notify_file_event O(1) 前綴正規化與單檔 include 之 is_file_included 過濾"
+    "summary": "新增可重入 _snapshot_lock、單檔 include 相對路徑修正、中繼 symlink 攔截與髒集合回滾"
   }
 }

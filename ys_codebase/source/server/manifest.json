@@ -1,10 +1,10 @@
 {
   "name": "server",
-  "version": "1.0.4.3",
+  "version": "1.0.4.4",
   "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.7"
+    "core": ">=1.2.7.3"
   },
   "onboarding": [
     "Start background daemon (or use --console in IDE background task): python yscb.py server start",
@@ -14,6 +14,6 @@
   "release": {
     "type": "bugfix",
     "urgency": "recommended",
-    "summary": "master Worker PID 區域變數快照讀取、watcher 鎖探測移入差異分支與註解純化"
+    "summary": "修正 stop 強殺後立即歸檔日誌、強化 Master/Worker IPC 生命週期與併發防護"
   }
 }

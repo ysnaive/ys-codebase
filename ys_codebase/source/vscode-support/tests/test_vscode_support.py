@@ -2,6 +2,8 @@
 Unit and boundary tests for `module:vscode-support` (`SettingsProjector`, `SchemaCompiler`, CLI, and lifecycle hooks).
 """
 
+import importlib.util
+import io
 import json
 import os
 import shutil
@@ -9,7 +11,9 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from typing import Any, Dict
 from unittest.mock import patch
 
 _test_dir = Path(__file__).resolve().parent
@@ -17,12 +21,14 @@ _pkg_root = _test_dir.parent
 if str(_pkg_root) not in sys.path:
     sys.path.insert(0, str(_pkg_root))
 
-from core import uri, vfs
+import vscode_support
+from core import vfs
+from core.commands import CmdBags, CmdOption
 from core.context import ExecutionContext
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from vscode_support.projector import SettingsProjector
 from vscode_support import schema_compiler as schema_compiler_mod
+from vscode_support.projector import SettingsProjector, strip_jsonc
 from vscode_support.schema_compiler import SchemaCompiler
 
 
@@ -45,40 +51,98 @@ class TestVSCodeSupport(YSCBTestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
         super().tearDown()
 
-    def test_ft_01_auto_create_vscode_dir_and_stable_site_packages_link(self) -> None:
-        """自動建立 project://.vscode/ 並恆定寫入 current-site-packages 穩定連結路徑。"""
+    def _load_script_module(self, script_name: str, mod_alias: str) -> Any:
+        """動態載入 `scripts/` 目錄下之腳本模組供測試調用。"""
+        script_path = os.path.join(str(_pkg_root), "scripts", script_name)
+        spec = importlib.util.spec_from_file_location(mod_alias, script_path)
+        self.assertIsNotNone(spec)
+        mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        return mod
+
+    def _write_settings(self, content: Any) -> str:
+        """建立 `.vscode/settings.json` 並寫入字典、字串或原始位元組。"""
         vscode_dir = os.path.join(self.project_root, ".vscode")
+        os.makedirs(vscode_dir, exist_ok=True)
+        settings_path = os.path.join(vscode_dir, "settings.json")
+        if isinstance(content, dict):
+            vfs.write_json(settings_path, content)
+        elif isinstance(content, bytes):
+            with open(settings_path, "wb") as f:
+                f.write(content)
+        else:
+            vfs.write_text(settings_path, str(content), encoding="utf-8")
+        return settings_path
+
+    def _read_settings(self) -> Dict[str, Any]:
+        """讀取 `.vscode/settings.json` 解析後之字典內容。"""
+        settings_path = os.path.join(self.project_root, ".vscode", "settings.json")
+        return vfs.read_json(settings_path)
+
+    def test_package_lazy_loading_and_module_exports(self) -> None:
+        """驗證 `vscode_support/__init__.py` PEP 562 延遲載入、`__dir__` 與未知屬性 `AttributeError`。"""
+        target_keys = ("SettingsProjector", "SchemaCompiler", "projector", "schema_compiler")
+        saved: Dict[str, Any] = {}
+        for key in target_keys:
+            if key in vscode_support.__dict__:
+                saved[key] = vscode_support.__dict__.pop(key)
+        try:
+            self.assertIs(vscode_support.SettingsProjector, SettingsProjector)
+            self.assertIs(vscode_support.SchemaCompiler, SchemaCompiler)
+            self.assertIs(vscode_support.projector.SettingsProjector, SettingsProjector)
+            self.assertIs(vscode_support.schema_compiler.SchemaCompiler, SchemaCompiler)
+            exported = dir(vscode_support)
+            for item in vscode_support.__all__:
+                self.assertIn(item, exported)
+            with self.assertRaises(AttributeError):
+                _ = vscode_support.non_existent_attr_for_test
+        finally:
+            vscode_support.__dict__.update(saved)
+        self.mark_passed()
+
+    def test_auto_create_vscode_dir_and_stable_site_packages_link(self) -> None:
+        """自動建立 `project://.vscode/`、各版本 `site-packages` 實體目錄與 `current-site-packages` 穩定連結目標切換。"""
+        vscode_dir = os.path.join(self.project_root, ".vscode")
+        link_path = self.projector.get_stable_link_path()
         self.assertFalse(os.path.exists(vscode_dir))
 
         ok = self.projector.sync_vscode_settings(self.project_root, py_tag="py312")
         self.assertTrue(ok)
         self.assertTrue(os.path.isdir(vscode_dir))
+        site_py312 = self.pip_mgr.get_site_packages_dir("py312")
+        self.assertTrue(os.path.isdir(site_py312))
+        if os.path.lexists(link_path):
+            self.assertEqual(
+                os.path.normcase(os.path.realpath(link_path)),
+                os.path.normcase(os.path.realpath(site_py312)),
+            )
 
-        settings_path = os.path.join(vscode_dir, "settings.json")
-        data = vfs.read_json(settings_path)
-        extra = data.get("python.analysis.extraPaths", [])
-        self.assertEqual(extra, ["./.yscb/.venv/current-site-packages"])
+        data = self._read_settings()
+        self.assertEqual(data.get("python.analysis.extraPaths", []), ["./.yscb/.venv/current-site-packages"])
 
-        # 切換 Python 版本 py311 -> settings.json 的 extraPaths 仍維持不變
-        self.projector.sync_vscode_settings(self.project_root, py_tag="py311")
-        data_after = vfs.read_json(settings_path)
+        self.assertTrue(self.projector.sync_vscode_settings(self.project_root, py_tag="py311"))
+        site_py311 = self.pip_mgr.get_site_packages_dir("py311")
+        self.assertTrue(os.path.isdir(site_py311))
+        if os.path.lexists(link_path):
+            self.assertEqual(
+                os.path.normcase(os.path.realpath(link_path)),
+                os.path.normcase(os.path.realpath(site_py311)),
+            )
+        data_after = self._read_settings()
         self.assertEqual(data_after.get("python.analysis.extraPaths"), ["./.yscb/.venv/current-site-packages"])
-
         self.mark_passed()
 
-    def test_ft_02_stable_path_preserved_when_symlink_unsupported(self) -> None:
-        """當受限容器檔案系統 (如 virtiofs) 不支援建立 Symlink 時，extraPaths 仍維持 current-site-packages 零變動。"""
+    def test_stable_path_preserved_when_symlink_unsupported(self) -> None:
+        """當受限檔案系統不支援建立 Symlink 時，`extraPaths` 仍維持 `current-site-packages` 零變動。"""
         with patch.object(self.projector, "ensure_stable_site_packages_link", return_value=None):
             ok = self.projector.sync_vscode_settings(self.project_root, py_tag="py312")
             self.assertTrue(ok)
-            settings_path = os.path.join(self.project_root, ".vscode", "settings.json")
-            data = vfs.read_json(settings_path)
-            extra = data.get("python.analysis.extraPaths", [])
-            self.assertEqual(extra, ["./.yscb/.venv/current-site-packages"])
+            data = self._read_settings()
+            self.assertEqual(data.get("python.analysis.extraPaths", []), ["./.yscb/.venv/current-site-packages"])
         self.mark_passed()
 
-    def test_ft_03_schema_compiler_contributes_and_recursive_types(self) -> None:
-        """驗證 _format.json 轉譯為 Draft-07 Schema（含自遞迴 $CommandNode、萬用鍵 *、float default 與外層包裹相容）。"""
+    def test_schema_compiler_contributes_and_composite_types(self) -> None:
+        """驗證 `_format.json` 轉譯為 Draft-07 Schema（含自遞迴 `$CommandNode`、`list[int]`、`dict[str]`、陣列節點與外層包裹）。"""
         fmt_data = {
             "_types": {
                 "CommandNode": {
@@ -87,9 +151,10 @@ class TestVSCodeSupport(YSCBTestCase):
                     "weight": "float? = 1.5",
                     "offset": "int? = -1",
                     "tags": "list[str]! | extend",
-                    "cmd": {
-                        "*": "$CommandNode",
-                    },
+                    "retries": "list[int]?",
+                    "labels": "dict[str, str]?",
+                    "extra_meta": "any?",
+                    "cmd": {"*": "$CommandNode"},
                 }
             },
             "commands": {
@@ -97,9 +162,9 @@ class TestVSCodeSupport(YSCBTestCase):
                 "merge": "merge",
                 "format": {
                     "module_alias": "list[str]?",
-                    "cmd": {
-                        "*": "$CommandNode",
-                    },
+                    "matrix": ["int!"],
+                    "empty_arr": [],
+                    "cmd": {"*": "$CommandNode"},
                 },
             },
             "locales": {
@@ -122,9 +187,18 @@ class TestVSCodeSupport(YSCBTestCase):
         self.assertEqual(cmd_node_def["properties"]["weight"]["default"], 1.5)
         self.assertEqual(cmd_node_def["properties"]["offset"]["type"], "integer")
         self.assertEqual(cmd_node_def["properties"]["offset"]["default"], -1)
+        self.assertEqual(cmd_node_def["properties"]["retries"], {"type": "array", "items": {"type": "integer"}})
+        self.assertEqual(
+            cmd_node_def["properties"]["labels"],
+            {"type": "object", "additionalProperties": {"type": "string"}},
+        )
+        self.assertEqual(cmd_node_def["properties"]["extra_meta"], {})
         self.assertEqual(cmd_node_def["properties"]["cmd"]["additionalProperties"], {"$ref": "#/$defs/CommandNode"})
 
-        # 驗證固定鍵 + "*" 混合字典與 path 型別 defaultSnippets 與 @desc(...) 說明
+        commands_prop = schema["properties"]["commands"]
+        self.assertEqual(commands_prop["properties"]["matrix"], {"type": "array", "items": {"type": "integer"}})
+        self.assertEqual(commands_prop["properties"]["empty_arr"], {"type": "array", "items": {}})
+
         locales_prop = schema["properties"]["locales"]
         self.assertEqual(locales_prop["required"], ["definition"])
         self.assertEqual(locales_prop["additionalProperties"], {"type": "string"})
@@ -132,18 +206,15 @@ class TestVSCodeSupport(YSCBTestCase):
         self.assertIn("語意契約檔相對路徑 (必填)", locales_prop["properties"]["definition"]["markdownDescription"])
         self.assertIn("defaultSnippets", locales_prop["properties"]["definition"])
         snippet_labels = [s["label"] for s in locales_prop["properties"]["definition"]["defaultSnippets"]]
-        self.assertIn("project://", snippet_labels)
-        self.assertIn("config://", snippet_labels)
-        self.assertIn("config.local://", snippet_labels)
-        self.assertIn("storage.local://", snippet_labels)
+        for expected_scheme in ("project://", "config://", "config.local://", "storage.local://"):
+            self.assertIn(expected_scheme, snippet_labels)
 
-        # 驗證支援外層包裹 {"demo-mod": { ... }}
         self.assertIn("demo-mod", schema["properties"])
         self.assertIn("commands", schema["properties"]["demo-mod"]["properties"])
         self.mark_passed()
 
-    def test_ft_04_schema_compiler_config_from_mirror_zip_and_orphan_cleanup(self) -> None:
-        """驗證自 module.mirror:// 讀取 configurable/config.project.json 推導 Schema 並自動清理孤兒 Schema。"""
+    def test_schema_compiler_config_from_mirror_zip_and_orphan_cleanup(self) -> None:
+        """驗證自 `module.mirror://` 讀取組態模板推導 Schema、清理孤兒 Schema 並精確斷言綁定數量。"""
         mirror_mod_dir = os.path.join(self.yscb_dir, ".mirror", "sample-mod")
         os.makedirs(mirror_mod_dir, exist_ok=True)
         zip_path = os.path.join(mirror_mod_dir, "1.0.0.0.zip")
@@ -170,25 +241,23 @@ class TestVSCodeSupport(YSCBTestCase):
         self.assertEqual(cfg_schema["properties"]["timeout_ms"], {"type": "integer", "default": 3000})
         self.assertEqual(cfg_schema["properties"]["ratio"], {"type": "number", "default": 0.75})
 
-        # 驗證 configurable/_format.json 同構 DSL 編譯 (含 uri! 與 @desc(...))
         cfg_fmt = {
+            "_types": {"EndpointCfg": {"url": "uri!"}},
             "paths": {
                 "plans": "uri! @desc(活躍計畫目錄路徑)",
                 "roadmap": "uri? = project://plans/roadmap @desc(路線圖目錄路徑)",
             },
+            "endpoint": {"description": "遠端端點設定", "format": "$EndpointCfg"},
             "enable_agents_md": "bool? = true @desc(是否生成 AGENTS.md)",
         }
         fmt_cfg_schema = self.compiler.compile_config_schema("sample-mod", template_data=tpl, fmt_data=cfg_fmt)
         self.assertFalse(fmt_cfg_schema["additionalProperties"])
+        self.assertIn("EndpointCfg", fmt_cfg_schema["$defs"])
         self.assertEqual(fmt_cfg_schema["properties"]["enable_agents_md"]["description"], "是否生成 AGENTS.md")
         self.assertEqual(fmt_cfg_schema["properties"]["paths"]["required"], ["plans"])
-        self.assertEqual(
-            fmt_cfg_schema["properties"]["paths"]["properties"]["plans"]["description"],
-            "活躍計畫目錄路徑",
-        )
+        self.assertEqual(fmt_cfg_schema["properties"]["paths"]["properties"]["plans"]["description"], "活躍計畫目錄路徑")
         self.assertIn("defaultSnippets", fmt_cfg_schema["properties"]["paths"]["properties"]["plans"])
 
-        # 預先放一個孤兒 Schema 檔案與舊版子目錄 .gitignore，驗證 sync_all_schemas 會自動刪除它們
         orphan_dir = os.path.join(self.project_root, ".vscode", "schemas", "contributes")
         os.makedirs(orphan_dir, exist_ok=True)
         orphan_file = os.path.join(orphan_dir, "non_existent_orphan_mod.schema.json")
@@ -199,18 +268,97 @@ class TestVSCodeSupport(YSCBTestCase):
         vfs.write_text(gi_file, "*\n")
         self.assertTrue(os.path.isfile(gi_file))
 
-        bindings = self.compiler.sync_all_schemas(self.project_root)
+        with patch.object(self.compiler, "_discover_installed_modules", return_value=["sample-mod"]), patch.object(
+            schema_compiler_mod.contributes, "get", return_value={}
+        ):
+            bindings = self.compiler.sync_all_schemas(self.project_root)
+
         self.assertFalse(os.path.exists(orphan_file))
-        self.assertTrue(len(bindings) >= 2)
         self.assertFalse(os.path.exists(gi_file))
+        self.assertEqual(len(bindings), 3)
+        schemas_root = os.path.join(self.project_root, ".vscode", "schemas")
+        self.assertTrue(os.path.isfile(os.path.join(schemas_root, "config", "sample-mod.schema.json")))
+        self.assertTrue(os.path.isfile(os.path.join(schemas_root, "meta", "format-meta.schema.json")))
+        self.assertTrue(os.path.isfile(os.path.join(schemas_root, "meta", "manifest.schema.json")))
         self.mark_passed()
 
-    def test_ft_05_soft_merge_preserves_user_settings_and_revert_cleans_all(self) -> None:
-        """驗證保留使用者自訂 extraPaths、interpreter 與 json.schemas，且 revert 100% 乾淨還原。"""
-        vscode_dir = os.path.join(self.project_root, ".vscode")
-        os.makedirs(vscode_dir, exist_ok=True)
-        settings_path = os.path.join(vscode_dir, "settings.json")
+    def test_contributed_json_schemas_extension_point_branches(self) -> None:
+        """驗證 `vscode-support.json_schemas` 擴充點之 `static_file`、`contributes_format` 與 `configurable_template` 分支。"""
+        custom_rules = {
+            "__provider__": "vscode-support",
+            "custom-static": {
+                "file_match": ["**/custom.static.json"],
+                "schema_source": "static_file",
+                "schema_path": "./meta/format-meta.schema.json",
+            },
+            "custom-contrib": {
+                "file_match": ["**/custom.contrib.json"],
+                "schema_source": "contributes_format",
+                "schema_path": "core",
+            },
+            "custom-config": {
+                "file_match": ["**/custom.config.json"],
+                "schema_source": "configurable_template",
+                "schema_path": "",
+            },
+        }
+        with patch.object(self.compiler, "_discover_installed_modules", return_value=[]), patch.object(
+            schema_compiler_mod.contributes,
+            "get",
+            side_effect=lambda mod, key: custom_rules if (mod, key) == ("vscode-support", "json_schemas") else [],
+        ):
+            bindings = self.compiler.sync_all_schemas(self.project_root)
 
+        self.assertEqual(len(bindings), 3)
+        urls = {b["url"]: b["fileMatch"] for b in bindings}
+        self.assertEqual(urls.get("./.vscode/schemas/meta/format-meta.schema.json"), ["**/custom.static.json"])
+        self.assertEqual(urls.get("./.vscode/schemas/contributes/core.schema.json"), ["**/custom.contrib.json"])
+        self.assertEqual(urls.get("./.vscode/schemas/config/custom-config.schema.json"), ["**/custom.config.json"])
+        self.mark_passed()
+
+    def test_semver_mirror_zip_selection_and_uri_snippet_caching(self) -> None:
+        """驗證 `_select_latest_mirror_zip` 四段式 SemVer 排序（`1.0.0.10 > 1.0.0.2`）與 `sync_all_schemas` 內 URI snippets 快取。"""
+        mirror_mod_dir = os.path.join(self.yscb_dir, ".mirror", "semver-mod")
+        os.makedirs(mirror_mod_dir, exist_ok=True)
+        os.makedirs(os.path.join(self.yscb_dir, ".modules", "semver-mod"), exist_ok=True)
+
+        zip_v2 = os.path.join(mirror_mod_dir, "1.0.0.2.zip")
+        with zipfile.ZipFile(zip_v2, "w") as zf:
+            zf.writestr("configurable/_format.json", json.dumps({"old_v2_key": "str = 'v2'"}))
+
+        zip_v10 = os.path.join(mirror_mod_dir, "1.0.0.10.zip")
+        with zipfile.ZipFile(zip_v10, "w") as zf:
+            zf.writestr("configurable/_format.json", json.dumps({"new_v10_key": "str = 'v10'"}))
+
+        zip_non_semver = os.path.join(mirror_mod_dir, "legacy_snapshot.zip")
+        with zipfile.ZipFile(zip_non_semver, "w") as zf:
+            zf.writestr("configurable/_format.json", json.dumps({"legacy_key": "str"}))
+
+        selected_zip = self.compiler._select_latest_mirror_zip(mirror_mod_dir)
+        self.assertIsNotNone(selected_zip)
+        self.assertTrue(str(selected_zip).endswith("1.0.0.10.zip"))
+
+        loaded_fmt = self.compiler._load_module_config_format("semver-mod")
+        self.assertIsNotNone(loaded_fmt)
+        self.assertIn("new_v10_key", loaded_fmt or {})
+        self.assertNotIn("old_v2_key", loaded_fmt or {})
+
+        snippet_call_count = {"n": 0}
+        orig_contributes_get = schema_compiler_mod.contributes.get
+
+        def _counting_contributes_get(mod: str, key: str) -> Any:
+            if mod == "core" and key == "uri_schemes":
+                snippet_call_count["n"] += 1
+            return orig_contributes_get(mod, key)
+
+        with patch.object(schema_compiler_mod.contributes, "get", side_effect=_counting_contributes_get):
+            self.compiler.sync_all_schemas(self.project_root)
+            self.assertEqual(snippet_call_count["n"], 1)
+            self.assertIsNone(self.compiler._cached_uri_snippets)
+        self.mark_passed()
+
+    def test_soft_merge_preserves_user_settings_and_revert_cleans_all(self) -> None:
+        """驗證保留使用者自訂 `extraPaths`、`interpreter` 與 `json.schemas`，且 `revert` 100% 乾淨還原（含移除 `python.analysis.exclude` 與空排除字典）。"""
         user_custom_schema = {"fileMatch": ["my.custom.json"], "url": "./my.schema.json"}
         initial_settings = {
             "editor.tabSize": 2,
@@ -218,141 +366,199 @@ class TestVSCodeSupport(YSCBTestCase):
             "python.analysis.extraPaths": ["./custom_src"],
             "json.schemas": [user_custom_schema],
         }
-        vfs.write_json(settings_path, initial_settings)
+        settings_path = self._write_settings(initial_settings)
 
-        ok = self.projector.sync_vscode_settings(self.project_root, extra_paths=["./extra_mod"], py_tag="py312")
-        self.assertTrue(ok)
+        with patch.object(self.compiler, "_discover_installed_modules", return_value=[]), patch.object(
+            schema_compiler_mod.contributes, "get", return_value={}
+        ):
+            ok = self.projector.sync_vscode_settings(self.project_root, extra_paths=["./extra_mod"], py_tag="py312")
+            self.assertTrue(ok)
 
-        merged = vfs.read_json(settings_path)
-        self.assertEqual(merged.get("editor.tabSize"), 2)
-        self.assertEqual(merged.get("python.defaultInterpreterPath"), "./.venv/bin/python")
-        self.assertIn("./custom_src", merged.get("python.analysis.extraPaths", []))
-        self.assertIn("./extra_mod", merged.get("python.analysis.extraPaths", []))
-        self.assertIn(user_custom_schema, merged.get("json.schemas", []))
-        self.assertTrue(len(merged.get("json.schemas", [])) > 1)
-        self.assertIn("_yscb_managed", merged)
+            merged = self._read_settings()
+            self.assertEqual(merged.get("editor.tabSize"), 2)
+            self.assertEqual(merged.get("python.defaultInterpreterPath"), "./.venv/bin/python")
+            self.assertIn("./custom_src", merged.get("python.analysis.extraPaths", []))
+            self.assertIn("./extra_mod", merged.get("python.analysis.extraPaths", []))
+            self.assertIn(user_custom_schema, merged.get("json.schemas", []))
+            self.assertEqual(len(merged.get("json.schemas", [])), 3)
+            self.assertIn("python.analysis.exclude", merged)
+            self.assertIn("files.watcherExclude", merged)
+            self.assertIn("search.exclude", merged)
+            self.assertIn("_yscb_managed", merged)
 
-        # Zero-Touch 測試：再次同步時不變更 mtime
-        mtime_1 = os.stat(settings_path).st_mtime_ns
-        self.projector.sync_vscode_settings(self.project_root, extra_paths=["./extra_mod"], py_tag="py312")
-        mtime_2 = os.stat(settings_path).st_mtime_ns
-        self.assertEqual(mtime_1, mtime_2)
+            mtime_1 = os.stat(settings_path).st_mtime_ns
+            self.projector.sync_vscode_settings(self.project_root, extra_paths=["./extra_mod"], py_tag="py312")
+            mtime_2 = os.stat(settings_path).st_mtime_ns
+            self.assertEqual(mtime_1, mtime_2)
 
-        # 執行 revert：必須 100% 還原至 initial_settings 且刪除 .vscode/schemas/ 與穩定連結
         rev_ok = self.projector.revert_vscode_settings(self.project_root)
         self.assertTrue(rev_ok)
-        reverted = vfs.read_json(settings_path)
-        self.assertNotIn("_yscb_managed", reverted)
+        reverted = self._read_settings()
+        for removed_key in (
+            "_yscb_managed",
+            "python.analysis.exclude",
+            "files.watcherExclude",
+            "search.exclude",
+            "files.exclude",
+        ):
+            self.assertNotIn(removed_key, reverted)
         self.assertEqual(reverted.get("editor.tabSize"), 2)
         self.assertEqual(reverted.get("python.defaultInterpreterPath"), "./.venv/bin/python")
         self.assertEqual(reverted.get("python.analysis.extraPaths"), ["./custom_src"])
         self.assertEqual(reverted.get("json.schemas"), [user_custom_schema])
-        self.assertFalse(os.path.exists(os.path.join(vscode_dir, "schemas")))
+        self.assertFalse(os.path.exists(os.path.join(self.project_root, ".vscode", "schemas")))
         self.assertFalse(os.path.lexists(self.projector.get_stable_link_path()))
         self.mark_passed()
 
-    def test_et_01_jsonc_settings_preserved_and_hook_lifecycle(self) -> None:
-        """驗證含註解與尾隨逗號之 JSONC settings.json 自動備份 .bak 並平滑軟合併，且不可恢復之損毀語法不覆寫原檔。"""
-        vscode_dir = os.path.join(self.project_root, ".vscode")
-        os.makedirs(vscode_dir, exist_ok=True)
-        settings_path = os.path.join(vscode_dir, "settings.json")
-        bak_path = settings_path + ".bak"
-        raw_jsonc = b'{\n  // user comment\n  "editor.tabSize": 4,\n  "custom.url": "https://example.com//not-a-comment",\n}\n'
-        with open(settings_path, "wb") as f:
-            f.write(raw_jsonc)
+    def test_legacy_venv_extra_paths_and_managed_interpreter_upgrade_cleanup(self) -> None:
+        """驗證舊版 YSCB `.venv/py3XX/.../site-packages` 路徑與託管直譯器於同步及還原時自動升級清理。"""
+        legacy_settings = {
+            "python.defaultInterpreterPath": "./.yscb/.venv/py310/bin/python",
+            "python.analysis.extraPaths": ["./.yscb/.venv/py310/lib/python3.10/site-packages", "./keep_me"],
+        }
+        self._write_settings(legacy_settings)
 
-        self.assertTrue(self.projector.sync_vscode_settings(self.project_root, py_tag="py312"))
+        self.assertTrue(self.projector.sync_vscode_settings(self.project_root, py_tag="py312", compile_schemas=False))
+        synced = self._read_settings()
+        self.assertNotIn("python.defaultInterpreterPath", synced)
+        self.assertEqual(
+            synced.get("python.analysis.extraPaths"),
+            ["./keep_me", "./.yscb/.venv/current-site-packages"],
+        )
+
+        synced["python.defaultInterpreterPath"] = "./.yscb/.venv/py311/bin/python"
+        synced["python.analysis.extraPaths"].append("./.yscb/.venv/py311/lib/python3.11/site-packages")
+        self._write_settings(synced)
+
+        self.assertTrue(self.projector.revert_vscode_settings(self.project_root))
+        reverted = self._read_settings()
+        self.assertNotIn("python.defaultInterpreterPath", reverted)
+        self.assertEqual(reverted.get("python.analysis.extraPaths"), ["./keep_me"])
+        self.mark_passed()
+
+    def test_jsonc_comments_trailing_commas_and_non_dict_guards(self) -> None:
+        """驗證多行區塊註解、連續尾隨逗號、損毀語法備份與非 dict 設定檔之安全防護。"""
+        raw_multiline_jsonc = (
+            "{\n"
+            "  /* multi-line\n"
+            "     block comment */\n"
+            '  "editor.tabSize": 4,\n'
+            '  "custom.url": "https://example.com//not-a-comment/*still-string*/",\n'
+            '  "arr": [1, 2,, ],\n'
+            "}\n"
+        )
+        parsed_stripped = json.loads(strip_jsonc(raw_multiline_jsonc))
+        self.assertEqual(parsed_stripped["editor.tabSize"], 4)
+        self.assertEqual(parsed_stripped["arr"], [1, 2])
+
+        raw_bytes = raw_multiline_jsonc.encode("utf-8")
+        settings_path = self._write_settings(raw_bytes)
+        bak_path = settings_path + ".bak"
+
+        self.assertTrue(self.projector.sync_vscode_settings(self.project_root, py_tag="py312", compile_schemas=False))
         self.assertTrue(os.path.isfile(bak_path))
         with open(bak_path, "rb") as f:
-            self.assertEqual(f.read(), raw_jsonc)
-        merged = vfs.read_json(settings_path)
+            self.assertEqual(f.read(), raw_bytes)
+        merged = self._read_settings()
         self.assertEqual(merged.get("editor.tabSize"), 4)
-        self.assertEqual(merged.get("custom.url"), "https://example.com//not-a-comment")
+        self.assertEqual(merged.get("custom.url"), "https://example.com//not-a-comment/*still-string*/")
         self.assertIn("_yscb_managed", merged)
 
-        # 不可恢復之損毀語法：備份至 .bak 且回傳 False 不覆寫原檔
         corrupt_bytes = b'{\n  "broken": [1, 2\n'
-        with open(settings_path, "wb") as f:
-            f.write(corrupt_bytes)
-        self.assertFalse(self.projector.sync_vscode_settings(self.project_root, py_tag="py312"))
+        self._write_settings(corrupt_bytes)
+        stderr_buf = io.StringIO()
+        with redirect_stderr(stderr_buf):
+            self.assertFalse(self.projector.sync_vscode_settings(self.project_root, py_tag="py312"))
+        self.assertIn("unrecoverable JSON syntax errors", stderr_buf.getvalue())
         with open(settings_path, "rb") as f:
             self.assertEqual(f.read(), corrupt_bytes)
         with open(bak_path, "rb") as f:
             self.assertEqual(f.read(), corrupt_bytes)
 
-        # 測試 hook.core.py 之 on_remove 僅在移除目標含 vscode-support 時觸發 revert
-        import importlib.util
+        list_json_bytes = b'["not", "a", "dict"]\n'
+        self._write_settings(list_json_bytes)
+        stderr_list_buf = io.StringIO()
+        with redirect_stderr(stderr_list_buf):
+            self.assertFalse(self.projector.sync_vscode_settings(self.project_root, py_tag="py312"))
+        self.assertEqual(stderr_list_buf.getvalue(), "")
+        self.assertFalse(self.projector.revert_vscode_settings(self.project_root))
+        with open(settings_path, "rb") as f:
+            self.assertEqual(f.read(), list_json_bytes)
 
-        hook_path = os.path.join(str(_pkg_root), "scripts", "hook.core.py")
-        spec = importlib.util.spec_from_file_location("_test_vsc_hook", hook_path)
-        self.assertIsNotNone(spec)
-        hook_mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-        spec.loader.exec_module(hook_mod)  # type: ignore[union-attr]
-
-        # 移除其他模組時應回傳 False 不觸發 revert
-        ctx_other = ExecutionContext("core", "remove", ["other-module"])
-        self.assertFalse(hook_mod.on_remove(ctx_other))
+        list_jsonc_bytes = b'// comment on non-dict jsonc\n["not", "a", "dict",]\n'
+        self._write_settings(list_jsonc_bytes)
+        stderr_jsonc_list_buf = io.StringIO()
+        with redirect_stderr(stderr_jsonc_list_buf):
+            self.assertFalse(self.projector.sync_vscode_settings(self.project_root, py_tag="py312"))
+        self.assertEqual(stderr_jsonc_list_buf.getvalue(), "")
+        with open(bak_path, "rb") as f:
+            self.assertEqual(f.read(), corrupt_bytes)
         self.mark_passed()
 
-    def test_ft_06_cli_status_sync_revert_commands(self) -> None:
-        """驗證 scripts/cli.py 之 status / sync / revert (含 --json) 入口與合約。"""
-        import importlib.util
-        import io
-        from contextlib import redirect_stdout
+    def test_status_jsonc_and_broken_symlink_detection(self) -> None:
+        """驗證 `get_status` 支援讀取 JSONC `settings.json` 並確定性檢測損毀之穩定連結。"""
+        jsonc_managed = (
+            '{\n  // JSONC managed settings\n  "_yscb_managed": {\n'
+            '    "extraPaths": ["./.yscb/source/core"],\n'
+            '    "jsonSchemas": ["./.vscode/schemas/meta/manifest.schema.json"],\n'
+            "  },\n}\n"
+        )
+        self._write_settings(jsonc_managed)
+        st_info = self.projector.get_status(self.project_root)
+        self.assertTrue(st_info["vscode_dir_exists"])
+        self.assertTrue(st_info["settings_managed"])
+        self.assertEqual(st_info["managed_extra_paths"], ["./.yscb/source/core"])
+        self.assertEqual(st_info["managed_schema_count"], 1)
 
-        cli_path = os.path.join(str(_pkg_root), "scripts", "cli.py")
-        spec = importlib.util.spec_from_file_location("_test_vsc_cli", cli_path)
-        self.assertIsNotNone(spec)
-        cli_mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-        spec.loader.exec_module(cli_mod)  # type: ignore[union-attr]
+        link_path = self.projector.get_stable_link_path()
+        os.makedirs(os.path.dirname(link_path), exist_ok=True)
+        if os.path.lexists(link_path):
+            self.projector.remove_stable_site_packages_link()
+        non_existent_target = os.path.join(self.yscb_dir, ".venv", "missing_target_dir")
 
-        with patch("core.uri.resolve", return_value=self.project_root), patch(
-            "vscode_support.projector.SettingsProjector",
-            side_effect=lambda *a, **kw: SettingsProjector(yscb_dir=self.yscb_dir),
-        ):
-            buf_sync = io.StringIO()
-            with redirect_stdout(buf_sync):
-                rc_sync = cli_mod.sync(["--json"])
-            self.assertEqual(rc_sync, 0)
-            sync_payload = json.loads(buf_sync.getvalue())
-            self.assertTrue(sync_payload.get("synced"))
-            self.assertTrue(sync_payload.get("settings_managed"))
+        symlink_created = False
+        try:
+            os.symlink(non_existent_target, link_path)
+            symlink_created = True
+        except (OSError, NotImplementedError):
+            symlink_created = False
 
-            buf_status = io.StringIO()
-            with redirect_stdout(buf_status):
-                rc_status = cli_mod.status(["--json"])
-            self.assertEqual(rc_status, 0)
-            status_payload = json.loads(buf_status.getvalue())
-            self.assertTrue(status_payload.get("vscode_dir_exists"))
-            self.assertTrue(status_payload.get("managed_schema_count", 0) >= 2)
-
-            buf_rev = io.StringIO()
-            with redirect_stdout(buf_rev):
-                rc_rev = cli_mod.revert(["--json"])
-            self.assertEqual(rc_rev, 0)
-            rev_payload = json.loads(buf_rev.getvalue())
-            self.assertTrue(rev_payload.get("reverted"))
-
+        try:
+            if symlink_created:
+                st_broken = self.projector.get_status(self.project_root)
+            else:
+                orig_lexists, orig_isdir = os.path.lexists, os.path.isdir
+                with patch(
+                    "os.path.lexists", side_effect=lambda p: True if p == link_path else orig_lexists(p)
+                ), patch(
+                    "os.path.isdir",
+                    side_effect=lambda p: False if p in (link_path, non_existent_target) else orig_isdir(p),
+                ):
+                    st_broken = self.projector.get_status(self.project_root)
+            self.assertFalse(st_broken["stable_link_active"])
+            self.assertTrue(st_broken["vscode_dir_exists"])
+        finally:
+            if os.path.lexists(link_path):
+                self.projector.remove_stable_site_packages_link()
         self.mark_passed()
 
-    def test_ft_07_module_and_source_extra_paths_projection_and_revert(self) -> None:
-        """驗證自動投影已安裝模組 (.modules/<mod>) 與源碼 (source/<mod>) 至 extraPaths，動態調整 analysisExclude 並支援 100% 乾淨還原。"""
+    def test_module_and_source_extra_paths_projection_and_revert(self) -> None:
+        """驗證自動投影 `.modules/<mod>` 與 `source/<mod>` 至 `extraPaths`、動態調整 `analysisExclude` 並乾淨還原。"""
         mods_dir = os.path.join(self.yscb_dir, ".modules")
         src_dir = os.path.join(self.yscb_dir, "source")
-        os.makedirs(os.path.join(mods_dir, "core"), exist_ok=True)
-        os.makedirs(os.path.join(mods_dir, "ast"), exist_ok=True)
-        os.makedirs(os.path.join(mods_dir, "file-space"), exist_ok=True)
-        os.makedirs(os.path.join(src_dir, "ast"), exist_ok=True)
-        os.makedirs(os.path.join(src_dir, "knowledge-db"), exist_ok=True)
+        for rel_d in (
+            os.path.join(mods_dir, "core"),
+            os.path.join(mods_dir, "ast"),
+            os.path.join(mods_dir, "file-space"),
+            os.path.join(src_dir, "ast"),
+            os.path.join(src_dir, "knowledge-db"),
+        ):
+            os.makedirs(rel_d, exist_ok=True)
 
-        vscode_dir = os.path.join(self.project_root, ".vscode")
-        os.makedirs(vscode_dir, exist_ok=True)
-        settings_path = os.path.join(vscode_dir, "settings.json")
-        vfs.write_json(settings_path, {"python.analysis.extraPaths": ["./user_custom"]})
+        self._write_settings({"python.analysis.extraPaths": ["./user_custom"]})
 
-        # Case 1: 同時包含 .modules/<mod> 與 source/<mod> 時，同名模組優先取 source/<mod>，且因含 .modules/ 故省略 **/.modules/** 排除
         self.assertTrue(self.projector.sync_vscode_settings(self.project_root, py_tag="py312"))
-        merged = vfs.read_json(settings_path)
+        merged = self._read_settings()
         self.assertEqual(
             merged.get("python.analysis.extraPaths"),
             [
@@ -368,11 +574,10 @@ class TestVSCodeSupport(YSCBTestCase):
         self.assertIn("**/.config.local/**", merged.get("python.analysis.exclude", []))
         self.assertIn("**/.storage.local/**", merged.get("python.analysis.exclude", []))
 
-        # Case 2: 若所有模組皆有對應 source/<mod>，extraPaths 全部指向 source/<mod> 且恢復 **/.modules/** 排除
         os.makedirs(os.path.join(src_dir, "core"), exist_ok=True)
         os.makedirs(os.path.join(src_dir, "file-space"), exist_ok=True)
         self.assertTrue(self.projector.sync_vscode_settings(self.project_root, py_tag="py312"))
-        merged_all_src = vfs.read_json(settings_path)
+        merged_all_src = self._read_settings()
         self.assertEqual(
             merged_all_src.get("python.analysis.extraPaths"),
             [
@@ -386,154 +591,332 @@ class TestVSCodeSupport(YSCBTestCase):
         )
         self.assertIn("**/.modules/**", merged_all_src.get("python.analysis.exclude", []))
 
-        # Case 3: revert_vscode_settings 必須 100% 乾淨還原為僅保留 ./user_custom
         self.assertTrue(self.projector.revert_vscode_settings(self.project_root))
-        reverted = vfs.read_json(settings_path)
+        reverted = self._read_settings()
         self.assertEqual(reverted.get("python.analysis.extraPaths"), ["./user_custom"])
+        self.assertNotIn("python.analysis.exclude", reverted)
         self.assertNotIn("_yscb_managed", reverted)
         self.mark_passed()
 
-    def test_ft_08_audit_remediation_hook_alias_semver_mirror_and_clean_status(
-        self,
-    ) -> None:
-        """
-        驗證 vscode-support 深度審計收斂項目：
-        1. hook.core.py on_remove 於 ctx=None 或 args=None 時安全回傳 False，且支援別名 'vsc' 觸發還原。
-        2. SchemaCompiler._select_latest_mirror_zip 採用四段式 SemVer 排序（1.0.0.10 > 1.0.0.2），並於 sync_all_schemas 內快取 URI snippets。
-        3. revert_vscode_settings 清空受管 exclude pattern 後若節點為空字典則連同頂層空鍵一併移除。
-        4. get_status 針對損毀之穩定連結回報 stable_link_active=False，且支援讀取含註解與尾隨逗號之 JSONC settings.json。
-        """
-        import importlib.util
-        import zipfile
+    def test_revert_side_effects_deferred_until_valid_managed_settings(self) -> None:
+        """驗證 `revert_vscode_settings` 先確認 `_yscb_managed` 存在後才刪除 `schemas/` 與穩定連結。"""
+        schemas_dir = os.path.join(self.project_root, ".vscode", "schemas")
+        os.makedirs(schemas_dir, exist_ok=True)
+        dummy_schema = os.path.join(schemas_dir, "user_kept.schema.json")
+        vfs.write_json(dummy_schema, {"type": "object"})
+        self.projector.ensure_stable_site_packages_link(py_tag="py312")
 
-        # 1. hook.core.py on_remove safety when ctx is None or args is None, and alias 'vsc' support
-        hook_path = os.path.join(str(_pkg_root), "scripts", "hook.core.py")
-        spec = importlib.util.spec_from_file_location("_test_vsc_hook_audit", hook_path)
-        self.assertIsNotNone(spec)
-        hook_mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-        spec.loader.exec_module(hook_mod)  # type: ignore[union-attr]
+        # 1. settings.json 不存在時，不應刪除 schemas_dir
+        self.assertFalse(self.projector.revert_vscode_settings(self.project_root))
+        self.assertTrue(os.path.isfile(dummy_schema))
 
-        self.assertFalse(hook_mod.on_remove(None))
-        ctx_none_args = ExecutionContext("core", "remove", None)  # type: ignore[arg-type]
-        self.assertFalse(hook_mod.on_remove(ctx_none_args))
-        ctx_other_mod = ExecutionContext("core", "remove", ["knowledge-db"])
-        self.assertFalse(hook_mod.on_remove(ctx_other_mod))
+        # 2. settings.json 語法損毀時，不應刪除 schemas_dir
+        self._write_settings(b'{"corrupt": [1, 2')
+        self.assertFalse(self.projector.revert_vscode_settings(self.project_root))
+        self.assertTrue(os.path.isfile(dummy_schema))
 
-        orig_resolve = hook_mod.uri.resolve
-        orig_revert = SettingsProjector.revert_vscode_settings
-        hook_revert_calls: list[str] = []
+        # 3. settings.json 合法但無 _yscb_managed 時，不應刪除 schemas_dir
+        self._write_settings({"editor.tabSize": 4})
+        self.assertFalse(self.projector.revert_vscode_settings(self.project_root))
+        self.assertTrue(os.path.isfile(dummy_schema))
 
-        def _stub_revert(proj_self, proj_root: str) -> bool:
-            hook_revert_calls.append(proj_root)
-            return True
+        # 4. settings.json 含 _yscb_managed 時，正常執行清理
+        self._write_settings({"editor.tabSize": 4, "_yscb_managed": {"extraPaths": []}})
+        self.assertTrue(self.projector.revert_vscode_settings(self.project_root))
+        self.assertFalse(os.path.exists(schemas_dir))
+        self.assertFalse(os.path.lexists(self.projector.get_stable_link_path()))
+        self.mark_passed()
 
-        hook_mod.uri.resolve = lambda u, interactive=False: self.project_root if u == "project://" else orig_resolve(u, interactive=interactive)
-        SettingsProjector.revert_vscode_settings = _stub_revert  # type: ignore[method-assign]
-        try:
-            ctx_vsc_alias = ExecutionContext("core", "remove", ["vsc"])
-            self.assertTrue(hook_mod.on_remove(ctx_vsc_alias))
-            self.assertEqual(hook_revert_calls, [self.project_root])
-        finally:
-            hook_mod.uri.resolve = orig_resolve
-            SettingsProjector.revert_vscode_settings = orig_revert  # type: ignore[method-assign]
-
-        # 2. SemVer mirror zip selection (1.0.0.10.zip > 1.0.0.2.zip) and URI snippet caching in sync_all_schemas
-        mirror_mod_dir = os.path.join(self.yscb_dir, ".mirror", "semver-mod")
-        os.makedirs(mirror_mod_dir, exist_ok=True)
-        os.makedirs(os.path.join(self.yscb_dir, ".modules", "semver-mod"), exist_ok=True)
-
-        zip_v2 = os.path.join(mirror_mod_dir, "1.0.0.2.zip")
-        with zipfile.ZipFile(zip_v2, "w") as zf:
-            zf.writestr(
-                "configurable/_format.json",
-                json.dumps({"old_v2_key": "str = 'v2'"}),
-            )
-
-        zip_v10 = os.path.join(mirror_mod_dir, "1.0.0.10.zip")
-        with zipfile.ZipFile(zip_v10, "w") as zf:
-            zf.writestr(
-                "configurable/_format.json",
-                json.dumps({"new_v10_key": "str = 'v10'"}),
-            )
-
-        compiler = SchemaCompiler(yscb_dir=self.yscb_dir)
-        selected_zip = compiler._select_latest_mirror_zip(mirror_mod_dir)
-        self.assertIsNotNone(selected_zip)
-        self.assertTrue(str(selected_zip).endswith("1.0.0.10.zip"))
-
-        loaded_fmt = compiler._load_module_config_format("semver-mod")
-        self.assertIsNotNone(loaded_fmt)
-        self.assertIn("new_v10_key", loaded_fmt or {})
-        self.assertNotIn("old_v2_key", loaded_fmt or {})
-
-        snippet_call_count = {"n": 0}
-        orig_contributes_get = schema_compiler_mod.contributes.get
-
-        def _counting_contributes_get(mod: str, key: str):
-            if mod == "core" and key == "uri_schemes":
-                snippet_call_count["n"] += 1
-            return orig_contributes_get(mod, key)
-
-        schema_compiler_mod.contributes.get = _counting_contributes_get  # type: ignore[assignment]
-        try:
-            compiler.sync_all_schemas(self.project_root)
-            self.assertEqual(snippet_call_count["n"], 1)
-            self.assertIsNone(compiler._cached_uri_snippets)
-        finally:
-            schema_compiler_mod.contributes.get = orig_contributes_get  # type: ignore[assignment]
-
-        # 3. revert_vscode_settings cleans up empty exclude dictionaries
-        vscode_dir = os.path.join(self.project_root, ".vscode")
-        os.makedirs(vscode_dir, exist_ok=True)
-        settings_path = os.path.join(vscode_dir, "settings.json")
-        if os.path.exists(settings_path):
-            os.remove(settings_path)
-
-        self.assertTrue(
-            self.projector.sync_vscode_settings(self.project_root, py_tag="py312")
+    def test_malformed_yscb_managed_subfields_defensive_fallback(self) -> None:
+        """驗證 `_yscb_managed` 子欄位被改為非預期型別（int/None/str）時不拋出 `TypeError` 並安全回退。"""
+        self._write_settings(
+            {
+                "editor.tabSize": 2,
+                "_yscb_managed": {
+                    "extraPaths": 123,
+                    "excludes": None,
+                    "analysisExclude": 456,
+                    "jsonSchemas": "not-a-list",
+                },
+            }
         )
-        synced_data = vfs.read_json(settings_path)
-        self.assertIn("files.watcherExclude", synced_data)
-        self.assertIn("search.exclude", synced_data)
+        status_info = self.projector.get_status(self.project_root)
+        self.assertTrue(status_info["settings_managed"])
+        self.assertEqual(status_info["managed_extra_paths"], [])
+        self.assertEqual(status_info["managed_schemas"], [])
+
+        self.assertTrue(self.projector.sync_vscode_settings(self.project_root, py_tag="py312", compile_schemas=False))
+        repaired = self._read_settings()
+        self.assertIsInstance(repaired["_yscb_managed"]["extraPaths"], list)
+        self.assertIsInstance(repaired["_yscb_managed"]["excludes"], dict)
+        self.assertIsInstance(repaired["_yscb_managed"]["analysisExclude"], list)
+
+        repaired["_yscb_managed"] = {
+            "extraPaths": None,
+            "excludes": 789,
+            "analysisExclude": "invalid",
+            "jsonSchemas": 0,
+        }
+        self._write_settings(repaired)
+        self.assertTrue(self.projector.revert_vscode_settings(self.project_root))
+        after_revert = self._read_settings()
+        self.assertNotIn("_yscb_managed", after_revert)
+        self.mark_passed()
+
+    def test_exclude_keys_diff_cleanup_and_user_analysis_exclude_preservation(self) -> None:
+        """驗證舊版 `excludes` 差集清理，以及使用者預先配置之 `python.analysis.exclude` 於同步與還原後完整保留。"""
+        self._write_settings(
+            {
+                "python.analysis.exclude": ["**/user_vendor/**", "**/.venv/**"],
+            }
+        )
+        self.assertTrue(self.projector.sync_vscode_settings(self.project_root, py_tag="py312", compile_schemas=False))
+        synced_1 = self._read_settings()
+        self.assertIn("**/user_vendor/**", synced_1["python.analysis.exclude"])
+        self.assertIn("**/.venv/**", synced_1["python.analysis.exclude"])
+        self.assertNotIn("**/user_vendor/**", synced_1["_yscb_managed"]["analysisExclude"])
+        self.assertNotIn("**/.venv/**", synced_1["_yscb_managed"]["analysisExclude"])
+
+        # 模擬舊版殘留之 exclude section 與舊 pattern
+        synced_1["legacy.exclude"] = {"**/.old_venv/**": True}
+        synced_1["files.exclude"]["**/.legacy_venv"] = True
+        synced_1["_yscb_managed"]["excludes"]["legacy.exclude"] = "**/.old_venv/**"
+        synced_1["_yscb_managed"]["excludes"]["files.exclude"] = "**/.legacy_venv"
+        self._write_settings(synced_1)
+
+        self.assertTrue(self.projector.sync_vscode_settings(self.project_root, py_tag="py312", compile_schemas=False))
+        synced_2 = self._read_settings()
+        self.assertNotIn("legacy.exclude", synced_2)
+        self.assertNotIn("legacy.exclude", synced_2["_yscb_managed"]["excludes"])
+        self.assertNotIn("**/.legacy_venv", synced_2.get("files.exclude", {}))
+        self.assertEqual(synced_2["_yscb_managed"]["excludes"].get("files.exclude"), "**/.venv")
+        self.assertNotIn("**/.venv/**", synced_2["_yscb_managed"]["analysisExclude"])
 
         self.assertTrue(self.projector.revert_vscode_settings(self.project_root))
-        reverted_clean = vfs.read_json(settings_path)
-        self.assertNotIn("files.watcherExclude", reverted_clean)
-        self.assertNotIn("search.exclude", reverted_clean)
-        self.assertEqual(reverted_clean, {})
+        reverted = self._read_settings()
+        self.assertEqual(reverted.get("python.analysis.exclude"), ["**/user_vendor/**", "**/.venv/**"])
+        self.mark_passed()
 
-        # 4. get_status with JSONC settings.json and broken symlink detection
-        jsonc_managed = (
-            '{\n  // JSONC managed settings\n  "_yscb_managed": {\n'
-            '    "extraPaths": ["./.yscb/source/core"],\n'
-            '    "jsonSchemas": ["./.vscode/schemas/meta/manifest.schema.json"],\n'
-            "  },\n}\n"
+    def test_schema_compiler_leaf_key_optional_description_and_local_modules_discovery(self) -> None:
+        """驗證子鍵名路徑推導隔離、省略 `description` 之規則字典識別，以及 `self.yscb_dir/.modules` 本地模組探測與 VFS fallback。"""
+        inferred = self.compiler._infer_value_schema(
+            {
+                "paths": {
+                    "timeout": "30s",
+                    "enabled_name": "default_profile",
+                    "output_dir": "build_out",
+                }
+            }
         )
-        vfs.write_text(settings_path, jsonc_managed, encoding="utf-8")
-        st_info = self.projector.get_status(self.project_root)
-        self.assertTrue(st_info["settings_managed"])
-        self.assertEqual(st_info["managed_extra_paths"], ["./.yscb/source/core"])
-        self.assertEqual(st_info["managed_schema_count"], 1)
+        paths_props = inferred["properties"]["paths"]["properties"]
+        self.assertNotIn("defaultSnippets", paths_props["timeout"])
+        self.assertNotIn("defaultSnippets", paths_props["enabled_name"])
+        self.assertIn("defaultSnippets", paths_props["output_dir"])
 
-        # Broken symlink check
-        link_path = self.projector.get_stable_link_path()
-        os.makedirs(os.path.dirname(link_path), exist_ok=True)
-        if os.path.lexists(link_path):
-            self.projector.remove_stable_site_packages_link()
-        non_existent_target = os.path.join(self.yscb_dir, ".venv", "missing_target_dir")
-        try:
-            os.symlink(non_existent_target, link_path)
-            st_broken = self.projector.get_status(self.project_root)
-            self.assertFalse(st_broken["stable_link_active"])
-        except OSError:
-            pass
-        finally:
-            if os.path.lexists(link_path):
-                self.projector.remove_stable_site_packages_link()
+        cfg_schema = self.compiler.compile_config_schema(
+            "rule-mod",
+            fmt_data={
+                "_types": {"TargetSpec": {"host": "str!"}},
+                "endpoint": {"format": "$TargetSpec"},
+                "mode": {"format": "str!", "merge": "replace"},
+                "nested_literal": {"format": "str!", "extra_count": "int? = 1"},
+            },
+        )
+        self.assertEqual(cfg_schema["properties"]["endpoint"], {"$ref": "#/$defs/TargetSpec"})
+        self.assertEqual(cfg_schema["properties"]["mode"], {"type": "string"})
+        self.assertIn("mode", cfg_schema.get("required", []))
+        self.assertEqual(cfg_schema["properties"]["nested_literal"]["type"], "object")
+        self.assertIn("format", cfg_schema["properties"]["nested_literal"]["properties"])
+        self.assertIn("extra_count", cfg_schema["properties"]["nested_literal"]["properties"])
 
+        # 於 self.yscb_dir/.modules 建立本地模組並驗證不依賴全域 module:// 即可探測與編譯
+        local_mod_dir = os.path.join(self.yscb_dir, ".modules", "local-mod")
+        os.makedirs(os.path.join(local_mod_dir, "contributes"), exist_ok=True)
+        os.makedirs(os.path.join(local_mod_dir, "configurable"), exist_ok=True)
+        vfs.write_json(
+            os.path.join(local_mod_dir, "contributes", "_format.json"),
+            {"hooks": {"format": {"*": "str!"}}},
+        )
+        vfs.write_json(
+            os.path.join(local_mod_dir, "configurable", "_format.json"),
+            {"api_token": {"format": "str!"}},
+        )
+
+        orig_vfs_exists = vfs.exists
+        with patch.object(
+            vfs,
+            "exists",
+            side_effect=lambda p: False if str(p).startswith("module://") else orig_vfs_exists(p),
+        ), patch.object(schema_compiler_mod.contributes, "get", return_value={}):
+            discovered = self.compiler._discover_installed_modules()
+            self.assertIn("local-mod", discovered)
+            loaded_cfg_fmt = self.compiler._load_module_config_format("local-mod")
+            self.assertEqual(loaded_cfg_fmt, {"api_token": {"format": "str!"}})
+            bindings = self.compiler.sync_all_schemas(self.project_root)
+
+        urls = {b["url"] for b in bindings}
+        self.assertIn("./.vscode/schemas/contributes/local-mod.schema.json", urls)
+        self.assertIn("./.vscode/schemas/config/local-mod.schema.json", urls)
+        self.mark_passed()
+
+    def test_cli_commands_json_and_human_modes_and_normalize_bags(self) -> None:
+        """驗證 `scripts/cli.py` 之 `_normalize_bags`、`status`、`sync`、`revert`（JSON 與人類可讀模式）。"""
+        cli_mod = self._load_script_module("cli.py", "_test_vsc_cli")
+
+        existing_bags = CmdBags(raw_cmd="sync", command="sync", args=["a"], options={"json": CmdOption("json", True)})
+        self.assertIs(cli_mod._normalize_bags(existing_bags, "sync"), existing_bags)
+
+        parsed_bags = cli_mod._normalize_bags(["pos_arg", "--format=pretty", "--json", "-v"], "status")
+        self.assertEqual(parsed_bags.args, ["pos_arg"])
+        self.assertEqual(parsed_bags.options["format"].params, "pretty")
+        self.assertTrue(parsed_bags.options["json"].params)
+        self.assertTrue(parsed_bags.options["v"].params)
+
+        fallback_bags = cli_mod._normalize_bags(None, "revert")
+        self.assertEqual(fallback_bags.command, "revert")
+        self.assertEqual(fallback_bags.args, [])
+
+        with patch("core.uri.resolve", return_value=self.project_root), patch(
+            "vscode_support.projector.SettingsProjector",
+            side_effect=lambda *a, **kw: SettingsProjector(yscb_dir=self.yscb_dir),
+        ), patch.object(SchemaCompiler, "_discover_installed_modules", return_value=[]), patch.object(
+            schema_compiler_mod.contributes, "get", return_value={}
+        ):
+            buf_sync = io.StringIO()
+            with redirect_stdout(buf_sync):
+                self.assertEqual(cli_mod.sync(["--json"]), 0)
+            sync_payload = json.loads(buf_sync.getvalue())
+            self.assertTrue(sync_payload.get("synced"))
+            self.assertTrue(sync_payload.get("settings_managed"))
+
+            buf_status = io.StringIO()
+            with redirect_stdout(buf_status):
+                self.assertEqual(cli_mod.status(["--json"]), 0)
+            status_payload = json.loads(buf_status.getvalue())
+            self.assertTrue(status_payload.get("vscode_dir_exists"))
+            self.assertEqual(status_payload.get("managed_schema_count"), 2)
+
+            buf_rev = io.StringIO()
+            with redirect_stdout(buf_rev):
+                self.assertEqual(cli_mod.revert(["--json"]), 0)
+            self.assertTrue(json.loads(buf_rev.getvalue()).get("reverted"))
+
+            buf_human_sync = io.StringIO()
+            with redirect_stdout(buf_human_sync):
+                self.assertEqual(cli_mod.sync([]), 0)
+            self.assertIn("Synced .vscode/settings.json", buf_human_sync.getvalue())
+
+            buf_human_status = io.StringIO()
+            with redirect_stdout(buf_human_status):
+                self.assertEqual(cli_mod.status([]), 0)
+            self.assertIn("YS-Codebase VS Code Workspace Support Status", buf_human_status.getvalue())
+            self.assertIn("Managed Schemas     : 2 schema(s)", buf_human_status.getvalue())
+
+            buf_human_rev = io.StringIO()
+            with redirect_stdout(buf_human_rev):
+                self.assertEqual(cli_mod.revert([]), 0)
+            self.assertIn("Reverted YSCB managed VS Code settings", buf_human_rev.getvalue())
+
+            buf_human_rev_noop = io.StringIO()
+            with redirect_stdout(buf_human_rev_noop):
+                self.assertEqual(cli_mod.revert([]), 0)
+            self.assertIn("No active _yscb_managed settings found to revert", buf_human_rev_noop.getvalue())
+
+            # Verify CLI revert returns exit code 1 when settings.json has unrecoverable syntax error or write failure
+            settings_path = os.path.join(self.project_root, ".vscode", "settings.json")
+            vfs.write_text(settings_path, "{broken_json_for_revert", encoding="utf-8", atomic=True)
+            buf_rev_err_json = io.StringIO()
+            with redirect_stdout(buf_rev_err_json):
+                self.assertEqual(cli_mod.revert(["--json"]), 1)
+            err_payload = json.loads(buf_rev_err_json.getvalue())
+            self.assertFalse(err_payload.get("reverted"))
+            self.assertIn("Failed to read or parse", err_payload.get("error", ""))
+
+            buf_rev_err_human = io.StringIO()
+            with redirect_stderr(buf_rev_err_human):
+                self.assertEqual(cli_mod.revert([]), 1)
+            self.assertIn("Failed to read or parse", buf_rev_err_human.getvalue())
+            self._write_settings({"editor.tabSize": 4})
+
+        missing_root = os.path.join(self.temp_dir, "non_existent_proj")
+        with patch("core.uri.resolve", return_value=missing_root), patch(
+            "vscode_support.projector.SettingsProjector",
+            side_effect=lambda *a, **kw: SettingsProjector(yscb_dir=self.yscb_dir),
+        ):
+            buf_err = io.StringIO()
+            with redirect_stderr(buf_err):
+                self.assertEqual(cli_mod.sync([]), 1)
+            self.assertIn("Failed or skipped syncing VS Code settings", buf_err.getvalue())
+        self.mark_passed()
+
+    def test_core_hook_real_lifecycle_and_error_guards(self) -> None:
+        """真實執行 `hook.core.py` 之 `on_env_synced`、`on_reload` 與 `on_remove`（含別名 `vsc`）及空路徑/例外防護。"""
+        hook_mod = self._load_script_module("hook.core.py", "_test_vsc_hook_core")
+
+        self.assertFalse(hook_mod.on_remove(None))
+        self.assertFalse(hook_mod.on_remove(ExecutionContext("core", "remove", None)))  # type: ignore[arg-type]
+        self.assertFalse(hook_mod.on_remove(ExecutionContext("core", "remove", ["other-module"])))
+
+        settings_path = os.path.join(self.project_root, ".vscode", "settings.json")
+        schemas_dir = os.path.join(self.project_root, ".vscode", "schemas")
+        orig_resolve = hook_mod.uri.resolve
+
+        with patch.object(
+            hook_mod.uri,
+            "resolve",
+            side_effect=lambda u, interactive=False: self.project_root
+            if u == "project://"
+            else orig_resolve(u, interactive=interactive),
+        ), patch("core.uri.resolve_yscb_root", return_value=self.yscb_dir), patch.object(
+            SchemaCompiler, "_discover_installed_modules", return_value=[]
+        ), patch.object(
+            schema_compiler_mod.contributes, "get", return_value={}
+        ):
+            self.assertTrue(hook_mod.on_env_synced())
+            self.assertTrue(os.path.isfile(settings_path))
+            self.assertTrue(os.path.isdir(schemas_dir))
+            self.assertIn("_yscb_managed", self._read_settings())
+
+            self.assertTrue(hook_mod.on_remove(ExecutionContext("core", "remove", ["vsc"])))
+            self.assertNotIn("_yscb_managed", self._read_settings())
+            self.assertFalse(os.path.exists(schemas_dir))
+
+            self.assertTrue(hook_mod.on_reload())
+            self.assertTrue(os.path.isdir(schemas_dir))
+            self.assertIn("_yscb_managed", self._read_settings())
+
+            self.assertTrue(hook_mod.on_remove(ExecutionContext("core", "remove", ["vscode-support"])))
+            self.assertNotIn("_yscb_managed", self._read_settings())
+            self.assertFalse(os.path.exists(schemas_dir))
+
+        with patch.object(hook_mod.uri, "resolve", return_value=""):
+            self.assertFalse(hook_mod.on_env_synced())
+            self.assertFalse(hook_mod.on_remove(ExecutionContext("core", "remove", ["vsc"])))
+
+        with patch.object(hook_mod.uri, "resolve", side_effect=RuntimeError("simulated resolve failure")):
+            stderr_sync = io.StringIO()
+            with redirect_stderr(stderr_sync):
+                self.assertFalse(hook_mod.on_env_synced())
+            self.assertIn("Warning: Failed to sync VS Code workspace", stderr_sync.getvalue())
+
+            stderr_rem = io.StringIO()
+            with redirect_stderr(stderr_rem):
+                self.assertFalse(hook_mod.on_remove(ExecutionContext("core", "remove", ["vscode-support"])))
+            self.assertIn("Warning: Failed during on_remove revert", stderr_rem.getvalue())
+
+        self.mark_passed()
+
+    def test_dev_hook_sandbox_setup_and_teardown_logging(self) -> None:
+        """驗證 `scripts/hook.dev.py` 之 `on_test_setup` 與 `on_test_teardown` 除錯日誌記錄。"""
+        dev_hook = self._load_script_module("hook.dev.py", "_test_vsc_hook_dev")
+        with self.assertLogs("vscode-support.hook.dev", level="DEBUG") as cm:
+            dev_hook.on_test_setup(context={"suite": "unit"})
+            dev_hook.on_test_teardown(context={"suite": "unit"})
+        joined_logs = "\n".join(cm.output)
+        self.assertIn("[hook.dev] Setup vscode-support sandbox:", joined_logs)
+        self.assertIn("[hook.dev] Teardown vscode-support sandbox:", joined_logs)
         self.mark_passed()
 
 
 if __name__ == "__main__":
     unittest.main()
-

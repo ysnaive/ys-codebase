@@ -66,23 +66,23 @@ def resolve_threads(explicit_threads: Optional[Union[int, str]] = None) -> int:
         except Exception:
             return auto_threads
 
+    if isinstance(target, bool):
+        return auto_threads
+
     if isinstance(target, str):
         val_str = target.strip().lower()
         if val_str in ("auto", "0", ""):
             return auto_threads
         try:
-            val = int(val_str)
-            if val > 0:
-                return max(1, min(val, cpu_cnt))
-            return auto_threads
+            val = int(float(val_str))
         except ValueError:
             return auto_threads
     elif isinstance(target, (int, float)):
         val = int(target)
-        if val > 0:
-            return max(1, min(val, cpu_cnt))
+    else:
         return auto_threads
-    return auto_threads
+
+    return max(1, min(val, cpu_cnt)) if val > 0 else auto_threads
 
 
 @dataclass
@@ -99,23 +99,51 @@ class KnowledgeDBConfig:
 
     def __init__(
         self,
-        enable_vector_search: bool = True,
+        enable_vector_search: Any = True,
         embedding_model: str = DEFAULT_EMBEDDING_MODEL,
-        jit_vector_timeout_ms: Optional[int] = None,
-        jit_vector_timeout_seconds: Optional[float] = None,
-        vector_batch_size: int = 32,
+        jit_vector_timeout_ms: Optional[Any] = None,
+        jit_vector_timeout_seconds: Optional[Any] = None,
+        vector_batch_size: Any = 32,
         max_threads: Any = 0,
     ) -> None:
-        self.enable_vector_search = bool(enable_vector_search)
-        self.embedding_model = str(embedding_model or DEFAULT_EMBEDDING_MODEL).strip() or DEFAULT_EMBEDDING_MODEL
-        if jit_vector_timeout_ms is not None:
-            self.jit_vector_timeout_ms = max(0, int(jit_vector_timeout_ms))
-        elif jit_vector_timeout_seconds is not None:
-            self.jit_vector_timeout_ms = max(0, int(round(float(jit_vector_timeout_seconds) * 1000.0)))
+        if isinstance(enable_vector_search, bool):
+            self.enable_vector_search = enable_vector_search
         else:
-            self.jit_vector_timeout_ms = 3000
-        self.vector_batch_size = max(1, int(vector_batch_size)) if vector_batch_size else 32
-        self.max_threads = max_threads
+            self.enable_vector_search = str(enable_vector_search).strip().lower() not in ("false", "0", "no", "off", "")
+
+        self.embedding_model = str(embedding_model or DEFAULT_EMBEDDING_MODEL).strip() or DEFAULT_EMBEDDING_MODEL
+
+        timeout_ms = 3000
+        if jit_vector_timeout_ms is not None and not isinstance(jit_vector_timeout_ms, bool):
+            try:
+                timeout_ms = int(float(jit_vector_timeout_ms))
+            except (TypeError, ValueError):
+                timeout_ms = 3000
+        elif jit_vector_timeout_seconds is not None and not isinstance(jit_vector_timeout_seconds, bool):
+            try:
+                timeout_ms = int(round(float(jit_vector_timeout_seconds) * 1000.0))
+            except (TypeError, ValueError):
+                timeout_ms = 3000
+        self.jit_vector_timeout_ms = max(0, timeout_ms)
+
+        batch_val = 32
+        if vector_batch_size is not None and not isinstance(vector_batch_size, bool):
+            try:
+                parsed_b = int(float(vector_batch_size))
+                batch_val = max(1, parsed_b) if parsed_b > 0 else 32
+            except (TypeError, ValueError):
+                batch_val = 32
+        self.vector_batch_size = batch_val
+
+        if isinstance(max_threads, str) and max_threads.strip().lower() == "auto":
+            self.max_threads = "auto"
+        elif isinstance(max_threads, bool) or max_threads is None:
+            self.max_threads = 0
+        else:
+            try:
+                self.max_threads = max(0, int(float(max_threads)))
+            except (TypeError, ValueError):
+                self.max_threads = 0
 
     @property
     def jit_vector_timeout_seconds(self) -> float:
@@ -135,59 +163,49 @@ class KnowledgeDBConfig:
         """Resolve effective thread count (`0` or `'auto'` -> `min(4, max(1, cpu_count // 2))`)."""
         return resolve_threads(explicit_threads if explicit_threads is not None else self.max_threads)
 
+    @staticmethod
+    def _extract_config_section(source: Optional[Union[str, Path, Dict[str, Any]]]) -> Dict[str, Any]:
+        """Extract configuration dictionary from a dict, Path, or JSON file path string."""
+        if source is None:
+            return {}
+        raw: Optional[Dict[str, Any]] = None
+        if isinstance(source, dict):
+            raw = source
+        elif isinstance(source, (str, Path)):
+            p = Path(source)
+            if p.is_file():
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        raw = loaded
+                except Exception:
+                    return {}
+        if not isinstance(raw, dict):
+            return {}
+        sec = raw.get("knowledge-db", raw.get("knowledge_db", raw))
+        return dict(sec) if isinstance(sec, dict) else {}
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "KnowledgeDBConfig":
         """Construct KnowledgeDBConfig from a raw dictionary."""
-        if not isinstance(data, dict):
+        sec = cls._extract_config_section(data)
+        if not sec:
             return cls()
-
-        sec = data.get("knowledge-db", data.get("knowledge_db", data))
-        if not isinstance(sec, dict):
-            sec = data
-
-        enable_vec = sec.get("enable_vector_search", True)
-        if not isinstance(enable_vec, bool):
-            enable_vec = str(enable_vec).lower() not in ("false", "0", "no", "off")
-
-        model = str(sec.get("embedding_model", DEFAULT_EMBEDDING_MODEL)).strip() or DEFAULT_EMBEDDING_MODEL
-
-        timeout_ms = 3000
-        if "jit_vector_timeout_ms" in sec and sec["jit_vector_timeout_ms"] is not None:
-            try:
-                timeout_ms = int(float(sec["jit_vector_timeout_ms"]))
-            except (TypeError, ValueError):
-                timeout_ms = 3000
-        elif "jit_vector_timeout_seconds" in sec and sec["jit_vector_timeout_seconds"] is not None:
-            try:
-                timeout_ms = int(round(float(sec["jit_vector_timeout_seconds"]) * 1000.0))
-            except (TypeError, ValueError):
-                timeout_ms = 3000
-
-        batch_size = 32
-        if "vector_batch_size" in sec and sec["vector_batch_size"] is not None:
-            try:
-                batch_size = max(1, int(sec["vector_batch_size"]))
-            except (TypeError, ValueError):
-                batch_size = 32
-
-        try:
-            threads = int(sec.get("max_threads", 0))
-        except (TypeError, ValueError):
-            threads = 0
-
         return cls(
-            enable_vector_search=enable_vec,
-            embedding_model=model,
-            jit_vector_timeout_ms=max(0, timeout_ms),
-            vector_batch_size=batch_size,
-            max_threads=max(0, threads),
+            enable_vector_search=sec.get("enable_vector_search", True),
+            embedding_model=sec.get("embedding_model", DEFAULT_EMBEDDING_MODEL),
+            jit_vector_timeout_ms=sec.get("jit_vector_timeout_ms"),
+            jit_vector_timeout_seconds=sec.get("jit_vector_timeout_seconds"),
+            vector_batch_size=sec.get("vector_batch_size", 32),
+            max_threads=sec.get("max_threads", 0),
         )
 
     @classmethod
     def load(
         cls,
-        project_config: Optional[Dict[str, Any]] = None,
-        local_config: Optional[Dict[str, Any]] = None,
+        project_config: Optional[Union[str, Path, Dict[str, Any]]] = None,
+        local_config: Optional[Union[str, Path, Dict[str, Any]]] = None,
     ) -> "KnowledgeDBConfig":
         """Load configuration with precedence: `local` > `project` > defaults."""
         merged: Dict[str, Any] = {}
@@ -208,27 +226,11 @@ class KnowledgeDBConfig:
             for uri_str in ("config://knowledge-db/config.project.json", "config.local://knowledge-db/config.local.json"):
                 p = cls._resolve_config_uri(uri_str)
                 if p and p.exists():
-                    try:
-                        with open(p, "r", encoding="utf-8") as f:
-                            raw = json.load(f)
-                        if isinstance(raw, dict):
-                            sec = raw.get("knowledge-db", raw.get("knowledge_db", {}))
-                            if isinstance(sec, dict):
-                                merged.update(sec)
-                    except Exception:
-                        pass
+                    merged.update(cls._extract_config_section(p))
             return cls.from_dict(merged)
 
-        if isinstance(project_config, dict):
-            sec = project_config.get("knowledge-db", project_config.get("knowledge_db", project_config))
-            if isinstance(sec, dict):
-                merged.update(sec)
-
-        if isinstance(local_config, dict):
-            sec = local_config.get("knowledge-db", local_config.get("knowledge_db", local_config))
-            if isinstance(sec, dict):
-                merged.update(sec)
-
+        merged.update(cls._extract_config_section(project_config))
+        merged.update(cls._extract_config_section(local_config))
         return cls.from_dict(merged)
 
     @staticmethod

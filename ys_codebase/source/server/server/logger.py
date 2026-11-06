@@ -25,21 +25,22 @@ def _extract_log_file_timestamp(file_path: str, time_format: str, header_regex: 
     2. Falls back to file modification time (mtime).
     3. Falls back to current system time.
     """
-    if os.path.exists(file_path):
-        try:
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                first_line = f.readline()
-                if first_line:
-                    match = header_regex.search(first_line)
-                    if match:
-                        return match.group(1)
-        except OSError:
-            pass
-        try:
-            mtime = os.path.getmtime(file_path)
-            return datetime.fromtimestamp(mtime).strftime(time_format)
-        except OSError:
-            pass
+    if not os.path.exists(file_path):
+        return datetime.now().strftime(time_format)
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            first_line = f.readline()
+            if first_line:
+                match = header_regex.search(first_line)
+                if match:
+                    return match.group(1)
+    except OSError:
+        pass
+    try:
+        mtime = os.path.getmtime(file_path)
+        return datetime.fromtimestamp(mtime).strftime(time_format)
+    except OSError:
+        pass
     return datetime.now().strftime(time_format)
 
 
@@ -162,6 +163,13 @@ class ServerLogger:
                 pass
             self._file = None
 
+    def _open_log_stream_locked(self, mode: str) -> None:
+        self._file = open(self.log_file, mode, encoding="utf-8")
+        try:
+            os.set_inheritable(self._file.fileno(), False)
+        except OSError:
+            pass
+
     def recover_and_open(self) -> str:
         """
         Pre-flight crash recovery and fresh log initialization:
@@ -185,11 +193,7 @@ class ServerLogger:
                 self.clean_rolling_history()
 
             self.start_time_str = datetime.now().strftime(self.TIME_FORMAT)
-            self._file = open(self.log_file, "w", encoding="utf-8")
-            try:
-                os.set_inheritable(self._file.fileno(), False)
-            except OSError:
-                pass
+            self._open_log_stream_locked("w")
             banner = f'{self.START_BANNER_PREFIX}{self.start_time_str}"\n'
             self._file.write(banner)
             self._file.flush()
@@ -223,10 +227,7 @@ class ServerLogger:
             if not os.path.exists(self.log_file):
                 return None
 
-            arch_ts = self.start_time_str or _extract_log_file_timestamp(
-                self.log_file, self.TIME_FORMAT, self.HEADER_TIME_REGEX
-            )
-            archive_path = self._resolve_safe_archive_path(arch_ts)
+            archive_path = self.get_expected_archive_path()
             _safe_replace_file(self.log_file, archive_path)
             self.clean_rolling_history()
             return archive_path
@@ -246,18 +247,14 @@ class ServerLogger:
         """
         with self._lock:
             if not self._file or self._file.closed:
-                self._file = open(self.log_file, "a", encoding="utf-8")
-                try:
-                    os.set_inheritable(self._file.fileno(), False)
-                except OSError:
-                    pass
+                self._open_log_stream_locked("a")
 
             if not line.endswith("\n"):
                 line += "\n"
 
             self._file.write(line)
             self._file.flush()
-            if getattr(self, "echo_console", False):
+            if self.echo_console:
                 try:
                     sys.stdout.write(line)
                     sys.stdout.flush()

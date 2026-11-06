@@ -7,6 +7,7 @@ Implements Full Zip Packaging Standard:
 """
 import os
 import json
+import uuid
 import fnmatch
 import hashlib
 import shutil
@@ -29,12 +30,13 @@ def compute_file_sha256(file_path: str) -> str:
     return h.hexdigest().lower()
 
 
-def _can_parse_semver(v: str) -> bool:
+def compare_semver_safe(a: str, b: str) -> int:
+    """Safe SemVer comparator with lexicographical fallback (returns 0 on equality)."""
     try:
-        semver.parse_semver(v)
-        return True
+        return semver.compare_semver(a, b)
     except Exception:
-        return False
+        return 1 if a > b else (-1 if a < b else 0)
+
 
 DEV_BUILD_IGNORES = [
     "__pycache__",
@@ -47,31 +49,27 @@ DEV_BUILD_IGNORES = [
     ".DS_Store",
 ]
 
-RELEASE_IGNORES = [
-    "__pycache__",
-    "*.pyc",
-    "*.pyo",
-    "*.tmp",
-    "*.bak",
-    ".git*",
-    ".pytest_cache",
-    ".DS_Store",
-    ".yscbignore",
-    "tests",
-    "tests/*",
-]
+RELEASE_IGNORES = [*DEV_BUILD_IGNORES, ".yscbignore", "tests", "tests/*"]
 
 
 def _should_ignore(rel_path: str, ignores: List[str]) -> bool:
-    norm_rel = rel_path.replace("\\", "/").rstrip("/")
+    norm_rel = rel_path.replace("\\", "/").strip("/")
+    if not norm_rel:
+        return False
     name = os.path.basename(norm_rel)
+    parts = norm_rel.split("/")
     for pattern in ignores:
-        pat = pattern.replace("\\", "/").rstrip("/")
+        pat = pattern.replace("\\", "/").strip("/")
+        if not pat:
+            continue
+        pat_prefix = pat.rstrip("*").rstrip("/")
         if (
             fnmatch.fnmatch(name, pat)
             or fnmatch.fnmatch(norm_rel, pat)
             or fnmatch.fnmatch(norm_rel, pat + "/*")
-            or norm_rel.startswith(pat.rstrip("*").rstrip("/") + "/")
+            or (pat_prefix and norm_rel.startswith(pat_prefix + "/"))
+            or (pat_prefix and f"/{pat_prefix}/" in f"/{norm_rel}/")
+            or ("/" not in pat and any(fnmatch.fnmatch(p, pat) for p in parts))
         ):
             return True
     return False
@@ -96,11 +94,11 @@ def _create_module_archive_atomic(
     target_version: str,
 ) -> int:
     """
-    Atomically package module files from source_dir into target_zip_path via a .tmp staging file
+    Atomically package module files from source_dir into target_zip_path via a PID/random .tmp staging file
     using deterministic entry ordering, fixed timestamp/permissions, and LF text normalization.
-    Guarantees .zip.tmp cleanup on any failure.
+    Guarantees .tmp cleanup on any failure.
     """
-    tmp_zip_path = target_zip_path + ".tmp"
+    tmp_zip_path = f"{target_zip_path}.{os.getpid()}.{uuid.uuid4().hex[:6]}.tmp"
     entries: List[Tuple[str, str]] = []
     for root, dirs, files in os.walk(source_dir):
         rel_dir = os.path.relpath(root, source_dir).replace("\\", "/")
@@ -179,13 +177,13 @@ class Builder:
                 if item.endswith(".zip"):
                     versions.append(item[:-4])
 
-        versions.sort(key=functools.cmp_to_key(semver.compare_semver))
+        versions.sort(key=functools.cmp_to_key(compare_semver_safe))
         index_data = {
             "name": name,
             "description": description or f"YS-Codebase module {name} (dev build)",
             "versions": versions,
         }
-        vfs.write_json(f"{mod_build_root}/index.json", index_data, indent=2)
+        vfs.write_json(f"{mod_build_root}/index.json", index_data, indent=2, atomic=True)
 
     def _update_release_index(
         self,
@@ -273,7 +271,7 @@ class Builder:
                 except ValueError:
                     pass
 
-        active_versions.sort(key=functools.cmp_to_key(semver.compare_semver))
+        active_versions.sort(key=functools.cmp_to_key(compare_semver_safe))
         active_set = set(active_versions)
 
         for v_key, v_meta in list(existing_releases.items()):
@@ -322,17 +320,13 @@ class Builder:
                 for k in ("type", "urgency", "summary"):
                     if isinstance(rel_info.get(k), str) and rel_info[k].strip():
                         new_meta[k] = rel_info[k].strip()
-            new_zip_cand = os.path.join(real_rel_dir, f"{new_version}.zip")
-            if os.path.isfile(new_zip_cand):
-                new_meta["sha256"] = compute_file_sha256(new_zip_cand)
+            if not new_meta.get("sha256"):
+                new_zip_cand = os.path.join(real_rel_dir, f"{new_version}.zip")
+                if os.path.isfile(new_zip_cand):
+                    new_meta["sha256"] = compute_file_sha256(new_zip_cand)
             existing_releases[new_version] = new_meta
 
-        sorted_rel_keys = sorted(
-            existing_releases.keys(),
-            key=functools.cmp_to_key(
-                lambda x, y: semver.compare_semver(x, y) if _can_parse_semver(x) and _can_parse_semver(y) else (1 if x > y else -1)
-            ),
-        )
+        sorted_rel_keys = sorted(existing_releases.keys(), key=functools.cmp_to_key(compare_semver_safe))
         ordered_releases = {k: existing_releases[k] for k in sorted_rel_keys}
 
         index_data = {
@@ -341,7 +335,7 @@ class Builder:
             "versions": active_versions,
             "releases": ordered_releases,
         }
-        vfs.write_json(index_uri, index_data, indent=2)
+        vfs.write_json(index_uri, index_data, indent=2, atomic=True)
 
     def build_module(self, name: str, clean: bool = True) -> Tuple[bool, str]:
         """
@@ -406,7 +400,16 @@ class Builder:
         if not vfs.exists(src_uri):
             return False, f"Source module not found at {src_uri}."
 
-        manifest_data = vfs.read_json(f"{src_uri}/manifest.json")
+        manifest_uri = f"{src_uri}/manifest.json"
+        if not vfs.exists(manifest_uri):
+            return False, f"manifest.json not found for module '{name}'."
+        try:
+            manifest_data = vfs.read_json(manifest_uri)
+            if not isinstance(manifest_data, dict):
+                return False, f"Invalid manifest.json format for module '{name}'."
+        except Exception as e:
+            return False, f"Invalid JSON in manifest.json for module '{name}': {e}"
+
         mod_rel_root = f"module.release://{name}"
         vfs.makedirs(mod_rel_root)
 

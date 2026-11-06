@@ -8,6 +8,7 @@ Cross-File Call Topology Linker (`TopologyLinker`) and Polymorphic Contract Expa
 from collections import defaultdict, deque
 import logging
 import re
+import threading
 from typing import Any, Deque, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from .graph import CallGraphIndex
@@ -15,6 +16,7 @@ from .schema import SymbolCallSite, SymbolKind, UnifiedSymbol
 
 logger = logging.getLogger("ast.linker")
 
+_LINKER_CACHE_LOCK = threading.RLock()
 _LAST_LINKER_CACHE: Dict[str, Any] = {
     "symbols_map_id": None,
     "symbols_count": 0,
@@ -37,17 +39,23 @@ def _extract_param_count_from_signature(signature: str) -> Optional[int]:
     """Extract parameter count from a declaration signature `(...)`."""
     if not signature or "(" not in signature or ")" not in signature:
         return None
+    from .resolver import extract_signature_params
+
     start = signature.find("(")
-    end = signature.rfind(")")
+    depth = 0
+    end = -1
+    for idx in range(start, len(signature)):
+        ch = signature[idx]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                end = idx
+                break
     if end <= start:
         return None
-    inner = signature[start + 1 : end].strip()
-    if not inner:
-        return 0
-    parts = [p.strip() for p in inner.split(",") if p.strip()]
-    if parts and parts[0].split()[0] in ("self", "cls", "this"):
-        parts = parts[1:]
-    return len(parts)
+    return len(extract_signature_params(signature))
 
 
 class TopologyLinker:
@@ -96,6 +104,8 @@ class TopologyLinker:
         self._methods_by_class_and_short.clear()
         self._class_fields.clear()
 
+        seen_fqn_ids: Dict[str, Set[str]] = defaultdict(set)
+
         for _, sym in self.symbols_map.items():
             norm_path = sym.file_path.replace("\\", "/").lower()
             self._by_file[norm_path].append(sym)
@@ -109,9 +119,11 @@ class TopologyLinker:
 
             if sym.fqn:
                 fqn_low = sym.fqn.lower()
-                if sym not in self._by_fqn[fqn_low]:
+                if sym.id not in seen_fqn_ids[fqn_low]:
+                    seen_fqn_ids[fqn_low].add(sym.id)
                     self._by_fqn[fqn_low].append(sym)
-                if sym.fqn != fqn_low and sym not in self._by_fqn[sym.fqn]:
+                if sym.fqn != fqn_low and sym.id not in seen_fqn_ids[sym.fqn]:
+                    seen_fqn_ids[sym.fqn].add(sym.id)
                     self._by_fqn[sym.fqn].append(sym)
                 for fqn_seg in re.split(r"[.:]+", fqn_low):
                     if len(fqn_seg) > 2:
@@ -162,12 +174,14 @@ class TopologyLinker:
                 for key in alias_keys:
                     self._by_space_name[sp][key].append(sym)
 
-        _LAST_LINKER_CACHE["symbols_map_id"] = id(self.symbols_map)
-        _LAST_LINKER_CACHE["symbols_count"] = len(self.symbols_map)
-        _LAST_LINKER_CACHE["symbols_fingerprint"] = _compute_symbols_map_fingerprint(self.symbols_map)
-        _LAST_LINKER_CACHE["class_bases"] = self._class_bases
-        _LAST_LINKER_CACHE["base_derived"] = self._base_derived
-        _LAST_LINKER_CACHE["methods_by_class_and_short"] = self._methods_by_class_and_short
+        fp = _compute_symbols_map_fingerprint(self.symbols_map)
+        with _LINKER_CACHE_LOCK:
+            _LAST_LINKER_CACHE["symbols_map_id"] = id(self.symbols_map)
+            _LAST_LINKER_CACHE["symbols_count"] = len(self.symbols_map)
+            _LAST_LINKER_CACHE["symbols_fingerprint"] = fp
+            _LAST_LINKER_CACHE["class_bases"] = self._class_bases
+            _LAST_LINKER_CACHE["base_derived"] = self._base_derived
+            _LAST_LINKER_CACHE["methods_by_class_and_short"] = self._methods_by_class_and_short
 
     @staticmethod
     def _select_best_overload(
@@ -674,7 +688,6 @@ class TopologyLinker:
                 graph.add_edge(caller_id, callee_id, site)
         return graph
 
-
     def expand_contract_symbol_ids(
         self,
         target_sym: Union[UnifiedSymbol, List[UnifiedSymbol]],
@@ -729,22 +742,26 @@ def expand_contract_symbol_ids(
     for t in targets:
         _add(t.id)
 
-    current_fp = _compute_symbols_map_fingerprint(sym_dict)
-    if (
-        cached_bases is None
-        and _LAST_LINKER_CACHE["symbols_map_id"] == id(sym_dict)
-        and _LAST_LINKER_CACHE["symbols_count"] == len(sym_dict)
-        and _LAST_LINKER_CACHE.get("symbols_fingerprint") == current_fp
-    ):
-        cached_bases = _LAST_LINKER_CACHE["class_bases"]
-        cached_derived = _LAST_LINKER_CACHE["base_derived"]
-        cached_methods = _LAST_LINKER_CACHE["methods_by_class_and_short"]
+    current_fp: Optional[int] = None
+    if cached_bases is None:
+        current_fp = _compute_symbols_map_fingerprint(sym_dict)
+        with _LINKER_CACHE_LOCK:
+            if (
+                _LAST_LINKER_CACHE["symbols_map_id"] == id(sym_dict)
+                and _LAST_LINKER_CACHE["symbols_count"] == len(sym_dict)
+                and _LAST_LINKER_CACHE.get("symbols_fingerprint") == current_fp
+            ):
+                cached_bases = _LAST_LINKER_CACHE["class_bases"]
+                cached_derived = _LAST_LINKER_CACHE["base_derived"]
+                cached_methods = _LAST_LINKER_CACHE["methods_by_class_and_short"]
 
     if cached_bases is not None and cached_derived is not None and cached_methods is not None:
         class_bases = cached_bases
         base_derived = cached_derived
         methods_by_class_and_short = cached_methods
     else:
+        if current_fp is None:
+            current_fp = _compute_symbols_map_fingerprint(sym_dict)
         class_bases = defaultdict(set)
         base_derived = defaultdict(set)
         methods_by_class_and_short = defaultdict(list)
@@ -764,12 +781,13 @@ def expand_contract_symbol_ids(
                         bt_str = str(bt)
                         class_bases[s_short].add(bt_str)
                         base_derived[bt_str].add(s_short)
-        _LAST_LINKER_CACHE["symbols_map_id"] = id(sym_dict)
-        _LAST_LINKER_CACHE["symbols_count"] = len(sym_dict)
-        _LAST_LINKER_CACHE["symbols_fingerprint"] = current_fp
-        _LAST_LINKER_CACHE["class_bases"] = class_bases
-        _LAST_LINKER_CACHE["base_derived"] = base_derived
-        _LAST_LINKER_CACHE["methods_by_class_and_short"] = methods_by_class_and_short
+        with _LINKER_CACHE_LOCK:
+            _LAST_LINKER_CACHE["symbols_map_id"] = id(sym_dict)
+            _LAST_LINKER_CACHE["symbols_count"] = len(sym_dict)
+            _LAST_LINKER_CACHE["symbols_fingerprint"] = current_fp
+            _LAST_LINKER_CACHE["class_bases"] = class_bases
+            _LAST_LINKER_CACHE["base_derived"] = base_derived
+            _LAST_LINKER_CACHE["methods_by_class_and_short"] = methods_by_class_and_short
 
     for t in targets:
         kind_str = t.kind.value if hasattr(t.kind, "value") else str(t.kind)

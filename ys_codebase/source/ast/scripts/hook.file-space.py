@@ -60,6 +60,20 @@ def _broadcast_ast_updated(payload: Dict[str, Any]) -> None:
         )
 
 
+def _get_current_ast_generation(engine: Any) -> int:
+    snap = getattr(engine, "_snapshot", None)
+    if snap is not None and hasattr(snap, "ast_generation"):
+        return int(snap.ast_generation)
+    if hasattr(engine, "get_persisted_meta"):
+        try:
+            meta = engine.get_persisted_meta()
+            if isinstance(meta, dict) and "ast_generation" in meta:
+                return int(meta["ast_generation"])
+        except Exception:
+            pass
+    return 0
+
+
 def on_file_space_changed(
     context: Any = None,
     spaces: Optional[List[str]] = None,
@@ -71,7 +85,7 @@ def on_file_space_changed(
     Consumes incremental diffs using `consumer_id="ast"`, updates `ASTEngine` snapshot/graph,
     and broadcasts `on_ast_index_updated`.
     """
-    from ast_engine.engine import ASTEngine, get_engine
+    from ast_engine.engine import get_engine
 
     # Support explicit diff_detail argument passed by direct unit test callers
     diff_detail_arg = kwargs.get("diff_detail")
@@ -81,7 +95,9 @@ def on_file_space_changed(
         space_name_arg = kwargs.get("space_name") or (spaces[0] if spaces else "default")
         if space_name_arg == "cloud":
             return {"status": "noop", "ast_generation": 0, "patched_count": 0, "to_generation": 0}
-        eng = kwargs.get("engine") or ASTEngine()
+        p_root = kwargs.get("project_root") or (context.get("project_root") if isinstance(context, dict) else None)
+        s_dir = kwargs.get("storage_dir") or (context.get("storage_dir") if isinstance(context, dict) else None)
+        eng = kwargs.get("engine") or get_engine(project_root=p_root, storage_dir=s_dir)
         normalized_detail = (
             diff_detail_arg
             if "spaces" in diff_detail_arg
@@ -131,7 +147,7 @@ def on_file_space_changed(
     if target_space == "cloud" or (
         target_space is not None and known_spaces and target_space not in known_spaces
     ):
-        cur_ast_gen = engine._snapshot.ast_generation if getattr(engine, "_snapshot", None) else 0
+        cur_ast_gen = _get_current_ast_generation(engine)
         return {
             "status": "noop",
             "ast_generation": cur_ast_gen,
@@ -142,7 +158,7 @@ def on_file_space_changed(
     if isinstance(spaces, list):
         spaces = [s for s in spaces if s != "cloud" and (not known_spaces or s in known_spaces)]
         if not spaces and target_space is None:
-            cur_ast_gen = engine._snapshot.ast_generation if getattr(engine, "_snapshot", None) else 0
+            cur_ast_gen = _get_current_ast_generation(engine)
             return {
                 "status": "noop",
                 "ast_generation": cur_ast_gen,
@@ -173,7 +189,7 @@ def on_file_space_changed(
                 return payload
             return {
                 "status": "noop",
-                "ast_generation": engine._snapshot.ast_generation if engine._snapshot else 0,
+                "ast_generation": _get_current_ast_generation(engine),
                 "patched_count": 0,
                 "to_generation": diff_res.to_generation,
             }

@@ -35,7 +35,7 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__():
-    return sorted(list(globals().keys()) + list(_MODULE_MAP.keys()))
+    return sorted(set(globals().keys()) | set(_MODULE_MAP.keys()))
 
 
 __all__ = ["Scaffolder", "Checker", "Builder", "Tester", "Releaser", "testing"]

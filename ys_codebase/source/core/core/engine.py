@@ -58,6 +58,26 @@ def normalize_legacy_provider_url(provider_url: Optional[str]) -> str:
     return s
 
 
+def resolve_local_provider_path(provider_url: Optional[str], base_dir: Optional[str] = None) -> Optional[str]:
+    """
+    Resolves a local filesystem path or ``file://`` URI provider string to a normalized
+    local path. Returns ``None`` if ``provider_url`` is empty or an HTTP/HTTPS URL.
+    """
+    p_str = normalize_legacy_provider_url(provider_url)
+    if not p_str or p_str.startswith(("http://", "https://")):
+        return None
+    if p_str.startswith("file://"):
+        raw_p = urllib.request.url2pathname(p_str[7:])
+        while raw_p.startswith("//"):
+            raw_p = raw_p[1:]
+        return os.path.normpath(raw_p)
+    if os.path.isabs(p_str) or (len(p_str) > 1 and p_str[1] == ":"):
+        return os.path.normpath(p_str)
+    if base_dir:
+        return os.path.normpath(os.path.join(base_dir, p_str))
+    return os.path.normpath(os.path.abspath(p_str))
+
+
 def _should_ignore_rel_path(rel_path: str, ignores: List[str]) -> bool:
     import fnmatch
     norm_rel = rel_path.replace("\\", "/").rstrip("/")
@@ -697,11 +717,9 @@ class AtomicEngine:
         Fetches a manifest, index, or package archive from local filesystem or remote HTTP/HTTPS.
         """
         provider_url = normalize_legacy_provider_url(provider_url)
-        if provider_url.startswith("file://"):
-            raw_p = urllib.request.url2pathname(provider_url[7:])
-            while raw_p.startswith("//"):
-                raw_p = raw_p[1:]
-            provider_url = os.path.normpath(raw_p)
+        local_provider = resolve_local_provider_path(provider_url)
+        if local_provider is not None and provider_url.startswith("file://"):
+            provider_url = local_provider
         local_target = os.path.join(provider_url, relative_path)
         if not os.path.exists(local_target):
             for sub in ("release", "build"):
@@ -843,7 +861,7 @@ class AtomicEngine:
                 shutil.copy2(uri.resolve(b_zip), dest_zip_real)
                 return dest_zip_uri
 
-        p_abs = os.path.abspath(provider_url) if not provider_url.startswith(("http://", "https://", "file://")) else None
+        p_abs = resolve_local_provider_path(provider_url)
         if p_abs and os.path.isdir(p_abs):
             for b_path in (
                 os.path.join(p_abs, "build", module_name, f"{version}.zip"),
@@ -866,14 +884,8 @@ class AtomicEngine:
         provider_url = normalize_legacy_provider_url(provider_url)
         candidate_dicts: List[Dict[str, Any]] = []
 
-        if provider_url and not provider_url.startswith(("http://", "https://")):
-            if provider_url.startswith("file://"):
-                raw_p = urllib.request.url2pathname(provider_url[7:])
-                while raw_p.startswith("//"):
-                    raw_p = raw_p[1:]
-                p_abs = os.path.normpath(raw_p)
-            else:
-                p_abs = os.path.abspath(provider_url)
+        p_abs = resolve_local_provider_path(provider_url)
+        if p_abs:
             for idx_cand in (
                 os.path.join(p_abs, module_name, "index.json"),
                 os.path.join(p_abs, "release", module_name, "index.json"),
@@ -967,7 +979,7 @@ class AtomicEngine:
             return dest_zip_uri
 
         provider_url = normalize_legacy_provider_url(provider_url)
-        p_abs = os.path.abspath(provider_url) if not provider_url.startswith(("http://", "https://", "file://")) else None
+        p_abs = resolve_local_provider_path(provider_url)
         if p_abs and os.path.isdir(p_abs):
             for z_path in (
                 os.path.join(p_abs, module_name, f"{version}.zip"),
@@ -983,12 +995,22 @@ class AtomicEngine:
                 os.path.join(p_abs, "release", module_name, version),
             ):
                 if os.path.isdir(d_path) and os.path.isfile(os.path.join(d_path, "manifest.json")):
-                    with zipfile.ZipFile(dest_zip_real, "w", zipfile.ZIP_DEFLATED) as zf:
-                        for root, _, files in os.walk(d_path):
-                            for f in files:
-                                f_p = os.path.join(root, f)
-                                arc = os.path.relpath(f_p, d_path).replace("\\", "/")
-                                zf.write(f_p, arcname=arc)
+                    os.makedirs(os.path.dirname(os.path.abspath(dest_zip_real)), exist_ok=True)
+                    tmp_zip = f"{dest_zip_real}.tmp_{os.getpid()}"
+                    try:
+                        with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+                            for root, _, files in os.walk(d_path):
+                                for f in files:
+                                    f_p = os.path.join(root, f)
+                                    arc = os.path.relpath(f_p, d_path).replace("\\", "/")
+                                    zf.write(f_p, arcname=arc)
+                        os.replace(tmp_zip, dest_zip_real)
+                    finally:
+                        if os.path.exists(tmp_zip):
+                            try:
+                                os.remove(tmp_zip)
+                            except OSError:
+                                pass
                     return dest_zip_uri
 
         # Local exact-version source/<mod> dynamic packaging fallback
@@ -1208,18 +1230,7 @@ class AtomicEngine:
         p_arg = normalize_legacy_provider_url(provider_url)
         idx_data: Optional[Dict[str, Any]] = None
 
-        if p_arg.startswith("file://"):
-            raw_p = urllib.request.url2pathname(p_arg[7:])
-            while raw_p.startswith("//"):
-                raw_p = raw_p[1:]
-            p_abs = os.path.normpath(raw_p)
-        elif not p_arg.startswith(("http://", "https://")):
-            if base_dir and not os.path.isabs(p_arg):
-                p_abs = os.path.normpath(os.path.join(base_dir, p_arg))
-            else:
-                p_abs = os.path.abspath(p_arg) if p_arg else None
-        else:
-            p_abs = None
+        p_abs = resolve_local_provider_path(p_arg, base_dir=base_dir)
 
         if p_abs and os.path.isdir(p_abs):
             for idx_cand in (
@@ -1459,7 +1470,7 @@ class AtomicEngine:
             if bld_mf is not None:
                 return bld_mf
 
-        p_abs = os.path.abspath(provider_url) if not provider_url.startswith(("http://", "https://", "file://")) else None
+        p_abs = resolve_local_provider_path(provider_url)
         if p_abs and os.path.isdir(p_abs):
             loc_mf = self._find_manifest_in_local_provider(module_name, p_abs, version_constraint, is_build_req)
             if loc_mf is not None:
@@ -1742,7 +1753,12 @@ class AtomicEngine:
                         continue
 
                 # Needs self-heal: either dep_mod is missing or its current version violates joint_constraint
-                prov_to_use = mod_providers.get(dep_mod, default_prov)
+                prov_to_use = mod_providers.get(dep_mod)
+                if not prov_to_use and req_list:
+                    first_req_mod = req_list[0][0].partition("@")[0]
+                    prov_to_use = mod_providers.get(first_req_mod, default_prov)
+                if not prov_to_use:
+                    prov_to_use = default_prov
                 if not prov_to_use:
                     raise RuntimeError(
                         f"Cannot self-heal dependency '{dep_mod}' ({detail_str}): no provider configured."
@@ -2311,7 +2327,11 @@ class AtomicEngine:
                 if spec and spec.loader:
                     migrate_mod = importlib.util.module_from_spec(spec)
                     sys.modules[mod_key] = migrate_mod
-                    spec.loader.exec_module(migrate_mod)
+                    try:
+                        spec.loader.exec_module(migrate_mod)
+                    except Exception:
+                        sys.modules.pop(mod_key, None)
+                        raise
                     if hasattr(migrate_mod, "migrate"):
                         res = migrate_mod.migrate(context)
                         if not res:

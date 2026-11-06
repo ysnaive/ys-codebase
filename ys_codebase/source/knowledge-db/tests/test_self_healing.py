@@ -2,12 +2,15 @@
 Unit and Integration Tests for Knowledge-DB Stage 1 Vector Eviction Self-Healing
 and Cross-Space Same-Basename Dirty File Isolation.
 """
+
 import os
 from pathlib import Path
 import shutil
 import sys
 import tempfile
-import time
+import unittest
+
+import numpy as np
 
 _test_dir = os.path.dirname(os.path.abspath(__file__))
 _pkg_root = os.path.dirname(_test_dir)
@@ -16,11 +19,11 @@ if _pkg_root not in sys.path:
 
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-
-from file_space import FileSpaceConfig, ScanDiffDetail
+from file_space import FileSpaceConfig
 from knowledge_db.embedding import format_symbol_embedding_text
 from knowledge_db.engine import KnowledgeEngine
 from knowledge_db.io_utils import is_dirty_file_match, normalize_dirty_paths
+from tests import write_text_and_advance_mtime
 
 
 class TestKnowledgeDBSelfHealing(YSCBTestCase):
@@ -38,7 +41,7 @@ class TestKnowledgeDBSelfHealing(YSCBTestCase):
         super().tearDown()
 
     @require(Requirement.LOGIC)
-    def test_ft_01_stage1_skip_vectors_evicts_old_vectors_for_same_line_edits(self) -> None:
+    def test_stage1_skip_vectors_evicts_old_vectors_for_same_line_edits(self) -> None:
         """
         Verify that when a symbol's body/docstring changes without changing its start line_number
         (so UnifiedSymbol.compute_id remains identical), hot_patch_unified_index(skip_vectors=True)
@@ -72,12 +75,11 @@ class TestKnowledgeDBSelfHealing(YSCBTestCase):
         vec_before = vec_idx_before.vectors[pos_before].copy()
 
         # Modify docstring/signature on the exact same start line (line 1) -> compute_id stays identical!
-        time.sleep(0.02)
-        target_py.write_text(
+        write_text_and_advance_mtime(
+            target_py,
             "def process_task(x: int, y: int = 0) -> int:\n"
             "    '''Updated docstring beta with completely new semantics'''\n"
             "    return x + y + 100\n",
-            encoding="utf-8",
         )
 
         with engine.scanner.consume_diff(consumer_id="knowledge-db") as diff_res:
@@ -88,7 +90,9 @@ class TestKnowledgeDBSelfHealing(YSCBTestCase):
             self.assertTrue(patch_res.success)
 
         sym_after = next(
-            s for s in engine.pipeline.unified_index.symbols.values() if s.name == "process_task"
+            s
+            for s in engine.pipeline.unified_index.symbols.values()
+            if s.name == "process_task"
         )
         # Symbol ID must remain stable for call graph continuity
         self.assertEqual(sym_after.id, sym_id)
@@ -112,12 +116,12 @@ class TestKnowledgeDBSelfHealing(YSCBTestCase):
         expected_new_vec = engine.embedding_service.embed_texts(
             [format_symbol_embedding_text(sym_after)]
         )[0]
-        self.assertFalse((vec_before == vec_after).all())
-        self.assertTrue((vec_after == expected_new_vec).all())
+        self.assertFalse(np.allclose(vec_before, vec_after))
+        np.testing.assert_allclose(vec_after, expected_new_vec, rtol=1e-5, atol=1e-6)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_02_cross_space_same_filename_isolation(self) -> None:
+    def test_cross_space_same_filename_isolation(self) -> None:
         """
         Verify that modifying or deleting a top-level file (without '/') in one space
         (e.g. __init__.py or README.md) does not falsely match or evict same-named files in other spaces.
@@ -159,9 +163,10 @@ class TestKnowledgeDBSelfHealing(YSCBTestCase):
         orig_b_cached = engine.bundler._file_symbols_cache[key_b][0]
 
         # Modify only mod_a/__init__.py (which yields rel_path="__init__.py" in space_a)
-        time.sleep(0.02)
-        init_a.write_text("class ModAInitUpdated:\n    pass\n", encoding="utf-8")
-        with engine.scanner.consume_diff("space_a", consumer_id="knowledge-db") as diff_a:
+        write_text_and_advance_mtime(init_a, "class ModAInitUpdated:\n    pass\n")
+        with engine.scanner.consume_diff(
+            "space_a", consumer_id="knowledge-db"
+        ) as diff_a:
             self.assertEqual(diff_a.modified, ["__init__.py"])
             res = engine.pipeline.hot_patch_unified_index(diff_a.detail)
             self.assertTrue(res.success)
@@ -175,12 +180,20 @@ class TestKnowledgeDBSelfHealing(YSCBTestCase):
 
         # Delete mod_a/__init__.py -> ModBInitSymbol in space_b must NOT be evicted!
         init_a.unlink()
-        with engine.scanner.consume_diff("space_a", consumer_id="knowledge-db") as diff_del:
+        with engine.scanner.consume_diff(
+            "space_a", consumer_id="knowledge-db"
+        ) as diff_del:
             self.assertEqual(diff_del.deleted, ["__init__.py"])
             res_del = engine.pipeline.hot_patch_unified_index(diff_del.detail)
             self.assertTrue(res_del.success)
 
-        sym_names_after = {s.name for s in engine.pipeline.unified_index.symbols.values()}
+        sym_names_after = {
+            s.name for s in engine.pipeline.unified_index.symbols.values()
+        }
         self.assertNotIn("ModAInitUpdated", sym_names_after)
         self.assertIn("ModBInitSymbol", sym_names_after)
         self.mark_passed()
+
+
+if __name__ == "__main__":
+    unittest.main()

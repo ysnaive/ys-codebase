@@ -6,7 +6,7 @@ Uses PEP 562 module-level `__getattr__` lazy loading so top-level package import
 import importlib
 from typing import Any, Dict, List, Tuple
 
-__version__ = "1.0.1.4"
+__version__ = "1.0.1.5"
 
 _LAZY_EXPORTS: Dict[str, Tuple[str, str]] = {
     "SemanticBundler": (".bundler", "SemanticBundler"),
@@ -51,6 +51,7 @@ _LAZY_EXPORTS: Dict[str, Tuple[str, str]] = {
     "SnippetExtractor": (".resolver", "SnippetExtractor"),
     "SymbolResolutionResult": (".resolver", "SymbolResolutionResult"),
     "SymbolSelector": (".resolver", "SymbolSelector"),
+    "extract_signature_params": (".resolver", "extract_signature_params"),
     "query_callees": (".resolver", "query_callees"),
     "query_callers": (".resolver", "query_callers"),
     "query_impact": (".resolver", "query_impact"),
@@ -109,6 +110,7 @@ __all__ = [
     "compute_project_relpath",
     "ensure_unique_overload_ids",
     "expand_contract_symbol_ids",
+    "extract_signature_params",
     "format_json",
     "get_dialect",
     "get_engine",

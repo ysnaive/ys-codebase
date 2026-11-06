@@ -11,16 +11,35 @@ import importlib
 import json
 import logging
 import os
-import sys
 import threading
 import time
 import urllib.request
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
+from core.platform import ensure_installed_modules_path
 
 _LAST_TOUCH_TS: float = 0.0
 _LAST_TOUCH_BY_ROOT: Dict[str, float] = {}
 _TOUCH_MIN_INTERVAL_SEC: float = 1.0
 _TOUCH_LOCK = threading.Lock()
+
+
+def _resolve_service_root(yscb_root: Optional[str]) -> str:
+    """Resolves the active YSCB root directory for daemon state lookup."""
+    if yscb_root:
+        return yscb_root
+    try:
+        from core import uri
+
+        resolved_root = uri.resolve("yscb://", interactive=False)
+        if resolved_root:
+            return resolved_root
+    except Exception:
+        pass
+    cand = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if os.path.isdir(os.path.join(cand, ".cache")):
+        return cand
+    return os.environ.get("YSCB_HOST_DIR", os.getcwd())
 
 
 def touch_activity(
@@ -42,27 +61,17 @@ def touch_activity(
     """
     global _LAST_TOUCH_TS
     now = time.monotonic()
-    root_key = os.path.normcase(os.path.abspath(yscb_root)) if yscb_root else "__default__"
+    resolved_root = _resolve_service_root(yscb_root)
+    root_key = os.path.normcase(os.path.abspath(resolved_root))
     if not force:
         with _TOUCH_LOCK:
-            last_ts = _LAST_TOUCH_TS if yscb_root is None else _LAST_TOUCH_BY_ROOT.get(root_key, 0.0)
+            last_ts = (
+                0.0
+                if (_LAST_TOUCH_TS == 0.0 and not _LAST_TOUCH_BY_ROOT)
+                else _LAST_TOUCH_BY_ROOT.get(root_key, 0.0)
+            )
             if last_ts > 0.0 and (now - last_ts) < _TOUCH_MIN_INTERVAL_SEC:
                 return True
-
-    resolved_root = yscb_root
-    if not resolved_root:
-        try:
-            from core import uri
-
-            resolved_root = uri.resolve("yscb://", interactive=False)
-        except Exception:
-            resolved_root = None
-    if not resolved_root:
-        cand = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        if os.path.isdir(os.path.join(cand, ".cache")):
-            resolved_root = cand
-        else:
-            resolved_root = os.environ.get("YSCB_HOST_DIR", os.getcwd())
 
     state_file = os.path.join(resolved_root, ".cache", "server", "daemon.json")
     if not os.path.isfile(state_file):
@@ -86,12 +95,12 @@ def touch_activity(
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=1.5) as resp:
-            if resp.status == 200:
-                with _TOUCH_LOCK:
-                    _LAST_TOUCH_TS = now
-                    _LAST_TOUCH_BY_ROOT[root_key] = now
-                return True
-            return False
+            if resp.status != 200:
+                return False
+        with _TOUCH_LOCK:
+            _LAST_TOUCH_TS = now
+            _LAST_TOUCH_BY_ROOT[root_key] = now
+        return True
     except Exception:
         return False
 
@@ -119,18 +128,13 @@ def _load_service_class_from_uri(uri_str: str, provider: str = "unknown") -> Opt
     try:
         mod = importlib.import_module(mod_path)
     except ModuleNotFoundError:
-        stripped = False
         if provider and provider != "unknown":
             prov_norm = f"{provider.replace('-', '_')}."
             if mod_path.startswith(prov_norm):
                 candidate_path = mod_path[len(prov_norm):]
-                try:
-                    mod = importlib.import_module(candidate_path)
-                    stripped = True
-                except ModuleNotFoundError:
-                    pass
-        if not stripped:
-            raise
+                mod = importlib.import_module(candidate_path)
+                return getattr(mod, cls_name)
+        raise
     return getattr(mod, cls_name)
 
 
@@ -223,17 +227,19 @@ class ServiceManager:
                 return
 
             modules_dir = os.path.join(yscb_root, ".modules")
-            if os.path.isdir(modules_dir):
-                for mod_name in sorted(os.listdir(modules_dir)):
-                    srv_json = os.path.join(modules_dir, mod_name, "contributes", "server.json")
-                    if os.path.isfile(srv_json):
-                        try:
-                            with open(srv_json, "r", encoding="utf-8") as f:
-                                sdata = json.load(f)
-                                for item in sdata.get("services", []):
-                                    self._load_service_item(item, provider=mod_name, yscb_root=yscb_root)
-                        except (OSError, ValueError) as ex:
-                            logging.warning(f"[Server Service] Error reading {srv_json}: {ex}")
+            if not os.path.isdir(modules_dir):
+                return
+            for mod_name in sorted(os.listdir(modules_dir)):
+                srv_json = os.path.join(modules_dir, mod_name, "contributes", "server.json")
+                if not os.path.isfile(srv_json):
+                    continue
+                try:
+                    with open(srv_json, "r", encoding="utf-8") as f:
+                        sdata = json.load(f)
+                    for item in sdata.get("services", []):
+                        self._load_service_item(item, provider=mod_name, yscb_root=yscb_root)
+                except (OSError, ValueError) as ex:
+                    logging.warning(f"[Server Service] Error reading {srv_json}: {ex}")
         except Exception as e:
             logging.warning(f"[Server Service] Failed to load contributes services: {e}")
 
@@ -246,8 +252,6 @@ class ServiceManager:
         auto_start = item.get("auto_start", True)
 
         if yscb_root and provider and provider != "unknown":
-            from core.platform import ensure_installed_modules_path
-
             ensure_installed_modules_path(yscb_root=yscb_root, priority_module=provider)
 
         try:

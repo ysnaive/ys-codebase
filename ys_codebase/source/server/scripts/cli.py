@@ -8,7 +8,6 @@ import json
 import os
 import sys
 import time
-import urllib.error
 import urllib.request
 from typing import Any, Dict, Optional
 
@@ -16,6 +15,7 @@ from core.commands.bags import CmdBags
 from core.guard import guard_dispatch
 from core.platform import InterProcessLock, daemon_probe, is_process_alive, kill_process_tree
 from server.config import ServerConfig
+from server.logger import ServerLogger
 from server.master import (
     MasterSupervisor,
     ServerDaemonState,
@@ -80,6 +80,31 @@ def _http_request(
         return None
 
 
+def _print_running_banner(state: ServerDaemonState) -> None:
+    status_info = _http_request(state, "/api/status") or build_fallback_status_payload(state)
+    print(format_startup_banner(status_info))
+
+
+def _cleanup_stale_state_file(yscb_root: str) -> None:
+    """Removes stale daemon.json when no active daemon holds daemon.lock."""
+    state_file = os.path.join(yscb_root, ".cache", "server", "daemon.json")
+    if not os.path.exists(state_file):
+        return
+    lock_file = os.path.join(yscb_root, ".cache", "server", "daemon.lock")
+    if os.path.exists(lock_file):
+        try:
+            probe = InterProcessLock(lock_file)
+            if not probe.acquire(blocking=False):
+                return
+            probe.release()
+        except Exception:
+            pass
+    try:
+        os.remove(state_file)
+    except OSError:
+        pass
+
+
 def start(cmd_bags: CmdBags) -> int:
     """Start persistent server daemon."""
     guard_dispatch("server")
@@ -101,8 +126,7 @@ def start(cmd_bags: CmdBags) -> int:
     state = read_daemon_state(yscb_root)
     if state and is_process_alive(state.pid):
         print(f"[Server] Daemon is already running (PID: {state.pid}, Port: {state.port}).")
-        status_info = _http_request(state, "/api/status") or build_fallback_status_payload(state)
-        print(format_startup_banner(status_info))
+        _print_running_banner(state)
         return 0
 
     cfg = ServerConfig.load()
@@ -126,8 +150,7 @@ def start(cmd_bags: CmdBags) -> int:
         time.sleep(0.1)
         state = read_daemon_state(yscb_root)
         if state and is_process_alive(state.pid):
-            status_info = _http_request(state, "/api/status") or build_fallback_status_payload(state)
-            print(format_startup_banner(status_info))
+            _print_running_banner(state)
             return 0
 
     # Distinguish a still-booting daemon from one that died during startup
@@ -147,24 +170,7 @@ def stop(cmd_bags: CmdBags) -> int:
     state = read_daemon_state(yscb_root)
     if not state or not is_process_alive(state.pid):
         print("[Server] Daemon is not running.")
-        state_file = os.path.join(yscb_root, ".cache", "server", "daemon.json")
-        if os.path.exists(state_file):
-            lock_file = os.path.join(yscb_root, ".cache", "server", "daemon.lock")
-            lock_held = False
-            if os.path.exists(lock_file):
-                try:
-                    probe = InterProcessLock(lock_file)
-                    if not probe.acquire(blocking=False):
-                        lock_held = True
-                    else:
-                        probe.release()
-                except Exception:
-                    pass
-            if not lock_held:
-                try:
-                    os.remove(state_file)
-                except OSError:
-                    pass
+        _cleanup_stale_state_file(yscb_root)
         return 0
 
     if not force_flag:
@@ -183,8 +189,10 @@ def stop(cmd_bags: CmdBags) -> int:
 
     print(f"[Server] Terminating process tree for PID: {state.pid}...")
     kill_process_tree(state.pid, timeout_sec=2.0)
+    _cleanup_stale_state_file(yscb_root)
     # User-initiated stop is not environment reaping: reset empirical detection
     daemon_probe.mark_clean_exit(yscb_root)
+    archived_log = ServerLogger(yscb_root=state.root).archive_and_close()
     uptime = time.time() - state.start_time
     fallback_summary = {
         "pid": state.pid,
@@ -193,7 +201,7 @@ def stop(cmd_bags: CmdBags) -> int:
         "tasks_executed": state.tasks_executed,
         "services_stopped": 0,
         "reason": "Force CLI termination" if force_flag else "Graceful shutdown timeout (forced)",
-        "archive_log": os.path.join(state.root, ".cache", "server", "log"),
+        "archive_log": archived_log or os.path.join(state.root, ".cache", "server", "log"),
     }
     print(format_shutdown_summary(fallback_summary))
     return 0

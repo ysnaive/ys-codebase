@@ -34,6 +34,14 @@ _LAST_DISPATCH_ERROR_HINT: str = ""
 _STRICT_SPAWN_WAIT_SEC: float = 10.0
 
 
+def _safe_getcwd() -> str:
+    """安全取得當前工作目錄，若目錄已被刪除則回傳空字串。"""
+    try:
+        return os.getcwd()
+    except OSError:
+        return ""
+
+
 def clear_cache() -> None:
     """清空已快取之 CommandsRegistry 與 CLI 模組快取。"""
     global _GLOBAL_REGISTRY, _GLOBAL_REGISTRY_ROOT
@@ -61,7 +69,7 @@ def _get_yscb_root() -> Tuple[str, str]:
     try:
         return uri._get_host_config()
     except Exception:
-        host_dir = uri.get_host_dir() or os.getcwd()
+        host_dir = uri.get_host_dir() or _safe_getcwd()
         return host_dir, uri.resolve_yscb_root()
 
 
@@ -114,7 +122,7 @@ def _load_registry(yscb_abs: str) -> CommandsRegistry:
 
 
 def _suggest_command(unknown_cmd: str, candidate_pool: List[str]) -> Optional[str]:
-    """模糊拼寫比對演算法。"""
+    """模糊拼寫比寫演算法。"""
     matches = difflib.get_close_matches(unknown_cmd, candidate_pool, n=1, cutoff=0.5)
     return matches[0] if matches else None
 
@@ -177,7 +185,7 @@ def _hot_dispatch_attempt(module_name: str, cmd_path_or_name: Any, args: List[st
     payload = {
         "module": module_name,
         "args": dispatch_args + list(args),
-        "cwd": os.getcwd(),
+        "cwd": _safe_getcwd(),
         "yscb_root": state.get("root", yscb_abs),
     }
     req = urllib.request.Request(
@@ -187,7 +195,10 @@ def _hot_dispatch_attempt(module_name: str, cmd_path_or_name: Any, args: List[st
         method="POST",
     )
     captured_err: List[str] = []
-    timeout_sec = float(os.environ.get("YSCB_DISPATCH_TIMEOUT", "120.0"))
+    try:
+        timeout_sec = float(os.environ.get("YSCB_DISPATCH_TIMEOUT", "120.0"))
+    except (TypeError, ValueError):
+        timeout_sec = 120.0
     try:
         resp = _open_localhost_no_proxy(req, timeout=timeout_sec)
     except urllib.error.HTTPError:
@@ -545,141 +556,141 @@ def dispatch_local(
     2. OptionResolver 解析參數與互斥檢查
     3. 載入目標模組 scripts/cli.py
     4. 調用精確命令函式
-    5. 觸發 post_cli_dispatch Hook
+    5. 觸發 post_cli_dispatch Hook（頂層 try...finally 對稱保證）
     """
-    # 對稱觸發 pre_cli_dispatch Hook
     is_verbose = (
         os.environ.get("YSCB_VERBOSE") == "1"
         or os.environ.get("YSCB_DEBUG") == "1"
         or any(arg in ("--verbose", "--debug") for arg in raw_args)
     )
     _ensure_hooks("pre_cli_dispatch", verbose=is_verbose)
-
-    if isinstance(cmd_name, list):
-        cmd_path = [str(c) for c in cmd_name]
-    elif isinstance(cmd_name, str):
-        cmd_path = cmd_name.split() if " " in cmd_name else [cmd_name]
-    else:
-        cmd_path = []
-
-    func_name = "_".join(cmd_path).replace("-", "_") if cmd_path else "default"
-    primary_cmd = cmd_path[0] if cmd_path else ""
-
-    # 參數解析
-    global _LAST_DISPATCH_ERROR_HINT
-    _LAST_DISPATCH_ERROR_HINT = ""
     try:
-        positional_args, resolved_options = OptionResolver.resolve(cmd_spec, raw_args)
-    except OptionResolutionError as err:
-        err_msg = f"[yscb] Error: {err}"
-        _LAST_DISPATCH_ERROR_HINT = err_msg
-        print(err_msg)
-        return 1
-
-    raw_cmd_str = " ".join(cmd_path + raw_args) if (cmd_path or raw_args) else ""
-    cmd_bags = CmdBags(
-        raw_cmd=raw_cmd_str,
-        command=func_name,
-        args=positional_args,
-        options=resolved_options,
-    )
-
-    target_cli = _find_module_cli(module_name, yscb_abs)
-    if not target_cli:
-        err_msg = f"[yscb] Error: Cannot find CLI entrypoint for module '{module_name}'."
-        _LAST_DISPATCH_ERROR_HINT = err_msg
-        print(err_msg)
-        return 1
-
-    # =========================================================================
-    # [!] 剛性架構約束 (Rigid Architectural Guardrail) - 嚴禁擅自改動！
-    # 統一透過 core.platform.ensure_installed_modules_path 將所有已安裝 .modules/<mod>
-    # 注入 sys.path（並將當前目標模組與 core 置於最前）。
-    # 嚴禁直接運行開發環境 (source/) 程式碼，禁止在此向 sys.path 插入 source/ 空間！
-    # =========================================================================
-    from core.platform import ensure_installed_modules_path
-
-    mod_root = os.path.dirname(os.path.dirname(target_cli))
-    ensure_installed_modules_path(
-        yscb_root=yscb_abs,
-        priority_module=module_name,
-        extra_paths=[mod_root] if os.path.isdir(mod_root) else None,
-    )
-
-    # 載入模組
-    if target_cli in _MODULE_CACHE:
-        mod = _MODULE_CACHE[target_cli]
-    else:
-        mod_pkg = module_name.replace("-", "_")
-        script_stem = os.path.splitext(os.path.basename(target_cli))[0].replace(".", "_")
-        unique_mod_name = f"_yscb_mod_{mod_pkg}_{script_stem}"
-        spec = importlib.util.spec_from_file_location(
-            unique_mod_name,
-            target_cli,
-        )
-        if spec is None or spec.loader is None:
-            print(f"[yscb] Error: Cannot load spec for '{target_cli}'.")
-            return 1
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = mod
-        try:
-            spec.loader.exec_module(mod)
-        except Exception as load_err:
-            # 載入期例外（含 SyntaxError）移除半初始化模組並回傳 1
-            sys.modules.pop(spec.name, None)
-            err_msg = f"[yscb] Error loading CLI for '{module_name}': {type(load_err).__name__}: {load_err}"
-            _LAST_DISPATCH_ERROR_HINT = err_msg
-            print(err_msg)
-            return 1
-        _MODULE_CACHE[target_cli] = mod
-
-    exit_code = 0
-    orig_argv = list(sys.argv)
-    try:
-        sys.argv = [target_cli] + raw_args
-
-        # 優先尋找階層下劃線精確函式 (如 uri_list)
-        fn = getattr(mod, func_name, None)
-        if not callable(fn) and len(cmd_path) > 1:
-            # 檢查頂層函式 (例如 cli.uri，若其能自行處理 sub_cmd)
-            top_fn = getattr(mod, primary_cmd, None)
-            if callable(top_fn):
-                combined_args = cmd_path[1:] + positional_args
-                sub_bags = CmdBags(raw_cmd=raw_cmd_str, command=primary_cmd, args=combined_args, options=resolved_options)
-                fn = lambda _: top_fn(sub_bags)
-
-        if callable(fn):
-            ret = fn(cmd_bags)
-            exit_code = int(ret) if ret is not None else 0
-        elif cmd_spec and cmd_spec.cmd:
-            # 純分支且無自身函式，自動降級渲染子指令 Help
-            disp_cmd = " ".join(cmd_path)
-            print(HelpRenderer.render_cmd_help(module_name, disp_cmd, cmd_spec))
-            exit_code = 0
+        if isinstance(cmd_name, list):
+            cmd_path = [str(c) for c in cmd_name]
+        elif isinstance(cmd_name, str):
+            cmd_path = cmd_name.split() if " " in cmd_name else [cmd_name]
         else:
-            # 既無精確函式亦非純分支 (Hard Sunset: 徹底移除 process fallback)
-            disp_cmd = " ".join(cmd_path)
-            err_msg = (
-                f"[yscb] Error (EC-05): Module '{module_name}' CLI script does not define "
-                f"command function '{func_name}(cmd_bags)'."
-            )
+            cmd_path = []
+
+        func_name = "_".join(cmd_path).replace("-", "_") if cmd_path else "default"
+        primary_cmd = cmd_path[0] if cmd_path else ""
+
+        # 參數解析
+        global _LAST_DISPATCH_ERROR_HINT
+        _LAST_DISPATCH_ERROR_HINT = ""
+        try:
+            positional_args, resolved_options = OptionResolver.resolve(cmd_spec, raw_args)
+        except OptionResolutionError as err:
+            err_msg = f"[yscb] Error: {err}"
             _LAST_DISPATCH_ERROR_HINT = err_msg
             print(err_msg)
-            return 127
-    except SystemExit as se:
-        exit_code = se.code if isinstance(se.code, int) else (0 if se.code is None else 1)
-    except Exception as e:
-        disp_cmd = " ".join(cmd_path)
-        err_msg = f"[yscb] Error executing '{module_name} {disp_cmd}': {e}"
-        _LAST_DISPATCH_ERROR_HINT = err_msg
-        print(err_msg)
-        exit_code = 1
+            return 1
+
+        raw_cmd_str = " ".join(cmd_path + raw_args) if (cmd_path or raw_args) else ""
+        cmd_bags = CmdBags(
+            raw_cmd=raw_cmd_str,
+            command=func_name,
+            args=positional_args,
+            options=resolved_options,
+        )
+
+        target_cli = _find_module_cli(module_name, yscb_abs)
+        if not target_cli:
+            err_msg = f"[yscb] Error: Cannot find CLI entrypoint for module '{module_name}'."
+            _LAST_DISPATCH_ERROR_HINT = err_msg
+            print(err_msg)
+            return 1
+
+        # =========================================================================
+        # [!] 剛性架構約束 (Rigid Architectural Guardrail) - 嚴禁擅自改動！
+        # 統一透過 core.platform.ensure_installed_modules_path 將所有已安裝 .modules/<mod>
+        # 注入 sys.path（並將當前目標模組與 core 置於最前）。
+        # 嚴禁直接運行開發環境 (source/) 程式碼，禁止在此向 sys.path 插入 source/ 空間！
+        # =========================================================================
+        from core.platform import ensure_installed_modules_path
+
+        mod_root = os.path.dirname(os.path.dirname(target_cli))
+        ensure_installed_modules_path(
+            yscb_root=yscb_abs,
+            priority_module=module_name,
+            extra_paths=[mod_root] if os.path.isdir(mod_root) else None,
+        )
+
+        # 載入模組
+        if target_cli in _MODULE_CACHE:
+            mod = _MODULE_CACHE[target_cli]
+        else:
+            mod_pkg = module_name.replace("-", "_")
+            script_stem = os.path.splitext(os.path.basename(target_cli))[0].replace(".", "_")
+            unique_mod_name = f"_yscb_mod_{mod_pkg}_{script_stem}"
+            spec = importlib.util.spec_from_file_location(
+                unique_mod_name,
+                target_cli,
+            )
+            if spec is None or spec.loader is None:
+                print(f"[yscb] Error: Cannot load spec for '{target_cli}'.")
+                return 1
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
+            try:
+                spec.loader.exec_module(mod)
+            except Exception as load_err:
+                # 載入期例外（含 SyntaxError）移除半初始化模組並回傳 1
+                sys.modules.pop(spec.name, None)
+                err_msg = f"[yscb] Error loading CLI for '{module_name}': {type(load_err).__name__}: {load_err}"
+                _LAST_DISPATCH_ERROR_HINT = err_msg
+                print(err_msg)
+                return 1
+            _MODULE_CACHE[target_cli] = mod
+
+        exit_code = 0
+        orig_argv = list(sys.argv)
+        try:
+            sys.argv = [target_cli] + raw_args
+
+            # 優先尋找階層下劃線精確函式 (如 uri_list)
+            fn = getattr(mod, func_name, None)
+            if not callable(fn) and len(cmd_path) > 1:
+                # 檢查頂層函式 (例如 cli.uri，若其能自行處理 sub_cmd)
+                top_fn = getattr(mod, primary_cmd, None)
+                if callable(top_fn):
+                    combined_args = cmd_path[1:] + positional_args
+                    sub_bags = CmdBags(raw_cmd=raw_cmd_str, command=primary_cmd, args=combined_args, options=resolved_options)
+                    fn = lambda _: top_fn(sub_bags)
+
+            if callable(fn):
+                ret = fn(cmd_bags)
+                exit_code = int(ret) if ret is not None else 0
+            elif cmd_spec and cmd_spec.cmd:
+                # 純分支且無自身函式，自動降級渲染子指令 Help
+                disp_cmd = " ".join(cmd_path)
+                print(HelpRenderer.render_cmd_help(module_name, disp_cmd, cmd_spec))
+                exit_code = 0
+            else:
+                # 既無精確函式亦非純分支 (Hard Sunset: 徹底移除 process fallback)
+                disp_cmd = " ".join(cmd_path)
+                err_msg = (
+                    f"[yscb] Error (EC-05): Module '{module_name}' CLI script does not define "
+                    f"command function '{func_name}(cmd_bags)'."
+                )
+                _LAST_DISPATCH_ERROR_HINT = err_msg
+                print(err_msg)
+                return 127
+        except SystemExit as se:
+            exit_code = se.code if isinstance(se.code, int) else (0 if se.code is None else 1)
+        except Exception as e:
+            disp_cmd = " ".join(cmd_path)
+            err_msg = f"[yscb] Error executing '{module_name} {disp_cmd}': {e}"
+            _LAST_DISPATCH_ERROR_HINT = err_msg
+            print(err_msg)
+            exit_code = 1
+        finally:
+            sys.argv = orig_argv
+
+        return exit_code
     finally:
-        sys.argv = orig_argv
         # 對稱觸發 post_cli_dispatch Hook
         _ensure_hooks("post_cli_dispatch", verbose=is_verbose)
-
-    return exit_code
 
 
 def _maybe_check_and_print_updates() -> None:
@@ -736,6 +747,7 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
     core_commands = set(core_mod.commands.keys()) if core_mod else {
         "install", "update", "remove", "list", "status",
         "rollback", "reload", "restore", "bootstrap", "uri", "config", "event",
+        "contributes", "gitignore",
     }
 
     # 2. 判斷是否為 core 的快捷指令 (例如 yscb status, yscb list)
@@ -910,4 +922,3 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
     )
     _maybe_check_and_print_updates()
     return ret
-

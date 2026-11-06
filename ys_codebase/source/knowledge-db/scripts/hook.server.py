@@ -8,8 +8,6 @@ import logging
 import threading
 from typing import Any
 
-logger = logging.getLogger("knowledge-db.hook.server")
-
 
 def on_worker_warming(context: Any) -> str:
     """
@@ -17,12 +15,13 @@ def on_worker_warming(context: Any) -> str:
     Pre-warms KnowledgeEngine in a background thread.
     """
     def _do_pre_warm():
+        log = logging.getLogger("knowledge-db.hook.server")
         try:
             from knowledge_db.engine import KnowledgeEngine
             KnowledgeEngine.pre_warm()
-            logger.info("[hook.server] Knowledge-DB pre-warm completed successfully.")
+            log.info("[hook.server] Knowledge-DB pre-warm completed successfully.")
         except Exception as e:
-            logger.warning(f"[hook.server] Knowledge-DB pre-warm failed or skipped: {e}")
+            log.warning(f"[hook.server] Knowledge-DB pre-warm failed or skipped: {e}")
 
     threading.Thread(target=_do_pre_warm, daemon=True, name="kdb-prewarm").start()
     return "warming_started"
@@ -31,5 +30,3 @@ def on_worker_warming(context: Any) -> str:
 def on_server_worker_warming(context: Any) -> str:
     """Standard event entry point matching events.broadcast('server_worker_warming')."""
     return on_worker_warming(context)
-
-

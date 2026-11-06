@@ -5,10 +5,13 @@ PlanScanner — 進行中開發計畫狀態掃描與矩陣渲染服務。
 import os
 import re
 from pathlib import Path
-from typing import Optional, List, Dict, Tuple, Any, Union
-
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ._common import resolve_plan_uri
+
+_RESEARCH_DOC_RE = re.compile(r"^R\d{2}_.+\.md$", re.IGNORECASE)
+_PLAN_DATE_PREFIX_RE = re.compile(r"^\d{4}_\d{2}_\d{2}")
+_CHECKLIST_ITEM_RE = re.compile(r"^\s*-\s*\[([xX ])\]\s+(.+)")
 
 
 class PlanScanner:
@@ -17,7 +20,7 @@ class PlanScanner:
     def __init__(self, plans_dir: Optional[Path] = None):
         """
         初始化 PlanScanner。
-        
+
         Args:
             plans_dir: 進行中計畫目錄路徑。若為 None 則透過 workflow.plans:// 解析。
         """
@@ -27,13 +30,90 @@ class PlanScanner:
             else resolve_plan_uri("workflow.plans://", "plans")
         )
 
+    def _resolve_umbrella_status(self, plan_dir: Path, umbrella: Path) -> str:
+        """判定 Umbrella 主計畫狀態。"""
+        from .status import PlanStatusResolver
+
+        raw_status = PlanStatusResolver.get_doc_header_status(umbrella)
+        if raw_status in ("completed", "concluded"):
+            return "Completed"
+        if raw_status in ("in progress", "executing", "implementing"):
+            return "In Progress"
+        if raw_status in ("planning", "discussing", "draft", "phase 0"):
+            return "Planning" if raw_status == "planning" else raw_status.title()
+
+        sub_dirs = [d for d in plan_dir.iterdir() if d.is_dir() and d.name.startswith("sub_")]
+        if not sub_dirs:
+            return "Planning"
+        sub_statuses = [self.get_plan_info(sd)[1] for sd in sub_dirs]
+        return "Completed" if all("Completed" in s for s in sub_statuses) else "In Progress"
+
+    @staticmethod
+    def _resolve_fast_track_status(ft_plan: Path) -> str:
+        """判定 Fast Track 計畫狀態。"""
+        from .status import PlanStatusResolver
+
+        raw_status = PlanStatusResolver.get_doc_header_status(ft_plan)
+        if raw_status in ("completed", "concluded"):
+            return "Completed"
+        if raw_status == "passed":
+            return "Passed"
+        if raw_status in ("in progress", "implementing"):
+            return "In Progress"
+        if raw_status == "unknown":
+            return "Planning"
+        return raw_status.title()
+
+    @staticmethod
+    def _resolve_full_track_status(plan_dir: Path) -> str:
+        """判定 Full Track 計畫狀態（支援標準檔名與 _auto.md 後綴雙軌相容）。"""
+        from .status import PlanStatusResolver
+
+        p07_file = PlanStatusResolver.resolve_phase_file(plan_dir, "P07")
+        if p07_file.exists():
+            return "Completed" if PlanStatusResolver.is_doc_completed(p07_file) else "Reviewing/Phase 7"
+
+        p06_file = PlanStatusResolver.resolve_phase_file(plan_dir, "P06")
+        p05_file = PlanStatusResolver.resolve_phase_file(plan_dir, "P05")
+        if (
+            p06_file.exists()
+            and p05_file.exists()
+            and PlanStatusResolver.get_doc_header_status(p06_file) in ("in progress", "passed", "completed")
+        ):
+            return "Testing/Phase 6"
+        if p05_file.exists():
+            return "Implementing/Phase 5"
+        if PlanStatusResolver.resolve_phase_file(plan_dir, "P04").exists():
+            return "Reviewing/Phase 4"
+        if PlanStatusResolver.resolve_phase_file(plan_dir, "P03").exists():
+            return "Designing/Phase 3"
+        if PlanStatusResolver.resolve_phase_file(plan_dir, "P02").exists():
+            return "Designing/Phase 2"
+        return "Planning/Phase 1"
+
+    @staticmethod
+    def _resolve_revision_status(rev_log: Path) -> str:
+        """判定獨立修訂計畫 (Revision) 狀態。"""
+        from .status import PlanStatusResolver
+
+        raw_status = PlanStatusResolver.get_doc_header_status(rev_log)
+        if raw_status in ("completed", "concluded"):
+            return "Completed"
+        if raw_status == "passed":
+            return "Passed"
+        if raw_status in ("in progress", "implementing"):
+            return "In Progress"
+        if raw_status in ("confirmed", "draft", "pending"):
+            return raw_status.title()
+        return "In Progress"
+
     def get_plan_info(self, plan_dir: Path) -> Tuple[str, str]:
         """
         解析單一計畫目錄的 Track 與當前狀態。
-        
+
         Args:
             plan_dir: 計畫目錄路徑
-            
+
         Returns:
             Tuple[str, str]: (track_type, status)
         """
@@ -48,110 +128,29 @@ class PlanScanner:
         track_type = "Unknown"
         status = "Unknown"
 
-        # 1. Umbrella 判定
         if umbrella.exists():
             track_type = "Umbrella"
-            raw_status = PlanStatusResolver.get_doc_header_status(umbrella)
-            if raw_status in ("completed", "concluded"):
-                status = "Completed"
-            elif raw_status in ("in progress", "executing", "implementing"):
-                status = "In Progress"
-            elif raw_status in ("planning", "discussing", "draft", "phase 0"):
-                status = "Planning" if raw_status == "planning" else raw_status.title()
-            else:
-                sub_dirs = [d for d in plan_dir.iterdir() if d.is_dir() and d.name.startswith("sub_")]
-                if sub_dirs:
-                    sub_statuses = [self.get_plan_info(sd)[1] for sd in sub_dirs]
-                    if all("Completed" in s for s in sub_statuses):
-                        status = "Completed"
-                    else:
-                        status = "In Progress"
-                else:
-                    status = "Planning"
-
-        # 2. Fast Track 判定
+            status = self._resolve_umbrella_status(plan_dir, umbrella)
         elif ft_plan.exists():
             track_type = "Fast Track"
-            raw_status = PlanStatusResolver.get_doc_header_status(ft_plan)
-            if raw_status in ("completed", "concluded"):
-                status = "Completed"
-            elif raw_status == "passed":
-                status = "Passed"
-            elif raw_status in ("in progress", "implementing"):
-                status = "In Progress"
-            elif raw_status in ("confirmed", "planning", "draft", "pending"):
-                status = raw_status.title()
-            elif raw_status == "unknown":
-                status = "Planning"
-            else:
-                status = raw_status.title()
-
-        # 3. Full Track 判定 (支援標準檔名與 _auto.md 後綴雙軌相容)
+            status = self._resolve_fast_track_status(ft_plan)
         elif p01_req.exists():
             track_type = "Full Track"
-            p07_file = PlanStatusResolver.resolve_phase_file(plan_dir, "P07")
-            p06_file = PlanStatusResolver.resolve_phase_file(plan_dir, "P06")
-            p05_file = PlanStatusResolver.resolve_phase_file(plan_dir, "P05")
-            p04_file = PlanStatusResolver.resolve_phase_file(plan_dir, "P04")
-            p03_file = PlanStatusResolver.resolve_phase_file(plan_dir, "P03")
-            p02_file = PlanStatusResolver.resolve_phase_file(plan_dir, "P02")
-
-            if p07_file.exists():
-                if PlanStatusResolver.is_doc_completed(p07_file):
-                    status = "Completed"
-                else:
-                    status = "Reviewing/Phase 7"
-            elif p06_file.exists() and p05_file.exists() and PlanStatusResolver.get_doc_header_status(p06_file) in ("in progress", "passed", "completed"):
-                status = "Testing/Phase 6"
-            elif p05_file.exists():
-                status = "Implementing/Phase 5"
-            elif p04_file.exists():
-                status = "Reviewing/Phase 4"
-            elif p03_file.exists():
-                status = "Designing/Phase 3"
-            elif p02_file.exists():
-                status = "Designing/Phase 2"
-            else:
-                status = "Planning/Phase 1"
-
-        # 4. 獨立修訂計畫 (Revision) 判定 (若附掛於 1~3 主計畫則不會進入此分支，保持正交不影響原計畫狀態)
+            status = self._resolve_full_track_status(plan_dir)
         elif rev_log.exists():
             track_type = "Revision"
-            raw_status = PlanStatusResolver.get_doc_header_status(rev_log)
-            if raw_status in ("completed", "concluded"):
-                status = "Completed"
-            elif raw_status == "passed":
-                status = "Passed"
-            elif raw_status in ("in progress", "implementing"):
-                status = "In Progress"
-            elif raw_status in ("confirmed", "draft", "pending"):
-                status = raw_status.title()
-            else:
-                status = "In Progress"
-
-        # 5. Research 調研 Track 判定
-        elif any(f.is_file() and re.match(r"^R\d{2}_.+\.md$", f.name, re.IGNORECASE) for f in plan_dir.iterdir() if f.is_file()):
+            status = self._resolve_revision_status(rev_log)
+        elif any(f.is_file() and _RESEARCH_DOC_RE.match(f.name) for f in plan_dir.iterdir() if f.is_file()):
             track_type = "Research"
-            if PlanStatusResolver.is_research_completed(plan_dir):
-                status = "Concluded"
-            else:
-                status = "Draft"
-
-        # 6. Phase 0 判定
+            status = "Concluded" if PlanStatusResolver.is_research_completed(plan_dir) else "Draft"
         elif p00_req.exists():
             track_type = "Phase 0"
             raw_status = PlanStatusResolver.get_doc_header_status(p00_req)
-            if raw_status in ("confirmed", "passed", "completed"):
-                status = "P00 Confirmed"
-            else:
-                status = "P00 Discussing"
-
-        # 6.5 前置源頭資產 (Seeded: roadmap.md / todo.md) 判定
+            status = "P00 Confirmed" if raw_status in ("confirmed", "passed", "completed") else "P00 Discussing"
         elif (plan_dir / "roadmap.md").is_file() or (plan_dir / "todo.md").is_file():
             track_type = "Seeded"
             status = "Seeded (Pending Plan)"
 
-        # 7. 檢查暫停快照
         if (plan_dir / "handoff.md").exists() and status not in ("Completed", "Concluded"):
             status = f"{status} (Paused)"
 
@@ -161,7 +160,7 @@ class PlanScanner:
         """
         掃描 workflow.plans:// 下的所有活躍進行中計畫。
         明確不掃描歷史目錄。
-        
+
         Returns:
             List[Dict]: 結構化計畫清單
         """
@@ -169,18 +168,19 @@ class PlanScanner:
             return []
 
         results = []
-        # 僅掃描符合時間戳命名規範之活躍計畫目錄 (r"^\d{4}_\d{2}_\d{2}")
         plan_dirs = [
             d for d in self.plans_dir.iterdir()
-            if d.is_dir() and not d.name.startswith(".") and re.match(r"^\d{4}_\d{2}_\d{2}", d.name)
+            if d.is_dir() and not d.name.startswith(".") and _PLAN_DATE_PREFIX_RE.match(d.name)
         ]
 
         for p_dir in sorted(plan_dirs, key=lambda x: x.name, reverse=True):
             track_type, status = self.get_plan_info(p_dir)
             sub_list = []
 
-            # 遞迴掃描子計畫 sub_*
-            sub_dirs = sorted([d for d in p_dir.iterdir() if d.is_dir() and d.name.startswith("sub_")], key=lambda x: x.name)
+            sub_dirs = sorted(
+                [d for d in p_dir.iterdir() if d.is_dir() and d.name.startswith("sub_")],
+                key=lambda x: x.name,
+            )
             for s_dir in sub_dirs:
                 s_track, s_status = self.get_plan_info(s_dir)
                 sub_list.append({
@@ -203,10 +203,10 @@ class PlanScanner:
     def render_matrix_ascii(self, plans: Optional[List[Dict]] = None) -> str:
         """
         將計畫清單渲染為 ASCII 表格字串。
-        
+
         Args:
             plans: 計畫清單，若為 None 則調用 scan_active_plans()
-            
+
         Returns:
             str: 格式化表格文字
         """
@@ -245,12 +245,6 @@ class PlanScanner:
         解析目標計畫或子計畫目錄路徑。
         - 若指定 plan_name_or_subpath：支援完整路徑、`<plan_name>`、`<plan_name>/sub_XX` 或唯一 `sub_XX` 名稱。
         - 若未指定：自動篩選尚未 Completed / Concluded 之活躍計畫；若僅有 1 個則自動定位，若超過 1 個則拒絕盲猜並回傳提示訊息。
-
-        Args:
-            plan_name_or_subpath: 計畫名稱、子計畫相對路徑或 None
-
-        Returns:
-            Tuple[Optional[Path], Optional[str]]: (定位之目標目錄 Path, 錯誤或提示訊息)
         """
         if plan_name_or_subpath:
             raw_str = str(plan_name_or_subpath).strip()
@@ -262,11 +256,10 @@ class PlanScanner:
             if rel_cand.is_dir():
                 return rel_cand, None
 
-            # 支援直接傳入 sub_XX 名稱（於活躍計畫下搜尋唯一匹配之子計畫目錄）
             if raw_str.startswith("sub_") and self.plans_dir.exists():
                 matched_subs: List[Path] = []
                 for p_dir in sorted(self.plans_dir.iterdir(), key=lambda x: x.name, reverse=True):
-                    if p_dir.is_dir() and re.match(r"^\d{4}_\d{2}_\d{2}", p_dir.name):
+                    if p_dir.is_dir() and _PLAN_DATE_PREFIX_RE.match(p_dir.name):
                         sub_cand = p_dir / raw_str
                         if sub_cand.is_dir():
                             matched_subs.append(sub_cand.resolve())
@@ -278,7 +271,6 @@ class PlanScanner:
 
             return None, f"找不到指定的計畫目錄：'{raw_str}'。"
 
-        # 未指定時：掃描所有活躍計畫，過濾掉已 Completed / Concluded 的計畫
         plans = self.scan_active_plans()
         if not plans:
             return None, "目前無進行中的開發計畫。"
@@ -297,13 +289,9 @@ class PlanScanner:
 
         return Path(target_pool[0]["path"]).resolve(), None
 
-    def build_recovery_capsule(self, plan_dir: Path) -> str:
-        """
-        當目標計畫未建立 handoff.md 時，從現有計畫檔案確定性提取恢復上下文膠囊：
-        1. 關鍵決策紀錄 (DRs)
-        2. 受影響檔案清單 (Impacted Files)
-        3. 任務進度與待完成項目 (Task Progress & Next Unchecked Items)
-        """
+    @staticmethod
+    def _extract_capsule_drs(plan_dir: Path) -> List[str]:
+        """提取恢復上下文膠囊之關鍵決策紀錄 (DRs，最多 5 筆)。"""
         from .searcher import PlanSearcher
         from .status import PlanStatusResolver
 
@@ -335,6 +323,12 @@ class PlanScanner:
                 continue
             if len(drs) >= 5:
                 break
+        return drs
+
+    @staticmethod
+    def _extract_capsule_impacted_files(plan_dir: Path) -> List[str]:
+        """提取恢復上下文膠囊之受影響檔案清單 (最多 8 筆)。"""
+        from .status import PlanStatusResolver
 
         impacted_files: List[str] = []
         file_sources: List[Path] = []
@@ -370,6 +364,12 @@ class PlanScanner:
                 continue
             if len(impacted_files) >= 8:
                 break
+        return impacted_files
+
+    @staticmethod
+    def _extract_capsule_task_progress(plan_dir: Path) -> Tuple[int, List[str]]:
+        """提取恢復上下文膠囊之任務進度與待辦清單 (checked_cnt, unchecked_items)。"""
+        from .status import PlanStatusResolver
 
         checked_cnt = 0
         unchecked_items: List[str] = []
@@ -386,7 +386,7 @@ class PlanScanner:
         for src_f in task_sources:
             try:
                 for line in src_f.read_text(encoding="utf-8", errors="ignore").splitlines():
-                    m_chk = re.match(r"^\s*-\s*\[([xX ])\]\s+(.+)", line)
+                    m_chk = _CHECKLIST_ITEM_RE.match(line)
                     if m_chk:
                         mark, item_txt = m_chk.group(1), m_chk.group(2).strip()
                         if mark.lower() == "x":
@@ -396,6 +396,18 @@ class PlanScanner:
                             unchecked_items.append(short_it)
             except Exception:
                 continue
+        return checked_cnt, unchecked_items
+
+    def build_recovery_capsule(self, plan_dir: Path) -> str:
+        """
+        當目標計畫未建立 handoff.md 時，從現有計畫檔案確定性提取恢復上下文膠囊：
+        1. 關鍵決策紀錄 (DRs)
+        2. 受影響檔案清單 (Impacted Files)
+        3. 任務進度與待完成項目 (Task Progress & Next Unchecked Items)
+        """
+        drs = self._extract_capsule_drs(plan_dir)
+        impacted_files = self._extract_capsule_impacted_files(plan_dir)
+        checked_cnt, unchecked_items = self._extract_capsule_task_progress(plan_dir)
 
         cap_lines: List[str] = []
         if drs:
@@ -420,13 +432,6 @@ class PlanScanner:
     ) -> Dict[str, Any]:
         """
         執行確定性狀態領航與選配之 `--resume` `handoff.md` 原子閱後即焚 (`Consume & Delete`)。
-
-        Args:
-            plan_name_or_subpath: 目標計畫或子計畫路徑/名稱（選填）
-            consume_handoff: 是否在讀取 handoff.md 後立即物理刪除 (os.unlink)
-
-        Returns:
-            Dict[str, Any]: 結構化領航與恢復結果
         """
         from .status import PlanStatusResolver
 
@@ -445,7 +450,6 @@ class PlanScanner:
         nav_info = PlanStatusResolver.resolve_next_action(target_dir)
         actual_dir: Path = nav_info["target_plan_dir"]
 
-        # 檢查目標目錄（如 sub_XX）或外層 Umbrella 目錄是否存在 handoff.md
         handoff_candidates: List[Path] = []
         if (actual_dir / "handoff.md").is_file():
             handoff_candidates.append(actual_dir / "handoff.md")
@@ -493,7 +497,7 @@ class PlanScanner:
             out_lines.append("-" * 90)
             out_lines.append(handoff_content.rstrip())
         else:
-            out_lines.append(f"  * Handoff Snapshot   : None (依產出物檔案結構與標頭狀態判定)")
+            out_lines.append("  * Handoff Snapshot   : None (依產出物檔案結構與標頭狀態判定)")
             recovery_capsule = self.build_recovery_capsule(actual_dir)
             if recovery_capsule:
                 out_lines.append("-" * 90)
@@ -512,4 +516,3 @@ class PlanScanner:
             "nav_info": nav_info,
             "formatted_output": "\n".join(out_lines),
         }
-

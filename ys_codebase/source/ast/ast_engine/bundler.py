@@ -6,6 +6,7 @@ and deterministic overload ID disambiguation.
 
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
+import dataclasses
 from datetime import datetime, timezone
 import json
 import logging
@@ -29,25 +30,64 @@ PARALLEL_BUNDLE_THRESHOLD = 10
 _worker_registry: Optional[ParserRegistry] = None
 
 
+def _safe_resolve_path(p: Union[str, Path]) -> Path:
+    p_obj = Path(p)
+    try:
+        return p_obj.resolve()
+    except OSError:
+        return p_obj
+
+
+def _safe_resolve_str(p: Union[str, Path]) -> str:
+    p_obj = Path(p)
+    try:
+        return str(p_obj.resolve()).replace("\\", "/")
+    except OSError:
+        return str(p_obj).replace("\\", "/")
+
+
+def _safe_exists(p: Path) -> bool:
+    try:
+        return p.exists()
+    except OSError:
+        return False
+
+
+def _safe_is_file(p: Path) -> bool:
+    try:
+        return p.is_file()
+    except OSError:
+        return False
+
+
+def _safe_mtime_ns(p: Path) -> int:
+    try:
+        return p.stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
 def ensure_unique_overload_ids(
     symbols: List[UnifiedSymbol],
     default_space: str = "project",
 ) -> List[UnifiedSymbol]:
     """
-    Ensure that same-file method overloads (symbols sharing `(file_path, parent_scope, name, kind)`)
-    always receive distinct `UnifiedSymbol.id` values by passing `(line_number, signature)` to `compute_id`.
+    Ensure that same-file method overloads (symbols sharing `(file_path, scope_path_or_parent_scope, name, kind)`)
+    always receive distinct `UnifiedSymbol.id` values by passing `(line_number, signature)` to `compute_id`,
+    and synchronize `parent_id` on any same-file child symbols whose parent ID was remapped.
     """
     if not symbols:
         return symbols
 
     groups: Dict[Tuple[str, str, str, str], List[int]] = defaultdict(list)
     for idx, sym in enumerate(symbols):
-        parent_scope = (sym.metadata or {}).get("parent_scope") or ""
+        scope_key = sym.scope_path or str((sym.metadata or {}).get("parent_scope") or "")
         short_name = (sym.metadata or {}).get("short_name") or sym.name
-        groups[(sym.file_path, str(parent_scope), str(short_name), str(sym.kind))].append(idx)
+        groups[(sym.file_path, str(scope_key), str(short_name), str(sym.kind))].append(idx)
 
     updated = list(symbols)
     seen_ids: Set[str] = set()
+    id_remap: Dict[Tuple[str, str], str] = {}
 
     for (_, _, _, _), indices in groups.items():
         if len(indices) > 1:
@@ -67,25 +107,12 @@ def ensure_unique_overload_ids(
                     signature_hint=sig_hint,
                 )
                 if new_id != sym.id:
-                    updated[i] = UnifiedSymbol(
+                    id_remap[(sym.file_path, sym.id)] = new_id
+                    updated[i] = dataclasses.replace(
+                        sym,
                         id=new_id,
-                        name=sym.name,
-                        kind=sym.kind,
-                        file_path=sym.file_path,
-                        line_number=sym.line_number,
-                        end_line=sym.end_line,
-                        language=sym.language,
-                        docstring=sym.docstring,
-                        signature=sym.signature,
-                        fqn=sym.fqn,
-                        scope_path=sym.scope_path,
-                        parent_id=sym.parent_id,
-                        children=sym.children,
-                        parameters=sym.parameters,
-                        return_type=sym.return_type,
-                        search_payload=sym.search_payload,
-                        visibility=sym.visibility,
-                        members=sym.members,
+                        children=tuple(sym.children),
+                        members=tuple(sym.members),
                         metadata=dict(sym.metadata),
                     )
 
@@ -101,28 +128,30 @@ def ensure_unique_overload_ids(
                 line_number=sym.line_number,
                 signature_hint=sig_hint,
             )
-            updated[idx] = UnifiedSymbol(
+            orig_id = symbols[idx].id
+            id_remap[(sym.file_path, orig_id)] = new_id
+            id_remap[(sym.file_path, sym.id)] = new_id
+            updated[idx] = dataclasses.replace(
+                sym,
                 id=new_id,
-                name=sym.name,
-                kind=sym.kind,
-                file_path=sym.file_path,
-                line_number=sym.line_number,
-                end_line=sym.end_line,
-                language=sym.language,
-                docstring=sym.docstring,
-                signature=sym.signature,
-                fqn=sym.fqn,
-                scope_path=sym.scope_path,
-                parent_id=sym.parent_id,
-                children=sym.children,
-                parameters=sym.parameters,
-                return_type=sym.return_type,
-                search_payload=sym.search_payload,
-                visibility=sym.visibility,
-                members=sym.members,
+                children=tuple(sym.children),
+                members=tuple(sym.members),
                 metadata=dict(sym.metadata),
             )
         seen_ids.add(updated[idx].id)
+
+    if id_remap:
+        for idx, sym in enumerate(updated):
+            if sym.parent_id and (sym.file_path, sym.parent_id) in id_remap:
+                new_parent_id = id_remap[(sym.file_path, sym.parent_id)]
+                if new_parent_id != sym.parent_id:
+                    updated[idx] = dataclasses.replace(
+                        sym,
+                        parent_id=new_parent_id,
+                        children=tuple(sym.children),
+                        members=tuple(sym.members),
+                        metadata=dict(sym.metadata),
+                    )
 
     return updated
 
@@ -179,24 +208,11 @@ def restore_unaggregated_partial_symbol(sym: UnifiedSymbol) -> UnifiedSymbol:
     else:
         new_meta.pop("field_types", None)
     search_payload = f"{sym.fqn} {new_meta.get('short_name', sym.name)} {own_doc} {sym.signature}".strip()
-    return UnifiedSymbol(
-        id=sym.id,
-        name=sym.name,
-        kind=sym.kind,
-        file_path=sym.file_path,
-        line_number=sym.line_number,
-        end_line=sym.end_line,
-        language=sym.language,
+    return dataclasses.replace(
+        sym,
         docstring=own_doc,
-        signature=sym.signature,
-        fqn=sym.fqn,
-        scope_path=sym.scope_path,
-        parent_id=sym.parent_id,
         children=tuple(own_members),
-        parameters=sym.parameters,
-        return_type=sym.return_type,
         search_payload=search_payload,
-        visibility=sym.visibility,
         members=tuple(own_members),
         metadata=new_meta,
     )
@@ -268,25 +284,10 @@ def aggregate_partial_symbols(symbols: List[UnifiedSymbol]) -> List[UnifiedSymbo
                         }
                     ]
                     new_meta["partial_siblings"] = []
-                    updated[indices[0]] = UnifiedSymbol(
-                        id=only_sym.id,
-                        name=only_sym.name,
-                        kind=only_sym.kind,
-                        file_path=only_sym.file_path,
-                        line_number=only_sym.line_number,
-                        end_line=only_sym.end_line,
-                        language=only_sym.language,
-                        docstring=only_sym.docstring,
-                        signature=only_sym.signature,
-                        fqn=only_sym.fqn,
-                        scope_path=only_sym.scope_path,
-                        parent_id=only_sym.parent_id,
-                        children=only_sym.children,
-                        parameters=only_sym.parameters,
-                        return_type=only_sym.return_type,
-                        search_payload=only_sym.search_payload,
-                        visibility=only_sym.visibility,
-                        members=only_sym.members,
+                    updated[indices[0]] = dataclasses.replace(
+                        only_sym,
+                        children=tuple(only_sym.children),
+                        members=tuple(only_sym.members),
                         metadata=new_meta,
                     )
                 else:
@@ -366,24 +367,11 @@ def aggregate_partial_symbols(symbols: List[UnifiedSymbol]) -> List[UnifiedSymbo
                 del new_meta["field_types"]
             doc_to_use = own_d or combined_doc
             search_payload = f"{orig.fqn} {new_meta.get('short_name', orig.name)} {doc_to_use} {orig.signature}".strip()
-            updated[i] = UnifiedSymbol(
-                id=orig.id,
-                name=orig.name,
-                kind=orig.kind,
-                file_path=orig.file_path,
-                line_number=orig.line_number,
-                end_line=orig.end_line,
-                language=orig.language,
+            updated[i] = dataclasses.replace(
+                orig,
                 docstring=doc_to_use,
-                signature=orig.signature,
-                fqn=orig.fqn,
-                scope_path=orig.scope_path,
-                parent_id=orig.parent_id,
                 children=tuple(merged_members),
-                parameters=orig.parameters,
-                return_type=orig.return_type,
                 search_payload=search_payload,
-                visibility=orig.visibility,
                 members=tuple(merged_members),
                 metadata=new_meta,
             )
@@ -443,7 +431,7 @@ def _resolve_default_ast_storage_dir(project_root: Optional[Path] = None) -> Pat
 
         res = uri.resolve("ast.storage://", interactive=False)
         if res and not str(res).startswith("!undefined"):
-            return Path(str(res)).resolve()
+            return _safe_resolve_path(str(res))
     except Exception:
         pass
     try:
@@ -451,10 +439,10 @@ def _resolve_default_ast_storage_dir(project_root: Optional[Path] = None) -> Pat
 
         res_storage = uri.resolve("storage.local://ast", interactive=False)
         if res_storage and not str(res_storage).startswith("!undefined"):
-            return Path(str(res_storage)).resolve()
+            return _safe_resolve_path(str(res_storage))
     except Exception:
         pass
-    base = Path(project_root).resolve() if project_root else Path.cwd().resolve()
+    base = _safe_resolve_path(project_root) if project_root else _safe_resolve_path(Path.cwd())
     if (base / "ys_codebase").is_dir():
         return base / "ys_codebase" / ".storage.local" / "ast"
     return base / ".storage.local" / "ast"
@@ -512,7 +500,7 @@ def _normalize_space_dirty_paths(
         if p_obj.is_absolute():
             expanded.add(raw_p)
             try:
-                c_abs = str(p_obj.resolve()).replace("\\", "/")
+                c_abs = _safe_resolve_str(p_obj)
                 expanded.add(c_abs)
                 expanded.add(compute_project_relpath(p_obj, p_obj.parent, project_root=proj_root))
             except Exception:
@@ -541,10 +529,7 @@ def _normalize_space_dirty_paths(
             for fp_rec in chosen_matches:
                 src_root = Path(fp_rec.source_root)
                 cand_abs = src_root / raw_p
-                try:
-                    c_abs = str(cand_abs.resolve()).replace("\\", "/")
-                except OSError:
-                    c_abs = str(cand_abs).replace("\\", "/")
+                c_abs = _safe_resolve_str(cand_abs)
                 expanded.add(c_abs)
                 expanded.add(compute_project_relpath(cand_abs, src_root, project_root=proj_root))
                 matched_from_snap = True
@@ -563,11 +548,11 @@ def _normalize_space_dirty_paths(
                 matching_candidates.append((cand_abs, Path(inc_root)))
             if proj_root is not None:
                 cand_proj = Path(proj_root) / raw_p
-                if cand_proj.exists():
+                if _safe_exists(cand_proj):
                     matching_candidates.append((cand_proj, Path(proj_root)))
 
-        existing_cands = [(c, r) for c, r in matching_candidates if c.exists()]
-        missing_cands = [(c, r) for c, r in matching_candidates if not c.exists()]
+        existing_cands = [(c, r) for c, r in matching_candidates if _safe_exists(c)]
+        missing_cands = [(c, r) for c, r in matching_candidates if not _safe_exists(c)]
         cache_ref = file_symbols_cache or {}
         if prefer_missing and missing_cands:
             if len(missing_cands) == 1:
@@ -576,13 +561,13 @@ def _normalize_space_dirty_paths(
                 cached_missing = [
                     (c, r)
                     for c, r in missing_cands
-                    if str(c.resolve()).replace("\\", "/") in cache_ref
+                    if _safe_resolve_str(c) in cache_ref
                 ]
                 cands_to_use = cached_missing or missing_cands
         else:
             if len(existing_cands) > 1 and "/" not in raw_p:
-                max_mtime = max((c.stat().st_mtime_ns for c, _ in existing_cands), default=0)
-                existing_cands = [(c, r) for c, r in existing_cands if c.stat().st_mtime_ns >= max_mtime]
+                max_mtime = max((_safe_mtime_ns(c) for c, _ in existing_cands), default=0)
+                existing_cands = [(c, r) for c, r in existing_cands if _safe_mtime_ns(c) >= max_mtime]
             cands_to_use = (
                 existing_cands
                 if len(existing_cands) >= 1
@@ -590,10 +575,7 @@ def _normalize_space_dirty_paths(
             )
         if cands_to_use:
             for cand_abs, inc_root in cands_to_use:
-                try:
-                    c_abs = str(cand_abs.resolve()).replace("\\", "/")
-                except OSError:
-                    c_abs = str(cand_abs).replace("\\", "/")
+                c_abs = _safe_resolve_str(cand_abs)
                 expanded.add(c_abs)
                 expanded.add(compute_project_relpath(cand_abs, inc_root, project_root=proj_root))
         else:
@@ -616,7 +598,7 @@ class SemanticBundler:
         self.parser_registry = parser_registry or ParserRegistry(register_defaults=True)
         self.scanner = scanner or FingerprintScanner(space_manager)
         if storage_dir is not None:
-            self.storage_dir = Path(storage_dir).resolve()
+            self.storage_dir = _safe_resolve_path(storage_dir)
         else:
             proj_root = getattr(self.space_manager, "project_root", None)
             self.storage_dir = _resolve_default_ast_storage_dir(proj_root)
@@ -624,6 +606,7 @@ class SemanticBundler:
         self._file_call_sites_cache: Dict[str, List[SymbolCallSite]] = {}
         self._file_imports_cache: Dict[str, Dict[str, str]] = {}
         self._last_bundle_unique_files: Dict[str, Tuple[Path, str, Set[str]]] = {}
+        self._last_bundle_spaces: Set[str] = set()
 
     def _resolve_target_spaces(
         self, spaces: Optional[Iterable[Union[str, FileSpaceConfig]]] = None
@@ -696,10 +679,7 @@ class SemanticBundler:
         for sp in target_spaces:
             space_name = sp.name
             for _, f_path, base_dir in self._iter_space_eligible_files(sp):
-                try:
-                    c_key = str(f_path.resolve()).replace("\\", "/")
-                except OSError:
-                    c_key = str(f_path).replace("\\", "/")
+                c_key = _safe_resolve_str(f_path)
                 relpath = self._get_project_relpath(f_path, base_dir)
                 if c_key not in unique_files:
                     unique_files[c_key] = (f_path, relpath, {space_name})
@@ -729,10 +709,10 @@ class SemanticBundler:
         space_inc_roots: Dict[str, List[Path]] = {}
         for sp in target_spaces:
             if self.space_manager is not None and sp.name in loaded_spaces:
-                inc_roots = [Path(r).resolve() for r in self.space_manager.resolve_space_include(sp.name)]
+                inc_roots = [_safe_resolve_path(r) for r in self.space_manager.resolve_space_include(sp.name)]
             else:
                 inc_roots = [
-                    Path(r).resolve()
+                    _safe_resolve_path(r)
                     for r in getattr(
                         sp,
                         "resolved_include_paths",
@@ -783,18 +763,18 @@ class SemanticBundler:
                 for sp in target_spaces:
                     for inc_root in space_inc_roots.get(sp.name, []):
                         cand = inc_root / clean_p
-                        if cand.is_file():
+                        if _safe_is_file(cand):
                             inc_matches.append((cand, inc_root))
                 if len(inc_matches) > 1 and "/" not in clean_p:
-                    max_mtime = max((c.stat().st_mtime_ns for c, _ in inc_matches), default=0)
-                    inc_matches = [(c, r) for c, r in inc_matches if c.stat().st_mtime_ns >= max_mtime]
+                    max_mtime = max((_safe_mtime_ns(c) for c, _ in inc_matches), default=0)
+                    inc_matches = [(c, r) for c, r in inc_matches if _safe_mtime_ns(c) >= max_mtime]
                 for cand, inc_root in inc_matches:
                     _add_candidate(cand, inc_root)
                     matched_this = True
 
             if proj_root is not None:
                 cand_proj = Path(proj_root) / clean_p
-                if cand_proj.is_file():
+                if _safe_is_file(cand_proj):
                     _add_candidate(cand_proj, Path(proj_root))
                     matched_this = True
 
@@ -864,6 +844,7 @@ class SemanticBundler:
         target_spaces = self._resolve_target_spaces(spaces)
         unique_files = self._collect_space_files(target_spaces)
         self._last_bundle_unique_files = dict(unique_files)
+        self._last_bundle_spaces = {sp.name for sp in target_spaces}
 
         total_files = len(unique_files)
         all_symbols: List[UnifiedSymbol] = []
@@ -1067,7 +1048,7 @@ class SemanticBundler:
         target_path: Optional[Union[str, Path]] = None,
     ) -> Path:
         if target_path is not None:
-            out_file = Path(target_path).resolve()
+            out_file = _safe_resolve_path(target_path)
         else:
             bundles_dir = self.storage_dir / "bundles"
             bundles_dir.mkdir(parents=True, exist_ok=True)

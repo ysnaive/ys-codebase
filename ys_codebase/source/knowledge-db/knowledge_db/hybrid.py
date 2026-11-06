@@ -4,10 +4,10 @@ knowledge-db 複合檢索與 RRF 倒數排名融合引擎 (HybridSearchEngine)
 """
 
 import logging
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 
 from .embedding import EmbeddingService, VectorIndex
+from .retrieval import QueryFilter, _extract_file_ext, normalize_ftypes, resolve_space_weight
 from .schema import UnifiedSymbol
 
 logger = logging.getLogger("knowledge-db.hybrid")
@@ -54,12 +54,24 @@ class HybridSearchEngine:
         weights_map = space_weights if space_weights is not None else self.space_weights
         if not weights_map or sym is None:
             return 1.0
-        sym_spaces = getattr(sym, "spaces", None) or []
-        if not sym_spaces:
-            return 1.0
-        relevant = [s for s in sym_spaces if s in spaces_filter] if spaces_filter else sym_spaces
-        target = relevant or sym_spaces
-        return max((float(weights_map.get(s, 1.0)) for s in target), default=1.0)
+        return resolve_space_weight(getattr(sym, "spaces", None), spaces_filter=spaces_filter, space_weights=weights_map)
+
+    @staticmethod
+    def _build_bm25_results(
+        bm25_hits: List[Dict[str, Any]],
+        symbols_map: Dict[str, UnifiedSymbol],
+        limit: int,
+        mode: str = "lexical_bm25",
+    ) -> List[Dict[str, Any]]:
+        return [
+            {
+                "symbol": symbols_map.get(hit["doc_id"]),
+                "score": hit["score"],
+                "matched_terms": hit.get("matched_terms", []),
+                "mode": mode,
+            }
+            for hit in bm25_hits[:limit]
+        ]
 
     @property
     def is_vector_available(self) -> bool:
@@ -79,9 +91,6 @@ class HybridSearchEngine:
         """
         標準 RRF 倒數排名融合演算法：
         Score(d) = w_lex / (k + rank_lex) + w_vec / (k + rank_vec)
-        :param lexical_ranks: {doc_id: 1-indexed rank}
-        :param vector_ranks: {doc_id: 1-indexed rank}
-        :return: {doc_id: rrf_score}
         """
         all_doc_ids: Set[str] = set(lexical_ranks.keys()) | set(vector_ranks.keys())
         rrf_scores: Dict[str, float] = {}
@@ -100,7 +109,7 @@ class HybridSearchEngine:
         self,
         query: str,
         limit: int = 10,
-        file_types: Optional[List[str]] = None,
+        file_types: Optional[Union[str, List[str]]] = None,
         spaces: Optional[List[str]] = None,
         kinds: Optional[List[str]] = None,
         languages: Optional[List[str]] = None,
@@ -116,26 +125,13 @@ class HybridSearchEngine:
             return []
 
         effective_weights = space_weights if space_weights is not None else self.space_weights
-
-        # 規範化副檔名篩選集合 (支援逗號分隔或串列，去前綴點並轉小寫)
-        norm_ftypes: Optional[Set[str]] = None
-        if file_types:
-            norm_ftypes = set()
-            raw = [file_types] if isinstance(file_types, str) else list(file_types)
-            for item in raw:
-                for part in str(item).split(","):
-                    p = part.strip().lstrip(".").lower()
-                    if p:
-                        norm_ftypes.add(p)
-            if not norm_ftypes:
-                norm_ftypes = None
+        norm_ftypes = normalize_ftypes(file_types) or None
 
         # 1. 執行 BM25 倒排檢索 (擷取足夠候選集供融合)
         fetch_limit = max(limit * 3, 30)
         bm25_hits: List[Dict[str, Any]] = []
         symbols_map = getattr(self.inverted_index, "symbols", {}) if self.inverted_index else {}
         if self.bm25_engine is not None and self.inverted_index is not None:
-            from .retrieval import QueryFilter
             flt = QueryFilter(
                 spaces=spaces,
                 kinds=kinds,
@@ -156,17 +152,7 @@ class HybridSearchEngine:
 
         # 2. 若指定 lexical_only 或向量管線未就緒，執行 100% 剛性平滑降級
         if lexical_only or not self.is_vector_available:
-            results = []
-            for hit in bm25_hits[:limit]:
-                doc_id = hit["doc_id"]
-                sym = symbols_map.get(doc_id)
-                results.append({
-                    "symbol": sym,
-                    "score": hit["score"],
-                    "matched_terms": hit.get("matched_terms", []),
-                    "mode": "lexical_bm25",
-                })
-            return results
+            return self._build_bm25_results(bm25_hits, symbols_map, limit, mode="lexical_bm25")
 
         # 3. 執行語意向量檢索
         try:
@@ -174,17 +160,7 @@ class HybridSearchEngine:
             raw_vector_hits = self.vector_index.search(query_vec, top_k=fetch_limit)
         except Exception as e:
             logger.warning(f"Vector search failed ({e}), falling back to pure BM25.")
-            results = []
-            for hit in bm25_hits[:limit]:
-                doc_id = hit["doc_id"]
-                sym = symbols_map.get(doc_id)
-                results.append({
-                    "symbol": sym,
-                    "score": hit["score"],
-                    "matched_terms": hit.get("matched_terms", []),
-                    "mode": "fallback_bm25",
-                })
-            return results
+            return self._build_bm25_results(bm25_hits, symbols_map, limit, mode="fallback_bm25")
 
         # 依 file_types、spaces、kinds、languages 與純語意相似度門檻過濾向量候選集
         filtered_vector_hits = []
@@ -193,17 +169,14 @@ class HybridSearchEngine:
             sym = symbols_map.get(doc_id)
             if sym is None:
                 continue
-            if norm_ftypes:
-                ext = Path(sym.file_path).suffix.lstrip(".").lower() if sym.file_path else ""
-                if ext not in norm_ftypes:
-                    continue
+            if norm_ftypes and _extract_file_ext(sym.file_path) not in norm_ftypes:
+                continue
             if spaces and not any(s in spaces for s in getattr(sym, "spaces", [])):
                 continue
             if kinds and sym.kind not in kinds:
                 continue
             if languages and sym.language not in languages:
                 continue
-            # 若該符號無任何 BM25 關鍵字命中，必須達到純語意門檻才視為召回，避免小庫弱相關噪音誤報
             if doc_id not in lexical_doc_ids and sim < self.min_vector_similarity:
                 continue
             filtered_vector_hits.append((doc_id, sim))
@@ -224,7 +197,6 @@ class HybridSearchEngine:
                 sp_w = self._resolve_symbol_space_weight(sym, spaces_filter=spaces, space_weights=effective_weights)
                 rrf_scores[doc_id] = rrf_scores[doc_id] * sp_w
 
-        # 按 RRF 得分降序排序
         sorted_doc_ids = sorted(
             rrf_scores.keys(),
             key=lambda d: rrf_scores[d],

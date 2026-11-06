@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+from unittest.mock import patch
 
 _test_dir = os.path.dirname(os.path.abspath(__file__))
 _pkg_root = os.path.dirname(_test_dir)
@@ -15,9 +16,9 @@ if _pkg_root not in sys.path:
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
 
-from file_space.exceptions import InvalidFileSpaceConfigError, FileSpaceNotFoundError
+from file_space.exceptions import FileSpaceNotFoundError, InvalidFileSpaceConfigError
 from file_space.manager import FileSpaceManager
-from file_space.schema import HashPolicy, FileSpaceConfig, FileSpaceOrigin
+from file_space.schema import FileSpaceConfig, FileSpaceOrigin, HashPolicy
 
 
 class TestFileSpaceManager(YSCBTestCase):
@@ -50,8 +51,8 @@ class TestFileSpaceManager(YSCBTestCase):
         super().tearDown()
 
     @require(Requirement.LOGIC)
-    def test_ft01_dual_track_aggregation_and_override(self) -> None:
-        """FT-01: Verify list append deduplication and host scalar override across module & project tracks."""
+    def test_dual_track_aggregation_and_override(self) -> None:
+        """Verify list append deduplication and host scalar override across module & project tracks."""
         contributed = {
             "docs": {
                 "description": "Module default docs",
@@ -162,8 +163,8 @@ class TestFileSpaceManager(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft02_ephemeral_space_and_iteration(self) -> None:
-        """FT-02: Verify define_ephemeral_space, iter_space_files filtering, and resolve_file_path."""
+    def test_ephemeral_space_and_iteration(self) -> None:
+        """Verify define_ephemeral_space (dict and FileSpaceConfig), iter_space_files, and resolve_file_path."""
         mgr = FileSpaceManager(
             project_root=self.proj_root,
             storage_root=self.storage_root,
@@ -179,7 +180,8 @@ class TestFileSpaceManager(YSCBTestCase):
 
         ephemeral_dir = self.tmp_dir / "sandbox_space"
         ephemeral_dir.mkdir()
-        (ephemeral_dir / "sandbox_mod.py").write_text("x = 1\n", encoding="utf-8")
+        sandbox_file = ephemeral_dir / "sandbox_mod.py"
+        sandbox_file.write_text("x = 1\n", encoding="utf-8")
 
         eph_cfg = mgr.define_ephemeral_space(
             "sandbox",
@@ -191,6 +193,28 @@ class TestFileSpaceManager(YSCBTestCase):
         )
         self.assertEqual(eph_cfg.origin, FileSpaceOrigin.EPHEMERAL)
         self.assertEqual(eph_cfg.hash_policy, HashPolicy.STAT_ONLY)
+
+        eph_cfg_instance = mgr.define_ephemeral_space(
+            "sandbox_instance",
+            FileSpaceConfig(
+                name="sandbox_instance",
+                include=[ephemeral_dir],
+                file_patterns=["*.py"],
+                hash_policy=HashPolicy.FULL_HASH,
+            ),
+        )
+        self.assertEqual(eph_cfg_instance.origin, FileSpaceOrigin.EPHEMERAL)
+        self.assertEqual(eph_cfg_instance.hash_policy, HashPolicy.FULL_HASH)
+        self.assertEqual(eph_cfg_instance.owner_modules, ["ephemeral"])
+
+        sandbox_files = list(mgr.iter_space_files("sandbox"))
+        self.assertEqual(len(sandbox_files), 1)
+        self.assertEqual(sandbox_files[0][0], "sandbox_mod.py")
+        self.assertEqual(
+            mgr.resolve_file_path("sandbox_mod.py", space_name="sandbox"),
+            sandbox_file.resolve(),
+        )
+        self.assertTrue(mgr.file_belongs_to_space(sandbox_file, "sandbox"))
 
         src_files = list(mgr.iter_space_files("source"))
         self.assertEqual(len(src_files), 1)
@@ -209,10 +233,14 @@ class TestFileSpaceManager(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_et01_path_traversal_and_invalid_space_errors(self) -> None:
-        """ET-01: Verify FileSpaceNotFoundError, InvalidFileSpaceConfigError, and path traversal protection."""
+    def test_path_traversal_and_invalid_space_errors(self) -> None:
+        """Verify FileSpaceNotFoundError, InvalidFileSpaceConfigError, exclude filtering, and path traversal protection."""
         outside_file = self.tmp_dir / "secret.py"
         outside_file.write_text("SECRET = 1\n", encoding="utf-8")
+
+        build_dir = self.src_dir / "build"
+        build_dir.mkdir(parents=True, exist_ok=True)
+        (build_dir / "artifact.py").write_text("ARTIFACT = 1\n", encoding="utf-8")
 
         mgr = FileSpaceManager(
             project_root=self.proj_root,
@@ -220,6 +248,7 @@ class TestFileSpaceManager(YSCBTestCase):
             spaces_config={
                 "source": {
                     "include": [self.src_dir.as_posix()],
+                    "exclude": [".git", "build"],
                     "file_patterns": ["*.py"],
                 }
             },
@@ -233,6 +262,18 @@ class TestFileSpaceManager(YSCBTestCase):
             mgr.define_ephemeral_space("bad_empty", {"include": []})
 
         with self.assertRaises(InvalidFileSpaceConfigError):
+            mgr.define_ephemeral_space("bad_type", 123)  # type: ignore[arg-type]
+
+        with self.assertRaises(InvalidFileSpaceConfigError):
+            mgr.define_ephemeral_space(
+                "bad_threshold",
+                {
+                    "include": [self.src_dir.as_posix()],
+                    "large_file_threshold_mb": 0,
+                },
+            )
+
+        with self.assertRaises(InvalidFileSpaceConfigError):
             FileSpaceConfig(
                 name="bad_policy",
                 include=[self.src_dir],
@@ -241,13 +282,14 @@ class TestFileSpaceManager(YSCBTestCase):
 
         traversed = mgr.resolve_file_path("../../secret.py", space_name="source")
         self.assertIsNone(traversed)
+        self.assertIsNone(
+            mgr.resolve_file_path("build/artifact.py", space_name="source")
+        )
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft03_load_spaces_caching_project_root_and_symlinks(self) -> None:
-        """FR-02, EC-02: Verify load_spaces(force=False) caching, project_root caching, and follow_symlinks subdirectory behavior."""
-        from unittest.mock import patch
-
+    def test_load_spaces_caching_project_root_and_symlinks(self) -> None:
+        """Verify load_spaces(force=False) caching, project_root caching, and follow_symlinks cycle protection."""
         resolve_calls = 0
 
         def counting_resolver(raw: str) -> str:
@@ -277,7 +319,11 @@ class TestFileSpaceManager(YSCBTestCase):
         self.assertEqual(resolve_calls, 1)
 
         # 2. load_spaces(force=False) returns cached map without re-discovering; force=True reloads
-        with patch.object(mgr, "_discover_module_contributed_spaces", wraps=mgr._discover_module_contributed_spaces) as mock_disc:
+        with patch.object(
+            mgr,
+            "_discover_module_contributed_spaces",
+            wraps=mgr._discover_module_contributed_spaces,
+        ) as mock_disc:
             cached_map = mgr.load_spaces(force=False)
             self.assertEqual(mock_disc.call_count, 0)
             self.assertIn("source", cached_map)
@@ -286,41 +332,42 @@ class TestFileSpaceManager(YSCBTestCase):
             self.assertEqual(mock_disc.call_count, 1)
             self.assertIn("source", reloaded_map)
 
-        # 3. EC-02: follow_symlinks=True with symlinked subdirectory resolves paths consistently
+        # 3. follow_symlinks=True with symlinked subdirectory and cyclic symlink back to src_dir
         ext_target_dir = self.tmp_dir / "ext_linked_pkg"
         ext_target_dir.mkdir(parents=True)
         (ext_target_dir / "linked_mod.py").write_text("LINKED = True\n", encoding="utf-8")
 
         symlink_sub = self.src_dir / "linked_sub"
-        symlink_supported = True
+        cycle_back = ext_target_dir / "cycle_back"
         try:
             os.symlink(ext_target_dir, symlink_sub, target_is_directory=True)
-        except (OSError, NotImplementedError):
-            symlink_supported = False
+            os.symlink(self.src_dir, cycle_back, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"Symlink creation not supported in this environment: {exc}")
 
-        if symlink_supported:
-            # When follow_symlinks=False (default), symlink_sub is ignored
-            files_no_follow = [rel for rel, _, _ in mgr.iter_space_files("source")]
-            self.assertEqual(files_no_follow, ["app.py"])
+        # When follow_symlinks=False (default), symlink_sub is ignored
+        files_no_follow = [rel for rel, _, _ in mgr.iter_space_files("source")]
+        self.assertEqual(files_no_follow, ["app.py"])
 
-            # When follow_symlinks=True, symlink_sub is traversed and its file is included
-            mgr.define_ephemeral_space(
-                "sym_space",
-                {
-                    "include": [self.src_dir.as_posix()],
-                    "file_patterns": ["*.py"],
-                    "follow_symlinks": True,
-                },
-            )
-            files_follow = [rel for rel, _, _ in mgr.iter_space_files("sym_space")]
-            self.assertIn("app.py", files_follow)
-            self.assertTrue(any("linked_mod.py" in f for f in files_follow))
-
+        # When follow_symlinks=True, symlink_sub is traversed without infinite loop and preserves logical rel_path
+        mgr.define_ephemeral_space(
+            "sym_space",
+            {
+                "include": [self.src_dir.as_posix()],
+                "file_patterns": ["*.py"],
+                "follow_symlinks": True,
+            },
+        )
+        files_follow = [rel for rel, _, _ in mgr.iter_space_files("sym_space")]
+        stat_follow = [item[0] for item in mgr.iter_space_files_with_stat("sym_space")]
+        self.assertEqual(files_follow, ["app.py", "linked_sub/linked_mod.py"])
+        self.assertEqual(stat_follow, ["app.py", "linked_sub/linked_mod.py"])
+        self.assertFalse(any(r.startswith("..") for r in stat_follow))
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft04_precompiled_filter_equivalence_and_zero_depth_glob(self) -> None:
-        """Verify FileSpaceConfig pre-compiled filter semantics for exact segments, path prefixes, **/ globs, and extensions."""
+    def test_precompiled_filter_equivalence_and_zero_depth_glob(self) -> None:
+        """Verify FileSpaceConfig pre-compiled filter semantics, to_dict/from_dict roundtrip, and origin fallback."""
         cfg = FileSpaceConfig(
             name="filter_check",
             include=[self.proj_root],
@@ -364,10 +411,26 @@ class TestFileSpaceManager(YSCBTestCase):
 
         # Excluded by file_patterns mismatch
         self.assertFalse(cfg.is_file_included("src/notes.txt"))
+
+        # Verify to_dict() / from_dict() roundtrip equivalence and unknown origin fallback
+        serialized = cfg.to_dict()
+        restored = FileSpaceConfig.from_dict(cfg.name, serialized)
+        self.assertEqual(restored.to_dict(), serialized)
+        self.assertEqual(restored.hash_policy, cfg.hash_policy)
+        self.assertEqual(restored.origin, cfg.origin)
+
+        fallback_cfg = FileSpaceConfig.from_dict(
+            "unknown_origin_space",
+            {
+                "include": [self.proj_root.as_posix()],
+                "origin": "unknown_legacy_origin",
+            },
+        )
+        self.assertEqual(fallback_cfg.origin, FileSpaceOrigin.PROJECT)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft05_iter_space_files_with_stat_and_override_mode_replace(self) -> None:
+    def test_iter_space_files_with_stat_and_override_mode_replace(self) -> None:
         """Verify iter_space_files_with_stat 6-tuple output, nested root deduplication, and override_mode='replace'."""
         nested_sub = self.src_dir / "nested"
         nested_sub.mkdir(parents=True)
@@ -399,19 +462,17 @@ class TestFileSpaceManager(YSCBTestCase):
         )
 
         src_cfg = mgr.get_space("source")
-        # override_mode="replace" replaces base include/exclude/file_patterns instead of appending
         self.assertEqual(src_cfg.exclude, [".git"])
         self.assertEqual(src_cfg.file_patterns, ["*.py"])
         resolved_inc = [p.as_posix() for p in src_cfg.resolved_include_paths]
         self.assertNotIn(self.docs_dir.resolve().as_posix(), resolved_inc)
 
-        # iter_space_files_with_stat yields 6-tuples and deduplicates nested_sub under src_dir
         stat_entries = list(mgr.iter_space_files_with_stat("source"))
         rel_paths = [item[0] for item in stat_entries]
         self.assertEqual(len(stat_entries), 2)
         self.assertEqual(sorted(rel_paths), ["src/app.py", "src/nested/mod.py"])
 
-        for rel_p, abs_p, src_r, mtime_ns, ctime_ns, size in stat_entries:
+        for _rel_p, abs_p, _src_r, mtime_ns, ctime_ns, size in stat_entries:
             self.assertTrue(abs_p.is_file())
             self.assertGreater(mtime_ns, 0)
             self.assertGreater(ctime_ns, 0)
@@ -420,8 +481,8 @@ class TestFileSpaceManager(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft06_single_file_include_and_symlink_logical_rel_path(self) -> None:
-        """Verify single-file include resolution/iteration and logical relative path preservation under symlinks."""
+    def test_single_file_include_resolution_and_iteration(self) -> None:
+        """Verify single-file include resolution, iteration, resolve_file_path, and file_belongs_to_space."""
         root_file = self.proj_root / "yscb.py"
         root_file.write_text("print('entry')\n", encoding="utf-8")
 
@@ -429,46 +490,43 @@ class TestFileSpaceManager(YSCBTestCase):
             project_root=self.proj_root,
             storage_root=self.storage_root,
             spaces_config={
+                "single_file_only": {
+                    "include": [root_file.as_posix()],
+                    "exclude": [".git"],
+                    "file_patterns": ["*.py"],
+                },
                 "entry_space": {
                     "include": [root_file.as_posix(), self.src_dir.as_posix()],
                     "exclude": [".git"],
                     "file_patterns": ["*.py"],
-                }
+                },
             },
             contributed_spaces={},
         )
+
+        # 1. Sole single-file include (multi_root=False)
+        single_inc = mgr.resolve_space_include("single_file_only")
+        self.assertEqual(single_inc, [root_file.resolve()])
+        single_entries = list(mgr.iter_space_files_with_stat("single_file_only"))
+        self.assertEqual(len(single_entries), 1)
+        self.assertEqual(single_entries[0][0], "yscb.py")
+        self.assertEqual(single_entries[0][1], root_file.resolve())
+        self.assertEqual(
+            mgr.resolve_file_path("yscb.py", space_name="single_file_only"),
+            root_file.resolve(),
+        )
+        self.assertTrue(mgr.file_belongs_to_space(root_file, "single_file_only"))
+
+        # 2. Multi-root single-file include (multi_root=True)
         inc_paths = mgr.resolve_space_include("entry_space")
         self.assertIn(root_file.resolve(), inc_paths)
         entries = list(mgr.iter_space_files_with_stat("entry_space"))
         rel_map = {item[0]: item[1] for item in entries}
         self.assertIn("yscb.py", rel_map)
         self.assertEqual(rel_map["yscb.py"], root_file.resolve())
-
-        # Symlink logical relative path preservation when follow_symlinks=True
-        ext_target = self.tmp_dir / "external_pkg"
-        ext_target.mkdir(parents=True, exist_ok=True)
-        (ext_target / "ext_mod.py").write_text("v = 1\n", encoding="utf-8")
-        link_in_src = self.src_dir / "linked_pkg"
-        try:
-            os.symlink(ext_target, link_in_src, target_is_directory=True)
-            symlink_ok = True
-        except OSError:
-            symlink_ok = False
-
-        if symlink_ok:
-            mgr.define_ephemeral_space(
-                "symlink_logical",
-                {
-                    "include": [self.src_dir.as_posix()],
-                    "file_patterns": ["*.py"],
-                    "follow_symlinks": True,
-                },
-            )
-            sym_rels = [item[0] for item in mgr.iter_space_files_with_stat("symlink_logical")]
-            self.assertIn("linked_pkg/ext_mod.py", sym_rels)
-            self.assertFalse(any(r.startswith("..") for r in sym_rels))
-
+        self.assertEqual(
+            mgr.resolve_file_path("yscb.py", space_name="entry_space"),
+            root_file.resolve(),
+        )
+        self.assertTrue(mgr.file_belongs_to_space(root_file, "entry_space"))
         self.mark_passed()
-
-
-

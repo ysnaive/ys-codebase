@@ -10,6 +10,28 @@ from typing import Any, List, Optional, Set
 from .manager import FileSpaceManager
 
 
+def _collect_space_weights(raw_weights: Any, target: Set[str]) -> bool:
+    if not isinstance(raw_weights, dict):
+        return False
+    found = False
+    for k in raw_weights:
+        k_str = str(k)
+        if not k_str.startswith("_"):
+            target.add(k_str)
+            found = True
+    return found
+
+
+def _escape_md_cell(text: str) -> str:
+    return (
+        str(text)
+        .replace("\r\n", " ")
+        .replace("\n", " ")
+        .replace("\r", " ")
+        .replace("|", "\\|")
+    )
+
+
 def _resolve_knowledge_db_indexed_space_names() -> Optional[Set[str]]:
     """
     Resolve the set of space names explicitly configured in `knowledge-db` `space_weights`.
@@ -19,36 +41,34 @@ def _resolve_knowledge_db_indexed_space_names() -> Optional[Set[str]]:
     found_cfg = False
     try:
         from core import contributes as core_contributes
+
         raw_merged = core_contributes.get("knowledge-db")
-        if isinstance(raw_merged, dict) and isinstance(raw_merged.get("space_weights"), dict):
-            for k in raw_merged["space_weights"]:
-                if not str(k).startswith("_"):
-                    weighted_names.add(str(k))
-                    found_cfg = True
+        if isinstance(raw_merged, dict):
+            if _collect_space_weights(raw_merged.get("space_weights"), weighted_names):
+                found_cfg = True
         elif isinstance(raw_merged, list):
             for item in raw_merged:
                 data = item.get("data", item) if isinstance(item, dict) else {}
-                if isinstance(data, dict) and isinstance(data.get("space_weights"), dict):
-                    for k in data["space_weights"]:
-                        if not str(k).startswith("_"):
-                            weighted_names.add(str(k))
-                            found_cfg = True
+                if isinstance(data, dict) and _collect_space_weights(
+                    data.get("space_weights"), weighted_names
+                ):
+                    found_cfg = True
     except Exception:
         pass
 
     try:
         from core import uri
+
         res = uri.resolve("config://knowledge-db/contribute.json", interactive=False)
         if res:
             cfg_path = Path(res).resolve()
             if cfg_path.is_file():
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     file_data = json.load(f)
-                if isinstance(file_data, dict) and isinstance(file_data.get("space_weights"), dict):
-                    for k in file_data["space_weights"]:
-                        if not str(k).startswith("_"):
-                            weighted_names.add(str(k))
-                            found_cfg = True
+                if isinstance(file_data, dict) and _collect_space_weights(
+                    file_data.get("space_weights"), weighted_names
+                ):
+                    found_cfg = True
     except Exception:
         pass
 
@@ -73,12 +93,15 @@ def get_registered_file_spaces_table(context: Optional[Any] = None) -> str:
         "| :--- | :--- | :--- | :--- | :--- |",
     ]
     for name, cfg in spaces.items():
-        origin_str = getattr(cfg, "origin_display", getattr(cfg.origin, "value", str(cfg.origin)))
-        policy_str = getattr(cfg.hash_policy, "value", str(cfg.hash_policy))
+        origin_str = _escape_md_cell(
+            getattr(cfg, "origin_display", getattr(cfg.origin, "value", str(cfg.origin)))
+        )
+        policy_str = _escape_md_cell(getattr(cfg.hash_policy, "value", str(cfg.hash_policy)))
         watch_str = "啟用" if cfg.watch else "停用"
-        desc = cfg.description or "-"
+        desc = _escape_md_cell(cfg.description or "-")
+        safe_name = _escape_md_cell(name)
         lines.append(
-            f"| `{name}` | `{origin_str}` | `{policy_str}` | {watch_str} | {desc} |"
+            f"| `{safe_name}` | `{origin_str}` | `{policy_str}` | {watch_str} | {desc} |"
         )
     return "\n".join(lines)
 
@@ -88,13 +111,14 @@ def get_knowledge_db_spaces(context: Optional[Any] = None, **kwargs: Any) -> str
     Render a Markdown table summarizing registered workspaces (include paths & file patterns) for `KNOWLEDGE_DB_SPACE`.
     Only includes spaces that have explicit weights configured in `knowledge-db` (`space_weights`).
     """
+    mgr = None
     try:
         mgr = FileSpaceManager(core_context=context)
         spaces = mgr.load_spaces()
     except Exception:
         spaces = {}
 
-    if spaces and type(mgr).__module__.startswith("file_space"):
+    if spaces and mgr is not None and type(mgr).__module__.startswith("file_space"):
         indexed_names = _resolve_knowledge_db_indexed_space_names()
         if indexed_names is not None:
             spaces = {k: v for k, v in spaces.items() if k in indexed_names}
@@ -112,16 +136,16 @@ def get_knowledge_db_spaces(context: Optional[Any] = None, **kwargs: Any) -> str
     ]
 
     for sp_name, sp in sorted(spaces.items()):
-        name_badge = f"**`{sp_name}`**"
-        origin_label = f"`{getattr(sp, 'origin_display', getattr(sp.origin, 'value', str(sp.origin)))}`"
+        name_badge = f"**`{_escape_md_cell(sp_name)}`**"
+        origin_label = f"`{_escape_md_cell(getattr(sp, 'origin_display', getattr(sp.origin, 'value', str(sp.origin))))}`"
 
-        inc_parts: List[str] = [f"`{inc}`" for inc in sp.include]
+        inc_parts: List[str] = [f"`{_escape_md_cell(str(inc))}`" for inc in sp.include]
         if sp.file_patterns:
-            pat_desc = f"*(過濾: `{', '.join(sp.file_patterns)}`)*"
-            inc_parts.append(pat_desc)
+            pats = ", ".join(_escape_md_cell(str(p)) for p in sp.file_patterns)
+            inc_parts.append(f"*(過濾: `{pats}`)*")
 
         scope_desc = "<br/>".join(inc_parts) if inc_parts else "*(全目錄)*"
-        desc = sp.description or "*(無描述)*"
+        desc = _escape_md_cell(sp.description or "*(無描述)*")
         lines.append(f"| {name_badge} | {origin_label} | {scope_desc} | {desc} |")
 
     return "\n".join(lines)

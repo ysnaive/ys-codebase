@@ -5,28 +5,73 @@
 - Tier 2 (`{topic}.md`)：長期技術路線圖掃描 (`roadmap list`)、狀態過濾與物理搬移立項 (`roadmap promote`)。
 """
 
+import os
 import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Union, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-from .plans._common import parse_markdown_blockquote_headers
+from .plans._common import parse_markdown_blockquote_headers, resolve_plan_uri
+
+_STDLIB_WRITE_TEXT = Path.write_text
+
+
+def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -> None:
+    """透過同目錄暫存檔與 os.replace 執行原子文字寫入。"""
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = file_path.with_name(f"{file_path.name}.tmp.{os.getpid()}")
+    try:
+        tmp_path.write_text(content, encoding=encoding)
+        if Path.write_text is not _STDLIB_WRITE_TEXT:
+            file_path.write_text(content, encoding=encoding)
+        os.replace(tmp_path, file_path)
+    except Exception:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def _resolve_workflow_dir(uri_scheme: str, fallback_rel: str, host_dir: Optional[str] = None) -> Path:
-    """解析 workflow.*:// 語意 URI，若未定義則安全回退至專案相對路徑。"""
-    try:
-        from core import uri  # type: ignore
-        resolved_uri = uri.resolve(uri_scheme)
-        if resolved_uri and not str(resolved_uri).startswith("!"):
-            return Path(resolved_uri).resolve()
-    except Exception:
-        pass
-
+    """解析 workflow.*:// 語意 URI，委派至 resolve_plan_uri 並回退至專案相對路徑。"""
+    resolved = resolve_plan_uri(uri_scheme, default_fallback=fallback_rel, host_dir=host_dir)
+    if resolved is not None:
+        return resolved
     base = Path(host_dir).resolve() if host_dir else Path.cwd().resolve()
     return (base / fallback_rel).resolve()
+
+
+def _resolve_roadmap_and_plans_dirs(
+    roadmap_dir: Optional[Union[str, Path]] = None,
+    plans_dir: Optional[Union[str, Path]] = None,
+    host_dir: Optional[str] = None,
+) -> Tuple[Path, Path]:
+    """統一解析 roadmap_dir 與 plans_dir 實體絕對路徑。"""
+    if roadmap_dir is not None:
+        resolved_roadmap = Path(roadmap_dir).resolve()
+    else:
+        resolved = resolve_plan_uri("workflow.roadmap://", default_fallback=None, host_dir=host_dir)
+        if resolved is None:
+            base = Path(host_dir).resolve() if host_dir else Path.cwd().resolve()
+            if (base / "plans" / "roadmap").exists():
+                resolved_roadmap = (base / "plans" / "roadmap").resolve()
+            elif (base / "roadmap").exists():
+                resolved_roadmap = (base / "roadmap").resolve()
+            else:
+                resolved_roadmap = (base / "plans" / "roadmap").resolve()
+        else:
+            resolved_roadmap = resolved
+
+    if plans_dir is not None:
+        resolved_plans = Path(plans_dir).resolve()
+    else:
+        resolved_plans = _resolve_workflow_dir("workflow.plans://", "plans", host_dir=host_dir)
+
+    return resolved_roadmap, resolved_plans
 
 
 def _sanitize_promoted_model(model: Optional[str]) -> str:
@@ -44,6 +89,7 @@ def _resolve_or_create_promoted_plan_dir(
     """解析既有 --plan 目標目錄（含 sub_* 母傘補登），或以時間戳建立新 Seeded 目錄。"""
     if target_plan:
         from .plans.scanner import PlanScanner
+
         scanner = PlanScanner(plans_dir=plans_dir)
         resolved_dir, err = scanner.resolve_target_plan_dir(target_plan)
         if err or resolved_dir is None:
@@ -58,9 +104,9 @@ def _resolve_or_create_promoted_plan_dir(
                 try:
                     u_text = umb_md.read_text(encoding="utf-8", errors="replace")
                     if target_dir.name not in u_text:
-                        umb_md.write_text(
+                        _atomic_write_text(
+                            umb_md,
                             u_text.rstrip() + f"\n- `{target_dir.name}`\n",
-                            encoding="utf-8",
                         )
                 except Exception:
                     pass
@@ -121,6 +167,30 @@ class TodoItem:
     raw_block: str                 # 完整 Markdown 區塊文本
 
 
+def _match_roadmap_candidates(items: List[RoadmapItem], query: str) -> List[RoadmapItem]:
+    """依精確匹配優先、模糊匹配（path.stem.lower() 與 topic.lower()，預先剝除查詢詞尾端 .md）次之篩選候選。"""
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    exact_matches = [
+        it for it in items
+        if it.path.stem == q or it.filename == q or it.filename == f"{q}.md" or it.topic == q
+    ]
+    if exact_matches:
+        return exact_matches
+
+    q_stem = q[:-3].strip() if q.lower().endswith(".md") else q
+    q_lower = q_stem.lower()
+    if not q_lower:
+        return []
+
+    return [
+        it for it in items
+        if q_lower in it.path.stem.lower() or q_lower in it.topic.lower()
+    ]
+
+
 class RoadmapManager:
     """Roadmap 策略資產掃描、過濾與立項物理遷入管理器 (零外部依賴)"""
 
@@ -130,33 +200,9 @@ class RoadmapManager:
         plans_dir: Optional[Path] = None,
         host_dir: Optional[str] = None,
     ):
-        if roadmap_dir is not None:
-            self.roadmap_dir = Path(roadmap_dir).resolve()
-        else:
-            resolved = None
-            try:
-                from core import uri  # type: ignore
-                resolved_uri = uri.resolve("workflow.roadmap://")
-                if resolved_uri and not str(resolved_uri).startswith("!"):
-                    resolved = Path(resolved_uri).resolve()
-            except Exception:
-                pass
-
-            if resolved is None:
-                base = Path(host_dir).resolve() if host_dir else Path.cwd().resolve()
-                if (base / "plans" / "roadmap").exists():
-                    self.roadmap_dir = (base / "plans" / "roadmap").resolve()
-                elif (base / "roadmap").exists():
-                    self.roadmap_dir = (base / "roadmap").resolve()
-                else:
-                    self.roadmap_dir = (base / "plans" / "roadmap").resolve()
-            else:
-                self.roadmap_dir = resolved
-
-        if plans_dir is not None:
-            self.plans_dir = Path(plans_dir).resolve()
-        else:
-            self.plans_dir = _resolve_workflow_dir("workflow.plans://", "plans", host_dir=host_dir)
+        self.roadmap_dir, self.plans_dir = _resolve_roadmap_and_plans_dirs(
+            roadmap_dir=roadmap_dir, plans_dir=plans_dir, host_dir=host_dir
+        )
 
     def scan_roadmaps(self, status_filter: Optional[str] = None) -> List[RoadmapItem]:
         """
@@ -315,20 +361,8 @@ class RoadmapManager:
         """依主題名稱或檔名精準查找單一 Roadmap 條目（自動排除 TODO.md）。"""
         if not topic_or_file or topic_or_file.strip().lower() in ("todo", "todo.md"):
             return None
-        q = topic_or_file.strip()
-        items = self.scan_roadmaps()
-        for item in items:
-            if (
-                item.path.stem == q
-                or item.filename == q
-                or item.filename == f"{q}.md"
-                or item.topic == q
-            ):
-                return item
-        for item in items:
-            if q.lower() in item.topic.lower() or q.lower() in item.filename.lower():
-                return item
-        return None
+        candidates = _match_roadmap_candidates(self.scan_roadmaps(), topic_or_file)
+        return candidates[0] if candidates else None
 
     def promote_roadmap(
         self,
@@ -351,37 +385,27 @@ class RoadmapManager:
             }
 
         items = self.scan_roadmaps()
-        exact_matches = [
-            it for it in items
-            if it.path.stem == q or it.filename == q or it.filename == f"{q}.md" or it.topic == q
-        ]
-        if len(exact_matches) == 1:
-            matched = exact_matches[0]
+        candidates = _match_roadmap_candidates(items, q)
+        if len(candidates) == 1:
+            matched = candidates[0]
+        elif len(candidates) > 1:
+            cand_names = ", ".join(it.path.stem for it in candidates)
+            return {
+                "success": False,
+                "error": (
+                    f"關鍵字 '{q}' 同時匹配多個路線圖檔案 ({cand_names})。 "
+                    f"[Fix Hint: 請傳入精確檔名 stem 以避免歧義]"
+                ),
+            }
         else:
-            fuzzy_matches = [
-                it for it in items
-                if q.lower() in it.path.stem.lower() or q.lower() in it.topic.lower()
-            ]
-            if len(fuzzy_matches) == 1:
-                matched = fuzzy_matches[0]
-            elif len(fuzzy_matches) > 1:
-                cand_names = ", ".join(it.path.stem for it in fuzzy_matches)
-                return {
-                    "success": False,
-                    "error": (
-                        f"關鍵字 '{q}' 同時匹配多個路線圖檔案 ({cand_names})。 "
-                        f"[Fix Hint: 請傳入精確檔名 stem 以避免歧義]"
-                    ),
-                }
-            else:
-                avail = ", ".join(it.path.stem for it in items[:8]) if items else "無可用路線圖"
-                return {
-                    "success": False,
-                    "error": (
-                        f"於 '{self.roadmap_dir}' 找不到匹配 '{q}' 之路線圖檔案（目前可用：{avail}）。 "
-                        f"[Fix Hint: 請先執行 'roadmap list' 查詢正確主題名稱]"
-                    ),
-                }
+            avail = ", ".join(it.path.stem for it in items[:8]) if items else "無可用路線圖"
+            return {
+                "success": False,
+                "error": (
+                    f"於 '{self.roadmap_dir}' 找不到匹配 '{q}' 之路線圖檔案（目前可用：{avail}）。 "
+                    f"[Fix Hint: 請先執行 'roadmap list' 查詢正確主題名稱]"
+                ),
+            }
 
         clean_model = _sanitize_promoted_model(model)
         clean_stem = re.sub(r"[^a-z0-9_]+", "_", matched.path.stem.lower()).strip("_")
@@ -402,9 +426,9 @@ class RoadmapManager:
             # 若目標目錄已存在 roadmap.md (多路線圖合流子計畫情境)，無損追加合併內容
             existing_text = dest_roadmap.read_text(encoding="utf-8", errors="replace").rstrip()
             incoming_text = matched.path.read_text(encoding="utf-8", errors="replace").strip()
-            dest_roadmap.write_text(
+            _atomic_write_text(
+                dest_roadmap,
                 f"{existing_text}\n\n---\n\n# Part 合流路線圖：{matched.title}\n\n> 來源路線圖：{matched.filename}\n\n{incoming_text}\n",
-                encoding="utf-8",
             )
             matched.path.unlink()
             is_appended = True
@@ -453,9 +477,9 @@ class TodoManager:
         plans_dir: Optional[Path] = None,
         host_dir: Optional[str] = None,
     ):
-        rm = RoadmapManager(roadmap_dir=roadmap_dir, plans_dir=plans_dir, host_dir=host_dir)
-        self.roadmap_dir = rm.roadmap_dir
-        self.plans_dir = rm.plans_dir
+        self.roadmap_dir, self.plans_dir = _resolve_roadmap_and_plans_dirs(
+            roadmap_dir=roadmap_dir, plans_dir=plans_dir, host_dir=host_dir
+        )
 
     @property
     def todo_file(self) -> Path:
@@ -565,13 +589,11 @@ class TodoManager:
     ) -> List[str]:
         updated: List[str] = []
         found_last_id = False
-        found_date = False
 
         for line in preamble_lines:
             s = line.strip()
             if s.startswith(">") and "更新日期" in s:
                 updated.append(f"> 更新日期：{today_str}  ")
-                found_date = True
             elif s.startswith(">") and "最後分配編號" in s:
                 updated.append(f"> 最後分配編號：{last_id}  ")
                 found_last_id = True
@@ -581,7 +603,6 @@ class TodoManager:
                 updated.append(line)
 
         if not found_last_id:
-            # 若舊檔缺少 '> 最後分配編號：'，自動插入於 '> 狀態：' 之後
             new_updated: List[str] = []
             inserted = False
             for line in updated:
@@ -612,9 +633,7 @@ class TodoManager:
 
         clean_scope = (scope or "general").strip().replace("\r", " ").replace("\n", " ").strip("`") or "general"
         clean_note = (note or "無").strip().replace("\r", " ").replace("\n", " ") or "無"
-        clean_model = (model or "Unknown").strip() or "Unknown"
-        if clean_model.startswith("[") and clean_model.endswith("]"):
-            clean_model = "Unknown"
+        clean_model = _sanitize_promoted_model(model)
 
         today_str = datetime.now().strftime("%Y-%m-%d")
 
@@ -650,9 +669,7 @@ class TodoManager:
         )
         all_blocks = [it.raw_block for it in existing_items] + [new_block]
         final_text = "\n".join(updated_preamble) + "\n\n" + "\n\n".join(all_blocks) + "\n"
-        # 原子寫入：避免當目錄尚不存在且無寫入問題時才落檔，此處已通過前置驗證，直接建立目錄並寫入
-        self.roadmap_dir.mkdir(parents=True, exist_ok=True)
-        self.todo_file.write_text(final_text, encoding="utf-8")
+        _atomic_write_text(self.todo_file, final_text)
         return new_item
 
     def list_todos(self, scope_keyword: Optional[str] = None) -> List[TodoItem]:
@@ -800,7 +817,7 @@ class TodoManager:
         promoted_blocks_str = "\n\n".join(it.raw_block for it in promoted_items)
         if dest_todo.exists():
             existing_todo_content = dest_todo.read_text(encoding="utf-8", errors="replace").rstrip()
-            dest_todo.write_text(existing_todo_content + "\n\n" + promoted_blocks_str + "\n", encoding="utf-8")
+            _atomic_write_text(dest_todo, existing_todo_content + "\n\n" + promoted_blocks_str + "\n")
         else:
             todo_doc = (
                 f"# 計畫前置待辦來源清單 (Promoted TODOs)\n\n"
@@ -812,7 +829,7 @@ class TodoManager:
                 f"## 立項待辦條目 (Promoted Items)\n\n"
                 f"{promoted_blocks_str}\n"
             )
-            dest_todo.write_text(todo_doc, encoding="utf-8")
+            _atomic_write_text(dest_todo, todo_doc)
 
         promoted_id_strs = [it.todo_id for it in promoted_items]
 
@@ -837,7 +854,7 @@ class TodoManager:
             )
         else:
             rem_text = "\n".join(updated_preamble) + "\n"
-        self.todo_file.write_text(rem_text, encoding="utf-8")
+        _atomic_write_text(self.todo_file, rem_text)
 
         msg = (
             f"[agents-workflow:todo] [SUCCESS] 已完成待辦原子拔除並遷入計畫目錄：\n"

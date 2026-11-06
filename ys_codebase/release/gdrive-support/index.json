@@ -3,64 +3,82 @@
   "description": "YS-Codebase Google Drive 原子雲端操作、Shortcut 差量分支與雙向同步模組",
   "versions": [
     "1.0.0.0",
-    "1.0.1.1",
-    "1.0.1.3"
+    "1.0.1.2",
+    "1.0.1.3",
+    "1.0.1.4"
   ],
   "releases": {
     "1.0.0.0": {
       "status": "active",
       "dependencies": {
-        "core": ">=1.2.6",
-        "file-space": ">=1.0.0"
+        "core": ">=1.2.6.0, <1.2.7.0",
+        "file-space": ">=1.0.0.5, <1.0.1.0"
       },
       "sha256": "087724f2c99e6b435c71388735deab98c113b77737fde331a544876ec05ec816",
       "type": "feature",
       "urgency": "recommended",
-      "summary": "首發 Google Drive 雲端原子操作、repo_sync 雙層隔離同步倉、Shortcut 零空間分支、CoW 30 天垃圾桶與雙軌內外部 Skills"
+      "summary": "首發 Google Drive 雲端原子操作、repo_sync 雙層隔離同步倉、Shortcut 零空間分支、CoW 30 天垃圾桶與雙軌內外部 Skills",
+      "commit": "f2805bcad3f625369c59ab35be5a863fa725b295"
     },
     "1.0.1.0": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.7",
-        "file-space": ">=1.0.1"
+        "core": ">=1.2.7.0",
+        "file-space": ">=1.0.1.0"
       },
       "sha256": "964a1adbd8e9e0cfd4aed74dd525a63598380d8a923ef0e9399375d74aefecd0",
       "type": "feature",
       "urgency": "recommended",
-      "summary": "HTTPS Keep-Alive 與 8 執行緒平行同步加速、憑證與同步帳本對齊 config.local:// 與 storage.local://"
+      "summary": "HTTPS Keep-Alive 與 8 執行緒平行同步加速、憑證與同步帳本對齊 config.local:// 與 storage.local://",
+      "commit": "5cf22b3de285edc7c9dd58f82754db1ed8efed5a"
     },
     "1.0.1.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.7",
-        "file-space": ">=1.0.1"
+        "core": ">=1.2.7.0",
+        "file-space": ">=1.0.1.0"
       },
       "sha256": "ca8a82cae8ff80c15e3b07c504747b96c8e34ce995111f8276035aee1be0b699",
       "type": "feature",
       "urgency": "recommended",
-      "summary": "Google Drive changes API 3-level remote cache short-circuit and foreground CLI lock preemption"
+      "summary": "Google Drive changes API 3-level remote cache short-circuit and foreground CLI lock preemption",
+      "commit": "92a3bbc2d1419b1cbb204930717d6aa34cc8d05e"
     },
     "1.0.1.2": {
-      "status": "pruned",
+      "status": "active",
       "dependencies": {
-        "core": ">=1.2.7",
-        "file-space": ">=1.0.1"
+        "core": ">=1.2.7.0",
+        "file-space": ">=1.0.1.1"
       },
       "sha256": "26eb8e0bb0feddecfe08f1e28d8af77eacd345b012f94ee4cb20988cb20a86c3",
       "type": "feature",
       "urgency": "recommended",
-      "summary": "接入 file-space 單調世代增量游標與 Level 1 changes.list 雙向遠端快取修補"
+      "summary": "接入 file-space 單調世代增量游標與 Level 1 changes.list 雙向遠端快取修補",
+      "commit": "3576d7d2f2ee85497bc2da64b76f5203d1f41781"
     },
     "1.0.1.3": {
       "status": "active",
       "dependencies": {
-        "core": ">=1.2.7",
-        "file-space": ">=1.0.1"
+        "core": ">=1.2.7.1",
+        "file-space": ">=1.0.1.2"
       },
       "sha256": "8012d471c129456a92c9515eb23a08a181ecdbf4c39590a39f5f085f83ffb434",
       "type": "refactor",
       "urgency": "recommended",
-      "summary": "完成單向基線保護、空目錄自底向上清理、Level 1 deepcopy 隔離、page_token 延遲提交與 CodeQualityStandards 深度重構"
+      "summary": "完成單向基線保護、空目錄自底向上清理、Level 1 deepcopy 隔離、page_token 延遲提交與 CodeQualityStandards 深度重構",
+      "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
+    },
+    "1.0.1.4": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7.3",
+        "file-space": ">=1.0.1.4"
+      },
+      "sha256": "4eb7dc4dcd63a17039ca14e6bbb0d922ad53142597c1fbf078f9d008e236f5cb",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "保護單向 --delete 未追蹤新檔、收斂空目錄清理至當輪刪除祖先鏈、還原資料夾觸發子樹掃描與導入 sync_state.journal.jsonl WAL 持久化",
+      "commit": "310a5df934114720707c5716d4d07dfe912d2b81"
     }
   }
 }

@@ -4,12 +4,28 @@ Migrated to core.commands active execution contract with strong-typed CmdBags.
 """
 import sys
 import os
+import re
 import json
 from typing import Any, List, Dict
 
 from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
 from core import uri, vfs, semver
+
+
+def _get_short_to_canonical_pairs() -> Dict[str, str]:
+    """回傳短別名與對應長選項映射表。"""
+    return {
+        "k": "pattern",
+        "j": "jobs",
+        "a": "all",
+        "q": "quiet",
+        "v": "verbose",
+        "f": "force",
+        "no-parallel": "sequential",
+        "stress": "perf",
+    }
+
 
 def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
     """容錯正規化：若傳入 List[str] 則包裝為 CmdBags，支援內部測試直呼與帶值短/長選項別名解析。"""
@@ -21,26 +37,13 @@ def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
             "dir", "type", "target", "desc", "report-json",
             "urgency", "summary", "dep", "ver", "version", "status",
         }
+        short_pairs = _get_short_to_canonical_pairs()
         alias_map = {
-            "k": "pattern",
-            "pattern": "k",
+            **short_pairs,
+            **{v: k for k, v in short_pairs.items()},
             "m": "msg",
             "msg": "m",
             "message": "msg",
-            "j": "jobs",
-            "jobs": "j",
-            "a": "all",
-            "all": "a",
-            "q": "quiet",
-            "quiet": "q",
-            "v": "verbose",
-            "verbose": "v",
-            "f": "force",
-            "force": "f",
-            "no-parallel": "sequential",
-            "sequential": "no-parallel",
-            "stress": "perf",
-            "perf": "stress",
             "ver": "version",
             "version": "ver",
         }
@@ -70,20 +73,6 @@ def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
             idx += 1
         return CmdBags(raw_cmd=raw_cmd, command=default_cmd, args=pos, options=opts)
     return CmdBags(raw_cmd="", command=default_cmd, args=[], options={})
-
-
-def _get_short_to_canonical_pairs() -> Dict[str, str]:
-    """回傳短別名與對應長選項映射表。"""
-    return {
-        "k": "pattern",
-        "j": "jobs",
-        "a": "all",
-        "q": "quiet",
-        "v": "verbose",
-        "f": "force",
-        "no-parallel": "sequential",
-        "stress": "perf",
-    }
 
 
 def _should_skip_alias(opt_name: str, options: dict) -> bool:
@@ -142,8 +131,6 @@ def _handle_bump(subcmd: str, cmd_bags: CmdBags) -> int:
 
 def _sync_package_dunder_version(mod_name: str, old_ver: str, new_ver: str) -> None:
     """若模組套件目錄之 __init__.py 宣告有 __version__ 字面量，自動同步更新為新版本。"""
-    import os
-    import re
     src_dir = uri.resolve(f"module.source://{mod_name}")
     if not src_dir or not os.path.isdir(src_dir):
         return
@@ -439,44 +426,38 @@ def index_patch(cmd_bags: Any) -> int:
 
 
 def bump_major(cmd_bags: Any) -> int:
-    bags = _normalize_bags(cmd_bags, "bump-major")
-    return _handle_bump("bump-major", bags)
+    return _handle_bump("bump-major", _normalize_bags(cmd_bags, "bump-major"))
 
 
 def bump_minor(cmd_bags: Any) -> int:
-    bags = _normalize_bags(cmd_bags, "bump-minor")
-    return _handle_bump("bump-minor", bags)
+    return _handle_bump("bump-minor", _normalize_bags(cmd_bags, "bump-minor"))
 
 
 def bump_patch(cmd_bags: Any) -> int:
-    bags = _normalize_bags(cmd_bags, "bump-patch")
-    return _handle_bump("bump-patch", bags)
+    return _handle_bump("bump-patch", _normalize_bags(cmd_bags, "bump-patch"))
 
 
 def bump_revision(cmd_bags: Any) -> int:
-    bags = _normalize_bags(cmd_bags, "bump-revision")
-    return _handle_bump("bump-revision", bags)
+    return _handle_bump("bump-revision", _normalize_bags(cmd_bags, "bump-revision"))
+
+
+def _run_tester_subcmd(subcmd: str, cmd_bags: Any) -> int:
+    guard_dispatch("dev")
+    bags = _normalize_bags(cmd_bags, subcmd)
+    from dev.tester import Tester
+    return Tester().run(_build_tester_argv(subcmd, bags))
 
 
 def test(cmd_bags: Any) -> int:
     """Run module tests inside an isolated sandbox."""
-    guard_dispatch("dev")
-    bags = _normalize_bags(cmd_bags, "test")
-    from dev.tester import Tester
-    return Tester().run(_build_tester_argv("test", bags))
+    return _run_tester_subcmd("test", cmd_bags)
 
 
 def op_mksb(cmd_bags: Any) -> int:
     """Internal atomic sandbox creation operation."""
-    guard_dispatch("dev")
-    bags = _normalize_bags(cmd_bags, "op-mksb")
-    from dev.tester import Tester
-    return Tester().run(_build_tester_argv("op-mksb", bags))
+    return _run_tester_subcmd("op-mksb", cmd_bags)
 
 
 def op_test(cmd_bags: Any) -> int:
     """Internal atomic test runner operation."""
-    guard_dispatch("dev")
-    bags = _normalize_bags(cmd_bags, "op-test")
-    from dev.tester import Tester
-    return Tester().run(_build_tester_argv("op-test", bags))
+    return _run_tester_subcmd("op-test", cmd_bags)

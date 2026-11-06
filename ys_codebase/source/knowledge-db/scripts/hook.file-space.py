@@ -6,14 +6,11 @@ and incremental hot-patching of the unified semantic index.
 """
 
 from contextlib import contextmanager
-import logging
 from typing import Any, Dict, Iterator, List, Optional
 
 from knowledge_db.engine import KnowledgeEngine, get_engine
 from knowledge_db.service import get_active_worker
 from file_space import ScanDiffResult, consume_diff
-
-logger = logging.getLogger("knowledge-db.hook.file-space")
 
 
 @contextmanager
@@ -66,38 +63,36 @@ def on_file_space_changed(
     使用 `consume_diff(consumer_id="knowledge-db")` 拉取自上次游標水位以來的增量變更，
     並對全域統一索引執行 4 階段熱修補（若基礎索引尚未建置則觸發全量建置）。
     """
-    engine: Optional[KnowledgeEngine] = None
+    explicit_engine_obj: Optional[KnowledgeEngine] = None
     target_space: Optional[str] = None
 
     if isinstance(context, dict):
-        engine = context.get("engine")
+        explicit_engine_obj = context.get("engine")
         target_space = context.get("space_name")
         if spaces is None and isinstance(context.get("spaces"), list):
             spaces = context.get("spaces")
     elif context is not None:
-        engine = getattr(context, "engine", None)
+        explicit_engine_obj = getattr(context, "engine", None)
         target_space = getattr(context, "space_name", None)
 
-    if engine is None:
-        engine = kwargs.get("engine") or get_engine()
+    if explicit_engine_obj is None and "engine" in kwargs:
+        explicit_engine_obj = kwargs.get("engine")
 
     if target_space is None and spaces and len(spaces) == 1:
         target_space = spaces[0]
 
     # 若專屬常駐 KnowledgeDBServiceWorker 在線且未顯式指定獨立測試 engine，透過 O(1) Event 喚醒由後台兩階段處理
-    explicit_engine = (isinstance(context, dict) and context.get("engine") is not None) or (
-        context is not None and not isinstance(context, dict) and getattr(context, "engine", None) is not None
-    ) or ("engine" in kwargs and kwargs.get("engine") is not None)
+    if explicit_engine_obj is None:
+        active_worker = get_active_worker()
+        if active_worker is not None and (not hasattr(active_worker, "is_alive") or active_worker.is_alive()):
+            active_worker.notify_space_changed()
+            return {
+                "status": "queued_to_worker",
+                "patched_count": 0,
+                "worker": getattr(active_worker, "name", "knowledge-db-worker"),
+            }
 
-    active_worker = get_active_worker()
-    if active_worker is not None and not explicit_engine:
-        active_worker.notify_space_changed()
-        return {
-            "status": "queued_to_worker",
-            "patched_count": 0,
-            "worker": active_worker.name,
-        }
-
+    engine = explicit_engine_obj or get_engine()
     indices_dir = engine.pipeline.get_indices_dir()
     bin_file = indices_dir / "unified.index.bin.gz"
     auto_refresh = False if diff_summary is not None else None

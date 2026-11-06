@@ -7,6 +7,7 @@ import _ast
 import importlib.machinery
 import importlib.util
 from pathlib import Path
+import re
 import sys
 import sysconfig
 from typing import Any, Dict, List, Optional, Set, Union
@@ -56,10 +57,36 @@ class PythonASTParser(BaseParser):
     def _format_func_signature(node: Union[py_ast.FunctionDef, py_ast.AsyncFunctionDef], lines: List[str]) -> str:
         start_idx = max(0, getattr(node, "lineno", 1) - 1)
         if start_idx < len(lines):
+            body_nodes = getattr(node, "body", None) or []
+            body_start_ln = getattr(body_nodes[0], "lineno", len(lines) + 1) if body_nodes else len(lines) + 1
+            max_idx = min(len(lines), max(start_idx + 1, body_start_ln))
+            header_parts: List[str] = []
+            paren_depth = 0
+            found_open = False
+            for idx in range(start_idx, max_idx):
+                code_part = lines[idx].split("#", 1)[0].strip()
+                if not code_part:
+                    continue
+                header_parts.append(code_part)
+                for ch in code_part:
+                    if ch in "([{":
+                        paren_depth += 1
+                        if ch == "(":
+                            found_open = True
+                    elif ch in ")]}":
+                        paren_depth = max(0, paren_depth - 1)
+                if found_open and paren_depth == 0 and code_part.endswith(":"):
+                    break
+            joined = " ".join(header_parts).strip()
+            if joined.endswith(":"):
+                joined = joined[:-1].strip()
+            joined = re.sub(r"\(\s+", "(", re.sub(r",?\s+\)", ")", joined))
+            if "def " in joined and "(" in joined and ")" in joined:
+                return joined
             first_line = lines[start_idx].strip()
             if first_line.endswith(":"):
                 first_line = first_line[:-1].strip()
-            if "def " in first_line:
+            if "def " in first_line and "(" in first_line and ")" in first_line:
                 return first_line
         prefix = "async def" if isinstance(node, py_ast.AsyncFunctionDef) else "def"
         args_list = [a.arg for a in node.args.args]
@@ -295,7 +322,13 @@ class PythonASTParser(BaseParser):
             elif isinstance(node.func, py_ast.Attribute):
                 callee_name = node.func.attr
                 if isinstance(node.func.value, py_ast.Name):
-                    prefix = node.func.value.id
+                    prefix = "base" if node.func.value.id == "super" else node.func.value.id
+                elif (
+                    isinstance(node.func.value, py_ast.Call)
+                    and isinstance(node.func.value.func, py_ast.Name)
+                    and node.func.value.func.id == "super"
+                ):
+                    prefix = "base"
                 elif isinstance(node.func.value, py_ast.Attribute) and isinstance(node.func.value.value, py_ast.Name):
                     prefix = f"{node.func.value.value.id}.{node.func.value.attr}"
             if not callee_name:

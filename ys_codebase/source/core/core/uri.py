@@ -295,9 +295,16 @@ _URI_REENTRANCY = threading.local()
 
 
 def invalidate_uri_cache() -> None:
-    """Clears in-memory URI schemes and token map caches."""
+    """Clears in-memory URI schemes, token map, and contributes scan/merged caches."""
     _SCHEMES_CACHE.clear()
     _TOKEN_MAP_CACHE.clear()
+    try:
+        from . import contributes
+        contributes._LAST_CLEAN_SCAN_TS.clear()
+        contributes._JSON_FILE_CACHE.clear()
+        contributes._MERGED_MEMORY_CACHE.clear()
+    except Exception:
+        pass
 
 
 def _get_merged_uri_schemes(yscb_dir: str) -> List[Dict[str, Any]]:
@@ -306,7 +313,7 @@ def _get_merged_uri_schemes(yscb_dir: str) -> List[Dict[str, Any]]:
     and thread-local reentrancy-guarded JIT dirty check.
     """
     if getattr(_URI_REENTRANCY, "active", False):
-        return {}
+        return [dict(s) for s in _BOOTSTRAP_FALLBACK_SCHEMES]
 
     merged_cfg = os.path.join(yscb_dir, ".cache", "core", "contributes.merged.json")
     cfg_core_contrib = os.path.join(yscb_dir, "config", "core", "contribute.json")
@@ -342,7 +349,7 @@ def _get_merged_uri_schemes(yscb_dir: str) -> List[Dict[str, Any]]:
     finally:
         _URI_REENTRANCY.active = False
 
-    return _BOOTSTRAP_FALLBACK_SCHEMES
+    return [dict(s) for s in _BOOTSTRAP_FALLBACK_SCHEMES]
 
 
 def _build_scheme_token_map(yscb_dir: str) -> Dict[str, Dict[str, Any]]:
@@ -762,4 +769,3 @@ def to_uri(abs_path: str, current_module: Optional[str] = None) -> str:
             return prefix + sub
 
     return norm
-

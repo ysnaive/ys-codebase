@@ -10,9 +10,9 @@ knowledge-db 呈現層格式化中樞 (formatter.py)
 import os
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
-from .schema import AggregatedFileResult, AggregatedItem, SymbolCallSite, UnifiedSymbol
+from .schema import AggregatedFileResult
 
 AUTO_BUDGET_CHARS: int = 8000
 AUTO_DECAY_START_CHARS: int = 3500
@@ -40,15 +40,15 @@ def compute_dynamic_snippet_lines(
     - 7000 ~ 8000 字元: 0 行 (強制無切片，保留元資料與保底 5 項目)
     - >= 8000 字元: 0 行
     """
+    if current_chars >= budget_limit or current_chars >= no_snippet_threshold:
+        return 0
     if current_chars < start_decay:
         return max_lines
-    elif current_chars < min_decay:
-        ratio = (current_chars - start_decay) / (min_decay - start_decay)
+    if current_chars < min_decay:
+        span = max(1, min_decay - start_decay)
+        ratio = (current_chars - start_decay) / span
         return max(min_lines, int(round(max_lines - ratio * (max_lines - min_lines))))
-    elif current_chars < no_snippet_threshold:
-        return min_lines
-    else:
-        return 0
+    return min_lines
 
 
 class UniversalRedundancyFilter:
@@ -104,47 +104,36 @@ class UniversalRedundancyFilter:
             # 2. Markdown Header 重疊剔除
             if is_md and stripped.startswith("#"):
                 heading_content = re.sub(r"^#+\s*", "", stripped).strip().lower()
-                if (norm_name and (heading_content in norm_name or norm_name in heading_content)) or \
-                   (signature and heading_content in signature.lower()):
+                if (norm_name and (heading_content in norm_name or norm_name in heading_content)) or (
+                    signature and heading_content in signature.lower()
+                ):
                     continue
 
             # 3. 程式碼 Docstring 區塊剔除 (Python: """ 或 ''')
             if not is_md:
                 if not in_docstring_block:
-                    # 檢測是否進入多行 docstring
                     for q in ('"""', "'''", "/*"):
                         if q in stripped:
-                            if q == "/*":
-                                end_q = "*/"
-                            else:
-                                end_q = q
-
-                            # 單行完整 docstring
+                            end_q = "*/" if q == "/*" else q
                             first_idx = stripped.find(q)
                             second_idx = stripped.find(end_q, first_idx + len(q))
                             if second_idx != -1:
-                                # 單行註解塊包含 docstring summary 或僅為純註解
                                 if ln != target_line:
                                     stripped = ""
                                     break
                             else:
-                                # 多行註解起點
                                 in_docstring_block = True
                                 docstring_quote = end_q
                                 break
 
                     if in_docstring_block:
-                        # 若起點非 target_line，或起點僅有引號，直接略過
                         if stripped in ('"""', "'''", "/*", "/**"):
                             continue
-                        # 若與 target_line 同行 (例如 def foo(): \"\"\"doc)
                         if ln == target_line:
                             cleaned.append((ln, txt))
                             continue
                         continue
-
                 else:
-                    # 處於 docstring 內部
                     if docstring_quote and docstring_quote in stripped:
                         in_docstring_block = False
                         docstring_quote = None
@@ -169,9 +158,7 @@ class UniversalRedundancyFilter:
         # 6. 安全保底：若純化後為空，保底保留 target_line
         if not cleaned:
             target_candidates = [l for l in lines if l[0] == target_line]
-            if target_candidates:
-                return target_candidates
-            return [lines[0]]
+            return target_candidates if target_candidates else [lines[0]]
 
         return cleaned
 
@@ -189,31 +176,24 @@ class TerminalStyler:
         self.enabled = is_atty and not no_color
 
     def path(self, text: str) -> str:
-        """亮藍色"""
         return f"\033[94m{text}\033[0m" if self.enabled else text
 
     def symbol(self, text: str) -> str:
-        """亮綠色"""
         return f"\033[92m{text}\033[0m" if self.enabled else text
 
     def kind(self, text: str) -> str:
-        """亮黃色"""
         return f"\033[93m{text}\033[0m" if self.enabled else text
 
     def line(self, text: str) -> str:
-        """亮青色"""
         return f"\033[96m{text}\033[0m" if self.enabled else text
 
     def warn(self, text: str) -> str:
-        """亮黃色加粗"""
         return f"\033[1;93m{text}\033[0m" if self.enabled else text
 
     def err(self, text: str) -> str:
-        """亮紅色加粗"""
         return f"\033[1;91m{text}\033[0m" if self.enabled else text
 
     def bold(self, text: str) -> str:
-        """加粗字元"""
         return f"\033[1m{text}\033[0m" if self.enabled else text
 
 
@@ -303,25 +283,94 @@ class ResultFormatter:
     ) -> str:
         """格式化為相對路徑行號標籤 rel/path.py:Lxx-yy，或於 file_uri=True 時輸出 [filename:Lxx-yy](file:///abs_path#Lxx)"""
         use_uri = self.file_uri if file_uri is None else bool(file_uri)
-        if not use_uri:
-            base_label = self.normalize_workspace_path(file_path)
-            if line is not None:
-                if end_line is not None and end_line > line:
-                    return f"{base_label}:L{line}-{end_line}"
-                return f"{base_label}:L{line}"
-            return base_label
-
-        base_label = Path(file_path).name if use_basename else self.normalize_workspace_path(file_path)
+        base_label = (
+            Path(file_path).name
+            if (use_uri and use_basename)
+            else self.normalize_workspace_path(file_path)
+        )
         if line is not None:
-            if end_line is not None and end_line > line:
-                label = f"{base_label}:L{line}-{end_line}"
-            else:
-                label = f"{base_label}:L{line}"
+            label = f"{base_label}:L{line}-{end_line}" if (end_line is not None and end_line > line) else f"{base_label}:L{line}"
         else:
             label = base_label
 
+        if not use_uri:
+            return label
+
         uri_str = self.to_file_uri(file_path, line=line)
         return f"[{label}]({uri_str})"
+
+    @staticmethod
+    def _format_line_range(sym: Any) -> str:
+        if sym.end_line and sym.end_line > sym.line_number:
+            return f"Lines {sym.line_number}~{sym.end_line}"
+        return f"Line {sym.line_number}"
+
+    @staticmethod
+    def _extract_item_summary(itm: Any) -> str:
+        if itm.code_snippet and itm.code_snippet.docstring_summary:
+            return itm.code_snippet.docstring_summary
+        return itm.snippet or ""
+
+    def _extract_purified_snippet_lines(
+        self, itm: Any, language: str, max_snip_lines: Optional[int]
+    ) -> List[Tuple[int, str]]:
+        if not (itm.code_snippet and itm.code_snippet.lines and (max_snip_lines is None or max_snip_lines > 0)):
+            return []
+        sym = itm.symbol
+        pure_lines = self.redundancy_filter.purify_lines(
+            itm.code_snippet.lines,
+            target_line=itm.code_snippet.target_line,
+            symbol_name=sym.name,
+            signature=sym.signature,
+            docstring_summary=itm.code_snippet.docstring_summary,
+            language=language or "",
+        )
+        return pure_lines[:max_snip_lines] if max_snip_lines else pure_lines
+
+    def _append_md_snippet_block(
+        self,
+        node_lines: List[str],
+        itm: Any,
+        language: str,
+        max_snip_lines: Optional[int],
+        header_line: Optional[str] = None,
+    ) -> None:
+        snip_lines = self._extract_purified_snippet_lines(itm, language, max_snip_lines)
+        if not snip_lines:
+            return
+        if header_line:
+            node_lines.append(header_line)
+        node_lines.append(f"    ```{language or ''}")
+        target_ln = itm.code_snippet.target_line
+        for ln, code in snip_lines:
+            mark = ">" if ln == target_ln else " "
+            node_lines.append(f"    {mark} {ln:5d} | {code}")
+        node_lines.append("    ```")
+
+    def _append_text_snippet_block(
+        self,
+        node_lines: List[str],
+        itm: Any,
+        language: str,
+        max_snip_lines: Optional[int],
+        pipe: str,
+        line_range: str,
+        include_header: bool = False,
+    ) -> None:
+        effective = self._extract_purified_snippet_lines(itm, language, max_snip_lines)
+        if not effective:
+            return
+        if include_header:
+            node_lines.append(f"  {pipe}   代碼切片 ({line_range}):")
+            code_indent = f"  {pipe}     "
+        else:
+            code_indent = f"  {pipe}   "
+        max_ln = max(ln for ln, _ in effective)
+        width = max(len(str(max_ln)), 3)
+        target_ln = itm.code_snippet.target_line
+        for ln, code in effective:
+            mark = ">" if ln == target_ln else " "
+            node_lines.append(f"{code_indent}{mark} {ln:{width}d} | {code}")
 
     def format_search_output(
         self,
@@ -382,13 +431,13 @@ class ResultFormatter:
         if not is_md and mode in ("detail", "auto") and snippet:
             lines.append("=" * 85)
 
-        # 3. 逐檔案節點渲染 (受 8,000 字元預算與全域切片去重保護)
+        current_chars = sum(len(l) + 1 for l in lines)
         rendered_nodes = 0
         budget_reached = False
         remaining_count = 0
 
         for rank, res in enumerate(filtered_results, start=1):
-            node_lines = []
+            node_lines: List[str] = []
             first_sym = res.items[0].symbol if res.items else None
             first_line = first_sym.line_number if first_sym else None
             first_end = first_sym.end_line if first_sym else None
@@ -404,101 +453,57 @@ class ResultFormatter:
 
             max_snip_lines: Optional[int] = None
             if limit_mode == "auto":
-                current_chars = sum(len(l) + 1 for l in lines)
                 if current_chars >= AUTO_BUDGET_CHARS and rendered_nodes >= AUTO_MIN_RENDERED_ITEMS:
                     budget_reached = True
                     remaining_count = len(filtered_results) - rendered_nodes
                     break
                 max_snip_lines = compute_dynamic_snippet_lines(current_chars)
 
+            lang_str = res.language or ""
             if is_md:
-                # Markdown 格式
                 if mode == "simple":
                     node_lines.append(f"- **#{rank:02d}** 檔案: {file_link}")
-                    for itm_idx, itm in enumerate(res.items, start=1):
+                    for itm in res.items:
                         sym = itm.symbol
-                        line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
+                        line_range = self._format_line_range(sym)
                         node_lines.append(f"  - `{sym.kind.upper()}`: **{sym.name}** ({line_range})")
-                        if snippet and itm.code_snippet and itm.code_snippet.lines and (max_snip_lines is None or max_snip_lines > 0):
-                            pure_lines = self.redundancy_filter.purify_lines(
-                                itm.code_snippet.lines,
-                                target_line=itm.code_snippet.target_line,
-                                symbol_name=sym.name,
-                                signature=sym.signature,
-                                docstring_summary=itm.code_snippet.docstring_summary,
-                                language=res.language or "",
-                            )
-                            snip_lines = pure_lines[:max_snip_lines] if max_snip_lines else pure_lines
-                            if snip_lines:
-                                lang = res.language or ""
-                                node_lines.append(f"    ```{lang}")
-                                for ln, code in snip_lines:
-                                    mark = ">" if ln == itm.code_snippet.target_line else " "
-                                    node_lines.append(f"    {mark} {ln:5d} | {code}")
-                                node_lines.append("    ```")
+                        if snippet:
+                            self._append_md_snippet_block(node_lines, itm, lang_str, max_snip_lines)
                 elif mode == "detail":
                     node_lines.append(f"#### #{rank:02d} [{res.total_score:05.2f}] 檔案: {file_link} *({res.language}, {len(res.items)} 個命中項目)*")
                     for itm_idx, itm in enumerate(res.items, start=1):
                         sym = itm.symbol
-                        line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
+                        line_range = self._format_line_range(sym)
                         node_lines.append(f"- **#{rank:02d}.{itm_idx}** [{itm.score:05.2f}] `{sym.kind.upper()}`: **{sym.name}** ({line_range})")
                         if sym.signature:
                             node_lines.append(f"  - **簽名**: `{sym.signature}`")
-                        if itm.code_snippet and itm.code_snippet.docstring_summary:
-                            node_lines.append(f"  - **摘要**: {itm.code_snippet.docstring_summary}")
-                        elif itm.snippet:
-                            node_lines.append(f"  - **摘要**: {itm.snippet}")
+                        summary_txt = self._extract_item_summary(itm)
+                        if summary_txt:
+                            node_lines.append(f"  - **摘要**: {summary_txt}")
                         if itm.matched_terms:
                             node_lines.append(f"  - **命中詞**: {', '.join(itm.matched_terms)}")
-                        if snippet and itm.code_snippet and itm.code_snippet.lines and (max_snip_lines is None or max_snip_lines > 0):
-                            pure_lines = self.redundancy_filter.purify_lines(
-                                itm.code_snippet.lines,
-                                target_line=itm.code_snippet.target_line,
-                                symbol_name=sym.name,
-                                signature=sym.signature,
-                                docstring_summary=itm.code_snippet.docstring_summary,
-                                language=res.language or "",
+                        if snippet:
+                            self._append_md_snippet_block(
+                                node_lines,
+                                itm,
+                                lang_str,
+                                max_snip_lines,
+                                header_line=f"  - **代碼切片** ({line_range}):",
                             )
-                            snip_lines = pure_lines[:max_snip_lines] if max_snip_lines else pure_lines
-                            if snip_lines:
-                                lang = res.language or ""
-                                node_lines.append(f"  - **代碼切片** ({line_range}):")
-                                node_lines.append(f"    ```{lang}")
-                                for ln, code in snip_lines:
-                                    mark = ">" if ln == itm.code_snippet.target_line else " "
-                                    node_lines.append(f"    {mark} {ln:5d} | {code}")
-                                node_lines.append("    ```")
                 else:  # auto
                     node_lines.append(f"- **#{rank:02d}** [{res.total_score:05.2f}] 檔案: {file_link} *({res.language})*")
                     for itm_idx, itm in enumerate(res.items, start=1):
                         sym = itm.symbol
-                        line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
+                        line_range = self._format_line_range(sym)
                         node_lines.append(f"  - **#{rank:02d}.{itm_idx}** [{itm.score:05.2f}] `{sym.kind.upper()}`: **{sym.name}** ({line_range})")
                         if sym.signature:
                             node_lines.append(f"    - **簽名**: `{sym.signature}`")
-                        if itm.code_snippet and itm.code_snippet.docstring_summary:
-                            node_lines.append(f"    - **摘要**: {itm.code_snippet.docstring_summary}")
-                        elif itm.snippet:
-                            node_lines.append(f"    - **摘要**: {itm.snippet}")
-                        if snippet and itm.code_snippet and itm.code_snippet.lines and (max_snip_lines is None or max_snip_lines > 0):
-                            pure_lines = self.redundancy_filter.purify_lines(
-                                itm.code_snippet.lines,
-                                target_line=itm.code_snippet.target_line,
-                                symbol_name=sym.name,
-                                signature=sym.signature,
-                                docstring_summary=itm.code_snippet.docstring_summary,
-                                language=res.language or "",
-                            )
-                            snip_lines = pure_lines[:max_snip_lines] if max_snip_lines else pure_lines
-                            if snip_lines:
-                                lang = res.language or ""
-                                node_lines.append(f"    ```{lang}")
-                                for ln, code in snip_lines:
-                                    mark = ">" if ln == itm.code_snippet.target_line else " "
-                                    node_lines.append(f"    {mark} {ln:5d} | {code}")
-                                node_lines.append("    ```")
+                        summary_txt = self._extract_item_summary(itm)
+                        if summary_txt:
+                            node_lines.append(f"    - **摘要**: {summary_txt}")
+                        if snippet:
+                            self._append_md_snippet_block(node_lines, itm, lang_str, max_snip_lines)
             else:
-                # Text / ANSI 終端格式
                 if mode == "simple":
                     node_lines.append(f"#{rank:02d} 檔案: {self.styler.path(file_link)}")
                     for itm_idx, itm in enumerate(res.items, start=1):
@@ -506,132 +511,68 @@ class ResultFormatter:
                         branch = "└──" if is_last else "├──"
                         pipe = "   " if is_last else "│  "
                         sym = itm.symbol
-                        line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
+                        line_range = self._format_line_range(sym)
                         node_lines.append(f"  {branch} {self.styler.kind(sym.kind.upper())}: {self.styler.symbol(sym.name)} {self.styler.line(f'({line_range})')}")
-                        if snippet and itm.code_snippet and itm.code_snippet.lines and (max_snip_lines is None or max_snip_lines > 0):
-                            pure_lines = self.redundancy_filter.purify_lines(
-                                itm.code_snippet.lines,
-                                target_line=itm.code_snippet.target_line,
-                                symbol_name=sym.name,
-                                signature=sym.signature,
-                                docstring_summary=itm.code_snippet.docstring_summary,
-                                language=res.language or "",
+                        if snippet:
+                            self._append_text_snippet_block(
+                                node_lines, itm, lang_str, max_snip_lines, pipe, line_range, include_header=False
                             )
-                            effective = pure_lines[:max_snip_lines] if max_snip_lines else pure_lines
-                            if effective:
-                                max_ln = max(ln for ln, _ in effective)
-                                width = max(len(str(max_ln)), 3)
-                                for ln, code in effective:
-                                    mark = ">" if ln == itm.code_snippet.target_line else " "
-                                    node_lines.append(f"  {pipe}   {mark} {ln:{width}d} | {code}")
-                elif mode == "detail":
+                elif mode == "detail" or (mode == "auto" and snippet):
                     node_lines.append(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {self.styler.path(file_link)} ({len(res.items)} 個命中項目, {res.language})")
                     for itm_idx, itm in enumerate(res.items, start=1):
                         is_last = (itm_idx == len(res.items))
                         branch = "└──" if is_last else "├──"
                         pipe = "   " if is_last else "│  "
                         sym = itm.symbol
-                        line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
+                        line_range = self._format_line_range(sym)
                         node_lines.append(f"  {branch} #{rank:02d}.{itm_idx} [{itm.score:05.2f}] {self.styler.kind(sym.kind.upper())}: {self.styler.symbol(sym.name)} {self.styler.line(f'({line_range})')}")
                         if sym.signature:
                             node_lines.append(f"  {pipe}   簽名: {sym.signature}")
-                        if itm.code_snippet and itm.code_snippet.docstring_summary:
-                            node_lines.append(f"  {pipe}   摘要: {itm.code_snippet.docstring_summary}")
-                        elif itm.snippet:
-                            node_lines.append(f"  {pipe}   摘要: {itm.snippet}")
-                        if itm.matched_terms:
+                        summary_txt = self._extract_item_summary(itm)
+                        if summary_txt:
+                            node_lines.append(f"  {pipe}   摘要: {summary_txt}")
+                        if mode == "detail" and itm.matched_terms:
                             node_lines.append(f"  {pipe}   命中詞: {', '.join(itm.matched_terms)}")
-                        if snippet and itm.code_snippet and itm.code_snippet.lines and (max_snip_lines is None or max_snip_lines > 0):
-                            pure_lines = self.redundancy_filter.purify_lines(
-                                itm.code_snippet.lines,
-                                target_line=itm.code_snippet.target_line,
-                                symbol_name=sym.name,
-                                signature=sym.signature,
-                                docstring_summary=itm.code_snippet.docstring_summary,
-                                language=res.language or "",
+                        if snippet:
+                            self._append_text_snippet_block(
+                                node_lines, itm, lang_str, max_snip_lines, pipe, line_range, include_header=True
                             )
-                            effective = pure_lines[:max_snip_lines] if max_snip_lines else pure_lines
-                            if effective:
-                                node_lines.append(f"  {pipe}   代碼切片 ({line_range}):")
-                                max_ln = max(ln for ln, _ in effective)
-                                width = max(len(str(max_ln)), 3)
-                                for ln, code in effective:
-                                    mark = ">" if ln == itm.code_snippet.target_line else " "
-                                    node_lines.append(f"  {pipe}     {mark} {ln:{width}d} | {code}")
                     node_lines.append("-" * 85)
-                else:  # auto
-                    if snippet:
-                        node_lines.append(f"#{rank:02d} [{res.total_score:05.2f}] 檔案: {self.styler.path(file_link)} ({len(res.items)} 個命中項目, {res.language})")
+                else:  # auto without snippet
+                    if len(res.items) == 1:
+                        sym = res.items[0].symbol
+                        sym_link = self.format_file_link(
+                            sym.file_path,
+                            line=sym.line_number,
+                            end_line=sym.end_line,
+                            file_uri=eff_file_uri,
+                        )
+                        node_lines.append(
+                            f"#{rank:02d} 檔案: {self.styler.path(sym_link)} "
+                            f"({self.styler.kind(sym.kind.upper())}:{self.styler.symbol(sym.name)}) [{res.total_score:05.2f}]"
+                        )
+                    else:
+                        node_lines.append(
+                            f"#{rank:02d} 檔案: {self.styler.path(file_link)} "
+                            f"(總分: {res.total_score:05.2f}, {len(res.items)} 項命中):"
+                        )
                         for itm_idx, itm in enumerate(res.items, start=1):
                             is_last = (itm_idx == len(res.items))
                             branch = "└──" if is_last else "├──"
-                            pipe = "   " if is_last else "│  "
                             sym = itm.symbol
-                            line_range = f"Lines {sym.line_number}~{sym.end_line}" if sym.end_line and sym.end_line > sym.line_number else f"Line {sym.line_number}"
-                            node_lines.append(f"  {branch} #{rank:02d}.{itm_idx} [{itm.score:05.2f}] {self.styler.kind(sym.kind.upper())}: {self.styler.symbol(sym.name)} {self.styler.line(f'({line_range})')}")
-                            if sym.signature:
-                                node_lines.append(f"  {pipe}   簽名: {sym.signature}")
-                            if itm.code_snippet and itm.code_snippet.docstring_summary:
-                                node_lines.append(f"  {pipe}   摘要: {itm.code_snippet.docstring_summary}")
-                            elif itm.snippet:
-                                node_lines.append(f"  {pipe}   摘要: {itm.snippet}")
-                            if itm.code_snippet and itm.code_snippet.lines and (max_snip_lines is None or max_snip_lines > 0):
-                                pure_lines = self.redundancy_filter.purify_lines(
-                                    itm.code_snippet.lines,
-                                    target_line=itm.code_snippet.target_line,
-                                    symbol_name=sym.name,
-                                    signature=sym.signature,
-                                    docstring_summary=itm.code_snippet.docstring_summary,
-                                    language=res.language or "",
-                                )
-                                effective = pure_lines[:max_snip_lines] if max_snip_lines else pure_lines
-                                if effective:
-                                    node_lines.append(f"  {pipe}   代碼切片 ({line_range}):")
-                                    max_ln = max(ln for ln, _ in effective)
-                                    width = max(len(str(max_ln)), 3)
-                                    for ln, code in effective:
-                                        mark = ">" if ln == itm.code_snippet.target_line else " "
-                                        node_lines.append(f"  {pipe}     {mark} {ln:{width}d} | {code}")
-                        node_lines.append("-" * 85)
-                    else:
-                        if len(res.items) == 1:
-                            sym = res.items[0].symbol
-                            sym_link = self.format_file_link(
-                                sym.file_path,
-                                line=sym.line_number,
-                                end_line=sym.end_line,
-                                file_uri=eff_file_uri,
-                            )
+                            line_range = self._format_line_range(sym)
                             node_lines.append(
-                                f"#{rank:02d} 檔案: {self.styler.path(sym_link)} "
-                                f"({self.styler.kind(sym.kind)}:{self.styler.symbol(sym.name)}) [{res.total_score:05.2f}]"
+                                f"  {branch} #{rank:02d}.{itm_idx} "
+                                f"{self.styler.kind(sym.kind.upper())}: {self.styler.symbol(sym.name)} "
+                                f"{self.styler.line(f'({line_range})')} [{itm.score:05.2f}]"
                             )
-                        else:
-                            node_lines.append(
-                                f"#{rank:02d} 檔案: {self.styler.path(file_link)} "
-                                f"(總分: {res.total_score:05.2f}, {len(res.items)} 項命中):"
-                            )
-                            for itm_idx, itm in enumerate(res.items, start=1):
-                                is_last = (itm_idx == len(res.items))
-                                branch = "└──" if is_last else "├──"
-                                sym = itm.symbol
-                                line_range = (
-                                    f"Lines {sym.line_number}~{sym.end_line}"
-                                    if sym.end_line and sym.end_line > sym.line_number
-                                    else f"Line {sym.line_number}"
-                                )
-                                node_lines.append(
-                                    f"  {branch} #{rank:02d}.{itm_idx} "
-                                    f"{self.styler.kind(sym.kind.upper())}: {self.styler.symbol(sym.name)} "
-                                    f"{self.styler.line(f'({line_range})')} [{itm.score:05.2f}]"
-                                )
 
             lines.extend(node_lines)
+            current_chars += sum(len(l) + 1 for l in node_lines)
             rendered_nodes += 1
 
             # 嚴格 8,000 字元預算上限檢查 (保底 5 個項目)
             if limit_mode == "auto":
-                current_chars = sum(len(l) + 1 for l in lines)
                 if current_chars >= AUTO_BUDGET_CHARS and rendered_nodes >= AUTO_MIN_RENDERED_ITEMS:
                     budget_reached = True
                     remaining_count = len(filtered_results) - rendered_nodes

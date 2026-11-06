@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 from ._trace_renderer import FrictionSignal
 
@@ -128,6 +128,43 @@ class _TranscriptParseState:
     last_planner_args_tok: int = 0
 
 
+@dataclass
+class _StepParseContext:
+    """單步 JSONL 紀錄解析上下文容器。"""
+    step_no: int
+    obj: Dict[str, Any]
+    payload_obj: Dict[str, Any]
+    payload_type: str
+    was_truncated: bool
+    is_step_error: bool = False
+    content_str: str = ""
+    content_tok: int = 0
+    is_tool_output_step: bool = False
+    tool_result_errors: List[str] = field(default_factory=list)
+    step_thinking_tok: int = 0
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    current_step_read_keys: List[str] = field(default_factory=list)
+    current_step_gate_cmds: List[str] = field(default_factory=list)
+    step_total_args_tok: int = 0
+
+
+def _append_thinking_excerpt_once(
+    state: _TranscriptParseState,
+    step_no: int,
+    context: str = "TOOL_ERROR",
+) -> None:
+    """依 step_no 去重追加思考鏈摘要，避免單步多重錯誤重複塞爆配額。"""
+    if not state.last_thinking or len(state.thinking_excerpts) >= 5:
+        return
+    if any(item.get("step") == step_no for item in state.thinking_excerpts):
+        return
+    state.thinking_excerpts.append({
+        "step": step_no,
+        "context": context,
+        "excerpt": state.last_thinking,
+    })
+
+
 def _accumulate_api_usage(obj: Dict[str, Any], state: _TranscriptParseState) -> None:
     """累加原生 API usage Token 欄位（相容 Claude Code / Codex .jsonl 之 usage 物件與頂層欄位）。"""
     usage_obj = obj.get("usage")
@@ -144,12 +181,27 @@ def _accumulate_api_usage(obj: Dict[str, Any], state: _TranscriptParseState) -> 
 
 
 def _extract_step_content_and_role(
-    obj: Dict[str, Any],
-    payload_obj: Dict[str, Any],
-    payload_type: str,
-    state: _TranscriptParseState,
+    ctx_or_obj: Union[_StepParseContext, Dict[str, Any]],
+    state_or_payload_obj: Union[_TranscriptParseState, Dict[str, Any]],
+    payload_type: str = "",
+    state: Optional[_TranscriptParseState] = None,
 ) -> Tuple[str, int, bool, List[str]]:
     """提取單步文本內容、估算 Token、歸類角色並提取行內 tool_result 錯誤。"""
+    if isinstance(ctx_or_obj, _StepParseContext):
+        ctx: Optional[_StepParseContext] = ctx_or_obj
+        eff_state = state_or_payload_obj if isinstance(state_or_payload_obj, _TranscriptParseState) else state
+        assert eff_state is not None
+        obj = ctx.obj
+        payload_obj = ctx.payload_obj
+        eff_payload_type = ctx.payload_type
+    else:
+        ctx = None
+        obj = ctx_or_obj
+        payload_obj = state_or_payload_obj if isinstance(state_or_payload_obj, dict) else {}
+        eff_payload_type = payload_type
+        assert state is not None
+        eff_state = state
+
     step_type = str(obj.get("type") or "").upper()
     step_source = str(obj.get("source") or "").upper()
     msg_role = str(
@@ -186,7 +238,7 @@ def _extract_step_content_and_role(
                     tr_c = blk.get("content")
                     tr_str = json.dumps(tr_c, ensure_ascii=False) if isinstance(tr_c, (list, dict)) else str(tr_c or "")
                     tr_tok = _estimate_tokens(tr_str)
-                    state.tok_tool_out += tr_tok
+                    eff_state.tok_tool_out += tr_tok
                     step_inline_tool_out_tok += tr_tok
                     if blk.get("is_error") is True:
                         tool_result_errors.append(" ".join(tr_str.split())[:200])
@@ -194,46 +246,74 @@ def _extract_step_content_and_role(
 
     content_tok = _estimate_tokens(content_str)
     is_tool_output_step = False
-    if step_type == "GENERIC" or payload_type in ("function_call_output", "custom_tool_call_output"):
-        state.tok_tool_out += content_tok
+    if step_type == "GENERIC" or eff_payload_type in ("function_call_output", "custom_tool_call_output"):
+        eff_state.tok_tool_out += content_tok
         is_tool_output_step = True
     elif step_type == "USER_INPUT" or step_source == "USER_EXPLICIT" or msg_role == "user":
         if step_inline_tool_out_tok > 0 and not content_str.strip():
             is_tool_output_step = True
             content_tok = step_inline_tool_out_tok
         else:
-            state.user_turns += 1
-            state.tok_user += content_tok
-            if not state.topic and content_str:
+            eff_state.user_turns += 1
+            eff_state.tok_user += content_tok
+            if not eff_state.topic and content_str:
                 raw_topic = content_str
                 if "<USER_REQUEST>" in raw_topic:
                     raw_topic = raw_topic.split("<USER_REQUEST>", 1)[1].split("</USER_REQUEST>", 1)[0].strip()
                 clean_topic = " ".join(raw_topic.split())
                 if clean_topic and clean_topic.lower() not in ("/context-init", "context-init"):
-                    state.topic = clean_topic[:60]
+                    eff_state.topic = clean_topic[:60]
     elif step_type == "PLANNER_RESPONSE" or step_source == "MODEL" or msg_role == "assistant":
-        state.model_turns += 1
-        state.tok_model += content_tok
+        eff_state.model_turns += 1
+        eff_state.tok_model += content_tok
     else:
-        state.tok_tool_out += content_tok
+        eff_state.tok_tool_out += content_tok
         is_tool_output_step = True
+
+    if ctx is not None:
+        ctx.content_str = content_str
+        ctx.content_tok = content_tok
+        ctx.is_tool_output_step = is_tool_output_step
+        ctx.tool_result_errors = tool_result_errors
 
     return content_str, content_tok, is_tool_output_step, tool_result_errors
 
 
 def _attribute_tool_output_tokens(
-    step_no: int,
-    content_str: str,
-    content_tok: int,
-    is_tool_output_step: bool,
-    is_step_error: bool,
-    was_truncated: bool,
-    tool_result_errors: List[str],
-    state: _TranscriptParseState,
+    ctx_or_step_no: Union[_StepParseContext, int],
+    state_or_content_str: Union[_TranscriptParseState, str] = "",
+    content_tok: int = 0,
+    is_tool_output_step: bool = False,
+    is_step_error: bool = False,
+    was_truncated: bool = False,
+    tool_result_errors: Optional[List[str]] = None,
+    state: Optional[_TranscriptParseState] = None,
 ) -> None:
     """檢查上一步驗證關卡退件，並將工具輸出 Token 歸戶至前一步發起之工具與重度排行。"""
+    if isinstance(ctx_or_step_no, _StepParseContext):
+        ctx = ctx_or_step_no
+        eff_state = state_or_content_str if isinstance(state_or_content_str, _TranscriptParseState) else state
+        assert eff_state is not None
+        step_no = ctx.step_no
+        content_str = ctx.content_str
+        eff_content_tok = ctx.content_tok
+        eff_is_tool_output = ctx.is_tool_output_step
+        eff_is_step_error = ctx.is_step_error
+        eff_was_truncated = ctx.was_truncated
+        eff_tool_errors = ctx.tool_result_errors
+    else:
+        step_no = int(ctx_or_step_no)
+        content_str = str(state_or_content_str or "")
+        eff_content_tok = content_tok
+        eff_is_tool_output = is_tool_output_step
+        eff_is_step_error = is_step_error
+        eff_was_truncated = was_truncated
+        eff_tool_errors = tool_result_errors or []
+        assert state is not None
+        eff_state = state
+
     has_gate_fail = False
-    if state.last_step_gate_cmds and content_str:
+    if eff_state.last_step_gate_cmds and content_str:
         has_gate_fail = any(
             marker in content_str
             for marker in (
@@ -242,10 +322,10 @@ def _attribute_tool_output_tokens(
             )
         )
         if has_gate_fail:
-            state.transcript_cli_failed += 1
+            eff_state.transcript_cli_failed += 1
             err_snip = " ".join(content_str.split())[:180]
-            for g_disp in state.last_step_gate_cmds:
-                state.transcript_gate_bounces.append(FrictionSignal(
+            for g_disp in eff_state.last_step_gate_cmds:
+                eff_state.transcript_gate_bounces.append(FrictionSignal(
                     signal_type="GATE_BOUNCE",
                     severity="HIGH",
                     tier_source="Tier 1",
@@ -253,54 +333,69 @@ def _attribute_tool_output_tokens(
                     summary=f"驗證關卡 '{g_disp}' 於終端輸出退件 (Step {step_no})：{err_snip}",
                     details={"cmd": g_disp, "step": step_no},
                 ))
-        state.last_step_gate_cmds = []
+        eff_state.last_step_gate_cmds = []
 
-    if is_tool_output_step and state.pending_tool_context is not None and content_tok > 0:
-        p_tools = state.pending_tool_context.get("tools", [])
+    if eff_is_tool_output and eff_state.pending_tool_context is not None and eff_content_tok > 0:
+        p_tools = eff_state.pending_tool_context.get("tools", [])
         if p_tools:
-            share_tok = max(1, int(round(content_tok / len(p_tools))))
+            share_tok = max(1, int(round(eff_content_tok / len(p_tools))))
             for pt in p_tools:
                 pt_name = pt["name"]
-                ts_entry = state.tool_token_stats.setdefault(
+                ts_entry = eff_state.tool_token_stats.setdefault(
                     pt_name, {"calls": 0, "args_tokens": 0, "output_tokens": 0}
                 )
                 ts_entry["output_tokens"] += share_tok
-                if pt.get("is_dup_read") and not is_step_error:
-                    state.wasted_dup_reads += share_tok
-                if pt.get("is_blind_read") and not is_step_error:
-                    state.wasted_blind_reads += share_tok
+                if pt.get("is_dup_read") and not eff_is_step_error:
+                    eff_state.wasted_dup_reads += share_tok
+                if pt.get("is_blind_read") and not eff_is_step_error:
+                    eff_state.wasted_blind_reads += share_tok
                 if pt.get("cmd_line"):
-                    state.heavy_cli_raw.append({
+                    eff_state.heavy_cli_raw.append({
                         "step": step_no,
                         "command": pt["cmd_line"][:120],
                         "tokens": pt["args_tok"] + share_tok,
                         "output_tokens": share_tok,
-                        "is_error": bool(is_step_error or has_gate_fail),
+                        "is_error": bool(eff_is_step_error or has_gate_fail),
                     })
             primary_pt = p_tools[0]
-            state.heavy_steps_raw.append({
+            eff_state.heavy_steps_raw.append({
                 "step": step_no,
                 "tool": primary_pt["name"],
                 "target": primary_pt["target"][:90],
-                "tokens": content_tok + state.pending_tool_context.get("total_args_tok", 0),
-                "truncated": was_truncated,
+                "tokens": eff_content_tok + eff_state.pending_tool_context.get("total_args_tok", 0),
+                "truncated": eff_was_truncated,
             })
-        if has_gate_fail and not is_step_error and not tool_result_errors:
-            state.wasted_failed_ops += (
-                content_tok
-                + state.pending_tool_context.get("total_args_tok", 0)
-                + state.pending_tool_context.get("thinking_tok", 0)
+        if has_gate_fail and not eff_is_step_error and not eff_tool_errors:
+            eff_state.wasted_failed_ops += (
+                eff_content_tok
+                + eff_state.pending_tool_context.get("total_args_tok", 0)
+                + eff_state.pending_tool_context.get("thinking_tok", 0)
             )
-        state.pending_tool_context = None
+        eff_state.pending_tool_context = None
 
 
 def _extract_step_thinking(
-    obj: Dict[str, Any],
-    payload_obj: Dict[str, Any],
-    payload_type: str,
-    state: _TranscriptParseState,
+    ctx_or_obj: Union[_StepParseContext, Dict[str, Any]],
+    state_or_payload_obj: Union[_TranscriptParseState, Dict[str, Any]],
+    payload_type: str = "",
+    state: Optional[_TranscriptParseState] = None,
 ) -> int:
     """提取單步 thinking 文本（相容 Antigravity, Claude Code thinking block 與 Codex reasoning summary）。"""
+    if isinstance(ctx_or_obj, _StepParseContext):
+        ctx: Optional[_StepParseContext] = ctx_or_obj
+        eff_state = state_or_payload_obj if isinstance(state_or_payload_obj, _TranscriptParseState) else state
+        assert eff_state is not None
+        obj = ctx.obj
+        payload_obj = ctx.payload_obj
+        eff_payload_type = ctx.payload_type
+    else:
+        ctx = None
+        obj = ctx_or_obj
+        payload_obj = state_or_payload_obj if isinstance(state_or_payload_obj, dict) else {}
+        eff_payload_type = payload_type
+        assert state is not None
+        eff_state = state
+
     step_type = str(obj.get("type") or "").upper()
     thinking_str = obj.get("thinking")
     if not thinking_str and isinstance(obj.get("message"), dict):
@@ -310,28 +405,42 @@ def _extract_step_thinking(
                 if isinstance(blk, dict) and blk.get("type") == "thinking":
                     thinking_str = blk.get("thinking") or blk.get("text")
                     break
-    if not thinking_str and (step_type == "REASONING" or payload_type == "reasoning"):
+    if not thinking_str and (step_type == "REASONING" or eff_payload_type == "reasoning"):
         summary_list = payload_obj.get("summary") or obj.get("summary")
         if isinstance(summary_list, list):
             thinking_str = " ".join(str(s.get("text") or "") for s in summary_list if isinstance(s, dict))
         elif isinstance(summary_list, str):
             thinking_str = summary_list
 
+    step_thinking_tok = 0
     if isinstance(thinking_str, str) and thinking_str.strip():
-        state.thinking_steps += 1
+        eff_state.thinking_steps += 1
         step_thinking_tok = _estimate_tokens(thinking_str)
-        state.tok_thinking += step_thinking_tok
-        state.last_thinking = " ".join(thinking_str.strip().split())[:300]
-        return step_thinking_tok
-    return 0
+        eff_state.tok_thinking += step_thinking_tok
+        eff_state.last_thinking = " ".join(thinking_str.strip().split())[:300]
+
+    if ctx is not None:
+        ctx.step_thinking_tok = step_thinking_tok
+    return step_thinking_tok
 
 
 def _extract_step_tool_calls(
-    obj: Dict[str, Any],
-    payload_obj: Dict[str, Any],
-    payload_type: str,
+    ctx_or_obj: Union[_StepParseContext, Dict[str, Any]],
+    payload_obj: Optional[Dict[str, Any]] = None,
+    payload_type: str = "",
 ) -> List[Dict[str, Any]]:
     """提取單步 tool_calls 清單（相容 Antigravity, Claude tool_use 與 Codex function_call）。"""
+    if isinstance(ctx_or_obj, _StepParseContext):
+        ctx: Optional[_StepParseContext] = ctx_or_obj
+        obj = ctx.obj
+        eff_payload_obj = ctx.payload_obj
+        eff_payload_type = ctx.payload_type
+    else:
+        ctx = None
+        obj = ctx_or_obj
+        eff_payload_obj = payload_obj or {}
+        eff_payload_type = payload_type
+
     step_type = str(obj.get("type") or "").upper()
     tool_calls: List[Dict[str, Any]] = []
 
@@ -363,13 +472,16 @@ def _extract_step_tool_calls(
                         "name": str(blk.get("name") or "").lower(),
                         "args": _parse_args(raw_a),
                     })
-    elif step_type in ("FUNCTION_CALL", "TOOL_CALL") or payload_type in ("function_call", "custom_tool_call"):
-        src_tc = payload_obj if payload_type in ("function_call", "custom_tool_call") else obj
+    elif step_type in ("FUNCTION_CALL", "TOOL_CALL") or eff_payload_type in ("function_call", "custom_tool_call"):
+        src_tc = eff_payload_obj if eff_payload_type in ("function_call", "custom_tool_call") else obj
         raw_a = src_tc.get("arguments") or src_tc.get("input") or src_tc.get("args") or {}
         tool_calls.append({
             "name": str(src_tc.get("name") or "").lower(),
             "args": _parse_args(raw_a),
         })
+
+    if ctx is not None:
+        ctx.tool_calls = tool_calls
     return tool_calls
 
 
@@ -441,35 +553,63 @@ def _handle_read_tool_call(
 
 
 def _process_tool_calls_in_step(
-    step_no: int,
-    tool_calls: List[Dict[str, Any]],
-    step_thinking_tok: int,
-    content_tok: int,
-    was_truncated: bool,
-    state: _TranscriptParseState,
+    ctx_or_step_no: Union[_StepParseContext, int, None] = None,
+    state_or_tool_calls: Union[_TranscriptParseState, List[Dict[str, Any]], None] = None,
+    step_thinking_tok: int = 0,
+    content_tok: int = 0,
+    was_truncated: bool = False,
+    state: Optional[_TranscriptParseState] = None,
+    *,
+    step_no: Optional[int] = None,
+    tool_calls: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[List[str], List[str], int]:
     """處理單步內所有 tool_calls，更新讀寫與 CLI 統計。"""
+    if isinstance(ctx_or_step_no, _StepParseContext):
+        ctx: Optional[_StepParseContext] = ctx_or_step_no
+        eff_state = state_or_tool_calls if isinstance(state_or_tool_calls, _TranscriptParseState) else state
+        assert eff_state is not None
+        eff_step_no = ctx.step_no
+        eff_tool_calls = ctx.tool_calls
+        eff_thinking_tok = ctx.step_thinking_tok
+        eff_content_tok = ctx.content_tok
+        eff_was_truncated = ctx.was_truncated
+    else:
+        ctx = None
+        eff_step_no = int(step_no if step_no is not None else (ctx_or_step_no or 0))
+        eff_tool_calls = (
+            tool_calls
+            if tool_calls is not None
+            else (state_or_tool_calls if isinstance(state_or_tool_calls, list) else [])
+        )
+        eff_thinking_tok = step_thinking_tok
+        eff_content_tok = content_tok
+        eff_was_truncated = was_truncated
+        assert state is not None
+        eff_state = state
+
     current_step_read_keys: List[str] = []
     current_step_gate_cmds: List[str] = []
     step_tools_meta: List[Dict[str, Any]] = []
     step_total_args_tok = 0
 
-    for tc in tool_calls:
+    for tc in eff_tool_calls:
         t_name = tc["name"].split(":")[-1] or "unknown"
-        state.total_tool_calls += 1
-        state.tool_dist[t_name] = state.tool_dist.get(t_name, 0) + 1
+        eff_state.total_tool_calls += 1
+        eff_state.tool_dist[t_name] = eff_state.tool_dist.get(t_name, 0) + 1
         if "subagent" in t_name or t_name in ("task", "dispatch_agent"):
-            state.subagent_calls += 1
+            eff_state.subagent_calls += 1
 
         t_args = tc["args"] if isinstance(tc["args"], dict) else {}
         try:
             single_arg_tok = _estimate_tokens(json.dumps(t_args, ensure_ascii=False))
         except Exception:
             single_arg_tok = _estimate_tokens(str(t_args))
-        state.tok_tool_args += single_arg_tok
+        eff_state.tok_tool_args += single_arg_tok
         step_total_args_tok += single_arg_tok
 
-        ts_entry = state.tool_token_stats.setdefault(t_name, {"calls": 0, "args_tokens": 0, "output_tokens": 0})
+        ts_entry = eff_state.tool_token_stats.setdefault(
+            t_name, {"calls": 0, "args_tokens": 0, "output_tokens": 0}
+        )
         ts_entry["calls"] += 1
         ts_entry["args_tokens"] += single_arg_tok
 
@@ -483,15 +623,15 @@ def _process_tool_calls_in_step(
             (any(m in cmd_line for m in ("knowledge-db", "kdb")) and any(k in cmd_line for k in ("search", "callers", "callees", "impact")))
             or ("ast" in cmd_line and any(k in cmd_line for k in ("outline", "callers", "callees", "impact")))
         ):
-            state.consecutive_source_reads = 0
-            state.has_recent_kdb_query = True
+            eff_state.consecutive_source_reads = 0
+            eff_state.has_recent_kdb_query = True
 
         if "yscb.py" in cmd_line:
             for m_cli in re.finditer(r"yscb\.py[\"\']?\s+([a-zA-Z0-9_-]+)(?:\s+([a-zA-Z0-9_-]+))?(?:\s+([a-zA-Z0-9_-]+))?", cmd_line):
                 raw_mod_tok, sub1, sub2 = m_cli.group(1), m_cli.group(2) or "", m_cli.group(3) or ""
                 mod_tok = "knowledge-db" if raw_mod_tok == "kdb" else raw_mod_tok
-                state.transcript_cli_calls += 1
-                state.transcript_cli_by_module[mod_tok] = state.transcript_cli_by_module.get(mod_tok, 0) + 1
+                eff_state.transcript_cli_calls += 1
+                eff_state.transcript_cli_by_module[mod_tok] = eff_state.transcript_cli_by_module.get(mod_tok, 0) + 1
                 sub_pair = f"{sub1} {sub2}".strip()
                 for g_mod, g_cmd in GATE_COMMANDS:
                     if mod_tok == g_mod and (sub_pair.startswith(g_cmd) or sub1 == g_cmd):
@@ -502,22 +642,22 @@ def _process_tool_calls_in_step(
         disp_target = Path(target_file).name if target_file else (cmd_line[:60] if cmd_line else t_name)
 
         if t_name in EDIT_TOOL_NAMES and target_file:
-            state.total_edit_ops += 1
-            file_steps = state.edit_history.setdefault(target_file, [])
-            if not file_steps or file_steps[-1] != int(step_no):
-                file_steps.append(int(step_no))
-            edit_tok_list = state.file_edit_step_tokens.setdefault(target_file, [])
-            if edit_tok_list and edit_tok_list[-1][0] == int(step_no):
-                edit_tok_list[-1] = (int(step_no), edit_tok_list[-1][1] + single_arg_tok)
+            eff_state.total_edit_ops += 1
+            file_steps = eff_state.edit_history.setdefault(target_file, [])
+            if not file_steps or file_steps[-1] != int(eff_step_no):
+                file_steps.append(int(eff_step_no))
+            edit_tok_list = eff_state.file_edit_step_tokens.setdefault(target_file, [])
+            if edit_tok_list and edit_tok_list[-1][0] == int(eff_step_no):
+                edit_tok_list[-1] = (int(eff_step_no), edit_tok_list[-1][1] + single_arg_tok)
             else:
-                edit_tok_list.append((int(step_no), single_arg_tok))
-            for rk in list(state.read_counts.keys()):
+                edit_tok_list.append((int(eff_step_no), single_arg_tok))
+            for rk in list(eff_state.read_counts.keys()):
                 if rk.startswith(f"{target_file}:"):
-                    state.read_counts[rk] = 0
-            state.consecutive_source_reads = 0
+                    eff_state.read_counts[rk] = 0
+            eff_state.consecutive_source_reads = 0
         elif t_name in READ_TOOL_NAMES and target_file:
             disp_target, is_dup_read_call, is_blind_read_call = _handle_read_tool_call(
-                step_no, target_file, t_args, single_arg_tok, current_step_read_keys, state
+                eff_step_no, target_file, t_args, single_arg_tok, current_step_read_keys, eff_state
             )
 
         step_tools_meta.append({
@@ -530,57 +670,96 @@ def _process_tool_calls_in_step(
         })
 
     if step_tools_meta:
-        state.pending_tool_context = {
-            "step": step_no,
+        eff_state.pending_tool_context = {
+            "step": eff_step_no,
             "tools": step_tools_meta,
             "total_args_tok": step_total_args_tok,
-            "thinking_tok": step_thinking_tok,
+            "thinking_tok": eff_thinking_tok,
         }
-        state.last_planner_thinking_tok = step_thinking_tok
-        state.last_planner_args_tok = step_total_args_tok
+        eff_state.last_planner_thinking_tok = eff_thinking_tok
+        eff_state.last_planner_args_tok = step_total_args_tok
         if step_total_args_tok >= 250:
             p_t = step_tools_meta[0]
-            state.heavy_steps_raw.append({
-                "step": step_no,
+            eff_state.heavy_steps_raw.append({
+                "step": eff_step_no,
                 "tool": p_t["name"],
                 "target": p_t["target"][:90],
-                "tokens": step_total_args_tok + step_thinking_tok + content_tok,
-                "truncated": was_truncated,
+                "tokens": step_total_args_tok + eff_thinking_tok + eff_content_tok,
+                "truncated": eff_was_truncated,
             })
+
+    if ctx is not None:
+        ctx.current_step_read_keys = current_step_read_keys
+        ctx.current_step_gate_cmds = current_step_gate_cmds
+        ctx.step_total_args_tok = step_total_args_tok
 
     return current_step_read_keys, current_step_gate_cmds, step_total_args_tok
 
 
 def _record_step_error_signals(
-    step_no: int,
-    obj: Dict[str, Any],
-    payload_obj: Dict[str, Any],
-    content_str: str,
-    content_tok: int,
-    step_thinking_tok: int,
-    step_total_args_tok: int,
-    is_step_error: bool,
-    is_tool_output_step: bool,
-    tool_result_errors: List[str],
-    tool_calls: List[Dict[str, Any]],
-    current_step_read_keys: List[str],
-    current_step_gate_cmds: List[str],
-    state: _TranscriptParseState,
+    ctx_or_step_no: Union[_StepParseContext, int],
+    state_or_obj: Union[_TranscriptParseState, Dict[str, Any], None] = None,
+    payload_obj: Optional[Dict[str, Any]] = None,
+    content_str: str = "",
+    content_tok: int = 0,
+    step_thinking_tok: int = 0,
+    step_total_args_tok: int = 0,
+    is_step_error: bool = False,
+    is_tool_output_step: bool = False,
+    tool_result_errors: Optional[List[str]] = None,
+    tool_calls: Optional[List[Dict[str, Any]]] = None,
+    current_step_read_keys: Optional[List[str]] = None,
+    current_step_gate_cmds: Optional[List[str]] = None,
+    state: Optional[_TranscriptParseState] = None,
 ) -> None:
     """處理單步錯誤狀態、讀檔失敗計數回滾與 TOOL_MISS_AND_RETRY 訊號記錄。"""
+    if isinstance(ctx_or_step_no, _StepParseContext):
+        ctx = ctx_or_step_no
+        eff_state = state_or_obj if isinstance(state_or_obj, _TranscriptParseState) else state
+        assert eff_state is not None
+        step_no = ctx.step_no
+        obj = ctx.obj
+        eff_payload_obj = ctx.payload_obj
+        eff_content_str = ctx.content_str
+        eff_content_tok = ctx.content_tok
+        eff_thinking_tok = ctx.step_thinking_tok
+        eff_args_tok = ctx.step_total_args_tok
+        eff_is_step_error = ctx.is_step_error
+        eff_is_tool_output = ctx.is_tool_output_step
+        eff_tool_errors = ctx.tool_result_errors
+        eff_tool_calls = ctx.tool_calls
+        eff_read_keys = ctx.current_step_read_keys
+        eff_gate_cmds = ctx.current_step_gate_cmds
+    else:
+        step_no = int(ctx_or_step_no)
+        obj = state_or_obj if isinstance(state_or_obj, dict) else {}
+        eff_payload_obj = payload_obj or {}
+        eff_content_str = content_str
+        eff_content_tok = content_tok
+        eff_thinking_tok = step_thinking_tok
+        eff_args_tok = step_total_args_tok
+        eff_is_step_error = is_step_error
+        eff_is_tool_output = is_tool_output_step
+        eff_tool_errors = tool_result_errors or []
+        eff_tool_calls = tool_calls or []
+        eff_read_keys = current_step_read_keys or []
+        eff_gate_cmds = current_step_gate_cmds or []
+        assert state is not None
+        eff_state = state
+
     step_type = str(obj.get("type") or "").upper()
-    if is_step_error or tool_result_errors:
-        state.wasted_failed_ops += content_tok + step_thinking_tok + step_total_args_tok
-        if is_tool_output_step:
-            state.wasted_failed_ops += state.last_planner_thinking_tok + state.last_planner_args_tok
-            state.last_planner_thinking_tok = 0
-            state.last_planner_args_tok = 0
+    if eff_is_step_error or eff_tool_errors:
+        eff_state.wasted_failed_ops += eff_content_tok + eff_thinking_tok + eff_args_tok
+        if eff_is_tool_output:
+            eff_state.wasted_failed_ops += eff_state.last_planner_thinking_tok + eff_state.last_planner_args_tok
+            eff_state.last_planner_thinking_tok = 0
+            eff_state.last_planner_args_tok = 0
 
         raw_err_text = " ".join([
-            str(content_str or ""),
+            str(eff_content_str or ""),
             str(obj.get("error") or ""),
-            str(payload_obj.get("error") or ""),
-            *tool_result_errors,
+            str(eff_payload_obj.get("error") or ""),
+            *eff_tool_errors,
         ]).lower()
         is_read_err = any(
             k in raw_err_text
@@ -590,26 +769,26 @@ def _record_step_error_signals(
             )
         )
         if is_read_err:
-            keys_to_rollback = state.last_step_read_keys if not current_step_read_keys else current_step_read_keys
+            keys_to_rollback = eff_state.last_step_read_keys if not eff_read_keys else eff_read_keys
             for rk in keys_to_rollback:
-                if state.read_counts.get(rk, 0) > 0:
-                    state.read_counts[rk] -= 1
-        state.last_step_read_keys = current_step_read_keys
+                if eff_state.read_counts.get(rk, 0) > 0:
+                    eff_state.read_counts[rk] -= 1
+        eff_state.last_step_read_keys = eff_read_keys
     else:
-        if tool_calls:
-            state.last_step_read_keys = current_step_read_keys
+        if eff_tool_calls:
+            eff_state.last_step_read_keys = eff_read_keys
         elif step_type == "GENERIC":
-            state.last_step_read_keys = []
-            state.last_planner_thinking_tok = 0
-            state.last_planner_args_tok = 0
+            eff_state.last_step_read_keys = []
+            eff_state.last_planner_thinking_tok = 0
+            eff_state.last_planner_args_tok = 0
 
-    if current_step_gate_cmds:
-        state.last_step_gate_cmds = current_step_gate_cmds
+    if eff_gate_cmds:
+        eff_state.last_step_gate_cmds = eff_gate_cmds
 
-    if is_step_error:
-        state.error_steps += 1
-        err_content = " ".join(str(content_str or obj.get("error") or payload_obj.get("error") or "").split())[:200]
-        state.signals.append(FrictionSignal(
+    if eff_is_step_error:
+        eff_state.error_steps += 1
+        err_content = " ".join(str(eff_content_str or obj.get("error") or eff_payload_obj.get("error") or "").split())[:200]
+        eff_state.signals.append(FrictionSignal(
             signal_type="TOOL_MISS_AND_RETRY",
             severity="MEDIUM",
             tier_source="Tier 1",
@@ -617,12 +796,11 @@ def _record_step_error_signals(
             summary=f"工具調用返回 ERROR 狀態：{err_content or 'Unknown error'}",
             details={"step": step_no},
         ))
-        if state.last_thinking and len(state.thinking_excerpts) < 5:
-            state.thinking_excerpts.append({"step": step_no, "context": "TOOL_ERROR", "excerpt": state.last_thinking})
+        _append_thinking_excerpt_once(eff_state, step_no, "TOOL_ERROR")
 
-    for tr_err in tool_result_errors:
-        state.error_steps += 1
-        state.signals.append(FrictionSignal(
+    for tr_err in eff_tool_errors:
+        eff_state.error_steps += 1
+        eff_state.signals.append(FrictionSignal(
             signal_type="TOOL_MISS_AND_RETRY",
             severity="MEDIUM",
             tier_source="Tier 1",
@@ -630,8 +808,7 @@ def _record_step_error_signals(
             summary=f"工具調用返回 is_error=True：{tr_err or 'Tool execution error'}",
             details={"step": step_no},
         ))
-        if state.last_thinking and len(state.thinking_excerpts) < 5:
-            state.thinking_excerpts.append({"step": step_no, "context": "TOOL_ERROR", "excerpt": state.last_thinking})
+        _append_thinking_excerpt_once(eff_state, step_no, "TOOL_ERROR")
 
 
 def _build_churn_and_waste_signals(state: _TranscriptParseState) -> None:
@@ -907,11 +1084,6 @@ def parse_transcript_file(
 
             payload_obj = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
             payload_type = str(payload_obj.get("type") or "").lower()
-
-            content_str, content_tok, is_tool_output_step, tool_result_errors = _extract_step_content_and_role(
-                obj, payload_obj, payload_type, state
-            )
-
             status_str = str(obj.get("status") or payload_obj.get("status") or "").upper()
             is_step_error = (
                 status_str in ("ERROR", "FAILED")
@@ -919,24 +1091,21 @@ def parse_transcript_file(
                 or payload_obj.get("is_error") is True
             )
 
-            _attribute_tool_output_tokens(
-                step_no, content_str, content_tok, is_tool_output_step,
-                is_step_error, was_truncated, tool_result_errors, state
+            ctx = _StepParseContext(
+                step_no=step_no,
+                obj=obj,
+                payload_obj=payload_obj,
+                payload_type=payload_type,
+                was_truncated=was_truncated,
+                is_step_error=is_step_error,
             )
 
-            step_thinking_tok = _extract_step_thinking(obj, payload_obj, payload_type, state)
-            tool_calls = _extract_step_tool_calls(obj, payload_obj, payload_type)
-
-            current_step_read_keys, current_step_gate_cmds, step_total_args_tok = _process_tool_calls_in_step(
-                step_no, tool_calls, step_thinking_tok, content_tok, was_truncated, state
-            )
-
-            _record_step_error_signals(
-                step_no, obj, payload_obj, content_str, content_tok,
-                step_thinking_tok, step_total_args_tok, is_step_error,
-                is_tool_output_step, tool_result_errors, tool_calls,
-                current_step_read_keys, current_step_gate_cmds, state
-            )
+            _extract_step_content_and_role(ctx, state)
+            _attribute_tool_output_tokens(ctx, state)
+            _extract_step_thinking(ctx, state)
+            _extract_step_tool_calls(ctx)
+            _process_tool_calls_in_step(ctx, state)
+            _record_step_error_signals(ctx, state)
     except (OSError, PermissionError):
         return None, [], [], {}
 

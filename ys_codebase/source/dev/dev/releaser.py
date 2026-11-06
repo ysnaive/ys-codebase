@@ -14,7 +14,7 @@ from typing import Optional, Tuple, Dict, Any, List, Set
 
 from core import uri, vfs, semver, events
 from core.context import ExecutionContext
-from dev.builder import Builder
+from dev.builder import Builder, compare_semver_safe
 from dev.checker import Checker, discover_source_modules
 
 
@@ -35,7 +35,7 @@ def resolve_module_dependency_order(
     adj_list: Dict[str, List[str]] = {m: [] for m in available_modules}
 
     for m in available_modules:
-        for dep in dep_map.get(m, []):
+        for dep in dict.fromkeys(dep_map.get(m, [])):
             if dep in available_modules:
                 adj_list[dep].append(m)
                 in_degree[m] += 1
@@ -253,8 +253,15 @@ class Releaser:
                 err_msg = "\n  - ".join(errors)
                 return False, f"Release pre-flight check failed for '{module_name}':\n  - {err_msg}"
 
-        src_uri = f"module.source://{module_name}"
-        manifest_data = vfs.read_json(f"{src_uri}/manifest.json")
+        manifest_uri = f"module.source://{module_name}/manifest.json"
+        if not vfs.exists(manifest_uri):
+            return False, f"manifest.json not found for module '{module_name}'."
+        try:
+            manifest_data = vfs.read_json(manifest_uri)
+            if not isinstance(manifest_data, dict):
+                return False, f"Invalid manifest.json format for module '{module_name}'."
+        except Exception as e:
+            return False, f"Invalid JSON in manifest.json for module '{module_name}': {e}"
         target_version = manifest_data.get("version", "1.0.0.0")
 
         ok, msg = self.builder.package_release(module_name, target_version)
@@ -288,8 +295,11 @@ class Releaser:
 
         dep_map: Dict[str, List[str]] = {}
         for m in available_modules:
-            mdata = vfs.read_json(f"module.source://{m}/manifest.json")
-            dep_map[m] = _extract_manifest_dependencies(mdata)
+            try:
+                mdata = vfs.read_json(f"module.source://{m}/manifest.json")
+                dep_map[m] = _extract_manifest_dependencies(mdata) if isinstance(mdata, dict) else []
+            except Exception:
+                dep_map[m] = []
 
         topo_order = resolve_module_dependency_order(available_modules, dep_map)
 
@@ -329,7 +339,8 @@ class Releaser:
             return False, "Commit message cannot be empty for release-git."
 
         src_uri = f"module.source://{module_name}"
-        if not vfs.exists(f"{src_uri}/manifest.json"):
+        manifest_uri = f"{src_uri}/manifest.json"
+        if not vfs.exists(manifest_uri):
             return False, f"manifest.json not found for module '{module_name}'."
 
         if release_meta:
@@ -337,7 +348,13 @@ class Releaser:
             if not ok_meta:
                 return False, err_meta
 
-        manifest_data = vfs.read_json(f"{src_uri}/manifest.json")
+        try:
+            manifest_data = vfs.read_json(manifest_uri)
+            if not isinstance(manifest_data, dict):
+                return False, f"Invalid manifest.json format for module '{module_name}'."
+        except Exception as e:
+            return False, f"Invalid JSON in manifest.json for module '{module_name}': {e}"
+
         ver = manifest_data.get("version", "1.0.0.0")
         exact_rel_zip = f"module.release://{module_name}/{ver}.zip"
         known_versions = self._collect_all_known_released_versions(module_name)
@@ -463,14 +480,8 @@ class Releaser:
 
         releases_map[clean_ver] = entry
 
-        def _safe_cmp(a: str, b: str) -> int:
-            try:
-                return semver.compare_semver(a, b)
-            except Exception:
-                return 1 if a > b else (-1 if a < b else 0)
-
-        active_versions = sorted(set(active_versions), key=functools.cmp_to_key(_safe_cmp))
-        sorted_rel_keys = sorted(releases_map.keys(), key=functools.cmp_to_key(_safe_cmp))
+        active_versions = sorted(set(active_versions), key=functools.cmp_to_key(compare_semver_safe))
+        sorted_rel_keys = sorted(releases_map.keys(), key=functools.cmp_to_key(compare_semver_safe))
         idx_data["versions"] = active_versions
         idx_data["releases"] = {k: releases_map[k] for k in sorted_rel_keys}
 

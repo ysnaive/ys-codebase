@@ -17,7 +17,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from core import events, uri
 from core.guard import GUARD_ENV_HOST, GUARD_ENV_TOKEN
-from core.platform import ensure_private_venv
+from core.platform import (
+    ensure_installed_modules_path,
+    ensure_private_venv,
+    set_process_title,
+)
 from server.service import ServiceManager
 from server.streamer import DebouncedIOStreamer
 
@@ -35,6 +39,16 @@ def _restore_env_diff(orig_env: Dict[str, str]) -> None:
             os.environ[k] = v
 
 
+def _reconfigure_utf8_stream(stream_obj: Any) -> None:
+    """Reconfigures a text stream to UTF-8 with replacement error handling when supported."""
+    reconf = getattr(stream_obj, "reconfigure", None)
+    if callable(reconf):
+        try:
+            reconf(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 class WarmWorker:
     """
     Persistent warm worker executing inside an isolated subprocess.
@@ -47,12 +61,35 @@ class WarmWorker:
         self.service_manager = ServiceManager()
         self._task_lock = threading.RLock()
 
+    def _emit_log(self, level: str, msg: str) -> None:
+        """Emits a structured worker log packet to the master supervisor."""
+        self.emit_packet_fn({
+            "type": "log",
+            "level": level,
+            "component": "worker",
+            "msg": msg,
+        })
+
+    def _record_task_exception(
+        self,
+        ex: Exception,
+        module: str,
+        args: List[str],
+        streamer: DebouncedIOStreamer,
+        stop_capture: bool = False,
+    ) -> Tuple[int, str]:
+        """Formats an unhandled task exception, writes to captured stderr, optionally stops capture, and logs error."""
+        err_text = f"{type(ex).__name__}: {str(ex)}"
+        streamer.write("stderr", f"[Server Worker Error] {err_text}\n")
+        if stop_capture:
+            streamer.stop_capture()
+        self._emit_log("ERROR", f"Task execution failed for module='{module}', args={args}: {err_text}")
+        return 1, err_text
+
     def pre_warm(self) -> None:
         """Emits warming events and pre-warms core runtime."""
         start_t = time.time()
         pid = os.getpid()
-
-        from core.platform import ensure_installed_modules_path
 
         ensure_installed_modules_path(
             yscb_root=self.yscb_root,
@@ -63,12 +100,7 @@ class WarmWorker:
         try:
             self.service_manager.load_from_contributes(self.yscb_root)
         except Exception as e:
-            self.emit_packet_fn({
-                "type": "log",
-                "level": "WARNING",
-                "component": "worker",
-                "msg": f"Failed to load background services contributes: {e}",
-            })
+            self._emit_log("WARNING", f"Failed to load background services contributes: {e}")
 
         try:
             events.broadcast("server_worker_warming", {"worker_pid": pid, "start_time": start_t}, emit_module="server")
@@ -78,12 +110,7 @@ class WarmWorker:
         try:
             self.service_manager.start_all({"yscb_root": self.yscb_root})
         except Exception as e:
-            self.emit_packet_fn({
-                "type": "log",
-                "level": "WARNING",
-                "component": "worker",
-                "msg": f"Failed to initialize background services: {e}",
-            })
+            self._emit_log("WARNING", f"Failed to initialize background services: {e}")
 
         duration_ms = (time.time() - start_t) * 1000.0
         try:
@@ -91,12 +118,7 @@ class WarmWorker:
         except Exception:
             pass
 
-        self.emit_packet_fn({
-            "type": "log",
-            "level": "INFO",
-            "component": "worker",
-            "msg": f"Warm worker pre_warm completed in {duration_ms:.1f}ms (PID: {pid})",
-        })
+        self._emit_log("INFO", f"Warm worker pre_warm completed in {duration_ms:.1f}ms (PID: {pid})")
 
     def _prepare_execution_env(self, cwd: str, env: Optional[Dict[str, str]]) -> None:
         """Applies working directory, environment overrides, and security guard tokens."""
@@ -147,15 +169,7 @@ class WarmWorker:
                 code = se.code if isinstance(se.code, int) else (1 if se.code else 0)
                 return code, None
             except Exception as ex:
-                err_text = f"{type(ex).__name__}: {str(ex)}"
-                streamer.write("stderr", f"[Server Worker Error] {err_text}\n")
-                self.emit_packet_fn({
-                    "type": "log",
-                    "level": "ERROR",
-                    "component": "worker",
-                    "msg": f"Task execution failed for module='{module}', args={args}: {err_text}",
-                })
-                return 1, err_text
+                return self._record_task_exception(ex, module, args, streamer, stop_capture=False)
 
     def execute_task(
         self,
@@ -169,7 +183,10 @@ class WarmWorker:
         """
         with self._task_lock:
             start_time = time.time()
-            orig_cwd = os.getcwd()
+            try:
+                orig_cwd = os.getcwd()
+            except OSError:
+                orig_cwd = self.yscb_root
             orig_env = dict(os.environ)
 
             streamer = DebouncedIOStreamer(emit_chunk=self.emit_packet_fn, debounce_ms=500)
@@ -183,16 +200,7 @@ class WarmWorker:
                 with host_ctx:
                     exit_code, err_text = self._dispatch_command_with_captured_streams(module, args, streamer)
             except Exception as ex:
-                err_text = f"{type(ex).__name__}: {str(ex)}"
-                streamer.write("stderr", f"[Server Worker Error] {err_text}\n")
-                streamer.stop_capture()
-                self.emit_packet_fn({
-                    "type": "log",
-                    "level": "ERROR",
-                    "component": "worker",
-                    "msg": f"Task execution failed for module='{module}', args={args}: {err_text}",
-                })
-                exit_code = 1
+                exit_code, err_text = self._record_task_exception(ex, module, args, streamer, stop_capture=True)
             finally:
                 try:
                     os.chdir(orig_cwd)
@@ -209,7 +217,6 @@ class WarmWorker:
 def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -> None:
     """Entry point for warm worker subprocess loop reading from stdin and writing to stdout."""
     try:
-        from core.platform import set_process_title
         set_process_title("yscb server: worker")
     except Exception:
         pass
@@ -217,19 +224,9 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
     orig_stdout = sys.stdout
     if out_stream is None:
         for stream_obj in (orig_stdout, sys.stderr):
-            reconf = getattr(stream_obj, "reconfigure", None)
-            if callable(reconf):
-                try:
-                    reconf(encoding="utf-8", errors="replace")
-                except Exception:
-                    pass
+            _reconfigure_utf8_stream(stream_obj)
     if in_stream is None:
-        reconf_in = getattr(sys.stdin, "reconfigure", None)
-        if callable(reconf_in):
-            try:
-                reconf_in(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
+        _reconfigure_utf8_stream(sys.stdin)
 
     ipc_out = out_stream or orig_stdout
     in_io = in_stream or sys.stdin

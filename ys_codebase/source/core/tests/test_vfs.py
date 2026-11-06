@@ -1,25 +1,29 @@
 """
 YS-Codebase VFS 單元測試與邊界安全測試集。
-測試覆蓋 OSBackend CRUD、同目錄原子寫入、沙盒防逃逸、VirtualPath 物件導向操作與 core.uri 相容轉發。
+測試覆蓋 OSBackend CRUD、同目錄原子寫入、沙盒防逃逸、VirtualPath 物件導向操作與語意 URI 整合。
 """
-
+import errno
 import os
-import json
 import shutil
+import stat
+import sys
 import tempfile
-import unittest
+from unittest.mock import patch
 
 from dev.testing.case import YSCBTestCase
-from core import vfs, uri
+from dev.testing.requirement import require, Requirement
+from core import contributes, uri, vfs
+from core.contributes import _read_json_cached, invalidate_cache
 from core.vfs import VFS, OSBackend, VirtualPath
+from core.vfs.os_backend import robust_replace
 
 
+@require(Requirement.ENV)
 class TestVFS(YSCBTestCase):
     """VFS 模組核心單元與邊界測試套件。"""
 
     def setUp(self):
         super().setUp()
-        # 建立本測試專屬之隔離暫存目錄
         self.test_dir = tempfile.mkdtemp(prefix="yscb_vfs_test_")
         self.backend = OSBackend(root_dir=self.test_dir)
         self.custom_vfs = VFS(default_backend=self.backend)
@@ -30,8 +34,7 @@ class TestVFS(YSCBTestCase):
         super().tearDown()
 
     def test_os_backend_crud(self):
-        """FT-01: OSBackend 基礎 CRUD 操作 (text, bytes, json, exists, listdir, copy, move, remove)。"""
-        # 1. 寫入與讀取純文字
+        """OSBackend 基礎 CRUD 操作 (text, bytes, json, exists, listdir, copy, move, remove)。"""
         txt_path = os.path.join(self.test_dir, "hello.txt")
         self.backend.write_text(txt_path, "Hello VFS World")
         self.assertTrue(self.backend.exists(txt_path))
@@ -39,18 +42,15 @@ class TestVFS(YSCBTestCase):
         self.assertFalse(self.backend.is_dir(txt_path))
         self.assertEqual(self.backend.read_text(txt_path), "Hello VFS World")
 
-        # 2. 寫入與讀取二進位
         bin_path = os.path.join(self.test_dir, "data.bin")
         self.backend.write_bytes(bin_path, b"\x00\x01\x02\xFF")
         self.assertEqual(self.backend.read_bytes(bin_path), b"\x00\x01\x02\xFF")
 
-        # 3. 寫入與讀取 JSON
         json_path = os.path.join(self.test_dir, "config.json")
         sample_data = {"key": "value", "items": [1, 2, 3]}
         self.backend.write_json(json_path, sample_data)
         self.assertEqual(self.backend.read_json(json_path), sample_data)
 
-        # 4. 目錄建立與列舉
         sub_dir = os.path.join(self.test_dir, "subdir")
         self.backend.makedirs(sub_dir)
         self.assertTrue(self.backend.is_dir(sub_dir))
@@ -60,7 +60,6 @@ class TestVFS(YSCBTestCase):
         self.assertIn("config.json", items)
         self.assertIn("subdir", items)
 
-        # 5. 複製與移動
         copied_path = os.path.join(self.test_dir, "hello_copy.txt")
         self.backend.copy(txt_path, copied_path)
         self.assertTrue(self.backend.exists(copied_path))
@@ -71,7 +70,6 @@ class TestVFS(YSCBTestCase):
         self.assertFalse(self.backend.exists(copied_path))
         self.assertTrue(self.backend.exists(moved_path))
 
-        # 6. 刪除
         self.backend.remove(moved_path)
         self.assertFalse(self.backend.exists(moved_path))
         self.backend.remove(sub_dir)
@@ -79,11 +77,10 @@ class TestVFS(YSCBTestCase):
         self.mark_passed()
 
     def test_atomic_write(self):
-        """FT-02: 驗證原子寫入確保寫入完成後原子取代且同分區無 EXDEV。"""
+        """驗證原子寫入確保寫入完成後原子取代且同分區無 EXDEV。"""
         target_file = os.path.join(self.test_dir, "atomic_test.txt")
         self.backend.write_text(target_file, "Initial State")
 
-        # 使用 atomic_write 上下文覆寫
         with self.backend.atomic_write(target_file, mode="w") as f:
             f.write("Updated Atomic State")
 
@@ -91,28 +88,23 @@ class TestVFS(YSCBTestCase):
         self.mark_passed()
 
     def test_atomic_write_failure_cleanup(self):
-        """ET-02: 驗證原子寫入過程中異常時臨時檔安全清理且目標檔保持完整。"""
+        """驗證原子寫入過程中異常時臨時檔安全清理且目標檔保持完整。"""
         target_file = os.path.join(self.test_dir, "atomic_fail.txt")
         self.backend.write_text(target_file, "Pre-existing Content")
 
-        # 模擬寫入中拋出異常
-        try:
+        with self.assertRaises(RuntimeError):
             with self.backend.atomic_write(target_file, mode="w") as f:
                 f.write("Corrupted Half Written Content")
                 raise RuntimeError("Simulated crash during write")
-        except RuntimeError:
-            pass
 
-        # 斷言原檔案未被覆蓋破壞
         self.assertEqual(self.backend.read_text(target_file), "Pre-existing Content")
 
-        # 斷言目錄下無殘留之 .tmp 暫存檔
         tmp_files = [f for f in os.listdir(self.test_dir) if ".tmp." in f]
         self.assertEqual(tmp_files, [], "Temporary files must be cleaned up on failure.")
         self.mark_passed()
 
     def test_auto_makedirs(self):
-        """ET-03: 驗證目標路徑父目錄不存在時寫入能自動遞迴建立目錄。"""
+        """驗證目標路徑父目錄不存在時寫入能自動遞迴建立目錄。"""
         nested_file = os.path.join(self.test_dir, "deep", "nested", "path", "test.txt")
         self.backend.write_text(nested_file, "Auto Created Directory Content")
         self.assertTrue(self.backend.exists(nested_file))
@@ -120,7 +112,7 @@ class TestVFS(YSCBTestCase):
         self.mark_passed()
 
     def test_safe_path_escape(self):
-        """ET-01: 驗證 assert_safe_path 邊界防逃逸 (偵測 ../ 逃逸拋出 PermissionError)。"""
+        """驗證 assert_safe_path 邊界防逃逸 (偵測 ../ 逃逸拋出 PermissionError)。"""
         outside_path = os.path.join(self.test_dir, "..", "outside_target.txt")
         with self.assertRaises(PermissionError):
             self.backend.assert_safe_path(outside_path)
@@ -130,45 +122,111 @@ class TestVFS(YSCBTestCase):
         self.mark_passed()
 
     def test_vfs_uri_resolution(self):
-        """FT-03: 驗證 VFS 核心中樞透過 core.uri.resolve 支援語意 URI。"""
-        # 使用 cache:// 協議測試
+        """驗證 VFS 核心中樞透過語意 URI 支援檔案與目錄操作（含 makedirs, listdir, copy, move, rmtree）。"""
         cache_test_uri = "cache://vfs_test/demo.txt"
         vfs.write_text(cache_test_uri, "VFS URI Integration Test")
         self.assertTrue(vfs.exists(cache_test_uri))
         self.assertEqual(vfs.read_text(cache_test_uri), "VFS URI Integration Test")
         vfs.remove(cache_test_uri)
         self.assertFalse(vfs.exists(cache_test_uri))
+
+        # Verify semantic URI directory operations and JSON I/O
+        d_uri = f"{self.sandbox_uri}/vfs_test_dir/subdir"
+        vfs.makedirs(d_uri)
+        self.assertTrue(vfs.is_dir(d_uri))
+
+        f1 = f"{d_uri}/f1.txt"
+        j1 = f"{d_uri}/j1.json"
+        vfs.write_text(f1, "file1")
+        vfs.write_json(j1, {"key": "value", "count": 100})
+        self.assertTrue(vfs.is_file(f1))
+        self.assertEqual(vfs.read_json(j1), {"key": "value", "count": 100})
+        self.assertIn("f1.txt", vfs.listdir(d_uri))
+
+        f2 = f"{d_uri}/f2.txt"
+        vfs.copy(f1, f2)
+        self.assertTrue(vfs.exists(f2))
+        self.assertEqual(vfs.read_text(f2), "file1")
+
+        f3 = f"{self.sandbox_uri}/vfs_test_dir/f3.txt"
+        vfs.move(f2, f3)
+        self.assertFalse(vfs.exists(f2))
+        self.assertTrue(vfs.exists(f3))
+
+        vfs.rmtree(f"{self.sandbox_uri}/vfs_test_dir")
+        self.assertFalse(vfs.exists(f"{self.sandbox_uri}/vfs_test_dir"))
         self.mark_passed()
 
     def test_virtual_path(self):
-        """FT-04: 驗證 VirtualPath 物件導向介面與 / 路徑拼接。"""
+        """驗證 VirtualPath 完整屬性與方法契約（含 parent, raw, resolved, __eq__, __hash__, bytes, mkdir, listdir, open, atomic_write）。"""
         base_vp = VirtualPath(self.test_dir, vfs_instance=self.custom_vfs)
         file_vp = base_vp / "notes" / "todo.txt"
 
         self.assertEqual(file_vp.name, "todo.txt")
         self.assertEqual(file_vp.suffix, ".txt")
+        self.assertEqual(file_vp.raw, os.path.join(self.test_dir, "notes", "todo.txt"))
+        self.assertTrue(os.path.isabs(file_vp.resolved))
+        self.assertIn("VirtualPath(", repr(file_vp))
+        self.assertEqual(file_vp.parent, base_vp / "notes")
+        self.assertEqual(file_vp, VirtualPath(file_vp.raw, vfs_instance=self.custom_vfs))
+        self.assertEqual(file_vp, file_vp.raw)
+        self.assertEqual(hash(file_vp), hash(file_vp.raw))
 
-        # 寫入與讀取
+        # mkdir, is_dir, listdir
+        notes_vp = base_vp / "notes"
+        notes_vp.mkdir(parents=True, exist_ok=True)
+        self.assertTrue(notes_vp.is_dir())
+
         file_vp.write_text("1. Build VFS\n2. Test All")
         self.assertTrue(file_vp.exists())
         self.assertTrue(file_vp.is_file())
         self.assertEqual(file_vp.read_text(), "1. Build VFS\n2. Test All")
+        self.assertIn("todo.txt", notes_vp.listdir())
 
-        # 刪除
+        # write_bytes / read_bytes
+        bin_vp = notes_vp / "raw.bin"
+        bin_vp.write_bytes(b"\x10\x20\x30")
+        self.assertEqual(bin_vp.read_bytes(), b"\x10\x20\x30")
+
+        # open & atomic_write
+        with file_vp.open("r", encoding="utf-8") as f:
+            self.assertIn("Build VFS", f.read())
+        with file_vp.atomic_write(mode="w", encoding="utf-8") as af:
+            af.write("Atomic VP Content")
+        self.assertEqual(file_vp.read_text(), "Atomic VP Content")
+
         file_vp.unlink()
+        bin_vp.unlink()
         self.assertFalse(file_vp.exists())
 
-        # URI 形式 VirtualPath
+        # Semantic URI VirtualPath parent and JSON operations
         uri_vp = VirtualPath("cache://vfs_vp_test") / "sub" / "data.json"
         self.assertEqual(str(uri_vp), "cache://vfs_vp_test/sub/data.json")
+        self.assertEqual(uri_vp.parent, VirtualPath("cache://vfs_vp_test/sub"))
+        self.assertEqual(VirtualPath("cache://vfs_vp_test").parent, VirtualPath("cache://"))
         uri_vp.write_json({"status": "ok"})
         self.assertTrue(uri_vp.exists())
         self.assertEqual(uri_vp.read_json(), {"status": "ok"})
         uri_vp.unlink()
+
+        # Verify writing contribute.json automatically invalidates URI and contributes caches
+        uri.resolve("yscb://")
+        contrib_override = "config://core/contribute.json"
+        had_override = vfs.exists(contrib_override)
+        saved_override = vfs.read_json(contrib_override) if had_override else None
+        try:
+            vfs.write_json(contrib_override, {})
+            self.assertEqual(uri._TOKEN_MAP_CACHE, {})
+            self.assertEqual(contributes._LAST_CLEAN_SCAN_TS, {})
+        finally:
+            if had_override and saved_override is not None:
+                vfs.write_json(contrib_override, saved_override)
+            else:
+                vfs.remove(contrib_override, missing_ok=True)
         self.mark_passed()
 
     def test_uri_compatibility_delegation(self):
-        """FT-05: 驗證 core.vfs 頂層快捷 IO helpers 無損轉發。"""
+        """驗證 core.vfs 頂層快捷 IO helpers 無損轉發。"""
         compat_file = os.path.join(self.test_dir, "compat.txt")
         vfs.write_text(compat_file, "Compatible Content")
         self.assertTrue(vfs.exists(compat_file))
@@ -184,10 +242,7 @@ class TestVFS(YSCBTestCase):
         self.mark_passed()
 
     def test_cross_backend_protection(self):
-        """FT-07: 驗證 VFS.copy 與 VFS.move 跨不同 Backend 時拋出 NotImplementedError。"""
-        from core.vfs import VFS
-        from core.vfs.os_backend import OSBackend
-
+        """驗證 VFS.copy 與 VFS.move 跨不同 Backend 時拋出 NotImplementedError。"""
         custom_vfs = VFS()
         dummy = OSBackend()
         custom_vfs.register_backend("dummy://", dummy)
@@ -203,9 +258,7 @@ class TestVFS(YSCBTestCase):
         self.mark_passed()
 
     def test_atomic_write_win32_retry_exhaustion_preserves_target(self):
-        """T-06: 驗證 Windows 平台 atomic_write 重試耗盡時拋出異常、絕不刪除/覆寫原目標檔，且清理 .tmp 暫存檔。"""
-        from unittest.mock import patch
-
+        """驗證 Windows 平台 atomic_write 重試耗盡時拋出異常、絕不刪除/覆寫原目標檔，且清理 .tmp 暫存檔。"""
         target_file = os.path.join(self.test_dir, "win32_atomic.txt")
         self.backend.write_text(target_file, "Original Safe Content")
 
@@ -225,19 +278,13 @@ class TestVFS(YSCBTestCase):
         self.mark_passed()
 
     def test_remove_directory_readonly_chmod_retry_and_error_propagation(self):
-        """T-14: 驗證 OSBackend.remove 目錄刪除對唯讀檔自動 chmod 重試、支援 missing_ok，且非 ENOENT 錯誤不靜默吞沒。"""
-        import errno
-        import stat
-        from unittest.mock import patch
-
-        # 1. 目錄內含唯讀檔案時可透過 _on_rm_error 自動 chmod 並成功刪除
+        """驗證 OSBackend.remove 目錄刪除對唯讀檔自動 chmod 重試、支援 missing_ok，且非 ENOENT 錯誤不靜默吞沒。"""
         ro_dir = os.path.join(self.test_dir, "readonly_dir")
         os.makedirs(ro_dir, exist_ok=True)
         ro_file = os.path.join(ro_dir, "locked.txt")
         self.backend.write_text(ro_file, "readonly data")
         os.chmod(ro_file, stat.S_IREAD)
 
-        # 模擬首次 unlink 拋出 PermissionError，觸發 _on_rm_error chmod 後重試成功
         real_unlink = os.unlink
         real_rmtree = shutil.rmtree
         call_state = {"count": 0}
@@ -252,7 +299,6 @@ class TestVFS(YSCBTestCase):
             try:
                 flaky_unlink(ro_file)
             except Exception:
-                import sys
                 onerror(flaky_unlink, ro_file, sys.exc_info())
             real_rmtree(path, ignore_errors=True)
 
@@ -261,7 +307,6 @@ class TestVFS(YSCBTestCase):
         self.assertFalse(os.path.exists(ro_dir))
         self.assertEqual(call_state["count"], 1)
 
-        # 2. 非 ENOENT 異常（例如 EBUSY）即使 missing_ok=True 亦必須向上拋出，絕不因 missing_ok 靜默吞沒
         busy_dir = os.path.join(self.test_dir, "busy_dir")
         os.makedirs(busy_dir, exist_ok=True)
         busy_file = os.path.join(busy_dir, "locked_busy.txt")
@@ -274,7 +319,6 @@ class TestVFS(YSCBTestCase):
             try:
                 fail_busy(busy_file)
             except Exception:
-                import sys
                 onerror(fail_busy, busy_file, sys.exc_info())
 
         with patch("core.vfs.os_backend.shutil.rmtree", side_effect=busy_rmtree):
@@ -286,11 +330,6 @@ class TestVFS(YSCBTestCase):
 
     def test_robust_replace_exdev_fallback_and_contributes_json_cache(self):
         """驗證 robust_replace 遭遇 EXDEV 時降級至目標同目錄暫存後原子替換，且 contributes._read_json_cached 命中與失效正常。"""
-        import errno
-        from unittest.mock import patch
-        from core.vfs.os_backend import robust_replace
-        from core.contributes import _read_json_cached, invalidate_cache
-
         src_file = os.path.join(self.test_dir, "exdev_src.json")
         dst_file = os.path.join(self.test_dir, "exdev_dst.json")
         self.backend.write_text(src_file, '{"ok": true}')
@@ -315,10 +354,7 @@ class TestVFS(YSCBTestCase):
         self.mark_passed()
 
     def test_vfs_open_boundary_guard_lf_newline_and_symlink_copy(self):
-        """驗證 VFS.open 邊界檢查與 LF 換行強制，以及 OSBackend.copy 對符號連結之非展開安全拷貝。"""
-        from core.vfs.vfs import VFS
-        from core.vfs.os_backend import OSBackend
-
+        """驗證 VFS.open 邊界檢查與 LF 換行強制、OSBackend symlink 越界讀取阻斷，以及 OSBackend.copy 對符號連結之非展開安全拷貝。"""
         box_dir = os.path.join(self.sandbox_dir, "vfs_open_box")
         outside_dir = os.path.join(self.sandbox_dir, "vfs_open_outside")
         os.makedirs(box_dir, exist_ok=True)
@@ -327,7 +363,8 @@ class TestVFS(YSCBTestCase):
         with open(outside_file, "w", encoding="utf-8") as f:
             f.write("forbidden")
 
-        scoped_vfs = VFS(default_backend=OSBackend(root_dir=box_dir))
+        guarded_backend = OSBackend(root_dir=box_dir)
+        scoped_vfs = VFS(default_backend=guarded_backend)
         with self.assertRaises(PermissionError):
             scoped_vfs.open(outside_file, "r")
 
@@ -337,18 +374,25 @@ class TestVFS(YSCBTestCase):
         with open(lf_file, "rb") as bf:
             self.assertEqual(bf.read(), b"line1\nline2\n")
 
-        # Symlink directory copy safety
+        # Symlink escape guard and non-dereferencing copy safety
         src_tree = os.path.join(box_dir, "src_tree")
         dst_tree = os.path.join(box_dir, "dst_tree")
         os.makedirs(src_tree, exist_ok=True)
         link_in_tree = os.path.join(src_tree, "ext_dir_link")
+        escape_file_link = os.path.join(box_dir, "escape_link.txt")
         try:
             os.symlink(outside_dir, link_in_tree)
+            os.symlink(outside_file, escape_file_link)
             has_symlink = True
         except OSError:
             has_symlink = False
 
         if has_symlink:
+            with self.assertRaises(PermissionError):
+                guarded_backend.read_text(escape_file_link)
+            with self.assertRaises(PermissionError):
+                guarded_backend.exists(escape_file_link)
+
             scoped_vfs.copy(src_tree, dst_tree)
             copied_link = os.path.join(dst_tree, "ext_dir_link")
             self.assertTrue(os.path.islink(copied_link))

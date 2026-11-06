@@ -2,12 +2,14 @@
 Unit tests for FingerprintScanner precise space_generations ack, watch=False auto_refresh,
 and CursorStore multi-threaded RLock Read-Modify-Write safety.
 """
+import json
 import os
 from pathlib import Path
 import shutil
 import sys
 import tempfile
 import threading
+import time
 from unittest.mock import patch
 
 _test_dir = os.path.dirname(os.path.abspath(__file__))
@@ -19,7 +21,13 @@ from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
 
 from file_space.manager import FileSpaceManager
-from file_space.scanner import CursorStore, FingerprintScanner
+from file_space.scanner import (
+    CursorStore,
+    FingerprintScanner,
+    _atomic_write_bytes,
+    is_watcher_active,
+)
+from file_space.service import FileSpaceWatcherServiceWorker
 
 
 class TestFingerprintScannerSelfHealing(YSCBTestCase):
@@ -64,7 +72,7 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
         )
 
     @require(Requirement.LOGIC)
-    def test_ft_01_precise_space_generations_ack_prevents_lost_update(self) -> None:
+    def test_precise_space_generations_ack_prevents_lost_update(self) -> None:
         """Verify consume_diff(None) / ack(None, space_generations=...) preserves concurrent new generations."""
         (self.space_a_dir / "a.py").write_text("v1\n", encoding="utf-8")
         (self.space_b_dir / "b.py").write_text("v1\n", encoding="utf-8")
@@ -98,7 +106,7 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_02_watch_false_space_auto_refreshes_when_watcher_active(self) -> None:
+    def test_watch_false_space_auto_refreshes_when_watcher_active(self) -> None:
         """Verify watch=False spaces still auto-refresh during consume_diff / _diff_all_spaces when watcher is active."""
         (self.space_a_dir / "a.py").write_text("v1\n", encoding="utf-8")
         (self.space_b_dir / "b.py").write_text("v1\n", encoding="utf-8")
@@ -110,7 +118,7 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
         # Edit file in space_b (watch=False) without manual refresh
         (self.space_b_dir / "b.py").write_text("v2_unwatched_change\n", encoding="utf-8")
 
-        with patch("file_space.service.is_watcher_active", return_value=True):
+        with patch("file_space.scanner.is_watcher_active", return_value=True):
             # 1. consume_diff(None) should auto-refresh space_b because space_b.watch is False
             with scanner.consume_diff(None, consumer_id="kdb") as diff_all:
                 self.assertIn("b.py", diff_all.modified)
@@ -125,9 +133,10 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_et_01_cursor_store_concurrent_rmw_thread_safety(self) -> None:
+    def test_cursor_store_concurrent_rmw_thread_safety(self) -> None:
         """Verify CursorStore RLock prevents multi-threaded set_cursor calls from overwriting sibling spaces."""
-        store = CursorStore(self.storage_root)
+        scanner = self._build_multi_space_scanner()
+        store: CursorStore = scanner.cursor_store
         num_threads = 12
         barrier = threading.Barrier(num_threads)
         errors = []
@@ -147,72 +156,104 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
                 errors.append(exc)
 
         threads = [
-            threading.Thread(target=_worker, args=(i,))
+            threading.Thread(target=_worker, args=(i,), daemon=True)
             for i in range(num_threads)
         ]
         for t in threads:
             t.start()
         for t in threads:
             t.join(timeout=10.0)
+            self.assertFalse(t.is_alive())
 
         self.assertEqual(errors, [])
-        all_Data = store.load_consumer("shared_consumer")
-        self.assertEqual(len(all_Data), num_threads)
+        all_data = store.load_consumer("shared_consumer")
+        self.assertEqual(len(all_data), num_threads)
         for i in range(num_threads):
             rec = store.get_cursor(f"space_{i}", "shared_consumer")
             self.assertEqual(rec["acked_gen"], 14)
             self.assertEqual(rec["merkle_root"], f"root_{i}_14")
 
+        store.set_cursor(
+            space_key="space_0",
+            consumer_id="alpha_consumer",
+            acked_gen=1,
+            merkle_root="root_0_1",
+            config_hash="cfg_0",
+        )
+        self.assertEqual(
+            scanner.cursor_store.list_consumers(),
+            ["alpha_consumer", "shared_consumer"],
+        )
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_et_02_racy_stat_gate_and_broken_symlink_safety(self) -> None:
-        """驗證同秒級同長度覆寫時透過 Racy Stat Gate 重新計算雜湊，且懸空符號連結不引發掃描崩潰。"""
-        target_f = self.space_a_dir / "racy.py"
-        target_f.write_text("AAAA\n", encoding="utf-8")
+    def test_broken_symlink_safety_and_patch_tombstone(self) -> None:
+        """Verify broken symlinks do not crash refresh and patch_space_files marks newly broken symlink as tombstone."""
+        ext_target_dir = self.tmp_dir / "symlink_targets"
+        ext_target_dir.mkdir(parents=True, exist_ok=True)
+        real_target = ext_target_dir / "real_target.py"
+        real_target.write_text("TARGET = 1\n", encoding="utf-8")
 
         broken_link = self.space_a_dir / "broken_link.py"
+        valid_link = self.space_a_dir / "valid_link.py"
         try:
-            os.symlink(self.space_a_dir / "non_existent_target.py", broken_link)
-        except OSError:
-            pass
+            os.symlink(ext_target_dir / "non_existent_target.py", broken_link)
+            os.symlink(real_target, valid_link)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"Symlink creation not supported in this environment: {exc}")
 
         scanner = self._build_multi_space_scanner()
-        scanner.refresh("space_a")
-        scanner.ack("space_a", consumer_id="kdb")
+        scanner.space_manager.define_ephemeral_space(
+            "sym_space",
+            {
+                "include": [self.space_a_dir.as_posix()],
+                "exclude": [".git"],
+                "file_patterns": ["*.py"],
+                "follow_symlinks": True,
+            },
+        )
+        scanner.refresh("sym_space")
+        scanner.ack("sym_space", consumer_id="kdb")
 
-        # 覆寫為相同位元組長度但內容不同之檔案，即使處於同秒視窗內亦必須偵測出 modified
-        target_f.write_text("BBBB\n", encoding="utf-8")
-        scanner.refresh("space_a")
-        diff_res = scanner.diff("space_a", consumer_id="kdb", auto_refresh=False)
-        self.assertIn("racy.py", diff_res.modified)
+        snap_initial = scanner.snapshot("sym_space")
+        self.assertNotIn("broken_link.py", snap_initial)
+        self.assertIn("valid_link.py", snap_initial)
+
+        # Delete target file so valid_link.py becomes a broken symlink, then patch_space_files
+        real_target.unlink()
+        patched_state = scanner.patch_space_files("sym_space", [valid_link])
+        self.assertIn("valid_link.py", patched_state.entries)
+        self.assertTrue(patched_state.entries["valid_link.py"].is_deleted)
+
+        diff_res = scanner.diff("sym_space", consumer_id="kdb", auto_refresh=False)
+        self.assertEqual(diff_res.deleted, ["valid_link.py"])
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_03_backdated_mtime_no_permanent_racy_and_tombstone_resurrection(self) -> None:
+    def test_backdated_mtime_no_permanent_racy_and_tombstone_resurrection(self) -> None:
         """Verify backdated mtime (ctime_ns > mtime_ns) hits cache after first scan, and resurrected tombstone keeps created_gen."""
-        import time
-
         f_utime = self.space_a_dir / "backdated.py"
         f_utime.write_text("content_v1\n", encoding="utf-8")
-        # Backdate mtime by 60 seconds so ctime_ns > mtime_ns permanently
         past_ts = time.time() - 60.0
         os.utime(f_utime, (past_ts, past_ts))
-        # Wait 15ms so scan_start_ns - ctime_ns > RACY_CLEAN_WINDOW_NS (10ms)
-        time.sleep(0.015)
+        st = f_utime.stat()
+        fixed_now_ns = max(st.st_mtime_ns, st.st_ctime_ns) + 50_000_000
 
         scanner = self._build_multi_space_scanner()
-        scanner.refresh("space_a")
-        snap1, _ = scanner._load_or_recover_state("space_a")
-        self.assertEqual(snap1.head_generation, 1)
-        self.assertEqual(snap1.entries["backdated.py"].created_gen, 1)
-
-        # Second scan must NOT re-hash f_utime even though ctime_ns > prev_fp.mtime_ns
-        with patch.object(scanner, "compute_file_hash", wraps=scanner.compute_file_hash) as mock_hash:
+        with patch("file_space.scanner.time.time_ns", return_value=fixed_now_ns):
             scanner.refresh("space_a")
-            snap2, _ = scanner._load_or_recover_state("space_a")
-            self.assertEqual(mock_hash.call_count, 0)
-            self.assertEqual(snap2.head_generation, 1)
+            snap1, _ = scanner._load_or_recover_state("space_a")
+            self.assertEqual(snap1.head_generation, 1)
+            self.assertEqual(snap1.entries["backdated.py"].created_gen, 1)
+
+            # Second scan must NOT re-hash f_utime even though ctime_ns > prev_fp.mtime_ns
+            with patch.object(
+                scanner, "compute_file_hash", wraps=scanner.compute_file_hash
+            ) as mock_hash:
+                scanner.refresh("space_a")
+                snap2, _ = scanner._load_or_recover_state("space_a")
+                self.assertEqual(mock_hash.call_count, 0)
+                self.assertEqual(snap2.head_generation, 1)
 
         # Delete backdated.py -> tombstone at Gen 2, then recreate -> updated at Gen 3 preserving created_gen=1
         f_utime.unlink()
@@ -230,10 +271,8 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_04_patch_space_files_and_watcher_directory_move_delete_guard(self) -> None:
+    def test_patch_space_files_and_watcher_directory_move_delete_guard(self) -> None:
         """Verify patch_space_files incremental updates and Watcher directory move/delete full-rescan fallback."""
-        from file_space.service import FileSpaceWatcherServiceWorker
-
         f1 = self.space_a_dir / "keep.py"
         f2 = self.space_a_dir / "edit.py"
         sub_dir = self.space_a_dir / "pkg"
@@ -269,7 +308,6 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
             space_manager=scanner.space_manager,
             scanner=scanner,
         )
-        # Fast segment filter ignores .git and .cache before Path.resolve()
         self.assertEqual(worker.notify_file_event(str(self.space_a_dir / ".git" / "HEAD")), [])
 
         shutil.rmtree(sub_dir)
@@ -284,11 +322,8 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_05_watcher_state_awareness_and_diff_all_spaces_aggregation(self) -> None:
+    def test_watcher_state_awareness_and_diff_all_spaces_aggregation(self) -> None:
         """Verify is_watcher_active checks watcher_state.json + space watch flag, and _diff_all_spaces aggregates generations."""
-        import json
-        from file_space.scanner import is_watcher_active
-
         (self.space_a_dir / "a.py").write_text("a = 1\n", encoding="utf-8")
         (self.space_b_dir / "b.py").write_text("b = 1\n", encoding="utf-8")
 
@@ -296,8 +331,8 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
         scanner.refresh(None)
 
         all_diff = scanner.diff(None, consumer_id="kdb", auto_refresh=False)
-        self.assertGreater(all_diff.to_generation, 0)
-        self.assertTrue(len(all_diff.merkle_root) > 0)
+        self.assertEqual(all_diff.to_generation, 2)
+        self.assertEqual(len(all_diff.merkle_root), 40)
         self.assertEqual(all_diff.space_generations.get("space_a"), 1)
         self.assertEqual(all_diff.space_generations.get("space_b"), 1)
 
@@ -313,8 +348,9 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
             ),
             encoding="utf-8",
         )
-        # When watchdog_running is False, is_watcher_active must return False
-        self.assertFalse(is_watcher_active(self.proj_root, space_name="space_a", space_manager=scanner.space_manager))
+        self.assertFalse(
+            is_watcher_active(self.proj_root, space_name="space_a", space_manager=scanner.space_manager)
+        )
 
         state_file.write_text(
             json.dumps(
@@ -326,17 +362,17 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
             ),
             encoding="utf-8",
         )
-        self.assertTrue(is_watcher_active(self.proj_root, space_name="space_a", space_manager=scanner.space_manager))
-        # space_b has watch=False, so is_watcher_active(..., space_name="space_b") must return False
-        self.assertFalse(is_watcher_active(self.proj_root, space_name="space_b", space_manager=scanner.space_manager))
+        self.assertTrue(
+            is_watcher_active(self.proj_root, space_name="space_a", space_manager=scanner.space_manager)
+        )
+        self.assertFalse(
+            is_watcher_active(self.proj_root, space_name="space_b", space_manager=scanner.space_manager)
+        )
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft_06_watcher_dirty_beacon_and_atomic_write_retry(self) -> None:
+    def test_watcher_dirty_beacon_and_atomic_write_retry(self) -> None:
         """Verify .watcher_dirty beacon triggers auto_refresh during debounce and _atomic_write_bytes retries PermissionError."""
-        from file_space.scanner import _atomic_write_bytes
-        from file_space.service import FileSpaceWatcherServiceWorker
-
         (self.space_a_dir / "a.py").write_text("v1\n", encoding="utf-8")
         scanner = self._build_multi_space_scanner()
         scanner.refresh(None)
@@ -346,7 +382,6 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
             space_manager=scanner.space_manager,
             scanner=scanner,
         )
-        # Edit file and notify watcher (without flushing yet) -> .watcher_dirty beacon is created
         f_a = self.space_a_dir / "a.py"
         f_a.write_text("v2_dirty_window\n", encoding="utf-8")
         worker.notify_file_event(str(f_a), is_directory=False, event_type="modified")
@@ -360,7 +395,7 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
         worker.flush_space_now("space_a")
         self.assertFalse(scanner.is_watcher_dirty("space_a"))
 
-        # Verify _atomic_write_bytes retries transient PermissionError on os.replace
+        # 1. Verify _atomic_write_bytes retries transient PermissionError on os.replace (2 failures -> 3rd succeeds)
         retry_target = self.tmp_dir / "atomic_retry.bin"
         real_replace = os.replace
         attempts = {"count": 0}
@@ -371,11 +406,37 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
                 raise PermissionError("Simulated Windows file lock")
             real_replace(src, dst)
 
-        with patch("file_space.scanner.os.replace", side_effect=_flaky_replace):
+        with patch("file_space.scanner.os.replace", side_effect=_flaky_replace), patch(
+            "file_space.scanner.time.sleep"
+        ) as mock_sleep:
             _atomic_write_bytes(retry_target, b"ok_payload")
 
         self.assertEqual(attempts["count"], 3)
         self.assertEqual(retry_target.read_bytes(), b"ok_payload")
+        self.assertEqual(
+            [c.args[0] for c in mock_sleep.call_args_list],
+            [0.01, 0.02],
+        )
+
+        # 2. Verify _atomic_write_bytes exhausts all 5 attempts, raises PermissionError, and cleans up .tmp file
+        exhaust_dir = self.tmp_dir / "exhaust_atomic"
+        exhaust_dir.mkdir(parents=True, exist_ok=True)
+        exhaust_target = exhaust_dir / "failed.bin"
+
+        with patch(
+            "file_space.scanner.os.replace",
+            side_effect=PermissionError("Permanent file lock"),
+        ), patch("file_space.scanner.time.sleep") as mock_sleep_exhaust:
+            with self.assertRaises(PermissionError):
+                _atomic_write_bytes(exhaust_target, b"never_written")
+
+        self.assertEqual(
+            [c.args[0] for c in mock_sleep_exhaust.call_args_list],
+            [0.01, 0.02, 0.04, 0.08],
+        )
+        self.assertFalse(exhaust_target.exists())
+        self.assertEqual(
+            [p for p in exhaust_dir.iterdir() if p.name.endswith(".tmp")],
+            [],
+        )
         self.mark_passed()
-
-

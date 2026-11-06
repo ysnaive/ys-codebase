@@ -3,108 +3,131 @@
   "description": "YS-Codebase 多工作空間幾何路由、雙階段單調世代指紋掃描、多消費者獨立游標與檔案變動監聽引擎",
   "versions": [
     "1.0.0.5",
-    "1.0.1.3"
+    "1.0.1.2",
+    "1.0.1.3",
+    "1.0.1.4"
   ],
   "releases": {
     "1.0.0.0": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.2"
+        "core": ">=1.2.2.0, <1.2.5.0"
       },
       "type": "feature",
       "urgency": "recommended",
       "summary": "初版 file-space 模組發布，提供多工作空間幾何路由、YFP2 雙階段單調世代指紋快照、多消費者游標與 file-space-watcher 常駐監聽",
-      "sha256": "16a6339eff5208155bb652e2a8774740d80e0f511710ce99b5c3a385e9f65914"
+      "sha256": "16a6339eff5208155bb652e2a8774740d80e0f511710ce99b5c3a385e9f65914",
+      "commit": "00571cffa8e7692b11d14d9abc2d2b8a908c6719"
     },
     "1.0.0.1": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.2"
+        "core": ">=1.2.3.0, <1.2.5.0"
       },
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "補齊 on_server_worker_warming 入口點與 is_transaction_locked 交易鎖探測",
-      "sha256": "f73835e6263a048407af6d2ac0e70cb82fd205daf4ba2a352659f34c9a0b8497"
+      "sha256": "f73835e6263a048407af6d2ac0e70cb82fd205daf4ba2a352659f34c9a0b8497",
+      "commit": "7710f36813f446bc33f6f42d3ee660b74a599c8d"
     },
     "1.0.0.2": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.2"
+        "core": ">=1.2.4.0, <1.2.5.0"
       },
       "sha256": "0453c371b1f3ec53ed9859a29afcfc1caf500945f1e6706fdf4471b77765cd2b",
       "type": "refactor",
       "urgency": "recommended",
-      "summary": "優化 FileSpaceManager 熱路徑快取與非 symlink 走訪效能"
+      "summary": "優化 FileSpaceManager 熱路徑快取與非 symlink 走訪效能",
+      "commit": "a208bb2553f1bfbcc6201267a920b9f6533a541b"
     },
     "1.0.0.3": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.5"
+        "core": ">=1.2.5.0, <1.2.7.0"
       },
       "sha256": "9d5191f57a8bf06a6c953bc17ab2240986b2d9174a655d37304d5f0ff5b780a3",
       "type": "refactor",
       "urgency": "optional",
-      "summary": "升級 contributes/_format.json 支援 uri 型別與 @desc(...) 欄位說明"
+      "summary": "升級 contributes/_format.json 支援 uri 型別與 @desc(...) 欄位說明",
+      "commit": "808d156b1412f464de01a52a3be2bd6343821204"
     },
     "1.0.0.4": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.5"
+        "core": ">=1.2.5.1, <1.2.7.0"
       },
       "sha256": "4f8332ee4a5b401c2519cc46c973b17063a1cb786a81d489a75b914c3e601d79",
       "type": "bugfix",
       "urgency": "recommended",
-      "summary": "新增同秒級 st_ctime_ns Racy Stat Gate 守門與符號連結安全防禦"
+      "summary": "新增同秒級 st_ctime_ns Racy Stat Gate 守門與符號連結安全防禦",
+      "commit": "f3f2ad7ed3bb84cd64ff7babfb3588e9268a5c3c"
     },
     "1.0.0.5": {
       "status": "active",
       "dependencies": {
-        "core": ">=1.2.5"
+        "core": ">=1.2.6.0, <1.2.7.0"
       },
       "sha256": "d834512ff99e20a19a3e5b371b40ab14b425e55f31fa20c11983247734d46cbb",
       "type": "feature",
       "urgency": "optional",
-      "summary": "FileSpaceWatcherService 背景掃描整合 server.touch_activity() 保活探針"
+      "summary": "FileSpaceWatcherService 背景掃描整合 server.touch_activity() 保活探針",
+      "commit": "f2805bcad3f625369c59ab35be5a863fa725b295"
     },
     "1.0.1.0": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.7"
+        "core": ">=1.2.7.0"
       },
       "sha256": "df4151cb2ec45cff53310ea41a958e6ee0e49c8d2522ff41db0a3e398be27387",
       "type": "feature",
       "urgency": "recommended",
-      "summary": "預設 snapshots 與 cursors 遷移至 storage.local:// 並附帶 1.0.1.x 自癒遷移腳本"
+      "summary": "預設 snapshots 與 cursors 遷移至 storage.local:// 並附帶 1.0.1.x 自癒遷移腳本",
+      "commit": "5cf22b3de285edc7c9dd58f82754db1ed8efed5a"
     },
     "1.0.1.1": {
       "status": "pruned",
       "dependencies": {
-        "core": ">=1.2.7"
+        "core": ">=1.2.7.0"
       },
       "sha256": "7c713fbe6187e5bb9b567e8500d1c7bc540b59cd8e3fd2bb53a19812d6c46b04",
       "type": "feature",
       "urgency": "recommended",
-      "summary": "YFP3 世代位元組增量快照、Racy-Clean 防護與 diff_since_cursor 消費者增量游標管線"
+      "summary": "YFP3 世代位元組增量快照、Racy-Clean 防護與 diff_since_cursor 消費者增量游標管線",
+      "commit": "3576d7d2f2ee85497bc2da64b76f5203d1f41781"
     },
     "1.0.1.2": {
-      "status": "pruned",
+      "status": "active",
       "dependencies": {
-        "core": ">=1.2.7"
+        "core": ">=1.2.7.1"
       },
       "sha256": "cba5ce4420a88ea8b8f7c77e74e0f86dc5009af31bc154e34760efc398c60166",
       "type": "bugfix",
       "urgency": "recommended",
-      "summary": "修正 .watcher_dirty 跨行程信標與世代對齊、follow_symlinks 邏輯路徑保留及沙盒空間隔離"
+      "summary": "修正 .watcher_dirty 跨行程信標與世代對齊、follow_symlinks 邏輯路徑保留及沙盒空間隔離",
+      "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
     },
     "1.0.1.3": {
       "status": "active",
       "dependencies": {
-        "core": ">=1.2.7"
+        "core": ">=1.2.7.2"
       },
       "sha256": "5c02eb41d5066f1d2ec20039a5288e0571e87e4fe58a77389b915ab1d20d1a08",
       "type": "bugfix",
       "urgency": "recommended",
-      "summary": "notify_file_event O(1) 前綴正規化與單檔 include 之 is_file_included 過濾"
+      "summary": "notify_file_event O(1) 前綴正規化與單檔 include 之 is_file_included 過濾",
+      "commit": "699fd5c166d49aa90021c9381a13f63863d68d58"
+    },
+    "1.0.1.4": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7.3"
+      },
+      "sha256": "75eca9bd2da96827e46b49cda9c90c30e0f36fc75cc9a91f9c33950c41e0fc5f",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "新增可重入 _snapshot_lock、單檔 include 相對路徑修正、中繼 symlink 攔截與髒集合回滾",
+      "commit": "310a5df934114720707c5716d4d07dfe912d2b81"
     }
   }
 }

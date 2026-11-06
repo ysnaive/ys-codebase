@@ -7,6 +7,16 @@ from typing import Any, Dict, Optional
 
 from .base import DialectAdapter
 
+_ES_IMPORT_RE = re.compile(
+    r"\bimport\s+(?:type\s+)?([^\n;]+?)\s+from\s+['\"]([^'\"]+)['\"]"
+)
+_REQ_DESTRUCT_RE = re.compile(
+    r"(?:const|let|var)\s+\{\s*([^}]+)\s*\}\s*=\s*require\(['\"]([^'\"]+)['\"]\)"
+)
+_REQ_SINGLE_RE = re.compile(
+    r"(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*=\s*require\(['\"]([^'\"]+)['\"]\)"
+)
+
 
 class JavaScriptDialect(DialectAdapter):
     language = "javascript"
@@ -34,21 +44,40 @@ class JavaScriptDialect(DialectAdapter):
         imports: Dict[str, str] = {}
         if not source_text:
             return imports
-        es_import = re.compile(r"import\s+(?:\{([^}]+)\}|([a-zA-Z0-9_$]+))\s+from\s+['\"]([^'\"]+)['\"]")
-        for m in es_import.finditer(source_text):
-            src = m.group(3)
-            if m.group(2):
-                imports[m.group(2).strip()] = src
-            if m.group(1):
-                for item in m.group(1).split(","):
+        for m in _ES_IMPORT_RE.finditer(source_text):
+            clause = m.group(1).strip()
+            src = m.group(2).strip()
+            if "{" in clause and "}" in clause:
+                b_start = clause.find("{")
+                b_end = clause.rfind("}")
+                before_brace = clause[:b_start].strip().rstrip(",").strip()
+                if before_brace.startswith("type "):
+                    before_brace = before_brace[5:].strip()
+                if before_brace:
+                    imports[before_brace] = src
+                named_part = clause[b_start + 1 : b_end]
+                for item in named_part.split(","):
                     item = item.strip()
+                    if item.startswith("type "):
+                        item = item[5:].strip()
                     if " as " in item:
                         orig, alias = item.split(" as ", 1)
                         imports[alias.strip()] = f"{src}.{orig.strip()}"
                     elif item:
                         imports[item] = f"{src}.{item}"
-        req_destruct = re.compile(r"(?:const|let|var)\s+\{\s*([^}]+)\s*\}\s*=\s*require\(['\"]([^'\"]+)['\"]\)")
-        for m in req_destruct.finditer(source_text):
+            else:
+                for part in clause.split(","):
+                    part = part.strip()
+                    if part.startswith("type "):
+                        part = part[5:].strip()
+                    if part.startswith("* as "):
+                        alias = part[5:].strip()
+                        if alias:
+                            imports[alias] = src
+                    elif part:
+                        imports[part] = src
+
+        for m in _REQ_DESTRUCT_RE.finditer(source_text):
             src = m.group(2)
             for item in m.group(1).split(","):
                 item = item.strip()
@@ -57,7 +86,6 @@ class JavaScriptDialect(DialectAdapter):
                     imports[alias.strip()] = f"{src}.{orig.strip()}"
                 elif item:
                     imports[item] = f"{src}.{item}"
-        req_single = re.compile(r"(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*=\s*require\(['\"]([^'\"]+)['\"]\)")
-        for m in req_single.finditer(source_text):
+        for m in _REQ_SINGLE_RE.finditer(source_text):
             imports[m.group(1).strip()] = m.group(2).strip()
         return imports

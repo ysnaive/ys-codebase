@@ -8,8 +8,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger("knowledge-db.hook.dev")
-
 
 def on_test_setup(context: Any) -> None:
     """
@@ -27,7 +25,9 @@ def on_test_setup(context: Any) -> None:
     (storage_dir / "models").mkdir(parents=True, exist_ok=True)
     cache_dir = sb_path / ".cache" / "knowledge-db"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    logger.debug(f"[hook.dev] Prepared knowledge-db storage at: {storage_dir}")
+    logging.getLogger("knowledge-db.hook.dev").debug(
+        f"[hook.dev] Prepared knowledge-db storage at: {storage_dir}"
+    )
 
 
 def on_test_teardown(context: Any) -> None:
@@ -35,4 +35,6 @@ def on_test_teardown(context: Any) -> None:
     Called after module test suite execution finishes in the virtual sandbox.
     """
     os.environ.pop("KNOWLEDGE_DB_MOCK_EMBEDDING", None)
-    logger.debug(f"[hook.dev] Teardown knowledge-db sandbox for: {context}")
+    logging.getLogger("knowledge-db.hook.dev").debug(
+        f"[hook.dev] Teardown knowledge-db sandbox for: {context}"
+    )

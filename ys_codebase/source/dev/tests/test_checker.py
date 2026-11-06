@@ -1,18 +1,57 @@
+"""
+Official test suite for dev.checker.Checker and module compliance validation.
+"""
+import importlib.util
+import io
+import json
 import os
 import shutil
+import sys
+import types
+from typing import Any, Dict, List, Optional
+from unittest.mock import patch
 from dev.testing import YSCBTestCase
 from dev.testing.requirement import require, Requirement
-from dev.checker import Checker, CheckSeverity
-from dev.releaser import Releaser
+from dev.checker import Checker, CheckReport, CheckIssue, CheckSeverity, discover_source_modules
 from core import uri
 
+
+@require(Requirement.LOGIC)
 class TestDevChecker(YSCBTestCase):
     def setUp(self):
         super().setUp()
         self.checker = Checker()
-        self.releaser = Releaser()
+        self._created_mods: List[str] = []
 
-    @require(Requirement.LOGIC)
+    def tearDown(self):
+        for mod_dir in self._created_mods:
+            if os.path.exists(mod_dir):
+                shutil.rmtree(mod_dir, ignore_errors=True)
+        src_root = uri.resolve("module.source://")
+        if os.path.isdir(src_root):
+            for item in os.listdir(src_root):
+                if item.startswith("mock_"):
+                    shutil.rmtree(os.path.join(src_root, item), ignore_errors=True)
+        super().tearDown()
+
+    def _make_mod(
+        self,
+        name: str,
+        version: str = "1.0.0.0",
+        deps: Any = None,
+        files: Optional[Dict[str, str]] = None,
+        remove_paths: Optional[List[str]] = None,
+    ) -> str:
+        mod_dir = self.create_mock_source_module(name, version=version, deps=deps, files=files)
+        self._created_mods.append(mod_dir)
+        for rel_p in (remove_paths or []):
+            target = os.path.join(mod_dir, rel_p)
+            if os.path.isdir(target):
+                shutil.rmtree(target, ignore_errors=True)
+            elif os.path.exists(target):
+                os.remove(target)
+        return mod_dir
+
     def test_check_core_module_passes(self):
         """Verify checking 'core' module returns True with 0 FAIL errors."""
         report = self.checker.check_module("core")
@@ -20,7 +59,6 @@ class TestDevChecker(YSCBTestCase):
         self.assertFalse(report.has_fails)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
     def test_check_dev_module_passes(self):
         """Verify checking 'dev' module returns True with 0 FAIL errors."""
         report = self.checker.check_module("dev")
@@ -28,7 +66,6 @@ class TestDevChecker(YSCBTestCase):
         self.assertFalse(report.has_fails)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
     def test_check_all_passes(self):
         """Verify check_all succeeds with passed == True across all production source modules."""
         reports = self.checker.check_all()
@@ -37,594 +74,462 @@ class TestDevChecker(YSCBTestCase):
             self.assertFalse(report.has_fails)
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft01_manifest_missing_core_dependency(self):
-        """FT-01: Verify missing 'core' in dependencies triggers [FAIL]."""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_ft01_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_ft01_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": []}')
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
+    def test_check_nonexistent_module_and_discover_source_modules(self):
+        """Verify check_module on nonexistent module fails with directive and discover_source_modules filters properly."""
+        rep = self.checker.check_module("mock_nonexistent_xyz")
+        self.assertFalse(rep.passed)
+        self.assertTrue(rep.has_fails)
+        self.assertTrue(any("Module source not found" in e for e in rep.errors))
+        self.assertIsNotNone(rep.agent_directive)
 
-            report = self.checker.check_module("mock_ft01_mod")
-            self.assertFalse(report.passed)
-            self.assertTrue(report.has_fails)
-            self.assertTrue(any("must explicitly declare 'core'" in e for e in report.errors))
-            self.assertTrue(any("[Agent Directive]" in e and "yscb-module-dev" in e for e in report.errors))
-            self.assertIsNotNone(report.agent_directive)
-            self.assertIn("[Agent Directive]", report.agent_directive)
-            self.assertIn("yscb-module-dev", report.format_report())
-            self.assertIn("agent_directive", report.to_dict())
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+        all_mods = discover_source_modules()
+        self.assertIn("core", all_mods)
+        self.assertIn("dev", all_mods)
+        self.assertEqual(discover_source_modules(target="dev:TestDevChecker"), ["dev"])
+        self.assertEqual(discover_source_modules(target="mock_nonexistent_xyz"), [])
 
-    @require(Requirement.LOGIC)
-    def test_ft02_core_injection_warn(self):
-        """FT-02: Verify missing contributes/core.json triggers [WARN]."""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_ft02_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_ft02_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
+        no_mf_dir = os.path.join(uri.resolve("module.source://"), "mock_no_mf_mod")
+        os.makedirs(no_mf_dir, exist_ok=True)
+        self._created_mods.append(no_mf_dir)
+        self.assertEqual(discover_source_modules(target="mock_no_mf_mod", require_manifest=True), [])
+        self.assertEqual(discover_source_modules(target="mock_no_mf_mod", require_manifest=False), ["mock_no_mf_mod"])
+        self.mark_passed()
 
-            report = self.checker.check_module("mock_ft02_mod")
-            self.assertTrue(report.passed)  # Warn does not fail
-            self.assertTrue(report.has_warns)
-            self.assertTrue(any("lacks 'contributes/core.json'" in w for w in report.warnings))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+    def test_manifest_missing_core_dependency(self):
+        """Verify missing 'core' in dependencies triggers FAIL and attaches agent_directive."""
+        self._make_mod(
+            "mock_missing_core_mod",
+            files={
+                "manifest.json": '{"name": "mock_missing_core_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": []}'
+            },
+        )
+        report = self.checker.check_module("mock_missing_core_mod")
+        self.assertFalse(report.passed)
+        self.assertTrue(report.has_fails)
+        self.assertTrue(any("must explicitly declare 'core'" in e for e in report.errors))
+        self.assertTrue(any("[Agent Directive]" in e and "yscb-module-dev" in e for e in report.errors))
+        self.assertIsNotNone(report.agent_directive)
+        self.assertIn("[Agent Directive]", report.agent_directive)
+        self.assertIn("yscb-module-dev", report.format_report())
+        self.assertIn("agent_directive", report.to_dict())
+        self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft03_zero_probing_detected(self):
-        """FT-03: Verify 'module.source://' access in business code triggers [FAIL]."""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_ft03_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            os.makedirs(os.path.join(tmp_mod_dir, "mock_pkg"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_ft03_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
-            with open(os.path.join(tmp_mod_dir, "mock_pkg", "logic.py"), "w", encoding="utf-8") as f:
-                f.write('src = "module.source://other_mod/foo"\n')
+    def test_core_injection_missing_warn(self):
+        """Verify missing contributes/core.json triggers WARN without blocking pass."""
+        self._make_mod("mock_missing_core_json_mod", remove_paths=["contributes/core.json"])
+        report = self.checker.check_module("mock_missing_core_json_mod")
+        self.assertTrue(report.passed)
+        self.assertFalse(report.has_fails)
+        self.assertTrue(report.has_warns)
+        self.assertTrue(any("lacks 'contributes/core.json'" in w for w in report.warnings))
+        self.mark_passed()
 
-            report = self.checker.check_module("mock_ft03_mod")
-            self.assertFalse(report.passed)
-            self.assertTrue(any("Zero Probing violation" in e for e in report.errors))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+    def test_zero_probing_detected(self):
+        """Verify 'module.source://' access in business code triggers FAIL."""
+        self._make_mod(
+            "mock_probing_mod",
+            files={"mock_pkg/logic.py": 'src = "module.source://other_mod/foo"\n'},
+        )
+        report = self.checker.check_module("mock_probing_mod")
+        self.assertFalse(report.passed)
+        self.assertTrue(report.has_fails)
+        self.assertTrue(any("Zero Probing violation" in e for e in report.errors))
+        self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft04_scattered_config_template_detected(self):
-        """FT-04: Verify scattered config.*.json at module root triggers [FAIL]."""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_ft04_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_ft04_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
-            with open(os.path.join(tmp_mod_dir, "config.project.json"), "w", encoding="utf-8") as f:
-                f.write('{"foo": "bar"}')
+    def test_scattered_config_template_detected(self):
+        """Verify scattered config.*.json at module root triggers FAIL."""
+        self._make_mod(
+            "mock_scattered_cfg_mod",
+            files={"config.project.json": '{"foo": "bar"}'},
+        )
+        report = self.checker.check_module("mock_scattered_cfg_mod")
+        self.assertFalse(report.passed)
+        self.assertTrue(report.has_fails)
+        self.assertTrue(any("Scattered config template found at module root" in e for e in report.errors))
+        self.mark_passed()
 
-            report = self.checker.check_module("mock_ft04_mod")
-            self.assertFalse(report.passed)
-            self.assertTrue(any("Scattered config template found at module root" in e for e in report.errors))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+    def test_antipattern_direct_config_and_contributes(self):
+        """Verify direct access to 'config.project.json' or 'contributes.merged.json' triggers FAIL."""
+        self._make_mod(
+            "mock_direct_cfg_mod",
+            files={
+                "mock_pkg/bad_cfg.py": 'CFG_FILE = "config.project.json"\n',
+                "mock_pkg/bad_contrib.py": 'MERGED = "contributes.merged.json"\n',
+            },
+        )
+        report = self.checker.check_module("mock_direct_cfg_mod")
+        self.assertFalse(report.passed)
+        self.assertTrue(report.has_fails)
+        self.assertTrue(any("Reinventing the wheel: direct access to 'config.project.json'" in e for e in report.errors))
+        self.assertTrue(any("Direct contributes probing: access to 'contributes.merged.json'" in e for e in report.errors))
+        self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft06_antipattern_direct_config_and_contributes(self):
-        """FT-06: Verify direct access to 'config.project.json' or 'contributes.merged.json' triggers [FAIL]."""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_ft06_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            os.makedirs(os.path.join(tmp_mod_dir, "mock_pkg"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_ft06_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
-            with open(os.path.join(tmp_mod_dir, "mock_pkg", "bad_cfg.py"), "w", encoding="utf-8") as f:
-                f.write('CFG_FILE = "config.project.json"\n')
-            with open(os.path.join(tmp_mod_dir, "mock_pkg", "bad_contrib.py"), "w", encoding="utf-8") as f:
-                f.write('MERGED = "contributes.merged.json"\n')
+    def test_syntax_error_handled_gracefully(self):
+        """Verify SyntaxError in .py file is safely captured as FAIL without crashing."""
+        self._make_mod(
+            "mock_syntax_err_mod",
+            files={"broken.py": "def syntax_error_here(\n"},
+        )
+        report = self.checker.check_module("mock_syntax_err_mod")
+        self.assertFalse(report.passed)
+        self.assertTrue(report.has_fails)
+        self.assertTrue(any("SyntaxError in broken.py" in e for e in report.errors))
+        self.mark_passed()
 
-            report = self.checker.check_module("mock_ft06_mod")
-            self.assertFalse(report.passed)
-            self.assertTrue(any("Reinventing the wheel: direct access to 'config.project.json'" in e for e in report.errors))
-            self.assertTrue(any("Direct contributes probing: access to 'contributes.merged.json'" in e for e in report.errors))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+    def test_raw_unittest_testcase_detected(self):
+        """Verify test class directly subclassing unittest.TestCase is caught as FAIL."""
+        self._make_mod(
+            "mock_raw_testcase_mod",
+            files={"tests/test_bad.py": "import unittest\nclass TestBad(unittest.TestCase):\n    def test_foo(self): pass\n"},
+        )
+        report = self.checker.check_module("mock_raw_testcase_mod")
+        self.assertFalse(report.passed)
+        self.assertTrue(report.has_fails)
+        self.assertTrue(any("Security Guard: Test class 'TestBad'" in e for e in report.errors))
+        self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft07_release_check_fails_on_blocking_issue(self):
-        """FT-07: Verify release_check fails and returns False when module has FAIL issues."""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_ft07_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                # Missing core dependency -> FAIL
-                f.write('{"name": "mock_ft07_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": []}')
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
-
-            passed, errors = self.releaser.release_check("mock_ft07_mod")
-            self.assertFalse(passed)
-            self.assertTrue(any("Gate 1 Failed" in e for e in errors))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
-
-    @require(Requirement.LOGIC)
-    def test_et01_syntax_error_handled_gracefully(self):
-        """ET-01: Verify SyntaxError in .py file is safely captured as [FAIL] without crashing."""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_et01_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_et01_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
-            with open(os.path.join(tmp_mod_dir, "broken.py"), "w", encoding="utf-8") as f:
-                f.write('def syntax_error_here(\n')
-
-            report = self.checker.check_module("mock_et01_mod")
-            self.assertFalse(report.passed)
-            self.assertTrue(any("SyntaxError in broken.py" in e for e in report.errors))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
-
-    @require(Requirement.LOGIC)
-    def test_et02_raw_unittest_testcase_detected(self):
-        """ET-02: Verify test class directly subclassing unittest.TestCase is caught."""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_et02_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            os.makedirs(os.path.join(tmp_mod_dir, "tests"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_et02_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
-            with open(os.path.join(tmp_mod_dir, "tests", "test_bad.py"), "w", encoding="utf-8") as f:
-                f.write('import unittest\nclass TestBad(unittest.TestCase):\n    def test_foo(self): pass\n')
-
-            report = self.checker.check_module("mock_et02_mod")
-            self.assertFalse(report.passed)
-            self.assertTrue(any("Security Guard: Test class 'TestBad'" in e for e in report.errors))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
-
-    @require(Requirement.LOGIC)
-    def test_ft07_logic_plus_isolated_sandbox_warning(self):
-        """FT-07: Verify test method marked with both LOGIC and ISOLATED_SANDBOX triggers [WARN]."""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_ft07_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            os.makedirs(os.path.join(tmp_mod_dir, "tests"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_ft07_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
-            with open(os.path.join(tmp_mod_dir, "tests", "test_sample.py"), "w", encoding="utf-8") as f:
-                f.write(
-                    'from dev.testing import YSCBTestCase, require, Requirement\n'
-                    'class TestSample(YSCBTestCase):\n'
-                    '    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)\n'
-                    '    def test_overkill(self):\n'
-                    '        pass\n'
+    def test_logic_plus_isolated_sandbox_warning(self):
+        """Verify test method marked with both LOGIC and ISOLATED_SANDBOX triggers WARN."""
+        self._make_mod(
+            "mock_logic_iso_mod",
+            files={
+                "tests/test_sample.py": (
+                    "from dev.testing import YSCBTestCase, require, Requirement\n"
+                    "class TestSample(YSCBTestCase):\n"
+                    "    @require(Requirement.LOGIC | Requirement.ISOLATED_SANDBOX)\n"
+                    "    def test_overkill(self):\n"
+                    "        self.mark_passed()\n"
                 )
+            },
+        )
+        report = self.checker.check_module("mock_logic_iso_mod")
+        self.assertTrue(report.passed)
+        self.assertFalse(report.has_fails)
+        self.assertTrue(report.has_warns)
+        self.assertTrue(any("marked with both 'LOGIC' and 'ISOLATED_SANDBOX'" in w for w in report.warnings))
+        self.mark_passed()
 
-            report = self.checker.check_module("mock_ft07_mod")
-            self.assertTrue(report.passed)  # Warning does not block pass
-            self.assertTrue(report.has_warns)
-            self.assertTrue(any("marked with both 'LOGIC' and 'ISOLATED_SANDBOX'" in w for w in report.warnings))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
-
-    @require(Requirement.LOGIC)
     def test_valid_optional_manifest(self):
-        """FT-03: 驗證合法的 optional 欄位通過 check_module 檢驗"""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_valid_opt_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write(
-                    '{\n'
-                    '  "name": "mock_valid_opt_mod",\n'
-                    '  "version": "1.0.0.0",\n'
-                    '  "entry": "scripts/cli.py",\n'
-                    '  "dependencies": ["core"],\n'
-                    '  "optional": {\n'
-                    '    "server": {\n'
-                    '      "version": ">=1.0.0",\n'
-                    '      "hint": "提供常駐背景服務"\n'
-                    '    }\n'
-                    '  }\n'
-                    '}\n'
+        """Verify valid optional field in manifest.json passes check_module."""
+        self._make_mod(
+            "mock_valid_opt_mod",
+            files={
+                "manifest.json": json.dumps(
+                    {
+                        "name": "mock_valid_opt_mod",
+                        "version": "1.0.0.0",
+                        "entry": "scripts/cli.py",
+                        "dependencies": ["core"],
+                        "optional": {
+                            "server": {
+                                "version": ">=1.0.0",
+                                "hint": "Background service support",
+                            }
+                        },
+                    }
                 )
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
+            },
+        )
+        report = self.checker.check_module("mock_valid_opt_mod")
+        self.assertTrue(report.passed, f"Expected pass, got errors: {report.errors}")
+        self.assertFalse(report.has_fails)
+        self.mark_passed()
 
-            report = self.checker.check_module("mock_valid_opt_mod")
-            self.assertTrue(report.passed, f"Expected pass, got errors: {report.errors}")
-            self.assertFalse(report.has_fails)
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
-
-    @require(Requirement.LOGIC)
     def test_invalid_optional_manifest(self):
-        """FT-04: 驗證不合規的 optional 結構 (非 dict、缺 hint 等) 被精確攔截 [FAIL]"""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_invalid_opt_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write(
-                    '{\n'
-                    '  "name": "mock_invalid_opt_mod",\n'
-                    '  "version": "1.0.0.0",\n'
-                    '  "entry": "scripts/cli.py",\n'
-                    '  "dependencies": ["core"],\n'
-                    '  "optional": {\n'
-                    '    "server": {\n'
-                    '      "version": ">=1.0.0"\n'
-                    '    }\n'
-                    '  }\n'
-                    '}\n'
+        """Verify malformed optional field in manifest.json (missing hint) triggers FAIL."""
+        self._make_mod(
+            "mock_invalid_opt_mod",
+            files={
+                "manifest.json": json.dumps(
+                    {
+                        "name": "mock_invalid_opt_mod",
+                        "version": "1.0.0.0",
+                        "entry": "scripts/cli.py",
+                        "dependencies": ["core"],
+                        "optional": {"server": {"version": ">=1.0.0"}},
+                    }
                 )
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
+            },
+        )
+        report = self.checker.check_module("mock_invalid_opt_mod")
+        self.assertFalse(report.passed)
+        self.assertTrue(report.has_fails)
+        self.assertTrue(any("missing non-empty string 'hint'" in e for e in report.errors))
+        self.mark_passed()
 
-            report = self.checker.check_module("mock_invalid_opt_mod")
-            self.assertFalse(report.passed)
-            self.assertTrue(report.has_fails)
-            self.assertTrue(any("missing non-empty string 'hint'" in e for e in report.errors))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+    def test_contributes_manifest_check(self):
+        """Verify missing contributes/_manifest.md fails, and legacy contributes.format.md emits WARN."""
+        mod_dir = self._make_mod("mock_contrib_manifest_mod", remove_paths=["contributes/_manifest.md"])
 
-    @require(Requirement.LOGIC)
-    def test_ft10_contributes_manifest_check(self):
-        """FT-10: 驗證 contributes/ 缺少 _manifest.md 時判定 FAIL，存在 legacy format 時判定 WARN"""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_ft10_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            os.makedirs(os.path.join(tmp_mod_dir, "contributes"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_ft10_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
+        report = self.checker.check_module("mock_contrib_manifest_mod")
+        self.assertFalse(report.passed)
+        self.assertTrue(report.has_fails)
+        self.assertTrue(any("lacks 'contributes/_manifest.md'" in e for e in report.errors))
 
-            # 1. 缺少 _manifest.md 應觸發 FAIL
-            report = self.checker.check_module("mock_ft10_mod")
-            self.assertFalse(report.passed)
-            self.assertTrue(any("lacks 'contributes/_manifest.md'" in e for e in report.errors))
+        with open(os.path.join(mod_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
+            f.write("# Manifest\n")
+        with open(os.path.join(mod_dir, "contributes.format.md"), "w", encoding="utf-8") as f:
+            f.write("# Legacy\n")
 
-            # 2. 補上 _manifest.md 並加入舊版 contributes.format.md
-            with open(os.path.join(tmp_mod_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
-                f.write("# Manifest\n")
-            with open(os.path.join(tmp_mod_dir, "contributes.format.md"), "w", encoding="utf-8") as f:
-                f.write("# Legacy\n")
+        report2 = self.checker.check_module("mock_contrib_manifest_mod")
+        self.assertTrue(report2.passed)
+        self.assertFalse(report2.has_fails)
+        self.assertTrue(report2.has_warns)
+        self.assertTrue(any("Legacy 'contributes.format.md' detected" in w for w in report2.warnings))
+        self.mark_passed()
 
-            report2 = self.checker.check_module("mock_ft10_mod")
-            self.assertTrue(report2.passed)
-            self.assertTrue(any("Legacy 'contributes.format.md' detected" in w for w in report2.warnings))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
-
-    @require(Requirement.LOGIC)
-    def test_ft11_test_method_mark_passed_warn(self):
-        """FT-11: 驗證測試方法體未呼叫 self.mark_passed() 時觸發 WARN 提示"""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_ft11_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            os.makedirs(os.path.join(tmp_mod_dir, "tests"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_ft11_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
-            with open(os.path.join(tmp_mod_dir, "tests", "test_missing.py"), "w", encoding="utf-8") as f:
-                f.write(
-                    'from dev.testing.case import YSCBTestCase\n'
-                    'class TestMissingPass(YSCBTestCase):\n'
-                    '    def test_without_mark(self):\n'
-                    '        self.assertTrue(True)\n'
+    def test_test_method_mark_passed_and_none_exemption(self):
+        """Verify test method without self.mark_passed() emits WARN, while @require(Requirement.NONE) is exempted."""
+        mod_dir = self._make_mod(
+            "mock_mark_pass_mod",
+            files={
+                "tests/test_missing.py": (
+                    "from dev.testing.case import YSCBTestCase\n"
+                    "class TestMissingPass(YSCBTestCase):\n"
+                    "    def test_without_mark(self):\n"
+                    "        self.assertTrue(True)\n"
                 )
+            },
+        )
+        report = self.checker.check_module("mock_mark_pass_mod")
+        self.assertTrue(report.passed)
+        self.assertFalse(report.has_fails)
+        self.assertTrue(report.has_warns)
+        self.assertTrue(any("lacks 'self.mark_passed()'" in w for w in report.warnings))
 
-            report = self.checker.check_module("mock_ft11_mod")
-            self.assertTrue(report.has_warns)
-            self.assertTrue(any("lacks 'self.mark_passed()'" in w for w in report.warnings))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+        with open(os.path.join(mod_dir, "tests", "test_missing.py"), "w", encoding="utf-8") as f:
+            f.write(
+                "from dev.testing import YSCBTestCase, require, Requirement\n"
+                "class TestExemptedPass(YSCBTestCase):\n"
+                "    @require(Requirement.NONE)\n"
+                "    def test_exempt_without_mark(self):\n"
+                "        self.assertTrue(True)\n"
+            )
+        report2 = self.checker.check_module("mock_mark_pass_mod")
+        self.assertTrue(report2.passed)
+        self.assertFalse(report2.has_fails)
+        self.assertFalse(report2.has_warns, f"Expected @require(Requirement.NONE) to exempt warning, got: {report2.warnings}")
+        self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft12_sandbox_hook_compliance(self):
-        """FT-12: 驗證 hook.dev.py 函式缺少參數或頂層存在執行語句時判定 FAIL"""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_ft12_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_ft12_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
-            with open(os.path.join(tmp_mod_dir, "scripts", "hook.dev.py"), "w", encoding="utf-8") as f:
-                f.write('def on_test_setup():\n    pass\n')
+    def test_sandbox_hook_compliance(self):
+        """Verify hook.dev.py parameter count, top-level statement prohibition, and syntax error handling."""
+        mod_dir = self._make_mod(
+            "mock_hook_compliance_mod",
+            files={"scripts/hook.dev.py": "def on_test_setup():\n    pass\n"},
+        )
+        report = self.checker.check_module("mock_hook_compliance_mod")
+        self.assertFalse(report.passed)
+        self.assertTrue(report.has_fails)
+        self.assertTrue(any("must accept at least 1 parameter" in e for e in report.errors))
 
-            report = self.checker.check_module("mock_ft12_mod")
-            self.assertFalse(report.passed)
-            self.assertTrue(any("must accept at least 1 parameter" in e for e in report.errors))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+        with open(os.path.join(mod_dir, "scripts", "hook.dev.py"), "w", encoding="utf-8") as f:
+            f.write("def on_test_setup(context):\n    pass\nprint('forbidden top level')\n")
+        report2 = self.checker.check_module("mock_hook_compliance_mod")
+        self.assertFalse(report2.passed)
+        self.assertTrue(report2.has_fails)
+        self.assertTrue(any("Forbidden top-level statement" in e for e in report2.errors))
 
-    @require(Requirement.LOGIC)
-    def test_ft13_docs_path_pollution_warn(self):
-        """FT-13: 驗證 docs/ 第三方文檔出現 project://source/ 硬編碼時觸發 WARN"""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_ft13_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            os.makedirs(os.path.join(tmp_mod_dir, "docs"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_ft13_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
-            with open(os.path.join(tmp_mod_dir, "docs", "dev_guide.md"), "w", encoding="utf-8") as f:
-                f.write('# Dev Guide\nEdit files in project://source/mock_ft13_mod/ to start.\n')
+        with open(os.path.join(mod_dir, "scripts", "hook.dev.py"), "w", encoding="utf-8") as f:
+            f.write("def broken_hook(:\n")
+        report3 = self.checker.check_module("mock_hook_compliance_mod")
+        self.assertFalse(report3.passed)
+        self.assertTrue(report3.has_fails)
+        self.assertTrue(any("SyntaxError in scripts/hook.dev.py" in e for e in report3.errors))
+        self.mark_passed()
 
-            report = self.checker.check_module("mock_ft13_mod")
-            self.assertTrue(report.has_warns)
-            self.assertTrue(any("Documentation path pollution" in w for w in report.warnings))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+    def test_docs_path_pollution_warn(self):
+        """Verify docs/ containing hardcoded project://source/ emits WARN."""
+        self._make_mod(
+            "mock_docs_pollution_mod",
+            files={"docs/dev_guide.md": "# Dev Guide\nEdit files in project://source/mock_docs_pollution_mod/ to start.\n"},
+        )
+        report = self.checker.check_module("mock_docs_pollution_mod")
+        self.assertTrue(report.passed)
+        self.assertFalse(report.has_fails)
+        self.assertTrue(report.has_warns)
+        self.assertTrue(any("Documentation path pollution" in w for w in report.warnings))
+        self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_ft14_configurable_naming_check(self):
-        """FT-14: 驗證 configurable/ 內包含非 config.*.json 命名之檔案時觸發 WARN"""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_ft14_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            os.makedirs(os.path.join(tmp_mod_dir, "configurable"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_ft14_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
-            with open(os.path.join(tmp_mod_dir, "configurable", "custom_template.json"), "w", encoding="utf-8") as f:
-                f.write('{"key": "value"}\n')
+    def test_configurable_naming_check(self):
+        """Verify non-standard filename under configurable/ emits WARN."""
+        self._make_mod(
+            "mock_cfg_naming_mod",
+            files={"configurable/custom_template.json": '{"key": "value"}\n'},
+        )
+        report = self.checker.check_module("mock_cfg_naming_mod")
+        self.assertTrue(report.passed)
+        self.assertFalse(report.has_fails)
+        self.assertTrue(report.has_warns)
+        self.assertTrue(any("Non-standard configuration template naming" in w for w in report.warnings))
+        self.mark_passed()
 
-            report = self.checker.check_module("mock_ft14_mod")
-            self.assertTrue(report.has_warns)
-            self.assertTrue(any("Non-standard configuration template naming" in w for w in report.warnings))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+    def test_format_and_configurable_json_errors_and_junk_files(self):
+        """Verify invalid JSON in contributes/_format.json and configurable/, and leftover junk file warnings."""
+        mod_dir = self._make_mod(
+            "mock_json_junk_mod",
+            files={
+                "contributes/_format.json": "{bad_format_json",
+                "configurable/config.project.json": "{bad_cfg_json",
+                "leftover.tmp": "scratch",
+            },
+        )
+        rep1 = self.checker.check_module("mock_json_junk_mod")
+        self.assertFalse(rep1.passed)
+        self.assertTrue(rep1.has_fails)
+        self.assertTrue(any("Syntax error in 'contributes/_format.json'" in e for e in rep1.errors))
+        self.assertTrue(any("Invalid JSON in 'configurable/config.project.json'" in e for e in rep1.errors))
+        self.assertTrue(any("Found leftover temporary/junk file: 'leftover.tmp'" in w for w in rep1.warnings))
 
-    @require(Requirement.LOGIC)
-    def test_ft15_manifest_onboarding_validation(self):
-        """FT-05, EC-02: 驗證 manifest.json 中 onboarding 欄位合法通過，非字串陣列則觸發 FAIL"""
-        src_root = uri.resolve("module.source://")
-        tmp_mod_dir = os.path.join(src_root, "mock_ft15_mod")
-        try:
-            os.makedirs(os.path.join(tmp_mod_dir, "scripts"), exist_ok=True)
-            with open(os.path.join(tmp_mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
+        os.remove(os.path.join(mod_dir, "contributes", "_format.json"))
+        with open(os.path.join(mod_dir, "configurable", "config.project.json"), "w", encoding="utf-8") as f:
+            f.write('{"valid": true}\n')
+        rep2 = self.checker.check_module("mock_json_junk_mod")
+        self.assertTrue(rep2.passed)
+        self.assertFalse(rep2.has_fails)
+        self.assertTrue(rep2.has_warns)
+        self.assertTrue(any("leftover.tmp" in w for w in rep2.warnings))
+        self.mark_passed()
 
-            # 1. Valid onboarding list of non-empty strings -> PASS
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write(
-                    '{"name": "mock_ft15_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", '
+    def test_manifest_onboarding_validation(self):
+        """Verify manifest.json onboarding field passes when valid string list and fails when empty/invalid."""
+        mod_dir = self._make_mod(
+            "mock_onboarding_mod",
+            files={
+                "manifest.json": (
+                    '{"name": "mock_onboarding_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", '
                     '"dependencies": ["core"], "onboarding": ["Step 1: python yscb.py status"]}'
                 )
-            report_ok = self.checker.check_module("mock_ft15_mod")
-            self.assertTrue(report_ok.passed, f"Expected pass, got: {report_ok.errors}")
+            },
+        )
+        report_ok = self.checker.check_module("mock_onboarding_mod")
+        self.assertTrue(report_ok.passed, f"Expected pass, got: {report_ok.errors}")
+        self.assertFalse(report_ok.has_fails)
 
-            # 2. Invalid onboarding (not a list of non-empty strings) -> FAIL
-            with open(os.path.join(tmp_mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write(
-                    '{"name": "mock_ft15_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", '
-                    '"dependencies": ["core"], "onboarding": [""]}'
-                )
-            report_bad = self.checker.check_module("mock_ft15_mod")
-            self.assertFalse(report_bad.passed)
-            self.assertTrue(any("'onboarding' field in manifest.json" in e for e in report_bad.errors))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_mod_dir):
-                shutil.rmtree(tmp_mod_dir, ignore_errors=True)
+        with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            f.write(
+                '{"name": "mock_onboarding_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", '
+                '"dependencies": ["core"], "onboarding": [""]}'
+            )
+        report_bad = self.checker.check_module("mock_onboarding_mod")
+        self.assertFalse(report_bad.passed)
+        self.assertTrue(report_bad.has_fails)
+        self.assertTrue(any("'onboarding' field in manifest.json" in e for e in report_bad.errors))
+        self.mark_passed()
 
-    @require(Requirement.LOGIC)
     def test_checker_cli_compliance_and_candidates(self):
-        """FT-05 & [P00:DR-01]: Verify CLI compliance candidates = {full_fn, primary_fn}."""
-        src_root = uri.resolve("module.source://")
-        tmp_dir = os.path.join(src_root, "mock_cli_cand_mod")
-        try:
-            os.makedirs(os.path.join(tmp_dir, "scripts"), exist_ok=True)
-            os.makedirs(os.path.join(tmp_dir, "contributes"), exist_ok=True)
-            with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_cli_cand_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"]}')
-            with open(os.path.join(tmp_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
-                f.write("# Manifest\n")
-            with open(os.path.join(tmp_dir, "contributes", "core.json"), "w", encoding="utf-8") as f:
-                f.write('{"commands": {"cmd": {"sub": {"description": "sub group", "cmd": {"run": {"description": "test"}}}}}}')
+        """Verify CLI compliance candidates accept full function name or primary group function name."""
+        mod_dir = self._make_mod(
+            "mock_cli_cand_mod",
+            files={
+                "contributes/core.json": '{"commands": {"cmd": {"sub": {"description": "sub group", "cmd": {"run": {"description": "test"}}}}}}',
+                "scripts/cli.py": 'from core.guard import guard_dispatch\ndef sub_run(cmd_bags):\n    guard_dispatch("mock_cli_cand_mod")\n    return 0\n',
+            },
+        )
+        rep1 = self.checker.check_module("mock_cli_cand_mod")
+        self.assertTrue(rep1.passed, f"sub_run should pass: {rep1.errors}")
 
-            # 1. Full function name sub_run passes
-            with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('from core.guard import guard_dispatch\ndef sub_run(cmd_bags):\n    guard_dispatch("mock_cli_cand_mod")\n    return 0\n')
-            rep1 = self.checker.check_module("mock_cli_cand_mod")
-            self.assertTrue(rep1.passed, f"sub_run should pass: {rep1.errors}")
+        with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+            f.write('from core.guard import guard_dispatch\ndef sub(cmd_bags):\n    guard_dispatch("mock_cli_cand_mod")\n    return 0\n')
+        rep2 = self.checker.check_module("mock_cli_cand_mod")
+        self.assertTrue(rep2.passed, f"sub should pass: {rep2.errors}")
 
-            # 2. Primary function name sub passes
-            with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('from core.guard import guard_dispatch\ndef sub(cmd_bags):\n    guard_dispatch("mock_cli_cand_mod")\n    return 0\n')
-            rep2 = self.checker.check_module("mock_cli_cand_mod")
-            self.assertTrue(rep2.passed, f"sub should pass: {rep2.errors}")
+        with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+            f.write('from core.guard import guard_dispatch\ndef run(cmd_bags):\n    guard_dispatch("mock_cli_cand_mod")\n    return 0\n')
+        rep3 = self.checker.check_module("mock_cli_cand_mod")
+        self.assertFalse(rep3.passed)
+        self.assertTrue(any("Missing required command handler functions" in e for e in rep3.errors))
 
-            # 3. Invalid candidate cmd_sub_run or run alone fails
-            with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('from core.guard import guard_dispatch\ndef run(cmd_bags):\n    guard_dispatch("mock_cli_cand_mod")\n    return 0\n')
-            rep3 = self.checker.check_module("mock_cli_cand_mod")
-            self.assertFalse(rep3.passed)
-            self.assertTrue(any("Missing required command handler functions" in e for e in rep3.errors))
+        with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+            f.write('from core.guard import guard_dispatch\ndef cmd_sub_run(cmd_bags):\n    guard_dispatch("mock_cli_cand_mod")\n    return 0\n')
+        rep4 = self.checker.check_module("mock_cli_cand_mod")
+        self.assertFalse(rep4.passed)
+        self.assertTrue(any("Missing required command handler functions" in e for e in rep4.errors))
+        self.mark_passed()
 
-            with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('from core.guard import guard_dispatch\ndef cmd_sub_run(cmd_bags):\n    guard_dispatch("mock_cli_cand_mod")\n    return 0\n')
-            rep4 = self.checker.check_module("mock_cli_cand_mod")
-            self.assertFalse(rep4.passed)
-            self.assertTrue(any("Missing required command handler functions" in e for e in rep4.errors))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_dir):
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    @require(Requirement.LOGIC)
     def test_checker_cli_forbidden_constructs(self):
-        """FT-07: Forbidden main and if __name__ == '__main__' fail compliance."""
-        src_root = uri.resolve("module.source://")
-        tmp_dir = os.path.join(src_root, "mock_cli_forbidden_mod")
-        try:
-            os.makedirs(os.path.join(tmp_dir, "scripts"), exist_ok=True)
-            with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_cli_forbidden_mod", "version": "1.0.0.0", "entry": "scripts/cli.py"}')
+        """Verify forbidden main function, if __name__ == '__main__', and top-level expressions fail compliance."""
+        mod_dir = self._make_mod(
+            "mock_cli_forbidden_mod",
+            files={"scripts/cli.py": "def hello(cmd_bags):\n    return 0\ndef main():\n    pass\n"},
+        )
+        rep1 = self.checker.check_module("mock_cli_forbidden_mod")
+        self.assertFalse(rep1.passed)
+        self.assertTrue(any("Forbidden function 'main'" in e for e in rep1.errors))
 
-            # 1. Main function forbidden
-            with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\ndef main():\n    pass\n')
-            rep1 = self.checker.check_module("mock_cli_forbidden_mod")
-            self.assertFalse(rep1.passed)
-            self.assertTrue(any("Forbidden function 'main'" in e for e in rep1.errors))
+        with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+            f.write('def hello(cmd_bags):\n    return 0\nif __name__ == "__main__":\n    pass\n')
+        rep2 = self.checker.check_module("mock_cli_forbidden_mod")
+        self.assertFalse(rep2.passed)
+        self.assertTrue(any('Forbidden \'if __name__ == "__main__":\'' in e for e in rep2.errors))
 
-            # 2. If name == main forbidden
-            with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\nif __name__ == "__main__":\n    pass\n')
-            rep2 = self.checker.check_module("mock_cli_forbidden_mod")
-            self.assertFalse(rep2.passed)
-            self.assertTrue(any("Forbidden 'if __name__ == \"__main__\":'" in e for e in rep2.errors))
+        with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+            f.write('def hello(cmd_bags):\n    return 0\nprint("side-effect")\n')
+        rep3 = self.checker.check_module("mock_cli_forbidden_mod")
+        self.assertFalse(rep3.passed)
+        self.assertTrue(any("top-level expression" in e for e in rep3.errors))
+        self.mark_passed()
 
-            # 3. Invalid top-level expression
-            with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\nprint("side-effect")\n')
-            rep3 = self.checker.check_module("mock_cli_forbidden_mod")
-            self.assertFalse(rep3.passed)
-            self.assertTrue(any("top-level expression" in e for e in rep3.errors))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_dir):
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    @require(Requirement.LOGIC)
     def test_checker_pip_dependencies_format(self):
-        """FT-08: Validate manifest.json pip_dependencies structure."""
-        src_root = uri.resolve("module.source://")
-        tmp_dir = os.path.join(src_root, "mock_pip_dep_mod")
-        try:
-            os.makedirs(os.path.join(tmp_dir, "scripts"), exist_ok=True)
-            with open(os.path.join(tmp_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
+        """Validate manifest.json pip_dependencies structure."""
+        mod_dir = self._make_mod(
+            "mock_pip_dep_mod",
+            files={
+                "manifest.json": '{"name": "mock_pip_dep_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"], "pip_dependencies": ["bad_list"]}'
+            },
+        )
+        rep1 = self.checker.check_module("mock_pip_dep_mod")
+        self.assertFalse(rep1.passed)
+        self.assertTrue(any("must be an object" in e or "must be a dictionary" in e for e in rep1.errors))
 
-            # 1. Non-dict pip_dependencies fails
-            with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_pip_dep_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "pip_dependencies": ["bad_list"]}')
-            rep1 = self.checker.check_module("mock_pip_dep_mod")
-            self.assertFalse(rep1.passed)
-            self.assertTrue(any("must be an object" in e or "must be a dictionary" in e for e in rep1.errors))
+        with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            f.write('{"name": "mock_pip_dep_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": ["core"], "pip_dependencies": {"pkg": 123}}')
+        rep2 = self.checker.check_module("mock_pip_dep_mod")
+        self.assertFalse(rep2.passed)
+        self.assertTrue(any("Invalid version specification" in e for e in rep2.errors))
+        self.mark_passed()
 
-            # 2. Non-string spec fails
-            with open(os.path.join(tmp_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_pip_dep_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "pip_dependencies": {"pkg": 123}}')
-            rep2 = self.checker.check_module("mock_pip_dep_mod")
-            self.assertFalse(rep2.passed)
-            self.assertTrue(any("Invalid version specification" in e for e in rep2.errors))
-            self.mark_passed()
-        finally:
-            if os.path.exists(tmp_dir):
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    @require(Requirement.LOGIC)
     def test_checker_custom_rules_dispatch_and_isolation(self):
-        """FR-04, EC-06, [P00:DR-02]: Custom rules support code.func://, isolate sys.path, convert error to WARN."""
-        import sys
-        import types
-        from unittest.mock import patch
-        from dev.checker import CheckReport, CheckSeverity, CheckIssue
-
+        """Verify custom rules support code.func://, isolate sys.path, and convert errors to WARN."""
         rep = CheckReport("mock_target")
-        # Test 1: Exception in custom rule converts to WARN
         with patch("core.contributes.get", return_value=[{"checker_func": "non_existent_pkg.checker.non_existent_func"}]):
             orig_path = list(sys.path)
             self.checker._check_custom_rules("mock_target", "/dummy", rep)
             self.assertEqual(sys.path, orig_path)
+            self.assertTrue(rep.passed)
+            self.assertFalse(rep.has_fails)
             self.assertTrue(rep.has_warns)
             self.assertTrue(any("Failed to execute custom rule" in w for w in rep.warnings))
 
-        # Test 2: Invalid code.func:// URI converts to WARN
         rep2 = CheckReport("mock_target")
         with patch("core.contributes.get", return_value=[{"checker_func": "code.func://bad_uri"}]):
             self.checker._check_custom_rules("mock_target", "/dummy", rep2)
+            self.assertTrue(rep2.passed)
+            self.assertFalse(rep2.has_fails)
             self.assertTrue(rep2.has_warns)
             self.assertTrue(any("Failed to parse custom check URI" in w for w in rep2.warnings))
 
-        # Test 3: Working custom rule via mod:func, code.func://, and hyphenated module name normalization
         dummy_mod = types.ModuleType("mock_donor_rule_pkg")
+
         def custom_rule_fn(mod_name, mod_dir, report):
             report.issues.append(CheckIssue(CheckSeverity.WARN, "CUSTOM", f"Custom rule fired for {mod_name}"))
+
         dummy_mod.custom_rule_fn = custom_rule_fn
         sys.modules["mock_donor_rule_pkg"] = dummy_mod
         try:
             rep3 = CheckReport("mock_target")
-            with patch("core.contributes.get", return_value=[
-                {"checker_func": "mock_donor_rule_pkg:custom_rule_fn", "_contribute_by": "core"},
-                {"checker_func": "mock-donor-rule-pkg:custom_rule_fn", "_contribute_by": "core"},
-                {"checker_func": "code.func://core/mock_donor_rule_pkg.py:custom_rule_fn"},
-            ]):
+            with patch(
+                "core.contributes.get",
+                return_value=[
+                    {"checker_func": "mock_donor_rule_pkg:custom_rule_fn", "_contribute_by": "core"},
+                    {"checker_func": "mock-donor-rule-pkg:custom_rule_fn", "_contribute_by": "core"},
+                    {"checker_func": "code.func://core/mock_donor_rule_pkg.py:custom_rule_fn"},
+                ],
+            ):
                 orig_path3 = list(sys.path)
                 self.checker._check_custom_rules("mock_target", "/dummy", rep3)
                 self.assertEqual(sys.path, orig_path3)
+                self.assertTrue(rep3.passed)
+                self.assertFalse(rep3.has_fails)
                 self.assertFalse(any("module.source://" in p or "/source" in p for p in sys.path if p not in orig_path3))
                 custom_msgs = [i.message for i in rep3.issues if i.category == "CUSTOM"]
                 self.assertEqual(len(custom_msgs), 3)
@@ -633,225 +538,141 @@ class TestDevChecker(YSCBTestCase):
 
         self.mark_passed()
 
-    @require(Requirement.LOGIC)
     def test_checker_core_injection_format_priority(self):
-        """FR-04: _check_core_injection prioritizes module.source://<target>/contributes/_format.json."""
-        import json
-        src_root = uri.resolve("module.source://")
-        donor_dir = os.path.join(src_root, "mock_donor_mod")
-        target_dir = os.path.join(src_root, "mock_target_mod")
-        try:
-            os.makedirs(os.path.join(donor_dir, "contributes"), exist_ok=True)
-            os.makedirs(os.path.join(donor_dir, "scripts"), exist_ok=True)
-            os.makedirs(os.path.join(target_dir, "contributes"), exist_ok=True)
-            os.makedirs(os.path.join(target_dir, "scripts"), exist_ok=True)
-
-            with open(os.path.join(donor_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_donor_mod", "version": "1.0.0.0", "entry": "scripts/cli.py"}')
-            with open(os.path.join(donor_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
-            with open(os.path.join(donor_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
-                f.write('# Donor Manifest\n')
-
-            # Target defines source format schema requiring "custom_token": "str!"
-            target_fmt = {
-                "custom_pt": {
-                    "description": "Custom point",
-                    "format": {
-                        "custom_token": "str!"
+        """Verify _check_core_injection prioritizes module.source://<target>/contributes/_format.json."""
+        self._make_mod(
+            "mock_target_mod",
+            files={
+                "contributes/_format.json": json.dumps(
+                    {
+                        "custom_pt": {
+                            "description": "Custom point",
+                            "format": {"custom_token": "str!"},
+                        }
                     }
-                }
-            }
-            with open(os.path.join(target_dir, "contributes", "_format.json"), "w", encoding="utf-8") as f:
-                json.dump(target_fmt, f)
+                )
+            },
+        )
+        self._make_mod(
+            "mock_donor_mod",
+            files={"contributes/mock_target_mod.json": '{"custom_pt": {"wrong_field": 123}}'},
+        )
+        rep = self.checker.check_module("mock_donor_mod")
+        self.assertFalse(rep.passed)
+        self.assertTrue(rep.has_fails)
+        self.assertTrue(any("Schema violation in 'contributes/mock_target_mod.json'" in e for e in rep.errors))
+        self.mark_passed()
 
-            # Donor contributes invalid data to target (missing custom_token)
-            with open(os.path.join(donor_dir, "contributes", "mock_target_mod.json"), "w", encoding="utf-8") as f:
-                f.write('{"custom_pt": {"wrong_field": 123}}')
-
-            rep = self.checker.check_module("mock_donor_mod")
-            # Should detect schema violation using target's source _format.json!
-            self.assertFalse(rep.passed)
-            self.assertTrue(any("Schema violation in 'contributes/mock_target_mod.json'" in e for e in rep.errors))
-            self.mark_passed()
-        finally:
-            if os.path.exists(donor_dir):
-                shutil.rmtree(donor_dir, ignore_errors=True)
-            if os.path.exists(target_dir):
-                shutil.rmtree(target_dir, ignore_errors=True)
-
-    @require(Requirement.LOGIC)
     def test_checker_locales_contract_validation(self):
-        """FR-05, EC-04: dev check validates 'locales' definition contract, orphan keys, and placeholder integrity."""
-        import json
-        src_root = uri.resolve("module.source://")
-        mod_dir = os.path.join(src_root, "mock_locale_check_mod")
-        try:
-            os.makedirs(os.path.join(mod_dir, "contributes"), exist_ok=True)
-            os.makedirs(os.path.join(mod_dir, "scripts"), exist_ok=True)
-            os.makedirs(os.path.join(mod_dir, "locales"), exist_ok=True)
-
-            with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_locale_check_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": {"core": ">=1.1.0"}}')
-            with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def hello(cmd_bags):\n    return 0\n')
-            with open(os.path.join(mod_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
-                f.write('# Locale Test Manifest\n')
-
-            with open(os.path.join(mod_dir, "locales", "definition.json"), "w", encoding="utf-8") as f:
-                json.dump({
-                    "cli.msg": {
-                        "description": "CLI message with count",
-                        "placeholders": ["count"]
+        """Verify dev check validates 'locales' definition contract, orphan keys, and placeholder integrity."""
+        mod_dir = self._make_mod(
+            "mock_locale_check_mod",
+            deps={"core": ">=1.1.0"},
+            files={
+                "scripts/cli.py": "def hello(cmd_bags):\n    return 0\n",
+                "locales/definition.json": json.dumps(
+                    {
+                        "cli.msg": {
+                            "description": "CLI message with count",
+                            "placeholders": ["count"],
+                        }
                     }
-                }, f)
-
-            # 1. Invalid locale file: orphan key + missing placeholder + core dependency < 1.2.0
-            with open(os.path.join(mod_dir, "locales", "zh-TW.json"), "w", encoding="utf-8") as f:
-                json.dump({
-                    "cli.msg": "沒有佔位符的字串",
-                    "cli.orphan": "孤兒鍵"
-                }, f)
-
-            with open(os.path.join(mod_dir, "contributes", "core.json"), "w", encoding="utf-8") as f:
-                json.dump({
-                    "locales": {
-                        "definition": "locales/definition.json",
-                        "zh-TW": "locales/zh-TW.json"
+                ),
+                "locales/zh-TW.json": json.dumps(
+                    {
+                        "cli.msg": "Missing placeholder string",
+                        "cli.orphan": "Orphan key",
                     }
-                }, f)
+                ),
+                "contributes/core.json": json.dumps(
+                    {
+                        "locales": {
+                            "definition": "locales/definition.json",
+                            "zh-TW": "locales/zh-TW.json",
+                        }
+                    }
+                ),
+            },
+        )
+        rep_fail = self.checker.check_module("mock_locale_check_mod")
+        self.assertFalse(rep_fail.passed)
+        err_str = "\n".join(rep_fail.errors)
+        self.assertIn("Placeholder contract mismatch for 'cli.msg'", err_str)
+        self.assertIn("Orphan locale key 'cli.orphan'", err_str)
+        self.assertIn("requires 'core' >= 1.2.0 in 'manifest.json' dependencies", err_str)
 
-            rep_fail = self.checker.check_module("mock_locale_check_mod")
-            self.assertFalse(rep_fail.passed)
-            err_str = "\n".join(rep_fail.errors)
-            self.assertIn("Placeholder contract mismatch for 'cli.msg'", err_str)
-            self.assertIn("Orphan locale key 'cli.orphan'", err_str)
-            self.assertIn("requires 'core' >= 1.2.0 in 'manifest.json' dependencies", err_str)
+        with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            f.write('{"name": "mock_locale_check_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": {"core": ">=1.2.0"}}')
+        with open(os.path.join(mod_dir, "locales", "zh-TW.json"), "w", encoding="utf-8") as f:
+            json.dump({"cli.msg": "Total {count} items"}, f)
 
-            # 2. Fix locale file and update dependencies.core >= 1.2.0 -> passes!
-            with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_locale_check_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": {"core": ">=1.2.0"}}')
-            with open(os.path.join(mod_dir, "locales", "zh-TW.json"), "w", encoding="utf-8") as f:
-                json.dump({
-                    "cli.msg": "共 {count} 筆結果"
-                }, f)
+        rep_ok = self.checker.check_module("mock_locale_check_mod")
+        self.assertTrue(rep_ok.passed, f"Expected pass, got errors: {rep_ok.errors}")
+        self.assertFalse(rep_ok.has_fails)
+        self.mark_passed()
 
-            rep_ok = self.checker.check_module("mock_locale_check_mod")
-            self.assertTrue(rep_ok.passed, f"Expected pass, got errors: {rep_ok.errors}")
-            self.mark_passed()
-        finally:
-            if os.path.exists(mod_dir):
-                shutil.rmtree(mod_dir, ignore_errors=True)
-
-    @require(Requirement.LOGIC)
     def test_checker_package_dunder_version_mismatch_detected(self):
-        """FR-04, EC-04: dev check detects mismatch between package __init__.py __version__ and manifest.json version."""
-        src_root = uri.resolve("module.source://")
-        mod_dir = os.path.join(src_root, "mock_ver_mismatch_mod")
-        pkg_dir = os.path.join(mod_dir, "mock_ver_mismatch_mod")
-        try:
-            os.makedirs(pkg_dir, exist_ok=True)
-            os.makedirs(os.path.join(mod_dir, "scripts"), exist_ok=True)
-            os.makedirs(os.path.join(mod_dir, "contributes"), exist_ok=True)
-            with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_ver_mismatch_mod", "version": "1.2.0.0", "entry": "scripts/cli.py", "dependencies": {"core": ">=1.0.0"}}')
-            with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def run(cmd_bags):\n    return 0\n')
-            with open(os.path.join(mod_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
-                f.write('# Test Manifest\n')
-            with open(os.path.join(mod_dir, "contributes", "core.json"), "w", encoding="utf-8") as f:
-                f.write('{"commands": {"cmd": {"run": {"description": "run"}}}}')
-            with open(os.path.join(pkg_dir, "__init__.py"), "w", encoding="utf-8") as f:
-                f.write('__version__ = "1.3.0.0"\n')
+        """Verify Checker detects mismatch between package __init__.py __version__ and manifest.json version."""
+        mod_dir = self._make_mod(
+            "mock_ver_mismatch_mod",
+            version="1.2.0.0",
+            files={"mock_ver_mismatch_mod/__init__.py": '__version__ = "1.3.0.0"\n'},
+        )
+        rep_fail = self.checker.check_module("mock_ver_mismatch_mod")
+        self.assertFalse(rep_fail.passed)
+        self.assertIn("Package __version__ mismatch", "\n".join(rep_fail.errors))
 
-            rep_fail = self.checker.check_module("mock_ver_mismatch_mod")
-            self.assertFalse(rep_fail.passed)
-            self.assertIn("Package __version__ mismatch", "\n".join(rep_fail.errors))
+        with open(os.path.join(mod_dir, "mock_ver_mismatch_mod", "__init__.py"), "w", encoding="utf-8") as f:
+            f.write('__version__ = "1.2.0.0"\n')
+        rep_ok = self.checker.check_module("mock_ver_mismatch_mod")
+        self.assertTrue(rep_ok.passed, f"Expected pass, got: {rep_ok.errors}")
+        self.assertFalse(rep_ok.has_fails)
+        self.mark_passed()
 
-            with open(os.path.join(pkg_dir, "__init__.py"), "w", encoding="utf-8") as f:
-                f.write('__version__ = "1.2.0.0"\n')
-            rep_ok = self.checker.check_module("mock_ver_mismatch_mod")
-            self.assertTrue(rep_ok.passed, f"Expected pass, got: {rep_ok.errors}")
-            self.mark_passed()
-        finally:
-            if os.path.exists(mod_dir):
-                shutil.rmtree(mod_dir, ignore_errors=True)
-
-    @require(Requirement.LOGIC)
     def test_checker_bare_except_emits_antipattern_warning(self):
-        """TASK-02: Checker.check_module emits a WARN (ANTIPATTERN) when a source file contains a bare 'except:' clause."""
-        src_root = uri.resolve("module.source://")
-        mod_dir = os.path.join(src_root, "mock_bare_except_mod")
-        pkg_dir = os.path.join(mod_dir, "mock_bare_except_mod")
-        try:
-            os.makedirs(pkg_dir, exist_ok=True)
-            os.makedirs(os.path.join(mod_dir, "scripts"), exist_ok=True)
-            os.makedirs(os.path.join(mod_dir, "contributes"), exist_ok=True)
-            with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_bare_except_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": {"core": ">=1.0.0"}}')
-            with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write('def run(cmd_bags):\n    return 0\n')
-            with open(os.path.join(mod_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
-                f.write('# Test Manifest\n')
-            with open(os.path.join(mod_dir, "contributes", "core.json"), "w", encoding="utf-8") as f:
-                f.write('{"commands": {"cmd": {"run": {"description": "run"}}}}')
-            with open(os.path.join(pkg_dir, "bad_mod.py"), "w", encoding="utf-8") as f:
-                f.write(
+        """Verify Checker.check_module emits a WARN (ANTIPATTERN) when a source file contains a bare 'except:' clause."""
+        self._make_mod(
+            "mock_bare_except_mod",
+            files={
+                "mock_bare_except_mod/bad_mod.py": (
                     "def risky():\n"
                     "    try:\n"
                     "        return 1 / 0\n"
                     "    except:\n"
                     "        return 0\n"
                 )
+            },
+        )
+        rep = self.checker.check_module("mock_bare_except_mod")
+        self.assertTrue(rep.passed, f"Expected pass with WARN, got errors: {rep.errors}")
+        self.assertFalse(rep.has_fails)
+        self.assertTrue(rep.has_warns)
+        self.assertEqual(rep.status, CheckSeverity.WARN)
+        bare_warns = [
+            i
+            for i in rep.issues
+            if i.severity == CheckSeverity.WARN
+            and i.category == "ANTIPATTERN"
+            and "Bare 'except:' clause detected" in i.message
+        ]
+        self.assertEqual(len(bare_warns), 1)
+        self.assertEqual(bare_warns[0].file_path, "mock_bare_except_mod/bad_mod.py")
+        self.assertEqual(bare_warns[0].line_number, 4)
+        self.mark_passed()
 
-            rep = self.checker.check_module("mock_bare_except_mod")
-            self.assertTrue(rep.passed, f"Expected pass with WARN, got errors: {rep.errors}")
-            self.assertEqual(rep.status, CheckSeverity.WARN)
-            bare_warns = [
-                i for i in rep.issues
-                if i.severity == CheckSeverity.WARN
-                and i.category == "ANTIPATTERN"
-                and "Bare 'except:' clause detected" in i.message
-            ]
-            self.assertEqual(len(bare_warns), 1)
-            self.assertEqual(bare_warns[0].file_path, "mock_bare_except_mod/bad_mod.py")
-            self.assertEqual(bare_warns[0].line_number, 4)
-            self.mark_passed()
-        finally:
-            if os.path.exists(mod_dir):
-                shutil.rmtree(mod_dir, ignore_errors=True)
-
-    @require(Requirement.LOGIC)
     def test_checker_forbids_non_core_sys_path_mutation(self):
-        """Verify Checker rejects direct sys.path mutations in non-core source files while allowing read-only access, test files, and core."""
-        src_root = uri.resolve("module.source://")
-        mod_dir = os.path.join(src_root, "mock_syspath_mod")
-        pkg_dir = os.path.join(mod_dir, "mock_syspath_mod")
-        tests_dir = os.path.join(mod_dir, "tests")
-        try:
-            os.makedirs(pkg_dir, exist_ok=True)
-            os.makedirs(tests_dir, exist_ok=True)
-            os.makedirs(os.path.join(mod_dir, "scripts"), exist_ok=True)
-            os.makedirs(os.path.join(mod_dir, "contributes"), exist_ok=True)
-            with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
-                f.write('{"name": "mock_syspath_mod", "version": "1.0.0.0", "entry": "scripts/cli.py", "dependencies": {"core": ">=1.0.0"}}')
-            with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
-                f.write(
+        """Verify Checker rejects direct sys.path mutations in non-core source files while allowing read-only access and test files."""
+        mod_dir = self._make_mod(
+            "mock_syspath_mod",
+            files={
+                "scripts/cli.py": (
                     "import sys\n"
-                    "def run(cmd_bags):\n"
+                    "def hello(cmd_bags):\n"
                     "    snap = list(sys.path)\n"
                     "    return 0 if snap is not None else 1\n"
-                )
-            with open(os.path.join(mod_dir, "contributes", "_manifest.md"), "w", encoding="utf-8") as f:
-                f.write("# Test Manifest\n")
-            with open(os.path.join(mod_dir, "contributes", "core.json"), "w", encoding="utf-8") as f:
-                f.write('{"commands": {"cmd": {"run": {"description": "run"}}}}')
-            with open(os.path.join(pkg_dir, "__init__.py"), "w", encoding="utf-8") as f:
-                f.write('__version__ = "1.0.0.0"\n')
-
-            # Test files are allowed to mutate sys.path for standalone test bootstrap
-            with open(os.path.join(tests_dir, "test_dummy.py"), "w", encoding="utf-8") as f:
-                f.write(
+                ),
+                "mock_syspath_mod/__init__.py": '__version__ = "1.0.0.0"\n',
+                "tests/test_dummy.py": (
                     "import sys\n"
                     "from dev.testing.case import YSCBTestCase\n"
                     "from dev.testing.requirement import require, Requirement\n"
@@ -860,34 +681,66 @@ class TestDevChecker(YSCBTestCase):
                     "class TestDummy(YSCBTestCase):\n"
                     "    def test_ok(self):\n"
                     "        self.mark_passed()\n"
-                )
+                ),
+            },
+        )
+        rep_clean = self.checker.check_module("mock_syspath_mod")
+        self.assertTrue(rep_clean.passed, f"Expected clean module to pass, got: {rep_clean.errors}")
+        self.assertFalse(rep_clean.has_fails)
 
-            rep_clean = self.checker.check_module("mock_syspath_mod")
-            self.assertTrue(rep_clean.passed, f"Expected clean module to pass, got: {rep_clean.errors}")
+        with open(os.path.join(mod_dir, "mock_syspath_mod", "violator.py"), "w", encoding="utf-8") as f:
+            f.write(
+                "import sys as s\n"
+                "from sys import path as sp\n"
+                "def bad():\n"
+                "    s.path.insert(0, '/bad')\n"
+                "    sp.append('/bad2')\n"
+                "    s.path[:] = []\n"
+                "    del s.path[0]\n"
+            )
+        rep_bad = self.checker.check_module("mock_syspath_mod")
+        self.assertFalse(rep_bad.passed)
+        fail_msgs = [
+            i.message
+            for i in rep_bad.issues
+            if i.severity == CheckSeverity.FAIL and "Forbidden direct sys.path mutation" in i.message
+        ]
+        self.assertEqual(len(fail_msgs), 4)
+        self.mark_passed()
 
-            with open(os.path.join(pkg_dir, "violator.py"), "w", encoding="utf-8") as f:
-                f.write(
-                    "import sys as s\n"
-                    "from sys import path as sp\n"
-                    "def bad():\n"
-                    "    s.path.insert(0, '/bad')\n"
-                    "    sp.append('/bad2')\n"
-                    "    s.path[:] = []\n"
-                    "    del s.path[0]\n"
-                )
+    def test_cli_check_command_modes(self):
+        """Verify scripts/cli.py check command in single-module, --all, and --json modes."""
+        cli_path = uri.resolve("module.source://dev/scripts/cli.py")
+        spec = importlib.util.spec_from_file_location("dev_cli_check_modes", cli_path)
+        cli_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli_mod)
 
-            rep_bad = self.checker.check_module("mock_syspath_mod")
-            self.assertFalse(rep_bad.passed)
-            fail_msgs = [
-                i.message for i in rep_bad.issues
-                if i.severity == CheckSeverity.FAIL and "Forbidden direct sys.path mutation" in i.message
-            ]
-            self.assertEqual(len(fail_msgs), 4)
-            self.mark_passed()
-        finally:
-            if os.path.exists(mod_dir):
-                shutil.rmtree(mod_dir, ignore_errors=True)
+        buf_single = io.StringIO()
+        with patch("sys.stdout", buf_single):
+            rc1 = cli_mod.check(["dev", "--json"])
+        self.assertEqual(rc1, 0)
+        parsed_single = json.loads(buf_single.getvalue())
+        self.assertEqual(parsed_single.get("module"), "dev")
+        self.assertTrue(parsed_single.get("passed"))
 
+        buf_all = io.StringIO()
+        with patch("sys.stdout", buf_all):
+            rc2 = cli_mod.check(["--all", "--json"])
+        self.assertEqual(rc2, 0)
+        parsed_all = json.loads(buf_all.getvalue())
+        self.assertIn("core", parsed_all)
+        self.assertIn("dev", parsed_all)
 
+        buf_text = io.StringIO()
+        with patch("sys.stdout", buf_text):
+            rc3 = cli_mod.check(["dev"])
+        self.assertEqual(rc3, 0)
+        self.assertIn("Status  : PASSED", buf_text.getvalue())
 
-
+        self._make_mod("mock_cli_chk_fail", remove_paths=["manifest.json"])
+        buf_fail = io.StringIO()
+        with patch("sys.stdout", buf_fail):
+            rc4 = cli_mod.check(["mock_cli_chk_fail"])
+        self.assertEqual(rc4, 1)
+        self.assertIn("FAILED (Release Blocked)", buf_fail.getvalue())
+        self.mark_passed()

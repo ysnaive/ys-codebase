@@ -4,7 +4,7 @@ Migrates legacy `config://<mod>/config*.local.json` files into `config.local://<
 and migrates `<yscb_dir>/.cache/core/gitignore_dynamic.json` into `<yscb_dir>/.storage.local/core/gitignore_dynamic.json`
 when upgrading `core` to >= 1.2.7.0, keeping runtime lookup logic 100% free of legacy fallback branches.
 """
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 import copy
 import json
 import os
@@ -20,6 +20,34 @@ def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str
         else:
             result[k] = copy.deepcopy(v)
     return result
+
+
+def _read_json_dict_or_none(file_path: str) -> Optional[Dict[str, Any]]:
+    """Reads a JSON file and returns it if it is a dictionary, otherwise None."""
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+            if isinstance(loaded, dict):
+                return loaded
+    except Exception:
+        pass
+    return None
+
+
+def _atomic_write_json_file(target_path: str, data: Dict[str, Any]) -> None:
+    """Atomically writes a dictionary as formatted JSON to `target_path`."""
+    tmp_path = f"{target_path}.tmp_{os.getpid()}"
+    try:
+        with open(tmp_path, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(tmp_path, target_path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def _migrate_local_configs(yscb_dir: str) -> None:
@@ -54,31 +82,12 @@ def _migrate_local_configs(yscb_dir: str) -> None:
             if not os.path.exists(target_path):
                 shutil.move(legacy_path, target_path)
             else:
-                legacy_data = None
-                target_data = None
-                try:
-                    with open(legacy_path, "r", encoding="utf-8") as f:
-                        loaded = json.load(f)
-                        if isinstance(loaded, dict):
-                            legacy_data = loaded
-                except Exception:
-                    legacy_data = None
-
-                try:
-                    with open(target_path, "r", encoding="utf-8") as f:
-                        loaded = json.load(f)
-                        if isinstance(loaded, dict):
-                            target_data = loaded
-                except Exception:
-                    target_data = None
+                legacy_data = _read_json_dict_or_none(legacy_path)
+                target_data = _read_json_dict_or_none(target_path)
 
                 if legacy_data is not None and target_data is not None:
                     merged = _deep_merge_dict(target_data, legacy_data)
-                    tmp_path = f"{target_path}.tmp"
-                    with open(tmp_path, "w", encoding="utf-8") as f:
-                        json.dump(merged, f, indent=2, ensure_ascii=False)
-                        f.write("\n")
-                    os.replace(tmp_path, target_path)
+                    _atomic_write_json_file(target_path, merged)
                 elif legacy_data is not None and target_data is None:
                     shutil.copy2(legacy_path, target_path)
 
@@ -107,23 +116,8 @@ def _migrate_gitignore_dynamic(yscb_dir: str, storage_local_dir: str) -> None:
         shutil.move(legacy_gi_path, target_gi_path)
         return
 
-    legacy_data = None
-    target_data = None
-    try:
-        with open(legacy_gi_path, "r", encoding="utf-8") as f:
-            loaded = json.load(f)
-            if isinstance(loaded, dict):
-                legacy_data = loaded
-    except Exception:
-        legacy_data = None
-
-    try:
-        with open(target_gi_path, "r", encoding="utf-8") as f:
-            loaded = json.load(f)
-            if isinstance(loaded, dict):
-                target_data = loaded
-    except Exception:
-        target_data = None
+    legacy_data = _read_json_dict_or_none(legacy_gi_path)
+    target_data = _read_json_dict_or_none(target_gi_path)
 
     if legacy_data is not None and target_data is not None:
         merged = copy.deepcopy(target_data)
@@ -136,11 +130,7 @@ def _migrate_gitignore_dynamic(yscb_dir: str, storage_local_dir: str) -> None:
                         merged[k].append(item)
             elif isinstance(merged[k], dict) and isinstance(v, dict):
                 merged[k] = _deep_merge_dict(v, merged[k])
-        tmp_path = f"{target_gi_path}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(merged, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.replace(tmp_path, target_gi_path)
+        _atomic_write_json_file(target_gi_path, merged)
     elif legacy_data is not None and target_data is None:
         shutil.copy2(legacy_gi_path, target_gi_path)
 
@@ -178,4 +168,3 @@ def migrate(context: Dict[str, Any]) -> bool:
         pass
 
     return True
-

@@ -11,8 +11,12 @@ from typing import Any, Dict
 def _migrate_dir_contents(src_dir: str, dst_dir: str) -> None:
     if not os.path.isdir(src_dir):
         return
-    os.makedirs(dst_dir, exist_ok=True)
-    for entry in sorted(os.listdir(src_dir)):
+    try:
+        os.makedirs(dst_dir, exist_ok=True)
+        entries = sorted(os.listdir(src_dir))
+    except OSError:
+        return
+    for entry in entries:
         if entry.endswith(".lock"):
             continue
         src_path = os.path.join(src_dir, entry)
@@ -21,8 +25,11 @@ def _migrate_dir_contents(src_dir: str, dst_dir: str) -> None:
             _migrate_dir_contents(src_path, dst_path)
         elif os.path.isfile(src_path):
             if not os.path.exists(dst_path):
-                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-                shutil.move(src_path, dst_path)
+                try:
+                    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                    shutil.move(src_path, dst_path)
+                except OSError:
+                    pass
             else:
                 try:
                     os.remove(src_path)
@@ -40,7 +47,8 @@ def migrate(context: Dict[str, Any]) -> bool:
     Idempotently migrates non-lock files from `<yscb_dir>/.cache/ast/{indices,bundles}`
     into `<storage_local_dir>/{indices,bundles}`.
     """
-    yscb_dir = context.get("yscb_dir")
+    ctx = context if isinstance(context, dict) else {}
+    yscb_dir = ctx.get("yscb_dir")
     if not yscb_dir:
         try:
             from core import uri
@@ -49,7 +57,7 @@ def migrate(context: Dict[str, Any]) -> bool:
         except Exception:
             return True
 
-    storage_local_dir = context.get("storage_local_dir") or os.path.join(
+    storage_local_dir = ctx.get("storage_local_dir") or os.path.join(
         str(yscb_dir), ".storage.local", "ast"
     )
     legacy_cache_dir = os.path.join(str(yscb_dir), ".cache", "ast")
@@ -59,6 +67,9 @@ def migrate(context: Dict[str, Any]) -> bool:
     for subdir in ("indices", "bundles"):
         src_sub = os.path.join(legacy_cache_dir, subdir)
         dst_sub = os.path.join(str(storage_local_dir), subdir)
-        _migrate_dir_contents(src_sub, dst_sub)
+        try:
+            _migrate_dir_contents(src_sub, dst_sub)
+        except OSError:
+            pass
 
     return True

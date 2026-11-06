@@ -12,6 +12,7 @@ Coordinates:
 from contextlib import contextmanager
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import shutil
@@ -127,6 +128,7 @@ def _sym_to_outline_node(
     rel_path: str,
     merged: bool,
     partial_siblings_map: Dict[str, List[Dict[str, Any]]],
+    snap_by_kind_fqn: Optional[Dict[Tuple[str, str], List[UnifiedSymbol]]] = None,
 ) -> OutlineNode:
     """Recursively convert a `UnifiedSymbol` and its child declarations into an `OutlineNode`."""
     is_part = _is_partial_symbol(sym)
@@ -139,7 +141,15 @@ def _sym_to_outline_node(
 
     direct_child_syms = children_by_parent_id.get(sym.id, [])
     child_nodes: List[OutlineNode] = [
-        _sym_to_outline_node(c, children_by_parent_id, snapshot, rel_path, merged, partial_siblings_map)
+        _sym_to_outline_node(
+            c,
+            children_by_parent_id,
+            snapshot,
+            rel_path,
+            merged,
+            partial_siblings_map,
+            snap_by_kind_fqn=snap_by_kind_fqn,
+        )
         for c in direct_child_syms
     ]
     existing_child_keys = {(c.name, c.kind, c.signature) for c in child_nodes}
@@ -154,39 +164,50 @@ def _sym_to_outline_node(
     if is_part and snapshot is not None:
         siblings: List[Dict[str, Any]] = []
         norm_this_path = rel_path.replace("\\", "/").lower()
-        for snap_sym in snapshot.symbols.values():
-            if snap_sym.kind == sym.kind and (snap_sym.fqn or snap_sym.name) == fqn_key:
-                snap_meta = snap_sym.metadata or {}
-                locs = snap_meta.get("partial_locations") or []
-                if locs:
-                    for loc in locs:
-                        loc_fp = str(loc.get("file_path", "")).replace("\\", "/")
-                        if loc_fp.lower() != norm_this_path or int(loc.get("line_number", 0)) != sym.line_number:
-                            sib_item = {
-                                "file_path": loc_fp,
-                                "line_number": int(loc.get("line_number", 1)),
-                                "end_line": int(loc.get("end_line", loc.get("line_number", 1))),
-                                "member_count": int(loc.get("member_count", 0)),
-                            }
-                            if sib_item not in siblings:
-                                siblings.append(sib_item)
-                elif snap_sym.file_path.replace("\\", "/").lower() != norm_this_path:
-                    s_own, _, _, _ = _extract_unaggregated_partial_state(snap_sym)
-                    sib_item = {
-                        "file_path": snap_sym.file_path,
-                        "line_number": snap_sym.line_number,
-                        "end_line": snap_sym.end_line,
-                        "member_count": len(s_own),
-                    }
-                    if sib_item not in siblings:
-                        siblings.append(sib_item)
+        candidates = (
+            snap_by_kind_fqn.get((sym.kind, fqn_key), [])
+            if snap_by_kind_fqn is not None
+            else [
+                s
+                for s in snapshot.symbols.values()
+                if s.kind == sym.kind and (s.fqn or s.name) == fqn_key
+            ]
+        )
+        sym_spaces = set(sym.spaces) if sym.spaces else set()
+        for snap_sym in candidates:
+            if sym_spaces and snap_sym.spaces and not sym_spaces.intersection(snap_sym.spaces):
+                continue
+            snap_meta = snap_sym.metadata or {}
+            locs = snap_meta.get("partial_locations") or []
+            if locs:
+                for loc in locs:
+                    loc_fp = str(loc.get("file_path", "")).replace("\\", "/")
+                    if loc_fp.lower() != norm_this_path or int(loc.get("line_number", 0)) != sym.line_number:
+                        sib_item = {
+                            "file_path": loc_fp,
+                            "line_number": int(loc.get("line_number", 1)),
+                            "end_line": int(loc.get("end_line", loc.get("line_number", 1))),
+                            "member_count": int(loc.get("member_count", 0)),
+                        }
+                        if sib_item not in siblings:
+                            siblings.append(sib_item)
+            elif snap_sym.file_path.replace("\\", "/").lower() != norm_this_path:
+                s_own, _, _, _ = _extract_unaggregated_partial_state(snap_sym)
+                sib_item = {
+                    "file_path": snap_sym.file_path,
+                    "line_number": snap_sym.line_number,
+                    "end_line": snap_sym.end_line,
+                    "member_count": len(s_own),
+                }
+                if sib_item not in siblings:
+                    siblings.append(sib_item)
 
-                if merged:
-                    for m in snap_sym.members:
-                        m_node = _member_to_outline_node(m, default_line=snap_sym.line_number)
-                        if (m_node.name, m_node.kind, m_node.signature) not in existing_child_keys:
-                            existing_child_keys.add((m_node.name, m_node.kind, m_node.signature))
-                            child_nodes.append(m_node)
+            if merged:
+                for m in snap_sym.members:
+                    m_node = _member_to_outline_node(m, default_line=snap_sym.line_number)
+                    if (m_node.name, m_node.kind, m_node.signature) not in existing_child_keys:
+                        existing_child_keys.add((m_node.name, m_node.kind, m_node.signature))
+                        child_nodes.append(m_node)
 
         if siblings:
             partial_siblings_map[fqn_key] = siblings
@@ -221,6 +242,12 @@ def _build_outline_tree(
     children_by_parent_id: Dict[str, List[UnifiedSymbol]] = {}
     top_level_syms: List[UnifiedSymbol] = []
 
+    snap_by_kind_fqn: Optional[Dict[Tuple[str, str], List[UnifiedSymbol]]] = None
+    if snapshot is not None and isinstance(snapshot.symbols, dict):
+        snap_by_kind_fqn = {}
+        for snap_sym in snapshot.symbols.values():
+            snap_by_kind_fqn.setdefault((snap_sym.kind, snap_sym.fqn or snap_sym.name), []).append(snap_sym)
+
     for s in sorted(file_symbols, key=lambda x: (x.line_number, x.name)):
         if s.parent_id and s.parent_id in sym_by_id:
             children_by_parent_id.setdefault(s.parent_id, []).append(s)
@@ -230,7 +257,13 @@ def _build_outline_tree(
     def _collect_flattened(sym_list: List[UnifiedSymbol], acc: List[OutlineNode]) -> None:
         for s in sym_list:
             node = _sym_to_outline_node(
-                s, children_by_parent_id, snapshot, rel_path, merged, partial_siblings_map
+                s,
+                children_by_parent_id,
+                snapshot,
+                rel_path,
+                merged,
+                partial_siblings_map,
+                snap_by_kind_fqn=snap_by_kind_fqn,
             )
             if s.kind == "namespace":
                 direct_children = children_by_parent_id.get(s.id, [])
@@ -480,6 +513,7 @@ class ASTEngine:
         try:
             target_cfgs = self.bundler._resolve_target_spaces(spaces)
             cached_unique = getattr(self.bundler, "_last_bundle_unique_files", None)
+            cached_spaces = getattr(self.bundler, "_last_bundle_spaces", set())
             existing_files_map = self._snapshot.files_map if self._snapshot is not None else {}
 
             for sp_cfg in target_cfgs:
@@ -517,12 +551,11 @@ class ASTEngine:
                                     base_set.add(relp)
                         rel_files = sorted(base_set)
 
-                if rel_files is None and cached_unique:
+                if rel_files is None and cached_unique is not None and sp_name in cached_spaces:
                     from_cache = [
                         relp for _, (_, relp, sp_set) in cached_unique.items() if sp_name in sp_set
                     ]
-                    if from_cache:
-                        rel_files = sorted(set(from_cache))
+                    rel_files = sorted(set(from_cache))
 
                 if rel_files is None:
                     walked = []
@@ -587,6 +620,18 @@ class ASTEngine:
             "symbols_size": sym_size,
         }
 
+    def _atomic_write_meta(self, meta_payload: Dict[str, Any]) -> None:
+        raw_bytes = json.dumps(meta_payload, ensure_ascii=False, indent=2).encode("utf-8")
+        self.meta_index_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            from core.vfs import write_bytes
+
+            write_bytes(str(self.meta_index_path), raw_bytes)
+        except Exception:
+            tmp_path = self.meta_index_path.with_suffix(self.meta_index_path.suffix + ".tmp")
+            tmp_path.write_bytes(raw_bytes)
+            os.replace(str(tmp_path), str(self.meta_index_path))
+
     def _save_snapshot_and_graph(self, snapshot: ASTSnapshot, graph: CallGraphIndex) -> None:
         from core.platform.lock import InterProcessLock
 
@@ -596,10 +641,7 @@ class ASTEngine:
             graph.save_binary(self.graph_index_path, compresslevel=1)
             try:
                 meta_payload = self._build_meta_payload(snapshot)
-                self.meta_index_path.write_text(
-                    json.dumps(meta_payload, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
+                self._atomic_write_meta(meta_payload)
             except Exception as exc:
                 logger.debug(f"Failed writing AST meta index: {exc}")
         self._snapshot = snapshot
@@ -647,33 +689,31 @@ class ASTEngine:
 
     def get_persisted_meta(self) -> Optional[Dict[str, Any]]:
         """Read lightweight AST generation/metadata without decompressing unified.symbols.bin.gz or unified.graph.bin.gz."""
-        if not self.symbols_index_path.exists():
+        with self._lock:
+            if not self.symbols_index_path.exists():
+                return None
+            try:
+                sym_st = self.symbols_index_path.stat()
+                if self._snapshot is not None and sym_st.st_mtime <= self._symbols_mtime:
+                    return self._build_meta_payload(self._snapshot)
+                if self.meta_index_path.exists():
+                    meta = json.loads(self.meta_index_path.read_text(encoding="utf-8"))
+                    if (
+                        isinstance(meta, dict)
+                        and meta.get("symbols_mtime_ns") == int(sym_st.st_mtime_ns)
+                        and meta.get("symbols_size") == int(sym_st.st_size)
+                    ):
+                        return meta
+                if self._ensure_symbols_loaded() and self._snapshot is not None:
+                    meta_payload = self._build_meta_payload(self._snapshot)
+                    try:
+                        self._atomic_write_meta(meta_payload)
+                    except Exception:
+                        pass
+                    return meta_payload
+            except Exception as exc:
+                logger.debug(f"get_persisted_meta fallback skipped: {exc}")
             return None
-        try:
-            sym_st = self.symbols_index_path.stat()
-            if self._snapshot is not None and sym_st.st_mtime <= self._symbols_mtime:
-                return self._build_meta_payload(self._snapshot)
-            if self.meta_index_path.exists():
-                meta = json.loads(self.meta_index_path.read_text(encoding="utf-8"))
-                if (
-                    isinstance(meta, dict)
-                    and meta.get("symbols_mtime_ns") == int(sym_st.st_mtime_ns)
-                    and meta.get("symbols_size") == int(sym_st.st_size)
-                ):
-                    return meta
-            if self._ensure_symbols_loaded() and self._snapshot is not None:
-                meta_payload = self._build_meta_payload(self._snapshot)
-                try:
-                    self.meta_index_path.write_text(
-                        json.dumps(meta_payload, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-                except Exception:
-                    pass
-                return meta_payload
-        except Exception as exc:
-            logger.debug(f"get_persisted_meta fallback skipped: {exc}")
-        return None
 
     def build_index(
         self,
@@ -1010,21 +1050,23 @@ class ASTEngine:
 
     def get_snapshot(self, auto_sync: bool = True) -> ASTSnapshot:
         """Return the current `ASTSnapshot` (triggering `ensure_jit_synced()` if `auto_sync=True`)."""
-        if auto_sync:
-            return self.ensure_jit_synced()
-        if not self._ensure_symbols_loaded():
-            raise ASTIndexNotFoundError(f"AST snapshot not found at {self.symbols_index_path}")
-        assert self._snapshot is not None
-        return self._snapshot
+        with self._lock:
+            if auto_sync:
+                return self.ensure_jit_synced()
+            if not self._ensure_symbols_loaded():
+                raise ASTIndexNotFoundError(f"AST snapshot not found at {self.symbols_index_path}")
+            assert self._snapshot is not None
+            return self._snapshot
 
     def get_call_graph(self, auto_sync: bool = True) -> CallGraphIndex:
         """Return the current `CallGraphIndex`."""
-        if auto_sync:
-            self.ensure_jit_synced()
-        if not self._ensure_graph_loaded():
-            raise ASTIndexNotFoundError(f"AST call graph not found at {self.graph_index_path}")
-        assert self._graph is not None
-        return self._graph
+        with self._lock:
+            if auto_sync:
+                self.ensure_jit_synced()
+            if not self._ensure_graph_loaded():
+                raise ASTIndexNotFoundError(f"AST call graph not found at {self.graph_index_path}")
+            assert self._graph is not None
+            return self._graph
 
     def _resolve_target_file(self, file_or_uri: str) -> Tuple[Path, str, str]:
         """Resolve `file_or_uri` to `(abs_path, rel_path, space_name)`."""
@@ -1098,52 +1140,54 @@ class ASTEngine:
         member_kind: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Extract hierarchical AST symbol outline for `file_or_uri` with optional orthogonal filters."""
-        GrammarProvisioner.get_warnings(clear=True)
-        active_filters = {
-            k: str(v).strip().lower()
-            for k, v in (("visibility", visibility), ("binding", binding), ("member_kind", member_kind))
-            if v
-        }
-        try:
-            abs_path, rel_path, space_name = self._resolve_target_file(file_or_uri)
-        except FileNotFoundError:
-            err_res: Dict[str, Any] = {
-                "file_path": str(file_or_uri), "language": "unknown", "merged": merged,
-                "symbols": [], "partial_siblings": {}, "warnings": [],
-                "error": f"File not found: {file_or_uri}",
+        with self._lock:
+            GrammarProvisioner.get_warnings(clear=True)
+            active_filters = {
+                k: str(v).strip().lower()
+                for k, v in (("visibility", visibility), ("binding", binding), ("member_kind", member_kind))
+                if v
             }
-            if active_filters:
-                err_res["filters"] = active_filters
-            return err_res
-
-        content = abs_path.read_text(encoding="utf-8", errors="replace")
-        file_symbols = self.parser_registry.parse_file(file_path=rel_path, content=content, space=space_name)
-        file_symbols = ensure_unique_overload_ids(file_symbols, default_space=space_name)
-
-        language = file_symbols[0].language if file_symbols else "unknown"
-        if language == "unknown":
-            ext = abs_path.suffix.lower()
-            language = next((cfg.id for cfg in self.parser_registry.language_configs.values() if ext in cfg.extensions), "unknown")
-
-        snapshot: Optional[ASTSnapshot] = None
-        if any(_is_partial_symbol(s) for s in file_symbols):
             try:
-                snapshot = self.ensure_jit_synced()
-            except Exception as exc:
-                logger.debug(f"Outline JIT sync skipped: {exc}")
+                abs_path, rel_path, space_name = self._resolve_target_file(file_or_uri)
+            except FileNotFoundError:
+                err_res: Dict[str, Any] = {
+                    "file_path": str(file_or_uri), "language": "unknown", "merged": merged,
+                    "symbols": [], "partial_siblings": {}, "warnings": [],
+                    "error": f"File not found: {file_or_uri}",
+                }
+                if active_filters:
+                    err_res["filters"] = active_filters
+                return err_res
 
-        outline_nodes, partial_siblings_map = _build_outline_tree(
-            file_symbols=file_symbols, snapshot=snapshot, rel_path=rel_path, merged=merged
-        )
-        outline_nodes = _filter_outline_nodes(outline_nodes, active_filters)
+            content = abs_path.read_text(encoding="utf-8", errors="replace")
+            file_symbols = self.parser_registry.parse_file(file_path=rel_path, content=content, space=space_name)
+            file_symbols = ensure_unique_overload_ids(file_symbols, default_space=space_name)
 
-        return OutlineResult(
-            file_path=rel_path, language=language, merged=merged,
-            symbols=[n.to_dict() for n in outline_nodes],
-            partial_siblings=partial_siblings_map,
-            warnings=GrammarProvisioner.get_warnings(clear=False),
-            filters=active_filters,
-        ).to_dict()
+            language = file_symbols[0].language if file_symbols else "unknown"
+            if language == "unknown":
+                ext = abs_path.suffix.lower()
+                language = next((cfg.id for cfg in self.parser_registry.language_configs.values() if ext in cfg.extensions), "unknown")
+
+            snapshot: Optional[ASTSnapshot] = None
+            if any(_is_partial_symbol(s) for s in file_symbols):
+                try:
+                    snapshot = self.ensure_jit_synced()
+                except Exception as exc:
+                    logger.debug(f"Outline JIT sync skipped: {exc}")
+
+            outline_nodes, partial_siblings_map = _build_outline_tree(
+                file_symbols=file_symbols, snapshot=snapshot, rel_path=rel_path, merged=merged
+            )
+            outline_nodes = _filter_outline_nodes(outline_nodes, active_filters)
+
+            return OutlineResult(
+                file_path=rel_path, language=language, merged=merged,
+                symbols=[n.to_dict() for n in outline_nodes],
+                partial_siblings=partial_siblings_map,
+                warnings=GrammarProvisioner.get_warnings(clear=False),
+                filters=active_filters,
+            ).to_dict()
+
 
     def callers(
         self,
@@ -1155,19 +1199,20 @@ class ASTEngine:
         include_snippet: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Query upstream callers for `target_query` with automatic JIT synchronization."""
-        eff_space = space if space is not None else spaces
-        eff_snippet = include_snippet if include_snippet is not None else snippet
-        snapshot = self.ensure_jit_synced(spaces=eff_space)
-        graph = self.get_call_graph(auto_sync=False)
-        return query_callers(
-            target_query=target_query,
-            symbols_map=snapshot.symbols,
-            graph=graph,
-            space=eff_space,
-            ftypes=ftypes,
-            snippet=eff_snippet,
-            snippet_extractor=self.snippet_extractor,
-        )
+        with self._lock:
+            eff_space = space if space is not None else spaces
+            eff_snippet = include_snippet if include_snippet is not None else snippet
+            snapshot = self.ensure_jit_synced(spaces=eff_space)
+            graph = self.get_call_graph(auto_sync=False)
+            return query_callers(
+                target_query=target_query,
+                symbols_map=snapshot.symbols,
+                graph=graph,
+                space=eff_space,
+                ftypes=ftypes,
+                snippet=eff_snippet,
+                snippet_extractor=self.snippet_extractor,
+            )
 
     def callees(
         self,
@@ -1179,19 +1224,20 @@ class ASTEngine:
         include_snippet: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Query downstream callees for `target_query` with automatic JIT synchronization."""
-        eff_space = space if space is not None else spaces
-        eff_snippet = include_snippet if include_snippet is not None else snippet
-        snapshot = self.ensure_jit_synced(spaces=eff_space)
-        graph = self.get_call_graph(auto_sync=False)
-        return query_callees(
-            target_query=target_query,
-            symbols_map=snapshot.symbols,
-            graph=graph,
-            space=eff_space,
-            ftypes=ftypes,
-            snippet=eff_snippet,
-            snippet_extractor=self.snippet_extractor,
-        )
+        with self._lock:
+            eff_space = space if space is not None else spaces
+            eff_snippet = include_snippet if include_snippet is not None else snippet
+            snapshot = self.ensure_jit_synced(spaces=eff_space)
+            graph = self.get_call_graph(auto_sync=False)
+            return query_callees(
+                target_query=target_query,
+                symbols_map=snapshot.symbols,
+                graph=graph,
+                space=eff_space,
+                ftypes=ftypes,
+                snippet=eff_snippet,
+                snippet_extractor=self.snippet_extractor,
+            )
 
     def impact(
         self,
@@ -1202,60 +1248,62 @@ class ASTEngine:
         spaces: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Perform N-hop reverse BFS impact analysis for `target_query` with automatic JIT synchronization."""
-        eff_space = space if space is not None else spaces
-        snapshot = self.ensure_jit_synced(spaces=eff_space)
-        graph = self.get_call_graph(auto_sync=False)
-        return query_impact(
-            target_query=target_query,
-            symbols_map=snapshot.symbols,
-            graph=graph,
-            depth=depth,
-            space=eff_space,
-            ftypes=ftypes,
-        )
+        with self._lock:
+            eff_space = space if space is not None else spaces
+            snapshot = self.ensure_jit_synced(spaces=eff_space)
+            graph = self.get_call_graph(auto_sync=False)
+            return query_impact(
+                target_query=target_query,
+                symbols_map=snapshot.symbols,
+                graph=graph,
+                depth=depth,
+                space=eff_space,
+                ftypes=ftypes,
+            )
 
     def status(self, space: Optional[str] = None, space_name: Optional[str] = None) -> Dict[str, Any]:
         """Return AST index health, generation numbers, symbol/edge counts, and registered parsers."""
-        target_space = space or space_name
-        has_symbols = self.symbols_index_path.exists()
-        has_graph = self.graph_index_path.exists()
+        with self._lock:
+            target_space = space or space_name
+            has_symbols = self.symbols_index_path.exists()
+            has_graph = self.graph_index_path.exists()
 
-        ast_gen = 0
-        space_gens: Dict[str, int] = {}
-        total_symbols = 0
-        total_files = 0
-        total_edges = 0
+            ast_gen = 0
+            space_gens: Dict[str, int] = {}
+            total_symbols = 0
+            total_files = 0
+            total_edges = 0
 
-        if has_symbols and has_graph and self._ensure_loaded_from_disk():
-            assert self._snapshot is not None
-            assert self._graph is not None
-            ast_gen = self._snapshot.ast_generation
-            space_gens = dict(self._snapshot.space_generations)
-            if target_space:
-                space_gens = {k: v for k, v in space_gens.items() if k == target_space}
-                total_symbols = sum(
-                    1 for s in self._snapshot.symbols.values() if target_space in (s.spaces or [])
-                )
-                total_files = len(self._snapshot.files_map.get(target_space, []))
-            else:
-                total_symbols = len(self._snapshot.symbols)
-                total_files = len(self._snapshot.file_to_symbol_ids)
-            total_edges = self._graph.graph.number_of_edges()
+            if has_symbols and has_graph and self._ensure_loaded_from_disk():
+                assert self._snapshot is not None
+                assert self._graph is not None
+                ast_gen = self._snapshot.ast_generation
+                space_gens = dict(self._snapshot.space_generations)
+                if target_space:
+                    space_gens = {k: v for k, v in space_gens.items() if k == target_space}
+                    total_symbols = sum(
+                        1 for s in self._snapshot.symbols.values() if target_space in (s.spaces or [])
+                    )
+                    total_files = len(self._snapshot.files_map.get(target_space, []))
+                else:
+                    total_symbols = len(self._snapshot.symbols)
+                    total_files = len(self._snapshot.file_to_symbol_ids)
+                total_edges = self._graph.graph.number_of_edges()
 
-        return {
-            "storage_dir": str(self.storage_dir),
-            "index_exists": bool(has_symbols and has_graph),
-            "snapshot_exists": bool(has_symbols and has_graph),
-            "has_symbols_index": has_symbols,
-            "has_graph_index": has_graph,
-            "ast_generation": ast_gen,
-            "space_generations": space_gens,
-            "total_symbols": total_symbols,
-            "total_files": total_files,
-            "total_edges": total_edges,
-            "registered_languages": sorted(list(self.parser_registry.language_configs.keys())),
-            "parser_load_errors": dict(self.parser_registry.load_errors),
-        }
+            return {
+                "storage_dir": str(self.storage_dir),
+                "index_exists": bool(has_symbols and has_graph),
+                "snapshot_exists": bool(has_symbols and has_graph),
+                "has_symbols_index": has_symbols,
+                "has_graph_index": has_graph,
+                "ast_generation": ast_gen,
+                "space_generations": space_gens,
+                "total_symbols": total_symbols,
+                "total_files": total_files,
+                "total_edges": total_edges,
+                "registered_languages": sorted(list(self.parser_registry.language_configs.keys())),
+                "parser_load_errors": dict(self.parser_registry.load_errors),
+            }
 
     def clean(self, space: Optional[str] = None, space_name: Optional[str] = None) -> Dict[str, Any]:
         """Remove persisted AST snapshot/graph caches and reset `file-space` cursor (`consumer='ast'`)."""
@@ -1300,6 +1348,10 @@ def get_engine(
 ) -> ASTEngine:
     """Return process-level singleton `ASTEngine` (or create a new instance when custom paths are passed)."""
     global _DEFAULT_ENGINE_INSTANCE
+    if not isinstance(ASTEngine, type):
+        if project_root is not None or storage_dir is not None:
+            return ASTEngine(project_root=project_root, storage_dir=storage_dir)
+        return ASTEngine()
     if project_root is not None or storage_dir is not None or force_new:
         return ASTEngine(project_root=project_root, storage_dir=storage_dir)
     with _ENGINE_LOCK:

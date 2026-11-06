@@ -65,6 +65,15 @@ class CommandsRegistry:
         self._alias_to_module: Dict[str, str] = {}
 
     @staticmethod
+    def _normalize_choice_list(choice_val: Any) -> Optional[List[str]]:
+        """將 choice / choices 欄位正規化為字串清單或 None。"""
+        if isinstance(choice_val, list):
+            return [str(c) for c in choice_val]
+        if choice_val:
+            return [str(choice_val)]
+        return None
+
+    @staticmethod
     def _parse_args_dict(args_raw: Any) -> Dict[str, ArgSpec]:
         """解析 args 字典結構 ({name: {description, required, choice}}) 為 Dict[str, ArgSpec]。"""
         res: Dict[str, ArgSpec] = {}
@@ -72,12 +81,7 @@ class CommandsRegistry:
             for arg_name, arg_data in args_raw.items():
                 if isinstance(arg_data, dict):
                     choice_val = arg_data.get("choices") if "choices" in arg_data else arg_data.get("choice")
-                    if isinstance(choice_val, list):
-                        choice_list = [str(c) for c in choice_val]
-                    elif choice_val:
-                        choice_list = [str(choice_val)]
-                    else:
-                        choice_list = None
+                    choice_list = CommandsRegistry._normalize_choice_list(choice_val)
                     res[arg_name] = ArgSpec(
                         name=arg_name,
                         description=str(arg_data.get("description", "")),
@@ -91,7 +95,7 @@ class CommandsRegistry:
                 if isinstance(item, dict) and "name" in item:
                     aname = item["name"]
                     choice_val = item.get("choices") if "choices" in item else item.get("choice")
-                    choice_list = [str(c) for c in choice_val] if isinstance(choice_val, list) else None
+                    choice_list = CommandsRegistry._normalize_choice_list(choice_val)
                     res[aname] = ArgSpec(
                         name=aname,
                         description=str(item.get("description", "")),

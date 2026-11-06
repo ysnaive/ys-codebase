@@ -1,6 +1,6 @@
 {
   "name": "core",
-  "version": "1.2.7.2",
+  "version": "1.2.7.3",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "entry": "scripts/cli.py",
   "dependencies": {},
@@ -26,6 +26,6 @@
   "release": {
     "type": "bugfix",
     "urgency": "recommended",
-    "summary": "POSIX flock Inode 核對、Win32 4-byte BOOL、dispatcher 快取重載失效、realpath 對齊與 contributes.get 深拷貝隔離"
+    "summary": "補齊跨子系統執行緒鎖與深拷貝隔離、修正 reconcile provider 回退與指數退避鎖"
   }
 }
