@@ -127,7 +127,7 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "新增可重入 _snapshot_lock、單檔 include 相對路徑修正、中繼 symlink 攔截與髒集合回滾",
-      "commit": "310a5df934114720707c5716d4d07dfe912d2b81"
+      "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
     }
   }
 }

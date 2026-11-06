@@ -78,7 +78,7 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "保護單向 --delete 未追蹤新檔、收斂空目錄清理至當輪刪除祖先鏈、還原資料夾觸發子樹掃描與導入 sync_state.journal.jsonl WAL 持久化",
-      "commit": "310a5df934114720707c5716d4d07dfe912d2b81"
+      "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
     }
   }
 }
