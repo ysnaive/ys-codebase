@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from core import telemetry
     from core import locale
     from core import gitignore
+    from core import space
 
 _MODULE_MAP = {
     "uri": ("core.uri", None),
@@ -62,6 +63,7 @@ _MODULE_MAP = {
     "telemetry": ("core.telemetry", None),
     "locale": ("core.locale", None),
     "gitignore": ("core.gitignore", None),
+    "space": ("core.space", None),
 }
 
 
@@ -111,4 +113,5 @@ __all__ = [
     "telemetry",
     "locale",
     "gitignore",
+    "space",
 ]

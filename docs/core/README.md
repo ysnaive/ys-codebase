@@ -10,6 +10,7 @@ source_paths:
   - "yscb://source/core/core/contributes.py"
   - "yscb://source/core/core/locale.py"
   - "yscb://source/core/core/gitignore.py"
+  - "yscb://source/core/core/space/"
   - "yscb://source/core/core/commands/"
 related_docs:
   - "./contributes_architecture.md"
@@ -152,6 +153,15 @@ with uri.module_scope("core"):
 - **根目錄單檔 SSOT (`project://.gitignore`) 與語意 URI 自動錨定**：將各模組於 `contributes/core.json` 靜態宣告之 `"gitignore"` 清單、專案級 `config://core/contribute.json` 規則，以及執行期透過 `core.gitignore.register_dynamic(module, patterns)` 註冊之動態規則（持久化於 `storage.local://core/gitignore_dynamic.json`）統一換算為相對於 `project://` 之錨定路徑，寫入 `project://.gitignore` 單一託管區塊（`# === YSCB MANAGED GITIGNORE BEGIN ===` ~ `# === YSCB MANAGED GITIGNORE END ===`）。
 - **`# [<module>]` 分組可觀測性與卸載自癒**：託管區塊內部強制按模組來源輸出 `# [<module>]` 子標頭（`core` 置頂，其餘模組按字母序，`project` 置底）；當模組移除（`act_delete`）或重載（`act_reload`）時自動清除已卸載模組之靜態與動態忽略規則，並自動清理過時之子目錄 `.gitignore`（如舊版 `yscb://.gitignore` 與 `.vscode/schemas/.gitignore`）。
 
+### 3.8 L0 邏輯檔案空間原子引擎 (`core.space`)
+微內核於 [`core/space/`](../../ys_codebase/source/core/core/space/__init__.py) 提供純標準庫、零持久化副作用的邏輯檔案空間與指紋原子引擎：
+- **`<owner>/<name>` 命名空間隔離與 `<name>` 短名自動聯集尋址**：各模組於 `contributes/core.json` 宣告之 `presets` 與 `spaces` 自動註冊為 `<module>/<name>`，專案於 `config://core/contribute.json` 宣告者自動註冊為 `project/<name>`，各來源獨立保存互不覆蓋；查詢時指定 `<owner>/<name>` 精準返回單一來源定義，指定短名 `<name>` 則自動執行結果集聯集（Union）。
+- **顯式預設集 (`presets`) 與內建 `@gitignore`**：支援顯式引用預設規則集（無隱式全域預設過濾），當 `presets` 包含 `"@gitignore"` 時自動載入並評估 `project://.gitignore`（含 `!` 負向豁免規則）。
+- **三座標預編譯匹配 (`match`)、目錄剪枝走訪 (`ls`) 與原子指紋 (`hash`)**：
+  1. `match_path`：支援語意 URI 前綴、含 `/` 之相對路徑（同時相容 `project_rel` 與 `entry_rel`）及不含 `/` 之檔名/目錄區段名，提供免全盤掃描之單點規則解釋。
+  2. `iter_space_files`：基於 `os.scandir` 目錄級 `exclude` 剪枝與 `DirEntry.stat()` 複用，跨入口與聯集空間自動依實體路徑去重。
+  3. `compute_file_hash` / `hash_target`：支援 `stat_only`、`adaptive`（大檔頭中尾稀疏取樣 Blake2b）與 `full_hash` 策略，計算決定性 16-byte Blake2b `merkle_root`。
+
 ---
 
 ## 4. CLI 指令速查
@@ -170,6 +180,13 @@ python yscb.py contributes check [module]   # 校驗模組 contributes 宣告是
 # 2.5 根目錄 .gitignore 託管區塊檢視與同步
 python yscb.py gitignore status [--json]    # 檢視 project://.gitignore 託管狀態與各模組規則分組
 python yscb.py gitignore sync [--json]      # 手動強制收斂同步全模組忽略規則至 project://.gitignore
+
+# 2.6 L0 邏輯檔案空間原子操作 (支援 core file-space 或快捷別名 fs)
+python yscb.py fs spaces [space] [--owner=<mod>] [--json]         # 列舉已註冊之邏輯空間定義與入口狀態
+python yscb.py fs presets [preset] [--owner=<mod>] [--json]       # 列舉已註冊之過濾預設集定義 (含 @gitignore)
+python yscb.py fs match <path> [space] [--space=<name>] [--json]  # 單點診斷路徑命中入口與納入/排除規則來源
+python yscb.py fs ls [space] [--pattern=<glob>] [--json]          # 零冗餘目錄剪枝走訪列舉空間受納管檔案
+python yscb.py fs hash [target] [--policy=<mode>] [--json]        # 計算單檔或空間級指紋與 Blake2b Merkle Root
 
 # 3. 套件生命週期管理 (支援單一或多模組單次批次原子交易，正式版預設強制校驗 index.json SHA-256，@build 免檢，或以 --ignore-sha256 跳過)
 python yscb.py install <module>[@version] [<module2>[@version] ...] [--provider="<source>"] [--force] [--ignore-sha256]

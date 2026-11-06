@@ -3,8 +3,8 @@
   "default_provider": "./ys_codebase/release",
   "installed_modules": {
     "core": {
-      "version": "1.2.7.4",
-      "installed_at": "2026-11-06 06:52:07",
+      "version": "1.2.7.build",
+      "installed_at": "2026-11-06 12:02:07",
       "provider": "./ys_codebase/release"
     },
     "dev": {

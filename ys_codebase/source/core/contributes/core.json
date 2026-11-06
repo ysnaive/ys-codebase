@@ -707,7 +707,484 @@
           ],
           "cons": []
         }
+      },
+      "file-space": {
+        "description": "Core L0 atomic file-space engine (spaces, presets, match, ls, hash)",
+        "tier": "safe",
+        "server_compatible": true,
+        "cmd": {
+          "spaces": {
+            "description": "List and inspect registered logical file spaces (<owner>/<space> or short name)",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "space": {
+                "description": "Optional space query (<owner>/<space> or short name <space>)",
+                "required": false
+              }
+            },
+            "options": {
+              "filter": {
+                "owner": {
+                  "description": "Filter spaces by owner module or 'project'",
+                  "alias": ["o"],
+                  "args": {
+                    "owner": {
+                      "description": "Owner module name"
+                    }
+                  }
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "檢視已註冊之邏輯空間定義、入口存在性與展開後規則: python yscb.py core file-space spaces [space] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "presets": {
+            "description": "List and inspect registered filter rule presets (<owner>/<preset>, <preset>, or @gitignore)",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "preset": {
+                "description": "Optional preset query (<owner>/<preset>, <preset>, or @gitignore)",
+                "required": false
+              }
+            },
+            "options": {
+              "filter": {
+                "owner": {
+                  "description": "Filter presets by owner module or 'project'",
+                  "alias": ["o"],
+                  "args": {
+                    "owner": {
+                      "description": "Owner module name"
+                    }
+                  }
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "檢視已註冊之過濾預設集定義與規則清單: python yscb.py core file-space presets [preset] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "match": {
+            "description": "Evaluate and explain three-coordinate inclusion/exclusion rules for a single path without disk scanning",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "path": {
+                "description": "Target file or directory path (or semantic URI) to evaluate",
+                "required": true
+              },
+              "space": {
+                "description": "Optional space query (<owner>/<space> or short name <space>)",
+                "required": false
+              }
+            },
+            "options": {
+              "scope": {
+                "space": {
+                  "description": "Target space query (<owner>/<space> or short name <space>)",
+                  "alias": ["s"],
+                  "args": {
+                    "name": {
+                      "description": "Space name"
+                    }
+                  }
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "單點診斷路徑命中哪個入口、被哪條規則納入或排除: python yscb.py core file-space match <path> [space] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "ls": {
+            "description": "List files in a space using zero-redundancy os.scandir directory pruning and union deduplication",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "space": {
+                "description": "Optional space query (<owner>/<space> or short name <space>)",
+                "required": false
+              }
+            },
+            "options": {
+              "scope": {
+                "space": {
+                  "description": "Target space query (<owner>/<space> or short name <space>)",
+                  "alias": ["s"],
+                  "args": {
+                    "name": {
+                      "description": "Space name"
+                    }
+                  }
+                }
+              },
+              "filter": {
+                "pattern": {
+                  "description": "Filter relative path or filename by glob pattern",
+                  "alias": ["p"],
+                  "args": {
+                    "glob": {
+                      "description": "Glob pattern (e.g. *.py)"
+                    }
+                  }
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "高速列舉空間內受納管之有效檔案清單: python yscb.py core file-space ls [space] [--pattern=*.py] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "hash": {
+            "description": "Compute atomic content fingerprints and deterministic Blake2b Merkle Root for a space or file",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "target": {
+                "description": "Optional space query (<owner>/<space>, <space>) or single file path",
+                "required": false
+              }
+            },
+            "options": {
+              "policy": {
+                "policy": {
+                  "description": "Override hash policy (adaptive, full_hash, stat_only)",
+                  "alias": ["p"],
+                  "args": {
+                    "mode": {
+                      "description": "Hash policy mode",
+                      "choice": ["adaptive", "full_hash", "stat_only", "lazy_stabilized"]
+                    }
+                  }
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "計算單檔或空間級內容雜湊與決定性 Merkle Root: python yscb.py core file-space hash [target] [--policy=adaptive] [--json]"
+              ],
+              "cons": []
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "Core 內建 L0 檔案空間原子引擎: python yscb.py core file-space <spaces|presets|match|ls|hash>"
+          ],
+          "cons": []
+        }
+      },
+      "fs": {
+        "description": "Shorthand alias for Core L0 atomic file-space engine (spaces, presets, match, ls, hash)",
+        "tier": "safe",
+        "server_compatible": true,
+        "cmd": {
+          "spaces": {
+            "description": "List and inspect registered logical file spaces (<owner>/<space> or short name)",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "space": {
+                "description": "Optional space query (<owner>/<space> or short name <space>)",
+                "required": false
+              }
+            },
+            "options": {
+              "filter": {
+                "owner": {
+                  "description": "Filter spaces by owner module or 'project'",
+                  "alias": ["o"],
+                  "args": {
+                    "owner": {
+                      "description": "Owner module name"
+                    }
+                  }
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "檢視已註冊之邏輯空間定義、入口存在性與展開後規則: python yscb.py fs spaces [space] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "presets": {
+            "description": "List and inspect registered filter rule presets (<owner>/<preset>, <preset>, or @gitignore)",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "preset": {
+                "description": "Optional preset query (<owner>/<preset>, <preset>, or @gitignore)",
+                "required": false
+              }
+            },
+            "options": {
+              "filter": {
+                "owner": {
+                  "description": "Filter presets by owner module or 'project'",
+                  "alias": ["o"],
+                  "args": {
+                    "owner": {
+                      "description": "Owner module name"
+                    }
+                  }
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "檢視已註冊之過濾預設集定義與規則清單: python yscb.py fs presets [preset] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "match": {
+            "description": "Evaluate and explain three-coordinate inclusion/exclusion rules for a single path without disk scanning",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "path": {
+                "description": "Target file or directory path (or semantic URI) to evaluate",
+                "required": true
+              },
+              "space": {
+                "description": "Optional space query (<owner>/<space> or short name <space>)",
+                "required": false
+              }
+            },
+            "options": {
+              "scope": {
+                "space": {
+                  "description": "Target space query (<owner>/<space> or short name <space>)",
+                  "alias": ["s"],
+                  "args": {
+                    "name": {
+                      "description": "Space name"
+                    }
+                  }
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "單點診斷路徑命中哪個入口、被哪條規則納入或排除: python yscb.py fs match <path> [space] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "ls": {
+            "description": "List files in a space using zero-redundancy os.scandir directory pruning and union deduplication",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "space": {
+                "description": "Optional space query (<owner>/<space> or short name <space>)",
+                "required": false
+              }
+            },
+            "options": {
+              "scope": {
+                "space": {
+                  "description": "Target space query (<owner>/<space> or short name <space>)",
+                  "alias": ["s"],
+                  "args": {
+                    "name": {
+                      "description": "Space name"
+                    }
+                  }
+                }
+              },
+              "filter": {
+                "pattern": {
+                  "description": "Filter relative path or filename by glob pattern",
+                  "alias": ["p"],
+                  "args": {
+                    "glob": {
+                      "description": "Glob pattern (e.g. *.py)"
+                    }
+                  }
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "高速列舉空間內受納管之有效檔案清單: python yscb.py fs ls [space] [--pattern=*.py] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "hash": {
+            "description": "Compute atomic content fingerprints and deterministic Blake2b Merkle Root for a space or file",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "target": {
+                "description": "Optional space query (<owner>/<space>, <space>) or single file path",
+                "required": false
+              }
+            },
+            "options": {
+              "policy": {
+                "policy": {
+                  "description": "Override hash policy (adaptive, full_hash, stat_only)",
+                  "alias": ["p"],
+                  "args": {
+                    "mode": {
+                      "description": "Hash policy mode",
+                      "choice": ["adaptive", "full_hash", "stat_only", "lazy_stabilized"]
+                    }
+                  }
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "計算單檔或空間級內容雜湊與決定性 Merkle Root: python yscb.py fs hash [target] [--policy=adaptive] [--json]"
+              ],
+              "cons": []
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "Core 內建 L0 檔案空間原子引擎快捷別名: python yscb.py fs <spaces|presets|match|ls|hash>"
+          ],
+          "cons": []
+        }
       }
+    }
+  },
+  "presets": {
+    "common-ignore": {
+      "description": "通用版本控制、OS 暫存與編譯產物排除規則集",
+      "exclude": [
+        ".git",
+        ".svn",
+        ".hg",
+        ".DS_Store",
+        "Thumbs.db",
+        "*.tmp",
+        "*.bak",
+        "*.swp"
+      ]
+    },
+    "python-ignore": {
+      "description": "Python 虛擬環境、Bytecode 快取與打包產物排除規則集",
+      "exclude": [
+        "__pycache__",
+        "*.pyc",
+        "*.pyo",
+        "*.pyd",
+        ".venv",
+        "venv",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        "*.egg-info"
+      ]
+    },
+    "yscb-runtime-ignore": {
+      "description": "YSCB 執行期物化、建置、鏡像、快取與本機私有空間排除規則集",
+      "exclude": [
+        "yscb://.modules/**",
+        "yscb://.build/**",
+        "yscb://.mirror/**",
+        "yscb://.temp/**",
+        "yscb://.snapshots/**",
+        "yscb://.cache/**",
+        "yscb://.config.local/**",
+        "yscb://.storage.local/**",
+        "yscb://.venv/**"
+      ]
+    }
+  },
+  "spaces": {
+    "source": {
+      "description": "Core 模組源碼與測試空間",
+      "entries": [
+        "module.source://core"
+      ],
+      "presets": [
+        "core/common-ignore",
+        "core/python-ignore"
+      ],
+      "include": [
+        "*"
+      ]
     }
   },
   "gitignore": [

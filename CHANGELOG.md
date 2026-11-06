@@ -1,5 +1,13 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_06_1020_core_file_space_architecture (In Progress)
+
+### sub_01_atomic_core_and_l0_cli (Completed)
+- **於 `module:core` 建立新一代邏輯檔案空間原子引擎 (`core.space`)、`<owner>/<name>` 命名空間隔離與短名 `<name>` 自動聯集、三座標預編譯過濾與 L0 CLI (`core file-space` / `fs`) (`FR-01` ~ `FR-07`, `EC-01` ~ `EC-06`, `NFR-01` ~ `NFR-03`)**：
+  - **`PresetDef` 與 `SpaceDef` Contributes Schema 擴充及 `<owner>/<name>` 命名空間隔離 (`FR-01` ~ `FR-03`, `[P00:DR-01]` ~ `[P00:DR-03]`)**：於 `core/contributes/_format.json` 新增 `PresetDef` 與 `SpaceDef`（確立 `entries` 多入口、`presets` 顯式規則包、`include` 預設 `["*"]`、`exclude` 高優先級否決權），各模組於 `contributes/core.json` 宣告之預設集与空間自動註冊為 `<module>/<name>`、專案於 `config/core/contribute.json` 宣告者註冊為 `project/<name>`（互不覆蓋、零載入順序相依），查詢時支援 `<owner>/<name>` 精準定位與 `<name>` 短名自動聯集，並內建 `"@gitignore"` 動態預設集（支援 `#` 註解與 `!` 負向豁免）及 `core/common-ignore`、`core/python-ignore`、`core/yscb-runtime-ignore`。
+  - **三座標相容預編譯匹配 (`match`)、零冗餘目錄剪枝走訪 (`ls`) 與 Blake2b 原子指紋 (`hash`) (`FR-04` ~ `FR-06`, `EC-01` ~ `EC-06`, `NFR-01` ~ `NFR-03`)**：實作 100% 純標準庫 `core/space/{exceptions,schema,registry,hasher}.py`，支援語意 URI 前綴、含 `/` 雙基準相對路徑（`project_rel` 與 `entry_rel`）及不含 `/` 檔名/目錄區段三座標預編譯匹配；實作 `os.scandir` 目錄級 `exclude` 剪枝與 `DirEntry.stat()` 複用、`(st_dev, st_ino)` 符號連結防循環與外部入口路徑自動退回；實作 `stat_only`、`adaptive`、`full_hash` 三策略單檔與空間級 Merkle Root 計算。
+  - **L0 CLI 雙路由暴露與過渡期外部同名模組避讓 (`FR-07`, `[P01:DR-02]`)**：於 `core` 註冊 `file-space` 與別名 `fs` 五大 L0 原子子命令（`spaces`、`presets`、`match`、`ls`、`hash`），並於 `core/commands/dispatcher.py` 實作未加 `core` 前綴時對已安裝同名外部模組之自動優先避讓，通過 `dev check core`、263/263 全量單元測試、實機 6 步情境驗收與 `/code-optimizer` + `/testing-sop` 雙盲審 (`PASSED`)。
+
 ## 2026_11_06_0615_vfs_unification_and_path_leak_fix (Completed)
 
 - **跨模組路徑洩漏根治、背景服務執行緒 URI 上下文固化、VFS 原子寫入收口與 `@build` 無視版號約束直通（`core`、`server`、`file-space`、`ast`、`knowledge-db`、`agents-workflow` 六大模組更新）**：

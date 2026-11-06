@@ -32,6 +32,21 @@
       "cmd": {
         "*": "$CommandNode"
       }
+    },
+    "PresetDef": {
+      "description": "str? @desc(預設過濾規則集用途說明)",
+      "include": "list[str]? @desc(納入空間之三座標匹配樣式清單)",
+      "exclude": "list[str]? @desc(排除空間之三座標匹配樣式清單)"
+    },
+    "SpaceDef": {
+      "description": "str? @desc(邏輯檔案空間用途說明)",
+      "entries": "list[uri]! | extend @desc(空間入口目錄或單一檔案之語意 URI / 相對路徑清單)",
+      "presets": "list[str]? | extend @desc(顯式引用之預設規則集名稱清單 (支援 <owner>/<preset>、<preset> 或內建 @gitignore))",
+      "include": "list[str]? | extend @desc(納入之三座標匹配樣式清單 (未指定時預設為 [\"*\"]))",
+      "exclude": "list[str]? | extend @desc(排除之三座標匹配樣式清單 (優先級恆高於 include))",
+      "hash_policy": "enum(adaptive, full_hash, stat_only, lazy_stabilized)? = adaptive @desc(檔案指紋雜湊計算策略)",
+      "large_file_threshold_mb": "int? = 10 @desc(大檔案自適應分流閾值 (MB))",
+      "follow_symlinks": "bool? = false @desc(走訪時是否跟隨符號連結)"
     }
   },
 
@@ -79,5 +94,21 @@
     "format": [
       "str! @desc(Git 忽略規則或語意 URI 路徑 (如 yscb://.venv/, project://.vscode/schemas/, *.local.json))"
     ]
+  },
+
+  "presets": {
+    "description": "向 core.space 註冊具名過濾規則預設集 (<owner>/<preset> 隔離註冊、<preset> 短名自動聯集)",
+    "merge": "merge",
+    "format": {
+      "*": "$PresetDef | merge"
+    }
+  },
+
+  "spaces": {
+    "description": "向 core.space 註冊邏輯檔案空間定義 (<owner>/<space> 隔離註冊、<space> 短名自動聯集)",
+    "merge": "merge",
+    "format": {
+      "*": "$SpaceDef | merge"
+    }
   }
 }

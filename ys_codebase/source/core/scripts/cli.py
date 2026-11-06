@@ -622,3 +622,315 @@ def gitignore(cmd_bags: CmdBags) -> int:
     else:
         print(f"[core:gitignore] Unknown subcommand '{sub_cmd}'. Available: status, sync", file=sys.stderr)
         return 1
+
+
+def _emit_space_error(exc: Exception, json_output: bool) -> int:
+    """Emit structured or human-readable error message for core.space CLI commands and return exit code 1."""
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "status": "error",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(f"[core:file-space] Error: {exc}", file=sys.stderr)
+    return 1
+
+
+def _handle_space_spaces(cmd_bags: CmdBags) -> int:
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    json_output = cmd_bags.has_option("json")
+    owner_filter = cmd_bags.get_option_value("owner") or cmd_bags.get_option_value("o")
+    query = cmd_bags.args[0] if cmd_bags.args else None
+
+    from core.space import SpaceError, SpaceRegistry
+
+    try:
+        reg = SpaceRegistry()
+        if query:
+            spaces = reg.resolve_spaces(query)
+        else:
+            spaces = reg.list_spaces(owner=owner_filter)
+        if owner_filter and query:
+            spaces = [s for s in spaces if s.owner == owner_filter]
+    except SpaceError as exc:
+        return _emit_space_error(exc, json_output)
+
+    payload = {
+        "status": "ok",
+        "query": query,
+        "count": len(spaces),
+        "spaces": [s.to_dict(reg.project_root) for s in spaces],
+    }
+    if json_output:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    print("=" * 80)
+    print(f"  YS-Codebase Core File-Space Registry ({len(spaces)} space(s))")
+    print("=" * 80)
+    if not spaces:
+        print("  (No spaces registered)")
+    for s_dict in payload["spaces"]:
+        print(f"\n[*] {s_dict['qualified_name']} (short: {s_dict['short_name']}, owner: {s_dict['owner']})")
+        if s_dict["description"]:
+            print(f"    Description : {s_dict['description']}")
+        print(f"    Hash Policy : {s_dict['hash_policy']} (threshold: {s_dict['large_file_threshold_mb']} MB)")
+        for ent in s_dict["resolved_entries"]:
+            state_lbl = "OK" if ent["exists"] else "MISSING (exists: false)"
+            print(f"    Entry       : {ent['entry']} -> {ent['resolved_path']} [{state_lbl}]")
+        if s_dict["presets"]:
+            print(f"    Presets     : {', '.join(s_dict['presets'])}")
+        if s_dict["unresolved_presets"]:
+            print(f"    Unresolved  : {', '.join(s_dict['unresolved_presets'])}")
+        print(f"    Include     : {', '.join(s_dict['include'])}")
+        if s_dict["exclude"]:
+            print(f"    Exclude     : {', '.join(s_dict['exclude'])}")
+    print("\n" + "=" * 80)
+    return 0
+
+
+def _handle_space_presets(cmd_bags: CmdBags) -> int:
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    json_output = cmd_bags.has_option("json")
+    owner_filter = cmd_bags.get_option_value("owner") or cmd_bags.get_option_value("o")
+    query = cmd_bags.args[0] if cmd_bags.args else None
+
+    from core.space import SpaceError, SpaceRegistry
+
+    try:
+        reg = SpaceRegistry()
+        if query:
+            presets = reg.resolve_presets(query)
+        else:
+            presets = reg.list_presets(owner=owner_filter)
+        if owner_filter and query:
+            presets = [p for p in presets if p.owner == owner_filter]
+    except SpaceError as exc:
+        return _emit_space_error(exc, json_output)
+
+    payload = {
+        "status": "ok",
+        "query": query,
+        "count": len(presets),
+        "presets": [p.to_dict() for p in presets],
+    }
+    if json_output:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    print("=" * 80)
+    print(f"  YS-Codebase Core File-Space Presets ({len(presets)} preset(s))")
+    print("=" * 80)
+    if not presets:
+        print("  (No presets registered)")
+    for p_dict in payload["presets"]:
+        print(f"\n[*] {p_dict['qualified_name']} (short: {p_dict['short_name']}, owner: {p_dict['owner']})")
+        if p_dict["description"]:
+            print(f"    Description : {p_dict['description']}")
+        if p_dict["include"]:
+            print(f"    Include     : {', '.join(p_dict['include'])}")
+        if p_dict["exclude"]:
+            print(f"    Exclude     : {', '.join(p_dict['exclude'])}")
+    print("\n" + "=" * 80)
+    return 0
+
+
+def _handle_space_match(cmd_bags: CmdBags) -> int:
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    json_output = cmd_bags.has_option("json")
+    space_opt = cmd_bags.get_option_value("space") or cmd_bags.get_option_value("s")
+
+    if not cmd_bags.args:
+        from core.space import SpaceError
+
+        return _emit_space_error(SpaceError("Target path argument is required for 'match'."), json_output)
+
+    target_path = cmd_bags.args[0]
+    space_query = space_opt or (cmd_bags.args[1] if len(cmd_bags.args) > 1 else None)
+
+    from core.space import SpaceError, SpaceRegistry
+
+    try:
+        reg = SpaceRegistry()
+        res = reg.match_path(target_path, space_query=space_query)
+    except SpaceError as exc:
+        return _emit_space_error(exc, json_output)
+
+    payload = {"status": "ok", **res.to_dict()}
+    if json_output:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    state_str = "MATCHED" if res.matched else "NOT MATCHED"
+    print(f"[core:file-space] Match Path: {res.target_path} -> [{state_str}]")
+    print(f"  Absolute Path  : {res.abs_path}")
+    print(f"  Matched Spaces : {', '.join(res.matched_spaces) if res.matched_spaces else '(none)'}")
+    for d in res.details:
+        print(f"  - [{d.qualified_space}] matched={d.matched} reason={d.reason}")
+        if d.matched_entry:
+            print(f"      entry   : {d.matched_entry}")
+        if d.include_rule:
+            print(f"      include : {d.include_rule} ({d.include_source})")
+        if d.exclude_rule:
+            print(f"      exclude : {d.exclude_rule} ({d.exclude_source})")
+    return 0
+
+
+def _handle_space_ls(cmd_bags: CmdBags) -> int:
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    json_output = cmd_bags.has_option("json")
+    space_opt = cmd_bags.get_option_value("space") or cmd_bags.get_option_value("s")
+    pattern = cmd_bags.get_option_value("pattern") or cmd_bags.get_option_value("p")
+    space_query = space_opt or (cmd_bags.args[0] if cmd_bags.args else None)
+
+    from core.space import SpaceError, SpaceRegistry
+
+    try:
+        reg = SpaceRegistry()
+        files = reg.iter_space_files(space_query=space_query, pattern=pattern)
+    except SpaceError as exc:
+        return _emit_space_error(exc, json_output)
+
+    payload = {
+        "status": "ok",
+        "space": space_query or "*",
+        "pattern": pattern,
+        "count": len(files),
+        "files": [f.to_dict() for f in files],
+    }
+    if json_output:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    for f in files:
+        spaces_tag = ",".join(f.matched_spaces)
+        print(f"{f.rel_path}\t({f.size} B)\t[{spaces_tag}]")
+    print(f"Total files: {len(files)}")
+    return 0
+
+
+def _handle_space_hash(cmd_bags: CmdBags) -> int:
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    json_output = cmd_bags.has_option("json")
+    policy_opt = cmd_bags.get_option_value("policy") or cmd_bags.get_option_value("p")
+    target = cmd_bags.args[0] if cmd_bags.args else None
+
+    from core.space import SpaceError, SpaceRegistry, hash_target
+
+    try:
+        reg = SpaceRegistry()
+        res = hash_target(reg, target=target, policy=policy_opt)
+    except SpaceError as exc:
+        return _emit_space_error(exc, json_output)
+
+    payload = {"status": "ok", **res.to_dict()}
+    if json_output:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    print(f"[core:file-space] Hash Target: {res.target} ({res.target_type})")
+    print(f"  Policy      : {res.policy}")
+    print(f"  File Count  : {res.file_count}")
+    print(f"  Merkle Root : {res.merkle_root}")
+    return 0
+
+
+def _dispatch_space_group(cmd_bags: CmdBags, group_cmd_name: str) -> int:
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    if not cmd_bags.args:
+        return _render_subcommand_group_help(group_cmd_name)
+    sub_cmd = cmd_bags.args[0]
+    sub_bags = CmdBags(
+        raw_cmd=cmd_bags.raw_cmd,
+        command=sub_cmd,
+        args=cmd_bags.args[1:],
+        options=cmd_bags.options,
+    )
+    handlers = {
+        "spaces": _handle_space_spaces,
+        "presets": _handle_space_presets,
+        "match": _handle_space_match,
+        "ls": _handle_space_ls,
+        "hash": _handle_space_hash,
+    }
+    handler = handlers.get(sub_cmd)
+    if handler is not None:
+        return handler(sub_bags)
+    print(
+        f"[core:{group_cmd_name}] Unknown subcommand '{sub_cmd}'. Available: spaces, presets, match, ls, hash",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def file_space_spaces(cmd_bags: CmdBags) -> int:
+    """List and inspect registered logical file spaces."""
+    return _handle_space_spaces(cmd_bags)
+
+
+def file_space_presets(cmd_bags: CmdBags) -> int:
+    """List and inspect registered filter rule presets."""
+    return _handle_space_presets(cmd_bags)
+
+
+def file_space_match(cmd_bags: CmdBags) -> int:
+    """Evaluate and explain inclusion/exclusion rules for a single path."""
+    return _handle_space_match(cmd_bags)
+
+
+def file_space_ls(cmd_bags: CmdBags) -> int:
+    """List files in a space using zero-redundancy directory pruning."""
+    return _handle_space_ls(cmd_bags)
+
+
+def file_space_hash(cmd_bags: CmdBags) -> int:
+    """Compute atomic content fingerprints and Merkle Root for a space or file."""
+    return _handle_space_hash(cmd_bags)
+
+
+def file_space(cmd_bags: CmdBags) -> int:
+    """Core L0 Atomic File-Space Engine (Group Dispatcher)."""
+    return _dispatch_space_group(cmd_bags, "file-space")
+
+
+def fs_spaces(cmd_bags: CmdBags) -> int:
+    """List and inspect registered logical file spaces (shorthand alias)."""
+    return _handle_space_spaces(cmd_bags)
+
+
+def fs_presets(cmd_bags: CmdBags) -> int:
+    """List and inspect registered filter rule presets (shorthand alias)."""
+    return _handle_space_presets(cmd_bags)
+
+
+def fs_match(cmd_bags: CmdBags) -> int:
+    """Evaluate and explain inclusion/exclusion rules for a single path (shorthand alias)."""
+    return _handle_space_match(cmd_bags)
+
+
+def fs_ls(cmd_bags: CmdBags) -> int:
+    """List files in a space using zero-redundancy directory pruning (shorthand alias)."""
+    return _handle_space_ls(cmd_bags)
+
+
+def fs_hash(cmd_bags: CmdBags) -> int:
+    """Compute atomic content fingerprints and Merkle Root for a space or file (shorthand alias)."""
+    return _handle_space_hash(cmd_bags)
+
+
+def fs(cmd_bags: CmdBags) -> int:
+    """Shorthand alias for Core L0 Atomic File-Space Engine (Group Dispatcher)."""
+    return _dispatch_space_group(cmd_bags, "fs")
