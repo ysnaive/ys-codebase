@@ -1,0 +1,259 @@
+{
+  "name": "knowledge-db",
+  "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
+  "versions": [
+    "1.0.0.0",
+    "1.0.1.22",
+    "1.0.2.6",
+    "1.1.0.6",
+    "1.1.1.2",
+    "1.1.2.3",
+    "1.2.0.5",
+    "1.2.1.3",
+    "1.2.1.4",
+    "1.2.1.5"
+  ],
+  "releases": {
+    "1.0.0.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.0.1.3, <1.1.0.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "初版知識庫模組發布，提供多語言解析、加權 BM25 檢索、6 大 CLI 指令與二進位 Gzip 倒排索引快取",
+      "sha256": "648575ce6217f78a4043e63b8d7bc2bff3af0f63e50c9782ae8566953cda6308",
+      "commit": "4bde8a37c9b9812de9dc4e44167cea62d78d07e6"
+    },
+    "1.0.1.22": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.0.3.0, <1.1.0.0"
+      },
+      "type": "refactor",
+      "urgency": "optional",
+      "summary": "將舊版 RETRO_CHECK_ITEMS 遷移為 SESSION_ANALYSIS_CHECK_ITEMS 效益評測規範並隨生態系對話節流協議同步發布",
+      "sha256": "6ff10665d50785c67c195ebfdb3a2d79b0d977591915bb7ba09b04c3de7e4a92",
+      "commit": "f4eba9f46a05c293f1f55e46a20f2bfd4e6f98c6"
+    },
+    "1.0.2.6": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.0.3.5, <1.1.0.0"
+      },
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "重構 scripts/cli.py 全面遷移至純宣告式 process(args) 進入點並掛載 core.guard.guard_dispatch 宿主守門 SDK",
+      "sha256": "a7573ec0ebef4a3f6ca78d768037a2d99a2d0f49e598f1f16fe6e1d7f3bd9007",
+      "commit": "90d692a22446fdb3963e1d77a119e38ea70ac4f2"
+    },
+    "1.1.0.6": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.1.0.6, <1.2.5.0"
+      },
+      "type": "docs",
+      "urgency": "optional",
+      "summary": "修正 manifest.json Onboarding 與 README.md 之空間設定指引為宣告式 config/knowledge-db/contribute.json 並純化模組設計筆記",
+      "sha256": "945108cbad1164cac39fab4192ef0e8b2f69bd8d9c9b984ba17db0d576272c96",
+      "commit": "93489141091807e0d8cae7cff6eeba2d53a6b9c8"
+    },
+    "1.1.1.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.1.1.2, <1.2.5.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 search --max-snippet-lines=40 切片溢位截斷保護並將 knowledge-db-search 技能升級為二階段漏斗檢索模型",
+      "sha256": "1d22787da392d398f756873576ecc0f92a2ea1fc543b63999a2c122a670e6a94",
+      "commit": "fa00a820078b701836b369050f0c94dc678a1a69"
+    },
+    "1.1.2.1": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.0.1, <1.2.5.0"
+      },
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "抽離 TopologyQueryService 與 io_utils、合一 BM25 50% 子詞覆蓋率計分核心，並對齊 knowledge-db-search 技能 SKILL.md Frontmatter 單一真理描述",
+      "commit": "0916eb2b44ea741908892c659626096715bee52b"
+    },
+    "1.1.2.2": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.0.2, <1.2.5.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "支援宣告式空間檢索權重 (SpaceDef.weight)、加固 TopologyLinker 靜態消歧與 Watcher 旗標時序，並新增 C# partial class 跨檔聚合",
+      "commit": "e92ed5e4c50e964ef0525d67de8fde8f7054f99b"
+    },
+    "1.1.2.3": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.0.2, <1.2.5.0"
+      },
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "支援自訂解析器多格式載入、實例級副檔名擴充與載入異常可觀測性自癒 (Issue #8)",
+      "sha256": "6dd655b3881f83047ee7c41b8a0d4fd324ed97bfcd4654d38df2b649a642662c",
+      "commit": "bb329b339e42a3dc551ed69ebc774932b80b9b6b"
+    },
+    "1.2.0.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.2.0, <1.2.5.0",
+        "file-space": ">=1.0.0.0, <1.0.1.0",
+        "ast": ">=1.0.0.0, <1.0.1.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "遷移至 file-space 與 ast 三層 DAG 底座（單次解析符號共享）、新增 KnowledgeDBServiceWorker 兩階段背景向量補齊與毫秒級動態降級",
+      "sha256": "1fed3a40b809476bdf129c5faef83e84bb9eb6ac5676031df82f42c6edc0f290",
+      "commit": "00571cffa8e7692b11d14d9abc2d2b8a908c6719"
+    },
+    "1.2.0.1": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.3.0, <1.2.5.0",
+        "file-space": ">=1.0.0.1, <1.0.1.0",
+        "ast": ">=1.0.0.1, <1.0.1.0"
+      },
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "修復 wait_until_worker_idle 跨進程緊密空轉、清理舊版組態遺留並補齊 on_server_worker_warming",
+      "sha256": "7b6c81495de7038fb2a3dbfa5c6795994d91a5c245d9bd00e3346da7a2c3eb6d",
+      "commit": "7710f36813f446bc33f6f42d3ee660b74a599c8d"
+    },
+    "1.2.0.2": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.4.0, <1.2.5.0",
+        "file-space": ">=1.0.0.2, <1.0.1.0",
+        "ast": ">=1.0.0.2, <1.0.1.0"
+      },
+      "sha256": "fce6b7bf9a7faf92c59bcf4bfe4261a481d16f8a39181f70d4c615953a1d7de0",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "實作 Stage 2 向量推論鎖分離、檢查點定期持久化、BM25 計分前預過濾與片段行快取",
+      "commit": "a208bb2553f1bfbcc6201267a920b9f6533a541b"
+    },
+    "1.2.0.3": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.5.0, <1.2.7.0",
+        "file-space": ">=1.0.0.3, <1.0.1.0",
+        "ast": ">=1.0.0.3, <1.0.1.0"
+      },
+      "sha256": "2e12833129bba22bbbab3149ea2dc1628d16b3c0605a5acc9e71163c3fc0777e",
+      "type": "feature",
+      "urgency": "optional",
+      "summary": "新增同構 configurable/_format.json 組態契約並升級 uri 與 @desc(...) 欄位說明",
+      "commit": "808d156b1412f464de01a52a3be2bd6343821204"
+    },
+    "1.2.0.4": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.5.1, <1.2.7.0",
+        "file-space": ">=1.0.0.4, <1.0.1.0",
+        "ast": ">=1.0.0.4, <1.0.1.0"
+      },
+      "sha256": "bdb083c1e6050e9f4802a95324bb8d2f9e72ec5a490c0b3eb58e194a177e027f",
+      "type": "bugfix",
+      "urgency": "optional",
+      "summary": "新增 .kdb_index.lock 跨進程寫入鎖與 numpy 頂層延遲載入",
+      "commit": "f3f2ad7ed3bb84cd64ff7babfb3588e9268a5c3c"
+    },
+    "1.2.0.5": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.6.0, <1.2.7.0",
+        "file-space": ">=1.0.0.5, <1.0.1.0",
+        "ast": ">=1.0.0.5, <1.0.1.0"
+      },
+      "sha256": "e1c236d23decd7e208b4b9b6e957db612e6ce3b67fba1d0739081e67d51bea95",
+      "type": "feature",
+      "urgency": "optional",
+      "summary": "KnowledgeIndexService 背景增量索引整合 server.touch_activity() 保活探針",
+      "commit": "f2805bcad3f625369c59ab35be5a863fa725b295"
+    },
+    "1.2.1.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.0",
+        "file-space": ">=1.0.1.0",
+        "ast": ">=1.0.1.0"
+      },
+      "sha256": "b34cce97aed654f051eb2664155fb7df45409a6c9b65d33e22dd50b14579d739",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "預設 indices、bundles 與 91MB models 遷移至 storage.local:// 並附帶 1.2.1.x 遷移腳本",
+      "commit": "5cf22b3de285edc7c9dd58f82754db1ed8efed5a"
+    },
+    "1.2.1.1": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.0",
+        "file-space": ">=1.0.1.0",
+        "ast": ">=1.0.1.1"
+      },
+      "sha256": "429c9ebcfe42d783933103822ceacef894071e0fd54779d33989d387293aaa1b",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "新增 kdb 短別名、CLI/JSON 預設精簡與 --file-uri、InvertedIndex doc_idx 駐留與 status 快照直讀",
+      "commit": "33b896dc1037bd8175b4214b72efa7f8cb358011"
+    },
+    "1.2.1.2": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.1",
+        "file-space": ">=1.0.1.2",
+        "ast": ">=1.0.1.3"
+      },
+      "sha256": "b518f63667d5eaf718e887b008aecc90c7e1174f933f5fabe1ed976162e73717",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "修正冷啟動水位線自癒、補齊 _kdb_index_file_lock 與 HybridSearchEngine 副檔名解析",
+      "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
+    },
+    "1.2.1.3": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7.2",
+        "file-space": ">=1.0.1.3",
+        "ast": ">=1.0.1.4"
+      },
+      "sha256": "527600dcce96aeeadad7451418ed83ea78552b1591c9e5d30247d633dac1f2ba",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "write_worker_state 退避重試與 .tmp 清理、clean 委派游標重置與 C# 分部鍵值擴充",
+      "commit": "699fd5c166d49aa90021c9381a13f63863d68d58"
+    },
+    "1.2.1.4": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7.3",
+        "file-space": ">=1.0.1.4",
+        "ast": ">=1.0.1.5"
+      },
+      "sha256": "347eec5c5a6c7aa732f91aab6cea0b8a611e7389d0d5b604be261fdd66886fd3",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "升級 EmbeddingService._init_lock 為 RLock 防重入死鎖、修正同 doc_id 詞頻累積與執行緒安全",
+      "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
+    },
+    "1.2.1.5": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7.3",
+        "file-space": ">=1.0.1.4",
+        "ast": ">=1.0.1.5"
+      },
+      "sha256": "dd7370ffad1a7434b44d49f216da1a3eb4703c87631f6c8d8c0147f25777fd73",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "根治儲存與模組檢查路徑退避洩漏並收口 worker_state 至 core.vfs"
+    }
+  }
+}

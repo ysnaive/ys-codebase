@@ -1,0 +1,222 @@
+{
+  "name": "dev",
+  "description": "YS-Codebase Developer Tools (Scaffold, Checker, Builder, Tester, Releaser)",
+  "versions": [
+    "1.0.0.5",
+    "1.0.1.15",
+    "1.1.0.2",
+    "1.1.1.1",
+    "1.1.2.2",
+    "1.1.3.4",
+    "1.1.4.5",
+    "1.1.4.6"
+  ],
+  "releases": {
+    "1.0.0.5": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.0.1.2, <1.1.0.0"
+      },
+      "type": "perf",
+      "urgency": "recommended",
+      "summary": "實作測試沙盒 Session 級共享機制與輕量狀態重置，將模組測試套件冷啟動耗時大幅壓降",
+      "sha256": "3e8e0aefc2bc35eacbba11448a966ab7f280f5503ca5118d70fe6111d4f1d4ef",
+      "commit": "5acd7a8a2cbe9fd4a98f59e68f4a953d62cdf785"
+    },
+    "1.0.1.15": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.0.3.5, <1.1.0.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "於 dev check 實作 AST 靜態 CLI 合規審查器（強制 guard_dispatch 與 process(args) 契約）並升級 scaffold 範本",
+      "sha256": "6ed20f6554419d1fe2b4b758063c944cab229350f4af73afc5fe59e5012c7541",
+      "commit": "90d692a22446fdb3963e1d77a119e38ea70ac4f2"
+    },
+    "1.1.0.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.1.0.6, <1.2.5.0"
+      },
+      "type": "docs",
+      "urgency": "optional",
+      "summary": "增補 dev/README.md 開發工具鏈雙軌發布與沙盒測試指引，並同步對齊核心依賴契約 (core>=1.1.0)",
+      "sha256": "9c87e2c5b33c3c08a6fe1e21c564c909df6d8abf29451aa850a950c2b09c08e4",
+      "commit": "93489141091807e0d8cae7cff6eeba2d53a6b9c8"
+    },
+    "1.1.1.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.1.1.2, <1.2.5.0"
+      },
+      "type": "feature",
+      "urgency": "optional",
+      "summary": "於測試沙盒注入 YSCB_SANDBOX_ACTIVE 環境隔離標記，防止單元測試期間污染宿主 session-trace 遙測日誌",
+      "sha256": "959d671c86c79ebb99be7f6410b609608569af564b71a444a122ffdeac0afd03",
+      "commit": "fcb75dbdbc292924ad89bf4c5506c76d94c54226"
+    },
+    "1.1.2.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.0.0, <1.2.5.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "於 dev check 新增 locales/*.json 跨語系鍵集合對稱性與專有名詞詞條契約靜態驗證",
+      "commit": "0b9741de86abf601be32f42708537c4260a679c5"
+    },
+    "1.1.2.1": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.0.1, <1.2.5.0"
+      },
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "完成 builder、checker、releaser、tester 與 sandbox 五維度代碼純化重構，並對齊 yscb-module-dev 技能單一真理描述",
+      "commit": "0916eb2b44ea741908892c659626096715bee52b"
+    },
+    "1.1.2.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.0.2, <1.2.5.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "於 dev check 新增測試命名規範與跨模組依賴檢查，並更新 yscb-module-dev 技能手冊指引",
+      "sha256": "c782d6e7dc4a5bf1f1daa6f50eeb848b5b553076815e11e3b1ff13482d84abb6",
+      "commit": "e92ed5e4c50e964ef0525d67de8fde8f7054f99b"
+    },
+    "1.1.3.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.1.0, <1.2.5.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "支援雙層索引打包、release-git 孤立分支雙提交發布、release --patch 元資料修補與發布欄位強校驗",
+      "commit": "d53c6a35de76c6fbe29e4c1367bf91c922ad642e"
+    },
+    "1.1.3.1": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.1.1, <1.2.5.0"
+      },
+      "type": "docs",
+      "urgency": "optional",
+      "summary": "對齊 dev 隨包手冊與技能文檔之雙軌釋出元數據、index-patch 與專案限定 @build 自部署建議",
+      "sha256": "870c158bb653aec2abb4429006f59fb3f92a559ed08618eaac28e8f3dd091e1b",
+      "commit": "e2ce33ed31609036e941850cf6a4bff4777fe570"
+    },
+    "1.1.3.2": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.2.0, <1.2.5.0"
+      },
+      "type": "docs",
+      "urgency": "optional",
+      "summary": "同步更新 contributes_guide 合併策略說明並對齊 core>=1.2.2 依賴契約",
+      "sha256": "eb76276aa337bbc911b5ad43d30eae021e96082371b3d8e378491eec738131c4",
+      "commit": "00571cffa8e7692b11d14d9abc2d2b8a908c6719"
+    },
+    "1.1.3.3": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.3.0, <1.2.5.0"
+      },
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "新增唯讀檔案沙盒清理回呼、單測方法級輸出切片捕獲與 bump 自動同步 __version__",
+      "sha256": "d4c6f9bfa6104542ddad22534dfe890fbf5f85873bb2f8dab148483aab34696c",
+      "commit": "7710f36813f446bc33f6f42d3ee660b74a599c8d"
+    },
+    "1.1.3.4": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.4.0, <1.2.5.0"
+      },
+      "sha256": "e82017714cec6de32762005ee0aea2cae05fb174db837c0cb6a142dae42b5d8b",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "實作確定性壓縮與 SHA-256 索引寫入、裸 except 靜態攔截、沙盒免雙倍拷貝與 AST 解析快取",
+      "commit": "a208bb2553f1bfbcc6201267a920b9f6533a541b"
+    },
+    "1.1.4.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.5.0, <1.2.7.0"
+      },
+      "sha256": "631dd8fffcb1aa44ccf8f772608d3979f24ff03a7b2cb519b34133e39e9ee6d8",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "Checker 支援同構 configurable/_format.json 組態契約並升級 @desc(...) 欄位說明",
+      "commit": "808d156b1412f464de01a52a3be2bd6343821204"
+    },
+    "1.1.4.1": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.5.1, <1.2.7.0"
+      },
+      "sha256": "b4d464bced38e149aee11be0d8e821cee38060b10278c1b84abfdfd58ed05a3a",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "沙盒清理串接 vfs.robust_rmtree、成對 realpath 校驗與平行測試超時進程樹回收",
+      "commit": "f3f2ad7ed3bb84cd64ff7babfb3588e9268a5c3c"
+    },
+    "1.1.4.2": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.6.0, <1.2.7.0"
+      },
+      "sha256": "b59f87785b25d2eaf989b61283b5d62cbd43285ea0a92d078b1e606119139ef9",
+      "type": "refactor",
+      "urgency": "optional",
+      "summary": "補充 manifest.json optional 建議擴充模組 (vscode-support, agents-workflow)",
+      "commit": "f2805bcad3f625369c59ab35be5a863fa725b295"
+    },
+    "1.1.4.3": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.0"
+      },
+      "sha256": "6c5fdc65151240962c41729b3a705056fb11fd21c037e0c4db5fc071e5cabd4f",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "checker 新增非 core 模組 sys.path 零豁免 AST 守門並支援五大語意空間沙盒與合規檢查",
+      "commit": "5cf22b3de285edc7c9dd58f82754db1ed8efed5a"
+    },
+    "1.1.4.4": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.1"
+      },
+      "sha256": "e0a1c43d9745611e93811e6e785d42170c3a5492228d98ce23a92e63f17d09c4",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "修正 cleanup_sandbox 鎖釋放時序、環境變數差量還原與連字號模組名正規化",
+      "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
+    },
+    "1.1.4.5": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7.2"
+      },
+      "sha256": "ee9210b37cd3411b33ecb636546b972e40b3d3bd043e1c54f1f79a91766fdaa3",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "create_mock_source_module 跳過清單收斂、tester tested_mods 補齊、cleanup_sandbox 順序與 Git UTF-8 防護",
+      "commit": "699fd5c166d49aa90021c9381a13f63863d68d58"
+    },
+    "1.1.4.6": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7.3"
+      },
+      "sha256": "1213600a158400d5f9710301068c372db381b10c85b6702edeedf65a42f85cfe",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "保留測試 core/dev.testing 免單例分裂、對齊 @require 覆蓋優先序、強制終止逾時子行程樹與分離語法錯誤快取",
+      "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
+    }
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "name": "vscode-support",
+  "description": "YS-Codebase VS Code 工作區投影、穩定微環境路徑連結與單檔級 JSON Schema 編譯模組",
+  "versions": [
+    "1.0.0.3",
+    "1.0.0.4",
+    "1.0.0.5"
+  ],
+  "releases": {
+    "1.0.0.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.5.0, <1.2.7.0"
+      },
+      "sha256": "996a6484f0efa3f509083eb5f066309567a54c692fd17801a9ba61fd9c1197f8",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "VS Code 工作區設定投影、current-site-packages 穩定連結與單檔級 JSON Schema 編譯器初始發布",
+      "commit": "808d156b1412f464de01a52a3be2bd6343821204"
+    },
+    "1.0.0.1": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.5.1, <1.2.7.0"
+      },
+      "sha256": "03110c991f4613725d38130544bee93fbe9af905c0adef6d2e304641b8c43138",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "新增 .vscode/settings.json 字串感知 JSONC 剝離、.bak 自動備份防覆寫與 Schema 原子寫入",
+      "commit": "f3f2ad7ed3bb84cd64ff7babfb3588e9268a5c3c"
+    },
+    "1.0.0.2": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.6.0, <1.2.7.0"
+      },
+      "sha256": "aef13e31b99e0192be30304593fc6f3d9f7ea5ed5ec03ee7516d0937b3e6d0ce",
+      "type": "refactor",
+      "urgency": "optional",
+      "summary": "schema_compiler 與 contributes/core.json 對齊根目錄 .gitignore 統一管理",
+      "commit": "f2805bcad3f625369c59ab35be5a863fa725b295"
+    },
+    "1.0.0.3": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7.0"
+      },
+      "sha256": "18fec2c259f8fba93a3ab6a9d2b9b40deb3ca920b13003d89343ce91894ada45",
+      "type": "refactor",
+      "urgency": "optional",
+      "summary": "extraPaths 對齊 core.platform 並擴充 JSON Schema 支援五大語意空間 URI",
+      "commit": "5cf22b3de285edc7c9dd58f82754db1ed8efed5a"
+    },
+    "1.0.0.4": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7.1"
+      },
+      "sha256": "2a7d82d0d16f22ee67bc247a878a1714febd9d747aa26a2c9ed1099ff86567f3",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "修正 on_remove Fail-Closed 守衛、.mirror 四段式 SemVer 排序與 JSONC/懸空連結狀態檢核",
+      "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
+    },
+    "1.0.0.5": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.7.3"
+      },
+      "sha256": "8210de880a443be8bb09a0d32e3ad088e907b7f2d7f65195e3b0b38dea924e45",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "新增 last_revert_error 區分 revert 冪等無操作與設定檔損毀退出碼並收斂投影路徑解析",
+      "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
+    }
+  }
+}

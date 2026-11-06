@@ -1,0 +1,226 @@
+{
+  "name": "core",
+  "description": "YS-Codebase Core Infrastructure Module & Package Manager",
+  "versions": [
+    "1.0.0.0",
+    "1.0.1.3",
+    "1.0.2.7",
+    "1.0.3.5",
+    "1.1.0.6",
+    "1.1.1.2",
+    "1.2.0.2",
+    "1.2.1.2",
+    "1.2.2.0",
+    "1.2.3.0",
+    "1.2.4.0",
+    "1.2.5.1",
+    "1.2.6.0",
+    "1.2.7.2",
+    "1.2.7.3",
+    "1.2.7.4"
+  ],
+  "releases": {
+    "1.0.0.0": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "初版微內核與套件管理器正式發布，提供 4 階段原子重載管線、標準 URI 語意協議、code.func:// 動態符號系統與 Contributes 擴充機制",
+      "sha256": "49799537127af6ce9a3dae558afc87dc333dbb6b6fcefc46d1ee58b9b89db2ef",
+      "commit": "dc3885b0b8a86e6c1930d603c2eaade5aa712091"
+    },
+    "1.0.1.3": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "強化 act_install 與 resolve_source_uri 本地/遠端嚴格解析，移除自動回退並補齊單元測試",
+      "sha256": "f3131f40621ae118c66e08b0b05e92f6694d0359d04eb8b57d97f8530caf7664",
+      "commit": "4e53d82c7a07d7792ab954dd97fdf3bd6f61dca9"
+    },
+    "1.0.2.7": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "實作 .modules/ 與 .build/ Git 追蹤解耦、.gitignore 區塊軟合併、JIT 鮮度自癒與 update_checker 安全熱更新引擎",
+      "sha256": "db959d804845896f1eed9835ba2cfde9117cdcf6efcba5a57a4cdf8b0c264e66",
+      "commit": "ffe0d95a80556575a6ef4b3021a6ccbcc16af0d9"
+    },
+    "1.0.3.5": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 core.guard.guard_dispatch 宿主守門 SDK 並將 scripts/cli.py 遷移至純宣告式 process(args) 進入點",
+      "sha256": "f07451fc377cae5cbb9ff12d958c02ecbf1366ef037b8a583ebeb77feece7ff0",
+      "commit": "90d692a22446fdb3963e1d77a119e38ea70ac4f2"
+    },
+    "1.1.0.6": {
+      "status": "active",
+      "dependencies": {},
+      "type": "docs",
+      "urgency": "optional",
+      "summary": "增補 core/README.md 跨平台路徑正規化與錯誤診斷規範，並擴充 CLI 路由與發行生命週期回歸測試",
+      "sha256": "3493f58763dd81071ad6f9889689a2c90728058578e60be6d5e56b9d3617acc4",
+      "commit": "93489141091807e0d8cae7cff6eeba2d53a6b9c8"
+    },
+    "1.1.1.2": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 core.telemetry 零侵入式 CLI 執行軌跡側錄引擎與 ide_projector 投影支援，賦能 /session-audit 摩擦診斷",
+      "sha256": "c59183b989bd4e858648fef1b2f4875c57f67879e09284073f0e37f6f74c55f0",
+      "commit": "fcb75dbdbc292924ad89bf4c5506c76d94c54226"
+    },
+    "1.2.0.0": {
+      "status": "pruned",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 core.locale 顯式語系回退引擎、contributes 詞條定義契約驗證與宿主層專有名詞雙語（zh/en）解析",
+      "commit": "0b9741de86abf601be32f42708537c4260a679c5"
+    },
+    "1.2.0.1": {
+      "status": "pruned",
+      "dependencies": {},
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "完成 core 全模組五維度靜態診斷與業務階段邏輯聚合重構，精簡冗餘分支並維持 100% 行為無損",
+      "commit": "0916eb2b44ea741908892c659626096715bee52b"
+    },
+    "1.2.0.2": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "強化 restore 批量安裝容錯韌性、.venv 損毀偵測自癒、locale 巢狀字典遞迴合併與 Windows 鎖定檔案重試防護",
+      "sha256": "e399dee4aec1234e24ef9a9b571cda6a1887dc659422e7761cccbddebe781405",
+      "commit": "e92ed5e4c50e964ef0525d67de8fde8f7054f99b"
+    },
+    "1.2.1.0": {
+      "status": "pruned",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "支援雙層 provider (index/release)、releases 孤立分支自動發布、releases 感知相容性解析、更新緊急度提示與跨平台目錄鎖定三階段真偽鑑別原子同步",
+      "commit": "d53c6a35de76c6fbe29e4c1367bf91c922ad642e"
+    },
+    "1.2.1.1": {
+      "status": "pruned",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "支援專案限定 @build 模組跨機 clone 自動自 source/<mod> 動態打包自舉",
+      "commit": "e2ce33ed31609036e941850cf6a4bff4777fe570"
+    },
+    "1.2.1.2": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "支援 install/update/remove 多模組單次批次原子交易與逆向依賴聯集豁免",
+      "sha256": "a051dd1db870ea2b8f81e4107f942b4902e6b4ce7a07b370ed6054eeec12589a",
+      "commit": "941ffca8160afd970df19a0630e72ae71c267d8e"
+    },
+    "1.2.2.0": {
+      "status": "active",
+      "dependencies": {},
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 _format.json 宣告式合併策略 DSL (merge/extend/replace/unique)、__providers__ 多來源追蹤與 core.uri 重入安全 JIT 鮮度自癒",
+      "sha256": "f1ddd5b9b13e26735cf44495a43514dc43c397aad5670408b8e07396c426e19c",
+      "commit": "00571cffa8e7692b11d14d9abc2d2b8a908c6719"
+    },
+    "1.2.3.0": {
+      "status": "active",
+      "dependencies": {},
+      "type": "bugfix",
+      "urgency": "critical",
+      "summary": "新增跨代升級相依交集解析與自癒引擎、快照交易鎖保護與 OSBackend Symlink 邊界加固",
+      "sha256": "a3d26725e9613109680696ac893f7b556b7f9896bbaf48d1961da6ab94f5a7e4",
+      "commit": "7710f36813f446bc33f6f42d3ee660b74a599c8d"
+    },
+    "1.2.4.0": {
+      "status": "active",
+      "dependencies": {},
+      "sha256": "aaff31c39a8dbc37a3ef8074f15aedb53270c5825d4e3f29262e667e1ce2b4f6",
+      "type": "bugfix",
+      "urgency": "critical",
+      "summary": "新增 SHA-256 強制驗證、實證回收探針、嚴格熱派發防重跑與 contributes 記憶體快取",
+      "commit": "a208bb2553f1bfbcc6201267a920b9f6533a541b"
+    },
+    "1.2.5.0": {
+      "status": "pruned",
+      "dependencies": {},
+      "sha256": "077571297545e55e190ab9bc777fc0120d0914d1d016a423299c6ddf9e0924d9",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "剝離 ide_projector 並新增 on_env_synced 事件、支援 uri/path 型別與 @desc(...) 正交屬性及 configurable/_format.json",
+      "commit": "808d156b1412f464de01a52a3be2bd6343821204"
+    },
+    "1.2.5.1": {
+      "status": "active",
+      "dependencies": {},
+      "sha256": "e1814a624686359b5540b26a9d2bb8380ee6078c24dc42a35c052271575d7336",
+      "type": "bugfix",
+      "urgency": "critical",
+      "summary": "新增 robust_rmtree/robust_replace EXDEV 防腐層、不可繼承鎖 FD、微環境跨進程鎖與 virtiofs lib64 相容修復",
+      "commit": "f3f2ad7ed3bb84cd64ff7babfb3588e9268a5c3c"
+    },
+    "1.2.6.0": {
+      "status": "active",
+      "dependencies": {},
+      "sha256": "36a6ffdedc95a2a111d4e330b7d47463ae830ef1a7d92d01dd7e04f708e4286c",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 core.gitignore 根目錄 .gitignore 統一分組軟合併引擎並將預設自更新 URL 對齊 releases 分支",
+      "commit": "f2805bcad3f625369c59ab35be5a863fa725b295"
+    },
+    "1.2.7.0": {
+      "status": "pruned",
+      "dependencies": {},
+      "sha256": "37b2e696ce8df7b346e2cafd7161a883d442a2716ff1d2ec740239474049c941",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增五大語意空間協議、全已安裝模組 sys.path 統一注入與多段版本遷移階梯",
+      "commit": "5cf22b3de285edc7c9dd58f82754db1ed8efed5a"
+    },
+    "1.2.7.1": {
+      "status": "pruned",
+      "dependencies": {},
+      "sha256": "d9532cb8422fcfef36e878b123acde32c81342b1d91103f73e5ecf5fbb83e934",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "core.uri 狀態執行緒本地化 (TLS)、路徑逃逸與 VFS.open 安全守衛、IPC ProxyHandler 隔離及快照排序加固",
+      "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
+    },
+    "1.2.7.2": {
+      "status": "active",
+      "dependencies": {},
+      "sha256": "2a7c715923da23dfd4df6c970f3e987a7e7245719ec966b524acba27fcdb032e",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "POSIX flock Inode 核對、Win32 4-byte BOOL、dispatcher 快取重載失效、realpath 對齊與 contributes.get 深拷貝隔離",
+      "commit": "699fd5c166d49aa90021c9381a13f63863d68d58"
+    },
+    "1.2.7.3": {
+      "status": "active",
+      "dependencies": {},
+      "sha256": "2130296f044499a9f0a46aeae23462302f3df35c2d206213fe41a7a7745c9ace",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "補齊跨子系統執行緒鎖與深拷貝隔離、修正 reconcile provider 回退與指數退避鎖",
+      "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
+    },
+    "1.2.7.4": {
+      "status": "active",
+      "dependencies": {},
+      "sha256": "88ffac8d99a232ee2c6330498e520c314d93f744b3f16de0218cf44a770eaee2",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "支援 @build 開發包無視版號約束直通與環境基底版本解析"
+    }
+  }
+}
