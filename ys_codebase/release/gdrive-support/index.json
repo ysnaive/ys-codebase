@@ -3,7 +3,6 @@
   "description": "YS-Codebase Google Drive 原子雲端操作、Shortcut 差量分支與雙向同步模組",
   "versions": [
     "1.0.0.0",
-    "1.0.1.2",
     "1.0.1.3",
     "1.0.1.4"
   ],
@@ -45,7 +44,7 @@
       "commit": "92a3bbc2d1419b1cbb204930717d6aa34cc8d05e"
     },
     "1.0.1.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.0",
         "file-space": ">=1.0.1.1"

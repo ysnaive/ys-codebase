@@ -192,6 +192,16 @@ jobs:
                           errors.append(f"[{mod}] Invalid source manifest version: {exc}")
 
               # Gate 2: Check which active_versions are new vs already on origin/releases
+              remote_mod_zip_tuples: list[tuple[int, int, int, int]] = []
+              for rf in remote_files:
+                  if rf.startswith(f"{mod}/") and rf.endswith(".zip"):
+                      rem_v = rf[len(mod) + 1 : -4]
+                      try:
+                          remote_mod_zip_tuples.append(parse_ver(rem_v))
+                      except ValueError:
+                          pass
+              highest_remote_zip_tuple = max(remote_mod_zip_tuples) if remote_mod_zip_tuples else None
+
               mod_has_new_release = False
               pending_new_versions: list[str] = []
               for v_str in active_versions:
@@ -209,6 +219,12 @@ jobs:
                               f"sha256={expected_sha[:12]}... Bump version instead of overwriting!"
                           )
                   else:
+                      try:
+                          v_tup = parse_ver(v_str)
+                      except ValueError:
+                          v_tup = None
+                      if highest_remote_zip_tuple is not None and v_tup is not None and v_tup <= highest_remote_zip_tuple:
+                          continue
                       pending_new_versions.append(v_str)
 
               if pending_new_versions:
