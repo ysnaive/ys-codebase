@@ -4,7 +4,7 @@
   "installed_modules": {
     "core": {
       "version": "1.2.7.build",
-      "installed_at": "2026-11-07 14:46:19",
+      "installed_at": "2026-11-07 15:26:39",
       "provider": "./ys_codebase/release"
     },
     "dev": {

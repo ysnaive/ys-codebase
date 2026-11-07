@@ -432,6 +432,25 @@ class SpaceRegistry:
                 if owner != "":
                     owners_by_short.setdefault(short_name, []).append(owner)
 
+        # Cross-share workspace ceiling exclude rules across all `<owner>/workspace` definitions
+        ws_owners = owners_by_short.get("workspace", [])
+        if ws_owners:
+            unified_ws_exclude: List[str] = []
+            for ws_o in ws_owners:
+                ws_raw = merged_by_owner[ws_o].get("workspace", {})
+                for pat in ws_raw.get("exclude", []) or []:
+                    s_pat = str(pat).strip()
+                    if s_pat and s_pat not in unified_ws_exclude:
+                        unified_ws_exclude.append(s_pat)
+            if unified_ws_exclude:
+                for ws_o in ws_owners:
+                    ws_qname = f"{ws_o}/workspace"
+                    if ws_qname in all_raw_by_qname:
+                        o_val, s_val, d_val = all_raw_by_qname[ws_qname]
+                        d_copy = dict(d_val)
+                        d_copy["exclude"] = list(unified_ws_exclude)
+                        all_raw_by_qname[ws_qname] = (o_val, s_val, d_copy)
+
         # Synthesize `/<short_name>` raw definitions for every short_name
         for short_name in sorted(owners_by_short.keys()):
             synth_qname = f"/{short_name}"
@@ -441,13 +460,16 @@ class SpaceRegistry:
                 bool(merged_by_owner[o][short_name].get("watch", True))
                 for o in owner_list
             )
+            synth_exclude: List[str] = []
+            if short_name == "workspace" and ws_owners:
+                synth_exclude = list(unified_ws_exclude)
             synth_base: Dict[str, Any] = {
                 "description": f"Synthesized union space for '{short_name}' across {', '.join(owner_list)}",
                 "entries": [],
                 "compose": compose_members,
                 "presets": [],
                 "include": ["*"],
-                "exclude": [],
+                "exclude": synth_exclude,
                 "watch": any_watch,
             }
             if synth_qname in all_raw_by_qname:

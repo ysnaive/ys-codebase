@@ -1,18 +1,35 @@
 {
   "spaces": {
+    "workspace": {
+      "description": "母倉工作區專屬排除規則（衍生二層物化區、IDE 與發布目錄）",
+      "exclude": [
+        ".agents",
+        ".vscode",
+        ".idea",
+        "node_modules",
+        "build",
+        "dist",
+        "target",
+        "env",
+        "ys_codebase/release"
+      ],
+      "watch": true
+    },
+    "gitignore": {
+      "description": "母倉發布產物與建置壓縮包忽略規則",
+      "entries": ["project://"],
+      "include": [
+        "ys_codebase/release/**/*.zip",
+        "ys_codebase/release/yscb.py",
+        "ys_codebase/release/yscb.py.sha256"
+      ],
+      "watch": false
+    },
     "source": {
       "description": "專案業務源碼空間",
       "entries": ["module.source://"],
       "presets": ["workspace", "!gitignore"],
       "exclude": [
-        ".git",
-        ".venv",
-        "__pycache__",
-        "node_modules",
-        ".agents",
-        "build",
-        "dist",
-        ".pytest_cache",
         "tests"
       ],
       "include": [
@@ -42,44 +59,13 @@
     "cloud": {
       "description": "母倉核心研發資產雲端 1:1 鏡像同步空間",
       "entries": ["project://"],
+      "presets": ["workspace", "!gitignore"],
       "exclude": [
-        ".git",
-        ".agents",
-        ".vscode",
-        ".idea",
-        "__pycache__",
-        "node_modules",
-        ".pytest_cache",
-        "build",
-        "dist",
-        "target",
-        ".venv",
-        "venv",
-        "env",
-        "ys_codebase/.modules",
-        "ys_codebase/.build",
-        "ys_codebase/.mirror",
-        "ys_codebase/.temp",
-        "ys_codebase/.snapshots",
-        "ys_codebase/.cache",
-        "ys_codebase/.config.local",
-        "ys_codebase/.storage.local",
-        "ys_codebase/.venv",
-        "ys_codebase/release",
-        "ys_codebase/config/gdrive-support/credentials.json",
-        "ys_codebase/config/gdrive-support/token.json",
-        "ys_codebase/config/gdrive-support/service_account.json",
-        "*secret*.json",
-        "*.local.json",
-        "*.bak",
-        "*.pyc",
-        "*.pyo",
         "*.so",
         "*.dll",
         "*.dylib",
         "*.class",
-        "*.zip",
-        ".DS_Store"
+        "*.zip"
       ],
       "include": ["*"],
       "hash_policy": "adaptive",

@@ -1,8 +1,3 @@
-ys_codebase/release/**/*.zip
-ys_codebase/release/yscb.py
-ys_codebase/release/yscb.py.sha256
-!**/configurable/*.local.json
-
 # === YSCB MANAGED GITIGNORE BEGIN ===
 # Auto-managed by YSCB core.gitignore. Do not edit this block manually.
 # [core]
@@ -20,6 +15,7 @@ __pycache__/
 *.pyc
 yscb.py.bak
 *.bak
+!**/configurable/*.local.json
 # [agents-workflow]
 /.agents/.yscb/standards/AgentsStandards.md
 /.agents/.yscb/standards/BlindSubagentStandards.md
@@ -100,4 +96,8 @@ yscb.py.bak
 /ys_codebase/config/gdrive-support/token.json
 # [vscode-support]
 /.vscode/schemas/
+# [project]
+ys_codebase/release/**/*.zip
+ys_codebase/release/yscb.py
+ys_codebase/release/yscb.py.sha256
 # === YSCB MANAGED GITIGNORE END ===

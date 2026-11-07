@@ -1473,6 +1473,9 @@
         "yscb.py.bak",
         "*.bak"
       ],
+      "exclude": [
+        "**/configurable/*.local.json"
+      ],
       "watch": false
     },
     "source": {
