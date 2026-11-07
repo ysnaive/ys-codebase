@@ -32,7 +32,7 @@
 | :---: | :--- | :---: | :---: | :--- |
 | **sub_01** | `sub_01_atomic_core_and_l0_cli` | Full Track | `Completed` | 內聚於 `core` 之 Space / Preset 定義解析、`<owner>/<space>` 與 `<space>` 聯集尋址、`entries`/`include`/`exclude` 三座標匹配原子引擎與 L0 CLI 介面 (`core file-space` / `fs`) |
 | **sub_02** | `sub_02_composite_capabilities` | Full Track | `Completed` | 基於核心原子操作衍生之複合功能（`compose` 組合視圖、快照與差異感知、進階 CLI 導航/診斷） |
-| **sub_03** | `sub_03_server_hook_integration` | Full Track | `Pending` | 對接 `module:server` 常駐監控與事件 Hook 整合（無 `server` 時天然靜默退回純本地原子運作） |
+| **sub_03** | `sub_03_server_hook_integration` | Full Track | `Completed` | 對接 `module:server` 常駐監控與事件 Hook 整合（無 `server` 時天然靜默退回純本地原子運作） |
 | **sub_04** | `sub_04_ecosystem_migration_and_legacy_removal` | Full Track | `Pending` | 遷移全倉既有模組（`ast`、`knowledge-db`、`gdrive-support`、`agents-workflow`）SDK 與 `contributes` 至 `core.space`，並正式退役移除舊 `module:file-space` |
 
 ---
@@ -41,5 +41,5 @@
 
 - [x] **里程碑 1 (`sub_01`)**：完成 Space 原子定義引擎與 L0 CLI 建置並通過沙盒驗證
 - [x] **里程碑 2 (`sub_02`)**：完成基於原子能力之複合功能建置
-- [ ] **里程碑 3 (`sub_03`)**：完成 `server` Hook 常駐增量整合
+- [x] **里程碑 3 (`sub_03`)**：完成 `server` Hook 常駐增量整合
 - [ ] **里程碑 4 (`sub_04`)**：完成全倉既有模組 SDK 遷移並移除舊 `module:file-space`

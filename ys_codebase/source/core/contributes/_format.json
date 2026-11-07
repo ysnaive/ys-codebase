@@ -47,7 +47,8 @@
       "exclude": "list[str]? | extend @desc(排除之三座標匹配樣式清單 (優先級恆高於 include))",
       "hash_policy": "enum(adaptive, full_hash, stat_only, lazy_stabilized)? = adaptive @desc(檔案指紋雜湊計算策略)",
       "large_file_threshold_mb": "int? = 10 @desc(大檔案自適應分流閾值 (MB))",
-      "follow_symlinks": "bool? = false @desc(走訪時是否跟隨符號連結)"
+      "follow_symlinks": "bool? = false @desc(走訪時是否跟隨符號連結)",
+      "watch": "bool? = true @desc(常駐 Server 啟動時是否納入背景檔案變更監聽)"
     }
   },
 

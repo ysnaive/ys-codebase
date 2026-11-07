@@ -27,7 +27,7 @@ related_docs:
   - "./API_REFERENCE.md"
   - "./DESIGN_NOTES.md"
   - "../_project/STANDARDS.md"
-last_updated: "2026-11-05"
+last_updated: "2026-11-07"
 ---
 
 # Core 微內核架構手冊 (Core Microkernel Overview)
@@ -163,9 +163,13 @@ with uri.module_scope("core"):
   2. `iter_space_files` & `resolve_file_path`：基於 `os.scandir` 目錄級 `exclude` 剪枝與 `DirEntry.stat()` 複用，跨入口與聯集空間自動依實體路徑去重，並支援將空間內標準相對路徑安全反解為磁碟 `Path`。
   3. `compute_file_hash` / `hash_target`：支援 `stat_only`、`adaptive`（大檔頭中尾稀疏取樣 Blake2b）與 `full_hash` 策略，計算決定性 16-byte Blake2b `merkle_root`。
 - **`YFP2` 單調世代二進位快照 (`SpaceScanner`) 與多消費者交易游標 (`CursorStore` / `consume_diff`)**：
-  1. `BinarySnapshotManager` 將空間快照以 `b"YFP2"` 二進位格式與 16-byte Blake2b Checksum 原子持久化於 `storage.local://core/space/snapshots/<target_key>.yfp2.bin`（動態臨時空間 `define_ephemeral_space` 則嚴格隔離於記憶體中，零磁碟落盤）。
-  2. `scan` / `refresh` 採 Stage 1 `(mtime_ns, size)` + `10ms` Racy-Clean 防護與 Stage 2 `core.space.hasher` 增量計算；`patch_files` 支援單點髒路徑（含已刪除之外部入口檔案）免全盤掃描局部修補。
+  1. `BinarySnapshotManager` 將空間快照以 `b"YFP2"` 二進位格式與 16-byte Blake2b Checksum 原子持久化於 `storage.local://core/space/snapshots/<target_key>.yfp2.bin`（動態臨時空間 `define_ephemeral_space` 則嚴格隔離於記憶體中，零磁碟落盤；並由進程級共享預設單例 `get_default_registry` / `get_default_scanner` 確保跨頂層 SDK 呼叫與背景 Watcher 共享動態空間狀態）。
+  2. `scan` / `refresh` 採 Stage 1 `(mtime_ns, size)` + `10ms` Racy-Clean 防護與 Stage 2 `core.space.hasher` 增量計算；`patch_files` 支援單點髒路徑（含已刪除之外部入口檔案）免全盤掃描局部修補，並透過 `sync_dependent_snapshots` 自動連動更新既有之 `<short_name>` 短名聯集、`compose` 父組合空間與 `__all__` 統合快照。
   3. `CursorStore` 於 `storage.local://core/space/cursors/<consumer_id>.json` 維護多消費者獨立水位世代，並提供 `consume_diff(space_query, consumer_id)` At-Least-Once 交易式 Context Manager（區塊正常退出自動 `ack`，發生例外自動保留原游標）。
+- **Watcher 推拉混合協調、`watch=True` 全空間預設監聽與 `on_file_space_changed` 事件廣播 (`core.space.watcher`)**：
+  1. **全空間預設監聽 (`watch=True`)**：所有靜態空間（`contributes/_format.json` 之 `SpaceDef.watch`）與執行期動態空間（`define_ephemeral_space(name, config, *, watch=None)`）皆一律預設開啟 `watch=True`（可顯式傳入 `watch=False` 停用）；當動態空間以 `watch=True` 註冊且同進程 Watcher 活躍時，自動通知 Watcher 將其入口目錄納入 `watchdog` 監聽。
+  2. **無感背景加速與純標準庫退化**：`core` 本體維持 100% 純標準庫零外部依賴；當常駐 `server` 啟動 [`CoreSpaceWatcherServiceWorker`](../server/hot_reload_and_services.md) 時，透過 `cache://core/space/watcher_state.json` 與 `.watcher_dirty` 跨進程信標（以及同進程 `flush_space_now` 即時排空）無感加速快照更新；當 `server` 未啟動時，100% 本地獨立執行 Pull-based 掃描。
+  3. **進程內訂閱與跨模組事件廣播**：提供 `subscribe(callback, *, spaces=None)`（同時支援 `<owner>/<space>` 與 `<space>` 短名雙軌過濾）與 `broadcast_file_space_changed`，透過 `core.events.broadcast("on_file_space_changed", payload, emit_module="core")` 觸發各模組之 `scripts/hook.core.py`。
 
 ---
 

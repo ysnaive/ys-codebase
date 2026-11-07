@@ -4,7 +4,7 @@
   "installed_modules": {
     "core": {
       "version": "1.2.7.build",
-      "installed_at": "2026-11-07 11:51:05",
+      "installed_at": "2026-11-07 14:40:50",
       "provider": "./ys_codebase/release"
     },
     "dev": {
@@ -23,8 +23,8 @@
       "provider": "./ys_codebase/release"
     },
     "server": {
-      "version": "1.0.4.5",
-      "installed_at": "2026-11-06 06:53:45",
+      "version": "1.0.4.build",
+      "installed_at": "2026-11-07 14:35:12",
       "provider": "./ys_codebase/release"
     },
     "file-space": {

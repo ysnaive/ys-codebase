@@ -25,8 +25,19 @@ from .hasher import (
     compute_file_hash,
     compute_space_merkle_root,
 )
-from .registry import SpaceFileEntry, SpaceRegistry, compute_canonical_rel_path
+from .registry import (
+    SpaceFileEntry,
+    SpaceRegistry,
+    compute_canonical_rel_path,
+    get_default_registry,
+    reset_default_registry,
+)
 from .schema import HashPolicy, resolve_semantic_or_rel_path
+from .watcher import (
+    get_active_watcher,
+    is_watcher_active,
+    resolve_watcher_dirty_path,
+)
 
 RACY_CLEAN_WINDOW_NS = 10_000_000  # 10 milliseconds
 
@@ -116,6 +127,31 @@ class ScanDiffResult:
     space_name: Optional[str] = None
     space_generations: Dict[str, int] = field(default_factory=dict)
 
+    @property
+    def has_changes(self) -> bool:
+        """Return True if any file was added, modified, or deleted."""
+        return self.detail.has_changes
+
+    @property
+    def added(self) -> List[str]:
+        """Return sorted list of added relative paths."""
+        return sorted(self.detail.added)
+
+    @property
+    def modified(self) -> List[str]:
+        """Return sorted list of modified relative paths."""
+        return sorted(self.detail.modified)
+
+    @property
+    def deleted(self) -> List[str]:
+        """Return sorted list of deleted relative paths."""
+        return sorted(self.detail.deleted)
+
+    @property
+    def unchanged(self) -> List[str]:
+        """Return sorted list of unchanged relative paths."""
+        return sorted(self.detail.unchanged)
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize ScanDiffResult into a dictionary."""
         return {
@@ -123,6 +159,9 @@ class ScanDiffResult:
             "from_generation": self.from_generation,
             "to_generation": self.to_generation,
             "merkle_root": self.merkle_root,
+            "added": self.added,
+            "modified": self.modified,
+            "deleted": self.deleted,
             "added_count": self.added_count,
             "modified_count": self.modified_count,
             "deleted_count": self.deleted_count,
@@ -141,6 +180,8 @@ class SnapshotState:
     merkle_root: str = ""
     config_hash: str = ""
     entries: Dict[str, FileFingerprint] = field(default_factory=dict)
+
+    last_diff: Optional[ScanDiffResult] = None
 
     def active_entries(self) -> Dict[str, FileFingerprint]:
         """Return only non-deleted FileFingerprint entries."""
@@ -460,7 +501,8 @@ class SpaceScanner:
         storage_root: Optional[Union[str, Path]] = None,
         lock_dir: Optional[Union[str, Path]] = None,
     ) -> None:
-        self._registry = registry or SpaceRegistry()
+        self._registry = registry or get_default_registry()
+        self._explicit_storage_root = storage_root
         self._storage_root = self._resolve_default_storage_root(storage_root)
         self._lock_dir = self._resolve_default_lock_dir(lock_dir)
         self._snapshots_dir = self._storage_root / "snapshots"
@@ -517,11 +559,12 @@ class SpaceScanner:
         return self._registry.yscb_dir / ".cache" / "core" / "space" / "locks"
 
     def _canonical_space_key(self, space_query: Optional[str]) -> str:
-        if space_query is None or str(space_query).strip() in ("", "*"):
+        if space_query is None or str(space_query).strip() in ("", "*", "__all__"):
             return self.UNIFIED_KEY
         q = str(space_query).strip()
-        # Validate space exists
-        self._registry.resolve_spaces(q)
+        resolved = self._registry.resolve_spaces(q)
+        if len(resolved) == 1 and resolved[0].is_ephemeral:
+            return resolved[0].qualified_name
         return q
 
     def _snapshot_path(self, space_key: str) -> Path:
@@ -635,6 +678,8 @@ class SpaceScanner:
                 space_gens[s_cfg.qualified_name] = sub_res.to_generation
             unified_res = self._scan_single_query(None, force=force)
             unified_res.space_generations = space_gens
+            if self.has_watcher_dirty_marker():
+                self.mark_watcher_dirty(False)
             return unified_res
 
         res = self._scan_single_query(space_query, force=force)
@@ -826,7 +871,7 @@ class SpaceScanner:
 
     def patch_files(
         self,
-        space_query: str,
+        space_query: Optional[str],
         dirty_paths: Iterable[Union[str, Path]],
     ) -> SnapshotState:
         """
@@ -840,13 +885,17 @@ class SpaceScanner:
         with self._locked_space(space_key):
             prev_state = self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
             if prev_state.head_generation == 0:
-                self._scan_single_query(space_query)
-                return self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
+                scan_res = self._scan_single_query(space_query)
+                st = self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
+                st.last_diff = scan_res
+                return st
 
             curr_cfg_hash = self._registry.compute_config_hash(space_query)
             if prev_state.config_hash != curr_cfg_hash:
-                self._scan_single_query(space_query, force=True)
-                return self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
+                scan_res = self._scan_single_query(space_query, force=True)
+                st = self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
+                st.last_diff = scan_res
+                return st
 
             participating_spaces = self._registry._collect_participating_spaces(space_query)
             space_map = {s.qualified_name: s for s in participating_spaces}
@@ -855,6 +904,7 @@ class SpaceScanner:
             entries = dict(prev_state.entries)
             next_gen = prev_state.head_generation + 1
             any_mutated = False
+            detail = ScanDiffDetail()
 
             for raw_p in dirty_paths:
                 raw_str = raw_p.as_posix() if isinstance(raw_p, Path) else str(raw_p).strip()
@@ -920,6 +970,8 @@ class SpaceScanner:
                                 is_deleted=False,
                                 entry_path=matched_entry_abs.as_posix(),
                             )
+                            detail.added.add(rel_p)
+                            detail.deleted.discard(rel_p)
                             any_mutated = True
                         elif old_fp.content_hash != c_hash:
                             entries[rel_p] = FileFingerprint(
@@ -933,6 +985,8 @@ class SpaceScanner:
                                 is_deleted=False,
                                 entry_path=matched_entry_abs.as_posix(),
                             )
+                            if rel_p not in detail.added:
+                                detail.modified.add(rel_p)
                             any_mutated = True
                         else:
                             entries[rel_p] = FileFingerprint(
@@ -966,18 +1020,51 @@ class SpaceScanner:
                             is_deleted=True,
                             entry_path=old_fp.entry_path,
                         )
+                        detail.added.discard(c_rel)
+                        detail.modified.discard(c_rel)
+                        detail.deleted.add(c_rel)
                         any_mutated = True
 
             if not any_mutated:
+                active_count = sum(1 for fp in prev_state.entries.values() if not fp.is_deleted)
+                prev_state.last_diff = ScanDiffResult(
+                    added_count=0,
+                    modified_count=0,
+                    deleted_count=0,
+                    unchanged_count=active_count,
+                    detail=detail,
+                    from_generation=prev_state.head_generation,
+                    to_generation=prev_state.head_generation,
+                    merkle_root=prev_state.merkle_root,
+                    space_name=space_key,
+                    space_generations={space_key: prev_state.head_generation},
+                )
                 return prev_state
 
             active_fps = [fp for fp in entries.values() if not fp.is_deleted]
+            for fp in active_fps:
+                if fp.rel_path not in detail.added and fp.rel_path not in detail.modified:
+                    detail.unchanged.add(fp.rel_path)
+
             merkle = _compute_merkle_from_fingerprints(active_fps)
+            diff_res = ScanDiffResult(
+                added_count=len(detail.added),
+                modified_count=len(detail.modified),
+                deleted_count=len(detail.deleted),
+                unchanged_count=len(detail.unchanged),
+                detail=detail,
+                from_generation=prev_state.head_generation,
+                to_generation=next_gen,
+                merkle_root=merkle,
+                space_name=space_key,
+                space_generations={space_key: next_gen},
+            )
             new_state = SnapshotState(
                 head_generation=next_gen,
                 merkle_root=merkle,
                 config_hash=curr_cfg_hash,
                 entries=entries,
+                last_diff=diff_res,
             )
             self._save_snapshot_state(space_key, new_state, is_ephemeral=is_ephem)
             return new_state
@@ -1028,6 +1115,137 @@ class SpaceScanner:
 
         return candidates
 
+    def _dirty_marker_path(self) -> Path:
+        if self._explicit_storage_root is not None:
+            return self._storage_root / ".watcher_dirty"
+        return resolve_watcher_dirty_path(
+            self._registry.project_root, self._registry.yscb_dir
+        )
+
+    def mark_watcher_dirty(self, is_dirty: bool) -> None:
+        """Create or remove the `.watcher_dirty` marker file."""
+        marker = self._dirty_marker_path()
+        try:
+            if is_dirty:
+                vfs.makedirs(str(marker.parent), exist_ok=True)
+                vfs.write_bytes(str(marker), b"1", atomic=True)
+            else:
+                if marker.exists():
+                    vfs.remove(str(marker), missing_ok=True)
+        except Exception:
+            if not is_dirty and marker.exists():
+                try:
+                    marker.unlink()
+                except OSError:
+                    pass
+
+    def has_watcher_dirty_marker(self) -> bool:
+        """Return True if `.watcher_dirty` exists on disk."""
+        return self._dirty_marker_path().is_file()
+
+    def _flush_in_process_watcher(self, space_query: Optional[str] = None) -> None:
+        """If an active in-process watcher is running, synchronously flush any pending debounce events."""
+        worker = get_active_watcher()
+        if worker is not None:
+            is_alive_fn = getattr(worker, "is_alive", None)
+            if callable(is_alive_fn) and is_alive_fn():
+                flush_fn = getattr(worker, "flush_space_now", None)
+                if callable(flush_fn):
+                    try:
+                        flush_fn(space_query)
+                    except Exception:
+                        pass
+
+    def _has_existing_snapshot(self, space_key: str) -> bool:
+        canon_key = self._canonical_space_key(space_key)
+        is_ephem = self._registry.is_ephemeral_query(canon_key)
+        if is_ephem:
+            return canon_key in self._ephemeral_snapshots
+        return self._snapshot_path(canon_key).is_file()
+
+    def sync_dependent_snapshots(
+        self,
+        changed_qname: str,
+        dirty_paths: Optional[Iterable[Union[str, Path]]] = None,
+        *,
+        exclude_keys: Optional[Iterable[str]] = None,
+    ) -> Dict[str, ScanDiffResult]:
+        """
+        Synchronize existing dependent snapshots when a space `changed_qname` updates:
+        - Short-name union snapshot `<short_name>` (if distinct from `changed_qname` and already initialized)
+        - Any composite parent space that transitively includes `changed_qname` via `compose` (if already initialized
+          and not already scheduled in `exclude_keys`)
+        - Unified snapshot `__all__` (if already initialized and non-ephemeral)
+        """
+        synced: Dict[str, ScanDiffResult] = {}
+        excluded: Set[str] = {str(k).strip() for k in (exclude_keys or ())}
+        dirty_list = list(dirty_paths) if dirty_paths is not None else []
+        use_patch = 0 < len(dirty_list) <= 200
+
+        candidate_keys: List[str] = []
+        if "/" in changed_qname:
+            short_name = changed_qname.split("/", 1)[-1]
+            if (
+                short_name
+                and short_name != changed_qname
+                and short_name not in excluded
+            ):
+                candidate_keys.append(short_name)
+
+        # Check registered composite spaces that transitively include changed_qname
+        for s_cfg in self._registry.list_spaces():
+            if s_cfg.qualified_name == changed_qname or not s_cfg.compose:
+                continue
+            try:
+                participating = self._registry._collect_participating_spaces(
+                    s_cfg.qualified_name
+                )
+            except Exception:
+                continue
+            if any(p.qualified_name == changed_qname for p in participating):
+                if (
+                    s_cfg.qualified_name not in candidate_keys
+                    and s_cfg.qualified_name not in excluded
+                ):
+                    candidate_keys.append(s_cfg.qualified_name)
+                if (
+                    s_cfg.short_name
+                    and s_cfg.short_name != s_cfg.qualified_name
+                    and s_cfg.short_name not in candidate_keys
+                    and s_cfg.short_name not in excluded
+                ):
+                    candidate_keys.append(s_cfg.short_name)
+
+        for dep_key in candidate_keys:
+            if not self._has_existing_snapshot(dep_key):
+                continue
+            try:
+                if use_patch:
+                    st = self.patch_files(dep_key, dirty_list)
+                    if st.last_diff is not None:
+                        synced[dep_key] = st.last_diff
+                else:
+                    synced[dep_key] = self._scan_single_query(dep_key)
+            except Exception:
+                continue
+
+        # Sync unified "__all__" snapshot if it exists and changed space is non-ephemeral
+        if (
+            not self._registry.is_ephemeral_query(changed_qname)
+            and self._snapshot_path(self.UNIFIED_KEY).is_file()
+        ):
+            try:
+                if use_patch:
+                    st_all = self.patch_files("*", dirty_list)
+                    if st_all.last_diff is not None:
+                        synced[self.UNIFIED_KEY] = st_all.last_diff
+                else:
+                    synced[self.UNIFIED_KEY] = self._scan_single_query(None)
+            except Exception:
+                pass
+
+        return synced
+
     def snapshot(
         self,
         space_query: Optional[str] = None,
@@ -1038,9 +1256,10 @@ class SpaceScanner:
         Return a dictionary of active `rel_path -> FileFingerprint` for `space_query`.
         Automatically runs an initial scan if no snapshot exists yet or if `refresh_first=True`.
         """
+        self._flush_in_process_watcher(space_query)
         space_key = self._canonical_space_key(space_query)
         is_ephem = self._registry.is_ephemeral_query(space_query)
-        if refresh_first:
+        if refresh_first or self.has_watcher_dirty_marker():
             self.scan(space_query)
         state = self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
         if state.head_generation == 0 and not refresh_first:
@@ -1055,9 +1274,10 @@ class SpaceScanner:
         refresh_first: bool = False,
     ) -> str:
         """Return the 16-byte Blake2b hex `merkle_root` of `space_query` from its snapshot."""
+        self._flush_in_process_watcher(space_query)
         space_key = self._canonical_space_key(space_query)
         is_ephem = self._registry.is_ephemeral_query(space_query)
-        if refresh_first:
+        if refresh_first or self.has_watcher_dirty_marker():
             self.scan(space_query)
         state = self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
         if state.head_generation == 0 and not refresh_first:
@@ -1076,9 +1296,10 @@ class SpaceScanner:
         Compute the delta between `consumer_id`'s acknowledged watermark generation
         and the current head generation of `space_query`.
         """
+        self._flush_in_process_watcher(space_query)
         space_key = self._canonical_space_key(space_query)
         is_ephem = self._registry.is_ephemeral_query(space_query)
-        if auto_refresh:
+        if auto_refresh or self.has_watcher_dirty_marker():
             scan_res = self.scan(space_query)
             space_gens = scan_res.space_generations
         else:
@@ -1248,11 +1469,14 @@ class SpaceScanner:
             spaces_report.append(s_dict)
 
         unified_state = self._load_snapshot_state(self.UNIFIED_KEY, is_ephemeral=False)
+        watcher_active = is_watcher_active(space_query, registry=self._registry)
         return {
             "status": "ok",
             "query": space_query or "*",
             "project_root": self._registry.project_root.as_posix(),
             "storage_root": self._storage_root.as_posix(),
+            "watcher_active": watcher_active,
+            "watcher_dirty": self.has_watcher_dirty_marker(),
             "unified_generation": unified_state.head_generation,
             "unified_merkle_root": unified_state.merkle_root,
             "consumers": consumers,
@@ -1344,8 +1568,52 @@ class SpaceScanner:
 
 
 # =========================================================================
-# Module-level Convenience Facade Functions
+# Module-level Convenience Facade Functions & Default Shared Instances
 # =========================================================================
+
+_DEFAULT_SCANNERS_LOCK = threading.RLock()
+_DEFAULT_SCANNERS: Dict[Tuple[str, str, str], SpaceScanner] = {}
+
+
+def get_default_scanner(
+    registry: Optional[SpaceRegistry] = None,
+    project_root: Optional[Union[str, Path]] = None,
+    yscb_dir: Optional[Union[str, Path]] = None,
+    storage_root: Optional[Union[str, Path]] = None,
+) -> SpaceScanner:
+    """
+    Return the process-level shared SpaceScanner instance for `(project_root, yscb_dir, storage_root)`.
+    Ensures in-memory ephemeral snapshots and cursors are shared across top-level SDK calls
+    and the active in-process Watcher.
+    """
+    if registry is not None:
+        # When an explicit custom SpaceRegistry is supplied, bind a SpaceScanner to it
+        return SpaceScanner(registry=registry, storage_root=storage_root)
+
+    reg = get_default_registry(project_root=project_root, yscb_dir=yscb_dir)
+    storage_key = (
+        os.path.normcase(os.path.abspath(str(storage_root)))
+        if storage_root is not None
+        else "__default__"
+    )
+    key = (
+        os.path.normcase(str(reg.project_root)),
+        os.path.normcase(str(reg.yscb_dir)),
+        storage_key,
+    )
+    with _DEFAULT_SCANNERS_LOCK:
+        sc = _DEFAULT_SCANNERS.get(key)
+        if sc is None:
+            sc = SpaceScanner(registry=reg, storage_root=storage_root)
+            _DEFAULT_SCANNERS[key] = sc
+        return sc
+
+
+def reset_default_instances() -> None:
+    """Clear all cached process-level default SpaceScanner and SpaceRegistry instances."""
+    with _DEFAULT_SCANNERS_LOCK:
+        _DEFAULT_SCANNERS.clear()
+    reset_default_registry()
 
 
 def _default_scanner(
@@ -1357,8 +1625,12 @@ def _default_scanner(
 ) -> SpaceScanner:
     if scanner is not None:
         return scanner
-    reg = registry or SpaceRegistry(project_root=project_root, yscb_dir=yscb_dir)
-    return SpaceScanner(registry=reg, storage_root=storage_root)
+    return get_default_scanner(
+        registry=registry,
+        project_root=project_root,
+        yscb_dir=yscb_dir,
+        storage_root=storage_root,
+    )
 
 
 def scan(

@@ -967,8 +967,10 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
             self.send_response(status_code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
+            self.close_connection = True
 
         def _authenticate(self) -> bool:
             auth_header = self.headers.get("Authorization", "")
@@ -990,7 +992,9 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                 supervisor.logger.info(f"HTTP GET /api/status -> 200 ({dur_ms:.1f}ms)")
             else:
                 self.send_response(404)
+                self.send_header("Connection", "close")
                 self.end_headers()
+                self.close_connection = True
                 supervisor.logger.warning(f"HTTP GET {parsed.path} -> 404 Not Found")
 
         def _reject_bad_dispatch(self, error_msg: str, log_msg: Optional[str] = None) -> None:
@@ -1122,7 +1126,9 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                 threading.Thread(target=supervisor.stop, daemon=True).start()
             else:
                 self.send_response(404)
+                self.send_header("Connection", "close")
                 self.end_headers()
+                self.close_connection = True
                 supervisor.logger.warning(f"HTTP POST {parsed.path} -> 404 Not Found")
 
     return http.server.ThreadingHTTPServer(("127.0.0.1", 0), DispatcherHTTPHandler)

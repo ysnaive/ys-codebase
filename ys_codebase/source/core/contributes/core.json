@@ -1567,7 +1567,8 @@
     { "on_update": "當模組更新完成後觸發" },
     { "on_remove": "當模組移除前觸發" },
     { "on_env_synced": "當私有微環境第三方依賴物化同步完成後觸發" },
-    { "on_gitignore_synced": "當根目錄 project://.gitignore 託管區塊完成同步更新後觸發" }
+    { "on_gitignore_synced": "當根目錄 project://.gitignore 託管區塊完成同步更新後觸發" },
+    { "on_file_space_changed": "當邏輯檔案空間 YFP2 二進位快照世代更新時觸發" }
   ]
 }
 

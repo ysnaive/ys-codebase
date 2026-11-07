@@ -52,8 +52,10 @@ class TestServerConfig(YSCBTestCase):
         self.doCleanups()
         server_service._LAST_TOUCH_TS = 0.0
         server_service._LAST_TOUCH_BY_ROOT.clear()
-        self.temp_dir.cleanup()
-        super().tearDown()
+        try:
+            self.temp_dir.cleanup()
+        finally:
+            super().tearDown()
 
     def test_default_config(self):
         """驗證 ServerConfig 預設值為 enable=True, enable_console=False 與 TTL=1800.0"""

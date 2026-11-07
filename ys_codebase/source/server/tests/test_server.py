@@ -106,8 +106,10 @@ class TestServerModule(YSCBTestCase):
 
         server_service._LAST_TOUCH_TS = 0.0
         server_service._LAST_TOUCH_BY_ROOT.clear()
-        self.temp_dir.cleanup()
-        super().tearDown()
+        try:
+            super().tearDown()
+        finally:
+            self.temp_dir.cleanup()
 
     def _make_supervisor(self, **kwargs) -> MasterSupervisor:
         kwargs.setdefault("yscb_root", self.root_dir)
@@ -171,9 +173,11 @@ class TestServerModule(YSCBTestCase):
 
         with patch.object(events, "broadcast", side_effect=mock_broadcast):
             worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: None)
+            self.addCleanup(worker.service_manager.stop_all)
             self.assertEqual(os.environ.get("YSCB_ROOT_DIR"), os.path.abspath(self.root_dir))
             self.assertTrue(os.environ.get("YSCB_HOST_DIR"))
             worker.pre_warm()
+            worker.service_manager.stop_all()
 
         event_names = [e[0] for e in captured_events]
         self.assertIn("server_worker_warming", event_names)
@@ -222,7 +226,16 @@ class TestServerModule(YSCBTestCase):
 
         # 4. os.getcwd() raising OSError falls back to self.yscb_root and still emits task_finish
         packets.clear()
-        with unittest.mock.patch("server.worker.os.getcwd", side_effect=OSError("cwd deleted")):
+        orig_os_getcwd = os.getcwd
+        call_idx = [0]
+
+        def _mock_getcwd_once():
+            call_idx[0] += 1
+            if call_idx[0] == 1:
+                raise OSError("cwd deleted")
+            return orig_os_getcwd()
+
+        with unittest.mock.patch("server.worker.os.getcwd", side_effect=_mock_getcwd_once):
             exit_code_cwd = worker.execute_task(module="mock_exit_none", args=[], cwd=self.root_dir)
         self.assertEqual(exit_code_cwd, 0)
         self.assertEqual(len([p for p in packets if p.get("type") == "task_finish"]), 1)
@@ -872,6 +885,8 @@ class TestServerModule(YSCBTestCase):
             sup.restart_server()
             sup.restart_server()
             self.assertTrue(exit_called.wait(timeout=2.0))
+            if sup._restart_thread is not None:
+                sup._restart_thread.join(timeout=2.0)
 
         self.assertEqual(len(spawn_calls), 1)
         self.assertIsNotNone(sup._restart_thread)

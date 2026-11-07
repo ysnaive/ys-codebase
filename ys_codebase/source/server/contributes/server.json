@@ -1,0 +1,10 @@
+{
+  "services": [
+    {
+      "name": "core-space-watcher",
+      "worker_class": "server.space_watcher:CoreSpaceWatcherServiceWorker",
+      "description": "Core 邏輯檔案空間變更監聽、防抖增量指紋更新與 on_file_space_changed 事件廣播服務",
+      "auto_start": true
+    }
+  ]
+}

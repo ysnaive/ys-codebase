@@ -7,12 +7,13 @@ source_paths:
   - "yscb://source/server/server/worker.py"
   - "yscb://source/server/server/service.py"
   - "yscb://source/server/server/watcher.py"
+  - "yscb://source/server/server/space_watcher.py"
   - "yscb://source/knowledge-db/knowledge_db/service.py"
 related_docs:
   - "./daemon_architecture.md"
   - "./README.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-03"
+last_updated: "2026-11-07"
 ---
 
 # 熱重載與背景服務託管專題 (Service Workers & Hot Reload Architecture)
@@ -104,11 +105,15 @@ class BaseServiceWorker(ABC):
         pass
 ```
 
-### 2.3 實例：Knowledge-DB Service Worker
-`knowledge-db` 模組透過 `KnowledgeDBServiceWorker` 掛載於 `WarmWorker` 中：
-- **500ms 防抖監聽**：透過 Watchdog 監控工作區檔案變更，防抖聚合 Burst Save 事件。
-- **增量全棧修補**：呼叫 `IndexingPipeline.hot_patch_unified_index`，一次性完成 AST、倒排索引 (BM25)、調用圖譜 (Graph) 與向量嵌入 (Vector) 之差量更新。
-- **零前台阻塞**：前台 CLI 查詢直接讀取已更新之記憶體/磁碟快取，零推論延遲。
+### 2.3 實例：Core-Space Watcher 與 Knowledge-DB Service Worker
+1. **`CoreSpaceWatcherServiceWorker` (`core-space-watcher`, provider: `server`)**：
+   - 於 [`server/contributes/server.json`](../../ys_codebase/source/server/contributes/server.json) 宣告並由 [`server/space_watcher.py`](../../ys_codebase/source/server/server/space_watcher.py) 實作，為 [`core.space`](../core/README.md) 提供 `watchdog` 檔案系統背景監聽，維持 `module:core` 100% 純標準庫零第三方依賴。
+   - **全空間預設監聽 (`watch=True`) 與動態空間熱掛載**：自動收集所有 `watch=True` 之靜態空間、`compose` 組合子空間入口，以及執行期透過 `core.space.define_ephemeral_space` 動態註冊之臨時空間（如 `yscb-skills`），動態掛載至 `watchdog` `Observer`。
+   - **500ms 防抖、`.yscb.lock` 交易禮讓與增量修補**：快速過濾 `.git`、`__pycache__`、`.cache`、`.storage.local` 等雜訊目錄；500ms 防抖視窗到齊且無 `.yscb.lock` 交易鎖時，以 `SpaceScanner.patch_files`（$\le 200$ 筆髒路徑）或局部重掃更新 `YFP2` 快照，同步連動更新 `<short_name>` 聯集與 `compose` 父空間快照，並透過 `core.events.broadcast("on_file_space_changed", payload, emit_module="core")` 廣播變更事件。
+2. **`KnowledgeDBServiceWorker` (`knowledge-db-worker`, provider: `knowledge-db`)**：
+   - **500ms 防抖監聽**：透過 Watchdog 監控工作區檔案變更，防抖聚合 Burst Save 事件。
+   - **增量全棧修補**：呼叫 `IndexingPipeline.hot_patch_unified_index`，一次性完成 AST、倒排索引 (BM25)、調用圖譜 (Graph) 與向量嵌入 (Vector) 之差量更新。
+   - **零前台阻塞**：前台 CLI 查詢直接讀取已更新之記憶體/磁碟快取，零推論延遲。
 
 ---
 

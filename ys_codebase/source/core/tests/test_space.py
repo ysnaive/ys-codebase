@@ -29,23 +29,38 @@ from core.space import (
     SpaceRegistry,
     SpaceScanner,
     ack,
+    broadcast_file_space_changed,
     clean,
+    clear_subscribers,
     compute_file_hash,
     consume_diff,
     define_ephemeral_space,
     diff,
+    get_active_watcher,
+    get_default_registry,
+    get_default_scanner,
     hash_space_or_path,
     hash_target,
+    is_watcher_active,
     iter_space_files,
     match_path,
     merkle_root,
+    notify_subscribers,
     patch_files,
+    read_watcher_state,
     refresh,
+    register_active_watcher,
+    remove_watcher_state,
     reset_cursor,
+    reset_default_instances,
     resolve_file_path,
+    resolve_watcher_dirty_path,
+    resolve_watcher_state_path,
     scan,
     snapshot,
     status,
+    subscribe,
+    write_watcher_state,
 )
 from core.validator import ContributesValidator
 from dev.testing.case import YSCBTestCase
@@ -72,6 +87,9 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         vfs.write_json(str(cfg_core_dir / "config.project.json"), {"project_root": "./"})
 
     def tearDown(self) -> None:
+        clear_subscribers()
+        register_active_watcher(None)
+        reset_default_instances()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
         super().tearDown()
 
@@ -1134,6 +1152,220 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
                 self.assertEqual(opts["space"].params, "comp_space")
                 self.assertEqual(opts["consumer"].params, "c1")
                 self.assertTrue(opts["json"].params)
+        self.mark_passed()
+
+    def test_watch_default_ephemeral_shared_registry_and_watcher_coordination(self) -> None:
+        """
+        Verify `[P00:DR-02]` & `[P00:DR-03]`:
+        - Static spaces and `define_ephemeral_space` default to `watch=True` (with `watch=False` override).
+        - Process-level shared `get_default_registry` / `get_default_scanner` persist ephemeral spaces across top-level calls.
+        - `subscribe` dual-track filtering (`source` vs `core/source`), `broadcast_file_space_changed` (`emit_module='core'`),
+          `watcher_state.json` / `.watcher_dirty` beacons, and `sync_dependent_snapshots` propagation.
+        """
+        skills_dir = self.proj_root / ".agents" / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        skill_md = skills_dir / "SKILL.md"
+        skill_md.write_text("# Skill v1\n", encoding="utf-8")
+
+        src_dir = self.proj_root / "src_mod"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        src_file = src_dir / "main.py"
+        src_file.write_text("x = 1\n", encoding="utf-8")
+
+        self._write_module_core_contrib(
+            "core",
+            {
+                "spaces": {
+                    "source": {
+                        "entries": ["project://src_mod"],
+                        "include": ["*.py"],
+                    },
+                    "unwatched": {
+                        "entries": ["project://src_mod"],
+                        "include": ["*.py"],
+                        "watch": False,
+                    },
+                }
+            },
+        )
+        self._write_project_core_contrib(
+            {
+                "spaces": {
+                    "bundle": {
+                        "compose": ["core/source"],
+                    }
+                }
+            }
+        )
+
+        # 1. Verify static space `watch=True` default and `watch=False` override
+        reg = get_default_registry(project_root=self.proj_root, yscb_dir=self.yscb_root)
+        src_cfg = reg.resolve_spaces("core/source")[0]
+        unw_cfg = reg.resolve_spaces("core/unwatched")[0]
+        self.assertTrue(src_cfg.watch)
+        self.assertFalse(unw_cfg.watch)
+
+        # 2. Verify top-level `define_ephemeral_space("yscb-skills", ...)` defaults to `watch=True`,
+        #    notifies active watcher, and is visible to top-level `scan` / `consume_diff` without passing `registry=`
+        synced_calls: list = []
+
+        class _DummyWatcher:
+            def is_alive(self) -> bool:
+                return True
+
+            def sync_watched_directories(self) -> None:
+                synced_calls.append("synced")
+
+            def flush_space_now(self, space_query=None):
+                synced_calls.append(("flushed", space_query))
+                return None
+
+        register_active_watcher(_DummyWatcher())
+        ephem_cfg = define_ephemeral_space(
+            "yscb-skills",
+            {"entries": ["project://.agents/skills"], "include": ["*.md"]},
+            project_root=self.proj_root,
+            yscb_dir=self.yscb_root,
+        )
+        self.assertTrue(ephem_cfg.watch)
+        self.assertTrue(ephem_cfg.is_ephemeral)
+        self.assertEqual(ephem_cfg.qualified_name, "ephemeral/yscb-skills")
+        self.assertIn("synced", synced_calls)
+
+        # Override `watch=False` on ephemeral space does not trigger sync
+        synced_calls.clear()
+        ephem_nowatch = define_ephemeral_space(
+            "yscb-temp",
+            {"entries": ["project://.agents/skills"]},
+            watch=False,
+            project_root=self.proj_root,
+            yscb_dir=self.yscb_root,
+        )
+        self.assertFalse(ephem_nowatch.watch)
+        self.assertEqual(synced_calls, [])
+
+        # Top-level `consume_diff` on `yscb-skills` shares default registry & scanner
+        with consume_diff(
+            "yscb-skills",
+            consumer_id="wf_agent",
+            project_root=self.proj_root,
+            yscb_dir=self.yscb_root,
+        ) as d_ephem:
+            self.assertTrue(d_ephem.has_changes)
+            self.assertEqual(d_ephem.added, [".agents/skills/SKILL.md"])
+            self.assertIn(("flushed", "yscb-skills"), synced_calls)
+
+        # Reloading default registry preserves active ephemeral spaces
+        reg.reload()
+        self.assertEqual(
+            reg.resolve_spaces("yscb-skills")[0].qualified_name,
+            "ephemeral/yscb-skills",
+        )
+        register_active_watcher(None)
+
+        # 3. Verify `subscribe` dual-track filtering and `broadcast_file_space_changed` (`emit_module="core"`)
+        received_events: list = []
+        unsub_short = subscribe(
+            lambda sp, df: received_events.append(("short", sp, df.to_generation)),
+            spaces=["source"],
+        )
+        unsub_qual = subscribe(
+            lambda sp, df: received_events.append(("qual", sp, df.to_generation)),
+            spaces=["core/source"],
+        )
+        unsub_other = subscribe(
+            lambda sp, df: received_events.append(("other", sp, df.to_generation)),
+            spaces=["other/space"],
+        )
+
+        sc = get_default_scanner(project_root=self.proj_root, yscb_dir=self.yscb_root)
+        d_src = sc.scan("core/source")
+        notify_subscribers("core/source", d_src)
+        self.assertEqual(
+            received_events,
+            [("short", "core/source", 1), ("qual", "core/source", 1)],
+        )
+        unsub_short()
+        unsub_qual()
+        unsub_other()
+
+        with patch("core.events.broadcast") as mock_bcast:
+            payload = broadcast_file_space_changed("core/source", d_src)
+            self.assertEqual(payload["space_name"], "core/source")
+            self.assertEqual(payload["short_name"], "source")
+            self.assertEqual(payload["spaces"], ["core/source", "source"])
+            self.assertEqual(payload["added"], ["src_mod/main.py"])
+            mock_bcast.assert_called_once_with(
+                "on_file_space_changed", payload, emit_module="core"
+            )
+
+        # 4. Verify `sync_dependent_snapshots` updates existing short-name union (`source`),
+        #    composite parent (`project/bundle`), and unified (`__all__`) snapshots
+        sc.scan("source")
+        sc.scan("project/bundle")
+        sc.scan(None)  # initializes __all__
+
+        src_file.write_text("x = 2\n", encoding="utf-8")
+        patched = sc.patch_files("core/source", [src_file])
+        self.assertEqual(patched.head_generation, 2)
+        self.assertIsNotNone(patched.last_diff)
+        self.assertEqual(patched.last_diff.modified, ["src_mod/main.py"])
+
+        synced_deps = sc.sync_dependent_snapshots("core/source", [src_file])
+        self.assertIn("source", synced_deps)
+        self.assertIn("project/bundle", synced_deps)
+        self.assertIn("__all__", synced_deps)
+        self.assertEqual(synced_deps["source"].to_generation, 2)
+        self.assertEqual(synced_deps["project/bundle"].to_generation, 2)
+
+        # 5. Verify `watcher_state.json` and `.watcher_dirty` beacons in `cache://core/space`
+        state_p = write_watcher_state(
+            watched_spaces=["core/source"],
+            watchdog_running=True,
+            project_root=self.proj_root,
+            yscb_dir=self.yscb_root,
+        )
+        self.assertEqual(
+            state_p,
+            resolve_watcher_state_path(self.proj_root, self.yscb_root),
+        )
+        self.assertTrue(
+            is_watcher_active("core/source", registry=reg, state_file=state_p)
+        )
+        self.assertTrue(
+            is_watcher_active("source", registry=reg, state_file=state_p)
+        )
+        self.assertFalse(
+            is_watcher_active("core/unwatched", registry=reg, state_file=state_p)
+        )
+
+        # Dead PID in watcher_state.json returns False
+        vfs.write_json(
+            str(state_p),
+            {
+                "pid": 99999999,
+                "watchdog_running": True,
+                "watched_spaces": ["core/source"],
+                "updated_at": 1.0,
+            },
+        )
+        self.assertFalse(
+            is_watcher_active("core/source", registry=reg, state_file=state_p)
+        )
+        remove_watcher_state(state_file=state_p)
+        self.assertIsNone(read_watcher_state(state_file=state_p))
+
+        # `.watcher_dirty` marker triggers auto-scan even when `auto_refresh=False`
+        src_file.write_text("x = 3\n", encoding="utf-8")
+        sc.mark_watcher_dirty(True)
+        self.assertTrue(sc.has_watcher_dirty_marker())
+        self.assertTrue(
+            resolve_watcher_dirty_path(self.proj_root, self.yscb_root).is_file()
+        )
+        d_dirty = sc.diff("core/source", consumer_id="c_dirty", auto_refresh=False)
+        self.assertEqual(d_dirty.to_generation, 3)
+        sc.mark_watcher_dirty(False)
+        self.assertFalse(sc.has_watcher_dirty_marker())
         self.mark_passed()
 
 

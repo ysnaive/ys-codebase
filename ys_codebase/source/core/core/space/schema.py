@@ -669,6 +669,7 @@ class SpaceConfig:
     hash_policy: HashPolicy = HashPolicy.ADAPTIVE
     large_file_threshold_mb: int = 10
     follow_symlinks: bool = False
+    watch: bool = True
     is_ephemeral: bool = False
     has_explicit_include: Optional[bool] = None
     effective_include: Tuple[RuleItem, ...] = ()
@@ -972,5 +973,6 @@ class SpaceConfig:
             "hash_policy": self.hash_policy.value,
             "large_file_threshold_mb": self.large_file_threshold_mb,
             "follow_symlinks": self.follow_symlinks,
+            "watch": self.watch,
             "is_ephemeral": self.is_ephemeral,
         }

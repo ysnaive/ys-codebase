@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import threading
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
 from .exceptions import SpaceCycleError, SpaceError, SpaceNotFoundError
@@ -22,6 +23,7 @@ from .schema import (
     SpaceConfig,
     resolve_semantic_or_rel_path,
 )
+from .watcher import notify_ephemeral_space_registered
 
 
 def _sort_owner_keys(owners: Iterable[str]) -> List[str]:
@@ -193,7 +195,9 @@ class SpaceRegistry:
         self._presets_by_short: Dict[str, List[PresetConfig]] = {}
         self._spaces: Dict[str, SpaceConfig] = {}
         self._spaces_by_short: Dict[str, List[SpaceConfig]] = {}
+        self._ephemeral_spaces: Dict[str, SpaceConfig] = {}
         self._gitignore_eval: Optional[GitignoreEvaluator] = None
+        self._lock = threading.RLock()
 
         self.reload()
 
@@ -232,25 +236,35 @@ class SpaceRegistry:
             cand = default_proj / "ys_codebase"
             default_yscb = cand if cand.is_dir() else default_proj
 
-        eff_proj = (
-            Path(os.path.normpath(os.path.abspath(str(project_root))))
-            if project_root is not None
-            else default_proj
-        )
         if yscb_dir is not None:
             eff_yscb = Path(os.path.normpath(os.path.abspath(str(yscb_dir))))
-        elif project_root is not None and os.path.normcase(str(eff_proj)) != os.path.normcase(
-            str(default_proj)
-        ):
-            cand_yscb = eff_proj / "ys_codebase"
-            cand_dot = eff_proj / ".yscb"
-            if cand_yscb.is_dir():
-                eff_yscb = cand_yscb
-            elif cand_dot.is_dir():
-                eff_yscb = cand_dot
+            if project_root is not None:
+                eff_proj = Path(os.path.normpath(os.path.abspath(str(project_root))))
+            elif os.path.normcase(str(eff_yscb)) != os.path.normcase(str(default_yscb)):
+                if eff_yscb.name in ("ys_codebase", ".yscb") and (
+                    (eff_yscb.parent / "yscb.config.json").is_file()
+                    or (eff_yscb.parent / "yscb.py").is_file()
+                ):
+                    eff_proj = eff_yscb.parent
+                else:
+                    eff_proj = eff_yscb
             else:
-                eff_yscb = eff_proj
+                eff_proj = default_proj
+        elif project_root is not None:
+            eff_proj = Path(os.path.normpath(os.path.abspath(str(project_root))))
+            if os.path.normcase(str(eff_proj)) != os.path.normcase(str(default_proj)):
+                cand_yscb = eff_proj / "ys_codebase"
+                cand_dot = eff_proj / ".yscb"
+                if cand_yscb.is_dir():
+                    eff_yscb = cand_yscb
+                elif cand_dot.is_dir():
+                    eff_yscb = cand_dot
+                else:
+                    eff_yscb = eff_proj
+            else:
+                eff_yscb = default_yscb
         else:
+            eff_proj = default_proj
             eff_yscb = default_yscb
 
         return eff_proj, eff_yscb
@@ -274,48 +288,66 @@ class SpaceRegistry:
 
     def reload(self) -> None:
         """Reload all preset and space definitions from modules and project configuration."""
-        self._presets.clear()
-        self._presets_by_short.clear()
-        self._spaces.clear()
-        self._spaces_by_short.clear()
-        self._gitignore_eval = None
+        with self._lock:
+            raw_presets_by_owner, raw_spaces_by_owner = self._discover_raw_definitions()
 
-        raw_presets_by_owner, raw_spaces_by_owner = self._discover_raw_definitions()
+            new_presets: Dict[str, PresetConfig] = {}
+            new_presets_by_short: Dict[str, List[PresetConfig]] = {}
+            new_spaces: Dict[str, SpaceConfig] = {}
+            new_spaces_by_short: Dict[str, List[SpaceConfig]] = {}
+            self._gitignore_eval = None
 
-        # 1. Register presets in deterministic owner order
-        for owner in _sort_owner_keys(raw_presets_by_owner.keys()):
-            owner_presets = raw_presets_by_owner[owner]
-            for short_name in sorted(owner_presets.keys()):
-                p_data = owner_presets[short_name]
-                if not isinstance(p_data, dict):
-                    continue
-                q_name = f"{owner}/{short_name}"
-                inc_list = [str(x) for x in p_data.get("include", []) if str(x).strip()]
-                exc_list = [str(x) for x in p_data.get("exclude", []) if str(x).strip()]
-                preset_cfg = PresetConfig(
-                    qualified_name=q_name,
-                    owner=owner,
-                    short_name=short_name,
-                    description=str(p_data.get("description", "") or ""),
-                    include=tuple(inc_list),
-                    exclude=tuple(exc_list),
-                )
-                self._presets[q_name] = preset_cfg
-                self._presets_by_short.setdefault(short_name, []).append(preset_cfg)
+            # 1. Register presets in deterministic owner order
+            for owner in _sort_owner_keys(raw_presets_by_owner.keys()):
+                owner_presets = raw_presets_by_owner[owner]
+                for short_name in sorted(owner_presets.keys()):
+                    p_data = owner_presets[short_name]
+                    if not isinstance(p_data, dict):
+                        continue
+                    q_name = f"{owner}/{short_name}"
+                    inc_list = [str(x) for x in p_data.get("include", []) if str(x).strip()]
+                    exc_list = [str(x) for x in p_data.get("exclude", []) if str(x).strip()]
+                    preset_cfg = PresetConfig(
+                        qualified_name=q_name,
+                        owner=owner,
+                        short_name=short_name,
+                        description=str(p_data.get("description", "") or ""),
+                        include=tuple(inc_list),
+                        exclude=tuple(exc_list),
+                    )
+                    new_presets[q_name] = preset_cfg
+                    new_presets_by_short.setdefault(short_name, []).append(preset_cfg)
 
-        # 2. Build and register spaces in deterministic owner order
-        for owner in _sort_owner_keys(raw_spaces_by_owner.keys()):
-            owner_spaces = raw_spaces_by_owner[owner]
-            for short_name in sorted(owner_spaces.keys()):
-                s_data = owner_spaces[short_name]
-                if not isinstance(s_data, dict):
-                    continue
-                space_cfg = self._build_space_config(owner, short_name, s_data)
-                self._spaces[space_cfg.qualified_name] = space_cfg
-                self._spaces_by_short.setdefault(short_name, []).append(space_cfg)
+            self._presets = new_presets
+            self._presets_by_short = new_presets_by_short
 
-        # 3. Populate unresolved_compose references after all spaces are registered
-        self._refresh_unresolved_compose()
+            # 2. Build and register spaces in deterministic owner order
+            for owner in _sort_owner_keys(raw_spaces_by_owner.keys()):
+                owner_spaces = raw_spaces_by_owner[owner]
+                for short_name in sorted(owner_spaces.keys()):
+                    s_data = owner_spaces[short_name]
+                    if not isinstance(s_data, dict):
+                        continue
+                    space_cfg = self._build_space_config(owner, short_name, s_data)
+                    new_spaces[space_cfg.qualified_name] = space_cfg
+                    new_spaces_by_short.setdefault(short_name, []).append(space_cfg)
+
+            # 2b. Re-attach active ephemeral spaces registered on this registry instance
+            for ephem_qname, ephem_cfg in self._ephemeral_spaces.items():
+                new_spaces[ephem_qname] = ephem_cfg
+                short_list = [
+                    s
+                    for s in new_spaces_by_short.get(ephem_cfg.short_name, [])
+                    if s.qualified_name != ephem_qname
+                ]
+                short_list.append(ephem_cfg)
+                new_spaces_by_short[ephem_cfg.short_name] = short_list
+
+            self._spaces = new_spaces
+            self._spaces_by_short = new_spaces_by_short
+
+            # 3. Populate unresolved_compose references after all spaces are registered
+            self._refresh_unresolved_compose()
 
     def _refresh_unresolved_compose(self) -> None:
         for space_cfg in self._spaces.values():
@@ -519,6 +551,7 @@ class SpaceRegistry:
             hash_policy=raw_data.get("hash_policy", HashPolicy.ADAPTIVE),
             large_file_threshold_mb=raw_data.get("large_file_threshold_mb", 10),
             follow_symlinks=bool(raw_data.get("follow_symlinks", False)),
+            watch=bool(raw_data.get("watch", True)),
             is_ephemeral=is_ephemeral,
             has_explicit_include=has_explicit_include,
             effective_include=tuple(effective_inc),
@@ -603,38 +636,40 @@ class SpaceRegistry:
 
     def list_spaces(self, owner: Optional[str] = None) -> List[SpaceConfig]:
         """List all registered SpaceConfig instances in deterministic order."""
-        if owner:
-            return [s for s in self._spaces.values() if s.owner == owner]
-        return list(self._spaces.values())
+        with self._lock:
+            if owner:
+                return [s for s in self._spaces.values() if s.owner == owner]
+            return list(self._spaces.values())
 
     def resolve_spaces(self, query: Optional[str] = None) -> List[SpaceConfig]:
         """
         Resolve space query:
-        - `None` -> all registered spaces
+        - `None` or `*` -> all registered spaces
         - `<owner>/<space>` (contains `/`) -> exact single SpaceConfig
         - `<space>` (no `/`) -> union of all SpaceConfig definitions with `short_name == <space>`
         Raises SpaceNotFoundError if no space matches.
         """
-        if query is None or str(query).strip() == "":
-            return list(self._spaces.values())
+        with self._lock:
+            if query is None or str(query).strip() in ("", "*"):
+                return list(self._spaces.values())
 
-        q = str(query).strip()
-        if "/" in q:
-            found = self._spaces.get(q)
-            if found is None:
-                available = sorted(self._spaces.keys())
+            q = str(query).strip()
+            if "/" in q:
+                found = self._spaces.get(q)
+                if found is None:
+                    available = sorted(self._spaces.keys())
+                    raise SpaceNotFoundError(
+                        f"Space '{q}' is not registered. Available spaces: {available}"
+                    )
+                return [found]
+
+            matched = list(self._spaces_by_short.get(q, []))
+            if not matched:
+                available = sorted(set(self._spaces.keys()) | set(self._spaces_by_short.keys()))
                 raise SpaceNotFoundError(
                     f"Space '{q}' is not registered. Available spaces: {available}"
                 )
-            return [found]
-
-        matched = list(self._spaces_by_short.get(q, []))
-        if not matched:
-            available = sorted(set(self._spaces.keys()) | set(self._spaces_by_short.keys()))
-            raise SpaceNotFoundError(
-                f"Space '{q}' is not registered. Available spaces: {available}"
-            )
-        return matched
+            return matched
 
     def get_spaces(self, query: Optional[str] = None) -> List[SpaceConfig]:
         """Alias for `resolve_spaces(query)`."""
@@ -644,53 +679,67 @@ class SpaceRegistry:
         self,
         name: str,
         config: Union[SpaceConfig, Mapping[str, Any]],
+        *,
+        watch: Optional[bool] = None,
     ) -> SpaceConfig:
         """
         Register an in-memory ephemeral space (`is_ephemeral=True`).
         Uses `<owner>/<name>` if `name` contains `/`, otherwise defaults to `ephemeral/<name>`.
+        Defaults `watch=True` unless overridden by `watch=False` or `config["watch"] = False`.
         """
-        q_name, owner, short_name = _parse_qualified_key(name, "ephemeral")
-        if not short_name:
-            raise SpaceError("Ephemeral space name must not be empty.")
-        if isinstance(config, SpaceConfig):
-            space_cfg = SpaceConfig(
-                qualified_name=q_name,
-                owner=owner,
-                short_name=short_name,
-                description=config.description,
-                entries=config.entries,
-                compose=config.compose,
-                presets=config.presets,
-                include=config.include,
-                exclude=config.exclude,
-                hash_policy=config.hash_policy,
-                large_file_threshold_mb=config.large_file_threshold_mb,
-                follow_symlinks=config.follow_symlinks,
-                is_ephemeral=True,
-                has_explicit_include=config.has_explicit_include,
-                effective_include=config.effective_include,
-                effective_exclude=config.effective_exclude,
-                unresolved_presets=config.unresolved_presets,
-                unresolved_compose=config.unresolved_compose,
-                uri_warnings=config.uri_warnings,
-                _project_root=self._project_root,
-                _yscb_dir=self._yscb_dir,
-                _gitignore_eval=config._gitignore_eval,
-            )
-        elif isinstance(config, Mapping):
-            space_cfg = self._build_space_config(
-                owner, short_name, config, is_ephemeral=True
-            )
-        else:
-            raise SpaceError(
-                f"Invalid ephemeral space config type '{type(config).__name__}'."
-            )
+        with self._lock:
+            q_name, owner, short_name = _parse_qualified_key(name, "ephemeral")
+            if not short_name:
+                raise SpaceError("Ephemeral space name must not be empty.")
+            if isinstance(config, SpaceConfig):
+                eff_watch = bool(watch) if watch is not None else bool(config.watch)
+                space_cfg = SpaceConfig(
+                    qualified_name=q_name,
+                    owner=owner,
+                    short_name=short_name,
+                    description=config.description,
+                    entries=config.entries,
+                    compose=config.compose,
+                    presets=config.presets,
+                    include=config.include,
+                    exclude=config.exclude,
+                    hash_policy=config.hash_policy,
+                    large_file_threshold_mb=config.large_file_threshold_mb,
+                    follow_symlinks=config.follow_symlinks,
+                    watch=eff_watch,
+                    is_ephemeral=True,
+                    has_explicit_include=config.has_explicit_include,
+                    effective_include=config.effective_include,
+                    effective_exclude=config.effective_exclude,
+                    unresolved_presets=config.unresolved_presets,
+                    unresolved_compose=config.unresolved_compose,
+                    uri_warnings=config.uri_warnings,
+                    _project_root=self._project_root,
+                    _yscb_dir=self._yscb_dir,
+                    _gitignore_eval=config._gitignore_eval,
+                )
+            elif isinstance(config, Mapping):
+                raw_dict = dict(config)
+                if watch is not None:
+                    raw_dict["watch"] = bool(watch)
+                elif "watch" not in raw_dict:
+                    raw_dict["watch"] = True
+                space_cfg = self._build_space_config(
+                    owner, short_name, raw_dict, is_ephemeral=True
+                )
+            else:
+                raise SpaceError(
+                    f"Invalid ephemeral space config type '{type(config).__name__}'."
+                )
 
-        self._spaces[q_name] = space_cfg
-        short_list = [s for s in self._spaces_by_short.get(short_name, []) if s.qualified_name != q_name]
-        short_list.append(space_cfg)
-        self._spaces_by_short[short_name] = short_list
-        self._refresh_unresolved_compose()
+            self._ephemeral_spaces[q_name] = space_cfg
+            self._spaces[q_name] = space_cfg
+            short_list = [s for s in self._spaces_by_short.get(short_name, []) if s.qualified_name != q_name]
+            short_list.append(space_cfg)
+            self._spaces_by_short[short_name] = short_list
+            self._refresh_unresolved_compose()
+        if space_cfg.watch:
+            notify_ephemeral_space_registered(q_name)
         return space_cfg
 
     def _collect_participating_spaces(
@@ -714,7 +763,7 @@ class SpaceRegistry:
 
     def is_ephemeral_query(self, space_query: Optional[str] = None) -> bool:
         """Return True if any space participating in `space_query` (including via `compose`) is ephemeral."""
-        if space_query is None or str(space_query).strip() == "":
+        if space_query is None or str(space_query).strip() in ("", "*", "__all__"):
             return False
         participating = self._collect_participating_spaces(space_query)
         return any(s.is_ephemeral for s in participating)
@@ -742,6 +791,7 @@ class SpaceRegistry:
                 "hash_policy": s_cfg.hash_policy.value,
                 "large_file_threshold_mb": s_cfg.large_file_threshold_mb,
                 "follow_symlinks": s_cfg.follow_symlinks,
+                "watch": s_cfg.watch,
             }
             hasher.update(json.dumps(payload, sort_keys=True).encode("utf-8"))
         return hasher.hexdigest()
@@ -1360,6 +1410,38 @@ class SpaceRegistry:
         ]
 
 
+_DEFAULT_REGISTRIES_LOCK = threading.RLock()
+_DEFAULT_REGISTRIES: Dict[Tuple[str, str], SpaceRegistry] = {}
+
+
+def get_default_registry(
+    project_root: Optional[Union[str, Path]] = None,
+    yscb_dir: Optional[Union[str, Path]] = None,
+) -> SpaceRegistry:
+    """
+    Return the process-level shared SpaceRegistry for `(project_root, yscb_dir)`.
+    Ensures runtime ephemeral spaces (`define_ephemeral_space`) registered via top-level
+    SDK calls are visible to subsequent queries and the in-process Watcher.
+    """
+    eff_proj, eff_yscb = SpaceRegistry._resolve_roots(project_root, yscb_dir)
+    key = (
+        os.path.normcase(str(eff_proj)),
+        os.path.normcase(str(eff_yscb)),
+    )
+    with _DEFAULT_REGISTRIES_LOCK:
+        reg = _DEFAULT_REGISTRIES.get(key)
+        if reg is None:
+            reg = SpaceRegistry(project_root=eff_proj, yscb_dir=eff_yscb)
+            _DEFAULT_REGISTRIES[key] = reg
+        return reg
+
+
+def reset_default_registry() -> None:
+    """Clear all cached process-level default SpaceRegistry instances."""
+    with _DEFAULT_REGISTRIES_LOCK:
+        _DEFAULT_REGISTRIES.clear()
+
+
 def match_path(
     file_path: Union[str, Path],
     space_query: Optional[str] = None,
@@ -1369,7 +1451,7 @@ def match_path(
     yscb_dir: Optional[Union[str, Path]] = None,
 ) -> MatchExplainResult:
     """Convenience atomic primitive for single-path matching and rule explanation."""
-    reg = registry or SpaceRegistry(project_root=project_root, yscb_dir=yscb_dir)
+    reg = registry or get_default_registry(project_root=project_root, yscb_dir=yscb_dir)
     return reg.match_path(file_path, space_query=space_query)
 
 
@@ -1382,7 +1464,7 @@ def iter_space_files(
     yscb_dir: Optional[Union[str, Path]] = None,
 ) -> List[SpaceFileEntry]:
     """Convenience atomic primitive for zero-redundancy directory-pruned file traversal."""
-    reg = registry or SpaceRegistry(project_root=project_root, yscb_dir=yscb_dir)
+    reg = registry or get_default_registry(project_root=project_root, yscb_dir=yscb_dir)
     return reg.iter_space_files(space_query=space_query, pattern=pattern)
 
 
@@ -1395,7 +1477,7 @@ def resolve_file_path(
     yscb_dir: Optional[Union[str, Path]] = None,
 ) -> Optional[Path]:
     """Convenience primitive for resolving a canonical relative path to a physical disk Path."""
-    reg = registry or SpaceRegistry(project_root=project_root, yscb_dir=yscb_dir)
+    reg = registry or get_default_registry(project_root=project_root, yscb_dir=yscb_dir)
     return reg.resolve_file_path(rel_path, space_query=space_query)
 
 
@@ -1403,10 +1485,11 @@ def define_ephemeral_space(
     name: str,
     config: Union[SpaceConfig, Mapping[str, Any]],
     *,
+    watch: Optional[bool] = None,
     registry: Optional[SpaceRegistry] = None,
     project_root: Optional[Union[str, Path]] = None,
     yscb_dir: Optional[Union[str, Path]] = None,
 ) -> SpaceConfig:
-    """Convenience primitive for registering an in-memory ephemeral space."""
-    reg = registry or SpaceRegistry(project_root=project_root, yscb_dir=yscb_dir)
-    return reg.define_ephemeral_space(name, config)
+    """Convenience primitive for registering an in-memory ephemeral space (`watch=True` by default)."""
+    reg = registry or get_default_registry(project_root=project_root, yscb_dir=yscb_dir)
+    return reg.define_ephemeral_space(name, config, watch=watch)
