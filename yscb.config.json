@@ -4,12 +4,12 @@
   "installed_modules": {
     "core": {
       "version": "1.2.7.build",
-      "installed_at": "2026-11-06 12:02:07",
+      "installed_at": "2026-11-07 11:51:05",
       "provider": "./ys_codebase/release"
     },
     "dev": {
       "version": "1.1.4.build",
-      "installed_at": "2026-11-06 12:19:31",
+      "installed_at": "2026-11-07 10:28:42",
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {

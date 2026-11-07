@@ -153,14 +153,19 @@ with uri.module_scope("core"):
 - **根目錄單檔 SSOT (`project://.gitignore`) 與語意 URI 自動錨定**：將各模組於 `contributes/core.json` 靜態宣告之 `"gitignore"` 清單、專案級 `config://core/contribute.json` 規則，以及執行期透過 `core.gitignore.register_dynamic(module, patterns)` 註冊之動態規則（持久化於 `storage.local://core/gitignore_dynamic.json`）統一換算為相對於 `project://` 之錨定路徑，寫入 `project://.gitignore` 單一託管區塊（`# === YSCB MANAGED GITIGNORE BEGIN ===` ~ `# === YSCB MANAGED GITIGNORE END ===`）。
 - **`# [<module>]` 分組可觀測性與卸載自癒**：託管區塊內部強制按模組來源輸出 `# [<module>]` 子標頭（`core` 置頂，其餘模組按字母序，`project` 置底）；當模組移除（`act_delete`）或重載（`act_reload`）時自動清除已卸載模組之靜態與動態忽略規則，並自動清理過時之子目錄 `.gitignore`（如舊版 `yscb://.gitignore` 與 `.vscode/schemas/.gitignore`）。
 
-### 3.8 L0 邏輯檔案空間原子引擎 (`core.space`)
-微內核於 [`core/space/`](../../ys_codebase/source/core/core/space/__init__.py) 提供純標準庫、零持久化副作用的邏輯檔案空間與指紋原子引擎：
+### 3.8 L0 與複合邏輯檔案空間引擎 (`core.space`)
+微內核於 [`core/space/`](../../ys_codebase/source/core/core/space/__init__.py) 提供純標準庫、零外部依賴的邏輯檔案空間、指紋快照與消費者交易游標引擎：
 - **`<owner>/<name>` 命名空間隔離與 `<name>` 短名自動聯集尋址**：各模組於 `contributes/core.json` 宣告之 `presets` 與 `spaces` 自動註冊為 `<module>/<name>`，專案於 `config://core/contribute.json` 宣告者自動註冊為 `project/<name>`，各來源獨立保存互不覆蓋；查詢時指定 `<owner>/<name>` 精準返回單一來源定義，指定短名 `<name>` 則自動執行結果集聯集（Union）。
+- **`compose` 空間組合代數、DAG 環路偵測與二次過濾**：支援以 `compose: ["<owner>/<space>", "<space>"]` 組合既有空間（純組合空間可省略 `entries`，但 `entries` 與 `compose` 至少一者非空）；具備呼叫堆疊環路檢測（拋出 `SpaceCycleError`），並保留子空間檔案之原始 `entry_path` 參與父組合空間之二次過濾（`exclude` 全體剔除；顯式非 `["*"]` 之 `include` 白名單交集）。
 - **顯式預設集 (`presets`) 與內建 `@gitignore`**：支援顯式引用預設規則集（無隱式全域預設過濾），當 `presets` 包含 `"@gitignore"` 時自動載入並評估 `project://.gitignore`（含 `!` 負向豁免規則）。
-- **三座標預編譯匹配 (`match`)、目錄剪枝走訪 (`ls`) 與原子指紋 (`hash`)**：
-  1. `match_path`：支援語意 URI 前綴、含 `/` 之相對路徑（同時相容 `project_rel` 與 `entry_rel`）及不含 `/` 之檔名/目錄區段名，提供免全盤掃描之單點規則解釋。
-  2. `iter_space_files`：基於 `os.scandir` 目錄級 `exclude` 剪枝與 `DirEntry.stat()` 複用，跨入口與聯集空間自動依實體路徑去重。
+- **三座標預編譯匹配 (`match`)、目錄剪枝走訪 (`ls`)、相對路徑反解 (`resolve_file_path`) 與原子指紋 (`hash`)**：
+  1. `match_path`：支援語意 URI 前綴、含 `/` 之相對路徑（同時相容 `project_rel` 與 `entry_rel`）及不含 `/` 之檔名/目錄區段名，提供免全盤掃描之單點規則與 `compose` 來源解釋。
+  2. `iter_space_files` & `resolve_file_path`：基於 `os.scandir` 目錄級 `exclude` 剪枝與 `DirEntry.stat()` 複用，跨入口與聯集空間自動依實體路徑去重，並支援將空間內標準相對路徑安全反解為磁碟 `Path`。
   3. `compute_file_hash` / `hash_target`：支援 `stat_only`、`adaptive`（大檔頭中尾稀疏取樣 Blake2b）與 `full_hash` 策略，計算決定性 16-byte Blake2b `merkle_root`。
+- **`YFP2` 單調世代二進位快照 (`SpaceScanner`) 與多消費者交易游標 (`CursorStore` / `consume_diff`)**：
+  1. `BinarySnapshotManager` 將空間快照以 `b"YFP2"` 二進位格式與 16-byte Blake2b Checksum 原子持久化於 `storage.local://core/space/snapshots/<target_key>.yfp2.bin`（動態臨時空間 `define_ephemeral_space` 則嚴格隔離於記憶體中，零磁碟落盤）。
+  2. `scan` / `refresh` 採 Stage 1 `(mtime_ns, size)` + `10ms` Racy-Clean 防護與 Stage 2 `core.space.hasher` 增量計算；`patch_files` 支援單點髒路徑（含已刪除之外部入口檔案）免全盤掃描局部修補。
+  3. `CursorStore` 於 `storage.local://core/space/cursors/<consumer_id>.json` 維護多消費者獨立水位世代，並提供 `consume_diff(space_query, consumer_id)` At-Least-Once 交易式 Context Manager（區塊正常退出自動 `ack`，發生例外自動保留原游標）。
 
 ---
 
@@ -181,12 +186,16 @@ python yscb.py contributes check [module]   # 校驗模組 contributes 宣告是
 python yscb.py gitignore status [--json]    # 檢視 project://.gitignore 託管狀態與各模組規則分組
 python yscb.py gitignore sync [--json]      # 手動強制收斂同步全模組忽略規則至 project://.gitignore
 
-# 2.6 L0 邏輯檔案空間原子操作 (支援 core file-space 或快捷別名 fs)
-python yscb.py fs spaces [space] [--owner=<mod>] [--json]         # 列舉已註冊之邏輯空間定義與入口狀態
-python yscb.py fs presets [preset] [--owner=<mod>] [--json]       # 列舉已註冊之過濾預設集定義 (含 @gitignore)
-python yscb.py fs match <path> [space] [--space=<name>] [--json]  # 單點診斷路徑命中入口與納入/排除規則來源
-python yscb.py fs ls [space] [--pattern=<glob>] [--json]          # 零冗餘目錄剪枝走訪列舉空間受納管檔案
-python yscb.py fs hash [target] [--policy=<mode>] [--json]        # 計算單檔或空間級指紋與 Blake2b Merkle Root
+# 2.6 L0 與複合邏輯檔案空間操作 (支援 core file-space 或快捷別名 fs)
+python yscb.py fs spaces [space] [--owner=<mod>] [--json]                    # 列舉已註冊之邏輯空間定義、compose 組合與入口狀態
+python yscb.py fs presets [preset] [--owner=<mod>] [--json]                  # 列舉已註冊之過濾預設集定義 (含 @gitignore)
+python yscb.py fs match <path> [space] [--space=<name>] [--json]             # 單點診斷路徑命中入口與納入/排除規則來源
+python yscb.py fs ls [space] [--pattern=<glob>] [--json]                     # 零冗餘目錄剪枝走訪列舉空間受納管檔案
+python yscb.py fs hash [target] [--policy=<mode>] [--json]                   # 計算單檔或空間級指紋與 Blake2b Merkle Root
+python yscb.py fs status [space] [--space=<name>] [--json]                   # 檢視空間快照世代、Merkle Root 與各消費者游標狀態
+python yscb.py fs scan [space] [--force] [--json]                            # 執行雙階段增量掃描並更新 YFP2 二進位快照
+python yscb.py fs diff [space] [--consumer=<id>] [--ack] [--json]            # 計算或確認消費者與最新快照世代間之新增/修改/刪除差異
+python yscb.py fs clean [space] [--consumer=<id>] [--json]                   # 清理空間二進位快照或重置特定消費者游標
 
 # 3. 套件生命週期管理 (支援單一或多模組單次批次原子交易，正式版預設強制校驗 index.json SHA-256，@build 免檢，或以 --ignore-sha256 跳過)
 python yscb.py install <module>[@version] [<module2>[@version] ...] [--provider="<source>"] [--force] [--ignore-sha256]

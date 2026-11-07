@@ -17,17 +17,35 @@ from core import uri, vfs
 from core.commands import dispatcher
 from core.commands.bags import CmdBags, CmdOption
 from core.space import (
+    BinarySnapshotManager,
+    FileFingerprint,
     HashPolicy,
     PresetConfig,
+    SnapshotState,
     SpaceConfig,
+    SpaceCycleError,
     SpaceError,
     SpaceNotFoundError,
     SpaceRegistry,
+    SpaceScanner,
+    ack,
+    clean,
     compute_file_hash,
+    consume_diff,
+    define_ephemeral_space,
+    diff,
     hash_space_or_path,
     hash_target,
     iter_space_files,
     match_path,
+    merkle_root,
+    patch_files,
+    refresh,
+    reset_cursor,
+    resolve_file_path,
+    scan,
+    snapshot,
+    status,
 )
 from core.validator import ContributesValidator
 from dev.testing.case import YSCBTestCase
@@ -97,7 +115,11 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
                     "hash_policy": "adaptive",
                     "large_file_threshold_mb": 15,
                     "follow_symlinks": False,
-                }
+                },
+                "pure_composite": {
+                    "description": "Pure compose space without entries",
+                    "compose": ["code"],
+                },
             },
         }
         val_res = ContributesValidator.validate(
@@ -105,10 +127,11 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         )
         self.assertTrue(val_res.is_valid, val_res.format_report())
 
-        # Negative validation: invalid hash_policy and missing required entries
+        # Negative validation: invalid hash_policy
         bad_payload = {
             "spaces": {
                 "broken": {
+                    "entries": ["project://src"],
                     "hash_policy": "invalid_policy",
                 }
             }
@@ -117,6 +140,16 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
             "core", bad_payload, donor_mod="test_mod", format_schema=fmt_schema
         )
         self.assertFalse(bad_res.is_valid)
+
+        # SpaceConfig without both entries and compose raises SpaceError
+        with self.assertRaises(SpaceError):
+            SpaceConfig(
+                qualified_name="project/empty_space",
+                owner="project",
+                short_name="empty_space",
+                entries=(),
+                compose=(),
+            )
 
         # SpaceConfig invalid hash_policy and threshold raises SpaceError
         with self.assertRaises(SpaceError):
@@ -708,6 +741,399 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
                     self.assertEqual(mock_dl.call_args[1]["cmd_name"], ["fs", "spaces"])
         finally:
             dispatcher.clear_cache()
+        self.mark_passed()
+
+    def test_compose_algebra_secondary_filtering_and_cycle_detection(self) -> None:
+        """Verify `compose` space union, `entry_path` inheritance in secondary filtering, `match_path` provenance, and `SpaceCycleError`."""
+        dir_a = self.proj_root / "mod_a"
+        dir_b = self.temp_dir / "ext_mod_b" / "nested"
+        dir_own = self.proj_root / "own_dir"
+        dir_a.mkdir(parents=True, exist_ok=True)
+        dir_b.mkdir(parents=True, exist_ok=True)
+        dir_own.mkdir(parents=True, exist_ok=True)
+
+        (dir_a / "a_code.py").write_text("a = 1\n", encoding="utf-8")
+        (dir_a / "a_doc.md").write_text("# doc a\n", encoding="utf-8")
+        (dir_b / "b_code.py").write_text("b = 2\n", encoding="utf-8")
+        (dir_b / "b_secret.py").write_text("secret = 3\n", encoding="utf-8")
+        (dir_own / "own_note.txt").write_text("note\n", encoding="utf-8")
+
+        ext_entry_root = self.temp_dir / "ext_mod_b"
+
+        reg = SpaceRegistry(
+            project_root=self.proj_root,
+            yscb_dir=self.yscb_root,
+            raw_spaces={
+                "mod_a/base": {
+                    "entries": ["project://mod_a"],
+                    "include": ["*.py", "*.md"],
+                },
+                "mod_b/ext": {
+                    "entries": [ext_entry_root.as_posix()],
+                    "include": ["*.py"],
+                },
+                "project/union_all": {
+                    "compose": ["mod_a/base", "mod_b/ext", "missing/non_existent"],
+                    "entries": ["project://own_dir"],
+                    "exclude": ["nested/b_secret.py"],  # Coordinate 2 relative to inherited entry `ext_mod_b`
+                },
+                "project/py_filtered": {
+                    "compose": ["project/union_all"],
+                    "include": ["*.py"],  # Explicit include intersects composed files + own entries
+                },
+            },
+        )
+
+        # 1. Verify unresolved_compose diagnostics
+        union_cfg = reg.resolve_spaces("project/union_all")[0]
+        self.assertEqual(union_cfg.unresolved_compose, ("missing/non_existent",))
+
+        # 2. Verify `project/union_all`: default include=['*'] preserves child includes (`*.py`, `*.md`) + own `own_note.txt`,
+        # while secondary exclude `nested/b_secret.py` (using inherited `ext_mod_b` entry_path) removes `b_secret.py`.
+        union_files = reg.iter_space_files("project/union_all")
+        union_rels = [f.rel_path for f in union_files]
+        self.assertEqual(
+            union_rels,
+            [
+                "ext_mod_b/nested/b_code.py",
+                "mod_a/a_code.py",
+                "mod_a/a_doc.md",
+                "own_dir/own_note.txt",
+            ],
+        )
+
+        # 3. Verify `project/py_filtered`: explicit `include: ["*.py"]` filters out `.md` and `.txt` from composed space
+        py_files = reg.iter_space_files("project/py_filtered")
+        self.assertEqual(
+            [f.rel_path for f in py_files],
+            ["ext_mod_b/nested/b_code.py", "mod_a/a_code.py"],
+        )
+
+        # 4. Verify `match_path` provenance on composed space
+        m_inc = reg.match_path(dir_b / "b_code.py", "project/py_filtered")
+        self.assertTrue(m_inc.matched)
+        self.assertIn("compose:project/union_all", m_inc.details[0].matched_entry or "")
+
+        m_exc = reg.match_path(dir_b / "b_secret.py", "project/union_all")
+        self.assertFalse(m_exc.matched)
+        self.assertEqual(m_exc.details[0].reason, "excluded")
+        self.assertEqual(m_exc.details[0].exclude_rule, "nested/b_secret.py")
+
+        # 5. Verify direct and indirect cycle detection raises SpaceCycleError
+        cycle_reg = SpaceRegistry(
+            project_root=self.proj_root,
+            yscb_dir=self.yscb_root,
+            raw_spaces={
+                "project/c1": {"compose": ["project/c2"]},
+                "project/c2": {"compose": ["project/c1"]},
+            },
+        )
+        with self.assertRaises(SpaceCycleError):
+            cycle_reg.iter_space_files("project/c1")
+        with self.assertRaises(SpaceCycleError):
+            cycle_reg.match_path(dir_a / "a_code.py", "project/c1")
+        self.mark_passed()
+
+    def test_resolve_file_path_and_ephemeral_space_memory_isolation(self) -> None:
+        """Verify `resolve_file_path` navigation and `define_ephemeral_space` zero-disk memory isolation."""
+        nav_dir = self.proj_root / "nav"
+        nav_dir.mkdir(parents=True, exist_ok=True)
+        f_ok = nav_dir / "valid.py"
+        f_ex = nav_dir / "ignored.tmp"
+        f_ok.write_text("ok = True\n", encoding="utf-8")
+        f_ex.write_text("tmp\n", encoding="utf-8")
+
+        ext_dir = self.temp_dir / "ext_lib"
+        ext_dir.mkdir(parents=True, exist_ok=True)
+        f_ext = ext_dir / "util.py"
+        f_ext.write_text("util = 1\n", encoding="utf-8")
+
+        reg = SpaceRegistry(
+            project_root=self.proj_root,
+            yscb_dir=self.yscb_root,
+            raw_spaces={
+                "project/nav_space": {
+                    "entries": ["project://nav", ext_dir.as_posix()],
+                    "include": ["*.py"],
+                    "exclude": ["*.tmp"],
+                }
+            },
+        )
+
+        # 1. resolve_file_path resolves project-relative and external-entry relative paths
+        resolved_ok = resolve_file_path("nav/valid.py", "project/nav_space", registry=reg)
+        self.assertIsNotNone(resolved_ok)
+        self.assertEqual(resolved_ok.resolve(), f_ok.resolve())
+
+        resolved_ext = reg.resolve_file_path("ext_lib/util.py", "project/nav_space")
+        self.assertIsNotNone(resolved_ext)
+        self.assertEqual(resolved_ext.resolve(), f_ext.resolve())
+
+        # Excluded or non-existent files return None
+        self.assertIsNone(reg.resolve_file_path("nav/ignored.tmp", "project/nav_space"))
+        self.assertIsNone(reg.resolve_file_path("nav/missing.py", "project/nav_space"))
+
+        # 2. define_ephemeral_space and verify zero disk persistence in storage.local
+        ephem_cfg = define_ephemeral_space(
+            "temp_view",
+            {"entries": ["project://nav"], "include": ["*.py"]},
+            registry=reg,
+        )
+        self.assertEqual(ephem_cfg.qualified_name, "ephemeral/temp_view")
+        self.assertTrue(ephem_cfg.is_ephemeral)
+        self.assertTrue(reg.is_ephemeral_query("temp_view"))
+
+        storage_dir = self.yscb_root / ".storage.local" / "core" / "space"
+        scanner = SpaceScanner(registry=reg, storage_root=storage_dir)
+
+        with scanner.consume_diff("temp_view", consumer_id="ephem_tester") as diff_res:
+            self.assertEqual(diff_res.added_count, 1)
+            self.assertIn("nav/valid.py", diff_res.detail.added)
+
+        # Verify no .yfp2.bin or cursor json was written to disk for ephemeral space
+        snaps_dir = storage_dir / "snapshots"
+        cursors_dir = storage_dir / "cursors"
+        if snaps_dir.exists():
+            self.assertEqual(list(snaps_dir.glob("*.yfp2.bin")), [])
+        if cursors_dir.exists():
+            self.assertEqual(list(cursors_dir.glob("*.json")), [])
+        self.mark_passed()
+
+    def test_yfp2_snapshot_scanner_patch_files_and_transactional_cursors(self) -> None:
+        """Verify `YFP2` binary snapshot, corruption recovery, `patch_files` multi-space deletion, and `consume_diff` rollback/commit."""
+        work_dir = self.proj_root / "pkg"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        f1 = work_dir / "a.py"
+        f2 = work_dir / "b.py"
+        f1.write_text("v = 1\n", encoding="utf-8")
+        f2.write_text("v = 2\n", encoding="utf-8")
+
+        ext_dir = self.temp_dir / "ext_data"
+        ext_dir.mkdir(parents=True, exist_ok=True)
+        f_ext = ext_dir / "ext.py"
+        f_ext.write_text("ext = 10\n", encoding="utf-8")
+
+        reg = SpaceRegistry(
+            project_root=self.proj_root,
+            yscb_dir=self.yscb_root,
+            raw_spaces={
+                "mod_x/code": {
+                    "entries": ["project://pkg"],
+                    "include": ["*.py"],
+                },
+                "project/code": {
+                    "entries": [ext_dir.as_posix()],
+                    "include": ["*.py"],
+                },
+            },
+        )
+        storage_dir = self.yscb_root / ".storage.local" / "core" / "space"
+        scanner = SpaceScanner(registry=reg, storage_root=storage_dir)
+
+        # 1. Initial scan (generation 0 -> 1) and 100% Merkle root parity with hash_target
+        s_res1 = scan("code", scanner=scanner)
+        self.assertEqual(s_res1.from_generation, 0)
+        self.assertEqual(s_res1.to_generation, 1)
+        self.assertEqual(s_res1.added_count, 3)
+
+        h_res = hash_target(reg, "code")
+        self.assertEqual(s_res1.merkle_root, h_res.merkle_root)
+        self.assertEqual(merkle_root("code", scanner=scanner), h_res.merkle_root)
+
+        # 2. Second scan with no changes keeps generation 1
+        s_res2 = refresh("code", scanner=scanner)
+        self.assertEqual(s_res2.to_generation, 1)
+        self.assertFalse(s_res2.detail.has_changes)
+
+        # 3. Transactional `consume_diff`: exception inside `with` block preserves cursor at 0
+        with self.assertRaises(RuntimeError):
+            with consume_diff("code", consumer_id="indexer", scanner=scanner) as d_fail:
+                self.assertEqual(d_fail.added_count, 3)
+                raise RuntimeError("Simulated indexing failure")
+
+        d_retry = diff("code", consumer_id="indexer", auto_refresh=False, scanner=scanner)
+        self.assertEqual(d_retry.from_generation, 0)
+        self.assertEqual(d_retry.added_count, 3)
+
+        # Normal exit advances cursor to generation 1
+        with consume_diff("code", consumer_id="indexer", auto_refresh=False, scanner=scanner) as d_ok:
+            self.assertEqual(d_ok.to_generation, 1)
+
+        d_after_ack = diff("code", consumer_id="indexer", auto_refresh=False, scanner=scanner)
+        self.assertEqual(d_after_ack.from_generation, 1)
+        self.assertFalse(d_after_ack.detail.has_changes)
+
+        # 4. `patch_files`: modify `f1`, delete external `f_ext`, and add `f3` without full tree walk
+        f1.write_text("v = 100\n", encoding="utf-8")
+        f_ext.unlink()
+        f3 = work_dir / "c.py"
+        f3.write_text("v = 3\n", encoding="utf-8")
+
+        patched_state = patch_files("code", [f1, f_ext, f3], scanner=scanner)
+        self.assertEqual(patched_state.head_generation, 2)
+        active_snaps = snapshot("code", scanner=scanner)
+        self.assertEqual(sorted(active_snaps.keys()), ["pkg/a.py", "pkg/b.py", "pkg/c.py"])
+
+        # Consumer `indexer` sees exact delta from gen 1 -> gen 2
+        d_gen2 = diff("code", consumer_id="indexer", auto_refresh=False, scanner=scanner)
+        self.assertEqual(d_gen2.from_generation, 1)
+        self.assertEqual(d_gen2.to_generation, 2)
+        self.assertEqual(d_gen2.detail.added, {"pkg/c.py"})
+        self.assertEqual(d_gen2.detail.modified, {"pkg/a.py"})
+        self.assertEqual(d_gen2.detail.deleted, {"ext_data/ext.py"})
+
+        # 5. YFP2 binary corruption recovery (checksum mismatch -> safe fallback to gen 0 and self-heal)
+        snap_file = scanner._snapshot_path("code")
+        self.assertTrue(snap_file.is_file())
+        raw_bytes = snap_file.read_bytes()
+        snap_file.write_bytes(raw_bytes[:-1] + bytes([raw_bytes[-1] ^ 0xFF]))
+
+        corrupted_load = BinarySnapshotManager().load_state(snap_file)
+        self.assertEqual(corrupted_load.head_generation, 0)
+
+        healed_res = scanner.scan("code")
+        self.assertEqual(healed_res.to_generation, 1)
+        self.assertEqual(healed_res.added_count, 3)
+
+        # 6. `status`, `ack`, `reset_cursor`, and `clean`
+        ack("code", consumer_id="indexer", scanner=scanner)
+        st_info = status("code", scanner=scanner)
+        self.assertEqual(st_info["status"], "ok")
+        reset_cursor("code", consumer_id="indexer", scanner=scanner)
+        clean_res = clean("code", scanner=scanner)
+        self.assertEqual(clean_res["status"], "ok")
+        self.assertFalse(snap_file.exists())
+        self.mark_passed()
+
+    def test_composite_cli_status_scan_diff_clean(self) -> None:
+        """Verify CLI subcommands `status`, `scan`, `diff --consumer --ack`, and `clean` on both `file-space` and `fs`."""
+        cli_dir = self.proj_root / "composite_cli"
+        cli_dir.mkdir(parents=True, exist_ok=True)
+        f_a = cli_dir / "item.py"
+        f_a.write_text("x = 1\n", encoding="utf-8")
+
+        self._write_project_core_contrib(
+            {
+                "spaces": {
+                    "comp_space": {
+                        "description": "Composite CLI test space",
+                        "entries": ["project://composite_cli"],
+                        "include": ["*.py"],
+                    }
+                }
+            }
+        )
+
+        cli_mod = load_core_cli_module()
+
+        with uri.host_scope(str(self.proj_root), str(self.yscb_root)):
+            # 1. `fs scan comp_space --json`
+            buf_scan = io.StringIO()
+            with redirect_stdout(buf_scan):
+                rc_s = cli_mod.fs_scan(
+                    CmdBags(
+                        raw_cmd="fs scan comp_space --json",
+                        command="fs_scan",
+                        args=["comp_space"],
+                        options={"json": CmdOption(name="json", params=True)},
+                    )
+                )
+            self.assertEqual(rc_s, 0)
+            scan_data = json.loads(buf_scan.getvalue())
+            self.assertEqual(scan_data["status"], "ok")
+            self.assertEqual(scan_data["to_generation"], 1)
+            self.assertEqual(scan_data["added_count"], 1)
+
+            # 2. `fs diff comp_space --consumer=c1 --ack --json`
+            buf_diff = io.StringIO()
+            with redirect_stdout(buf_diff):
+                rc_d = cli_mod.file_space_diff(
+                    CmdBags(
+                        raw_cmd="file-space diff comp_space --consumer=c1 --ack --json",
+                        command="file_space_diff",
+                        args=["comp_space"],
+                        options={
+                            "consumer": CmdOption(name="consumer", params={"id": "c1"}),
+                            "ack": CmdOption(name="ack", params=True),
+                            "json": CmdOption(name="json", params=True),
+                        },
+                    )
+                )
+            self.assertEqual(rc_d, 0)
+            diff_data = json.loads(buf_diff.getvalue())
+            self.assertTrue(diff_data["acked"])
+            self.assertEqual(diff_data["acked_generation"], 1)
+            self.assertEqual(diff_data["added_count"], 1)
+
+            # Subsequent diff for c1 has 0 changes
+            buf_diff2 = io.StringIO()
+            with redirect_stdout(buf_diff2):
+                rc_d2 = cli_mod.fs(
+                    CmdBags(
+                        raw_cmd="fs diff comp_space --consumer=c1 --json",
+                        command="fs",
+                        args=["diff", "comp_space"],
+                        options={
+                            "consumer": CmdOption(name="consumer", params={"id": "c1"}),
+                            "json": CmdOption(name="json", params=True),
+                        },
+                    )
+                )
+            self.assertEqual(rc_d2, 0)
+            diff_data2 = json.loads(buf_diff2.getvalue())
+            self.assertFalse(diff_data2["has_changes"])
+
+            # 3. `fs status comp_space --json`
+            buf_stat = io.StringIO()
+            with redirect_stdout(buf_stat):
+                rc_st = cli_mod.fs_status(
+                    CmdBags(
+                        raw_cmd="fs status comp_space --json",
+                        command="fs_status",
+                        args=["comp_space"],
+                        options={"json": CmdOption(name="json", params=True)},
+                    )
+                )
+            self.assertEqual(rc_st, 0)
+            stat_data = json.loads(buf_stat.getvalue())
+            self.assertEqual(stat_data["status"], "ok")
+            self.assertEqual(stat_data["space_count"], 1)
+
+            # 4. `fs clean comp_space --json`
+            buf_clean = io.StringIO()
+            with redirect_stdout(buf_clean):
+                rc_cl = cli_mod.file_space_clean(
+                    CmdBags(
+                        raw_cmd="file-space clean comp_space --json",
+                        command="file_space_clean",
+                        args=["comp_space"],
+                        options={"json": CmdOption(name="json", params=True)},
+                    )
+                )
+            self.assertEqual(rc_cl, 0)
+            clean_data = json.loads(buf_clean.getvalue())
+            self.assertEqual(clean_data["status"], "ok")
+            self.assertTrue(len(clean_data["removed_snapshots"]) >= 1)
+
+            # 5. Verify OptionResolver orthogonal groups: `--space` and `--consumer` can be used together
+            from core.commands.registry import CommandsRegistry
+            from core.commands.resolver import OptionResolver
+
+            core_contrib_path = Path(__file__).resolve().parents[1] / "contributes" / "core.json"
+            core_contrib_data = json.loads(core_contrib_path.read_text(encoding="utf-8"))
+            cmd_reg = CommandsRegistry()
+            cmd_reg.register_module("core", core_contrib_data.get("commands", {}))
+
+            for cmd_path in ("file-space diff", "fs diff", "file-space clean", "fs clean"):
+                spec = cmd_reg.get_command("core", cmd_path)
+                self.assertIsNotNone(spec)
+                pos_args, opts = OptionResolver.resolve(
+                    spec, ["--space", "comp_space", "--consumer", "c1", "--json"]
+                )
+                self.assertEqual(pos_args, [])
+                self.assertEqual(opts["space"].params, "comp_space")
+                self.assertEqual(opts["consumer"].params, "c1")
+                self.assertTrue(opts["json"].params)
         self.mark_passed()
 
 

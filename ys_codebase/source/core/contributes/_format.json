@@ -40,7 +40,8 @@
     },
     "SpaceDef": {
       "description": "str? @desc(邏輯檔案空間用途說明)",
-      "entries": "list[uri]! | extend @desc(空間入口目錄或單一檔案之語意 URI / 相對路徑清單)",
+      "entries": "list[uri]? | extend @desc(空間入口目錄或單一檔案之語意 URI / 相對路徑清單 (與 compose 至少一者非空))",
+      "compose": "list[str]? | extend @desc(組合既有空間之名稱清單 (支援 <owner>/<space> 或短名聯集 <space>))",
       "presets": "list[str]? | extend @desc(顯式引用之預設規則集名稱清單 (支援 <owner>/<preset>、<preset> 或內建 @gitignore))",
       "include": "list[str]? | extend @desc(納入之三座標匹配樣式清單 (未指定時預設為 [\"*\"]))",
       "exclude": "list[str]? | extend @desc(排除之三座標匹配樣式清單 (優先級恆高於 include))",

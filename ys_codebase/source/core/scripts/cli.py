@@ -686,6 +686,10 @@ def _handle_space_spaces(cmd_bags: CmdBags) -> int:
         for ent in s_dict["resolved_entries"]:
             state_lbl = "OK" if ent["exists"] else "MISSING (exists: false)"
             print(f"    Entry       : {ent['entry']} -> {ent['resolved_path']} [{state_lbl}]")
+        if s_dict.get("compose"):
+            print(f"    Compose     : {', '.join(s_dict['compose'])}")
+        if s_dict.get("unresolved_compose"):
+            print(f"    UnresolvedC : {', '.join(s_dict['unresolved_compose'])}")
         if s_dict["presets"]:
             print(f"    Presets     : {', '.join(s_dict['presets'])}")
         if s_dict["unresolved_presets"]:
@@ -847,6 +851,163 @@ def _handle_space_hash(cmd_bags: CmdBags) -> int:
     return 0
 
 
+def _handle_space_status(cmd_bags: CmdBags) -> int:
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    json_output = cmd_bags.has_option("json")
+    space_opt = cmd_bags.get_option_value("space") or cmd_bags.get_option_value("s")
+    space_query = space_opt or (cmd_bags.args[0] if cmd_bags.args else None)
+
+    from core.space import SpaceError, SpaceScanner
+
+    try:
+        scanner = SpaceScanner()
+        payload = scanner.status(space_query=space_query)
+    except SpaceError as exc:
+        return _emit_space_error(exc, json_output)
+
+    if json_output:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    print("=" * 80)
+    print(f"  YS-Codebase Core File-Space Status ({payload['space_count']} space(s))")
+    print("=" * 80)
+    print(f"  Project Root       : {payload['project_root']}")
+    print(f"  Storage Root       : {payload['storage_root']}")
+    print(f"  Unified Generation : {payload['unified_generation']}")
+    if payload["unified_merkle_root"]:
+        print(f"  Unified MerkleRoot : {payload['unified_merkle_root']}")
+    for s_info in payload["spaces"]:
+        print(f"\n[*] {s_info['qualified_name']} (gen={s_info['head_generation']}, files={s_info['active_file_count']})")
+        if s_info["merkle_root"]:
+            print(f"    Merkle Root : {s_info['merkle_root']}")
+        if s_info.get("compose"):
+            print(f"    Compose     : {', '.join(s_info['compose'])}")
+        if s_info.get("cursors"):
+            for cid, c_rec in s_info["cursors"].items():
+                print(f"    Cursor[{cid}] : acked_gen={c_rec['acked_generation']}")
+    print("\n" + "=" * 80)
+    return 0
+
+
+def _handle_space_scan(cmd_bags: CmdBags) -> int:
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    json_output = cmd_bags.has_option("json")
+    force = cmd_bags.has_option("force") or cmd_bags.has_option("f")
+    space_opt = cmd_bags.get_option_value("space") or cmd_bags.get_option_value("s")
+    space_query = space_opt or (cmd_bags.args[0] if cmd_bags.args else None)
+
+    from core.space import SpaceError, SpaceScanner
+
+    try:
+        scanner = SpaceScanner()
+        res = scanner.scan(space_query=space_query, force=force)
+    except SpaceError as exc:
+        return _emit_space_error(exc, json_output)
+
+    payload = {"status": "ok", **res.to_dict()}
+    if json_output:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    print(f"[core:file-space] Scan Target: {res.space_name} (gen {res.from_generation} -> {res.to_generation})")
+    print(
+        f"  Added: {res.added_count}, Modified: {res.modified_count}, "
+        f"Deleted: {res.deleted_count}, Unchanged: {res.unchanged_count}"
+    )
+    print(f"  Merkle Root : {res.merkle_root}")
+    return 0
+
+
+def _handle_space_diff(cmd_bags: CmdBags) -> int:
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    json_output = cmd_bags.has_option("json")
+    do_ack = cmd_bags.has_option("ack") or cmd_bags.has_option("a")
+    consumer_id = (
+        cmd_bags.get_option_value("consumer")
+        or cmd_bags.get_option_value("c")
+        or "default"
+    )
+    space_opt = cmd_bags.get_option_value("space") or cmd_bags.get_option_value("s")
+    space_query = space_opt or (cmd_bags.args[0] if cmd_bags.args else None)
+
+    from core.space import SpaceError, SpaceScanner
+
+    try:
+        scanner = SpaceScanner()
+        res = scanner.diff(space_query=space_query, consumer_id=consumer_id)
+        acked_gen: Optional[int] = None
+        if do_ack:
+            acked_gen = scanner.ack(
+                space_query=space_query,
+                consumer_id=consumer_id,
+                generation=res.to_generation,
+                space_generations=res.space_generations,
+            )
+    except SpaceError as exc:
+        return _emit_space_error(exc, json_output)
+
+    payload = {
+        "status": "ok",
+        "consumer": consumer_id,
+        "acked": do_ack,
+        "acked_generation": acked_gen,
+        **res.to_dict(),
+    }
+    if json_output:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    print(
+        f"[core:file-space] Diff Target: {res.space_name} [consumer={consumer_id}] "
+        f"(gen {res.from_generation} -> {res.to_generation})"
+    )
+    print(
+        f"  Added: {res.added_count}, Modified: {res.modified_count}, "
+        f"Deleted: {res.deleted_count}, Unchanged: {res.unchanged_count}"
+    )
+    for rel_p in sorted(res.detail.added):
+        print(f"  + {rel_p}")
+    for rel_p in sorted(res.detail.modified):
+        print(f"  M {rel_p}")
+    for rel_p in sorted(res.detail.deleted):
+        print(f"  - {rel_p}")
+    if do_ack:
+        print(f"  [ACK] Consumer '{consumer_id}' advanced to generation {acked_gen}")
+    return 0
+
+
+def _handle_space_clean(cmd_bags: CmdBags) -> int:
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    json_output = cmd_bags.has_option("json")
+    consumer_id = cmd_bags.get_option_value("consumer") or cmd_bags.get_option_value("c")
+    space_opt = cmd_bags.get_option_value("space") or cmd_bags.get_option_value("s")
+    space_query = space_opt or (cmd_bags.args[0] if cmd_bags.args else None)
+
+    from core.space import SpaceError, SpaceScanner
+
+    try:
+        scanner = SpaceScanner()
+        payload = scanner.clean(space_query=space_query, consumer_id=consumer_id)
+    except SpaceError as exc:
+        return _emit_space_error(exc, json_output)
+
+    if json_output:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    print(
+        f"[core:file-space] Clean Target: {payload['space']} "
+        f"(removed_snapshots={len(payload['removed_snapshots'])}, "
+        f"reset_consumers={len(payload['reset_consumers'])})"
+    )
+    return 0
+
+
 def _dispatch_space_group(cmd_bags: CmdBags, group_cmd_name: str) -> int:
     guard_dispatch("core")
     cmd_bags = _normalize_bags(cmd_bags)
@@ -865,12 +1026,17 @@ def _dispatch_space_group(cmd_bags: CmdBags, group_cmd_name: str) -> int:
         "match": _handle_space_match,
         "ls": _handle_space_ls,
         "hash": _handle_space_hash,
+        "status": _handle_space_status,
+        "scan": _handle_space_scan,
+        "diff": _handle_space_diff,
+        "clean": _handle_space_clean,
     }
     handler = handlers.get(sub_cmd)
     if handler is not None:
         return handler(sub_bags)
     print(
-        f"[core:{group_cmd_name}] Unknown subcommand '{sub_cmd}'. Available: spaces, presets, match, ls, hash",
+        f"[core:{group_cmd_name}] Unknown subcommand '{sub_cmd}'. "
+        "Available: spaces, presets, match, ls, hash, status, scan, diff, clean",
         file=sys.stderr,
     )
     return 1
@@ -901,8 +1067,28 @@ def file_space_hash(cmd_bags: CmdBags) -> int:
     return _handle_space_hash(cmd_bags)
 
 
+def file_space_status(cmd_bags: CmdBags) -> int:
+    """Inspect space snapshot generation, Merkle Root, and consumer cursors."""
+    return _handle_space_status(cmd_bags)
+
+
+def file_space_scan(cmd_bags: CmdBags) -> int:
+    """Execute two-stage incremental scan and update YFP2 binary snapshot."""
+    return _handle_space_scan(cmd_bags)
+
+
+def file_space_diff(cmd_bags: CmdBags) -> int:
+    """Compute delta between consumer watermark cursor and current snapshot generation."""
+    return _handle_space_diff(cmd_bags)
+
+
+def file_space_clean(cmd_bags: CmdBags) -> int:
+    """Clean persisted YFP2 binary snapshots and/or reset consumer watermark cursors."""
+    return _handle_space_clean(cmd_bags)
+
+
 def file_space(cmd_bags: CmdBags) -> int:
-    """Core L0 Atomic File-Space Engine (Group Dispatcher)."""
+    """Core L0 Atomic & Composite File-Space Engine (Group Dispatcher)."""
     return _dispatch_space_group(cmd_bags, "file-space")
 
 
@@ -931,6 +1117,26 @@ def fs_hash(cmd_bags: CmdBags) -> int:
     return _handle_space_hash(cmd_bags)
 
 
+def fs_status(cmd_bags: CmdBags) -> int:
+    """Inspect space snapshot generation, Merkle Root, and consumer cursors (shorthand alias)."""
+    return _handle_space_status(cmd_bags)
+
+
+def fs_scan(cmd_bags: CmdBags) -> int:
+    """Execute two-stage incremental scan and update YFP2 binary snapshot (shorthand alias)."""
+    return _handle_space_scan(cmd_bags)
+
+
+def fs_diff(cmd_bags: CmdBags) -> int:
+    """Compute delta between consumer watermark cursor and current snapshot generation (shorthand alias)."""
+    return _handle_space_diff(cmd_bags)
+
+
+def fs_clean(cmd_bags: CmdBags) -> int:
+    """Clean persisted YFP2 binary snapshots and/or reset consumer watermark cursors (shorthand alias)."""
+    return _handle_space_clean(cmd_bags)
+
+
 def fs(cmd_bags: CmdBags) -> int:
-    """Shorthand alias for Core L0 Atomic File-Space Engine (Group Dispatcher)."""
+    """Shorthand alias for Core L0 Atomic & Composite File-Space Engine (Group Dispatcher)."""
     return _dispatch_space_group(cmd_bags, "fs")

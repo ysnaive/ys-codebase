@@ -220,7 +220,7 @@ def _compile_single_rule(
             )
             if resolved_base is None:
                 return None
-            norm_abs = os.path.normcase(resolved_base.as_posix()).rstrip("/")
+            norm_abs = os.path.normcase(resolved_base.as_posix()).replace("\\", "/").rstrip("/")
             return _CompiledRuleEntry(
                 rule=rule,
                 coordinate="uri",
@@ -243,8 +243,10 @@ def _compile_single_rule(
         )
         if resolved_base is None:
             return None
-        base_posix = os.path.normcase(resolved_base.as_posix()).rstrip("/")
-        full_glob = f"{base_posix}/{glob_tail}" if glob_tail else base_posix
+        base_posix = os.path.normcase(resolved_base.as_posix()).replace("\\", "/").rstrip("/")
+        full_glob = os.path.normcase(
+            f"{base_posix}/{glob_tail}" if glob_tail else base_posix
+        ).replace("\\", "/")
         rx = _compile_glob_pattern(full_glob, allow_dir_prefix=allow_dir_prefix)
         return _CompiledRuleEntry(
             rule=rule,
@@ -269,7 +271,7 @@ def _compile_single_rule(
 
     # Coordinate 2: Relative path containing "/" (matches project_rel or entry_rel)
     if "/" in clean_pat:
-        norm_pat = os.path.normcase(clean_pat)
+        norm_pat = os.path.normcase(clean_pat).replace("\\", "/")
         if not has_wildcard:
             return _CompiledRuleEntry(
                 rule=rule,
@@ -286,7 +288,7 @@ def _compile_single_rule(
         )
 
     # Coordinate 3: Pure filename or directory segment name (no "/")
-    norm_pat = os.path.normcase(clean_pat)
+    norm_pat = os.path.normcase(clean_pat).replace("\\", "/")
     if not has_wildcard:
         return _CompiledRuleEntry(
             rule=rule,
@@ -644,7 +646,7 @@ def _compute_norm_rel(target_abs: Path, base_abs: Path) -> Optional[str]:
             return ""
         if rel.startswith(".."):
             return None
-        return os.path.normcase(rel.strip("/"))
+        return os.path.normcase(rel.strip("/")).replace("\\", "/")
     except ValueError:
         return None
 
@@ -660,15 +662,19 @@ class SpaceConfig:
     short_name: str
     description: str = ""
     entries: Tuple[str, ...] = ()
+    compose: Tuple[str, ...] = ()
     presets: Tuple[str, ...] = ()
     include: Tuple[str, ...] = ()
     exclude: Tuple[str, ...] = ()
     hash_policy: HashPolicy = HashPolicy.ADAPTIVE
     large_file_threshold_mb: int = 10
     follow_symlinks: bool = False
+    is_ephemeral: bool = False
+    has_explicit_include: Optional[bool] = None
     effective_include: Tuple[RuleItem, ...] = ()
     effective_exclude: Tuple[RuleItem, ...] = ()
     unresolved_presets: Tuple[str, ...] = ()
+    unresolved_compose: Tuple[str, ...] = ()
     uri_warnings: Tuple[str, ...] = ()
 
     _project_root: Path = field(default_factory=Path.cwd, repr=False, compare=False)
@@ -700,9 +706,15 @@ class SpaceConfig:
             )
 
         self.entries = tuple(str(e) for e in self.entries if str(e).strip())
+        self.compose = tuple(str(c) for c in self.compose if str(c).strip())
         self.presets = tuple(str(p) for p in self.presets if str(p).strip())
         self.include = tuple(str(i) for i in self.include if str(i).strip())
         self.exclude = tuple(str(x) for x in self.exclude if str(x).strip())
+
+        if not self.entries and not self.compose:
+            raise SpaceError(
+                f"Space '{self.qualified_name}' must declare at least one of 'entries' or 'compose'."
+            )
 
         if not self.effective_include:
             raw_inc = self.include if self.include else ("*",)
@@ -715,6 +727,18 @@ class SpaceConfig:
                 RuleItem(raw_pattern=pat, source=f"space:{self.qualified_name}")
                 for pat in self.exclude
             )
+
+        if self.has_explicit_include is None:
+            has_non_wildcard_own = any(
+                pat not in ("*", "**", "**/*") for pat in self.include
+            )
+            has_preset_inc = any(
+                r.source.startswith("preset:") and r.raw_pattern not in ("*", "**", "**/*")
+                for r in self.effective_include
+            )
+            self.has_explicit_include = bool(has_non_wildcard_own or has_preset_inc)
+        else:
+            self.has_explicit_include = bool(self.has_explicit_include)
 
         self._compile_matchers()
 
@@ -761,21 +785,23 @@ class SpaceConfig:
     def _prepare_candidate_coords(
         self, target_abs: Path, entry_abs: Path, project_root: Path
     ) -> Tuple[str, Optional[str], str, List[str], str]:
-        norm_abs = os.path.normcase(target_abs.as_posix()).rstrip("/")
+        norm_abs = os.path.normcase(target_abs.as_posix()).replace("\\", "/").rstrip("/")
         project_rel = _compute_norm_rel(target_abs, project_root)
         entry_rel_opt = _compute_norm_rel(target_abs, entry_abs)
         if entry_rel_opt is None or entry_rel_opt == "":
-            entry_rel = os.path.normcase(target_abs.name)
+            entry_rel = os.path.normcase(target_abs.name).replace("\\", "/")
         else:
             entry_rel = entry_rel_opt
 
-        rel_for_parts = entry_rel if entry_rel else (project_rel or os.path.normcase(target_abs.name))
+        rel_for_parts = (
+            entry_rel if entry_rel else (project_rel or os.path.normcase(target_abs.name).replace("\\", "/"))
+        )
         parts = [p for p in rel_for_parts.split("/") if p and p != "."]
         if project_rel:
             for p in project_rel.split("/"):
                 if p and p != "." and p not in parts:
                     parts.append(p)
-        filename = os.path.normcase(target_abs.name)
+        filename = os.path.normcase(target_abs.name).replace("\\", "/")
         if filename and filename not in parts:
             parts.append(filename)
         return norm_abs, project_rel, entry_rel, parts, filename
@@ -929,9 +955,11 @@ class SpaceConfig:
             "short_name": self.short_name,
             "description": self.description,
             "entries": list(self.entries),
+            "compose": list(self.compose),
             "resolved_entries": resolved_entries_info,
             "presets": list(self.presets),
             "unresolved_presets": list(self.unresolved_presets),
+            "unresolved_compose": list(self.unresolved_compose),
             "uri_warnings": list(self.uri_warnings),
             "include": list(self.include) if self.include else ["*"],
             "exclude": list(self.exclude),
@@ -944,4 +972,5 @@ class SpaceConfig:
             "hash_policy": self.hash_policy.value,
             "large_file_threshold_mb": self.large_file_threshold_mb,
             "follow_symlinks": self.follow_symlinks,
+            "is_ephemeral": self.is_ephemeral,
         }

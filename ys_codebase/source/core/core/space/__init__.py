@@ -1,12 +1,14 @@
 """
-Core File-Space Atomic Engine (`core.space`).
+Core File-Space Atomic & Composite Engine (`core.space`).
 100% Python Standard Library. Zero Third-Party Dependencies.
 Provides `<owner>/<name>` namespace-isolated presets & spaces, `<name>` short-name union addressing,
-explicit `presets` expansion (including `@gitignore`), three-coordinate precompiled rule matching (`match`),
-zero-redundancy `os.scandir` pruned traversal (`ls`), and atomic Blake2b fingerprinting (`hash`).
+`compose` space composition with DAG cycle detection and secondary filtering, explicit `presets` expansion
+(including `@gitignore`), three-coordinate precompiled rule matching (`match`), zero-redundancy `os.scandir`
+pruned traversal (`ls`), atomic Blake2b fingerprinting (`hash`), `YFP2` monotonic generation snapshots (`scan`),
+and multi-consumer transactional watermark cursors (`diff`, `consume_diff`).
 """
 
-from .exceptions import SpaceError, SpaceNotFoundError
+from .exceptions import SpaceCycleError, SpaceError, SpaceNotFoundError
 from .hasher import (
     FileHashEntry,
     SpaceHashResult,
@@ -21,8 +23,30 @@ from .registry import (
     SpaceMatchDetail,
     SpaceRegistry,
     compute_canonical_rel_path,
+    define_ephemeral_space,
     iter_space_files,
     match_path,
+    resolve_file_path,
+)
+from .scanner import (
+    BinarySnapshotManager,
+    CursorStore,
+    FileFingerprint,
+    ScanDiffDetail,
+    ScanDiffResult,
+    SnapshotState,
+    SpaceScanner,
+    ack,
+    clean,
+    consume_diff,
+    diff,
+    merkle_root,
+    patch_files,
+    refresh,
+    reset_cursor,
+    scan,
+    snapshot,
+    status,
 )
 from .schema import (
     CompiledRuleSet,
@@ -35,26 +59,47 @@ from .schema import (
 )
 
 __all__ = [
+    "BinarySnapshotManager",
     "CompiledRuleSet",
+    "CursorStore",
+    "FileFingerprint",
     "FileHashEntry",
     "GitignoreEvaluator",
     "HashPolicy",
     "MatchExplainResult",
     "PresetConfig",
     "RuleItem",
+    "ScanDiffDetail",
+    "ScanDiffResult",
+    "SnapshotState",
     "SpaceConfig",
+    "SpaceCycleError",
     "SpaceError",
     "SpaceFileEntry",
     "SpaceHashResult",
     "SpaceMatchDetail",
     "SpaceNotFoundError",
     "SpaceRegistry",
+    "SpaceScanner",
+    "ack",
+    "clean",
     "compute_canonical_rel_path",
     "compute_file_hash",
     "compute_space_merkle_root",
+    "consume_diff",
+    "define_ephemeral_space",
+    "diff",
     "hash_space_or_path",
     "hash_target",
     "iter_space_files",
     "match_path",
+    "merkle_root",
+    "patch_files",
+    "refresh",
+    "reset_cursor",
+    "resolve_file_path",
     "resolve_semantic_or_rel_path",
+    "scan",
+    "snapshot",
+    "status",
 ]

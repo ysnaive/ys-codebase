@@ -68,7 +68,7 @@ class TestDistributionLifecycle(YSCBTestCase):
                 self.assertIn("v1.0", f.read())
 
             valid_script = os.path.join(self.temp_dir, "valid.py")
-            with open(valid_script, "w", encoding="utf-8") as f:
+            with open(valid_script, "w", encoding="utf-8", newline="\n") as f:
                 f.write("# Updated v2.0\n__version__ = '2.0.0.0'\ndef main():\n    print('v2.0')\n    return 0\n")
 
             ret_ok = yscb.cmd_self_update([f"--url={valid_script}"])

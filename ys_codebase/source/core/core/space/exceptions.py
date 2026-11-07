@@ -9,3 +9,8 @@ class SpaceError(Exception):
 
 class SpaceNotFoundError(SpaceError):
     """Raised when a queried space or preset identifier is not registered."""
+
+
+class SpaceCycleError(SpaceError):
+    """Raised when a circular reference is detected in space `compose` definitions."""
+

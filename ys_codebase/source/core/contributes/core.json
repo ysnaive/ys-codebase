@@ -709,7 +709,7 @@
         }
       },
       "file-space": {
-        "description": "Core L0 atomic file-space engine (spaces, presets, match, ls, hash)",
+        "description": "Core L0 atomic & composite file-space engine (spaces, presets, match, ls, hash, status, scan, diff, clean)",
         "tier": "safe",
         "server_compatible": true,
         "cmd": {
@@ -908,17 +908,195 @@
               ],
               "cons": []
             }
+          },
+          "status": {
+            "description": "Inspect space snapshot generation, Merkle Root, and consumer watermark cursors",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "space": {
+                "description": "Optional space query (<owner>/<space> or short name <space>)",
+                "required": false
+              }
+            },
+            "options": {
+              "scope": {
+                "space": {
+                  "description": "Target space query (<owner>/<space> or short name <space>)",
+                  "alias": ["s"],
+                  "args": {
+                    "name": {
+                      "description": "Space name"
+                    }
+                  }
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "檢視空間快照世代、Merkle Root 與各消費者水位游標狀態: python yscb.py core file-space status [space] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "scan": {
+            "description": "Execute two-stage incremental scan and update YFP2 binary snapshot",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "space": {
+                "description": "Optional space query (<owner>/<space> or short name <space>)",
+                "required": false
+              }
+            },
+            "options": {
+              "scope": {
+                "space": {
+                  "description": "Target space query (<owner>/<space> or short name <space>)",
+                  "alias": ["s"],
+                  "args": {
+                    "name": {
+                      "description": "Space name"
+                    }
+                  }
+                }
+              },
+              "flags": {
+                "force": {
+                  "description": "Force full re-hash ignoring cached mtime/size",
+                  "alias": ["f"]
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "執行雙階段增量指紋掃描並更新 YFP2 二進位快照: python yscb.py core file-space scan [space] [--force] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "diff": {
+            "description": "Compute delta between consumer watermark cursor and current snapshot generation",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "space": {
+                "description": "Optional space query (<owner>/<space> or short name <space>)",
+                "required": false
+              }
+            },
+            "options": {
+              "scope": {
+                "space": {
+                  "description": "Target space query (<owner>/<space> or short name <space>)",
+                  "alias": ["s"],
+                  "args": {
+                    "name": {
+                      "description": "Space name"
+                    }
+                  }
+                }
+              },
+              "consumer": {
+                "consumer": {
+                  "description": "Consumer watermark identifier (default: 'default')",
+                  "alias": ["c"],
+                  "args": {
+                    "id": {
+                      "description": "Consumer ID"
+                    }
+                  }
+                }
+              },
+              "flags": {
+                "ack": {
+                  "description": "Acknowledge and advance consumer watermark cursor to current generation",
+                  "alias": ["a"]
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "檢視或確認消費者與最新快照世代間之新增/修改/刪除差異: python yscb.py core file-space diff [space] [--consumer=default] [--ack] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "clean": {
+            "description": "Clean persisted YFP2 binary snapshots and/or reset consumer watermark cursors",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "space": {
+                "description": "Optional space query (<owner>/<space> or short name <space>)",
+                "required": false
+              }
+            },
+            "options": {
+              "scope": {
+                "space": {
+                  "description": "Target space query (<owner>/<space> or short name <space>)",
+                  "alias": ["s"],
+                  "args": {
+                    "name": {
+                      "description": "Space name"
+                    }
+                  }
+                }
+              },
+              "consumer": {
+                "consumer": {
+                  "description": "Reset only the specified consumer watermark cursor",
+                  "alias": ["c"],
+                  "args": {
+                    "id": {
+                      "description": "Consumer ID"
+                    }
+                  }
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "清理空間二進位快照或重置特定消費者游標: python yscb.py core file-space clean [space] [--consumer=<id>] [--json]"
+              ],
+              "cons": []
+            }
           }
         },
         "usage": {
           "pros": [
-            "Core 內建 L0 檔案空間原子引擎: python yscb.py core file-space <spaces|presets|match|ls|hash>"
+            "Core 內建 L0 與複合檔案空間引擎: python yscb.py core file-space <spaces|presets|match|ls|hash|status|scan|diff|clean>"
           ],
           "cons": []
         }
       },
       "fs": {
-        "description": "Shorthand alias for Core L0 atomic file-space engine (spaces, presets, match, ls, hash)",
+        "description": "Shorthand alias for Core L0 atomic & composite file-space engine (spaces, presets, match, ls, hash, status, scan, diff, clean)",
         "tier": "safe",
         "server_compatible": true,
         "cmd": {
@@ -1117,11 +1295,189 @@
               ],
               "cons": []
             }
+          },
+          "status": {
+            "description": "Inspect space snapshot generation, Merkle Root, and consumer watermark cursors",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "space": {
+                "description": "Optional space query (<owner>/<space> or short name <space>)",
+                "required": false
+              }
+            },
+            "options": {
+              "scope": {
+                "space": {
+                  "description": "Target space query (<owner>/<space> or short name <space>)",
+                  "alias": ["s"],
+                  "args": {
+                    "name": {
+                      "description": "Space name"
+                    }
+                  }
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "檢視空間快照世代、Merkle Root 與各消費者水位游標狀態: python yscb.py fs status [space] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "scan": {
+            "description": "Execute two-stage incremental scan and update YFP2 binary snapshot",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "space": {
+                "description": "Optional space query (<owner>/<space> or short name <space>)",
+                "required": false
+              }
+            },
+            "options": {
+              "scope": {
+                "space": {
+                  "description": "Target space query (<owner>/<space> or short name <space>)",
+                  "alias": ["s"],
+                  "args": {
+                    "name": {
+                      "description": "Space name"
+                    }
+                  }
+                }
+              },
+              "flags": {
+                "force": {
+                  "description": "Force full re-hash ignoring cached mtime/size",
+                  "alias": ["f"]
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "執行雙階段增量指紋掃描並更新 YFP2 二進位快照: python yscb.py fs scan [space] [--force] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "diff": {
+            "description": "Compute delta between consumer watermark cursor and current snapshot generation",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "space": {
+                "description": "Optional space query (<owner>/<space> or short name <space>)",
+                "required": false
+              }
+            },
+            "options": {
+              "scope": {
+                "space": {
+                  "description": "Target space query (<owner>/<space> or short name <space>)",
+                  "alias": ["s"],
+                  "args": {
+                    "name": {
+                      "description": "Space name"
+                    }
+                  }
+                }
+              },
+              "consumer": {
+                "consumer": {
+                  "description": "Consumer watermark identifier (default: 'default')",
+                  "alias": ["c"],
+                  "args": {
+                    "id": {
+                      "description": "Consumer ID"
+                    }
+                  }
+                }
+              },
+              "flags": {
+                "ack": {
+                  "description": "Acknowledge and advance consumer watermark cursor to current generation",
+                  "alias": ["a"]
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "檢視或確認消費者與最新快照世代間之新增/修改/刪除差異: python yscb.py fs diff [space] [--consumer=default] [--ack] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "clean": {
+            "description": "Clean persisted YFP2 binary snapshots and/or reset consumer watermark cursors",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "space": {
+                "description": "Optional space query (<owner>/<space> or short name <space>)",
+                "required": false
+              }
+            },
+            "options": {
+              "scope": {
+                "space": {
+                  "description": "Target space query (<owner>/<space> or short name <space>)",
+                  "alias": ["s"],
+                  "args": {
+                    "name": {
+                      "description": "Space name"
+                    }
+                  }
+                }
+              },
+              "consumer": {
+                "consumer": {
+                  "description": "Reset only the specified consumer watermark cursor",
+                  "alias": ["c"],
+                  "args": {
+                    "id": {
+                      "description": "Consumer ID"
+                    }
+                  }
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "清理空間二進位快照或重置特定消費者游標: python yscb.py fs clean [space] [--consumer=<id>] [--json]"
+              ],
+              "cons": []
+            }
           }
         },
         "usage": {
           "pros": [
-            "Core 內建 L0 檔案空間原子引擎快捷別名: python yscb.py fs <spaces|presets|match|ls|hash>"
+            "Core 內建 L0 與複合檔案空間引擎快捷別名: python yscb.py fs <spaces|presets|match|ls|hash|status|scan|diff|clean>"
           ],
           "cons": []
         }
