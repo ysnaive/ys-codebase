@@ -41,3 +41,35 @@ def on_pre_cli_dispatch(ctx=None) -> bool:
         print(f"[agents-workflow:hook] Warning: Failed during on_pre_cli_dispatch: {e}", file=sys.stderr)
         return False
 
+
+def on_register_file_spaces(ctx=None) -> bool:
+    """當 SpaceRegistry 重載時，依當前活躍 release_target 投影路徑動態註冊 agents-workflow/gitignore 空間。"""
+    try:
+        registry = ctx.get("registry") if isinstance(ctx, dict) else getattr(ctx, "registry", None)
+        if registry is None:
+            return False
+        register_fn = getattr(registry, "register_space", None) or getattr(
+            registry, "define_ephemeral_space", None
+        )
+        if not callable(register_fn):
+            return False
+
+        proj_root_obj = getattr(registry, "project_root", None)
+        proj_root = str(proj_root_obj) if proj_root_obj is not None else None
+        publisher = ReleasePublisher()
+        rel_paths = publisher.collect_gitignore_patterns(proj_root=proj_root)
+        register_fn(
+            "agents-workflow/gitignore",
+            {
+                "description": "agents-workflow 活躍發布目標物化檔案與私有目錄忽略規則",
+                "entries": ["project://"],
+                "include": rel_paths,
+                "watch": False,
+            },
+        )
+        return True
+    except Exception as e:
+        print(f"[agents-workflow:hook] Warning: Failed during on_register_file_spaces: {e}", file=sys.stderr)
+        return False
+
+

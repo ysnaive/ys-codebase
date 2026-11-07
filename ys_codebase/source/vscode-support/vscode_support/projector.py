@@ -318,6 +318,70 @@ class SettingsProjector:
             return self._is_under_yscb_venv(norm, proj_root, allow_root=False)
         return False
 
+    @staticmethod
+    def _translate_exclude_to_vscode_glob(raw_pattern: str) -> Optional[str]:
+        """將 `core.space` 之 `workspace` 排除規則（語意 URI 如 `yscb://.modules/**` 或裸目錄名）轉譯為 VS Code `**/...` Glob。"""
+        clean = str(raw_pattern or "").strip().replace("\\", "/")
+        if not clean:
+            return None
+        if "://" in clean:
+            after = clean.split("://", 1)[1].strip("/")
+            if after.endswith("/**"):
+                after = after[:-3].strip("/")
+            elif after.endswith("/*"):
+                after = after[:-2].strip("/")
+            if not after or "*" in after or "?" in after:
+                return None
+            return f"**/{after}/**"
+        if clean.startswith("**/") and clean.endswith("/**"):
+            return clean
+        clean_stripped = clean.strip("/")
+        if clean_stripped.endswith("/**"):
+            clean_stripped = clean_stripped[:-3].strip("/")
+        if (
+            clean_stripped
+            and "/" not in clean_stripped
+            and "*" not in clean_stripped
+            and "?" not in clean_stripped
+            and clean_stripped not in (".DS_Store", "Thumbs.db")
+        ):
+            return f"**/{clean_stripped}/**"
+        return None
+
+    def _resolve_workspace_exclude_patterns(
+        self,
+        proj_root: Optional[str] = None,
+        *,
+        include_all: bool = False,
+    ) -> List[str]:
+        """從 `core.space` 讀取 `workspace` 空間之 `effective_exclude`，搭配 `ANALYSIS_EXCLUDE_PATTERNS` 作為兜底基底。"""
+        translated: List[str] = []
+        try:
+            from core.space import SpaceRegistry
+
+            reg = SpaceRegistry(project_root=proj_root, yscb_dir=self.yscb_dir)
+            ws_spaces = reg.resolve_spaces("workspace")
+            for sp_cfg in ws_spaces:
+                rules = getattr(sp_cfg, "effective_exclude", None) or getattr(sp_cfg, "exclude", ())
+                for rule_item in rules:
+                    raw_pat = getattr(rule_item, "raw_pattern", rule_item)
+                    glob_pat = self._translate_exclude_to_vscode_glob(str(raw_pat))
+                    if glob_pat and glob_pat not in translated:
+                        translated.append(glob_pat)
+        except Exception:
+            translated = []
+
+        merged = list(self.ANALYSIS_EXCLUDE_PATTERNS)
+        if include_all:
+            for pat in translated:
+                if pat not in merged:
+                    merged.append(pat)
+            return merged
+        translated_set = set(translated)
+        if not translated_set:
+            return merged
+        return [pat for pat in self.ANALYSIS_EXCLUDE_PATTERNS if pat in translated_set or pat in merged]
+
     def _apply_vscode_settings_merge(
         self,
         settings: Dict[str, Any],
@@ -375,9 +439,10 @@ class SettingsProjector:
                 managed_excludes[sec] = pattern
 
         has_modules_extra = any("/.modules/" in str(p).replace("\\", "/") for p in new_managed_paths)
+        base_analysis_excludes = self._resolve_workspace_exclude_patterns(proj_root)
         active_analysis_exclude = [
             pat
-            for pat in self.ANALYSIS_EXCLUDE_PATTERNS
+            for pat in base_analysis_excludes
             if not (has_modules_extra and pat == "**/.modules/**")
         ]
 

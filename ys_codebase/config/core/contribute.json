@@ -3,6 +3,7 @@
     "source": {
       "description": "專案業務源碼空間",
       "entries": ["module.source://"],
+      "presets": ["workspace", "!gitignore"],
       "exclude": [
         ".git",
         ".venv",

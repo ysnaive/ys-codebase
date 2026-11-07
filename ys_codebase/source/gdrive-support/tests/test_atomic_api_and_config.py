@@ -1025,6 +1025,32 @@ class TestGDriveAtomicApiAndConfig(YSCBTestCase):
         self.assertIsNotNone(moved_child)
         assert moved_child is not None
         self.assertEqual(moved_child.rel_path, "dir_dst/nested/sub_item.md")
+
+        # 9. Verify scripts/hook.core.py on_register_file_spaces registers gdrive-support/cloud when repo_sync.enable is True
+        hook_spec = importlib.util.spec_from_file_location(
+            "_gdrive_support_hook_core", _pkg_root / "scripts" / "hook.core.py"
+        )
+        assert hook_spec is not None and hook_spec.loader is not None
+        hook_mod = importlib.util.module_from_spec(hook_spec)
+        hook_spec.loader.exec_module(hook_mod)
+
+        cfg_dir = self.proj_dir / "config" / "gdrive-support"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        (cfg_dir / "config.project.json").write_text(
+            json.dumps({"repo_sync": {"enable": True, "auto_sync": True}}),
+            encoding="utf-8",
+        )
+        registered_spaces: dict = {}
+
+        class _DummyReg:
+            project_root = self.proj_dir
+
+            def register_space(self, name: str, cfg: dict) -> None:
+                registered_spaces[name] = cfg
+
+        self.assertTrue(hook_mod.on_register_file_spaces({"registry": _DummyReg()}))
+        self.assertIn("gdrive-support/cloud", registered_spaces)
+        self.assertTrue(registered_spaces["gdrive-support/cloud"]["watch"])
         self.mark_passed()
 
 

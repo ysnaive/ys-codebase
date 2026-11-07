@@ -151,26 +151,29 @@ with uri.module_scope("core"):
 
 ### 3.7 根目錄單一 `.gitignore` 統一收斂引擎 (`core.gitignore`)
 微內核於 [`core/gitignore.py`](../../ys_codebase/source/core/core/gitignore.py) 提供零外部依賴的 `.gitignore` 託管區塊收斂引擎：
-- **根目錄單檔 SSOT (`project://.gitignore`) 與語意 URI 自動錨定**：將各模組於 `contributes/core.json` 靜態宣告之 `"gitignore"` 清單、專案級 `config://core/contribute.json` 規則，以及執行期透過 `core.gitignore.register_dynamic(module, patterns)` 註冊之動態規則（持久化於 `storage.local://core/gitignore_dynamic.json`）統一換算為相對於 `project://` 之錨定路徑，寫入 `project://.gitignore` 單一託管區塊（`# === YSCB MANAGED GITIGNORE BEGIN ===` ~ `# === YSCB MANAGED GITIGNORE END ===`）。
-- **`# [<module>]` 分組可觀測性與卸載自癒**：託管區塊內部強制按模組來源輸出 `# [<module>]` 子標頭（`core` 置頂，其餘模組按字母序，`project` 置底）；當模組移除（`act_delete`）或重載（`act_reload`）時自動清除已卸載模組之靜態與動態忽略規則，並自動清理過時之子目錄 `.gitignore`（如舊版 `yscb://.gitignore` 與 `.vscode/schemas/.gitignore`）。
+- **根目錄單檔 SSOT (`project://.gitignore`) 與 `spaces.gitignore` 正向空間驅動**：將各模組於 `contributes/core.json` 宣告之 `"spaces": {"gitignore": {...}}`、專案級 `config://core/contribute.json` 宣告之 `project/gitignore`、各模組於 `scripts/hook.core.py` 實作 `on_register_file_spaces` 註冊之 `<module>/gitignore`，以及執行期透過 `core.gitignore.register(module, patterns)` 注入之 `<module>/gitignore` 統一解析：將 `effective_include` 轉換為相對於 `project://` 之忽略規則、將 `effective_exclude` 轉換為 `!<pattern>` 豁免規則，寫入 `project://.gitignore` 單一託管區塊（`# === YSCB MANAGED GITIGNORE BEGIN ===` ~ `# === YSCB MANAGED GITIGNORE END ===`）。
+- **`# [<module>]` 分組可觀測性與卸載自癒**：託管區塊內部強制按模組來源輸出 `# [<module>]` 子標頭（`core` 置頂，其餘模組按字母序，`project` 置底）；當模組移除（`act_delete`）或重載（`act_reload`）時自動清除已卸載模組之忽略規則，並自動清理過時之子目錄 `.gitignore`（如舊版 `yscb://.gitignore` 與 `.vscode/schemas/.gitignore`）。
 
-### 3.8 L0 與複合邏輯檔案空間引擎 (`core.space`)
+### 3.8 統一邏輯檔案空間與複合快照引擎 (`core.space`)
 微內核於 [`core/space/`](../../ys_codebase/source/core/core/space/__init__.py) 提供純標準庫、零外部依賴的邏輯檔案空間、指紋快照與消費者交易游標引擎：
-- **`<owner>/<name>` 命名空間隔離與 `<name>` 短名自動聯集尋址**：各模組於 `contributes/core.json` 宣告之 `presets` 與 `spaces` 自動註冊為 `<module>/<name>`，專案於 `config://core/contribute.json` 宣告者自動註冊為 `project/<name>`，各來源獨立保存互不覆蓋；查詢時指定 `<owner>/<name>` 精準返回單一來源定義，指定短名 `<name>` 則自動執行結果集聯集（Union）。
-- **`compose` 空間組合代數、DAG 環路偵測與二次過濾**：支援以 `compose: ["<owner>/<space>", "<space>"]` 組合既有空間（純組合空間可省略 `entries`，但 `entries` 與 `compose` 至少一者非空）；具備呼叫堆疊環路檢測（拋出 `SpaceCycleError`），並保留子空間檔案之原始 `entry_path` 參與父組合空間之二次過濾（`exclude` 全體剔除；顯式非 `["*"]` 之 `include` 白名單交集）。
-- **顯式預設集 (`presets`) 與內建 `@gitignore`**：支援顯式引用預設規則集（無隱式全域預設過濾），當 `presets` 包含 `"@gitignore"` 時自動載入並評估 `project://.gitignore`（含 `!` 負向豁免規則）。
-- **三座標預編譯匹配 (`match`)、目錄剪枝走訪 (`ls`)、相對路徑反解 (`resolve_file_path`) 與原子指紋 (`hash`)**：
-  1. `match_path`：支援語意 URI 前綴、含 `/` 之相對路徑（同時相容 `project_rel` 與 `entry_rel`）及不含 `/` 之檔名/目錄區段名，提供免全盤掃描之單點規則與 `compose` 來源解釋。
-  2. `iter_space_files` & `resolve_file_path`：基於 `os.scandir` 目錄級 `exclude` 剪枝與 `DirEntry.stat()` 複用，跨入口與聯集空間自動依實體路徑去重，並支援將空間內標準相對路徑安全反解為磁碟 `Path`。
+- **統一 `SpaceConfig` 模型、四階段兩趟編譯與 `/<short-name>` 合成空間**：全面廢除獨立 `PresetConfig`，統一由 `SpaceConfig` 承載所有空間與純規則模板（允許 `entries=()` 且 `compose=()` 皆為空，單獨求值時結果為 $\emptyset$）。`SpaceRegistry._reload()` 以四階段優先序（`1. Module Contributes` $\to$ `2. Project Config` $\to$ `3. on_register_file_spaces Event` $\to$ `4. In-Process Runtime register_space`）收集定義：Pass 1 對同名 `<owner>/<short-name>` 執行規則層絕對聯集（`[*] ∪ [any] = [*]`；未指定 `<owner>/` 之 Runtime 注入預設歸入 `__unknown__/<short-name>`）；Pass 2 為所有 `<short-name>` 自動生成無擁有者合成空間 `/<short-name>`（`owner=""`，別名 `<short-name>`，快照鍵 `synthetic__<short-name>`，其 `compose` 自動匯聚所有 `<owner>/<short-name>`）。
+- **`presets` 規則引用與 `!<space>` 反向規則排除（含局部子樹剪枝）**：`presets` 引用其他空間以拉取過濾規則（正向引用合併目標顯式 `include` 與 `exclude`；反向引用 `!<space>` 將命中目標 `include` 且未命中目標 `exclude` 之檔案視為當前空間排除）。在 `os.scandir` 走訪時，若目錄 $D$ 命中負向 preset 之 `include`，且負向 preset 之 `effective_exclude` 無任何可能匹配 $D$ 子樹之豁免規則（`has_potential_descendant_match == False`），立即對 $D$ 執行 $O(1)$ 子樹剪枝。
+- **`compose` 檔案集代數、無母空間二次過濾與 `!<space>` 差集運算**：母空間自身之 `include` 與 `exclude` **僅作用於母空間自身的 `entries`**，絕不對 `compose` 子空間產出之檔案執行二次過濾。`compose` 支援正向聯集與 `!<space>` 負向差集（$\text{Result} = (\text{OwnEntries} \cup \bigcup \text{PosCompose}) \setminus \bigcup \text{NegCompose}$），並於 `presets` 與 `compose` 展開時執行 DFS 環路偵測（拋出 `SpaceCycleError`）。
+- **內建核心空間 `gitignore` 與 `workspace`**：
+  1. `gitignore`（`core/gitignore` 與 `/gitignore`）：正向定義「哪些檔案屬於被 Git 忽略的集合」（`entries: ["project://"]`, `watch: False`），各模組可透過 `presets: ["!gitignore"]` 或 `compose: ["!gitignore"]` 排除忽略檔，並直接驅動 `core.gitignore` 物化 `project://.gitignore`。
+  2. `workspace`（`core/workspace` 與 `/workspace`）：定義專案最外層遞迴掃描天花板（`entries: ["project://"]`, `include: ["*"]`, `exclude: [非專案中間產物]`），作為 `resolve_spaces(None)` 與 `scan(None)` 之預設目標，並供 `vscode-support` 投影至 `.vscode/settings.json`。
+- **對稱三座標預編譯匹配 (`match`)、目錄剪枝走訪 (`ls`)、相對路徑反解 (`resolve_file_path`) 與原子指紋 (`hash`)**：
+  1. `CompiledRuleSet` 與 `match_path`：`include` 與 `exclude` 100% 對稱採用 `allow_dir_prefix=True` 與 `match_any_segment_for_name=True`，支援語意 URI 前綴、含 `/` 之相對路徑（同時相容 `project_rel` 與 `entry_rel`）及不含 `/` 之檔名/目錄區段名，提供免全盤掃描之單點規則與 `compose` 來源解釋。
+  2. `iter_space_files` & `resolve_file_path`：基於 `os.scandir` 目錄級剪枝與 `DirEntry.stat()` 複用，跨入口與聯集空間自動依實體路徑去重，並支援將空間內標準相對路徑安全反解為磁碟 `Path`。
   3. `compute_file_hash` / `hash_target`：支援 `stat_only`、`adaptive`（大檔頭中尾稀疏取樣 Blake2b）與 `full_hash` 策略，計算決定性 16-byte Blake2b `merkle_root`。
 - **`YFP2` 單調世代二進位快照 (`SpaceScanner`) 與多消費者交易游標 (`CursorStore` / `consume_diff`)**：
-  1. `BinarySnapshotManager` 將空間快照以 `b"YFP2"` 二進位格式與 16-byte Blake2b Checksum 原子持久化於 `storage.local://core/space/snapshots/<target_key>.yfp2.bin`（動態臨時空間 `define_ephemeral_space` 則嚴格隔離於記憶體中，零磁碟落盤；並由進程級共享預設單例 `get_default_registry` / `get_default_scanner` 確保跨頂層 SDK 呼叫與背景 Watcher 共享動態空間狀態）。
-  2. `scan` / `refresh` 採 Stage 1 `(mtime_ns, size)` + `10ms` Racy-Clean 防護與 Stage 2 `core.space.hasher` 增量計算；`patch_files` 支援單點髒路徑（含已刪除之外部入口檔案）免全盤掃描局部修補，並透過 `sync_dependent_snapshots` 自動連動更新既有之 `<short_name>` 短名聯集、`compose` 父組合空間與 `__all__` 統合快照。
-  3. `CursorStore` 於 `storage.local://core/space/cursors/<consumer_id>.json` 維護多消費者獨立水位世代，並提供 `consume_diff(space_query, consumer_id)` At-Least-Once 交易式 Context Manager（區塊正常退出自動 `ack`，發生例外自動保留原游標）。
+  1. `BinarySnapshotManager` 將空間快照以 `b"YFP2"` 二進位格式與 16-byte Blake2b Checksum 原子持久化於 `storage.local://core/space/snapshots/<target_key>.yfp2.bin`（並由進程級共享預設單例 `get_default_registry` / `get_default_scanner` 確保跨頂層 SDK 呼叫與背景 Watcher 共享執行期註冊空間 `register_space`）。
+  2. `scan` / `refresh` 採 Stage 1 `(mtime_ns, size)` + `10ms` Racy-Clean 防護與 Stage 2 `core.space.hasher` 增量計算；`patch_files` 支援單點髒路徑免全盤掃描局部修補，並透過 `sync_dependent_snapshots` 自動連動更新既有之 `/<short_name>` 合成空間、`compose` 父組合空間與 `workspace` 統合快照。
+  3. `CursorStore` 於 `storage.local://core/space/cursors/<consumer_id>.json` 維護多消費者獨立水位世代，並提供 `consume_diff(space_query, consumer_id)` At-Least-Once 交易式 Context Manager。
 - **Watcher 推拉混合協調、`watch=True` 全空間預設監聽與 `on_file_space_changed` 事件廣播 (`core.space.watcher`)**：
-  1. **全空間預設監聽 (`watch=True`)**：所有靜態空間（`contributes/_format.json` 之 `SpaceDef.watch`）與執行期動態空間（`define_ephemeral_space(name, config, *, watch=None)`）皆一律預設開啟 `watch=True`（可顯式傳入 `watch=False` 停用）；當動態空間以 `watch=True` 註冊且同進程 Watcher 活躍時，自動通知 Watcher 將其入口目錄納入 `watchdog` 監聽。
-  2. **無感背景加速與純標準庫退化**：`core` 本體維持 100% 純標準庫零外部依賴；當常駐 `server` 啟動 [`CoreSpaceWatcherServiceWorker`](../server/hot_reload_and_services.md) 時，透過 `cache://core/space/watcher_state.json` 與 `.watcher_dirty` 跨進程信標（以及同進程 `flush_space_now` 即時排空）無感加速快照更新；當 `server` 未啟動時，100% 本地獨立執行 Pull-based 掃描。
-  3. **進程內訂閱與跨模組事件廣播**：提供 `subscribe(callback, *, spaces=None)`（同時支援 `<owner>/<space>` 與 `<space>` 短名雙軌過濾）與 `broadcast_file_space_changed`，透過 `core.events.broadcast("on_file_space_changed", payload, emit_module="core")` 觸發各模組之 `scripts/hook.core.py`。
+  1. **全空間預設監聽 (`watch=True`)**：除 `gitignore` 預設 `watch=False` 外，所有靜態空間與執行期空間（`register_space(name, config, *, watch=None)`）皆預設開啟 `watch=True`；當同進程 Watcher 活躍時，自動通知 Watcher 將其入口目錄納入 `watchdog` 監聽。
+  2. **無感背景加速與純標準庫退化**：`core` 本體維持 100% 純標準庫零外部依賴；當常駐 `server` 啟動 [`CoreSpaceWatcherServiceWorker`](../server/hot_reload_and_services.md) 時，透過 `cache://core/space/watcher_state.json` 與 `.watcher_dirty` 跨進程信標無感加速快照更新；當 `server` 未啟動時，100% 本地獨立執行 Pull-based 掃描。
+  3. **進程內訂閱與跨模組事件廣播**：提供 `subscribe(callback, *, spaces=None)`（同時支援 `<owner>/<space>`、`/short` 與 `<space>` 短名過濾）與 `broadcast_file_space_changed`，透過 `core.events.broadcast("on_file_space_changed", payload, emit_module="core")` 觸發各模組之 `scripts/hook.core.py`。
 
 ---
 
@@ -192,10 +195,9 @@ python yscb.py gitignore status [--json]    # 檢視 project://.gitignore 託管
 python yscb.py gitignore sync [--json]      # 手動強制收斂同步全模組忽略規則至 project://.gitignore
 
 # 2.6 L0 與複合邏輯檔案空間操作 (支援 core file-space 或快捷別名 fs)
-python yscb.py fs spaces [space] [--owner=<mod>] [--json]                    # 列舉已註冊之邏輯空間定義、compose 組合與入口狀態
-python yscb.py fs presets [preset] [--owner=<mod>] [--json]                  # 列舉已註冊之過濾預設集定義 (含 @gitignore)
+python yscb.py fs spaces [space] [--owner=<mod>] [--json]                    # 列舉已註冊之邏輯空間定義 (含 /<short> 合成空間)、presets/compose 與入口狀態
 python yscb.py fs match <path> [space] [--space=<name>] [--json]             # 單點診斷路徑命中入口與納入/排除規則來源
-python yscb.py fs ls [space] [--pattern=<glob>] [--json]                     # 零冗餘目錄剪枝走訪列舉空間受納管檔案
+python yscb.py fs ls [space] [--pattern=<glob>] [--json]                     # 零冗餘目錄剪枝走訪列舉空間受納管檔案 (預設 workspace)
 python yscb.py fs hash [target] [--policy=<mode>] [--json]                   # 計算單檔或空間級指紋與 Blake2b Merkle Root
 python yscb.py fs status [space] [--space=<name>] [--json]                   # 檢視空間快照世代、Merkle Root 與各消費者游標狀態
 python yscb.py fs scan [space] [--force] [--json]                            # 執行雙階段增量掃描並更新 YFP2 二進位快照

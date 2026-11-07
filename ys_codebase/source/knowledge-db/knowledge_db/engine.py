@@ -404,7 +404,7 @@ class KnowledgeEngine:
         """取得已宣告 `space_weights` 且納入資料庫索引之邏輯空間映射表。"""
         try:
             result: Dict[str, SpaceConfig] = {}
-            for sp in self.space_manager.list_spaces():
+            for sp in self.space_manager.list_spaces(include_synthetic=False):
                 if sp.qualified_name in self.space_weights or sp.short_name in self.space_weights:
                     result[self._resolve_space_display_key(sp)] = sp
             return result

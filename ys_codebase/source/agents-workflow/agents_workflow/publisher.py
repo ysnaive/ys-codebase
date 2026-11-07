@@ -1110,17 +1110,13 @@ class ReleasePublisher:
             "fingerprint": combined_fingerprint,
         }
 
-    def sync_gitignore(
+    def collect_gitignore_patterns(
         self,
         active_targets: Optional[List[str]] = None,
         published_files: Optional[Any] = None,
         proj_root: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        非破壞性軟合併 project://.gitignore 中的 YSCB 管理區塊。
-        精準針對 agents-workflow 發布之個別檔案與 .yscb 私有目錄進行忽略，
-        避免整目錄忽略 (.agents/) 干擾使用者存放於該目錄下的自訂 skills/rules/檔案。
-        """
+    ) -> List[str]:
+        """收集當前活躍發布目標與雙軌清冊對應之受管 gitignore 相對路徑清單。"""
         if proj_root is None:
             proj_root = self.host_dir
             if uri:
@@ -1175,7 +1171,32 @@ class ReleasePublisher:
                     p_clean = f"/{p_clean}"
                 ignore_patterns.add(p_clean)
 
-        sorted_patterns = sorted(list(ignore_patterns))
+        return sorted(list(ignore_patterns))
+
+    def sync_gitignore(
+        self,
+        active_targets: Optional[List[str]] = None,
+        published_files: Optional[Any] = None,
+        proj_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        非破壞性軟合併 project://.gitignore 中的 YSCB 管理區塊。
+        精準針對 agents-workflow 發布之個別檔案與 .yscb 私有目錄進行忽略，
+        避免整目錄忽略 (.agents/) 干擾使用者存放於該目錄下的自訂 skills/rules/檔案。
+        """
+        if proj_root is None:
+            proj_root = self.host_dir
+            if uri:
+                try:
+                    proj_root = uri.resolve("project://", interactive=False)
+                except Exception:
+                    pass
+
+        sorted_patterns = self.collect_gitignore_patterns(
+            active_targets=active_targets,
+            published_files=published_files,
+            proj_root=proj_root,
+        )
 
         try:
             from core import gitignore as gi_mod

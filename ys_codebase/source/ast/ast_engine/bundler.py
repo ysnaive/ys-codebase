@@ -634,6 +634,16 @@ class SemanticBundler:
         self._last_bundle_unique_files: Dict[str, Tuple[Path, str, Set[str]]] = {}
         self._last_bundle_spaces: Set[str] = set()
 
+    def _has_valid_space_entries(self, sp: SpaceConfig) -> bool:
+        if hasattr(self.space_manager, "collect_all_entry_paths"):
+            try:
+                q_name = sp.qualified_name or sp.short_name
+                if q_name:
+                    return bool(self.space_manager.collect_all_entry_paths(q_name))
+            except Exception:
+                pass
+        return bool(sp.entries or sp.compose)
+
     def _resolve_target_spaces(
         self, spaces: Optional[Iterable[Union[str, SpaceConfig]]] = None
     ) -> List[SpaceConfig]:
@@ -641,7 +651,10 @@ class SemanticBundler:
             return [
                 sp
                 for sp in self.space_manager.list_spaces()
-                if sp.short_name != "cloud" and not sp.qualified_name.endswith("/cloud")
+                if sp.owner != ""
+                and sp.short_name not in ("cloud", "gitignore", "workspace")
+                and not sp.qualified_name.endswith(("/cloud", "/gitignore", "/workspace"))
+                and self._has_valid_space_entries(sp)
             ]
         resolved: List[SpaceConfig] = []
         seen_qnames: Set[str] = set()

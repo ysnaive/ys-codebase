@@ -176,27 +176,39 @@ def normalize_pattern(
     return f"!{clean_glob}" if is_negated else clean_glob
 
 
-def _load_dynamic_registry(
-    proj_root: str,
-    is_custom_root: bool,
-) -> Dict[str, List[str]]:
-    """Loads persisted dynamic patterns per module."""
+def _migrate_legacy_dynamic_cache_if_needed(is_custom_root: bool) -> Dict[str, List[str]]:
+    """
+    Reads and removes legacy `storage.local://core/gitignore_dynamic.json` if present,
+    migrating its patterns into the in-memory store without creating new cache files.
+    """
     if is_custom_root:
-        norm_key = os.path.normcase(os.path.abspath(proj_root))
-        return dict(_CUSTOM_ROOT_DYNAMIC_STORE.get(norm_key, {}))
-
+        return {}
+    migrated: Dict[str, List[str]] = {}
     try:
         if vfs.exists(DYNAMIC_CACHE_URI):
             data = vfs.read_json(DYNAMIC_CACHE_URI)
             if isinstance(data, dict):
-                out: Dict[str, List[str]] = {}
                 for k, v in data.items():
                     if isinstance(k, str) and k.strip() and isinstance(v, list):
-                        out[k.strip()] = [str(x) for x in v if isinstance(x, str) and x.strip()]
-                return out
+                        migrated[k.strip()] = [str(x) for x in v if isinstance(x, str) and x.strip()]
+            vfs.remove(DYNAMIC_CACHE_URI, missing_ok=True)
     except Exception:
         pass
-    return {}
+    return migrated
+
+
+def _load_dynamic_registry(
+    proj_root: str,
+    is_custom_root: bool,
+) -> Dict[str, List[str]]:
+    """Loads active runtime-registered patterns per module from memory."""
+    norm_key = os.path.normcase(os.path.abspath(proj_root))
+    store = _CUSTOM_ROOT_DYNAMIC_STORE.setdefault(norm_key, {})
+    if not is_custom_root and not store:
+        migrated = _migrate_legacy_dynamic_cache_if_needed(is_custom_root)
+        if migrated:
+            store.update(migrated)
+    return dict(store)
 
 
 def _save_dynamic_registry(
@@ -204,29 +216,59 @@ def _save_dynamic_registry(
     proj_root: str,
     is_custom_root: bool,
 ) -> None:
-    """Persists dynamic patterns per module to `storage.local://core/gitignore_dynamic.json` (or memory for custom root)."""
-    if is_custom_root:
-        norm_key = os.path.normcase(os.path.abspath(proj_root))
-        _CUSTOM_ROOT_DYNAMIC_STORE[norm_key] = dict(registry)
-        return
-
-    try:
-        vfs.makedirs("storage.local://core", exist_ok=True)
-        vfs.write_json(DYNAMIC_CACHE_URI, registry, indent=2, atomic=True)
-    except Exception:
-        pass
+    """Stores runtime-registered patterns per module in memory and removes legacy disk cache if present."""
+    norm_key = os.path.normcase(os.path.abspath(proj_root))
+    _CUSTOM_ROOT_DYNAMIC_STORE[norm_key] = dict(registry)
+    if not is_custom_root:
+        try:
+            if vfs.exists(DYNAMIC_CACHE_URI):
+                vfs.remove(DYNAMIC_CACHE_URI, missing_ok=True)
+        except Exception:
+            pass
 
 
 def _extract_patterns_from_contrib_payload(payload: Any) -> List[str]:
-    """Extracts the `"gitignore"` list from a `contributes/core.json` or `contribute.json` payload."""
+    """
+    Extracts ignore rules from `spaces.gitignore` (`include` -> positive, `exclude` -> `!<pattern>`)
+    as well as legacy top-level `"gitignore"` list from a `contributes/core.json` or `contribute.json` payload.
+    """
     if not isinstance(payload, dict):
         return []
-    raw = payload.get("gitignore")
-    if raw is None and isinstance(payload.get("core"), dict):
-        raw = payload["core"].get("gitignore")
-    if isinstance(raw, list):
-        return [str(x) for x in raw if isinstance(x, str) and x.strip()]
-    return []
+    body = payload.get("core") if isinstance(payload.get("core"), dict) else payload
+    if not isinstance(body, dict):
+        return []
+
+    patterns: List[str] = []
+
+    spaces_sec = body.get("spaces")
+    if isinstance(spaces_sec, dict):
+        gi_space = spaces_sec.get("gitignore")
+        if isinstance(gi_space, dict):
+            raw_inc = gi_space.get("include")
+            if isinstance(raw_inc, list):
+                for item in raw_inc:
+                    if isinstance(item, str) and item.strip():
+                        s = item.strip()
+                        if s not in patterns:
+                            patterns.append(s)
+            raw_exc = gi_space.get("exclude")
+            if isinstance(raw_exc, list):
+                for item in raw_exc:
+                    if isinstance(item, str) and item.strip():
+                        s = item.strip()
+                        neg_s = s if s.startswith("!") else f"!{s}"
+                        if neg_s not in patterns:
+                            patterns.append(neg_s)
+
+    raw_legacy = body.get("gitignore")
+    if isinstance(raw_legacy, list):
+        for item in raw_legacy:
+            if isinstance(item, str) and item.strip():
+                s = item.strip()
+                if s not in patterns:
+                    patterns.append(s)
+
+    return patterns
 
 
 def _collect_static_contributes_by_module(
@@ -326,6 +368,43 @@ def _sort_module_keys(keys: Iterable[str]) -> List[str]:
     return ordered
 
 
+def _collect_space_registry_gitignore_groups(
+    proj_root: str,
+    yscb_root: str,
+    is_custom_root: bool,
+) -> Dict[str, List[str]]:
+    """
+    Collects `<owner>/gitignore` space definitions from `SpaceRegistry`
+    (including `on_register_file_spaces` hooks and runtime registrations).
+    """
+    grouped: Dict[str, List[str]] = {}
+    try:
+        from core.space import SpaceRegistry, get_default_registry
+
+        if not is_custom_root:
+            reg = get_default_registry(project_root=proj_root, yscb_dir=yscb_root)
+        else:
+            reg = SpaceRegistry(project_root=proj_root, yscb_dir=yscb_root)
+
+        for s_cfg in reg.list_spaces():
+            if s_cfg.short_name != "gitignore" or not s_cfg.owner:
+                continue
+            bucket = grouped.setdefault(s_cfg.owner, [])
+            for pat in s_cfg.include:
+                s = str(pat).strip()
+                if s and s != "*" and s not in bucket:
+                    bucket.append(s)
+            for pat in s_cfg.exclude:
+                s = str(pat).strip()
+                if s:
+                    neg_s = s if s.startswith("!") else f"!{s}"
+                    if neg_s not in bucket:
+                        bucket.append(neg_s)
+    except Exception:
+        pass
+    return grouped
+
+
 def collect_grouped_patterns(
     proj_root: Optional[str] = None,
     yscb_root: Optional[str] = None,
@@ -335,28 +414,41 @@ def collect_grouped_patterns(
     """
     eff_proj, eff_yscb, is_custom = _resolve_roots(proj_root=proj_root, yscb_root=yscb_root)
     static_groups = _collect_static_contributes_by_module(eff_proj, eff_yscb, is_custom)
+    space_groups = _collect_space_registry_gitignore_groups(eff_proj, eff_yscb, is_custom)
     dynamic_groups = _load_dynamic_registry(eff_proj, is_custom)
 
     combined_raw: Dict[str, List[str]] = {}
     for mod, pats in static_groups.items():
         combined_raw.setdefault(mod, []).extend(pats)
+    for mod, pats in space_groups.items():
+        bucket = combined_raw.setdefault(mod, [])
+        for p in pats:
+            if p not in bucket:
+                bucket.append(p)
     for mod, pats in dynamic_groups.items():
-        combined_raw.setdefault(mod, []).extend(pats)
+        bucket = combined_raw.setdefault(mod, [])
+        for p in pats:
+            if p not in bucket:
+                bucket.append(p)
 
     normalized_groups: Dict[str, List[str]] = {}
     for mod in _sort_module_keys(combined_raw.keys()):
-        norm_set: List[str] = []
+        pos_list: List[str] = []
+        neg_list: List[str] = []
         seen: Set[str] = set()
         for raw_p in combined_raw[mod]:
             norm_p = normalize_pattern(raw_p, eff_proj, eff_yscb)
             if norm_p and norm_p not in seen:
                 seen.add(norm_p)
-                norm_set.append(norm_p)
-        if norm_set:
+                if norm_p.startswith("!"):
+                    neg_list.append(norm_p)
+                else:
+                    pos_list.append(norm_p)
+        if pos_list or neg_list:
             if mod == "core":
-                normalized_groups[mod] = norm_set
+                normalized_groups[mod] = pos_list + neg_list
             else:
-                normalized_groups[mod] = sorted(norm_set)
+                normalized_groups[mod] = sorted(pos_list) + sorted(neg_list)
 
     return normalized_groups
 
@@ -457,6 +549,54 @@ def _cleanup_obsolete_nested_gitignores(proj_root: str, yscb_root: str) -> List[
     return cleaned_paths
 
 
+def _sync_runtime_gitignore_space(
+    mod_name: str,
+    raw_patterns: List[str],
+    eff_proj: str,
+    eff_yscb: str,
+    is_custom: bool,
+) -> None:
+    """Bridges runtime gitignore pattern updates into `core.space` for the active workspace."""
+    if is_custom:
+        return
+    try:
+        from core.space import get_default_registry
+
+        reg = get_default_registry(project_root=eff_proj, yscb_dir=eff_yscb)
+        q_name = f"{mod_name}/gitignore"
+        if not raw_patterns:
+            unreg_fn = getattr(reg, "unregister_space", None)
+            if callable(unreg_fn):
+                unreg_fn(q_name)
+            return
+
+        inc_list: List[str] = []
+        exc_list: List[str] = []
+        for pat in raw_patterns:
+            if pat.startswith("!"):
+                core_p = pat[1:].strip()
+                if core_p and core_p not in exc_list:
+                    exc_list.append(core_p)
+            else:
+                if pat not in inc_list:
+                    inc_list.append(pat)
+
+        reg_fn = getattr(reg, "register_space", None) or getattr(reg, "define_ephemeral_space", None)
+        if callable(reg_fn):
+            reg_fn(
+                q_name,
+                {
+                    "entries": ["project://"],
+                    "include": inc_list,
+                    "exclude": exc_list,
+                    "watch": False,
+                },
+                watch=False,
+            )
+    except Exception:
+        pass
+
+
 def register_dynamic(
     module: str,
     patterns: Iterable[str],
@@ -466,8 +606,8 @@ def register_dynamic(
     yscb_root: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Registers or replaces dynamic gitignore patterns for `module` (mandatory non-empty string).
-    Persists to `storage.local://core/gitignore_dynamic.json` and optionally triggers `sync()`.
+    Registers or replaces runtime gitignore patterns for `module` (mandatory non-empty string).
+    Bridges to `<module>/gitignore` in `core.space` and optionally triggers `sync()`.
     """
     mod_name = _validate_module_name(module)
     eff_proj, eff_yscb, is_custom = _resolve_roots(proj_root=proj_root, yscb_root=yscb_root)
@@ -487,6 +627,7 @@ def register_dynamic(
     else:
         reg.pop(mod_name, None)
     _save_dynamic_registry(reg, eff_proj, is_custom)
+    _sync_runtime_gitignore_space(mod_name, clean_list, eff_proj, eff_yscb, is_custom)
 
     if sync_now:
         return sync(proj_root=eff_proj, yscb_root=eff_yscb)
@@ -507,7 +648,7 @@ def clear_dynamic(
     yscb_root: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Removes all dynamic gitignore patterns registered by `module` and optionally triggers `sync()`.
+    Removes all runtime gitignore patterns registered by `module` and optionally triggers `sync()`.
     """
     mod_name = _validate_module_name(module)
     eff_proj, eff_yscb, is_custom = _resolve_roots(proj_root=proj_root, yscb_root=yscb_root)
@@ -516,6 +657,7 @@ def clear_dynamic(
     removed = mod_name in reg
     reg.pop(mod_name, None)
     _save_dynamic_registry(reg, eff_proj, is_custom)
+    _sync_runtime_gitignore_space(mod_name, [], eff_proj, eff_yscb, is_custom)
 
     if sync_now:
         res = sync(proj_root=eff_proj, yscb_root=eff_yscb)
@@ -529,6 +671,58 @@ def clear_dynamic(
         "cleared_module": mod_name,
         "had_dynamic_entries": removed,
     }
+
+
+def register(
+    module: str,
+    patterns: Iterable[str],
+    *,
+    sync_now: bool = True,
+    proj_root: Optional[str] = None,
+    yscb_root: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Alias for `register_dynamic` supporting positive rules and `!<pattern>` exemptions."""
+    return register_dynamic(
+        module,
+        patterns,
+        sync_now=sync_now,
+        proj_root=proj_root,
+        yscb_root=yscb_root,
+    )
+
+
+def unregister(
+    module: str,
+    patterns: Optional[Iterable[str]] = None,
+    *,
+    sync_now: bool = True,
+    proj_root: Optional[str] = None,
+    yscb_root: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Unregisters specific runtime gitignore patterns (or all patterns when `patterns` is None)
+    for `module` and optionally triggers `sync()`.
+    """
+    if patterns is None:
+        return clear_dynamic(
+            module,
+            sync_now=sync_now,
+            proj_root=proj_root,
+            yscb_root=yscb_root,
+        )
+    mod_name = _validate_module_name(module)
+    eff_proj, eff_yscb, is_custom = _resolve_roots(proj_root=proj_root, yscb_root=yscb_root)
+    remove_set = {str(p).strip() for p in patterns if isinstance(p, str) and str(p).strip()}
+    reg = _load_dynamic_registry(eff_proj, is_custom)
+    existing = list(reg.get(mod_name, []))
+    remaining = [p for p in existing if p not in remove_set]
+    return register_dynamic(
+        mod_name,
+        remaining,
+        sync_now=sync_now,
+        proj_root=eff_proj,
+        yscb_root=eff_yscb,
+    )
 
 
 def sync(

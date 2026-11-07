@@ -1,5 +1,5 @@
 """
-Data models, precompiled three-coordinate rule matchers, and @gitignore evaluator for core.space.
+Data models and precompiled symmetric three-coordinate rule matchers for core.space.
 """
 
 from __future__ import annotations
@@ -152,29 +152,6 @@ class RuleItem:
 
 
 @dataclass(frozen=True)
-class PresetConfig:
-    """Immutable configuration of a named filter preset."""
-
-    qualified_name: str
-    owner: str
-    short_name: str
-    description: str = ""
-    include: Tuple[str, ...] = ()
-    exclude: Tuple[str, ...] = ()
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize PresetConfig into a dictionary."""
-        return {
-            "qualified_name": self.qualified_name,
-            "owner": self.owner,
-            "short_name": self.short_name,
-            "description": self.description,
-            "include": list(self.include),
-            "exclude": list(self.exclude),
-        }
-
-
-@dataclass(frozen=True)
 class _CompiledRuleEntry:
     """Internal precompiled representation of a single RuleItem."""
 
@@ -193,7 +170,7 @@ def _compile_single_rule(
     yscb_dir: Optional[Path] = None,
     *,
     owner_module: Optional[str] = None,
-    allow_dir_prefix: bool = False,
+    allow_dir_prefix: bool = True,
     pattern_override: Optional[str] = None,
 ) -> Optional[_CompiledRuleEntry]:
     raw = str(pattern_override if pattern_override is not None else (rule.raw_pattern or "")).strip()
@@ -272,6 +249,24 @@ def _compile_single_rule(
     # Coordinate 2: Relative path containing "/" (matches project_rel or entry_rel)
     if "/" in clean_pat:
         norm_pat = os.path.normcase(clean_pat).replace("\\", "/")
+        if norm_pat.endswith("/**") and not any(
+            ch in norm_pat[:-3] for ch in ("*", "?", "[")
+        ):
+            base_seg = norm_pat[:-3].strip("/")
+            if "/" not in base_seg:
+                return _CompiledRuleEntry(
+                    rule=rule,
+                    coordinate="name",
+                    exact_val=base_seg,
+                    dir_only=True,
+                )
+            return _CompiledRuleEntry(
+                rule=rule,
+                coordinate="rel",
+                exact_val=base_seg,
+                prefix_val=f"{base_seg}/" if allow_dir_prefix else None,
+                dir_only=True,
+            )
         if not has_wildcard:
             return _CompiledRuleEntry(
                 rule=rule,
@@ -386,105 +381,9 @@ def _entry_matches_candidate(
     return False
 
 
-class GitignoreEvaluator:
-    """
-    Ordered evaluator for `project://.gitignore` rules supporting `#` comments
-    and `!` negative exemption rules.
-    """
-
-    def __init__(self, rules: Sequence[Tuple[_CompiledRuleEntry, bool]]) -> None:
-        self._rules: Tuple[Tuple[_CompiledRuleEntry, bool], ...] = tuple(rules)
-
-    @classmethod
-    def from_gitignore_file(
-        cls,
-        project_root: Path,
-        yscb_dir: Optional[Path] = None,
-    ) -> "GitignoreEvaluator":
-        gi_path = project_root / ".gitignore"
-        if not gi_path.is_file():
-            return cls(())
-        try:
-            text = gi_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return cls(())
-        return cls.from_lines(text.splitlines(), project_root, yscb_dir)
-
-    @classmethod
-    def from_lines(
-        cls,
-        lines: Sequence[str],
-        project_root: Path,
-        yscb_dir: Optional[Path] = None,
-    ) -> "GitignoreEvaluator":
-        compiled: List[Tuple[_CompiledRuleEntry, bool]] = []
-        for raw_line in lines:
-            stripped = raw_line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            is_neg = stripped.startswith("!")
-            pat_body = stripped[1:].strip() if is_neg else stripped
-            if not pat_body:
-                continue
-            rule_item = RuleItem(
-                raw_pattern=stripped,
-                source="preset:@gitignore",
-                is_negated=is_neg,
-            )
-            comp = _compile_single_rule(
-                rule_item,
-                project_root,
-                yscb_dir,
-                allow_dir_prefix=True,
-                pattern_override=pat_body,
-            )
-            if comp is not None:
-                compiled.append((comp, is_neg))
-        return cls(compiled)
-
-    @property
-    def has_rules(self) -> bool:
-        return bool(self._rules)
-
-    def evaluate(
-        self,
-        *,
-        norm_abs: str,
-        project_rel: Optional[str],
-        entry_rel: str,
-        parts: Sequence[str],
-        filename: str,
-        is_dir: bool,
-    ) -> Optional[RuleItem]:
-        """
-        Return the last matching non-negated `.gitignore` RuleItem if the path is ignored,
-        or None if not ignored (or exempted by a subsequent `!` rule).
-        """
-        if not self._rules:
-            return None
-        active_ignore: Optional[RuleItem] = None
-        for comp, is_neg in self._rules:
-            matched = _entry_matches_candidate(
-                comp,
-                norm_abs=norm_abs,
-                project_rel=project_rel,
-                entry_rel=entry_rel,
-                parts=parts,
-                filename=filename,
-                is_dir=is_dir,
-                match_any_segment_for_name=True,
-            )
-            if matched:
-                if is_neg:
-                    active_ignore = None
-                else:
-                    active_ignore = comp.rule
-        return active_ignore
-
-
 class CompiledRuleSet:
     """
-    Precompiled filter engine combining fast $O(1)$ set/prefix checks with full
+    Precompiled symmetric filter engine combining fast $O(1)$ set/prefix checks with full
     rule provenance lookup for explainability (`match`).
     """
 
@@ -496,11 +395,9 @@ class CompiledRuleSet:
         *,
         owner_module: Optional[str] = None,
         is_exclude: bool = False,
-        gitignore_eval: Optional[GitignoreEvaluator] = None,
     ) -> None:
         self.rules: Tuple[RuleItem, ...] = tuple(rules)
         self.is_exclude = is_exclude
-        self.gitignore_eval = gitignore_eval
 
         compiled_list: List[_CompiledRuleEntry] = []
         exact_names: Set[str] = set()
@@ -519,7 +416,7 @@ class CompiledRuleSet:
                 project_root,
                 yscb_dir,
                 owner_module=owner_module,
-                allow_dir_prefix=is_exclude,
+                allow_dir_prefix=True,
             )
             if comp is None:
                 continue
@@ -531,13 +428,13 @@ class CompiledRuleSet:
                     exact_names.add(comp.exact_val)
                 elif comp.ext_suffix is not None:
                     ext_suffixes.append(comp.ext_suffix)
-            elif comp.coordinate == "rel" and not comp.dir_only:
-                if comp.exact_val is not None:
+            elif comp.coordinate == "rel":
+                if comp.exact_val is not None and not comp.dir_only:
                     rel_exact.add(comp.exact_val)
-                if comp.prefix_val is not None:
+                if comp.prefix_val is not None and comp.regex is None:
                     rel_prefixes.append(comp.prefix_val)
-            elif comp.coordinate == "uri" and not comp.dir_only:
-                if comp.exact_val is not None:
+            elif comp.coordinate == "uri":
+                if comp.exact_val is not None and not comp.dir_only:
                     uri_exact.add(comp.exact_val)
                 if comp.prefix_val is not None and comp.regex is None:
                     uri_prefixes.append(comp.prefix_val)
@@ -561,8 +458,7 @@ class CompiledRuleSet:
         filename: str,
         is_dir: bool,
     ) -> Optional[RuleItem]:
-        """Return the first matching RuleItem (or @gitignore rule if applicable), or None."""
-        match_any_seg = self.is_exclude
+        """Return the first matching RuleItem, or None."""
         for comp in self._compiled:
             if _entry_matches_candidate(
                 comp,
@@ -572,19 +468,9 @@ class CompiledRuleSet:
                 parts=parts,
                 filename=filename,
                 is_dir=is_dir,
-                match_any_segment_for_name=match_any_seg,
+                match_any_segment_for_name=True,
             ):
                 return comp.rule
-
-        if self.is_exclude and self.gitignore_eval is not None:
-            return self.gitignore_eval.evaluate(
-                norm_abs=norm_abs,
-                project_rel=project_rel,
-                entry_rel=entry_rel,
-                parts=parts,
-                filename=filename,
-                is_dir=is_dir,
-            )
         return None
 
     def matches_fast(
@@ -600,16 +486,10 @@ class CompiledRuleSet:
         """Fast boolean check during directory walk (`ls`)."""
         if self._has_match_all:
             return True
-        if self.is_exclude:
-            if self._exact_names and any(p in self._exact_names for p in parts):
-                return True
-            if self._ext_suffixes and any(p.endswith(self._ext_suffixes) for p in parts):
-                return True
-        else:
-            if self._exact_names and filename in self._exact_names:
-                return True
-            if self._ext_suffixes and filename.endswith(self._ext_suffixes):
-                return True
+        if self._exact_names and any(p in self._exact_names for p in parts):
+            return True
+        if self._ext_suffixes and any(p.endswith(self._ext_suffixes) for p in parts):
+            return True
 
         if self._rel_exact:
             if (project_rel and project_rel in self._rel_exact) or (
@@ -637,6 +517,52 @@ class CompiledRuleSet:
             )
             is not None
         )
+
+    def has_potential_descendant_match(
+        self, norm_abs: str, project_rel: Optional[str], entry_rel: str
+    ) -> bool:
+        """
+        Return True if any rule in this rule set could potentially match a file or subdirectory
+        under the directory represented by `(norm_abs, project_rel, entry_rel)`.
+        Used for safe local subtree pruning when evaluating negated presets (`!<space>`).
+        """
+        if not self._compiled:
+            return False
+        dir_abs_prefix = f"{norm_abs.rstrip('/')}/"
+        rels = [r.strip("/") for r in (project_rel, entry_rel) if r]
+        rel_prefixes = [f"{r}/" for r in rels if r]
+
+        for comp in self._compiled:
+            if comp.coordinate == "all":
+                return True
+            if comp.coordinate == "name":
+                if comp.ext_suffix is None and comp.exact_val is None:
+                    return True
+                continue
+            if comp.regex is not None:
+                return True
+            if comp.coordinate == "uri":
+                if comp.exact_val and comp.exact_val.startswith(dir_abs_prefix):
+                    return True
+                if comp.prefix_val and (
+                    comp.prefix_val.startswith(dir_abs_prefix)
+                    or dir_abs_prefix.startswith(comp.prefix_val)
+                ):
+                    return True
+            elif comp.coordinate == "rel":
+                for rp in rel_prefixes:
+                    if comp.exact_val and comp.exact_val.startswith(rp):
+                        return True
+                    if comp.prefix_val and (
+                        comp.prefix_val.startswith(rp) or rp.startswith(comp.prefix_val)
+                    ):
+                        return True
+                for r in rels:
+                    if comp.exact_val and f"/{r}/".endswith(f"/{comp.exact_val.split('/', 1)[0]}/"):
+                        return True
+                    if comp.prefix_val and f"/{r}/".endswith(f"/{comp.prefix_val.split('/', 1)[0]}/"):
+                        return True
+        return False
 
 
 def _compute_norm_rel(target_abs: Path, base_abs: Path) -> Optional[str]:
@@ -670,10 +596,9 @@ class SpaceConfig:
     large_file_threshold_mb: int = 10
     follow_symlinks: bool = False
     watch: bool = True
-    is_ephemeral: bool = False
-    has_explicit_include: Optional[bool] = None
     effective_include: Tuple[RuleItem, ...] = ()
     effective_exclude: Tuple[RuleItem, ...] = ()
+    negated_presets: Tuple["SpaceConfig", ...] = ()
     unresolved_presets: Tuple[str, ...] = ()
     unresolved_compose: Tuple[str, ...] = ()
     uri_warnings: Tuple[str, ...] = ()
@@ -682,7 +607,6 @@ class SpaceConfig:
     _yscb_dir: Optional[Path] = field(default=None, repr=False, compare=False)
     _compiled_include: Optional[CompiledRuleSet] = field(default=None, init=False, repr=False, compare=False)
     _compiled_exclude: Optional[CompiledRuleSet] = field(default=None, init=False, repr=False, compare=False)
-    _gitignore_eval: Optional[GitignoreEvaluator] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if isinstance(self.hash_policy, str):
@@ -712,11 +636,6 @@ class SpaceConfig:
         self.include = tuple(str(i) for i in self.include if str(i).strip())
         self.exclude = tuple(str(x) for x in self.exclude if str(x).strip())
 
-        if not self.entries and not self.compose:
-            raise SpaceError(
-                f"Space '{self.qualified_name}' must declare at least one of 'entries' or 'compose'."
-            )
-
         if not self.effective_include:
             raw_inc = self.include if self.include else ("*",)
             self.effective_include = tuple(
@@ -728,18 +647,6 @@ class SpaceConfig:
                 RuleItem(raw_pattern=pat, source=f"space:{self.qualified_name}")
                 for pat in self.exclude
             )
-
-        if self.has_explicit_include is None:
-            has_non_wildcard_own = any(
-                pat not in ("*", "**", "**/*") for pat in self.include
-            )
-            has_preset_inc = any(
-                r.source.startswith("preset:") and r.raw_pattern not in ("*", "**", "**/*")
-                for r in self.effective_include
-            )
-            self.has_explicit_include = bool(has_non_wildcard_own or has_preset_inc)
-        else:
-            self.has_explicit_include = bool(self.has_explicit_include)
 
         self._compile_matchers()
 
@@ -757,7 +664,6 @@ class SpaceConfig:
             self._yscb_dir,
             owner_module=self.owner,
             is_exclude=True,
-            gitignore_eval=self._gitignore_eval,
         )
 
     def resolve_entries(
@@ -797,11 +703,14 @@ class SpaceConfig:
         rel_for_parts = (
             entry_rel if entry_rel else (project_rel or os.path.normcase(target_abs.name).replace("\\", "/"))
         )
-        parts = [p for p in rel_for_parts.split("/") if p and p != "."]
+        parts: List[str] = []
         if project_rel:
             for p in project_rel.split("/"):
                 if p and p != "." and p not in parts:
                     parts.append(p)
+        for p in rel_for_parts.split("/"):
+            if p and p != "." and p not in parts:
+                parts.append(p)
         filename = os.path.normcase(target_abs.name).replace("\\", "/")
         if filename and filename not in parts:
             parts.append(filename)
@@ -817,14 +726,46 @@ class SpaceConfig:
         norm_abs, project_rel, entry_rel, parts, filename = self._prepare_candidate_coords(
             dir_abs, entry_abs, project_root
         )
-        return self._compiled_exclude.matches_fast(
+        if self._compiled_exclude.matches_fast(
             norm_abs=norm_abs,
             project_rel=project_rel,
             entry_rel=entry_rel,
             parts=parts,
             filename=filename,
             is_dir=True,
-        )
+        ):
+            return True
+        for neg_sp in self.negated_presets:
+            if neg_sp._compiled_include is None or neg_sp._compiled_exclude is None:
+                neg_sp._compile_matchers()
+            assert neg_sp._compiled_include is not None
+            assert neg_sp._compiled_exclude is not None
+            if neg_sp._compiled_include.matches_fast(
+                norm_abs=norm_abs,
+                project_rel=project_rel,
+                entry_rel=entry_rel,
+                parts=parts,
+                filename=filename,
+                is_dir=True,
+            ):
+                if not neg_sp._compiled_exclude.matches_fast(
+                    norm_abs=norm_abs,
+                    project_rel=project_rel,
+                    entry_rel=entry_rel,
+                    parts=parts,
+                    filename=filename,
+                    is_dir=True,
+                ) and not neg_sp._compiled_exclude.has_potential_descendant_match(
+                    norm_abs, project_rel, entry_rel
+                ):
+                    return True
+        return False
+
+    def is_dir_excluded(
+        self, dir_abs: Path, entry_abs: Path, project_root: Path
+    ) -> bool:
+        """Alias for `is_dir_excluded_fast`."""
+        return self.is_dir_excluded_fast(dir_abs, entry_abs, project_root)
 
     def check_dir_excluded(
         self, dir_abs: Path, entry_abs: Path, project_root: Path
@@ -836,7 +777,7 @@ class SpaceConfig:
         norm_abs, project_rel, entry_rel, parts, filename = self._prepare_candidate_coords(
             dir_abs, entry_abs, project_root
         )
-        return self._compiled_exclude.find_matching_rule(
+        own_excl = self._compiled_exclude.find_matching_rule(
             norm_abs=norm_abs,
             project_rel=project_rel,
             entry_rel=entry_rel,
@@ -844,6 +785,38 @@ class SpaceConfig:
             filename=filename,
             is_dir=True,
         )
+        if own_excl is not None:
+            return own_excl
+        for neg_sp in self.negated_presets:
+            if neg_sp._compiled_include is None or neg_sp._compiled_exclude is None:
+                neg_sp._compile_matchers()
+            assert neg_sp._compiled_include is not None
+            assert neg_sp._compiled_exclude is not None
+            neg_inc_rule = neg_sp._compiled_include.find_matching_rule(
+                norm_abs=norm_abs,
+                project_rel=project_rel,
+                entry_rel=entry_rel,
+                parts=parts,
+                filename=filename,
+                is_dir=True,
+            )
+            if neg_inc_rule is not None:
+                if not neg_sp._compiled_exclude.matches_fast(
+                    norm_abs=norm_abs,
+                    project_rel=project_rel,
+                    entry_rel=entry_rel,
+                    parts=parts,
+                    filename=filename,
+                    is_dir=True,
+                ) and not neg_sp._compiled_exclude.has_potential_descendant_match(
+                    norm_abs, project_rel, entry_rel
+                ):
+                    return RuleItem(
+                        raw_pattern=neg_inc_rule.raw_pattern,
+                        source=f"preset:!{neg_sp.qualified_name}",
+                        is_negated=True,
+                    )
+        return None
 
     def is_file_matched_fast(
         self, file_abs: Path, entry_abs: Path, project_root: Path
@@ -865,6 +838,27 @@ class SpaceConfig:
             is_dir=False,
         ):
             return False
+        for neg_sp in self.negated_presets:
+            if neg_sp._compiled_include is None or neg_sp._compiled_exclude is None:
+                neg_sp._compile_matchers()
+            assert neg_sp._compiled_include is not None
+            assert neg_sp._compiled_exclude is not None
+            if neg_sp._compiled_include.matches_fast(
+                norm_abs=norm_abs,
+                project_rel=project_rel,
+                entry_rel=entry_rel,
+                parts=parts,
+                filename=filename,
+                is_dir=False,
+            ) and not neg_sp._compiled_exclude.matches_fast(
+                norm_abs=norm_abs,
+                project_rel=project_rel,
+                entry_rel=entry_rel,
+                parts=parts,
+                filename=filename,
+                is_dir=False,
+            ):
+                return False
         return self._compiled_include.matches_fast(
             norm_abs=norm_abs,
             project_rel=project_rel,
@@ -926,6 +920,29 @@ class SpaceConfig:
         if excl_rule is not None:
             return False, None, excl_rule
 
+        for neg_sp in self.negated_presets:
+            if neg_sp._compiled_include is None or neg_sp._compiled_exclude is None:
+                neg_sp._compile_matchers()
+            assert neg_sp._compiled_include is not None
+            assert neg_sp._compiled_exclude is not None
+            neg_inc_rule = neg_sp._compiled_include.find_matching_rule(
+                norm_abs=norm_abs,
+                project_rel=project_rel,
+                entry_rel=entry_rel,
+                parts=parts,
+                filename=filename,
+                is_dir=is_dir,
+            )
+            if neg_inc_rule is not None and not neg_sp._compiled_exclude.matches_fast(
+                norm_abs=norm_abs,
+                project_rel=project_rel,
+                entry_rel=entry_rel,
+                parts=parts,
+                filename=filename,
+                is_dir=is_dir,
+            ):
+                return False, None, neg_inc_rule
+
         if is_dir:
             return True, RuleItem(raw_pattern="*", source=f"space:{self.qualified_name}"), None
 
@@ -974,5 +991,4 @@ class SpaceConfig:
             "large_file_threshold_mb": self.large_file_threshold_mb,
             "follow_symlinks": self.follow_symlinks,
             "watch": self.watch,
-            "is_ephemeral": self.is_ephemeral,
         }

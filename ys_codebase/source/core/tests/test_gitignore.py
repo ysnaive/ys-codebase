@@ -65,19 +65,36 @@ class TestCoreGitignore(YSCBTestCase):
         self.mark_passed()
 
     def test_grouped_managed_block_and_static_dynamic_merge(self) -> None:
-        """驗證靜態 contributes (`vscode-support`, `project`) 與動態 SDK (`agents-workflow`) 按 `# [<module>]` 分組合成。"""
+        """驗證靜態 contributes (`spaces.gitignore` 正向 `include` 與反向 `exclude`) 與動態 SDK (`agents-workflow`) 按 `# [<module>]` 分組合成。"""
         vsc_contrib_dir = os.path.join(self.yscb_root, ".modules", "vscode-support", "contributes")
         os.makedirs(vsc_contrib_dir, exist_ok=True)
         vfs.write_json(
             os.path.join(vsc_contrib_dir, "core.json"),
-            {"gitignore": ["project://.vscode/schemas/"]},
+            {
+                "spaces": {
+                    "gitignore": {
+                        "entries": ["project://"],
+                        "include": ["project://.vscode/schemas/"],
+                        "watch": False,
+                    }
+                }
+            },
         )
 
         proj_contrib_dir = os.path.join(self.yscb_root, "config", "core")
         os.makedirs(proj_contrib_dir, exist_ok=True)
         vfs.write_json(
             os.path.join(proj_contrib_dir, "contribute.json"),
-            {"gitignore": ["project://datasets/large_raw/"]},
+            {
+                "spaces": {
+                    "gitignore": {
+                        "entries": ["project://"],
+                        "include": ["project://datasets/large_raw/"],
+                        "exclude": ["project://datasets/large_raw/keep.csv"],
+                        "watch": False,
+                    }
+                }
+            },
         )
 
         res = gitignore.register_dynamic(
@@ -97,7 +114,7 @@ class TestCoreGitignore(YSCBTestCase):
         self.assertIn("# [core]\n/ys_codebase/.modules/", content)
         self.assertIn("# [agents-workflow]\n/.agents/.yscb/templates/P00_discuss.md", content)
         self.assertIn("# [vscode-support]\n/.vscode/schemas/", content)
-        self.assertIn("# [project]\n/datasets/large_raw/", content)
+        self.assertIn("# [project]\n/datasets/large_raw/\n!/datasets/large_raw/keep.csv", content)
 
         # 順序驗證：core 置頂，agents-workflow 與 vscode-support 字母序，project 置底
         idx_core = content.index("# [core]")
@@ -299,31 +316,48 @@ class TestCoreGitignore(YSCBTestCase):
         self.assertIn("Unknown subcommand", err_buf.getvalue())
         self.mark_passed()
 
-    def test_default_workspace_storage_local_persistence(self) -> None:
-        """驗證預設工作區動態忽略規則持久化至 `storage.local://core/gitignore_dynamic.json`。"""
+    def test_runtime_register_unregister_and_no_dynamic_cache_file(self) -> None:
+        """驗證 `register` / `unregister` 同步至 `.gitignore` 受控區塊與 `gitignore` 空間，且不再建立 `gitignore_dynamic.json`。"""
         self.assertEqual(gitignore.DYNAMIC_CACHE_URI, "storage.local://core/gitignore_dynamic.json")
 
-        had_existing = vfs.exists(gitignore.DYNAMIC_CACHE_URI)
-        orig_data = vfs.read_json(gitignore.DYNAMIC_CACHE_URI) if had_existing else None
         try:
-            res_reg = gitignore.register_dynamic(
-                "mock_dyn_persist",
-                ["/.mock_dyn_dir/"],
-                sync_now=False,
+            res_reg = gitignore.register(
+                "mock_dyn_mod",
+                ["/.mock_dyn_dir/", "!/.mock_dyn_dir/keep.txt"],
+                sync_now=True,
+                proj_root=self.proj_root,
+                yscb_root=self.yscb_root,
             )
-            self.assertEqual(res_reg["module"], "mock_dyn_persist")
-            self.assertTrue(vfs.exists(gitignore.DYNAMIC_CACHE_URI))
-            persisted = vfs.read_json(gitignore.DYNAMIC_CACHE_URI)
-            self.assertEqual(persisted.get("mock_dyn_persist"), ["/.mock_dyn_dir/"])
+            self.assertTrue(res_reg["updated"])
+            self.assertFalse(vfs.exists(gitignore.DYNAMIC_CACHE_URI))
 
-            res_clr = gitignore.clear_dynamic("mock_dyn_persist", sync_now=False)
+            gi_path = os.path.join(self.proj_root, ".gitignore")
+            content = vfs.read_text(gi_path)
+            self.assertIn("# [mock_dyn_mod]\n/.mock_dyn_dir/\n!/.mock_dyn_dir/keep.txt", content)
+
+            res_partial = gitignore.unregister(
+                "mock_dyn_mod",
+                ["!/.mock_dyn_dir/keep.txt"],
+                sync_now=True,
+                proj_root=self.proj_root,
+                yscb_root=self.yscb_root,
+            )
+            self.assertTrue(res_partial["updated"])
+            content_partial = vfs.read_text(gi_path)
+            self.assertIn("# [mock_dyn_mod]\n/.mock_dyn_dir/", content_partial)
+            self.assertNotIn("!/.mock_dyn_dir/keep.txt", content_partial)
+
+            res_clr = gitignore.unregister(
+                "mock_dyn_mod",
+                sync_now=True,
+                proj_root=self.proj_root,
+                yscb_root=self.yscb_root,
+            )
             self.assertTrue(res_clr["had_dynamic_entries"])
-            persisted_after = vfs.read_json(gitignore.DYNAMIC_CACHE_URI)
-            self.assertNotIn("mock_dyn_persist", persisted_after)
+            content_after = vfs.read_text(gi_path)
+            self.assertNotIn("# [mock_dyn_mod]", content_after)
         finally:
-            if had_existing and orig_data is not None:
-                vfs.write_json(gitignore.DYNAMIC_CACHE_URI, orig_data, indent=2, atomic=True)
-            elif vfs.exists(gitignore.DYNAMIC_CACHE_URI):
+            if vfs.exists(gitignore.DYNAMIC_CACHE_URI):
                 vfs.remove(gitignore.DYNAMIC_CACHE_URI, missing_ok=True)
         self.mark_passed()
 

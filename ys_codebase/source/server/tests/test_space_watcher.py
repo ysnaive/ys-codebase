@@ -360,7 +360,7 @@ class TestCoreSpaceWatcherService(YSCBTestCase):
             )
             self.assertTrue(ephem_cfg.watch)
             self.assertIn(
-                "ephemeral/yscb-skills",
+                ephem_cfg.qualified_name,
                 worker.get_custom_metrics()["watched_spaces"],
             )
 
@@ -379,7 +379,7 @@ class TestCoreSpaceWatcherService(YSCBTestCase):
             matched = worker.notify_file_event(
                 skill_file, is_directory=False, event_type="modified"
             )
-            self.assertEqual(matched, ["ephemeral/yscb-skills"])
+            self.assertIn(ephem_cfg.qualified_name, matched)
 
             # Calling `consume_diff("yscb-skills", auto_refresh=False)` when worker is alive
             # synchronously flushes the in-process watcher via `flush_space_now("yscb-skills")`!

@@ -273,12 +273,28 @@ def _load_space_include_roots(
         result: Dict[str, List[Path]] = {}
         for s_cfg in reg.list_spaces():
             roots: List[Path] = []
-            for raw_ent in s_cfg.entries:
-                resolved_p = resolve_semantic_or_rel_path(raw_ent, proj_root)
-                if resolved_p is not None:
-                    roots.append(Path(resolved_p).resolve())
-            if s_cfg.short_name:
-                result[s_cfg.short_name] = roots
+            if hasattr(reg, "collect_all_entry_paths") and s_cfg.qualified_name:
+                try:
+                    roots = [
+                        Path(p).resolve()
+                        for p in reg.collect_all_entry_paths(s_cfg.qualified_name)
+                    ]
+                except Exception:
+                    roots = []
+            if not roots:
+                for raw_ent in s_cfg.entries:
+                    resolved_p = resolve_semantic_or_rel_path(raw_ent, proj_root)
+                    if resolved_p is not None:
+                        roots.append(Path(resolved_p).resolve())
+            if s_cfg.short_name and (roots or s_cfg.short_name not in result):
+                if roots and s_cfg.short_name in result and result[s_cfg.short_name]:
+                    merged = list(result[s_cfg.short_name])
+                    for r in roots:
+                        if r not in merged:
+                            merged.append(r)
+                    result[s_cfg.short_name] = merged
+                else:
+                    result[s_cfg.short_name] = roots
             if s_cfg.qualified_name:
                 result[s_cfg.qualified_name] = roots
         return result

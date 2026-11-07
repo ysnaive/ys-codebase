@@ -904,6 +904,33 @@ class TestVSCodeSupport(YSCBTestCase):
                 self.assertFalse(hook_mod.on_remove(ExecutionContext("core", "remove", ["vscode-support"])))
             self.assertIn("Warning: Failed during on_remove revert", stderr_rem.getvalue())
 
+        registered_spaces: Dict[str, Any] = {}
+
+        class _DummyRegistry:
+            def register_space(self, name: str, cfg: Dict[str, Any]) -> None:
+                registered_spaces[name] = cfg
+
+        self.assertFalse(hook_mod.on_register_file_spaces(None))
+        self.assertTrue(hook_mod.on_register_file_spaces({"registry": _DummyRegistry()}))
+        self.assertIn("vscode-support/gitignore", registered_spaces)
+        self.assertEqual(
+            registered_spaces["vscode-support/gitignore"].get("include"),
+            ["project://.vscode/schemas/"],
+        )
+
+        self.assertEqual(
+            SettingsProjector._translate_exclude_to_vscode_glob("yscb://.modules/**"),
+            "**/.modules/**",
+        )
+        self.assertEqual(
+            SettingsProjector._translate_exclude_to_vscode_glob("__pycache__"),
+            "**/__pycache__/**",
+        )
+        self.assertIsNone(SettingsProjector._translate_exclude_to_vscode_glob("*.pyc"))
+        resolved_excl = self.projector._resolve_workspace_exclude_patterns(self.project_root)
+        self.assertIn("**/.cache/**", resolved_excl)
+        self.assertIn("**/.venv/**", resolved_excl)
+
         self.mark_passed()
 
     def test_dev_hook_sandbox_setup_and_teardown_logging(self) -> None:

@@ -201,7 +201,7 @@ class TestFileSpaceManager(YSCBTestCase):
             mgr.get_space("non_existent_space")
 
         with self.assertRaises(InvalidFileSpaceConfigError):
-            mgr.define_ephemeral_space("bad_empty", {"include": []})
+            mgr.define_ephemeral_space("", {"include": [self.src_dir.as_posix()]})
 
         with self.assertRaises(InvalidFileSpaceConfigError):
             mgr.define_ephemeral_space("bad_type", 123)  # type: ignore[arg-type]

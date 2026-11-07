@@ -43,7 +43,12 @@ RACY_CLEAN_WINDOW_NS = 10_000_000  # 10 milliseconds
 
 
 def _sanitize_target_key(key: str) -> str:
-    clean = str(key or "").strip().strip("/")
+    raw = str(key or "").strip()
+    if raw.startswith("/"):
+        clean_synth = raw.lstrip("/")
+        if clean_synth and "/" not in clean_synth:
+            return f"synthetic__{clean_synth}"
+    clean = raw.strip("/")
     if not clean:
         return "__all__"
     return (
@@ -513,10 +518,6 @@ class SpaceScanner:
         self._cursor_store = CursorStore(self._storage_root, self._lock_dir)
         self._rlock = threading.RLock()
 
-        # In-memory state for ephemeral spaces (`is_ephemeral=True`)
-        self._ephemeral_snapshots: Dict[str, SnapshotState] = {}
-        self._ephemeral_cursors: Dict[str, Dict[str, Dict[str, Any]]] = {}
-
     @property
     def registry(self) -> SpaceRegistry:
         return self._registry
@@ -573,7 +574,11 @@ class SpaceScanner:
         return q
 
     def _snapshot_path(self, space_key: str) -> Path:
-        safe_name = _sanitize_target_key(space_key)
+        if space_key == self.UNIFIED_KEY:
+            canon_key = self.UNIFIED_KEY
+        else:
+            canon_key = self._canonical_space_key(space_key)
+        safe_name = _sanitize_target_key(canon_key)
         return self._snapshots_dir / f"{safe_name}.yfp2.bin"
 
     @contextmanager
@@ -584,46 +589,17 @@ class SpaceScanner:
             with InterProcessLock(str(lock_file), timeout=10.0):
                 yield
 
-    def _load_snapshot_state(self, space_key: str, *, is_ephemeral: bool) -> SnapshotState:
-        if is_ephemeral:
-            state = self._ephemeral_snapshots.get(space_key)
-            if state is None:
-                return SnapshotState()
-            return SnapshotState(
-                head_generation=state.head_generation,
-                merkle_root=state.merkle_root,
-                config_hash=state.config_hash,
-                entries=dict(state.entries),
-            )
+    def _load_snapshot_state(self, space_key: str) -> SnapshotState:
         return self._snapshot_mgr.load_state(self._snapshot_path(space_key))
 
     def _save_snapshot_state(
-        self, space_key: str, state: SnapshotState, *, is_ephemeral: bool
+        self, space_key: str, state: SnapshotState
     ) -> None:
-        if is_ephemeral:
-            self._ephemeral_snapshots[space_key] = SnapshotState(
-                head_generation=state.head_generation,
-                merkle_root=state.merkle_root,
-                config_hash=state.config_hash,
-                entries=dict(state.entries),
-            )
-            return
         self._snapshot_mgr.save_state(state, self._snapshot_path(space_key))
 
     def _get_cursor_record(
-        self, space_key: str, consumer_id: str, *, is_ephemeral: bool
+        self, space_key: str, consumer_id: str
     ) -> Dict[str, Any]:
-        if is_ephemeral:
-            c_map = self._ephemeral_cursors.get(consumer_id or "default", {})
-            rec = c_map.get(space_key)
-            if isinstance(rec, dict):
-                return dict(rec)
-            return {
-                "acked_generation": 0,
-                "merkle_root": "",
-                "config_hash": "",
-                "updated_at": 0.0,
-            }
         return self._cursor_store.get_cursor(space_key, consumer_id)
 
     def _set_cursor_record(
@@ -633,18 +609,7 @@ class SpaceScanner:
         acked_gen: int,
         merkle_root: str,
         config_hash: str,
-        *,
-        is_ephemeral: bool,
     ) -> None:
-        if is_ephemeral:
-            cid = consumer_id or "default"
-            self._ephemeral_cursors.setdefault(cid, {})[space_key] = {
-                "acked_generation": max(0, int(acked_gen)),
-                "merkle_root": str(merkle_root or ""),
-                "config_hash": str(config_hash or ""),
-                "updated_at": time.time(),
-            }
-            return
         self._cursor_store.set_cursor(
             space_key,
             consumer_id,
@@ -669,15 +634,18 @@ class SpaceScanner:
         force: bool = False,
     ) -> ScanDiffResult:
         """
-        Execute a two-stage incremental scan for `space_query` (or all spaces if `None`),
-        updating the `YFP2` snapshot (or in-memory state if ephemeral) only when changes occur
-        or on initial generation 0.
+        Execute a two-stage incremental scan for `space_query` (or all watched spaces if `None`/`*`),
+        updating the `YFP2` snapshot only when changes occur or on initial generation 0.
         """
         if space_query is None or str(space_query).strip() in ("", "*"):
-            # Scan each non-ephemeral registered space + unified "__all__" snapshot
+            # Scan each non-synthetic watched space with entries/compose + synthetic union spaces + unified "__all__" snapshot
             space_gens: Dict[str, int] = {}
-            for s_cfg in self._registry.list_spaces():
-                if s_cfg.is_ephemeral:
+            for s_cfg in self._registry.list_spaces(include_synthetic=True):
+                if (
+                    not s_cfg.watch
+                    or s_cfg.short_name == "gitignore"
+                    or (not s_cfg.entries and not s_cfg.compose)
+                ):
                     continue
                 sub_res = self._scan_single_query(s_cfg.qualified_name, force=force)
                 space_gens[s_cfg.qualified_name] = sub_res.to_generation
@@ -709,20 +677,20 @@ class SpaceScanner:
         force: bool = False,
     ) -> ScanDiffResult:
         space_key = self._canonical_space_key(space_query)
-        is_ephem = self._registry.is_ephemeral_query(space_query)
+        eff_query = "*" if space_key == self.UNIFIED_KEY else space_query
 
         with self._locked_space(space_key):
-            prev_state = self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
-            curr_cfg_hash = self._registry.compute_config_hash(space_query)
+            prev_state = self._load_snapshot_state(space_key)
+            curr_cfg_hash = self._registry.compute_config_hash(eff_query)
             config_changed = bool(
                 prev_state.head_generation == 0
                 or prev_state.config_hash != curr_cfg_hash
                 or force
             )
 
-            participating_spaces = self._registry._collect_participating_spaces(space_query)
+            participating_spaces = self._registry._collect_participating_spaces(eff_query)
             space_map = {s.qualified_name: s for s in participating_spaces}
-            walked_files: List[SpaceFileEntry] = self._registry.iter_space_files(space_query)
+            walked_files: List[SpaceFileEntry] = self._registry.iter_space_files(eff_query)
 
             now_ns = time.time_ns()
             next_gen = prev_state.head_generation + 1
@@ -845,7 +813,7 @@ class SpaceScanner:
                     config_hash=curr_cfg_hash,
                     entries=new_entries,
                 )
-                self._save_snapshot_state(space_key, new_state, is_ephemeral=is_ephem)
+                self._save_snapshot_state(space_key, new_state)
             else:
                 final_gen = prev_state.head_generation
                 # If mtime was updated on touch-only file, still persist updated mtime without bumping generation
@@ -860,7 +828,7 @@ class SpaceScanner:
                         config_hash=curr_cfg_hash,
                         entries=new_entries,
                     )
-                    self._save_snapshot_state(space_key, new_state, is_ephemeral=is_ephem)
+                    self._save_snapshot_state(space_key, new_state)
 
             return ScanDiffResult(
                 added_count=len(detail.added),
@@ -885,26 +853,26 @@ class SpaceScanner:
         Handles multi-space unions, composed spaces, and deleted external entry files.
         """
         space_key = self._canonical_space_key(space_query)
-        is_ephem = self._registry.is_ephemeral_query(space_query)
+        eff_query = "*" if space_key == self.UNIFIED_KEY else space_query
 
         with self._locked_space(space_key):
-            prev_state = self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
+            prev_state = self._load_snapshot_state(space_key)
             if prev_state.head_generation == 0:
-                scan_res = self._scan_single_query(space_query)
-                st = self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
+                scan_res = self._scan_single_query(eff_query)
+                st = self._load_snapshot_state(space_key)
                 st.last_diff = scan_res
                 return st
 
-            curr_cfg_hash = self._registry.compute_config_hash(space_query)
+            curr_cfg_hash = self._registry.compute_config_hash(eff_query)
             if prev_state.config_hash != curr_cfg_hash:
-                scan_res = self._scan_single_query(space_query, force=True)
-                st = self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
+                scan_res = self._scan_single_query(eff_query, force=True)
+                st = self._load_snapshot_state(space_key)
                 st.last_diff = scan_res
                 return st
 
-            participating_spaces = self._registry._collect_participating_spaces(space_query)
+            participating_spaces = self._registry._collect_participating_spaces(eff_query)
             space_map = {s.qualified_name: s for s in participating_spaces}
-            all_entry_paths = self._registry.collect_all_entry_paths(space_query)
+            all_entry_paths = self._registry.collect_all_entry_paths(eff_query)
 
             entries = dict(prev_state.entries)
             next_gen = prev_state.head_generation + 1
@@ -935,7 +903,10 @@ class SpaceScanner:
                     is_existing_file = False
 
                 if is_existing_file:
-                    match_res = self._registry.match_path(cand_abs, space_query=space_query)
+                    target_key = "*" if space_key == self.UNIFIED_KEY else space_key
+                    match_res = self._registry.match_path(
+                        cand_abs, space=target_key
+                    )
                     if match_res.matched:
                         # Determine matched entry_path and primary space config
                         matched_entry_abs = self._find_best_entry_for_file(
@@ -1071,7 +1042,7 @@ class SpaceScanner:
                 entries=entries,
                 last_diff=diff_res,
             )
-            self._save_snapshot_state(space_key, new_state, is_ephemeral=is_ephem)
+            self._save_snapshot_state(space_key, new_state)
             return new_state
 
     def _find_best_entry_for_file(
@@ -1163,9 +1134,6 @@ class SpaceScanner:
 
     def _has_existing_snapshot(self, space_key: str) -> bool:
         canon_key = self._canonical_space_key(space_key)
-        is_ephem = self._registry.is_ephemeral_query(canon_key)
-        if is_ephem:
-            return canon_key in self._ephemeral_snapshots
         return self._snapshot_path(canon_key).is_file()
 
     def sync_dependent_snapshots(
@@ -1177,10 +1145,10 @@ class SpaceScanner:
     ) -> Dict[str, ScanDiffResult]:
         """
         Synchronize existing dependent snapshots when a space `changed_qname` updates:
-        - Short-name union snapshot `<short_name>` (if distinct from `changed_qname` and already initialized)
-        - Any composite parent space that transitively includes `changed_qname` via `compose` (if already initialized
+        - Synthesized short-name union snapshot `/<short_name>` (if distinct from `changed_qname` and already initialized)
+        - Any composite parent space that transitively depends on `changed_qname` via `compose` (if already initialized
           and not already scheduled in `exclude_keys`)
-        - Unified snapshot `__all__` (if already initialized and non-ephemeral)
+        - Unified snapshot `__all__` (if already initialized)
         """
         synced: Dict[str, ScanDiffResult] = {}
         excluded: Set[str] = {str(k).strip() for k in (exclude_keys or ())}
@@ -1190,24 +1158,32 @@ class SpaceScanner:
         candidate_keys: List[str] = []
         if "/" in changed_qname:
             short_name = changed_qname.split("/", 1)[-1]
+            synth_key = f"/{short_name}" if short_name else ""
+            if (
+                synth_key
+                and synth_key != changed_qname
+                and synth_key not in excluded
+            ):
+                candidate_keys.append(synth_key)
             if (
                 short_name
                 and short_name != changed_qname
                 and short_name not in excluded
+                and short_name not in candidate_keys
             ):
                 candidate_keys.append(short_name)
 
-        # Check registered composite spaces that transitively include changed_qname
+        # Check registered composite spaces that transitively depend on changed_qname
         for s_cfg in self._registry.list_spaces():
             if s_cfg.qualified_name == changed_qname or not s_cfg.compose:
                 continue
             try:
-                participating = self._registry._collect_participating_spaces(
+                deps = self._registry._collect_all_dependency_spaces(
                     s_cfg.qualified_name
                 )
             except Exception:
                 continue
-            if any(p.qualified_name == changed_qname for p in participating):
+            if any(p.qualified_name == changed_qname for p in deps):
                 if (
                     s_cfg.qualified_name not in candidate_keys
                     and s_cfg.qualified_name not in excluded
@@ -1221,31 +1197,43 @@ class SpaceScanner:
                 ):
                     candidate_keys.append(s_cfg.short_name)
 
+        seen_canon: Set[str] = set()
         for dep_key in candidate_keys:
-            if not self._has_existing_snapshot(dep_key):
+            try:
+                canon_dep = self._canonical_space_key(dep_key)
+            except Exception:
+                continue
+            if canon_dep in excluded:
+                continue
+            if canon_dep in seen_canon:
+                if canon_dep in synced:
+                    synced[dep_key] = synced[canon_dep]
+                continue
+            seen_canon.add(canon_dep)
+            if not self._has_existing_snapshot(canon_dep):
                 continue
             try:
                 if use_patch:
-                    st = self.patch_files(dep_key, dirty_list)
+                    st = self.patch_files(canon_dep, dirty_list)
                     if st.last_diff is not None:
                         synced[dep_key] = st.last_diff
+                        synced[canon_dep] = st.last_diff
                 else:
-                    synced[dep_key] = self._scan_single_query(dep_key)
+                    res_dep = self._scan_single_query(canon_dep)
+                    synced[dep_key] = res_dep
+                    synced[canon_dep] = res_dep
             except Exception:
                 continue
 
-        # Sync unified "__all__" snapshot if it exists and changed space is non-ephemeral
-        if (
-            not self._registry.is_ephemeral_query(changed_qname)
-            and self._snapshot_path(self.UNIFIED_KEY).is_file()
-        ):
+        # Sync unified "__all__" snapshot if it exists
+        if self._has_existing_snapshot(self.UNIFIED_KEY) and self.UNIFIED_KEY not in excluded:
             try:
                 if use_patch:
-                    st_all = self.patch_files("*", dirty_list)
+                    st_all = self.patch_files(self.UNIFIED_KEY, dirty_list)
                     if st_all.last_diff is not None:
                         synced[self.UNIFIED_KEY] = st_all.last_diff
                 else:
-                    synced[self.UNIFIED_KEY] = self._scan_single_query(None)
+                    synced[self.UNIFIED_KEY] = self._scan_single_query(self.UNIFIED_KEY)
             except Exception:
                 pass
 
@@ -1263,13 +1251,12 @@ class SpaceScanner:
         """
         self._flush_in_process_watcher(space_query)
         space_key = self._canonical_space_key(space_query)
-        is_ephem = self._registry.is_ephemeral_query(space_query)
         if refresh_first or self.has_watcher_dirty_marker():
             self.scan(space_query)
-        state = self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
+        state = self._load_snapshot_state(space_key)
         if state.head_generation == 0 and not refresh_first:
             self.scan(space_query)
-            state = self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
+            state = self._load_snapshot_state(space_key)
         return state.active_entries()
 
     def merkle_root(
@@ -1281,13 +1268,12 @@ class SpaceScanner:
         """Return the 16-byte Blake2b hex `merkle_root` of `space_query` from its snapshot."""
         self._flush_in_process_watcher(space_query)
         space_key = self._canonical_space_key(space_query)
-        is_ephem = self._registry.is_ephemeral_query(space_query)
         if refresh_first or self.has_watcher_dirty_marker():
             self.scan(space_query)
-        state = self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
+        state = self._load_snapshot_state(space_key)
         if state.head_generation == 0 and not refresh_first:
             self.scan(space_query)
-            state = self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
+            state = self._load_snapshot_state(space_key)
         return state.merkle_root
 
     def diff(
@@ -1303,20 +1289,19 @@ class SpaceScanner:
         """
         self._flush_in_process_watcher(space_query)
         space_key = self._canonical_space_key(space_query)
-        is_ephem = self._registry.is_ephemeral_query(space_query)
         if auto_refresh or self.has_watcher_dirty_marker():
             scan_res = self.scan(space_query)
             space_gens = scan_res.space_generations
         else:
             space_gens = {}
 
-        state = self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
+        state = self._load_snapshot_state(space_key)
         if state.head_generation == 0 and not auto_refresh:
             scan_res = self.scan(space_query)
             space_gens = scan_res.space_generations
-            state = self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
+            state = self._load_snapshot_state(space_key)
 
-        cursor = self._get_cursor_record(space_key, consumer_id, is_ephemeral=is_ephem)
+        cursor = self._get_cursor_record(space_key, consumer_id)
         from_gen = int(cursor.get("acked_generation", 0))
         cursor_cfg_hash = str(cursor.get("config_hash", ""))
 
@@ -1364,8 +1349,7 @@ class SpaceScanner:
     ) -> int:
         """Advance `consumer_id`'s watermark cursor to `generation` (or current `head_generation`)."""
         space_key = self._canonical_space_key(space_query)
-        is_ephem = self._registry.is_ephemeral_query(space_query)
-        state = self._load_snapshot_state(space_key, is_ephemeral=is_ephem)
+        state = self._load_snapshot_state(space_key)
         target_gen = int(generation) if generation is not None else state.head_generation
 
         self._set_cursor_record(
@@ -1374,21 +1358,18 @@ class SpaceScanner:
             acked_gen=target_gen,
             merkle_root=state.merkle_root,
             config_hash=state.config_hash,
-            is_ephemeral=is_ephem,
         )
         if space_generations:
             for sub_key, sub_gen in space_generations.items():
                 if sub_key == space_key:
                     continue
-                sub_ephem = self._registry.is_ephemeral_query(sub_key)
-                sub_state = self._load_snapshot_state(sub_key, is_ephemeral=sub_ephem)
+                sub_state = self._load_snapshot_state(sub_key)
                 self._set_cursor_record(
                     sub_key,
                     consumer_id,
                     acked_gen=int(sub_gen),
                     merkle_root=sub_state.merkle_root,
                     config_hash=sub_state.config_hash,
-                    is_ephemeral=sub_ephem,
                 )
             if target_gen == 0:
                 target_gen = max((int(g) for g in space_generations.values()), default=0)
@@ -1401,14 +1382,9 @@ class SpaceScanner:
     ) -> None:
         """Reset watermark cursor for `(space_query, consumer_id)`."""
         if space_query is None:
-            self._ephemeral_cursors.pop(consumer_id or "default", None)
             self._cursor_store.reset_cursor(None, consumer_id=consumer_id)
             return
         space_key = self._canonical_space_key(space_query)
-        is_ephem = self._registry.is_ephemeral_query(space_query)
-        if is_ephem:
-            self._ephemeral_cursors.get(consumer_id or "default", {}).pop(space_key, None)
-            return
         self._cursor_store.reset_cursor(space_key, consumer_id=consumer_id)
 
     @contextmanager
@@ -1442,30 +1418,28 @@ class SpaceScanner:
         """Return comprehensive health, snapshot generation, Merkle root, and consumer cursor status."""
         target_spaces = self._registry.resolve_spaces(space_query)
         consumers = self._cursor_store.list_consumers()
-        for ephem_cid in self._ephemeral_cursors:
-            if ephem_cid not in consumers:
-                consumers.append(ephem_cid)
 
         spaces_report: List[Dict[str, Any]] = []
         for s_cfg in target_spaces:
             q_name = s_cfg.qualified_name
-            state = self._load_snapshot_state(q_name, is_ephemeral=s_cfg.is_ephemeral)
+            state = self._load_snapshot_state(q_name)
             if state.head_generation == 0 and s_cfg.short_name != q_name:
-                short_state = self._load_snapshot_state(
-                    s_cfg.short_name, is_ephemeral=s_cfg.is_ephemeral
-                )
+                short_state = self._load_snapshot_state(f"/{s_cfg.short_name}")
+                if short_state.head_generation == 0:
+                    short_state = self._load_snapshot_state(s_cfg.short_name)
                 if short_state.head_generation > 0:
                     state = short_state
             active_count = len(state.active_entries())
             snap_file = self._snapshot_path(q_name)
+            synth_snap_file = self._snapshot_path(f"/{s_cfg.short_name}")
             short_snap_file = self._snapshot_path(s_cfg.short_name)
             cursors_info: Dict[str, Any] = {}
             for cid in consumers:
-                c_rec = self._get_cursor_record(q_name, cid, is_ephemeral=s_cfg.is_ephemeral)
+                c_rec = self._get_cursor_record(q_name, cid)
                 if c_rec.get("acked_generation", 0) == 0 and s_cfg.short_name != q_name:
-                    c_rec = self._get_cursor_record(
-                        s_cfg.short_name, cid, is_ephemeral=s_cfg.is_ephemeral
-                    )
+                    c_rec = self._get_cursor_record(f"/{s_cfg.short_name}", cid)
+                    if c_rec.get("acked_generation", 0) == 0:
+                        c_rec = self._get_cursor_record(s_cfg.short_name, cid)
                 if c_rec.get("acked_generation", 0) > 0:
                     cursors_info[cid] = c_rec
 
@@ -1477,16 +1451,16 @@ class SpaceScanner:
                     "config_hash": state.config_hash,
                     "active_file_count": active_count,
                     "snapshot_exists": (
-                        (q_name in self._ephemeral_snapshots or s_cfg.short_name in self._ephemeral_snapshots)
-                        if s_cfg.is_ephemeral
-                        else (snap_file.is_file() or short_snap_file.is_file())
+                        snap_file.is_file()
+                        or synth_snap_file.is_file()
+                        or short_snap_file.is_file()
                     ),
                     "cursors": cursors_info,
                 }
             )
             spaces_report.append(s_dict)
 
-        unified_state = self._load_snapshot_state(self.UNIFIED_KEY, is_ephemeral=False)
+        unified_state = self._load_snapshot_state(self.UNIFIED_KEY)
         watcher_active = is_watcher_active(space_query, registry=self._registry)
         return {
             "status": "ok",
@@ -1532,7 +1506,6 @@ class SpaceScanner:
             # Resolve spaces first so SpaceNotFoundError is raised if space_query is invalid
             resolved_spaces = self._registry.resolve_spaces(space_query)
             space_key = self._canonical_space_key(space_query)
-            self._ephemeral_snapshots.pop(space_key, None)
             snap_p = self._snapshot_path(space_key)
             if snap_p.is_file():
                 try:
@@ -1542,27 +1515,24 @@ class SpaceScanner:
                     pass
             # Also clean resolved qualified spaces if space_query was a short name
             for s_cfg in resolved_spaces:
-                self._ephemeral_snapshots.pop(s_cfg.qualified_name, None)
-                sp = self._snapshot_path(s_cfg.qualified_name)
-                if sp.is_file():
-                    try:
-                        vfs.remove(str(sp))
-                        if sp.name not in removed_snapshots:
-                            removed_snapshots.append(sp.name)
-                    except Exception:
-                        pass
-                short_sp = self._snapshot_path(s_cfg.short_name)
-                if short_sp.is_file():
-                    try:
-                        vfs.remove(str(short_sp))
-                        if short_sp.name not in removed_snapshots:
-                            removed_snapshots.append(short_sp.name)
-                    except Exception:
-                        pass
+                for cand_k in (
+                    s_cfg.qualified_name,
+                    f"/{s_cfg.short_name}",
+                    s_cfg.short_name,
+                ):
+                    sp = self._snapshot_path(cand_k)
+                    if sp.is_file():
+                        try:
+                            vfs.remove(str(sp))
+                            if sp.name not in removed_snapshots:
+                                removed_snapshots.append(sp.name)
+                        except Exception:
+                            pass
             for cid in self._cursor_store.list_consumers():
                 self._cursor_store.reset_cursor(space_key, consumer_id=cid)
                 for s_cfg in resolved_spaces:
                     self._cursor_store.reset_cursor(s_cfg.qualified_name, consumer_id=cid)
+                    self._cursor_store.reset_cursor(f"/{s_cfg.short_name}", consumer_id=cid)
                     self._cursor_store.reset_cursor(s_cfg.short_name, consumer_id=cid)
                 reset_consumers.append(cid)
             return {
@@ -1574,8 +1544,6 @@ class SpaceScanner:
             }
 
         # Clean all snapshots and cursors
-        self._ephemeral_snapshots.clear()
-        self._ephemeral_cursors.clear()
         if self._snapshots_dir.is_dir():
             for name in sorted(os.listdir(self._snapshots_dir)):
                 p = self._snapshots_dir / name

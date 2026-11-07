@@ -260,7 +260,13 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         return self.is_alive()
 
     def _watched_space_configs(self) -> List[SpaceConfig]:
-        return [s for s in self.registry.list_spaces() if s.watch]
+        return [
+            s
+            for s in self.registry.list_spaces()
+            if s.watch
+            and s.owner != ""
+            and bool(self.registry.collect_all_entry_paths(s.qualified_name))
+        ]
 
     def _watched_space_names(self) -> List[str]:
         return [s.qualified_name for s in self._watched_space_configs()]
@@ -414,7 +420,10 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         for s_cfg in watched_spaces:
             q_name = s_cfg.qualified_name
             try:
-                match_res = self.registry.match_path(abs_p, space_query=q_name)
+                try:
+                    match_res = self.registry.match_path(abs_p, space=q_name)
+                except TypeError:
+                    match_res = self.registry.match_path(abs_p, space_query=q_name)
                 if match_res.matched:
                     matched.append(q_name)
             except Exception:

@@ -9,13 +9,18 @@ from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
 from core.space import ScanDiffResult, consume_diff
-from knowledge_db.engine import KnowledgeEngine, get_engine
-from knowledge_db.service import get_active_worker
+
+try:
+    from knowledge_db.engine import get_engine
+    from knowledge_db.service import get_active_worker
+except Exception:
+    get_engine = None  # type: ignore[assignment]
+    get_active_worker = None  # type: ignore[assignment]
 
 
 @contextmanager
 def _resolve_consume_diff(
-    engine: KnowledgeEngine,
+    engine: Any,
     space_name: Optional[str] = None,
     consumer_id: str = "knowledge-db",
     auto_refresh: Optional[bool] = None,
@@ -64,7 +69,17 @@ def on_file_space_changed(
     使用 `consume_diff(consumer_id="knowledge-db")` 拉取自上次游標水位以來的增量變更，
     並對全域統一索引執行 4 階段熱修補（若基礎索引尚未建置則觸發全量建置）。
     """
-    explicit_engine_obj: Optional[KnowledgeEngine] = None
+    global get_engine, get_active_worker
+    if get_engine is None:
+        from knowledge_db.engine import get_engine as _get_engine
+
+        get_engine = _get_engine
+    if get_active_worker is None:
+        from knowledge_db.service import get_active_worker as _get_active_worker
+
+        get_active_worker = _get_active_worker
+
+    explicit_engine_obj: Optional[Any] = None
     target_space: Optional[str] = None
 
     if isinstance(context, dict):

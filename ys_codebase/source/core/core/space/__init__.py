@@ -1,11 +1,12 @@
 """
 Core File-Space Atomic & Composite Engine (`core.space`).
 100% Python Standard Library. Zero Third-Party Dependencies.
-Provides `<owner>/<name>` namespace-isolated presets & spaces, `<name>` short-name union addressing,
-`compose` space composition with DAG cycle detection and secondary filtering, explicit `presets` expansion
-(including `@gitignore`), three-coordinate precompiled rule matching (`match`), zero-redundancy `os.scandir`
-pruned traversal (`ls`), atomic Blake2b fingerprinting (`hash`), `YFP2` monotonic generation snapshots (`scan`),
-and multi-consumer transactional watermark cursors (`diff`, `consume_diff`).
+Provides `<owner>/<name>` namespace-isolated spaces, `/<name>` synthetic short-name union addressing,
+`compose` space composition with DAG cycle detection and `!<space>` difference evaluation, `presets` rule
+expansion (including `!<preset>` negated rule exclusion), symmetric three-coordinate precompiled rule
+matching (`match`), zero-redundancy `os.scandir` pruned traversal (`ls`), atomic Blake2b fingerprinting
+(`hash`), `YFP2` monotonic generation snapshots (`scan`), and multi-consumer transactional watermark
+cursors (`diff`, `consume_diff`).
 """
 
 from .exceptions import SpaceCycleError, SpaceError, SpaceNotFoundError
@@ -27,8 +28,10 @@ from .registry import (
     get_default_registry,
     iter_space_files,
     match_path,
+    register_space,
     reset_default_registry,
     resolve_file_path,
+    unregister_space,
 )
 from .scanner import (
     BinarySnapshotManager,
@@ -54,9 +57,7 @@ from .scanner import (
 )
 from .schema import (
     CompiledRuleSet,
-    GitignoreEvaluator,
     HashPolicy,
-    PresetConfig,
     RuleItem,
     SpaceConfig,
     resolve_semantic_or_rel_path,
@@ -66,6 +67,8 @@ from .watcher import (
     clear_subscribers,
     get_active_watcher,
     is_watcher_active,
+    notify_ephemeral_space_registered,
+    notify_space_registered,
     notify_subscribers,
     read_watcher_state,
     register_active_watcher,
@@ -87,10 +90,8 @@ __all__ = [
     "CursorStore",
     "FileFingerprint",
     "FileHashEntry",
-    "GitignoreEvaluator",
     "HashPolicy",
     "MatchExplainResult",
-    "PresetConfig",
     "RuleItem",
     "ScanDiffDetail",
     "ScanDiffResult",
@@ -125,11 +126,14 @@ __all__ = [
     "iter_space_files",
     "match_path",
     "merkle_root",
+    "notify_ephemeral_space_registered",
+    "notify_space_registered",
     "notify_subscribers",
     "patch_files",
     "read_watcher_state",
     "refresh",
     "register_active_watcher",
+    "register_space",
     "remove_watcher_state",
     "reset_cursor",
     "reset_default_instances",
@@ -143,5 +147,6 @@ __all__ = [
     "snapshot",
     "status",
     "subscribe",
+    "unregister_space",
     "write_watcher_state",
 ]

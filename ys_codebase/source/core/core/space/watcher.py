@@ -147,18 +147,21 @@ def get_active_watcher() -> Optional[Any]:
         return _ACTIVE_WATCHER_WORKER
 
 
-def notify_ephemeral_space_registered(space_name: str) -> None:
-    """Notify the active in-process watcher when an ephemeral space with `watch=True` is registered."""
+def notify_space_registered(space_name: str) -> None:
+    """Notify the active in-process watcher when a space with `watch=True` is registered."""
     worker = get_active_watcher()
     if worker is not None and hasattr(worker, "sync_watched_directories"):
         try:
             worker.sync_watched_directories()
         except Exception as exc:
             logger.debug(
-                "Failed to sync watched directories for ephemeral space '%s': %s",
+                "Failed to sync watched directories for space '%s': %s",
                 space_name,
                 exc,
             )
+
+
+notify_ephemeral_space_registered = notify_space_registered
 
 
 def resolve_watcher_cache_dir(
@@ -324,7 +327,20 @@ def is_watcher_active(
         return False
 
     watched_set = set(state.get("watched_spaces", []))
-    return all(
-        (s.qualified_name in watched_set or s.short_name in watched_set)
-        for s in spaces
-    )
+
+    def _space_covered(s: "SpaceConfig") -> bool:
+        if s.qualified_name in watched_set or s.short_name in watched_set:
+            return True
+        if s.owner == "" and not s.entries and s.compose:
+            try:
+                pos_c, _neg_c = reg._split_compose_children(s, ())
+                if pos_c:
+                    return all(
+                        c.qualified_name in watched_set or c.short_name in watched_set
+                        for c in pos_c
+                    )
+            except Exception:
+                pass
+        return False
+
+    return all(_space_covered(s) for s in spaces)

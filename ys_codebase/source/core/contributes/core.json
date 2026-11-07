@@ -709,7 +709,7 @@
         }
       },
       "file-space": {
-        "description": "Core L0 atomic & composite file-space engine (spaces, presets, match, ls, hash, status, scan, diff, clean)",
+        "description": "Core L0 atomic & composite file-space engine (spaces, match, ls, hash, status, scan, diff, clean)",
         "tier": "safe",
         "server_compatible": true,
         "cmd": {
@@ -745,42 +745,6 @@
             "usage": {
               "pros": [
                 "檢視已註冊之邏輯空間定義、入口存在性與展開後規則: python yscb.py core file-space spaces [space] [--json]"
-              ],
-              "cons": []
-            }
-          },
-          "presets": {
-            "description": "List and inspect registered filter rule presets (<owner>/<preset>, <preset>, or @gitignore)",
-            "tier": "safe",
-            "server_compatible": true,
-            "args": {
-              "preset": {
-                "description": "Optional preset query (<owner>/<preset>, <preset>, or @gitignore)",
-                "required": false
-              }
-            },
-            "options": {
-              "filter": {
-                "owner": {
-                  "description": "Filter presets by owner module or 'project'",
-                  "alias": ["o"],
-                  "args": {
-                    "owner": {
-                      "description": "Owner module name"
-                    }
-                  }
-                }
-              },
-              "output_format": {
-                "json": {
-                  "description": "Format output in JSON",
-                  "alias": []
-                }
-              }
-            },
-            "usage": {
-              "pros": [
-                "檢視已註冊之過濾預設集定義與規則清單: python yscb.py core file-space presets [preset] [--json]"
               ],
               "cons": []
             }
@@ -1090,13 +1054,13 @@
         },
         "usage": {
           "pros": [
-            "Core 內建 L0 與複合檔案空間引擎: python yscb.py core file-space <spaces|presets|match|ls|hash|status|scan|diff|clean>"
+            "Core 內建 L0 與複合檔案空間引擎: python yscb.py core file-space <spaces|match|ls|hash|status|scan|diff|clean>"
           ],
           "cons": []
         }
       },
       "fs": {
-        "description": "Shorthand alias for Core L0 atomic & composite file-space engine (spaces, presets, match, ls, hash, status, scan, diff, clean)",
+        "description": "Shorthand alias for Core L0 atomic & composite file-space engine (spaces, match, ls, hash, status, scan, diff, clean)",
         "tier": "safe",
         "server_compatible": true,
         "cmd": {
@@ -1132,42 +1096,6 @@
             "usage": {
               "pros": [
                 "檢視已註冊之邏輯空間定義、入口存在性與展開後規則: python yscb.py fs spaces [space] [--json]"
-              ],
-              "cons": []
-            }
-          },
-          "presets": {
-            "description": "List and inspect registered filter rule presets (<owner>/<preset>, <preset>, or @gitignore)",
-            "tier": "safe",
-            "server_compatible": true,
-            "args": {
-              "preset": {
-                "description": "Optional preset query (<owner>/<preset>, <preset>, or @gitignore)",
-                "required": false
-              }
-            },
-            "options": {
-              "filter": {
-                "owner": {
-                  "description": "Filter presets by owner module or 'project'",
-                  "alias": ["o"],
-                  "args": {
-                    "owner": {
-                      "description": "Owner module name"
-                    }
-                  }
-                }
-              },
-              "output_format": {
-                "json": {
-                  "description": "Format output in JSON",
-                  "alias": []
-                }
-              }
-            },
-            "usage": {
-              "pros": [
-                "檢視已註冊之過濾預設集定義與規則清單: python yscb.py fs presets [preset] [--json]"
               ],
               "cons": []
             }
@@ -1477,17 +1405,32 @@
         },
         "usage": {
           "pros": [
-            "Core 內建 L0 與複合檔案空間引擎快捷別名: python yscb.py fs <spaces|presets|match|ls|hash|status|scan|diff|clean>"
+            "Core 內建 L0 與複合檔案空間引擎快捷別名: python yscb.py fs <spaces|match|ls|hash|status|scan|diff|clean>"
           ],
           "cons": []
         }
       }
     }
   },
-  "presets": {
-    "common-ignore": {
-      "description": "通用版本控制、OS 暫存與編譯產物排除規則集",
+  "spaces": {
+    "workspace": {
+      "description": "專案最外層遞迴掃描上限空間（排除非專案資產、執行期中間態與快取黑名單）",
+      "entries": [
+        "project://"
+      ],
+      "include": [
+        "*"
+      ],
       "exclude": [
+        "yscb://.modules/**",
+        "yscb://.build/**",
+        "yscb://.mirror/**",
+        "yscb://.temp/**",
+        "yscb://.snapshots/**",
+        "yscb://.cache/**",
+        "yscb://.config.local/**",
+        "yscb://.storage.local/**",
+        "yscb://.venv/**",
         ".git",
         ".svn",
         ".hg",
@@ -1495,12 +1438,7 @@
         "Thumbs.db",
         "*.tmp",
         "*.bak",
-        "*.swp"
-      ]
-    },
-    "python-ignore": {
-      "description": "Python 虛擬環境、Bytecode 快取與打包產物排除規則集",
-      "exclude": [
+        "*.swp",
         "__pycache__",
         "*.pyc",
         "*.pyo",
@@ -1511,54 +1449,45 @@
         ".mypy_cache",
         ".ruff_cache",
         "*.egg-info"
-      ]
+      ],
+      "watch": true
     },
-    "yscb-runtime-ignore": {
-      "description": "YSCB 執行期物化、建置、鏡像、快取與本機私有空間排除規則集",
-      "exclude": [
-        "yscb://.modules/**",
-        "yscb://.build/**",
-        "yscb://.mirror/**",
-        "yscb://.temp/**",
-        "yscb://.snapshots/**",
-        "yscb://.cache/**",
-        "yscb://.config.local/**",
-        "yscb://.storage.local/**",
-        "yscb://.venv/**"
-      ]
-    }
-  },
-  "spaces": {
+    "gitignore": {
+      "description": "Git 版本控制忽略檔案正向定義空間（自動收斂物化至 project://.gitignore）",
+      "entries": [
+        "project://"
+      ],
+      "include": [
+        "yscb://.modules/",
+        "yscb://.build/",
+        "yscb://.mirror/",
+        "yscb://.temp/",
+        "yscb://.snapshots/",
+        "yscb://.cache/",
+        "yscb://.config.local/",
+        "yscb://.storage.local/",
+        "yscb://.venv/",
+        "*.local.json",
+        "__pycache__/",
+        "*.pyc",
+        "yscb.py.bak",
+        "*.bak"
+      ],
+      "watch": false
+    },
     "source": {
       "description": "Core 模組源碼與測試空間",
       "entries": [
         "module.source://core"
       ],
       "presets": [
-        "core/common-ignore",
-        "core/python-ignore"
+        "workspace"
       ],
       "include": [
         "*"
       ]
     }
   },
-  "gitignore": [
-    "yscb://.modules/",
-    "yscb://.build/",
-    "yscb://.mirror/",
-    "yscb://.temp/",
-    "yscb://.snapshots/",
-    "yscb://.cache/",
-    "yscb://.config.local/",
-    "yscb://.storage.local/",
-    "yscb://.venv/",
-    "*.local.json",
-    "__pycache__/",
-    "*.pyc",
-    "yscb.py.bak",
-    "*.bak"
-  ],
   "events": [
     { "pre_cli_dispatch": "在 CLI 執行各模組指令前觸發，提供自癒與生命週期檢查" },
     { "post_cli_dispatch": "在 CLI 執行結束後觸發，提供更新檢查提示" },
@@ -1568,7 +1497,8 @@
     { "on_remove": "當模組移除前觸發" },
     { "on_env_synced": "當私有微環境第三方依賴物化同步完成後觸發" },
     { "on_gitignore_synced": "當根目錄 project://.gitignore 託管區塊完成同步更新後觸發" },
-    { "on_file_space_changed": "當邏輯檔案空間 YFP2 二進位快照世代更新時觸發" }
+    { "on_file_space_changed": "當邏輯檔案空間 YFP2 二進位快照世代更新時觸發" },
+    { "on_register_file_spaces": "當 SpaceRegistry 重載時觸發，供各模組依組態動態註冊檔案空間與忽略規則" }
   ]
 }
 

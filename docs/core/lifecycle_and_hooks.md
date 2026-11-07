@@ -10,7 +10,7 @@ related_docs:
   - "./README.md"
   - "./cli_commands_architecture.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-15"
+last_updated: "2026-11-07"
 ---
 
 # 命名空間 Hook 與生命週期事件手冊 (Namespaced Hooks & Lifecycle Events)
@@ -79,6 +79,16 @@ def on_update(context: ExecutionContext) -> None:
 
 def on_remove(context: ExecutionContext) -> None:
     """當 core 移除模組前觸發"""
+    pass
+
+def on_register_file_spaces(context: ExecutionContext) -> None:
+    """當 SpaceRegistry 重新載入時觸發，可透過 context.metadata['register_space'] 注入動態空間規則"""
+    reg_fn = (context.metadata or {}).get("register_space")
+    if callable(reg_fn):
+        reg_fn("my_mod/gitignore", {"entries": ["project://"], "include": ["*.tmp"], "watch": False})
+
+def on_file_space_changed(context: ExecutionContext) -> None:
+    """當常駐 CoreSpaceWatcherServiceWorker 偵測到監聽空間檔案變更並完成快照修補時觸發"""
     pass
 ```
 

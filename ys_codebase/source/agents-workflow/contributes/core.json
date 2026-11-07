@@ -29,6 +29,7 @@
     "docs": {
       "description": "專案架構與核心知識文檔空間",
       "entries": ["workflow.docs://"],
+      "presets": ["workspace"],
       "exclude": [".git", "archive"],
       "include": ["*.md", "*.txt", "*.json", "*.yaml", "*.yml"],
       "hash_policy": "adaptive",
@@ -39,6 +40,7 @@
     "plans": {
       "description": "專案演進與開發計畫空間",
       "entries": ["workflow.plans://"],
+      "presets": ["workspace"],
       "exclude": [".git", "archive"],
       "include": ["*.md"],
       "hash_policy": "adaptive",

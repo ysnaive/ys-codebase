@@ -597,6 +597,19 @@ class TestJITReleaseAndHooks(YSCBTestCase):
             self.assertFalse(hook_core.on_pre_cli_dispatch())
         self.assertIn("Warning: Failed during on_pre_cli_dispatch", err_buf.getvalue())
 
+        registered: dict = {}
+
+        class _DummySpaceReg:
+            def register_space(self, name: str, cfg: dict) -> None:
+                registered[name] = cfg
+
+        self.assertFalse(hook_core.on_register_file_spaces(None))
+        with patch.object(ReleasePublisher, "collect_gitignore_patterns", return_value=["/.agents/.yscb/"]):
+            self.assertTrue(hook_core.on_register_file_spaces({"registry": _DummySpaceReg()}))
+        self.assertIn("agents-workflow/gitignore", registered)
+        self.assertEqual(registered["agents-workflow/gitignore"]["include"], ["/.agents/.yscb/"])
+        self.assertFalse(registered["agents-workflow/gitignore"]["watch"])
+
         self.assertIsNone(hook_dev.on_test_setup({"sandbox": "mock"}))
         self.assertIsNone(hook_dev.on_test_teardown({"sandbox": "mock"}))
         self.mark_passed()

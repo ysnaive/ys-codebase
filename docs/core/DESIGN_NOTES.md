@@ -12,6 +12,8 @@ source_paths:
   - "yscb://source/core/core/pip_manager.py"
   - "yscb://source/core/core/ide_projector.py"
   - "yscb://source/core/core/events.py"
+  - "yscb://source/core/core/gitignore.py"
+  - "yscb://source/core/core/space/"
 related_docs:
   - "./README.md"
   - "./contributes_architecture.md"
@@ -20,7 +22,7 @@ related_docs:
   - "./cli_commands_architecture.md"
   - "./ZIP_PACKAGE_SPEC.md"
   - "../_project/STANDARDS.md"
-last_updated: "2026-11-05"
+last_updated: "2026-11-07"
 ---
 
 # Core 微內核設計決策與工程註記 (Core Design Notes)
@@ -53,6 +55,7 @@ last_updated: "2026-11-05"
 | **[DN-17](#dn-17-根目錄單一-projectgitignore-統一收斂與--module-強制分組-coregitignore)** | `DN-GI-01` | 根目錄單一 `project://.gitignore` 統一收斂與 `# [<module>]` 強制分組 (`core.gitignore`) | `source/core/core/gitignore.py` | 🚨 CAUTION |
 | **[DN-18](#dn-18-coreplatform-統一全模組-syspath-注入與非-core-模組零豁免靜態守門)** | `DN-PATH-01` | `core.platform` 統一全模組 `sys.path` 注入與非 `core` 模組零豁免靜態守門 | `source/core/core/platform/venv.py`<br/>`source/core/core/commands/dispatcher.py`<br/>`source/core/core/events.py`<br/>`source/core/core/symbols.py` | 🚨 CAUTION |
 | **[DN-19](#dn-19-五大語意資料空間正交分離與零執行期版本債之多維度-act_migrate-遷移階梯)** | `DN-SPACE-01` | 五大語意資料空間正交分離與零執行期版本債之多維度 `act_migrate` 遷移階梯 | `source/core/core/uri.py`<br/>`source/core/core/config.py`<br/>`source/core/core/engine.py`<br/>`source/core/scripts/migrations/1.2.7.x.py` | 🚨 CAUTION |
+| **[DN-20](#dn-20-compiledruleset-正反向對稱化-preset-局部子樹剪枝不變量與-compose-純檔案集代數)** | `DN-SPACE-02` | `CompiledRuleSet` 正反向對稱化、`!<preset>` 局部子樹剪枝不變量與 `compose` 純檔案集代數 | `source/core/core/space/schema.py`<br/>`source/core/core/space/registry.py` | 🚨 CAUTION |
 
 ---
 
@@ -254,9 +257,9 @@ last_updated: "2026-11-05"
 ### [DN-17] 根目錄單一 `project://.gitignore` 統一收斂與 `# [<module>]` 強制分組 (`core.gitignore`)
 
 - **核心決策**：
-  1. **根目錄單檔 SSOT (`project://.gitignore`)**：全系統廢除子目錄分散式 `.gitignore`（如舊版 `yscb://.gitignore` 與 `.vscode/schemas/.gitignore`），統一由 `core.gitignore` 將各模組透過 `contributes/core.json`（`"gitignore"`）或動態 SDK（`register_dynamic(module, patterns)`）註冊之語意 URI 自動換算為相對於 `project://` 之錨定路徑，寫入 `project://.gitignore` 的 `# === YSCB MANAGED GITIGNORE BEGIN ===` ~ `# === YSCB MANAGED GITIGNORE END ===` 區塊。
-  2. **`# [<module>]` 強制分組與 SDK 非空模組名守衛**：託管區塊內依貢獻來源輸出 `# [<module>]` 子標頭（`core` 置頂、一般模組字母序、`project` 置底），且 `register_dynamic` / `clear_dynamic` 強制驗證 `module` 為非空字串；當呼叫端傳入非活躍工作區之自訂沙盒 `proj_root` 時，自動將動態規則隔離於記憶體字典而不污染全域 `storage.local://core/gitignore_dynamic.json`。
-- **背後考量**：子目錄拆散多個 `.gitignore` 易造成跨拓撲規則過時、外部工具鏈解析不一致以及模組移除後殘留隱藏殭屍檔；集中於單一根目錄託管區塊並以 `# [<module>]` 分組，可在模組卸載（`act_delete`）時 100% 自動剔除該模組之靜態與動態忽略規則。
+  1. **根目錄單檔 SSOT (`project://.gitignore`) 與 `spaces.gitignore` 正向空間驅動**：全系統廢除子目錄分散式 `.gitignore` 與獨立 `gitignore_dynamic.json` 狀態檔，統一由 `core.gitignore` 讀取 `SpaceRegistry` 中所有 `<owner>/gitignore` 空間定義（涵蓋 `contributes/core.json`、`config/core/contribute.json`、`on_register_file_spaces` 事件與進程內 `core.gitignore.register(module, patterns)`）：將 `effective_include` 轉換為相對於 `project://` 之錨定忽略規則、將 `effective_exclude` 轉換為 `!<pattern>` 豁免規則，寫入 `project://.gitignore` 的 `# === YSCB MANAGED GITIGNORE BEGIN ===` ~ `# === YSCB MANAGED GITIGNORE END ===` 區塊。
+  2. **`# [<module>]` 強制分組與 SDK 非空模組名守衛**：託管區塊內依貢獻來源輸出 `# [<module>]` 子標頭（`core` 置頂、一般模組字母序、`project` 置底），且 `register` / `clear` 強制驗證 `module` 為非空字串。
+- **背後考量**：子目錄拆散多個 `.gitignore` 或雙軌維護 `.gitignore` 與 `core.space` 規則易造成跨拓撲規則過時、外部工具鏈解析不一致以及模組移除後殘留隱藏殭屍檔；集中於 `spaces.gitignore` 正向空間並以 `# [<module>]` 分組物化，可在模組卸載（`act_delete`）時 100% 自動剔除該模組之忽略規則。
 - **防禦宣告**：
   > [!CAUTION]
   > **嚴禁任何業務模組繞過 `core.gitignore` 自行拼湊 Regex 讀寫 `project://.gitignore` 或在子目錄偷塞隱藏 `.gitignore`！動態註冊忽略規則時必須傳入明確之模組識別名稱！**
@@ -289,6 +292,20 @@ last_updated: "2026-11-05"
 - **防禦宣告**：
   > [!CAUTION]
   > **嚴禁將 `storage.local://` 或 `cache://` 納入 `act_snapshot` 備份範圍！嚴禁在 `core.config` 或業務代碼熱路徑中塞入歷史版本路徑相容分支（所有跨版本資料與路徑遷移一律註冊於 `scripts/migrations/`）！**
+
+---
+
+### [DN-20] `CompiledRuleSet` 正反向對稱化、`!<preset>` 局部子樹剪枝不變量與 `compose` 純檔案集代數
+
+- **核心決策**：
+  1. **`CompiledRuleSet` 正反向對稱化 (`allow_dir_prefix=True`, `match_any_segment_for_name=True`)**：由於 `presets: ["!<space>"]` 會將目標空間之 `include` 反轉為當前空間之排除規則、將目標 `exclude` 反轉為豁免規則，`CompiledRuleSet` 在編譯與評估 `include` 與 `exclude` 時必須 100% 對稱（目錄規則與區段名稱規則在正向納入與反向排除下行為完全一致），且 `_prepare_candidate_coords` 必須將 `project_rel` 各目錄段置於 `filename` (`parts[-1]`) 之前，確保 `dir_only` 規則對子目錄入口 (`entry_abs != project_root`) 下之檔案依然能匹配父目錄段。
+  2. **`!<preset>` 局部子樹剪枝不變量 (`has_potential_descendant_match`)**：在 `os.scandir`（及根目錄 `entry_path` 進入遞迴前）檢查目錄 $D$ 是否因負向 preset $T$ 而剪枝時，僅當 $D$ 命中 $T.\text{include}$、未命中 $T.\text{exclude}$，且 **`T._compiled_exclude.has_potential_descendant_match(D)` 為 `False`** 時，方可安全剪枝 $D$；若 $T.\text{exclude}$ 含有可能命中 $D$ 子樹之豁免規則（例如 `build/keep.txt`），必須進入 $D$ 逐檔評估而不得提前剪枝。
+  3. **`compose` 純檔案集代數（零母空間二次過濾）**：母空間自身之 `include` 與 `exclude` **僅過濾母空間自身的 `entries`**，絕不對 `compose` 子空間產出之檔案執行二次過濾；若需從組合結果中剔除特定集合，一律透過 `compose: ["!<space>"]` 執行檔案集差集 ($\text{Positive} \setminus \text{Negative}$)。
+- **背後考量**：若 `include` 與 `exclude` 編譯不對稱，`gitignore` 這類正向空間透過 `presets: ["!gitignore"]` 轉為排除規則時將無法剪枝目錄；若負向 preset 在存在子樹豁免規則時無條件剪枝外層目錄，將導致豁免檔案被誤殺；若母空間預設 `include: ["*"]` 或特定規則對 `compose` 子空間二次過濾，將破壞獨立定義空間的封閉性。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **嚴禁在 `CompiledRuleSet` 中為 `is_exclude=True/False` 引入不對稱的目錄前綴或路徑段匹配分支！嚴禁在評估 `negated_presets` 目錄剪枝時略過 `has_potential_descendant_match` 檢查！嚴禁在 `_walk_single_space` 中將母空間之 `include`/`exclude` 套用至 `compose` 子空間結果！**
+
 
 
 

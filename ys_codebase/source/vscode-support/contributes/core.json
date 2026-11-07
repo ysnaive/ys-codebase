@@ -65,8 +65,17 @@
       }
     }
   },
-  "gitignore": [
-    "project://.vscode/schemas/"
-  ]
+  "spaces": {
+    "gitignore": {
+      "description": "VS Code 動態生成之 JSON Schema 目錄",
+      "entries": [
+        "project://"
+      ],
+      "include": [
+        "project://.vscode/schemas/"
+      ],
+      "watch": false
+    }
+  }
 }
 

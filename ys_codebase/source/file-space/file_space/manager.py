@@ -189,7 +189,7 @@ class FileSpaceManager:
         if force:
             self._registry.reload()
         result: Dict[str, FileSpaceConfig] = {}
-        for s_cfg in self._registry.list_spaces():
+        for s_cfg in self._registry.list_spaces(include_synthetic=False):
             adapted = FileSpaceConfig.from_space_config(s_cfg, self.project_root)
             result[s_cfg.short_name] = adapted
             result[s_cfg.qualified_name] = adapted
@@ -198,7 +198,7 @@ class FileSpaceManager:
     def list_spaces(self) -> List[str]:
         """Return registered workspace short names in deterministic order."""
         seen: List[str] = []
-        for s_cfg in self._registry.list_spaces():
+        for s_cfg in self._registry.list_spaces(include_synthetic=False):
             if s_cfg.short_name not in seen:
                 seen.append(s_cfg.short_name)
         return seen
@@ -206,13 +206,24 @@ class FileSpaceManager:
     def get_all_spaces(self) -> Dict[str, FileSpaceConfig]:
         """Return mapping of short workspace names to FileSpaceConfig."""
         result: Dict[str, FileSpaceConfig] = {}
-        for s_cfg in self._registry.list_spaces():
+        for s_cfg in self._registry.list_spaces(include_synthetic=False):
             result[s_cfg.short_name] = FileSpaceConfig.from_space_config(
                 s_cfg, self.project_root
             )
         return result
 
     def _adapt_matched_spaces(self, matched: List[SpaceConfig]) -> FileSpaceConfig:
+        if (
+            len(matched) == 1
+            and matched[0].owner == ""
+            and not matched[0].entries
+            and matched[0].compose
+        ):
+            pos_children, _neg_children = self._registry._split_compose_children(
+                matched[0], ()
+            )
+            if pos_children:
+                matched = pos_children
         primary = matched[-1]
         if len(matched) == 1:
             cfg = FileSpaceConfig.from_space_config(primary, self.project_root)

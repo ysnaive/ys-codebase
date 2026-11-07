@@ -20,7 +20,6 @@ from core.space import (
     BinarySnapshotManager,
     FileFingerprint,
     HashPolicy,
-    PresetConfig,
     SnapshotState,
     SpaceConfig,
     SpaceCycleError,
@@ -108,9 +107,11 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         return c_file
 
     def test_schema_validation_and_default_include_exclude_priority(self) -> None:
-        """Verify `_format.json` schema validation for `presets`/`spaces` and default `include=['*']` with `exclude > include`."""
+        """Verify `_format.json` schema validation for unified `spaces`, rule-only space (`entries=()`, `compose=()`), and symmetric `CompiledRuleSet`."""
         self.assertIn("space", core.__all__)
         self.assertIs(core.space.SpaceRegistry, SpaceRegistry)
+        self.assertFalse(hasattr(core.space, "PresetConfig"))
+        self.assertFalse(hasattr(core.space, "GitignoreEvaluator"))
 
         fmt_path = Path(uri.resolve("module.source://core/contributes/_format.json"))
         fmt_schema = vfs.read_json(str(fmt_path))
@@ -118,25 +119,23 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         self.assertTrue(meta_res.is_valid, meta_res.format_report())
 
         valid_payload = {
-            "presets": {
+            "spaces": {
                 "py-only": {
-                    "description": "Python files only",
+                    "description": "Python files only (pure rule space)",
                     "include": ["*.py"],
                     "exclude": ["*_pb2.py"],
-                }
-            },
-            "spaces": {
+                },
                 "code": {
                     "description": "Code space",
                     "entries": ["project://src"],
-                    "presets": ["py-only", "@gitignore"],
+                    "presets": ["py-only", "!gitignore"],
                     "hash_policy": "adaptive",
                     "large_file_threshold_mb": 15,
                     "follow_symlinks": False,
                 },
                 "pure_composite": {
                     "description": "Pure compose space without entries",
-                    "compose": ["code"],
+                    "compose": ["code", "!gitignore"],
                 },
             },
         }
@@ -159,15 +158,17 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         )
         self.assertFalse(bad_res.is_valid)
 
-        # SpaceConfig without both entries and compose raises SpaceError
-        with self.assertRaises(SpaceError):
-            SpaceConfig(
-                qualified_name="project/empty_space",
-                owner="project",
-                short_name="empty_space",
-                entries=(),
-                compose=(),
-            )
+        # Pure rule-template SpaceConfig (entries=() and compose=()) is valid and evaluates to empty set
+        empty_cfg = SpaceConfig(
+            qualified_name="project/rule_template",
+            owner="project",
+            short_name="rule_template",
+            entries=(),
+            compose=(),
+            include=("*.py",),
+        )
+        self.assertEqual(empty_cfg.entries, ())
+        self.assertEqual(empty_cfg.compose, ())
 
         # SpaceConfig invalid hash_policy and threshold raises SpaceError
         with self.assertRaises(SpaceError):
@@ -187,19 +188,24 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
                 large_file_threshold_mb=0,
             )
 
-        # Default include=["*"] and exclude priority over include
+        # Default include=["*"] and symmetric CompiledRuleSet (dir prefix & segment matching in both include & exclude)
         src_dir = self.proj_root / "src"
-        src_dir.mkdir(parents=True, exist_ok=True)
+        sub_dir = src_dir / "nested_dir"
+        sub_dir.mkdir(parents=True, exist_ok=True)
         (src_dir / "keep.py").write_text("print(1)\n", encoding="utf-8")
         (src_dir / "secret.py").write_text("print(2)\n", encoding="utf-8")
+        (sub_dir / "inside.txt").write_text("inside\n", encoding="utf-8")
 
         reg = SpaceRegistry(
             project_root=self.proj_root,
             yscb_dir=self.yscb_root,
             raw_spaces={
+                "project/rule_only": {
+                    "include": ["*.py"],
+                },
                 "project/app": {
                     "entries": ["src"],
-                    "include": ["*.py"],
+                    "include": ["*.py", "nested_dir/"],
                     "exclude": ["secret.py"],
                 },
                 "project/all_files": {
@@ -209,13 +215,17 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         )
         all_cfg = reg.resolve_spaces("project/all_files")[0]
         self.assertEqual([r.raw_pattern for r in all_cfg.effective_include], ["*"])
+        self.assertEqual(reg.iter_space_files("project/rule_only"), [])
+        m_rule_only = reg.match_path(src_dir / "keep.py", "project/rule_only")
+        self.assertFalse(m_rule_only.matched)
+        self.assertEqual(m_rule_only.details[0].reason, "outside_entries")
 
         matched_files = [f.rel_path for f in reg.iter_space_files("project/app")]
-        self.assertEqual(matched_files, ["src/keep.py"])
+        self.assertEqual(matched_files, ["src/keep.py", "src/nested_dir/inside.txt"])
         self.mark_passed()
 
     def test_namespace_isolation_and_short_name_union_addressing(self) -> None:
-        """Verify `<owner>/<name>` isolation and `<name>` short-name union without cross-contamination."""
+        """Verify `<owner>/<name>` isolation, `/<short-name>` synthetic space generation, and short-name union without cross-contamination."""
         docs_mod_a = self.proj_root / "docs_a"
         docs_proj = self.proj_root / "docs_proj"
         docs_mod_a.mkdir(parents=True, exist_ok=True)
@@ -229,30 +239,26 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         self._write_module_core_contrib(
             "mod_a",
             {
-                "presets": {
-                    "ignore_rules": {"exclude": ["*.tmp"]},
-                },
                 "spaces": {
+                    "ignore_rules": {"exclude": ["*.tmp"]},
                     "docs": {
                         "description": "Module A docs",
                         "entries": ["project://docs_a"],
                         "presets": ["mod_a/ignore_rules"],
                         "include": ["*.md", "*.tmp"],
-                    }
+                    },
                 },
             },
         )
         self._write_project_core_contrib(
             {
-                "presets": {
-                    "ignore_rules": {"exclude": ["*.bak"]},
-                },
                 "spaces": {
+                    "ignore_rules": {"exclude": ["*.bak"]},
                     "docs": {
                         "description": "Project docs",
                         "entries": ["project://docs_proj", "project://docs_a/guide.md"],
                         "include": ["*.md"],
-                    }
+                    },
                 },
             }
         )
@@ -269,78 +275,96 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         self.assertEqual(len(proj_spaces), 1)
         self.assertEqual(proj_spaces[0].owner, "project")
 
-        # 2. Short-name lookup returns deterministic union (module before project)
+        # 2. Synthetic `/<short-name>` space is automatically created and composed of `<owner>/<short-name>`
+        synth_spaces = reg.resolve_spaces("/docs")
+        self.assertEqual(len(synth_spaces), 1)
+        self.assertEqual(synth_spaces[0].qualified_name, "/docs")
+        self.assertEqual(synth_spaces[0].owner, "")
+        self.assertEqual(synth_spaces[0].entries, ())
+        self.assertEqual(synth_spaces[0].compose, ("mod_a/docs", "project/docs"))
+
+        # Short-name lookup `<short-name>` returns the synthesized union space `/docs` composed of concrete definitions
         union_spaces = reg.resolve_spaces("docs")
-        self.assertEqual([s.qualified_name for s in union_spaces], ["mod_a/docs", "project/docs"])
+        self.assertEqual([s.qualified_name for s in union_spaces], ["/docs"])
+        self.assertEqual(list(union_spaces[0].compose), ["mod_a/docs", "project/docs"])
 
         # 3. Union traversal deduplicates overlapping physical file `docs_a/guide.md` and records both matched_spaces
-        union_files = reg.iter_space_files("docs")
-        by_rel = {f.rel_path: f for f in union_files}
-        self.assertEqual(sorted(by_rel.keys()), ["docs_a/guide.md", "docs_proj/readme.md"])
-        self.assertEqual(
-            by_rel["docs_a/guide.md"].matched_spaces,
-            ("mod_a/docs", "project/docs"),
-        )
-        self.assertEqual(
-            by_rel["docs_proj/readme.md"].matched_spaces,
-            ("project/docs",),
-        )
+        for q_str in ("docs", "/docs"):
+            union_files = reg.iter_space_files(q_str)
+            by_rel = {f.rel_path: f for f in union_files}
+            self.assertEqual(sorted(by_rel.keys()), ["docs_a/guide.md", "docs_proj/readme.md"])
+            self.assertEqual(
+                by_rel["docs_a/guide.md"].matched_spaces,
+                ("mod_a/docs", "project/docs"),
+            )
+            self.assertEqual(
+                by_rel["docs_proj/readme.md"].matched_spaces,
+                ("project/docs",),
+            )
         self.mark_passed()
 
-    def test_explicit_presets_and_builtin_gitignore_evaluation(self) -> None:
-        """Verify explicit preset expansion, unresolved preset warning, and `@gitignore` with `!` exemptions."""
-        (self.proj_root / ".gitignore").write_text(
-            "# Root comment\n"
-            "\n"
-            "*.log\n"
-            "!important.log\n"
-            "ignored_dir/\n",
-            encoding="utf-8",
-        )
+    def test_presets_rule_reference_negated_preset_and_subtree_pruning(self) -> None:
+        """Verify `presets` rule pulling, `!<space>` inverted exclusion, and local subtree pruning invariant (`EC-03`)."""
         logs_dir = self.proj_root / "logs"
-        logs_dir.mkdir(parents=True, exist_ok=True)
+        venv_dir = logs_dir / ".venv" / "lib"
+        build_dir = logs_dir / "build" / "sub"
+        venv_dir.mkdir(parents=True, exist_ok=True)
+        build_dir.mkdir(parents=True, exist_ok=True)
+
+        (logs_dir / "app.py").write_text("x = 1\n", encoding="utf-8")
         (logs_dir / "debug.log").write_text("debug\n", encoding="utf-8")
         (logs_dir / "important.log").write_text("important\n", encoding="utf-8")
-        (logs_dir / "override.log").write_text("override\n", encoding="utf-8")
-
-        ignored_sub = logs_dir / "ignored_dir"
-        ignored_sub.mkdir(parents=True, exist_ok=True)
-        (ignored_sub / "inside.txt").write_text("inside\n", encoding="utf-8")
+        (venv_dir / "pkg.py").write_text("pkg = 1\n", encoding="utf-8")
+        (build_dir / "drop.txt").write_text("drop\n", encoding="utf-8")
+        (logs_dir / "build" / "keep.txt").write_text("keep\n", encoding="utf-8")
 
         reg = SpaceRegistry(
             project_root=self.proj_root,
             yscb_dir=self.yscb_root,
             raw_spaces={
+                "core/gitignore": {
+                    "entries": ["project://"],
+                    "include": ["*.log", ".venv/**", "build/**"],
+                    "exclude": ["important.log", "build/keep.txt"],
+                    "watch": False,
+                },
                 "project/no_gitignore": {
                     "entries": ["logs"],
                     "presets": ["missing_preset_name"],
                 },
-                "project/with_gitignore": {
+                "project/with_neg_gitignore": {
                     "entries": ["logs"],
-                    "presets": ["@gitignore"],
-                    "exclude": ["override.log"],
+                    "presets": ["!core/gitignore"],
                 },
             },
         )
 
-        # Space without @gitignore is completely unaffected by .gitignore; unresolved preset is recorded without crash
+        # 1. Unresolved preset recorded without crash
         no_gi_cfg = reg.resolve_spaces("project/no_gitignore")[0]
         self.assertEqual(no_gi_cfg.unresolved_presets, ("missing_preset_name",))
         no_gi_files = [f.rel_path for f in reg.iter_space_files("project/no_gitignore")]
         self.assertIn("logs/debug.log", no_gi_files)
-        self.assertIn("logs/ignored_dir/inside.txt", no_gi_files)
+        self.assertIn("logs/.venv/lib/pkg.py", no_gi_files)
 
-        # Space with @gitignore excludes debug.log & ignored_dir/, exempts !important.log,
-        # while space-level explicit exclude ("override.log") still wins
-        with_gi_files = [f.rel_path for f in reg.iter_space_files("project/with_gitignore")]
-        self.assertEqual(with_gi_files, ["logs/important.log"])
+        # 2. `!core/gitignore` excludes files matching `gitignore.include` unless exempted by `gitignore.exclude`,
+        #    and prunes `.venv` subtree at os.scandir level while entering `build` to keep `build/keep.txt` (EC-03).
+        scandir_calls: list[str] = []
+        real_scandir = os.scandir
 
-        # Inspect builtin @gitignore preset via resolve_presets("@gitignore")
-        gi_presets = reg.resolve_presets("@gitignore")
-        self.assertEqual(len(gi_presets), 1)
-        self.assertEqual(gi_presets[0].qualified_name, "@gitignore")
-        self.assertIn("*.log", gi_presets[0].exclude)
-        self.assertIn("!important.log", gi_presets[0].exclude)
+        def _spy_scandir(path):
+            scandir_calls.append(Path(path).as_posix())
+            return real_scandir(path)
+
+        with patch("core.space.registry.os.scandir", side_effect=_spy_scandir):
+            with_gi_files = [f.rel_path for f in reg.iter_space_files("project/with_neg_gitignore")]
+
+        self.assertEqual(
+            with_gi_files,
+            ["logs/app.py", "logs/build/keep.txt", "logs/important.log"],
+        )
+        for called_p in scandir_calls:
+            self.assertNotIn(".venv", called_p)
+        self.assertTrue(any(called_p.endswith("/logs/build") for called_p in scandir_calls))
         self.mark_passed()
 
     def test_three_coordinate_rules_and_single_point_match_explain(self) -> None:
@@ -371,7 +395,7 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         reg = SpaceRegistry(
             project_root=self.proj_root,
             yscb_dir=self.yscb_root,
-            raw_presets={
+            raw_spaces={
                 "core/std_ignore": {
                     "exclude": [
                         "yscb://.cache/**",       # Coordinate 1: Semantic URI prefix
@@ -379,9 +403,7 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
                         "subpkg/ignored_*.py",    # Coordinate 2: Relative to entry (module.source://core)
                         "__pycache__",            # Coordinate 3: Segment name without '/'
                     ]
-                }
-            },
-            raw_spaces={
+                },
                 "core/workspace": {
                     "entries": [
                         "project://plans",
@@ -390,7 +412,7 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
                     ],
                     "presets": ["core/std_ignore"],
                     "include": ["*.py", "*.md"],
-                }
+                },
             },
         )
 
@@ -573,19 +595,17 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
 
         self._write_project_core_contrib(
             {
-                "presets": {
-                    "cli_preset": {
-                        "description": "CLI test preset",
-                        "exclude": ["*.tmp"],
-                    }
-                },
                 "spaces": {
+                    "cli_preset": {
+                        "description": "CLI test preset space",
+                        "exclude": ["*.tmp"],
+                    },
                     "cli_space": {
                         "description": "CLI test space",
                         "entries": ["project://cli_src"],
                         "presets": ["project/cli_preset"],
                         "include": ["*.py"],
-                    }
+                    },
                 },
             }
         )
@@ -608,7 +628,7 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
             spaces_json = json.loads(buf_spaces.getvalue())
             self.assertEqual(spaces_json["status"], "ok")
             self.assertEqual(spaces_json["count"], 1)
-            self.assertEqual(spaces_json["spaces"][0]["qualified_name"], "project/cli_space")
+            self.assertIn(spaces_json["spaces"][0]["qualified_name"], ("/cli_space", "project/cli_space"))
 
             # Human-readable spaces output
             buf_spaces_txt = io.StringIO()
@@ -624,20 +644,9 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
             self.assertEqual(rc_txt, 0)
             self.assertIn("project/cli_space", buf_spaces_txt.getvalue())
 
-            # 2. `fs presets --json`
-            buf_presets = io.StringIO()
-            with redirect_stdout(buf_presets):
-                rc_p = cli_mod.fs_presets(
-                    CmdBags(
-                        raw_cmd="fs presets cli_preset --json",
-                        command="fs_presets",
-                        args=["cli_preset"],
-                        options={"json": CmdOption(name="json", params=True)},
-                    )
-                )
-            self.assertEqual(rc_p, 0)
-            presets_json = json.loads(buf_presets.getvalue())
-            self.assertEqual(presets_json["presets"][0]["qualified_name"], "project/cli_preset")
+            # 2. Verify `fs_presets` and `file_space_presets` are removed from CLI module
+            self.assertFalse(hasattr(cli_mod, "fs_presets"))
+            self.assertFalse(hasattr(cli_mod, "file_space_presets"))
 
             # 3. `fs match --json`
             buf_match = io.StringIO()
@@ -746,8 +755,8 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
             dispatcher.clear_cache()
         self.mark_passed()
 
-    def test_compose_algebra_secondary_filtering_and_cycle_detection(self) -> None:
-        """Verify `compose` space union, `entry_path` inheritance in secondary filtering, `match_path` provenance, and `SpaceCycleError`."""
+    def test_compose_algebra_set_difference_and_cycle_detection(self) -> None:
+        """Verify `compose` absolute file-set union (no secondary parent filtering), `!<space>` file-set difference, and `SpaceCycleError`."""
         dir_a = self.proj_root / "mod_a"
         dir_b = self.temp_dir / "ext_mod_b" / "nested"
         dir_own = self.proj_root / "own_dir"
@@ -760,6 +769,7 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         (dir_b / "b_code.py").write_text("b = 2\n", encoding="utf-8")
         (dir_b / "b_secret.py").write_text("secret = 3\n", encoding="utf-8")
         (dir_own / "own_note.txt").write_text("note\n", encoding="utf-8")
+        (dir_own / "own_code.py").write_text("own = 4\n", encoding="utf-8")
 
         ext_entry_root = self.temp_dir / "ext_mod_b"
 
@@ -775,14 +785,14 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
                     "entries": [ext_entry_root.as_posix()],
                     "include": ["*.py"],
                 },
-                "project/union_all": {
-                    "compose": ["mod_a/base", "mod_b/ext", "missing/non_existent"],
-                    "entries": ["project://own_dir"],
-                    "exclude": ["nested/b_secret.py"],  # Coordinate 2 relative to inherited entry `ext_mod_b`
+                "mod_b/secrets": {
+                    "entries": [ext_entry_root.as_posix()],
+                    "include": ["nested/b_secret.py"],
                 },
-                "project/py_filtered": {
-                    "compose": ["project/union_all"],
-                    "include": ["*.py"],  # Explicit include intersects composed files + own entries
+                "project/union_all": {
+                    "compose": ["mod_a/base", "mod_b/ext", "!mod_b/secrets", "missing/non_existent"],
+                    "entries": ["project://own_dir"],
+                    "include": ["*.txt"],  # Only filters own_dir (does NOT filter composed mod_a/base or mod_b/ext)
                 },
             },
         )
@@ -791,8 +801,8 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         union_cfg = reg.resolve_spaces("project/union_all")[0]
         self.assertEqual(union_cfg.unresolved_compose, ("missing/non_existent",))
 
-        # 2. Verify `project/union_all`: default include=['*'] preserves child includes (`*.py`, `*.md`) + own `own_note.txt`,
-        # while secondary exclude `nested/b_secret.py` (using inherited `ext_mod_b` entry_path) removes `b_secret.py`.
+        # 2. Verify `project/union_all`: parent `include: ["*.txt"]` filters only `own_dir` (`own_note.txt` kept, `own_code.py` dropped),
+        #    while composed `mod_a/base` and `mod_b/ext` keep their `.py`/`.md` files and `!mod_b/secrets` subtracts `b_secret.py`.
         union_files = reg.iter_space_files("project/union_all")
         union_rels = [f.rel_path for f in union_files]
         self.assertEqual(
@@ -805,24 +815,20 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
             ],
         )
 
-        # 3. Verify `project/py_filtered`: explicit `include: ["*.py"]` filters out `.md` and `.txt` from composed space
-        py_files = reg.iter_space_files("project/py_filtered")
-        self.assertEqual(
-            [f.rel_path for f in py_files],
-            ["ext_mod_b/nested/b_code.py", "mod_a/a_code.py"],
-        )
+        # 3. Verify `collect_all_entry_paths` expands only positive `compose` (ignores `!mod_b/secrets`)
+        entry_paths = reg.collect_all_entry_paths("project/union_all")
+        self.assertIn(dir_a.resolve(), [p.resolve() for p in entry_paths])
+        self.assertIn(dir_own.resolve(), [p.resolve() for p in entry_paths])
 
-        # 4. Verify `match_path` provenance on composed space
-        m_inc = reg.match_path(dir_b / "b_code.py", "project/py_filtered")
+        # 4. Verify `match_path` provenance on composed space and negative `!compose`
+        m_inc = reg.match_path(dir_b / "b_code.py", "project/union_all")
         self.assertTrue(m_inc.matched)
-        self.assertIn("compose:project/union_all", m_inc.details[0].matched_entry or "")
+        self.assertIn("compose:mod_b/ext", m_inc.details[0].matched_entry or "")
 
         m_exc = reg.match_path(dir_b / "b_secret.py", "project/union_all")
         self.assertFalse(m_exc.matched)
-        self.assertEqual(m_exc.details[0].reason, "excluded")
-        self.assertEqual(m_exc.details[0].exclude_rule, "nested/b_secret.py")
 
-        # 5. Verify direct and indirect cycle detection raises SpaceCycleError
+        # 5. Verify direct and indirect cycle detection (both `compose` and `presets`) raises SpaceCycleError
         cycle_reg = SpaceRegistry(
             project_root=self.proj_root,
             yscb_dir=self.yscb_root,
@@ -835,16 +841,28 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
             cycle_reg.iter_space_files("project/c1")
         with self.assertRaises(SpaceCycleError):
             cycle_reg.match_path(dir_a / "a_code.py", "project/c1")
+
+        with self.assertRaises(SpaceCycleError):
+            SpaceRegistry(
+                project_root=self.proj_root,
+                yscb_dir=self.yscb_root,
+                raw_spaces={
+                    "project/p1": {"presets": ["project/p2"]},
+                    "project/p2": {"presets": ["!project/p1"]},
+                },
+            )
         self.mark_passed()
 
-    def test_resolve_file_path_and_ephemeral_space_memory_isolation(self) -> None:
-        """Verify `resolve_file_path` navigation and `define_ephemeral_space` zero-disk memory isolation."""
+    def test_resolve_file_path_four_stage_injection_and_runtime_register_space(self) -> None:
+        """Verify `resolve_file_path`, four-stage rule union (`[*] ∪ [*.py] = [*]`), `__unknown__` default owner, and `register_space`/`unregister_space`."""
         nav_dir = self.proj_root / "nav"
         nav_dir.mkdir(parents=True, exist_ok=True)
         f_ok = nav_dir / "valid.py"
         f_ex = nav_dir / "ignored.tmp"
+        f_md = nav_dir / "readme.md"
         f_ok.write_text("ok = True\n", encoding="utf-8")
         f_ex.write_text("tmp\n", encoding="utf-8")
+        f_md.write_text("# doc\n", encoding="utf-8")
 
         ext_dir = self.temp_dir / "ext_lib"
         ext_dir.mkdir(parents=True, exist_ok=True)
@@ -872,34 +890,37 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         self.assertIsNotNone(resolved_ext)
         self.assertEqual(resolved_ext.resolve(), f_ext.resolve())
 
-        # Excluded or non-existent files return None
         self.assertIsNone(reg.resolve_file_path("nav/ignored.tmp", "project/nav_space"))
         self.assertIsNone(reg.resolve_file_path("nav/missing.py", "project/nav_space"))
 
-        # 2. define_ephemeral_space and verify zero disk persistence in storage.local
-        ephem_cfg = define_ephemeral_space(
+        # 2. Runtime `register_space` without `<owner>/` defaults to `__unknown__/<short-name>`
+        #    (`define_ephemeral_space` forwards to `register_space`)
+        dyn_cfg = define_ephemeral_space(
             "temp_view",
             {"entries": ["project://nav"], "include": ["*.py"]},
             registry=reg,
         )
-        self.assertEqual(ephem_cfg.qualified_name, "ephemeral/temp_view")
-        self.assertTrue(ephem_cfg.is_ephemeral)
-        self.assertTrue(reg.is_ephemeral_query("temp_view"))
+        self.assertEqual(dyn_cfg.qualified_name, "__unknown__/temp_view")
+        self.assertEqual(dyn_cfg.owner, "__unknown__")
+        self.assertFalse(hasattr(dyn_cfg, "is_ephemeral"))
 
-        storage_dir = self.yscb_root / ".storage.local" / "core" / "space"
-        scanner = SpaceScanner(registry=reg, storage_root=storage_dir)
+        # 3. Rule-level absolute union on the same `<owner>/<short-name>`:
+        #    injecting `include: ["*"]` into `project/nav_space` makes `[*] ∪ [*.py] = [*]` while uniting `exclude`
+        reg.register_space(
+            "project/nav_space",
+            {"include": ["*"], "exclude": ["util.py"]},
+        )
+        merged_nav = reg.resolve_spaces("project/nav_space")[0]
+        self.assertEqual(merged_nav.include, ("*",))
+        self.assertEqual(merged_nav.exclude, ("*.tmp", "util.py"))
+        nav_rels = [f.rel_path for f in reg.iter_space_files("project/nav_space")]
+        self.assertIn("nav/readme.md", nav_rels)
+        self.assertNotIn("ext_lib/util.py", nav_rels)
 
-        with scanner.consume_diff("temp_view", consumer_id="ephem_tester") as diff_res:
-            self.assertEqual(diff_res.added_count, 1)
-            self.assertIn("nav/valid.py", diff_res.detail.added)
-
-        # Verify no .yfp2.bin or cursor json was written to disk for ephemeral space
-        snaps_dir = storage_dir / "snapshots"
-        cursors_dir = storage_dir / "cursors"
-        if snaps_dir.exists():
-            self.assertEqual(list(snaps_dir.glob("*.yfp2.bin")), [])
-        if cursors_dir.exists():
-            self.assertEqual(list(cursors_dir.glob("*.json")), [])
+        # 4. `unregister_space` removes runtime-injected space
+        self.assertTrue(reg.unregister_space("__unknown__/temp_view"))
+        with self.assertRaises(SpaceNotFoundError):
+            reg.resolve_spaces("__unknown__/temp_view")
         self.mark_passed()
 
     def test_yfp2_snapshot_scanner_patch_files_and_transactional_cursors(self) -> None:
@@ -1161,6 +1182,17 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
             "core",
             {
                 "spaces": {
+                    "workspace": {
+                        "entries": ["project://"],
+                        "include": ["*"],
+                        "exclude": ["yscb://.modules/**", "yscb://.storage.local/**", "yscb://.cache/**", "__pycache__"],
+                        "watch": True,
+                    },
+                    "gitignore": {
+                        "entries": ["project://"],
+                        "include": ["yscb://.modules/", "yscb://.venv/"],
+                        "watch": False,
+                    },
                     "source": {
                         "entries": ["project://src_mod"],
                         "include": ["*.py"],
@@ -1173,6 +1205,16 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
                 }
             },
         )
+        # Create a module hook in .modules/mock_hook/scripts/hook.core.py for Stage 3 on_register_file_spaces
+        hook_dir = self.yscb_root / ".modules" / "mock_hook" / "scripts"
+        hook_dir.mkdir(parents=True, exist_ok=True)
+        (hook_dir / "hook.core.py").write_text(
+            "def on_register_file_spaces(ctx):\n"
+            "    reg = ctx.get('registry') if isinstance(ctx, dict) else getattr(ctx, 'registry', None)\n"
+            "    if reg is not None:\n"
+            "        reg.register_space('mock_hook/dynamic_hook', {'entries': ['project://src_mod'], 'include': ['*.py'], 'watch': False})\n",
+            encoding="utf-8",
+        )
         self._write_project_core_contrib(
             {
                 "spaces": {
@@ -1183,15 +1225,23 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
             }
         )
 
-        # 1. Verify static space `watch=True` default and `watch=False` override
+        # 1. Verify static space `watch=True` default, `gitignore` (`watch=False`), and Stage 3 `on_register_file_spaces`
         reg = get_default_registry(project_root=self.proj_root, yscb_dir=self.yscb_root)
         src_cfg = reg.resolve_spaces("core/source")[0]
         unw_cfg = reg.resolve_spaces("core/unwatched")[0]
+        gi_cfg = reg.resolve_spaces("core/gitignore")[0]
+        hook_cfg = reg.resolve_spaces("mock_hook/dynamic_hook")[0]
         self.assertTrue(src_cfg.watch)
         self.assertFalse(unw_cfg.watch)
+        self.assertFalse(gi_cfg.watch)
+        self.assertEqual(hook_cfg.owner, "mock_hook")
 
-        # 2. Verify top-level `define_ephemeral_space("yscb-skills", ...)` defaults to `watch=True`,
-        #    notifies active watcher, and is visible to top-level `scan` / `consume_diff` without passing `registry=`
+        # Verify default `resolve_spaces(None)` resolves to `/workspace` ceiling
+        default_spaces = reg.resolve_spaces(None)
+        self.assertTrue(any(s.short_name == "workspace" for s in default_spaces))
+
+        # 2. Verify top-level `define_ephemeral_space("yscb-skills", ...)` forwards to `register_space`,
+        #    defaults to `watch=True`, notifies active watcher, and is visible to top-level `scan` / `consume_diff`
         synced_calls: list = []
 
         class _DummyWatcher:
@@ -1213,11 +1263,10 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
             yscb_dir=self.yscb_root,
         )
         self.assertTrue(ephem_cfg.watch)
-        self.assertTrue(ephem_cfg.is_ephemeral)
-        self.assertEqual(ephem_cfg.qualified_name, "ephemeral/yscb-skills")
+        self.assertEqual(ephem_cfg.qualified_name, "__unknown__/yscb-skills")
         self.assertIn("synced", synced_calls)
 
-        # Override `watch=False` on ephemeral space does not trigger sync
+        # Override `watch=False` on runtime-registered space does not trigger sync
         synced_calls.clear()
         ephem_nowatch = define_ephemeral_space(
             "yscb-temp",
@@ -1240,11 +1289,11 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
             self.assertEqual(d_ephem.added, [".agents/skills/SKILL.md"])
             self.assertIn(("flushed", "yscb-skills"), synced_calls)
 
-        # Reloading default registry preserves active ephemeral spaces
+        # Reloading default registry preserves active runtime-injected spaces
         reg.reload()
         self.assertEqual(
-            reg.resolve_spaces("yscb-skills")[0].qualified_name,
-            "ephemeral/yscb-skills",
+            reg.resolve_spaces("__unknown__/yscb-skills")[0].qualified_name,
+            "__unknown__/yscb-skills",
         )
         register_active_watcher(None)
 

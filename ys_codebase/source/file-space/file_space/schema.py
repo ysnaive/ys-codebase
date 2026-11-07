@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Optional, Union
 from core.space import (
     FileFingerprint,
     HashPolicy,
-    PresetConfig,
     RuleItem,
     ScanDiffDetail,
     ScanDiffResult,
@@ -124,7 +123,7 @@ class FileSpaceConfig:
             res_p if res_p is not None else Path(raw_e)
             for raw_e, res_p, _exists in resolved_entries
         ]
-        if space_cfg.is_ephemeral:
+        if getattr(space_cfg, "is_ephemeral", False) or space_cfg.owner in ("__unknown__", "ephemeral"):
             origin = FileSpaceOrigin.EPHEMERAL
         elif space_cfg.owner == "project":
             origin = FileSpaceOrigin.PROJECT
@@ -248,7 +247,6 @@ __all__ = [
     "FileSpaceConfig",
     "FileSpaceOrigin",
     "HashPolicy",
-    "PresetConfig",
     "RuleItem",
     "ScanDiffDetail",
     "ScanDiffResult",

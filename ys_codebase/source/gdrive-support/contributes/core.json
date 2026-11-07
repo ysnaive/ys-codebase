@@ -656,10 +656,19 @@
       }
     }
   },
-  "gitignore": [
-    "config://gdrive-support/credentials.json",
-    "config://gdrive-support/service_account.json",
-    "config://gdrive-support/token.json",
-    "config://gdrive-support/*secret*.json"
-  ]
+  "spaces": {
+    "gitignore": {
+      "description": "Google Drive OAuth 憑證與機密組態排除規則",
+      "entries": [
+        "project://"
+      ],
+      "include": [
+        "config://gdrive-support/credentials.json",
+        "config://gdrive-support/service_account.json",
+        "config://gdrive-support/token.json",
+        "config://gdrive-support/*secret*.json"
+      ],
+      "watch": false
+    }
+  }
 }

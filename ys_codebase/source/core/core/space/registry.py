@@ -16,14 +16,12 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, 
 
 from .exceptions import SpaceCycleError, SpaceError, SpaceNotFoundError
 from .schema import (
-    GitignoreEvaluator,
     HashPolicy,
-    PresetConfig,
     RuleItem,
     SpaceConfig,
     resolve_semantic_or_rel_path,
 )
-from .watcher import notify_ephemeral_space_registered
+from .watcher import notify_space_registered
 
 
 def _sort_owner_keys(owners: Iterable[str]) -> List[str]:
@@ -42,8 +40,15 @@ def _sort_owner_keys(owners: Iterable[str]) -> List[str]:
     return ordered
 
 
-def _parse_qualified_key(key: str, default_owner: str) -> Tuple[str, str, str]:
-    clean = str(key or "").strip().strip("/")
+def _parse_qualified_key(
+    key: str, default_owner: str = "__unknown__"
+) -> Tuple[str, str, str]:
+    clean = str(key or "").strip()
+    if clean.startswith("/"):
+        stripped = clean.lstrip("/")
+        if "/" not in stripped and stripped:
+            return f"/{stripped}", "", stripped
+    clean = clean.strip("/")
     if "/" in clean:
         owner, short = clean.split("/", 1)
         owner = owner.strip() or default_owner
@@ -52,6 +57,81 @@ def _parse_qualified_key(key: str, default_owner: str) -> Tuple[str, str, str]:
         owner = default_owner
         short = clean
     return f"{owner}/{short}", owner, short
+
+
+def _merge_raw_space_dict(
+    existing: Dict[str, Any], incoming: Mapping[str, Any]
+) -> Dict[str, Any]:
+    """
+    Merge `incoming` raw space definition into `existing` using rule-level absolute union:
+    - `entries`, `compose`, `presets`, `exclude`: deduplicated ordered union.
+    - `include`: if either `existing` or `incoming` contains `*`, `**`, or `**/*`, result is `["*"]`;
+      otherwise deduplicated union (retaining `existing` if `incoming` omits `include`).
+    - Scalar fields (`description`, `hash_policy`, `large_file_threshold_mb`, `follow_symlinks`, `watch`):
+      updated when explicitly provided in `incoming`.
+    """
+    merged: Dict[str, Any] = dict(existing)
+
+    # Merge list fields: entries (including legacy include_entries), compose, presets, exclude
+    for field_name in ("entries", "compose", "presets", "exclude"):
+        cur_raw = merged.get(field_name, [])
+        if field_name == "entries" and not cur_raw and "include_entries" in merged:
+            cur_raw = merged.get("include_entries", [])
+        cur_list: List[str] = [
+            str(x).strip()
+            for x in (cur_raw if isinstance(cur_raw, (list, tuple)) else [])
+            if str(x).strip()
+        ]
+        inc_raw = incoming.get(field_name)
+        if field_name == "entries" and inc_raw is None and "include_entries" in incoming:
+            inc_raw = incoming.get("include_entries")
+        if isinstance(inc_raw, (list, tuple)):
+            for x in inc_raw:
+                s = str(x).strip()
+                if s and s not in cur_list:
+                    cur_list.append(s)
+        merged[field_name] = cur_list
+
+    # Merge `include` with wildcard absorption
+    has_existing_inc = "include" in merged and isinstance(merged["include"], (list, tuple))
+    cur_inc: List[str] = (
+        [str(x).strip() for x in merged["include"] if str(x).strip()]
+        if has_existing_inc
+        else []
+    )
+    inc_provided = "include" in incoming and isinstance(incoming["include"], (list, tuple))
+    new_inc: List[str] = (
+        [str(x).strip() for x in incoming["include"] if str(x).strip()]
+        if inc_provided
+        else []
+    )
+    if cur_inc or new_inc:
+        combined_inc: List[str] = []
+        for pat in (*cur_inc, *new_inc):
+            if pat not in combined_inc:
+                combined_inc.append(pat)
+        if any(pat in ("*", "**", "**/*") for pat in combined_inc):
+            merged["include"] = ["*"]
+        else:
+            merged["include"] = combined_inc
+    elif inc_provided:
+        merged["include"] = []
+
+    # Scalar fields
+    if "description" in incoming and incoming["description"] is not None:
+        desc_str = str(incoming["description"]).strip()
+        if desc_str or "description" not in merged:
+            merged["description"] = desc_str
+    for scalar_key in (
+        "hash_policy",
+        "large_file_threshold_mb",
+        "follow_symlinks",
+        "watch",
+    ):
+        if scalar_key in incoming and incoming[scalar_key] is not None:
+            merged[scalar_key] = incoming[scalar_key]
+
+    return merged
 
 
 def _has_intervening_symlink(child: Path, parent: Path) -> bool:
@@ -174,7 +254,7 @@ class MatchExplainResult:
 
 class SpaceRegistry:
     """
-    Atomic registry for `<owner>/<name>` presets and spaces with short-name `<name>` union addressing.
+    Atomic registry for `<owner>/<name>` spaces and synthesized `/<name>` short-name union spaces.
     """
 
     def __init__(
@@ -191,12 +271,11 @@ class SpaceRegistry:
         self._explicit_presets = raw_presets
         self._explicit_spaces = raw_spaces
 
-        self._presets: Dict[str, PresetConfig] = {}
-        self._presets_by_short: Dict[str, List[PresetConfig]] = {}
         self._spaces: Dict[str, SpaceConfig] = {}
         self._spaces_by_short: Dict[str, List[SpaceConfig]] = {}
-        self._ephemeral_spaces: Dict[str, SpaceConfig] = {}
-        self._gitignore_eval: Optional[GitignoreEvaluator] = None
+        self._runtime_spaces: Dict[str, Dict[str, Any]] = {}
+        self._raw_spaces_by_owner: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self._in_reload_broadcast: bool = False
         self._lock = threading.RLock()
 
         self.reload()
@@ -279,106 +358,216 @@ class SpaceRegistry:
         """Return normalized YSCB root directory Path."""
         return self._yscb_dir
 
-    def _get_gitignore_evaluator(self) -> GitignoreEvaluator:
-        if self._gitignore_eval is None:
-            self._gitignore_eval = GitignoreEvaluator.from_gitignore_file(
-                self._project_root, self._yscb_dir
-            )
-        return self._gitignore_eval
-
     def reload(self) -> None:
-        """Reload all preset and space definitions from modules and project configuration."""
+        """
+        Reload all space definitions using the four-stage, two-pass compilation pipeline:
+        Pass 1: Stage 1 (Module Contributes) -> Stage 2 (Project Config) ->
+                Stage 3 (`on_register_file_spaces` Event) -> Stage 4 (Runtime Injection).
+        Pass 2: Synthesize `/<short-name>` spaces -> DFS expand `presets`/`!presets` -> Compile `SpaceConfig`.
+        """
         with self._lock:
-            raw_presets_by_owner, raw_spaces_by_owner = self._discover_raw_definitions()
+            base_spaces_by_owner = self._discover_raw_definitions()
+            self._raw_spaces_by_owner = base_spaces_by_owner
 
-            new_presets: Dict[str, PresetConfig] = {}
-            new_presets_by_short: Dict[str, List[PresetConfig]] = {}
-            new_spaces: Dict[str, SpaceConfig] = {}
-            new_spaces_by_short: Dict[str, List[SpaceConfig]] = {}
-            self._gitignore_eval = None
+            # Stage 3: Broadcast `on_register_file_spaces` unless in sandbox/explicit mode or re-entering
+            if (
+                self._explicit_spaces is None
+                and self._explicit_presets is None
+                and not self._in_reload_broadcast
+            ):
+                self._in_reload_broadcast = True
+                try:
+                    from core import events as core_events
 
-            # 1. Register presets in deterministic owner order
-            for owner in _sort_owner_keys(raw_presets_by_owner.keys()):
-                owner_presets = raw_presets_by_owner[owner]
-                for short_name in sorted(owner_presets.keys()):
-                    p_data = owner_presets[short_name]
-                    if not isinstance(p_data, dict):
-                        continue
-                    q_name = f"{owner}/{short_name}"
-                    inc_list = [str(x) for x in p_data.get("include", []) if str(x).strip()]
-                    exc_list = [str(x) for x in p_data.get("exclude", []) if str(x).strip()]
-                    preset_cfg = PresetConfig(
-                        qualified_name=q_name,
-                        owner=owner,
-                        short_name=short_name,
-                        description=str(p_data.get("description", "") or ""),
-                        include=tuple(inc_list),
-                        exclude=tuple(exc_list),
+                    core_events.broadcast(
+                        "on_register_file_spaces",
+                        {
+                            "registry": self,
+                            "project_root": str(self._project_root),
+                            "yscb_dir": str(self._yscb_dir),
+                        },
+                        emit_module="core",
+                        search_roots=[str(self._yscb_dir / ".modules")],
                     )
-                    new_presets[q_name] = preset_cfg
-                    new_presets_by_short.setdefault(short_name, []).append(preset_cfg)
+                except Exception:
+                    pass
+                finally:
+                    self._in_reload_broadcast = False
 
-            self._presets = new_presets
-            self._presets_by_short = new_presets_by_short
+            self._compile_pass_two()
 
-            # 2. Build and register spaces in deterministic owner order
-            for owner in _sort_owner_keys(raw_spaces_by_owner.keys()):
-                owner_spaces = raw_spaces_by_owner[owner]
-                for short_name in sorted(owner_spaces.keys()):
-                    s_data = owner_spaces[short_name]
-                    if not isinstance(s_data, dict):
-                        continue
-                    space_cfg = self._build_space_config(owner, short_name, s_data)
-                    new_spaces[space_cfg.qualified_name] = space_cfg
-                    new_spaces_by_short.setdefault(short_name, []).append(space_cfg)
+    def _compile_pass_two(self) -> None:
+        """
+        Execute Pass 2 compilation over `self._raw_spaces_by_owner` merged with `self._runtime_spaces`:
+        1. Merge Stage 4 `self._runtime_spaces` via `_merge_raw_space_dict`.
+        2. Synthesize `/<short-name>` (`owner=""`) for every short name.
+        3. Topologically compile each space (DFS expanding `presets` and `!presets` with cycle detection).
+        4. Populate `unresolved_compose` and validate `compose` DAG cycles.
+        """
+        merged_by_owner: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for owner, owner_dict in self._raw_spaces_by_owner.items():
+            merged_by_owner[owner] = {
+                s_name: dict(s_val) for s_name, s_val in owner_dict.items()
+            }
 
-            # 2b. Re-attach active ephemeral spaces registered on this registry instance
-            for ephem_qname, ephem_cfg in self._ephemeral_spaces.items():
-                new_spaces[ephem_qname] = ephem_cfg
-                short_list = [
-                    s
-                    for s in new_spaces_by_short.get(ephem_cfg.short_name, [])
-                    if s.qualified_name != ephem_qname
-                ]
-                short_list.append(ephem_cfg)
-                new_spaces_by_short[ephem_cfg.short_name] = short_list
+        # Stage 4: Overlay runtime spaces via rule-level union
+        for q_name, rt_raw in self._runtime_spaces.items():
+            _, owner, short = _parse_qualified_key(q_name, "__unknown__")
+            owner_bucket = merged_by_owner.setdefault(owner, {})
+            owner_bucket[short] = _merge_raw_space_dict(
+                owner_bucket.get(short, {}), rt_raw
+            )
 
-            self._spaces = new_spaces
-            self._spaces_by_short = new_spaces_by_short
+        # Group owners by short_name in deterministic order
+        owners_by_short: Dict[str, List[str]] = {}
+        all_raw_by_qname: Dict[str, Tuple[str, str, Dict[str, Any]]] = {}
+        for owner in _sort_owner_keys(merged_by_owner.keys()):
+            owner_spaces = merged_by_owner[owner]
+            for short_name in sorted(owner_spaces.keys()):
+                s_data = owner_spaces[short_name]
+                if not isinstance(s_data, dict):
+                    continue
+                q_name = f"/{short_name}" if owner == "" else f"{owner}/{short_name}"
+                all_raw_by_qname[q_name] = (owner, short_name, s_data)
+                if owner != "":
+                    owners_by_short.setdefault(short_name, []).append(owner)
 
-            # 3. Populate unresolved_compose references after all spaces are registered
-            self._refresh_unresolved_compose()
+        # Synthesize `/<short_name>` raw definitions for every short_name
+        for short_name in sorted(owners_by_short.keys()):
+            synth_qname = f"/{short_name}"
+            owner_list = owners_by_short[short_name]
+            compose_members = [f"{o}/{short_name}" for o in owner_list]
+            any_watch = any(
+                bool(merged_by_owner[o][short_name].get("watch", True))
+                for o in owner_list
+            )
+            synth_base: Dict[str, Any] = {
+                "description": f"Synthesized union space for '{short_name}' across {', '.join(owner_list)}",
+                "entries": [],
+                "compose": compose_members,
+                "presets": [],
+                "include": ["*"],
+                "exclude": [],
+                "watch": any_watch,
+            }
+            if synth_qname in all_raw_by_qname:
+                existing_synth = all_raw_by_qname[synth_qname][2]
+                synth_base = _merge_raw_space_dict(synth_base, existing_synth)
+            all_raw_by_qname[synth_qname] = ("", short_name, synth_base)
+
+        compiled_spaces: Dict[str, SpaceConfig] = {}
+        spaces_by_short: Dict[str, List[SpaceConfig]] = {}
+
+        def _resolve_preset_target_qnames(ref_clean: str) -> List[str]:
+            if ref_clean.startswith("/"):
+                short = ref_clean.lstrip("/")
+                return [f"{o}/{short}" for o in owners_by_short.get(short, [])]
+            if "/" in ref_clean:
+                return [ref_clean] if ref_clean in all_raw_by_qname else []
+            return [f"{o}/{ref_clean}" for o in owners_by_short.get(ref_clean, [])]
+
+        def _compile_single_space(
+            q_name: str, visiting: Tuple[str, ...]
+        ) -> SpaceConfig:
+            if q_name in compiled_spaces:
+                return compiled_spaces[q_name]
+            if q_name in visiting:
+                cycle_chain = " -> ".join([*visiting, q_name])
+                raise SpaceCycleError(
+                    f"Circular space preset reference detected: {cycle_chain}"
+                )
+            next_visiting = (*visiting, q_name)
+            owner, short_name, raw_data = all_raw_by_qname[q_name]
+            cfg = self._build_space_config_pass2(
+                q_name=q_name,
+                owner=owner,
+                short_name=short_name,
+                raw_data=raw_data,
+                visiting=next_visiting,
+                resolve_preset_targets=_resolve_preset_target_qnames,
+                compile_target=_compile_single_space,
+            )
+            compiled_spaces[q_name] = cfg
+            return cfg
+
+        # Compile owner-qualified spaces in deterministic owner order first, then synthesized spaces
+        for owner in _sort_owner_keys(merged_by_owner.keys()):
+            if owner == "":
+                continue
+            for short_name in sorted(merged_by_owner[owner].keys()):
+                q_name = f"{owner}/{short_name}"
+                if q_name in all_raw_by_qname:
+                    cfg = _compile_single_space(q_name, ())
+                    spaces_by_short.setdefault(short_name, []).append(cfg)
+
+        for short_name in sorted(owners_by_short.keys()):
+            synth_qname = f"/{short_name}"
+            if synth_qname in all_raw_by_qname:
+                _compile_single_space(synth_qname, ())
+
+        # Reorder self._spaces deterministically: owner spaces first, then `/<short>`
+        ordered_spaces: Dict[str, SpaceConfig] = {}
+        for owner in _sort_owner_keys(merged_by_owner.keys()):
+            if owner == "":
+                continue
+            for short_name in sorted(merged_by_owner[owner].keys()):
+                q_name = f"{owner}/{short_name}"
+                if q_name in compiled_spaces:
+                    ordered_spaces[q_name] = compiled_spaces[q_name]
+        for short_name in sorted(owners_by_short.keys()):
+            synth_qname = f"/{short_name}"
+            if synth_qname in compiled_spaces:
+                ordered_spaces[synth_qname] = compiled_spaces[synth_qname]
+
+        self._spaces = ordered_spaces
+        self._spaces_by_short = spaces_by_short
+        self._refresh_unresolved_compose()
 
     def _refresh_unresolved_compose(self) -> None:
         for space_cfg in self._spaces.values():
             unresolved_c: List[str] = []
             for comp_ref in space_cfg.compose:
-                if not self._lookup_spaces_non_throwing(comp_ref):
+                clean_ref = str(comp_ref or "").strip()
+                target_ref = (
+                    clean_ref[1:].strip() if clean_ref.startswith("!") else clean_ref
+                )
+                if not self._lookup_spaces_non_throwing(target_ref):
                     if comp_ref not in unresolved_c:
                         unresolved_c.append(comp_ref)
             space_cfg.unresolved_compose = tuple(unresolved_c)
 
     def _discover_raw_definitions(
         self,
-    ) -> Tuple[Dict[str, Dict[str, Dict[str, Any]]], Dict[str, Dict[str, Dict[str, Any]]]]:
-        presets_by_owner: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
         spaces_by_owner: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
         if self._explicit_presets is not None or self._explicit_spaces is not None:
             for k, v in (self._explicit_presets or {}).items():
                 if not isinstance(v, dict):
                     continue
-                _, owner, short = _parse_qualified_key(k, str(v.get("owner", "project")))
-                presets_by_owner.setdefault(owner, {})[short] = dict(v)
+                _, owner, short = _parse_qualified_key(
+                    k, str(v.get("owner", "project"))
+                )
+                p_dict = dict(v)
+                p_dict.setdefault("entries", [])
+                owner_bucket = spaces_by_owner.setdefault(owner, {})
+                owner_bucket[short] = _merge_raw_space_dict(
+                    owner_bucket.get(short, {}), p_dict
+                )
 
             for k, v in (self._explicit_spaces or {}).items():
                 if not isinstance(v, dict):
                     continue
-                _, owner, short = _parse_qualified_key(k, str(v.get("owner", "project")))
-                spaces_by_owner.setdefault(owner, {})[short] = dict(v)
-            return presets_by_owner, spaces_by_owner
+                _, owner, short = _parse_qualified_key(
+                    k, str(v.get("owner", "project"))
+                )
+                owner_bucket = spaces_by_owner.setdefault(owner, {})
+                owner_bucket[short] = _merge_raw_space_dict(
+                    owner_bucket.get(short, {}), dict(v)
+                )
+            return spaces_by_owner
 
-        # Scan installed modules in yscb_dir/.modules/*/contributes/core.json
+        # Stage 1: Scan installed modules in yscb_dir/.modules/*/contributes/core.json
         modules_dir = self._yscb_dir / ".modules"
         if modules_dir.is_dir():
             try:
@@ -391,32 +580,31 @@ class SpaceRegistry:
                 core_json = modules_dir / mod_name / "contributes" / "core.json"
                 if core_json.is_file():
                     self._extract_file_definitions(
-                        core_json, mod_name, presets_by_owner, spaces_by_owner
+                        core_json, mod_name, spaces_by_owner
                     )
 
         # Fallback for core's own contributes/core.json if core is not yet materialized in .modules
-        if "core" not in presets_by_owner and "core" not in spaces_by_owner:
+        if "core" not in spaces_by_owner:
             core_pkg_root = Path(__file__).resolve().parents[2]
             self_core_json = core_pkg_root / "contributes" / "core.json"
             if self_core_json.is_file():
                 self._extract_file_definitions(
-                    self_core_json, "core", presets_by_owner, spaces_by_owner
+                    self_core_json, "core", spaces_by_owner
                 )
 
-        # Scan project-level config/core/contribute.json
+        # Stage 2: Scan project-level config/core/contribute.json
         proj_contrib = self._yscb_dir / "config" / "core" / "contribute.json"
         if proj_contrib.is_file():
             self._extract_file_definitions(
-                proj_contrib, "project", presets_by_owner, spaces_by_owner
+                proj_contrib, "project", spaces_by_owner
             )
 
-        return presets_by_owner, spaces_by_owner
+        return spaces_by_owner
 
     @staticmethod
     def _extract_file_definitions(
         json_path: Path,
         default_owner: str,
-        presets_by_owner: Dict[str, Dict[str, Dict[str, Any]]],
         spaces_by_owner: Dict[str, Dict[str, Dict[str, Any]]],
     ) -> None:
         try:
@@ -425,17 +613,55 @@ class SpaceRegistry:
             return
         if not isinstance(payload, dict):
             return
-        body = payload.get("core", payload) if isinstance(payload.get("core"), dict) else payload
+        body = (
+            payload.get("core", payload)
+            if isinstance(payload.get("core"), dict)
+            else payload
+        )
         if not isinstance(body, dict):
             return
 
+        # Backward compatibility: legacy `presets` converted into rule-only spaces (`entries: []`)
         raw_p = body.get("presets")
         if isinstance(raw_p, dict):
             for p_key, p_val in raw_p.items():
                 if str(p_key).startswith("_") or not isinstance(p_val, dict):
                     continue
                 _, owner, short = _parse_qualified_key(p_key, default_owner)
-                presets_by_owner.setdefault(owner, {})[short] = dict(p_val)
+                p_dict = dict(p_val)
+                p_dict.setdefault("entries", [])
+                owner_bucket = spaces_by_owner.setdefault(owner, {})
+                owner_bucket[short] = _merge_raw_space_dict(
+                    owner_bucket.get(short, {}), p_dict
+                )
+
+        # Backward compatibility: legacy top-level `gitignore` list converted into `<owner>/gitignore` space
+        raw_gi = body.get("gitignore")
+        if isinstance(raw_gi, list):
+            gi_inc: List[str] = []
+            gi_exc: List[str] = []
+            for item in raw_gi:
+                s = str(item or "").strip()
+                if not s or s.startswith("#"):
+                    continue
+                if s.startswith("!"):
+                    neg_body = s[1:].strip()
+                    if neg_body and neg_body not in gi_exc:
+                        gi_exc.append(neg_body)
+                else:
+                    if s not in gi_inc:
+                        gi_inc.append(s)
+            if gi_inc or gi_exc:
+                gi_space_dict: Dict[str, Any] = {
+                    "entries": ["project://"],
+                    "include": gi_inc,
+                    "exclude": gi_exc,
+                    "watch": False,
+                }
+                owner_bucket = spaces_by_owner.setdefault(default_owner, {})
+                owner_bucket["gitignore"] = _merge_raw_space_dict(
+                    owner_bucket.get("gitignore", {}), gi_space_dict
+                )
 
         raw_s = body.get("spaces")
         if isinstance(raw_s, dict):
@@ -443,17 +669,22 @@ class SpaceRegistry:
                 if str(s_key).startswith("_") or not isinstance(s_val, dict):
                     continue
                 _, owner, short = _parse_qualified_key(s_key, default_owner)
-                spaces_by_owner.setdefault(owner, {})[short] = dict(s_val)
+                owner_bucket = spaces_by_owner.setdefault(owner, {})
+                owner_bucket[short] = _merge_raw_space_dict(
+                    owner_bucket.get(short, {}), dict(s_val)
+                )
 
-    def _build_space_config(
+    def _build_space_config_pass2(
         self,
+        *,
+        q_name: str,
         owner: str,
         short_name: str,
         raw_data: Mapping[str, Any],
-        *,
-        is_ephemeral: bool = False,
+        visiting: Tuple[str, ...],
+        resolve_preset_targets: Any,
+        compile_target: Any,
     ) -> SpaceConfig:
-        q_name = f"{owner}/{short_name}"
         raw_entries = raw_data.get("entries", raw_data.get("include_entries", []))
         if not isinstance(raw_entries, (list, tuple)):
             raw_entries = []
@@ -481,32 +712,66 @@ class SpaceRegistry:
 
         effective_inc: List[RuleItem] = []
         effective_exc: List[RuleItem] = []
+        negated_presets_list: List[SpaceConfig] = []
         unresolved: List[str] = []
-        uses_gitignore = False
-        has_preset_inc = False
 
-        # Expand explicit presets only (no implicit global default_presets)
+        # Expand explicit presets (positive rule union and `!` negated preset collection)
         for preset_ref in presets_tuple:
-            if preset_ref == "@gitignore":
-                uses_gitignore = True
+            clean_ref = str(preset_ref or "").strip()
+            if not clean_ref:
                 continue
-            matched_presets = self._lookup_presets_non_throwing(preset_ref)
-            if not matched_presets:
+            is_negated = clean_ref.startswith("!")
+            target_ref = clean_ref[1:].strip() if is_negated else clean_ref
+            if target_ref == "@gitignore":
+                target_ref = "gitignore"
+                is_negated = True
+
+            target_qnames: List[str] = resolve_preset_targets(target_ref)
+            if not target_qnames:
                 if preset_ref not in unresolved:
                     unresolved.append(preset_ref)
                 continue
-            for p_cfg in matched_presets:
-                p_src = f"preset:{p_cfg.qualified_name}"
-                for pat in p_cfg.include:
-                    if pat not in ("*", "**", "**/*"):
-                        has_preset_inc = True
-                    item = RuleItem(raw_pattern=pat, source=p_src)
-                    if item not in effective_inc:
-                        effective_inc.append(item)
-                for pat in p_cfg.exclude:
-                    item = RuleItem(raw_pattern=pat, source=p_src)
-                    if item not in effective_exc:
-                        effective_exc.append(item)
+
+            for t_qname in target_qnames:
+                t_cfg: SpaceConfig = compile_target(t_qname, visiting)
+                if is_negated:
+                    if all(
+                        existing.qualified_name != t_cfg.qualified_name
+                        for existing in negated_presets_list
+                    ):
+                        negated_presets_list.append(t_cfg)
+                    for neg_child in t_cfg.negated_presets:
+                        if all(
+                            existing.qualified_name != neg_child.qualified_name
+                            for existing in negated_presets_list
+                        ):
+                            negated_presets_list.append(neg_child)
+                else:
+                    p_src = f"preset:{t_cfg.qualified_name}"
+                    # Only pull target's effective_include if target had explicit include or positive presets
+                    has_explicit_target_inc = bool(t_cfg.include) or any(
+                        r.source.startswith("preset:")
+                        for r in t_cfg.effective_include
+                    )
+                    if has_explicit_target_inc:
+                        for r_item in t_cfg.effective_include:
+                            item = RuleItem(
+                                raw_pattern=r_item.raw_pattern, source=p_src
+                            )
+                            if item not in effective_inc:
+                                effective_inc.append(item)
+                    for r_item in t_cfg.effective_exclude:
+                        item = RuleItem(
+                            raw_pattern=r_item.raw_pattern, source=p_src
+                        )
+                        if item not in effective_exc:
+                            effective_exc.append(item)
+                    for neg_child in t_cfg.negated_presets:
+                        if all(
+                            existing.qualified_name != neg_child.qualified_name
+                            for existing in negated_presets_list
+                        ):
+                            negated_presets_list.append(neg_child)
 
         space_src = f"space:{q_name}"
         for pat in inc_tuple:
@@ -514,29 +779,40 @@ class SpaceRegistry:
             if item not in effective_inc:
                 effective_inc.append(item)
 
+        # Rule-level absolute union for include: if any rule is `*`/`**`/`**/*`, collapse to `*`
+        if any(r.raw_pattern in ("*", "**", "**/*") for r in effective_inc):
+            first_wildcard_src = next(
+                (
+                    r.source
+                    for r in effective_inc
+                    if r.raw_pattern in ("*", "**", "**/*")
+                ),
+                space_src,
+            )
+            effective_inc = [RuleItem(raw_pattern="*", source=first_wildcard_src)]
+        elif not effective_inc:
+            effective_inc.append(RuleItem(raw_pattern="*", source=space_src))
+
         for pat in exc_tuple:
             item = RuleItem(raw_pattern=pat, source=space_src)
             if item not in effective_exc:
                 effective_exc.append(item)
 
-        if not effective_inc:
-            effective_inc.append(RuleItem(raw_pattern="*", source=space_src))
-
-        has_explicit_include = bool(
-            has_preset_inc or any(pat not in ("*", "**", "**/*") for pat in inc_tuple)
-        )
-
-        # Check URI warnings on entries and URI rules
+        # Check URI warnings on entries
         uri_warnings: List[str] = []
         for entry_str in entries_tuple:
             if "://" in entry_str:
                 res = resolve_semantic_or_rel_path(
-                    entry_str, self._project_root, self._yscb_dir, owner_module=owner
+                    entry_str,
+                    self._project_root,
+                    self._yscb_dir,
+                    owner_module=owner or None,
                 )
                 if res is None:
                     uri_warnings.append(f"Unresolvable entry URI: '{entry_str}'")
 
-        gi_eval = self._get_gitignore_evaluator() if uses_gitignore else None
+        default_watch = False if short_name == "gitignore" else True
+        eff_watch = bool(raw_data.get("watch", default_watch))
 
         return SpaceConfig(
             qualified_name=q_name,
@@ -551,109 +827,130 @@ class SpaceRegistry:
             hash_policy=raw_data.get("hash_policy", HashPolicy.ADAPTIVE),
             large_file_threshold_mb=raw_data.get("large_file_threshold_mb", 10),
             follow_symlinks=bool(raw_data.get("follow_symlinks", False)),
-            watch=bool(raw_data.get("watch", True)),
-            is_ephemeral=is_ephemeral,
-            has_explicit_include=has_explicit_include,
+            watch=eff_watch,
             effective_include=tuple(effective_inc),
             effective_exclude=tuple(effective_exc),
+            negated_presets=tuple(negated_presets_list),
             unresolved_presets=tuple(unresolved),
             uri_warnings=tuple(uri_warnings),
             _project_root=self._project_root,
             _yscb_dir=self._yscb_dir,
-            _gitignore_eval=gi_eval,
         )
-
-    def _lookup_presets_non_throwing(self, query: str) -> List[PresetConfig]:
-        q = str(query or "").strip()
-        if not q:
-            return []
-        if "/" in q:
-            found = self._presets.get(q)
-            return [found] if found is not None else []
-        return list(self._presets_by_short.get(q, []))
 
     def _lookup_spaces_non_throwing(self, query: str) -> List[SpaceConfig]:
         q = str(query or "").strip()
         if not q:
             return []
+        if q.startswith("/"):
+            found = self._spaces.get(q)
+            return [found] if found is not None else []
         if "/" in q:
             found = self._spaces.get(q)
             return [found] if found is not None else []
+        synth = self._spaces.get(f"/{q}")
+        if synth is not None:
+            return [synth]
         return list(self._spaces_by_short.get(q, []))
+
+    def _split_compose_children(
+        self, space_cfg: SpaceConfig, visiting: Tuple[str, ...]
+    ) -> Tuple[List[SpaceConfig], List[SpaceConfig]]:
+        """
+        Resolve `space_cfg.compose` into `(positive_children, negative_children)` while detecting cycles.
+        """
+        if space_cfg.qualified_name in visiting:
+            cycle_chain = " -> ".join([*visiting, space_cfg.qualified_name])
+            raise SpaceCycleError(
+                f"Circular space compose reference detected: {cycle_chain}"
+            )
+        next_visiting = (*visiting, space_cfg.qualified_name)
+        pos_children: List[SpaceConfig] = []
+        neg_children: List[SpaceConfig] = []
+        for comp_ref in space_cfg.compose:
+            clean_ref = str(comp_ref or "").strip()
+            if not clean_ref:
+                continue
+            is_neg = clean_ref.startswith("!")
+            target_ref = clean_ref[1:].strip() if is_neg else clean_ref
+            matched_children = self._lookup_spaces_non_throwing(target_ref)
+            for child_cfg in matched_children:
+                if child_cfg.qualified_name in next_visiting:
+                    cycle_chain = " -> ".join(
+                        [*next_visiting, child_cfg.qualified_name]
+                    )
+                    raise SpaceCycleError(
+                        f"Circular space compose reference detected: {cycle_chain}"
+                    )
+                target_bucket = neg_children if is_neg else pos_children
+                if child_cfg not in target_bucket:
+                    target_bucket.append(child_cfg)
+        return pos_children, neg_children
 
     def _expand_compose_children(
         self, space_cfg: SpaceConfig, visiting: Tuple[str, ...]
     ) -> List[SpaceConfig]:
-        if space_cfg.qualified_name in visiting:
-            cycle_chain = " -> ".join([*visiting, space_cfg.qualified_name])
-            raise SpaceCycleError(f"Circular space compose reference detected: {cycle_chain}")
-        next_visiting = (*visiting, space_cfg.qualified_name)
-        children: List[SpaceConfig] = []
-        for comp_ref in space_cfg.compose:
-            matched_children = self._lookup_spaces_non_throwing(comp_ref)
-            for child_cfg in matched_children:
-                if child_cfg.qualified_name in next_visiting:
-                    cycle_chain = " -> ".join([*next_visiting, child_cfg.qualified_name])
-                    raise SpaceCycleError(
-                        f"Circular space compose reference detected: {cycle_chain}"
-                    )
-                if child_cfg not in children:
-                    children.append(child_cfg)
-        return children
+        pos_children, _neg_children = self._split_compose_children(
+            space_cfg, visiting
+        )
+        return pos_children
 
-    def list_presets(self, owner: Optional[str] = None) -> List[PresetConfig]:
-        """List all registered PresetConfig instances in deterministic order."""
-        if owner:
-            return [p for p in self._presets.values() if p.owner == owner]
-        return list(self._presets.values())
-
-    def resolve_presets(self, query: str) -> List[PresetConfig]:
-        """
-        Resolve `<owner>/<preset>` (single definition) or `<preset>` short name (union of definitions).
-        Raises SpaceNotFoundError if not found.
-        """
-        q = str(query or "").strip()
-        if q == "@gitignore":
-            gi_eval = self._get_gitignore_evaluator()
-            raw_pats = [comp.rule.raw_pattern for comp, _ in gi_eval._rules]
-            return [
-                PresetConfig(
-                    qualified_name="@gitignore",
-                    owner="builtin",
-                    short_name="@gitignore",
-                    description="Built-in dynamic preset from project://.gitignore",
-                    include=(),
-                    exclude=tuple(raw_pats),
-                )
-            ]
-        matched = self._lookup_presets_non_throwing(q)
-        if not matched:
-            available = sorted(self._presets.keys())
-            raise SpaceNotFoundError(
-                f"Preset '{query}' is not registered. Available presets: {available}"
-            )
-        return matched
-
-    def list_spaces(self, owner: Optional[str] = None) -> List[SpaceConfig]:
+    def list_spaces(
+        self,
+        owner: Optional[str] = None,
+        *,
+        include_synthetic: bool = True,
+    ) -> List[SpaceConfig]:
         """List all registered SpaceConfig instances in deterministic order."""
         with self._lock:
-            if owner:
-                return [s for s in self._spaces.values() if s.owner == owner]
-            return list(self._spaces.values())
+            spaces = list(self._spaces.values())
+            if not include_synthetic:
+                spaces = [s for s in spaces if s.owner != ""]
+            if owner is not None:
+                return [s for s in spaces if s.owner == owner]
+            return spaces
 
     def resolve_spaces(self, query: Optional[str] = None) -> List[SpaceConfig]:
         """
         Resolve space query:
-        - `None` or `*` -> all registered spaces
-        - `<owner>/<space>` (contains `/`) -> exact single SpaceConfig
-        - `<space>` (no `/`) -> union of all SpaceConfig definitions with `short_name == <space>`
+        - `None` or `""` -> `[self._spaces["/workspace"]]` if present, else non-gitignore owner spaces with entries/compose
+        - `*` -> all watched owner spaces (excluding `gitignore` and rule-only spaces)
+        - `<owner>/<space>` -> `[self._spaces["<owner>/<space>"]]`
+        - `<space>` or `/<space>` -> `[self._spaces["/<space>"]]`
         Raises SpaceNotFoundError if no space matches.
         """
         with self._lock:
-            if query is None or str(query).strip() in ("", "*"):
-                return list(self._spaces.values())
+            q = "" if query is None else str(query).strip()
+            if q == "":
+                ws_cfg = self._spaces.get("/workspace")
+                if ws_cfg is not None:
+                    return [ws_cfg]
+                return [
+                    s
+                    for s in self._spaces.values()
+                    if s.owner != ""
+                    and s.short_name != "gitignore"
+                    and (s.entries or s.compose)
+                ]
 
-            q = str(query).strip()
+            if q in ("*", "__all__"):
+                return [
+                    s
+                    for s in self._spaces.values()
+                    if s.owner != ""
+                    and s.watch
+                    and s.short_name != "gitignore"
+                    and (s.entries or s.compose)
+                ]
+
+            if q.startswith("/"):
+                found = self._spaces.get(q)
+                if found is None:
+                    available = sorted(self._spaces.keys())
+                    raise SpaceNotFoundError(
+                        f"Space '{q}' is not registered. Available spaces: {available}"
+                    )
+                return [found]
+
             if "/" in q:
                 found = self._spaces.get(q)
                 if found is None:
@@ -663,9 +960,15 @@ class SpaceRegistry:
                     )
                 return [found]
 
+            synth = self._spaces.get(f"/{q}")
+            if synth is not None:
+                return [synth]
+
             matched = list(self._spaces_by_short.get(q, []))
             if not matched:
-                available = sorted(set(self._spaces.keys()) | set(self._spaces_by_short.keys()))
+                available = sorted(
+                    set(self._spaces.keys()) | set(self._spaces_by_short.keys())
+                )
                 raise SpaceNotFoundError(
                     f"Space '{q}' is not registered. Available spaces: {available}"
                 )
@@ -675,7 +978,7 @@ class SpaceRegistry:
         """Alias for `resolve_spaces(query)`."""
         return self.resolve_spaces(query)
 
-    def define_ephemeral_space(
+    def register_space(
         self,
         name: str,
         config: Union[SpaceConfig, Mapping[str, Any]],
@@ -683,110 +986,170 @@ class SpaceRegistry:
         watch: Optional[bool] = None,
     ) -> SpaceConfig:
         """
-        Register an in-memory ephemeral space (`is_ephemeral=True`).
-        Uses `<owner>/<name>` if `name` contains `/`, otherwise defaults to `ephemeral/<name>`.
-        Defaults `watch=True` unless overridden by `watch=False` or `config["watch"] = False`.
+        Register or merge a runtime space definition (Stage 4 / Stage 3 hook injection).
+        Uses `<owner>/<name>` if `name` contains `/`, otherwise defaults to `__unknown__/<name>`.
         """
         with self._lock:
-            q_name, owner, short_name = _parse_qualified_key(name, "ephemeral")
+            q_name, owner, short_name = _parse_qualified_key(name, "__unknown__")
             if not short_name:
-                raise SpaceError("Ephemeral space name must not be empty.")
+                raise SpaceError("Space name must not be empty.")
             if isinstance(config, SpaceConfig):
-                eff_watch = bool(watch) if watch is not None else bool(config.watch)
-                space_cfg = SpaceConfig(
-                    qualified_name=q_name,
-                    owner=owner,
-                    short_name=short_name,
-                    description=config.description,
-                    entries=config.entries,
-                    compose=config.compose,
-                    presets=config.presets,
-                    include=config.include,
-                    exclude=config.exclude,
-                    hash_policy=config.hash_policy,
-                    large_file_threshold_mb=config.large_file_threshold_mb,
-                    follow_symlinks=config.follow_symlinks,
-                    watch=eff_watch,
-                    is_ephemeral=True,
-                    has_explicit_include=config.has_explicit_include,
-                    effective_include=config.effective_include,
-                    effective_exclude=config.effective_exclude,
-                    unresolved_presets=config.unresolved_presets,
-                    unresolved_compose=config.unresolved_compose,
-                    uri_warnings=config.uri_warnings,
-                    _project_root=self._project_root,
-                    _yscb_dir=self._yscb_dir,
-                    _gitignore_eval=config._gitignore_eval,
-                )
+                raw_dict: Dict[str, Any] = {
+                    "description": config.description,
+                    "entries": list(config.entries),
+                    "compose": list(config.compose),
+                    "presets": list(config.presets),
+                    "include": list(config.include),
+                    "exclude": list(config.exclude),
+                    "hash_policy": config.hash_policy,
+                    "large_file_threshold_mb": config.large_file_threshold_mb,
+                    "follow_symlinks": config.follow_symlinks,
+                    "watch": bool(watch) if watch is not None else bool(config.watch),
+                }
             elif isinstance(config, Mapping):
                 raw_dict = dict(config)
                 if watch is not None:
                     raw_dict["watch"] = bool(watch)
-                elif "watch" not in raw_dict:
-                    raw_dict["watch"] = True
-                space_cfg = self._build_space_config(
-                    owner, short_name, raw_dict, is_ephemeral=True
-                )
             else:
                 raise SpaceError(
-                    f"Invalid ephemeral space config type '{type(config).__name__}'."
+                    f"Invalid space config type '{type(config).__name__}'."
                 )
 
-            self._ephemeral_spaces[q_name] = space_cfg
-            self._spaces[q_name] = space_cfg
-            short_list = [s for s in self._spaces_by_short.get(short_name, []) if s.qualified_name != q_name]
-            short_list.append(space_cfg)
-            self._spaces_by_short[short_name] = short_list
-            self._refresh_unresolved_compose()
+            existing = self._runtime_spaces.get(q_name, {})
+            self._runtime_spaces[q_name] = _merge_raw_space_dict(existing, raw_dict)
+
+            if self._in_reload_broadcast:
+                default_w = False if short_name == "gitignore" else True
+                eff_w = bool(self._runtime_spaces[q_name].get("watch", default_w))
+                return SpaceConfig(
+                    qualified_name=q_name,
+                    owner=owner,
+                    short_name=short_name,
+                    description=str(self._runtime_spaces[q_name].get("description", "") or ""),
+                    entries=tuple(self._runtime_spaces[q_name].get("entries", [])),
+                    compose=tuple(self._runtime_spaces[q_name].get("compose", [])),
+                    presets=tuple(self._runtime_spaces[q_name].get("presets", [])),
+                    include=tuple(self._runtime_spaces[q_name].get("include", [])),
+                    exclude=tuple(self._runtime_spaces[q_name].get("exclude", [])),
+                    watch=eff_w,
+                    _project_root=self._project_root,
+                    _yscb_dir=self._yscb_dir,
+                )
+
+            self._compile_pass_two()
+            space_cfg = self._spaces[q_name]
+
         if space_cfg.watch:
-            notify_ephemeral_space_registered(q_name)
+            notify_space_registered(q_name)
         return space_cfg
+
+    def unregister_space(self, name: str) -> bool:
+        """
+        Remove a runtime-injected space definition by `<owner>/<name>` or `<name>` and recompile.
+        Returns True if a runtime space was removed.
+        """
+        with self._lock:
+            q_name, _owner, _short = _parse_qualified_key(name, "__unknown__")
+            removed = False
+            if q_name in self._runtime_spaces:
+                del self._runtime_spaces[q_name]
+                removed = True
+            elif name in self._runtime_spaces:
+                del self._runtime_spaces[name]
+                removed = True
+            if removed and not self._in_reload_broadcast:
+                self._compile_pass_two()
+            return removed
+
+    def define_ephemeral_space(
+        self,
+        name: str,
+        config: Union[SpaceConfig, Mapping[str, Any]],
+        *,
+        watch: Optional[bool] = None,
+    ) -> SpaceConfig:
+        """Backward-compatible alias for `register_space`."""
+        return self.register_space(name, config, watch=watch)
 
     def _collect_participating_spaces(
         self,
         space_query: Optional[str] = None,
     ) -> List[SpaceConfig]:
+        """Collect all spaces participating positively in `space_query` (own + positive `compose`)."""
         roots = self.resolve_spaces(space_query)
         collected: List[SpaceConfig] = []
 
         def _visit(cfg: SpaceConfig, visiting: Tuple[str, ...]) -> None:
-            children = self._expand_compose_children(cfg, visiting)
+            pos_children, _neg_children = self._split_compose_children(cfg, visiting)
             if cfg not in collected:
                 collected.append(cfg)
             next_visiting = (*visiting, cfg.qualified_name)
-            for child in children:
+            for child in pos_children:
                 _visit(child, next_visiting)
 
         for r in roots:
             _visit(r, ())
         return collected
 
-    def is_ephemeral_query(self, space_query: Optional[str] = None) -> bool:
-        """Return True if any space participating in `space_query` (including via `compose`) is ephemeral."""
-        if space_query is None or str(space_query).strip() in ("", "*", "__all__"):
-            return False
-        participating = self._collect_participating_spaces(space_query)
-        return any(s.is_ephemeral for s in participating)
+    def _collect_all_dependency_spaces(
+        self,
+        space_query: Optional[str] = None,
+    ) -> List[SpaceConfig]:
+        """
+        Collect all spaces affecting `space_query` for `compute_config_hash`:
+        positive `compose`, negative `!compose`, positive `presets`, and negative `!presets`.
+        """
+        roots = self.resolve_spaces(space_query)
+        collected: List[SpaceConfig] = []
+        visited_qnames: Set[str] = set()
+
+        def _visit(cfg: SpaceConfig, compose_visiting: Tuple[str, ...]) -> None:
+            pos_children, neg_children = self._split_compose_children(
+                cfg, compose_visiting
+            )
+            if cfg.qualified_name not in visited_qnames:
+                visited_qnames.add(cfg.qualified_name)
+                collected.append(cfg)
+            next_visiting = (*compose_visiting, cfg.qualified_name)
+            for child in (*pos_children, *neg_children):
+                _visit(child, next_visiting)
+            for neg_p in cfg.negated_presets:
+                if neg_p.qualified_name not in visited_qnames:
+                    _visit(neg_p, ())
+            for p_ref in cfg.presets:
+                clean_ref = str(p_ref or "").strip()
+                target_ref = (
+                    clean_ref[1:].strip() if clean_ref.startswith("!") else clean_ref
+                )
+                for p_target in self._lookup_spaces_non_throwing(target_ref):
+                    if p_target.qualified_name not in visited_qnames:
+                        _visit(p_target, ())
+
+        for r in roots:
+            _visit(r, ())
+        return collected
 
     def compute_config_hash(self, space_query: Optional[str] = None) -> str:
         """
         Compute a deterministic 16-byte Blake2b hex digest over all participating spaces,
-        their transitive `compose` children, and expanded preset rules.
+        their positive/negative `compose` children, and positive/negative `presets` dependencies.
         """
-        participating = self._collect_participating_spaces(space_query)
+        dependencies = self._collect_all_dependency_spaces(space_query)
         hasher = hashlib.blake2b(digest_size=16)
-        for s_cfg in sorted(participating, key=lambda s: s.qualified_name):
+        for s_cfg in sorted(dependencies, key=lambda s: s.qualified_name):
             payload = {
                 "qualified_name": s_cfg.qualified_name,
                 "entries": list(s_cfg.entries),
                 "compose": list(s_cfg.compose),
                 "presets": list(s_cfg.presets),
-                "has_explicit_include": bool(s_cfg.has_explicit_include),
                 "effective_include": [
                     (r.raw_pattern, r.source) for r in s_cfg.effective_include
                 ],
                 "effective_exclude": [
                     (r.raw_pattern, r.source) for r in s_cfg.effective_exclude
+                ],
+                "negated_presets": [
+                    np.qualified_name for np in s_cfg.negated_presets
                 ],
                 "hash_policy": s_cfg.hash_policy.value,
                 "large_file_threshold_mb": s_cfg.large_file_threshold_mb,
@@ -870,14 +1233,22 @@ class SpaceRegistry:
         self,
         file_path: Union[str, Path],
         space_query: Optional[str] = None,
+        *,
+        space: Optional[str] = None,
+        is_dir: Optional[bool] = None,
     ) -> MatchExplainResult:
         """
         Single-point three-coordinate path judgment and explanation without full disk scanning.
         Evaluates whether `file_path` belongs to the queried space(s) and explains the exact
         entry, include rule, or exclude rule responsible.
         """
-        target_spaces = self.resolve_spaces(space_query)
-        raw_str = file_path.as_posix() if isinstance(file_path, Path) else str(file_path).strip()
+        eff_query = space if space is not None else space_query
+        target_spaces = self.resolve_spaces(eff_query)
+        raw_str = (
+            file_path.as_posix()
+            if isinstance(file_path, Path)
+            else str(file_path).strip()
+        )
 
         if "://" in raw_str:
             resolved_target = resolve_semantic_or_rel_path(
@@ -890,19 +1261,38 @@ class SpaceRegistry:
             if p.is_absolute():
                 resolved_target = Path(os.path.normpath(str(p)))
             else:
-                resolved_target = Path(os.path.normpath(str(self._project_root / p)))
+                resolved_target = Path(
+                    os.path.normpath(str(self._project_root / p))
+                )
 
-        try:
-            is_dir = resolved_target.is_dir()
-        except OSError:
-            is_dir = raw_str.endswith(("/", "\\"))
+        if is_dir is None:
+            try:
+                eff_is_dir = resolved_target.is_dir()
+            except OSError:
+                eff_is_dir = raw_str.endswith(("/", "\\"))
+        else:
+            eff_is_dir = bool(is_dir)
 
         matched_space_names: List[str] = []
         details: List[SpaceMatchDetail] = []
 
         for space_cfg in target_spaces:
+            if space_cfg.owner == "" and not space_cfg.entries and space_cfg.compose:
+                pos_c, neg_c = self._split_compose_children(space_cfg, ())
+                if not neg_c:
+                    for child_cfg in pos_c:
+                        child_detail = self._evaluate_single_space_match(
+                            child_cfg, resolved_target, is_dir=eff_is_dir
+                        )
+                        details.append(child_detail)
+                        if (
+                            child_detail.matched
+                            and child_cfg.qualified_name not in matched_space_names
+                        ):
+                            matched_space_names.append(child_cfg.qualified_name)
+                    continue
             detail = self._evaluate_single_space_match(
-                space_cfg, resolved_target, is_dir=is_dir
+                space_cfg, resolved_target, is_dir=eff_is_dir
             )
             details.append(detail)
             if detail.matched:
@@ -937,9 +1327,29 @@ class SpaceRegistry:
         is_dir: bool,
         visiting: Tuple[str, ...] = (),
     ) -> Tuple[SpaceMatchDetail, Optional[Path]]:
-        # Validate compose DAG cycle upfront even if own entries are evaluated first
-        compose_children = self._expand_compose_children(space_cfg, visiting)
+        # Validate compose DAG cycle upfront and split into positive and negative children
+        pos_children, neg_children = self._split_compose_children(
+            space_cfg, visiting
+        )
         next_visiting = (*visiting, space_cfg.qualified_name)
+
+        # Evaluate negative `!compose` children first: if matched by any negative child, exclude
+        for neg_child in neg_children:
+            neg_detail, _neg_entry = self._evaluate_single_space_match_with_entry(
+                neg_child, target_abs, is_dir=is_dir, visiting=next_visiting
+            )
+            if neg_detail.matched:
+                return (
+                    SpaceMatchDetail(
+                        qualified_space=space_cfg.qualified_name,
+                        matched=False,
+                        reason="excluded",
+                        matched_entry=neg_detail.matched_entry,
+                        exclude_rule=f"!{neg_child.qualified_name}",
+                        exclude_source=f"compose:!{neg_child.qualified_name}",
+                    ),
+                    None,
+                )
 
         try:
             if not space_cfg.follow_symlinks and target_abs.is_symlink():
@@ -979,7 +1389,9 @@ class SpaceRegistry:
                 try:
                     t_real = target_abs.resolve()
                     e_real = entry_path.resolve()
-                    if t_real == e_real or not str(t_real.relative_to(e_real)).startswith(".."):
+                    if t_real == e_real or not str(
+                        t_real.relative_to(e_real)
+                    ).startswith(".."):
                         candidate_entries.append((raw_entry, e_real))
                 except (OSError, ValueError):
                     pass
@@ -1025,59 +1437,40 @@ class SpaceRegistry:
                     matched_entry=raw_entry,
                 )
 
-        # Evaluate composed child spaces if not already matched by own entries
-        for child_cfg in compose_children:
-            child_detail, child_entry_path = self._evaluate_single_space_match_with_entry(
-                child_cfg, target_abs, is_dir=is_dir, visiting=next_visiting
-            )
-            if not child_detail.matched or child_entry_path is None:
-                continue
-
-            sec_matched, sec_inc_rule, sec_exc_rule = self._evaluate_composite_secondary_filter(
-                space_cfg, target_abs, child_entry_path, is_dir=is_dir
+        # Evaluate positive composed child spaces (absolute union without parent secondary filter)
+        for child_cfg in pos_children:
+            child_detail, child_entry_path = (
+                self._evaluate_single_space_match_with_entry(
+                    child_cfg, target_abs, is_dir=is_dir, visiting=next_visiting
+                )
             )
             comp_entry_tag = f"compose:{child_cfg.qualified_name}"
             if child_detail.matched_entry:
                 comp_entry_tag = f"{comp_entry_tag} ({child_detail.matched_entry})"
 
-            if sec_matched:
+            if child_detail.matched and child_entry_path is not None:
                 return (
                     SpaceMatchDetail(
                         qualified_space=space_cfg.qualified_name,
                         matched=True,
                         reason="included",
                         matched_entry=comp_entry_tag,
-                        include_rule=(
-                            sec_inc_rule.raw_pattern
-                            if sec_inc_rule
-                            else (child_detail.include_rule or "*")
-                        ),
+                        include_rule=child_detail.include_rule or "*",
                         include_source=(
-                            sec_inc_rule.source
-                            if sec_inc_rule
-                            else (
-                                child_detail.include_source
-                                or f"compose:{child_cfg.qualified_name}"
-                            )
+                            child_detail.include_source
+                            or f"compose:{child_cfg.qualified_name}"
                         ),
                     ),
                     child_entry_path,
                 )
-            if sec_exc_rule is not None:
+            if last_detail is None and child_detail.reason != "outside_entries":
                 last_detail = SpaceMatchDetail(
                     qualified_space=space_cfg.qualified_name,
                     matched=False,
-                    reason="excluded",
+                    reason=child_detail.reason,
                     matched_entry=comp_entry_tag,
-                    exclude_rule=sec_exc_rule.raw_pattern,
-                    exclude_source=sec_exc_rule.source,
-                )
-            elif last_detail is None:
-                last_detail = SpaceMatchDetail(
-                    qualified_space=space_cfg.qualified_name,
-                    matched=False,
-                    reason="not_matching_include",
-                    matched_entry=comp_entry_tag,
+                    exclude_rule=child_detail.exclude_rule,
+                    exclude_source=child_detail.exclude_source,
                 )
 
         if last_detail is not None:
@@ -1091,28 +1484,6 @@ class SpaceRegistry:
             ),
             None,
         )
-
-    def _evaluate_composite_secondary_filter(
-        self,
-        parent_cfg: SpaceConfig,
-        target_abs: Path,
-        inherited_entry_abs: Path,
-        *,
-        is_dir: bool = False,
-    ) -> Tuple[bool, Optional[RuleItem], Optional[RuleItem]]:
-        """
-        Apply parent composite space's secondary filter to a file/dir inherited from a composed child space:
-        - `exclude` (and ancestor directory exclusion under `inherited_entry_abs`) always vetoes.
-        - `include` is enforced when `parent_cfg.has_explicit_include` is True.
-        """
-        matched, inc_rule, exc_rule = parent_cfg.match_file(
-            target_abs, inherited_entry_abs, self._project_root, is_dir=is_dir
-        )
-        if exc_rule is not None:
-            return False, None, exc_rule
-        if parent_cfg.has_explicit_include:
-            return matched, inc_rule, None
-        return True, None, None
 
     def iter_space_files(
         self,
@@ -1165,7 +1536,9 @@ class SpaceRegistry:
         dedup_map: Dict[str, List[Any]],
         visiting: Tuple[str, ...] = (),
     ) -> None:
-        compose_children = self._expand_compose_children(space_cfg, visiting)
+        pos_children, neg_children = self._split_compose_children(
+            space_cfg, visiting
+        )
         next_visiting = (*visiting, space_cfg.qualified_name)
 
         own_map: Dict[str, List[Any]] = {}
@@ -1186,13 +1559,19 @@ class SpaceRegistry:
                 is_sym = entry_path.is_symlink()
                 if is_sym and not space_cfg.follow_symlinks:
                     continue
-                st = entry_path.stat() if space_cfg.follow_symlinks else entry_path.lstat()
+                st = (
+                    entry_path.stat()
+                    if space_cfg.follow_symlinks
+                    else entry_path.lstat()
+                )
             except OSError:
                 continue
 
             if entry_path.is_file():
                 # Single-file entry
-                if space_cfg.is_file_matched_fast(entry_path, entry_path, self._project_root):
+                if space_cfg.is_file_matched_fast(
+                    entry_path, entry_path, self._project_root
+                ):
                     self._record_matched_file(
                         file_abs=entry_path,
                         entry_abs=entry_path,
@@ -1201,6 +1580,10 @@ class SpaceRegistry:
                         dedup_map=own_map,
                     )
             elif entry_path.is_dir():
+                if space_cfg.is_dir_excluded_fast(
+                    entry_path, entry_path, self._project_root
+                ):
+                    continue
                 self._scandir_walk_recursive(
                     current_dir=entry_path,
                     entry_abs=entry_path,
@@ -1211,22 +1594,27 @@ class SpaceRegistry:
                     dedup_map=own_map,
                 )
 
-        # Evaluate composed child spaces and apply secondary filter with inherited entry_path
-        if compose_children:
+        # Evaluate positive composed child spaces (absolute union without parent secondary filter)
+        if pos_children:
             composed_map: Dict[str, List[Any]] = {}
-            for child_cfg in compose_children:
-                self._walk_single_space(child_cfg, composed_map, visiting=next_visiting)
+            for child_cfg in pos_children:
+                self._walk_single_space(
+                    child_cfg, composed_map, visiting=next_visiting
+                )
 
             own_rel_index: Dict[str, List[Any]] = {
                 item[0]: item for item in own_map.values()
             }
             for phys_key, c_item in composed_map.items():
-                c_rel, c_abs, c_entry_abs, c_matched_spaces, c_size, c_mtime, c_ctime = c_item
-                sec_matched, _inc_r, _exc_r = self._evaluate_composite_secondary_filter(
-                    space_cfg, c_abs, c_entry_abs, is_dir=False
-                )
-                if not sec_matched:
-                    continue
+                (
+                    c_rel,
+                    c_abs,
+                    c_entry_abs,
+                    c_matched_spaces,
+                    c_size,
+                    c_mtime,
+                    c_ctime,
+                ) = c_item
                 existing_own = own_map.get(phys_key) or own_rel_index.get(c_rel)
                 if existing_own is not None:
                     own_matched: List[str] = existing_own[3]
@@ -1234,10 +1622,13 @@ class SpaceRegistry:
                         if m_sp not in own_matched:
                             own_matched.append(m_sp)
                 else:
-                    merged_spaces = [space_cfg.qualified_name]
-                    for m_sp in c_matched_spaces:
-                        if m_sp not in merged_spaces:
-                            merged_spaces.append(m_sp)
+                    if space_cfg.owner == "":
+                        merged_spaces = list(c_matched_spaces)
+                    else:
+                        merged_spaces = [space_cfg.qualified_name]
+                        for m_sp in c_matched_spaces:
+                            if m_sp not in merged_spaces:
+                                merged_spaces.append(m_sp)
                     new_item = [
                         c_rel,
                         c_abs,
@@ -1249,6 +1640,24 @@ class SpaceRegistry:
                     ]
                     own_map[phys_key] = new_item
                     own_rel_index[c_rel] = new_item
+
+        # Apply negative `!compose` set difference if any negative children are declared
+        if neg_children and own_map:
+            excluded_phys: List[str] = []
+            for phys_key, item in own_map.items():
+                cand_abs: Path = item[1]
+                if any(
+                    self._evaluate_single_space_match_with_entry(
+                        neg_child,
+                        cand_abs,
+                        is_dir=False,
+                        visiting=next_visiting,
+                    )[0].matched
+                    for neg_child in neg_children
+                ):
+                    excluded_phys.append(phys_key)
+            for phys_key in excluded_phys:
+                own_map.pop(phys_key, None)
 
         # Merge own_map into caller's dedup_map (U_own takes priority over U_compose on rel_path collision)
         rel_path_index: Dict[str, List[Any]] = {
@@ -1446,13 +1855,17 @@ def match_path(
     file_path: Union[str, Path],
     space_query: Optional[str] = None,
     *,
+    space: Optional[str] = None,
+    is_dir: Optional[bool] = None,
     registry: Optional[SpaceRegistry] = None,
     project_root: Optional[Union[str, Path]] = None,
     yscb_dir: Optional[Union[str, Path]] = None,
 ) -> MatchExplainResult:
     """Convenience atomic primitive for single-path matching and rule explanation."""
     reg = registry or get_default_registry(project_root=project_root, yscb_dir=yscb_dir)
-    return reg.match_path(file_path, space_query=space_query)
+    return reg.match_path(
+        file_path, space_query=space_query, space=space, is_dir=is_dir
+    )
 
 
 def iter_space_files(
@@ -1481,6 +1894,32 @@ def resolve_file_path(
     return reg.resolve_file_path(rel_path, space_query=space_query)
 
 
+def register_space(
+    name: str,
+    config: Union[SpaceConfig, Mapping[str, Any]],
+    *,
+    watch: Optional[bool] = None,
+    registry: Optional[SpaceRegistry] = None,
+    project_root: Optional[Union[str, Path]] = None,
+    yscb_dir: Optional[Union[str, Path]] = None,
+) -> SpaceConfig:
+    """Convenience primitive for registering or merging a runtime space (`watch=True` by default)."""
+    reg = registry or get_default_registry(project_root=project_root, yscb_dir=yscb_dir)
+    return reg.register_space(name, config, watch=watch)
+
+
+def unregister_space(
+    name: str,
+    *,
+    registry: Optional[SpaceRegistry] = None,
+    project_root: Optional[Union[str, Path]] = None,
+    yscb_dir: Optional[Union[str, Path]] = None,
+) -> bool:
+    """Convenience primitive for removing a runtime-registered space."""
+    reg = registry or get_default_registry(project_root=project_root, yscb_dir=yscb_dir)
+    return reg.unregister_space(name)
+
+
 def define_ephemeral_space(
     name: str,
     config: Union[SpaceConfig, Mapping[str, Any]],
@@ -1490,6 +1929,12 @@ def define_ephemeral_space(
     project_root: Optional[Union[str, Path]] = None,
     yscb_dir: Optional[Union[str, Path]] = None,
 ) -> SpaceConfig:
-    """Convenience primitive for registering an in-memory ephemeral space (`watch=True` by default)."""
-    reg = registry or get_default_registry(project_root=project_root, yscb_dir=yscb_dir)
-    return reg.define_ephemeral_space(name, config, watch=watch)
+    """Backward-compatible alias for `register_space`."""
+    return register_space(
+        name,
+        config,
+        watch=watch,
+        registry=registry,
+        project_root=project_root,
+        yscb_dir=yscb_dir,
+    )

@@ -701,53 +701,6 @@ def _handle_space_spaces(cmd_bags: CmdBags) -> int:
     return 0
 
 
-def _handle_space_presets(cmd_bags: CmdBags) -> int:
-    guard_dispatch("core")
-    cmd_bags = _normalize_bags(cmd_bags)
-    json_output = cmd_bags.has_option("json")
-    owner_filter = cmd_bags.get_option_value("owner") or cmd_bags.get_option_value("o")
-    query = cmd_bags.args[0] if cmd_bags.args else None
-
-    from core.space import SpaceError, SpaceRegistry
-
-    try:
-        reg = SpaceRegistry()
-        if query:
-            presets = reg.resolve_presets(query)
-        else:
-            presets = reg.list_presets(owner=owner_filter)
-        if owner_filter and query:
-            presets = [p for p in presets if p.owner == owner_filter]
-    except SpaceError as exc:
-        return _emit_space_error(exc, json_output)
-
-    payload = {
-        "status": "ok",
-        "query": query,
-        "count": len(presets),
-        "presets": [p.to_dict() for p in presets],
-    }
-    if json_output:
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
-        return 0
-
-    print("=" * 80)
-    print(f"  YS-Codebase Core File-Space Presets ({len(presets)} preset(s))")
-    print("=" * 80)
-    if not presets:
-        print("  (No presets registered)")
-    for p_dict in payload["presets"]:
-        print(f"\n[*] {p_dict['qualified_name']} (short: {p_dict['short_name']}, owner: {p_dict['owner']})")
-        if p_dict["description"]:
-            print(f"    Description : {p_dict['description']}")
-        if p_dict["include"]:
-            print(f"    Include     : {', '.join(p_dict['include'])}")
-        if p_dict["exclude"]:
-            print(f"    Exclude     : {', '.join(p_dict['exclude'])}")
-    print("\n" + "=" * 80)
-    return 0
-
-
 def _handle_space_match(cmd_bags: CmdBags) -> int:
     guard_dispatch("core")
     cmd_bags = _normalize_bags(cmd_bags)
@@ -1022,7 +975,6 @@ def _dispatch_space_group(cmd_bags: CmdBags, group_cmd_name: str) -> int:
     )
     handlers = {
         "spaces": _handle_space_spaces,
-        "presets": _handle_space_presets,
         "match": _handle_space_match,
         "ls": _handle_space_ls,
         "hash": _handle_space_hash,
@@ -1036,7 +988,7 @@ def _dispatch_space_group(cmd_bags: CmdBags, group_cmd_name: str) -> int:
         return handler(sub_bags)
     print(
         f"[core:{group_cmd_name}] Unknown subcommand '{sub_cmd}'. "
-        "Available: spaces, presets, match, ls, hash, status, scan, diff, clean",
+        "Available: spaces, match, ls, hash, status, scan, diff, clean",
         file=sys.stderr,
     )
     return 1
@@ -1045,11 +997,6 @@ def _dispatch_space_group(cmd_bags: CmdBags, group_cmd_name: str) -> int:
 def file_space_spaces(cmd_bags: CmdBags) -> int:
     """List and inspect registered logical file spaces."""
     return _handle_space_spaces(cmd_bags)
-
-
-def file_space_presets(cmd_bags: CmdBags) -> int:
-    """List and inspect registered filter rule presets."""
-    return _handle_space_presets(cmd_bags)
 
 
 def file_space_match(cmd_bags: CmdBags) -> int:
@@ -1095,11 +1042,6 @@ def file_space(cmd_bags: CmdBags) -> int:
 def fs_spaces(cmd_bags: CmdBags) -> int:
     """List and inspect registered logical file spaces (shorthand alias)."""
     return _handle_space_spaces(cmd_bags)
-
-
-def fs_presets(cmd_bags: CmdBags) -> int:
-    """List and inspect registered filter rule presets (shorthand alias)."""
-    return _handle_space_presets(cmd_bags)
 
 
 def fs_match(cmd_bags: CmdBags) -> int:

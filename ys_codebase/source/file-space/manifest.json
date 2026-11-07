@@ -6,7 +6,7 @@
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.7.5"
+    "core": ">=1.2.7.4"
   },
   "optional": {},
   "pip_dependencies": {},
