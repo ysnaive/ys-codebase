@@ -102,7 +102,6 @@
       "./.vscode/schemas/contributes/ast.schema.json",
       "./.vscode/schemas/contributes/core.schema.json",
       "./.vscode/schemas/contributes/dev.schema.json",
-      "./.vscode/schemas/contributes/file-space.schema.json",
       "./.vscode/schemas/contributes/gdrive-support.schema.json",
       "./.vscode/schemas/contributes/knowledge-db.schema.json",
       "./.vscode/schemas/contributes/server.schema.json",
@@ -154,13 +153,6 @@
         "**/config/dev/contribute.json"
       ],
       "url": "./.vscode/schemas/contributes/dev.schema.json"
-    },
-    {
-      "fileMatch": [
-        "**/contributes/file-space.json",
-        "**/config/file-space/contribute.json"
-      ],
-      "url": "./.vscode/schemas/contributes/file-space.schema.json"
     },
     {
       "fileMatch": [

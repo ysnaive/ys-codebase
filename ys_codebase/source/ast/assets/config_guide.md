@@ -4,7 +4,7 @@
 <!-- yscb:ignore:end -->
 - **① 組態項目與用途**：
   - **自訂或覆寫語言解析器**：[`config/ast/contribute.json`](`__#{config://ast/contribute.json}__`)（或 Donor 模組 `contributes/ast.json`），透過 `languages.<id>` 宣告 `"mode": "tree_sitter"`（指定 `grammar` 與 `.scm` `query_file`）或 `"mode": "custom"`（指定 `parser_entry`）。
-  - **跨模組空間來源**：自動讀取 [`config/file-space/contribute.json`](`__#{config://file-space/contribute.json}__`) 已註冊空間並維護獨立游標 `cursors/ast.json`。
+  - **跨模組空間來源**：自動讀取 [`config/core/contribute.json`](`__#{config://core/contribute.json}__`) 與各模組貢獻之 `core.space` 已註冊空間並維護獨立游標 `cursors/ast.json`。
 - **② 健康度檢查條件**：
   - `python __${yscb.host://yscb.py}__ ast status`：驗證已註冊空間之 `ast_generation`、符號總數、呼叫圖譜節點/邊數，以及 `parser_load_errors` 是否為空。
   - `python __${yscb.host://yscb.py}__ ast outline __${yscb.host://yscb.py}__`：驗證單檔 AST 解析與結構大綱輸出正常。

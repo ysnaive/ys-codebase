@@ -4,8 +4,7 @@
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.7.3",
-    "file-space": ">=1.0.1.4",
+    "core": ">=1.2.7.4",
     "ast": ">=1.0.1.5"
   },
   "optional": {
@@ -21,7 +20,7 @@
     "storage": "storage.local://knowledge-db"
   },
   "onboarding": [
-    "[Pre-flight] Configure project workspaces in config/file-space/contribute.json and optional retrieval weights in config/knowledge-db/contribute.json (space_weights)",
+    "[Pre-flight] Configure project workspaces in config/core/contribute.json and optional retrieval weights in config/knowledge-db/contribute.json (space_weights)",
     "Optional - Download local ONNX vector model (or use lightweight BM25 via config set knowledge-db enable_vector_search false): python yscb.py knowledge-db model download",
     "Build unified AST & BM25/vector index: python yscb.py knowledge-db index",
     "Search symbols & code snippets: python yscb.py knowledge-db search \"<query>\" -s"

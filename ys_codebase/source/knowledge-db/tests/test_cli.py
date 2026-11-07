@@ -235,7 +235,13 @@ class TestCLI(YSCBTestCase):
         """驗證當 enable_vector_search: true 但無模型時，stderr 輸出 [GUARD] 提示"""
         with tempfile.TemporaryDirectory() as empty_cache:
             err_buf = io.StringIO()
-            with contextlib.redirect_stderr(err_buf):
+            with (
+                patch(
+                    "knowledge_db.embedding.is_agents_workflow_installed",
+                    return_value=True,
+                ),
+                contextlib.redirect_stderr(err_buf),
+            ):
                 svc = EmbeddingService(
                     cache_dir=empty_cache, mock_mode=False, enable_vector_search=True
                 )
@@ -489,9 +495,15 @@ class TestCLI(YSCBTestCase):
         old_yscb_loc = os.environ.get("YSCB_LOCALE")
         try:
             os.environ["YSCB_LOCALE"] = "nouns-claude,zh"
-            with patch(
-                "knowledge_db.engine.KnowledgeEngine.search",
-                return_value=mock_search_res,
+            with (
+                patch(
+                    "knowledge_db.config.is_agents_workflow_installed",
+                    return_value=True,
+                ),
+                patch(
+                    "knowledge_db.engine.KnowledgeEngine.search",
+                    return_value=mock_search_res,
+                ),
             ):
                 ret_tr, out_tr, _ = self._run_cli(
                     [

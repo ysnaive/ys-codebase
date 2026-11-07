@@ -15,8 +15,14 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
+from core.space import (
+    ScanDiffDetail,
+    SpaceConfig,
+    SpaceFileEntry,
+    SpaceRegistry,
+    SpaceScanner,
+)
 from core.vfs import write_bytes
-from file_space import FileSpaceConfig, FileSpaceManager, FingerprintScanner, ScanDiffDetail
 
 from .exceptions import ASTError
 from .io_utils import compute_project_relpath, is_dirty_file_match, normalize_dirty_paths
@@ -445,25 +451,51 @@ def _resolve_default_ast_storage_dir(project_root: Optional[Path] = None) -> Pat
     return base / ".storage.local" / "ast"
 
 
-def _get_loaded_spaces(space_manager: Optional[FileSpaceManager]) -> Dict[str, Any]:
+def _space_logical_name(sp: SpaceConfig) -> str:
+    """Return canonical logical space label (`short_name` if available, else `qualified_name`)."""
+    return sp.short_name or sp.qualified_name
+
+
+def _get_loaded_spaces(space_manager: Optional[SpaceRegistry]) -> Dict[str, SpaceConfig]:
     if space_manager is None:
         return {}
-    if hasattr(space_manager, "get_all_spaces"):
-        return space_manager.get_all_spaces()
-    return space_manager.load_spaces()
+    mapping: Dict[str, SpaceConfig] = {}
+    for sp in space_manager.list_spaces():
+        if sp.qualified_name:
+            mapping[sp.qualified_name] = sp
+        if sp.short_name and sp.short_name not in mapping:
+            mapping[sp.short_name] = sp
+    return mapping
+
+
+def _resolve_space_entry_roots(
+    sp: SpaceConfig,
+    space_manager: Optional[SpaceRegistry] = None,
+) -> List[Path]:
+    proj_root = getattr(space_manager, "project_root", None) if space_manager else None
+    roots: List[Path] = []
+    for _, abs_p, exists in sp.resolve_entries(proj_root):
+        if abs_p is not None and exists:
+            roots.append(_safe_resolve_path(abs_p))
+        elif abs_p is not None:
+            roots.append(_safe_resolve_path(abs_p))
+    return roots
 
 
 def _preload_snap_entries(
-    scanner: Optional[FingerprintScanner],
-    target_spaces: Iterable[FileSpaceConfig],
+    scanner: Optional[SpaceScanner],
+    target_spaces: Iterable[SpaceConfig],
 ) -> Dict[str, Dict[str, Any]]:
     snap_entries_by_space: Dict[str, Dict[str, Any]] = {}
-    if scanner is not None and hasattr(scanner, "_load_or_recover_state"):
+    if scanner is not None and hasattr(scanner, "snapshot"):
         for sp in target_spaces:
+            sp_key = _space_logical_name(sp)
             try:
-                st, _ = scanner._load_or_recover_state(sp.name)
-                if st and st.entries:
-                    snap_entries_by_space[sp.name] = st.entries
+                entries = scanner.snapshot(sp.qualified_name or sp_key, refresh_first=False)
+                if entries:
+                    snap_entries_by_space[sp_key] = entries
+                    if sp.qualified_name:
+                        snap_entries_by_space[sp.qualified_name] = entries
             except Exception:
                 pass
     return snap_entries_by_space
@@ -471,9 +503,9 @@ def _preload_snap_entries(
 
 def _normalize_space_dirty_paths(
     raw_paths: Iterable[str],
-    target_spaces: List[FileSpaceConfig],
-    space_manager: Optional[FileSpaceManager] = None,
-    scanner: Optional[FingerprintScanner] = None,
+    target_spaces: List[SpaceConfig],
+    space_manager: Optional[SpaceRegistry] = None,
+    scanner: Optional[SpaceScanner] = None,
     file_symbols_cache: Optional[Dict[str, List[UnifiedSymbol]]] = None,
     prefer_missing: bool = False,
     snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -490,7 +522,6 @@ def _normalize_space_dirty_paths(
         snap_entries_by_space = _preload_snap_entries(scanner, target_spaces)
 
     proj_root = getattr(space_manager, "project_root", None) if space_manager else None
-    loaded_spaces = _get_loaded_spaces(space_manager)
 
     for raw_p in raw_list:
         p_obj = Path(raw_p)
@@ -507,9 +538,10 @@ def _normalize_space_dirty_paths(
         matched_from_snap = False
         snap_matches: List[Any] = []
         for sp in target_spaces:
-            entries = snap_entries_by_space.get(sp.name, {})
+            sp_key = _space_logical_name(sp)
+            entries = snap_entries_by_space.get(sp_key) or snap_entries_by_space.get(sp.qualified_name, {})
             fp_rec = entries.get(raw_p)
-            if fp_rec is not None and getattr(fp_rec, "source_root", ""):
+            if fp_rec is not None and getattr(fp_rec, "entry_path", ""):
                 snap_matches.append(fp_rec)
 
         if snap_matches:
@@ -524,7 +556,7 @@ def _normalize_space_dirty_paths(
             else:
                 chosen_matches = deleted_matches or snap_matches
             for fp_rec in chosen_matches:
-                src_root = Path(fp_rec.source_root)
+                src_root = Path(fp_rec.entry_path)
                 cand_abs = src_root / raw_p
                 c_abs = _safe_resolve_str(cand_abs)
                 expanded.add(c_abs)
@@ -536,10 +568,7 @@ def _normalize_space_dirty_paths(
 
         matching_candidates: List[Tuple[Path, Path]] = []
         for sp in target_spaces:
-            if space_manager is not None and sp.name in loaded_spaces:
-                inc_roots = space_manager.resolve_space_include(sp.name)
-            else:
-                inc_roots = getattr(sp, "resolved_include_paths", [Path(inc) for inc in getattr(sp, "include", [])])
+            inc_roots = _resolve_space_entry_roots(sp, space_manager)
             for inc_root in inc_roots:
                 cand_abs = Path(inc_root) / raw_p
                 matching_candidates.append((cand_abs, Path(inc_root)))
@@ -586,14 +615,14 @@ class SemanticBundler:
 
     def __init__(
         self,
-        space_manager: FileSpaceManager,
+        space_manager: SpaceRegistry,
         parser_registry: Optional[ParserRegistry] = None,
-        scanner: Optional[FingerprintScanner] = None,
+        scanner: Optional[SpaceScanner] = None,
         storage_dir: Optional[Union[str, Path]] = None,
     ):
         self.space_manager = space_manager
         self.parser_registry = parser_registry or ParserRegistry(register_defaults=True)
-        self.scanner = scanner or FingerprintScanner(space_manager)
+        self.scanner = scanner or SpaceScanner(registry=space_manager)
         if storage_dir is not None:
             self.storage_dir = _safe_resolve_path(storage_dir)
         else:
@@ -606,33 +635,56 @@ class SemanticBundler:
         self._last_bundle_spaces: Set[str] = set()
 
     def _resolve_target_spaces(
-        self, spaces: Optional[Iterable[Union[str, FileSpaceConfig]]] = None
-    ) -> List[FileSpaceConfig]:
+        self, spaces: Optional[Iterable[Union[str, SpaceConfig]]] = None
+    ) -> List[SpaceConfig]:
         if spaces is None:
-            if hasattr(self.space_manager, "get_all_spaces"):
-                return list(self.space_manager.get_all_spaces().values())
-            raw_list = self.space_manager.list_spaces()
             return [
-                self.space_manager.get_space(sp) if isinstance(sp, str) else sp
-                for sp in raw_list
+                sp
+                for sp in self.space_manager.list_spaces()
+                if sp.short_name != "cloud" and not sp.qualified_name.endswith("/cloud")
             ]
-        resolved: List[FileSpaceConfig] = []
+        resolved: List[SpaceConfig] = []
+        seen_qnames: Set[str] = set()
         for sp in spaces:
             if isinstance(sp, str):
-                resolved.append(self.space_manager.get_space(sp))
+                for cfg in self.space_manager.resolve_spaces(sp):
+                    if cfg.qualified_name not in seen_qnames:
+                        seen_qnames.add(cfg.qualified_name)
+                        resolved.append(cfg)
             else:
-                resolved.append(sp)
+                q_key = sp.qualified_name or sp.short_name
+                if q_key not in seen_qnames:
+                    seen_qnames.add(q_key)
+                    resolved.append(sp)
         return resolved
 
-    def _iter_space_eligible_files(self, space_cfg: FileSpaceConfig) -> List[Tuple[str, Path, Path]]:
-        if space_cfg.name in _get_loaded_spaces(self.space_manager):
-            return list(self.space_manager.iter_space_files(space_cfg.name))
-        temp_mgr = FileSpaceManager(
-            project_root=getattr(self.space_manager, "project_root", None),
-            storage_root=getattr(self.space_manager, "storage_root", None),
-            spaces_config={space_cfg.name: space_cfg},
-        )
-        return list(temp_mgr.iter_space_files(space_cfg.name))
+    def _iter_space_eligible_files(self, space_cfg: SpaceConfig) -> List[Tuple[str, Path, Path]]:
+        loaded_spaces = _get_loaded_spaces(self.space_manager)
+        query_name = space_cfg.qualified_name or space_cfg.short_name
+        if query_name in loaded_spaces or space_cfg.short_name in loaded_spaces:
+            entries = self.space_manager.iter_space_files(query_name)
+        else:
+            temp_reg = SpaceRegistry(
+                project_root=getattr(self.space_manager, "project_root", None),
+                raw_spaces={
+                    space_cfg.short_name or "custom": {
+                        "entries": list(space_cfg.entries),
+                        "include": list(space_cfg.include),
+                        "exclude": list(space_cfg.exclude),
+                    }
+                },
+            )
+            entries = temp_reg.iter_space_files(space_cfg.short_name or "custom")
+
+        results: List[Tuple[str, Path, Path]] = []
+        for item in entries:
+            if isinstance(item, SpaceFileEntry):
+                base_dir = Path(item.entry_path) if item.entry_path else item.abs_path.parent
+                results.append((item.rel_path, item.abs_path, base_dir))
+            else:
+                rel_p, abs_p, base_dir = item[0], item[1], item[2]
+                results.append((str(rel_p), Path(abs_p), Path(base_dir)))
+        return results
 
     def _get_project_relpath(self, f_path: Path, fallback_base: Path) -> str:
         proj_root = getattr(self.space_manager, "project_root", None)
@@ -669,12 +721,12 @@ class SemanticBundler:
         return file_symbols, call_sites, dict(imports or {})
 
     def _collect_space_files(
-        self, target_spaces: List[FileSpaceConfig]
+        self, target_spaces: List[SpaceConfig]
     ) -> Dict[str, Tuple[Path, str, Set[str]]]:
         unique_files: Dict[str, Tuple[Path, str, Set[str]]] = {}
 
         for sp in target_spaces:
-            space_name = sp.name
+            space_name = _space_logical_name(sp)
             for _, f_path, base_dir in self._iter_space_eligible_files(sp):
                 c_key = _safe_resolve_str(f_path)
                 relpath = self._get_project_relpath(f_path, base_dir)
@@ -688,7 +740,7 @@ class SemanticBundler:
     def _resolve_dirty_files_only(
         self,
         dirty_raw_paths: Iterable[str],
-        target_spaces: List[FileSpaceConfig],
+        target_spaces: List[SpaceConfig],
         snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Dict[str, Tuple[Path, str, Set[str]]]:
         """
@@ -701,22 +753,11 @@ class SemanticBundler:
         if snap_entries_by_space is None:
             snap_entries_by_space = _preload_snap_entries(self.scanner, target_spaces)
 
-        loaded_spaces = _get_loaded_spaces(self.space_manager)
         proj_root = getattr(self.space_manager, "project_root", None)
         space_inc_roots: Dict[str, List[Path]] = {}
         for sp in target_spaces:
-            if self.space_manager is not None and sp.name in loaded_spaces:
-                inc_roots = [_safe_resolve_path(r) for r in self.space_manager.resolve_space_include(sp.name)]
-            else:
-                inc_roots = [
-                    _safe_resolve_path(r)
-                    for r in getattr(
-                        sp,
-                        "resolved_include_paths",
-                        [Path(inc) for inc in getattr(sp, "include", [])],
-                    )
-                ]
-            space_inc_roots[sp.name] = inc_roots
+            sp_key = _space_logical_name(sp)
+            space_inc_roots[sp_key] = _resolve_space_entry_roots(sp, self.space_manager)
 
         candidate_files: Dict[str, Tuple[Path, Path]] = {}
 
@@ -741,9 +782,10 @@ class SemanticBundler:
             matched_this = False
             snap_matches: List[Any] = []
             for sp in target_spaces:
-                entries = snap_entries_by_space.get(sp.name, {})
+                sp_key = _space_logical_name(sp)
+                entries = snap_entries_by_space.get(sp_key) or snap_entries_by_space.get(sp.qualified_name, {})
                 fp_rec = entries.get(clean_p)
-                if fp_rec is not None and not getattr(fp_rec, "is_deleted", False) and getattr(fp_rec, "source_root", ""):
+                if fp_rec is not None and not getattr(fp_rec, "is_deleted", False) and getattr(fp_rec, "entry_path", ""):
                     snap_matches.append(fp_rec)
 
             if snap_matches:
@@ -751,14 +793,15 @@ class SemanticBundler:
                     best_mtime_ns = max((int(getattr(fp, "mtime_ns", 0)) for fp in snap_matches), default=0)
                     snap_matches = [fp for fp in snap_matches if int(getattr(fp, "mtime_ns", 0)) >= best_mtime_ns]
                 for fp_rec in snap_matches:
-                    src_root = Path(fp_rec.source_root)
+                    src_root = Path(fp_rec.entry_path)
                     _add_candidate(src_root / clean_p, src_root)
                     matched_this = True
 
             if not matched_this:
                 inc_matches: List[Tuple[Path, Path]] = []
                 for sp in target_spaces:
-                    for inc_root in space_inc_roots.get(sp.name, []):
+                    sp_key = _space_logical_name(sp)
+                    for inc_root in space_inc_roots.get(sp_key, []):
                         cand = inc_root / clean_p
                         if _safe_is_file(cand):
                             inc_matches.append((cand, inc_root))
@@ -778,12 +821,13 @@ class SemanticBundler:
             if not matched_this:
                 norm_single = normalize_dirty_paths([clean_p])
                 for sp in target_spaces:
-                    entries = snap_entries_by_space.get(sp.name, {})
+                    sp_key = _space_logical_name(sp)
+                    entries = snap_entries_by_space.get(sp_key) or snap_entries_by_space.get(sp.qualified_name, {})
                     for rel_key, fp_rec in entries.items():
-                        if getattr(fp_rec, "is_deleted", False) or not getattr(fp_rec, "source_root", ""):
+                        if getattr(fp_rec, "is_deleted", False) or not getattr(fp_rec, "entry_path", ""):
                             continue
                         if is_dirty_file_match(rel_key, norm_single):
-                            src_root = Path(fp_rec.source_root)
+                            src_root = Path(fp_rec.entry_path)
                             _add_candidate(src_root / rel_key, src_root)
 
         result: Dict[str, Tuple[Path, str, Set[str]]] = {}
@@ -791,33 +835,23 @@ class SemanticBundler:
             matched_spaces: Set[str] = set()
             chosen_base = fallback_base
             for sp in target_spaces:
-                entries = snap_entries_by_space.get(sp.name, {})
-                for inc_root in space_inc_roots.get(sp.name, []):
+                sp_key = _space_logical_name(sp)
+                entries = snap_entries_by_space.get(sp_key) or snap_entries_by_space.get(sp.qualified_name, {})
+                for inc_root in space_inc_roots.get(sp_key, []):
                     try:
                         rel_to_inc = resolved_p.relative_to(inc_root).as_posix()
                     except ValueError:
                         continue
                     fp_rec = entries.get(rel_to_inc)
                     if fp_rec is not None and not getattr(fp_rec, "is_deleted", False):
-                        matched_spaces.add(sp.name)
+                        matched_spaces.add(sp_key)
                         chosen_base = inc_root
                         break
-                    if hasattr(sp, "is_file_included"):
-                        try:
-                            if sp.is_file_included(rel_to_inc):
-                                matched_spaces.add(sp.name)
-                                chosen_base = inc_root
-                                break
-                        except Exception:
-                            matched_spaces.add(sp.name)
-                            chosen_base = inc_root
-                            break
-                    else:
-                        matched_spaces.add(sp.name)
-                        chosen_base = inc_root
-                        break
+                    matched_spaces.add(sp_key)
+                    chosen_base = inc_root
+                    break
             if not matched_spaces and target_spaces:
-                matched_spaces.add(target_spaces[0].name)
+                matched_spaces.add(_space_logical_name(target_spaces[0]))
             if matched_spaces:
                 relpath = self._get_project_relpath(resolved_p, chosen_base)
                 result[c_key] = (resolved_p, relpath, matched_spaces)
@@ -833,7 +867,7 @@ class SemanticBundler:
 
     def bundle_union(
         self,
-        spaces: Optional[List[Union[str, FileSpaceConfig]]] = None,
+        spaces: Optional[List[Union[str, SpaceConfig]]] = None,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
         allow_parallel: bool = True,
     ) -> SemanticBundle:
@@ -841,7 +875,7 @@ class SemanticBundler:
         target_spaces = self._resolve_target_spaces(spaces)
         unique_files = self._collect_space_files(target_spaces)
         self._last_bundle_unique_files = dict(unique_files)
-        self._last_bundle_spaces = {sp.name for sp in target_spaces}
+        self._last_bundle_spaces = {_space_logical_name(sp) for sp in target_spaces}
 
         total_files = len(unique_files)
         all_symbols: List[UnifiedSymbol] = []
@@ -954,7 +988,7 @@ class SemanticBundler:
     def _normalize_space_dirty_paths(
         self,
         raw_paths: Iterable[str],
-        target_spaces: List[FileSpaceConfig],
+        target_spaces: List[SpaceConfig],
         prefer_missing: bool = False,
         snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Set[str]:
@@ -971,7 +1005,7 @@ class SemanticBundler:
     def bundle_dirty_files(
         self,
         dirty_diff: ScanDiffDetail,
-        spaces: Optional[List[Union[str, FileSpaceConfig]]] = None,
+        spaces: Optional[List[Union[str, SpaceConfig]]] = None,
     ) -> Tuple[Dict[str, List[UnifiedSymbol]], Set[str]]:
         """Parse only added/modified files in `dirty_diff` and evict deleted/modified cache entries."""
         target_spaces = self._resolve_target_spaces(spaces)
@@ -1061,7 +1095,7 @@ class SemanticBundler:
 
     def _extract_call_sites_and_imports_core(
         self,
-        spaces: Optional[List[Union[str, FileSpaceConfig]]] = None,
+        spaces: Optional[List[Union[str, SpaceConfig]]] = None,
         dirty_file_paths: Optional[Iterable[str]] = None,
         snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Tuple[List[SymbolCallSite], Dict[str, Dict[str, str]]]:
@@ -1115,14 +1149,14 @@ class SemanticBundler:
 
     def extract_all_call_sites_and_imports(
         self,
-        spaces: Optional[List[Union[str, FileSpaceConfig]]] = None,
+        spaces: Optional[List[Union[str, SpaceConfig]]] = None,
     ) -> Tuple[List[SymbolCallSite], Dict[str, Dict[str, str]]]:
         return self._extract_call_sites_and_imports_core(spaces=spaces, dirty_file_paths=None)
 
     def extract_dirty_call_sites_and_imports(
         self,
         dirty_diff: ScanDiffDetail,
-        spaces: Optional[List[Union[str, FileSpaceConfig]]] = None,
+        spaces: Optional[List[Union[str, SpaceConfig]]] = None,
     ) -> Tuple[List[SymbolCallSite], Dict[str, Dict[str, str]]]:
         target_spaces = self._resolve_target_spaces(spaces)
         snap_entries_by_space = _preload_snap_entries(self.scanner, target_spaces)

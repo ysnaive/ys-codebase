@@ -2,7 +2,7 @@
   "spaces": {
     "source": {
       "description": "專案業務源碼空間",
-      "include": ["module.source://"],
+      "entries": ["module.source://"],
       "exclude": [
         ".git",
         ".venv",
@@ -14,7 +14,7 @@
         ".pytest_cache",
         "tests"
       ],
-      "file_patterns": [
+      "include": [
         "*.py",
         "*.ts",
         "*.tsx",
@@ -40,7 +40,7 @@
     },
     "cloud": {
       "description": "母倉核心研發資產雲端 1:1 鏡像同步空間",
-      "include": ["project://"],
+      "entries": ["project://"],
       "exclude": [
         ".git",
         ".agents",
@@ -80,7 +80,7 @@
         "*.zip",
         ".DS_Store"
       ],
-      "file_patterns": ["*"],
+      "include": ["*"],
       "hash_policy": "adaptive",
       "large_file_threshold_mb": 10,
       "follow_symlinks": false,

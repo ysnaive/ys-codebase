@@ -4,7 +4,7 @@
 <!-- yscb:ignore:end -->
 - **① 模組定位與適用時機**：
   - **單檔原子操作（永遠可用）**：直接讀寫雲端根目錄 `<root_folder_id>/**/*` 下之純雲端檔案（大型資產、歸檔、不拉到本地工作區之檔案）或單點檢視雲端目錄。
-  - **`repo_sync` 工作區版控同步（需 `repo_sync.enable: true`）**：將指定 `file-space` 雙向同步至 `<root_folder_id>/<repo_sync_root>/<branch>/`（預設 `repo/<branch>/`），支援 Google Drive Shortcut 增量分支與 `.history/` Copy-on-Write 引用計數回收。
+  - **`repo_sync` 工作區版控同步（需 `repo_sync.enable: true`）**：將指定 `core.space` 雙向同步至 `<root_folder_id>/<repo_sync_root>/<branch>/`（預設 `repo/<branch>/`），支援 Google Drive Shortcut 增量分支與 `.history/` Copy-on-Write 引用計數回收。
 - **② 標準用法速查 (Golden Recipes)**：
   - **狀態與授權檢查 (`🟢 [SAFE]`)**：`python __${yscb.host://yscb.py}__ gdrive status [--json]` / `python __${yscb.host://yscb.py}__ gdrive auth --check [--json]`
   - **單檔原子讀寫 (`🟢 [SAFE]` / `🟡 [CONDITIONAL]`)**：

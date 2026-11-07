@@ -651,13 +651,12 @@ class SnippetExtractor:
             if proj_r:
                 roots.append(Path(proj_r).resolve())
             try:
-                loaded_spaces = (
-                    self.space_manager.get_all_spaces()
-                    if hasattr(self.space_manager, "get_all_spaces")
-                    else self.space_manager.load_spaces()
-                )
-                for sp_name in loaded_spaces:
-                    for inc in self.space_manager.resolve_space_include(sp_name):
+                if hasattr(self.space_manager, "resolve_file_path"):
+                    resolved_sp = self.space_manager.resolve_file_path(raw)
+                    if resolved_sp and Path(resolved_sp).is_file():
+                        return Path(resolved_sp).resolve()
+                if hasattr(self.space_manager, "collect_all_entry_paths"):
+                    for inc in self.space_manager.collect_all_entry_paths():
                         roots.append(Path(inc).resolve())
             except Exception:
                 pass

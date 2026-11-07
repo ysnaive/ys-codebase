@@ -15,9 +15,9 @@ _pkg_root = os.path.dirname(_test_dir)
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 
+from core.space import SpaceConfig
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from file_space import FileSpaceConfig
 from knowledge_db.engine import KnowledgeEngine
 from knowledge_db.retrieval import InvertedIndex
 from knowledge_db.schema import UnifiedSymbol
@@ -43,13 +43,23 @@ class TestJITHotHealing(YSCBTestCase):
                 encoding="utf-8",
             )
 
-            sp_a = FileSpaceConfig(name="space_a", include=[str(src_dir)])
-            sp_b = FileSpaceConfig(name="space_b", include=[str(src_dir)])
+            sp_a = SpaceConfig(
+                qualified_name="project/space_a",
+                owner="project",
+                short_name="space_a",
+                entries=(str(src_dir),),
+            )
+            sp_b = SpaceConfig(
+                qualified_name="project/space_b",
+                owner="project",
+                short_name="space_b",
+                entries=(str(src_dir),),
+            )
 
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={
-                    "spaces": {"space_a": sp_a.to_dict(), "space_b": sp_b.to_dict()},
+                    "spaces": {"space_a": sp_a, "space_b": sp_b},
                     "space_weights": {"space_a": 1.0, "space_b": 1.2},
                 },
             )
@@ -82,10 +92,15 @@ class TestJITHotHealing(YSCBTestCase):
                 encoding="utf-8",
             )
 
-            sp = FileSpaceConfig(name="source", include=[str(src_dir)])
+            sp = SpaceConfig(
+                qualified_name="project/source",
+                owner="project",
+                short_name="source",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
-                contributes_data={"spaces": {"source": sp.to_dict()}},
+                contributes_data={"spaces": {"source": sp}},
             )
 
             # 1. 先由 ast_engine 執行一次 JIT 同步產出 ASTSnapshot
@@ -161,13 +176,23 @@ class TestJITHotHealing(YSCBTestCase):
                 "# AuthEngine 說明文件\n說明授權流程", encoding="utf-8"
             )
 
-            sp_code = FileSpaceConfig(name="source", include=[str(src_dir)])
-            sp_docs = FileSpaceConfig(name="docs", include=[str(docs_dir)])
+            sp_code = SpaceConfig(
+                qualified_name="project/source",
+                owner="project",
+                short_name="source",
+                entries=(str(src_dir),),
+            )
+            sp_docs = SpaceConfig(
+                qualified_name="project/docs",
+                owner="project",
+                short_name="docs",
+                entries=(str(docs_dir),),
+            )
 
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={
-                    "spaces": {"source": sp_code.to_dict(), "docs": sp_docs.to_dict()}
+                    "spaces": {"source": sp_code, "docs": sp_docs}
                 },
             )
 
@@ -201,10 +226,15 @@ class TestJITHotHealing(YSCBTestCase):
             app_file = src_dir / "app.py"
             app_file.write_text("class AlphaService:\n    pass", encoding="utf-8")
 
-            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+            sp = SpaceConfig(
+                qualified_name="project/main",
+                owner="project",
+                short_name="main",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
-                contributes_data={"spaces": {"main": sp.to_dict()}},
+                contributes_data={"spaces": {"main": sp}},
             )
 
             engine.search("AlphaService", auto_rebuild=True)
@@ -234,10 +264,15 @@ class TestJITHotHealing(YSCBTestCase):
             file1 = src_dir / "target.py"
             file1.write_text("class ColdStartSymbol:\n    pass\n", encoding="utf-8")
 
-            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+            sp = SpaceConfig(
+                qualified_name="project/main",
+                owner="project",
+                short_name="main",
+                entries=(str(src_dir),),
+            )
             engine1 = KnowledgeEngine(
                 storage_dir=storage_dir,
-                contributes_data={"spaces": {"main": sp.to_dict()}},
+                contributes_data={"spaces": {"main": sp}},
                 embedding_mock_mode=True,
             )
             engine1.build_unified_index(force=True)
@@ -248,7 +283,7 @@ class TestJITHotHealing(YSCBTestCase):
 
             engine2 = KnowledgeEngine(
                 storage_dir=storage_dir,
-                contributes_data={"spaces": {"main": sp.to_dict()}},
+                contributes_data={"spaces": {"main": sp}},
                 embedding_mock_mode=True,
             )
             self.assertFalse(engine2.pipeline.hybrid_engine.is_vector_available)
@@ -278,14 +313,19 @@ class TestIncrementalHotReload(YSCBTestCase):
                 f.write_text(f"class Class{i}: pass", encoding="utf-8")
                 files.append(f)
 
-            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+            sp = SpaceConfig(
+                qualified_name="project/main",
+                owner="project",
+                short_name="main",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
-                contributes_data={"spaces": {"main": sp.to_dict()}},
+                contributes_data={"spaces": {"main": sp}},
             )
 
             engine.build_unified_index(force=True)
-            snap_path = engine.scanner.get_snapshot_path("main")
+            snap_path = engine.scanner._snapshot_path("project/main")
             self.assertTrue(snap_path.exists())
 
             write_text_and_advance_mtime(files[0], "class Class0Modified: pass")
@@ -295,7 +335,8 @@ class TestIncrementalHotReload(YSCBTestCase):
 
             with engine.scanner.consume_diff(consumer_id="knowledge-db") as diff_res:
                 self.assertTrue(diff_res.has_changes)
-                self.assertEqual(diff_res.total_changed + diff_res.unchanged_count, 6)
+                total_changed = diff_res.added_count + diff_res.modified_count + diff_res.deleted_count
+                self.assertEqual(total_changed + diff_res.unchanged_count, 6)
                 self.assertEqual(diff_res.modified_count, 2)
                 self.assertEqual(diff_res.added_count, 1)
                 self.assertEqual(diff_res.deleted_count, 0)
@@ -316,10 +357,15 @@ class TestIncrementalHotReload(YSCBTestCase):
             f1.write_text("class Mod1:\n    def run(self): pass", encoding="utf-8")
             f2.write_text("class Mod2:\n    def exec(self): pass", encoding="utf-8")
 
-            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+            sp = SpaceConfig(
+                qualified_name="project/main",
+                owner="project",
+                short_name="main",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
-                contributes_data={"spaces": {"main": sp.to_dict()}},
+                contributes_data={"spaces": {"main": sp}},
                 embedding_mock_mode=True,
             )
 
@@ -414,10 +460,15 @@ class TestIncrementalHotReload(YSCBTestCase):
                 encoding="utf-8",
             )
 
-            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+            sp = SpaceConfig(
+                qualified_name="project/main",
+                owner="project",
+                short_name="main",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
-                contributes_data={"spaces": {"main": sp.to_dict()}},
+                contributes_data={"spaces": {"main": sp}},
                 embedding_mock_mode=True,
             )
 
@@ -454,10 +505,15 @@ class TestIncrementalHotReload(YSCBTestCase):
             f1.write_text("class PermanentKeeper: pass", encoding="utf-8")
             f2.write_text("class TemporaryObject: pass", encoding="utf-8")
 
-            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+            sp = SpaceConfig(
+                qualified_name="project/main",
+                owner="project",
+                short_name="main",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
-                contributes_data={"spaces": {"main": sp.to_dict()}},
+                contributes_data={"spaces": {"main": sp}},
                 embedding_mock_mode=True,
             )
 
@@ -495,10 +551,15 @@ class TestIncrementalHotReload(YSCBTestCase):
             f1 = src_dir / "target.py"
             f1.write_text("class WillBeEmpty: pass", encoding="utf-8")
 
-            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+            sp = SpaceConfig(
+                qualified_name="project/main",
+                owner="project",
+                short_name="main",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
-                contributes_data={"spaces": {"main": sp.to_dict()}},
+                contributes_data={"spaces": {"main": sp}},
             )
 
             engine.search("WillBeEmpty", auto_rebuild=True)
@@ -522,16 +583,21 @@ class TestIncrementalHotReload(YSCBTestCase):
             f1 = src_dir / "code.py"
             f1.write_text("class SafeFallbackClass: pass", encoding="utf-8")
 
-            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+            sp = SpaceConfig(
+                qualified_name="project/main",
+                owner="project",
+                short_name="main",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
-                contributes_data={"spaces": {"main": sp.to_dict()}},
+                contributes_data={"spaces": {"main": sp}},
             )
 
             engine.search("SafeFallbackClass", auto_rebuild=True)
 
-            # 1. 損毀 file-space 指紋快照
-            snap_path = engine.scanner.get_snapshot_path("main")
+            # 1. 損毀 space 指紋快照
+            snap_path = engine.scanner._snapshot_path("project/main")
             snap_path.write_bytes(b"CORRUPTED_BIN_HEADER_123")
 
             r1 = engine.search("SafeFallbackClass", auto_rebuild=True)
@@ -565,10 +631,15 @@ class TestIncrementalHotReload(YSCBTestCase):
                     f"class FileClass{i}: pass", encoding="utf-8"
                 )
 
-            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+            sp = SpaceConfig(
+                qualified_name="project/main",
+                owner="project",
+                short_name="main",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
-                contributes_data={"spaces": {"main": sp.to_dict()}},
+                contributes_data={"spaces": {"main": sp}},
             )
 
             engine.search("FileClass0", auto_rebuild=True)
@@ -587,7 +658,8 @@ class TestIncrementalHotReload(YSCBTestCase):
                     f"Expected clean cursor state but got changes: {diff_res}",
                 )
                 self.assertEqual(len(diff_res.detail.dirty_files), 0)
-                self.assertEqual(diff_res.total_changed + diff_res.unchanged_count, 10)
+                total_changed = diff_res.added_count + diff_res.modified_count + diff_res.deleted_count
+                self.assertEqual(total_changed + diff_res.unchanged_count, 10)
 
             for q in ["FileClass0", "FileClass5", "FileClass9"]:
                 res = engine.search(q, auto_rebuild=True)
@@ -617,10 +689,15 @@ class TestIncrementalHotReload(YSCBTestCase):
                 )
                 files.append(f)
 
-            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+            sp = SpaceConfig(
+                qualified_name="project/main",
+                owner="project",
+                short_name="main",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
-                contributes_data={"spaces": {"main": sp.to_dict()}},
+                contributes_data={"spaces": {"main": sp}},
             )
 
             engine.search("ServiceWorker0", auto_rebuild=True)

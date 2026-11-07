@@ -1,5 +1,5 @@
 """
-Tests for Knowledge-DB Space Event Hook (`scripts/hook.file-space.py`), Server Pre-warm Hook,
+Tests for Knowledge-DB Space Event Hook (`scripts/hook.core.py`), Server Pre-warm Hook,
 and mtime Cache Synchronization.
 """
 
@@ -20,9 +20,9 @@ _pkg_root = os.path.dirname(_test_dir)
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 
+from core.space import SpaceConfig
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from file_space import FileSpaceConfig
 import knowledge_db.engine as kdb_engine
 import knowledge_db.pipeline as kdb_pipeline
 from knowledge_db import service as svc_mod
@@ -41,7 +41,7 @@ from tests import advance_mtime, load_script_module, process, write_text_and_adv
 
 
 class TestSpaceEventHookAndCacheSync(YSCBTestCase):
-    """驗證 hook.file-space.py + consume_diff 事件熱修補、Server 預熱與 mtime 快取自愈"""
+    """驗證 hook.core.py + consume_diff 事件熱修補、Server 預熱與 mtime 快取自愈"""
 
     def setUp(self):
         super().setUp()
@@ -61,8 +61,8 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_hook_file_space_on_file_space_changed_end_to_end(self):
-        """驗證 scripts/hook.file-space.py 接收 on_file_space_changed 事件時透過 consume_diff 觸發熱修補與游標推進"""
-        hook_file_space = load_script_module("hook.file-space.py")
+        """驗證 scripts/hook.core.py 接收 on_file_space_changed 事件時透過 consume_diff 觸發熱修補與游標推進"""
+        hook_file_space = load_script_module("hook.core.py")
 
         src_dir = self.root_path / "src"
         src_dir.mkdir(parents=True, exist_ok=True)
@@ -73,10 +73,15 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
             "class AlphaComponent:\n    def execute(self): pass\n", encoding="utf-8"
         )
 
-        sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+        sp = SpaceConfig(
+            qualified_name="project/main",
+            owner="project",
+            short_name="main",
+            entries=(str(src_dir),),
+        )
         engine = KnowledgeEngine(
             storage_dir=storage_dir,
-            contributes_data={"spaces": {"main": sp.to_dict()}},
+            contributes_data={"spaces": {"main": sp}},
             embedding_mock_mode=True,
         )
 
@@ -121,8 +126,8 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_hook_file_space_fallback_to_rebuild_when_hot_patch_fails(self):
-        """驗證當 hot_patch_unified_index 返回失敗時，hook.file-space.py 安全退回 build_unified_index(allow_parallel=False)"""
-        hook_file_space = load_script_module("hook.file-space.py")
+        """驗證當 hot_patch_unified_index 返回失敗時，hook.core.py 安全退回 build_unified_index(allow_parallel=False)"""
+        hook_file_space = load_script_module("hook.core.py")
 
         src_dir = self.root_path / "src"
         src_dir.mkdir(parents=True, exist_ok=True)
@@ -131,10 +136,15 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         f1 = src_dir / "service.py"
         f1.write_text("class BaseService:\n    pass\n", encoding="utf-8")
 
-        sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+        sp = SpaceConfig(
+            qualified_name="project/main",
+            owner="project",
+            short_name="main",
+            entries=(str(src_dir),),
+        )
         engine = KnowledgeEngine(
             storage_dir=storage_dir,
-            contributes_data={"spaces": {"main": sp.to_dict()}},
+            contributes_data={"spaces": {"main": sp}},
             embedding_mock_mode=True,
         )
         engine.build_unified_index(force=True)
@@ -167,7 +177,7 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_hook_file_space_queued_to_active_worker_and_diff_summary(self):
         """驗證常駐 Worker 存活時 O(1) 轉發 queued_to_worker，以及傳入 diff_summary 時傳遞 auto_refresh=False"""
-        hook_file_space = load_script_module("hook.file-space.py")
+        hook_file_space = load_script_module("hook.core.py")
 
         fake_worker = MagicMock()
         fake_worker.name = "knowledge-db-worker"
@@ -185,10 +195,15 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         src_dir = self.root_path / "src_diff_sum"
         src_dir.mkdir(parents=True, exist_ok=True)
         (src_dir / "item.py").write_text("class DiffSumNode: pass\n", encoding="utf-8")
-        sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+        sp = SpaceConfig(
+            qualified_name="project/main",
+            owner="project",
+            short_name="main",
+            entries=(str(src_dir),),
+        )
         engine = KnowledgeEngine(
             storage_dir=self.root_path / "storage_diff_sum",
-            contributes_data={"spaces": {"main": sp.to_dict()}},
+            contributes_data={"spaces": {"main": sp}},
             embedding_mock_mode=True,
         )
         engine.build_unified_index(force=True)
@@ -202,7 +217,7 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
             )
         self.assertEqual(res_ds["status"], "noop")
         spy_consume.assert_called_once_with(
-            space_name="main", consumer_id="knowledge-db", auto_refresh=False
+            "main", consumer_id="knowledge-db", auto_refresh=False
         )
         self.mark_passed()
 
@@ -405,7 +420,12 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
             "class VectorTargetNode:\n    '''核心向量測試節點'''\n    def compute(self): pass\n",
             encoding="utf-8",
         )
-        sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+        sp = SpaceConfig(
+            qualified_name="project/main",
+            owner="project",
+            short_name="main",
+            entries=(str(src_dir),),
+        )
         engine = KnowledgeEngine(
             storage_dir=storage_dir,
             local_config={
@@ -414,7 +434,7 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
                     "enable_vector_search": True,
                 }
             },
-            contributes_data={"spaces": {"main": sp.to_dict()}},
+            contributes_data={"spaces": {"main": sp}},
             embedding_mock_mode=True,
         )
         engine.build_unified_index(force=True)
@@ -505,7 +525,12 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
                 encoding="utf-8",
             )
 
-        sp = FileSpaceConfig(name="w_space", include=[str(src_dir)])
+        sp = SpaceConfig(
+            qualified_name="project/w_space",
+            owner="project",
+            short_name="w_space",
+            entries=(str(src_dir),),
+        )
         engine = KnowledgeEngine(
             storage_dir=storage_dir,
             local_config={
@@ -515,7 +540,7 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
                     "jit_vector_timeout_ms": 2000,
                 }
             },
-            contributes_data={"spaces": {"w_space": sp.to_dict()}},
+            contributes_data={"spaces": {"w_space": sp}},
             embedding_mock_mode=True,
         )
 
@@ -603,13 +628,18 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
                 encoding="utf-8",
             )
 
-        sp = FileSpaceConfig(name="l_space", include=[str(src_dir)])
+        sp = SpaceConfig(
+            qualified_name="project/l_space",
+            owner="project",
+            short_name="l_space",
+            entries=(str(src_dir),),
+        )
         engine = KnowledgeEngine(
             storage_dir=storage_dir,
             local_config={
                 "knowledge-db": {"enable_vector_search": True, "vector_batch_size": 2}
             },
-            contributes_data={"spaces": {"l_space": sp.to_dict()}},
+            contributes_data={"spaces": {"l_space": sp}},
             embedding_mock_mode=True,
         )
         engine.pipeline.build_unified_index(force=True, skip_vectors=True)

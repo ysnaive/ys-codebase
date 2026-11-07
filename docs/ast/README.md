@@ -12,15 +12,15 @@ source_paths:
   - "yscb://source/ast/scripts/cli.py"
 related_docs:
   - "./DESIGN_NOTES.md"
-  - "../file-space/README.md"
+  - "../core/README.md"
   - "../knowledge-db/README.md"
-last_updated: "2026-11-03"
+last_updated: "2026-11-07"
 ---
 
 # AST 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎手冊 (AST Overview)
 
 > 模組名稱：`ast`  
-> 職責定位：YS-Codebase 三階單向無環圖（`file-space` $\to$ `ast` $\to$ `knowledge-db`）之 Layer 2 靜態語法分析與呼叫拓撲核心引擎，專責多語言 Tree-sitter / AST 結構化解析、官方方言隔離（`dialects/<lang>`）、`contributes` 宣告式語言擴充、C# `partial class` 雙層無損聚合、確定性同名異載（Method Overloads）群組定址、雙向呼叫圖譜（`CallGraph`）與單檔結構大綱（`outline`），並向 Layer 3 `knowledge-db` 提供單次解析符號共享快照（Single-Parse Symbol Sharing）。
+> 職責定位：YS-Codebase 三階單向無環圖（`core.space` $\to$ `ast` $\to$ `knowledge-db`）之 Layer 2 靜態語法分析與呼叫拓撲核心引擎，專責多語言 Tree-sitter / AST 結構化解析、官方方言隔離（`dialects/<lang>`）、`contributes` 宣告式語言擴充、C# `partial class` 雙層無損聚合、確定性同名異載（Method Overloads）群組定址、雙向呼叫圖譜（`CallGraph`）與單檔結構大綱（`outline`），並向 Layer 3 `knowledge-db` 提供單次解析符號共享快照（Single-Parse Symbol Sharing）。
 
 ---
 
@@ -45,7 +45,7 @@ last_updated: "2026-11-03"
   - 動態安裝日誌與離線降級 Warning 100% 導向 `sys.stderr`，內建會話級負快取避免重複重試，保證 `--json` stdout 在任何網路/沙盒環境下 100% 純淨可解析。
 - **Single-Parse Symbol Sharing、單次讀檔建置與 $O(|\text{dirty}|)$ Pull-Based JIT 熱自癒**：
   - 全量建置 `bundle_union` 於單次讀檔中同時提取 `(symbols, call_sites, imports)` 並緩存於 `SemanticBundler`（`_file_call_sites_cache` / `_file_imports_cache`），使後續 `extract_all_call_sites_and_imports` 零重複讀盤。
-  - 以 `consumer_id="ast"` 消費 `file-space` 指紋差量；單檔或增量熱修補 `hot_patch_index` 透過 `_resolve_dirty_files_only` 直接從 `YFP2` 快照與空間 `include` 根目錄以 $O(|\text{dirty}|)$ 定位異動檔案（零全倉走訪）、透過 `file_to_symbol_ids` 快速淘汰舊符號並增量合成 `files_map`，原子持久化 `ast.storage://indices/unified.symbols.bin.gz` (`ASTSnapshot`) 與 `unified.graph.bin.gz` (`CallGraphIndex`)，並透過 `scripts/hook.file-space.py` 訂閱 `on_file_space_changed` 自動熱修補及廣播 `on_ast_index_updated`。
+  - 以 `consumer_id="ast"` 消費 `core.space` 指紋差量；單檔或增量熱修補 `hot_patch_index` 透過 `_resolve_dirty_files_only` 直接從 `YFP2` 快照與 `core.space.resolve_file_path` 以 $O(|\text{dirty}|)$ 定位異動檔案（零全倉走訪）、透過 `file_to_symbol_ids` 快速淘汰舊符號並增量合成 `files_map`，原子持久化 `ast.storage://indices/unified.symbols.bin.gz` (`ASTSnapshot`) 與 `unified.graph.bin.gz` (`CallGraphIndex`)，並透過 `scripts/hook.core.py` 訂閱 `on_file_space_changed` 自動熱修補及廣播 `on_ast_index_updated`。
 
 ---
 

@@ -40,9 +40,9 @@ class TestContributesValidator(YSCBTestCase):
         self.assertEqual(p_replace["default"], [])
         self.assertEqual(p_replace["merge_strategy"], "replace")
 
-        p_ref_unique = ContributesValidator.parse_type_signature("$FileSpaceDef | unique")
+        p_ref_unique = ContributesValidator.parse_type_signature("$SpaceDef | unique")
         self.assertEqual(p_ref_unique["type"], "ref")
-        self.assertEqual(p_ref_unique["ref_name"], "FileSpaceDef")
+        self.assertEqual(p_ref_unique["ref_name"], "SpaceDef")
         self.assertEqual(p_ref_unique["merge_strategy"], "unique")
 
         p_float = ContributesValidator.parse_type_signature("float? = 1.0")

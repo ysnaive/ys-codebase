@@ -76,6 +76,10 @@ from .watcher import (
     subscribe,
     write_watcher_state,
 )
+from .providers import (
+    get_knowledge_db_spaces,
+    get_registered_file_spaces_table,
+)
 
 __all__ = [
     "BinarySnapshotManager",
@@ -113,6 +117,8 @@ __all__ = [
     "get_active_watcher",
     "get_default_registry",
     "get_default_scanner",
+    "get_knowledge_db_spaces",
+    "get_registered_file_spaces_table",
     "hash_space_or_path",
     "hash_target",
     "is_watcher_active",

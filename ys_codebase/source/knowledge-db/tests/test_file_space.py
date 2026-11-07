@@ -16,9 +16,9 @@ _pkg_root = os.path.dirname(_test_dir)
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 
+from core.space import SpaceConfig, SpaceNotFoundError
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from file_space import FileSpaceConfig, FileSpaceNotFoundError
 import knowledge_db
 from knowledge_db.config import KnowledgeDBConfig, resolve_threads
 from knowledge_db.engine import KnowledgeEngine
@@ -190,18 +190,18 @@ class TestSpaceIntegrationAndWeights(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_space_not_found_error(self):
-        """驗證透過 KnowledgeEngine 查詢或打包未註冊空間時拋出 FileSpaceNotFoundError"""
+        """驗證透過 KnowledgeEngine 查詢或打包未註冊空間時拋出 SpaceNotFoundError"""
         with tempfile.TemporaryDirectory() as temp_dir:
             engine = KnowledgeEngine(
                 storage_dir=Path(temp_dir) / "storage",
                 contributes_data={"spaces": {}},
                 embedding_mock_mode=True,
             )
-            with self.assertRaises(FileSpaceNotFoundError) as ctx:
+            with self.assertRaises(SpaceNotFoundError) as ctx:
                 engine.status(space="non_existent_space")
             self.assertIn("non_existent_space", str(ctx.exception))
 
-            with self.assertRaises(FileSpaceNotFoundError):
+            with self.assertRaises(SpaceNotFoundError):
                 engine.bundle(space="non_existent_space")
 
         self.mark_passed()
@@ -244,7 +244,7 @@ class TestSpaceIntegrationAndWeights(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_storage_dir_decoupling(self):
-        """驗證 KnowledgeEngine.storage_dir 與 FileSpaceManager.storage_dir 物理隔離解耦"""
+        """驗證 KnowledgeEngine.storage_dir 與 SpaceScanner.storage_root 物理隔離解耦"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             kdb_storage = temp_path / "knowledge_cache"
@@ -252,7 +252,7 @@ class TestSpaceIntegrationAndWeights(YSCBTestCase):
                 storage_dir=kdb_storage, contributes_data={"spaces": {}}
             )
             self.assertEqual(engine.storage_dir, kdb_storage.resolve())
-            self.assertNotEqual(engine.storage_dir, engine.space_manager.storage_dir)
+            self.assertNotEqual(engine.storage_dir, engine.scanner.storage_root)
 
         self.mark_passed()
 
@@ -333,19 +333,18 @@ class TestSpaceIntegrationAndWeights(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_space_weight_schema_and_validation(self):
-        """驗證 FileSpaceConfig 與 space_weights 預設值、覆寫與 <= 0 阻斷"""
-        sp_default = FileSpaceConfig.from_dict("source", {"include": ["src/"]})
-        self.assertEqual(sp_default.weight, 1.0)
-        self.assertEqual(sp_default.to_dict()["weight"], 1.0)
+        """驗證 SpaceConfig 與 space_weights 預設值、覆寫與 <= 0 阻斷"""
+        sp_default = SpaceConfig(
+            qualified_name="project/source",
+            owner="project",
+            short_name="source",
+            entries=("src/",),
+        )
+        self.assertEqual(sp_default.short_name, "source")
 
-        sp_docs = FileSpaceConfig.from_dict(
-            "docs", {"include": ["docs/"], "weight": 1.2}
-        )
-        sp_plans = FileSpaceConfig.from_dict(
-            "plans", {"include": ["plans/"], "weight": 0.85}
-        )
-        self.assertAlmostEqual(sp_docs.weight, 1.2)
-        self.assertAlmostEqual(sp_plans.weight, 0.85)
+        valid_weights = validate_space_weights({"docs": 1.2, "plans": 0.85})
+        self.assertAlmostEqual(valid_weights["docs"], 1.2)
+        self.assertAlmostEqual(valid_weights["plans"], 0.85)
 
         for invalid_w in (0, 0.0, -0.5, -1, "invalid_float"):
             with self.assertRaises(InvalidConfigError):
@@ -409,7 +408,8 @@ class TestSpaceIntegrationAndWeights(YSCBTestCase):
             )
 
             self.assertEqual(
-                set(engine.space_manager.get_all_spaces().keys()), {"source", "cloud"}
+                {sp.short_name for sp in engine.space_manager.list_spaces()},
+                {"source", "cloud"},
             )
             self.assertEqual(set(engine.get_indexed_spaces().keys()), {"source"})
             self.assertEqual(engine.get_all_space_weights(), {"source": 1.0})
@@ -442,33 +442,33 @@ class TestKnowledgeDBProviders(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_get_knowledge_db_spaces_output_format(self):
         """驗證 get_knowledge_db_spaces 產出正確的 Markdown 空間速查表格"""
-        mock_spaces = {
-            "alpha_space": FileSpaceConfig(
-                name="alpha_space",
+        mock_spaces = [
+            SpaceConfig(
+                qualified_name="alpha/alpha_space",
+                owner="alpha",
+                short_name="alpha_space",
                 description="Alpha 領域空間",
-                include=["module://alpha/docs"],
-                file_patterns=["*.py", "*.md"],
-                origin="module:alpha",
+                entries=("module://alpha/docs",),
             ),
-            "beta_space": FileSpaceConfig(
-                name="beta_space",
+            SpaceConfig(
+                qualified_name="beta/beta_space",
+                owner="beta",
+                short_name="beta_space",
                 description="Beta 核心源碼空間",
-                include=["module://beta/src"],
-                origin="module:beta",
+                entries=("module://beta/src",),
             ),
-        }
+        ]
 
-        with patch("file_space.providers.FileSpaceManager") as mock_sm_cls:
-            mock_sm_inst = mock_sm_cls.return_value
-            mock_sm_inst.load_spaces.return_value = mock_spaces
+        with patch("core.space.providers._resolve_registry_from_context") as mock_res:
+            mock_res.return_value.list_spaces.return_value = mock_spaces
 
             output = get_knowledge_db_spaces()
             self.assertIn(
                 "| 空間名稱 (`--space=<name>`) | 來源定義 | 涵蓋路徑與包含範圍 | 語意說明 |",
                 output,
             )
-            self.assertIn("**`alpha_space`**", output)
-            self.assertIn("**`beta_space`**", output)
+            self.assertIn("`alpha_space`", output)
+            self.assertIn("`beta_space`", output)
             self.assertIn("Alpha 領域空間", output)
 
         self.mark_passed()
@@ -476,9 +476,8 @@ class TestKnowledgeDBProviders(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_get_knowledge_db_spaces_empty_fallback(self):
         """驗證無任何空間時之安全降級輸出"""
-        with patch("file_space.providers.FileSpaceManager") as mock_sm_cls:
-            mock_sm_inst = mock_sm_cls.return_value
-            mock_sm_inst.load_spaces.return_value = {}
+        with patch("core.space.providers._resolve_registry_from_context") as mock_res:
+            mock_res.return_value.list_spaces.return_value = []
 
             output = get_knowledge_db_spaces()
             self.assertIn("*(目前無已註冊空間)*", output)
@@ -492,21 +491,22 @@ class TestKnowledgeDBProviders(YSCBTestCase):
         mf_data = json.loads(mf_path.read_text(encoding="utf-8"))
         self.assertEqual(knowledge_db.__version__, mf_data["version"])
 
-        mock_spaces = {
-            "source": FileSpaceConfig(
-                name="source",
+        mock_spaces = [
+            SpaceConfig(
+                qualified_name="project/source",
+                owner="project",
+                short_name="source",
                 description="No-networkx test space",
-                include=["project://src"],
-                origin="project",
+                entries=("project://src",),
             )
-        }
+        ]
         try:
             with patch.dict(sys.modules, {"networkx": None, "fastembed": None}):
                 importlib.reload(kdb_prov)
-                with patch("file_space.providers.FileSpaceManager") as mock_sm_cls:
-                    mock_sm_cls.return_value.load_spaces.return_value = mock_spaces
+                with patch("core.space.providers._resolve_registry_from_context") as mock_res:
+                    mock_res.return_value.list_spaces.return_value = mock_spaces
                     table = kdb_prov.get_knowledge_db_spaces()
-                    self.assertIn("**`source`**", table)
+                    self.assertIn("`source`", table)
                     self.assertIn("No-networkx test space", table)
         finally:
             importlib.reload(kdb_prov)

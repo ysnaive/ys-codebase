@@ -3,7 +3,7 @@
 供 `/how-to-config-yscb` Step 1 自動驗證之體檢片段；編輯者註記於編譯時自動抹除。
 <!-- yscb:ignore:end -->
 - **① 組態項目與用途**：
-  - **工作空間幾何範圍**：統一由 [`config/file-space/contribute.json`](`__#{config://file-space/contribute.json}__`) 宣告（`spaces.source.include` 對齊本體業務空間，`exclude` 排除 `.modules/**`、`.venv/**` 等外部工具包黑盒）。
+  - **工作空間幾何範圍**：統一由 [`config/core/contribute.json`](`__#{config://core/contribute.json}__`) 宣告（`spaces.source.entries` 對齊本體業務空間，`exclude` 排除 `.modules/**`、`.venv/**` 等外部工具包黑盒）。
   - **空間檢索權重與同義詞庫**：[`config/knowledge-db/contribute.json`](`__#{config://knowledge-db/contribute.json}__`)（設定 `space_weights`、`thesaurus`、`aliases`、`related`）。
   - **團隊共享檢索與向量參數**：[`config/knowledge-db/config.project.json`](`__#{config://knowledge-db/config.project.json}__`)（混合檢索權重、模型名稱與 `jit_vector_timeout_ms`）；個人本機覆寫則放 `config.local://knowledge-db/config.local.json`（`.config.local/knowledge-db/config.local.json`）。
 - **② 健康度檢查條件**：

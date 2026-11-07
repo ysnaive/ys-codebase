@@ -1,6 +1,6 @@
 # `ast` — 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎
 
-`ast`（內部套件命名為 `ast_engine`）為 YS-Codebase 生態系的第 2 層（Layer 2）靜態語法樹與呼叫拓撲基座模組，嚴格介於底層 `file-space`（Layer 1：檔案空間與指紋底座）與上層 `knowledge-db`（Layer 3：全文與向量混合檢索）之間，負責提供單次解析符號共享（Single-Parse Symbol Sharing）、方言隔離（Dialect Isolation）、C# `partial` 型別雙層無損聚合以及確定性雙向呼叫拓撲分析。
+`ast`（內部套件命名為 `ast_engine`）為 YS-Codebase 生態系的第 2 層（Layer 2）靜態語法樹與呼叫拓撲基座模組，嚴格介於底層 `core.space`（Layer 1：檔案空間與指紋底座）與上層 `knowledge-db`（Layer 3：全文與向量混合檢索）之間，負責提供單次解析符號共享（Single-Parse Symbol Sharing）、方言隔離（Dialect Isolation）、C# `partial` 型別雙層無損聚合以及確定性雙向呼叫拓撲分析。
 
 ---
 
@@ -16,7 +16,7 @@
 
 3. **雙層分部符號模型與單次解析快照 (`SemanticBundler` & `ASTSnapshot`)**：
    - 針對 C# `partial class/struct/interface` 同時保存表層跨檔合併邏輯視圖（`members` / `children` / `partial_files`）與底層單檔物理定義（`metadata["_own_*"]`），支援單檔 `outline` 精確檢視與增量退化重聚合。
-   - 以 `consumer_id="ast"` 消費 `file-space` 游標，原子持久化 `ast.storage://indices/unified.symbols.bin.gz` 與 `unified.graph.bin.gz`。
+   - 以 `consumer_id="ast"` 消費 `core.space` 游標，原子持久化 `ast.storage://indices/unified.symbols.bin.gz` 與 `unified.graph.bin.gz`。
 
 4. **無 BM25 確定性符號定位與同名多載群組定址 (`DeterministicSymbolResolver` & `TopologyLinker`)**：
    - 支援 `[kind] [scope.]name[(param_types...)]` 選擇器語法與四階消歧連結。

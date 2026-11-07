@@ -425,7 +425,7 @@ class TestCorePlatform(YSCBTestCase):
 
         root = self.temp_dir.name
         mods_dir = os.path.join(root, ".modules")
-        for name in ("core", "ast", "file-space", "gdrive-support", ".staging_ast_123", ".old_core_456"):
+        for name in ("core", "ast", "server", "gdrive-support", ".staging_ast_123", ".old_core_456"):
             os.makedirs(os.path.join(mods_dir, name), exist_ok=True)
         with open(os.path.join(mods_dir, "README.txt"), "w", encoding="utf-8") as f:
             f.write("placeholder")
@@ -435,7 +435,7 @@ class TestCorePlatform(YSCBTestCase):
             os.path.normpath(os.path.abspath(os.path.join(mods_dir, "gdrive-support"))),
             os.path.normpath(os.path.abspath(os.path.join(mods_dir, "core"))),
             os.path.normpath(os.path.abspath(os.path.join(mods_dir, "ast"))),
-            os.path.normpath(os.path.abspath(os.path.join(mods_dir, "file-space"))),
+            os.path.normpath(os.path.abspath(os.path.join(mods_dir, "server"))),
         ]
         self.assertEqual(roots, expected)
 
@@ -475,7 +475,7 @@ class TestCorePlatform(YSCBTestCase):
         mods_dir = os.path.join(root, ".modules")
         src_root = os.path.join(root, "source")
         os.makedirs(os.path.join(mods_dir, "core"), exist_ok=True)
-        os.makedirs(os.path.join(mods_dir, "file-space"), exist_ok=True)
+        os.makedirs(os.path.join(mods_dir, "server"), exist_ok=True)
         os.makedirs(os.path.join(mods_dir, "ast"), exist_ok=True)
         src_ast = os.path.join(src_root, "ast")
         src_kdb = os.path.join(src_root, "knowledge-db")
@@ -488,20 +488,20 @@ class TestCorePlatform(YSCBTestCase):
             [
                 os.path.normpath(os.path.abspath(os.path.join(mods_dir, "core"))),
                 os.path.normpath(os.path.abspath(src_ast)),
-                os.path.normpath(os.path.abspath(os.path.join(mods_dir, "file-space"))),
                 os.path.normpath(os.path.abspath(src_kdb)),
+                os.path.normpath(os.path.abspath(os.path.join(mods_dir, "server"))),
             ],
         )
 
         dirty_existing = os.pathsep.join([src_ast, os.path.join(root, "external_lib")])
         py_path = build_runtime_pythonpath(
             yscb_root=root,
-            priority_module="file-space",
+            priority_module="server",
             include_host_roots=True,
             existing_pythonpath=dirty_existing,
         )
         entries = py_path.split(os.pathsep)
-        self.assertIn(os.path.normpath(os.path.abspath(os.path.join(mods_dir, "file-space"))), entries)
+        self.assertIn(os.path.normpath(os.path.abspath(os.path.join(mods_dir, "server"))), entries)
         self.assertIn(os.path.normpath(os.path.abspath(os.path.join(mods_dir, "core"))), entries)
         for item in entries:
             norm_slash = item.replace("\\", "/")

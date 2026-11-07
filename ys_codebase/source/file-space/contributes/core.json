@@ -4,26 +4,21 @@
       "token": "file-space.storage",
       "type": "const",
       "value": "storage.local://file-space/",
-      "description": "工作空間二進位指紋快照 (YFP2) 與多消費者游標儲存根目錄"
+      "description": "[Deprecated] 舊版 file-space 儲存根目錄（新版已收斂至 storage.local://core/space/）"
     },
     {
       "token": "file-space.cache",
       "type": "const",
       "value": "cache://file-space/",
-      "description": "工作空間快取根目錄別名"
-    }
-  ],
-  "events": [
-    {
-      "on_file_space_changed": "當受監聽的工作空間發生檔案新增、修改或刪除並完成 YFP2 快照更新時觸發"
+      "description": "[Deprecated] 舊版 file-space 快取根目錄（新版已收斂至 cache://core/space/）"
     }
   ],
   "commands": {
     "module_alias": [],
-    "description": "多工作空間幾何路由、雙階段指紋快照與多消費者變更游標管理指令群",
+    "description": "[Deprecated] 轉發至 core.space 之相容指令群（建議更新 core >=1.2.7.5 後執行 python yscb.py remove file-space）",
     "cmd": {
       "status": {
-        "description": "顯示各空間幾何配置、檔案數、head_generation、merkle_root 與各消費者游標滯後狀態",
+        "description": "[Deprecated] 委派 core.space 顯示各空間配置、head_generation、merkle_root 與消費者游標狀態",
         "tier": "safe",
         "server_compatible": true,
         "args": {
@@ -49,18 +44,10 @@
               "description": "以結構化 JSON 格式輸出狀態報告"
             }
           }
-        },
-        "usage": {
-          "pros": [
-            "檢視已註冊工作空間、世代水位與消費者游標同步狀態"
-          ],
-          "cons": [
-            "不會主動觸發磁碟掃描；若需更新快照請使用 scan"
-          ]
         }
       },
       "scan": {
-        "description": "觸發指定或全空間雙階段增量指紋掃描，更新 YFP2 二進位快照並回報變更統計",
+        "description": "[Deprecated] 委派 core.space 觸發指定或全空間雙階段增量指紋掃描並更新 YFP2 快照",
         "tier": "conditional",
         "server_compatible": true,
         "args": {
@@ -92,18 +79,10 @@
               "description": "以結構化 JSON 格式輸出掃描結果"
             }
           }
-        },
-        "usage": {
-          "pros": [
-            "手動觸發雙階段增量指紋掃描並推進空間世代水位"
-          ],
-          "cons": [
-            "僅檢視既有快照狀態時請使用 status"
-          ]
         }
       },
       "files": {
-        "description": "列出指定或全空間受納管之有效檔案清單與指紋摘要",
+        "description": "[Deprecated] 委派 core.space 列出指定或全空間受納管之有效檔案清單",
         "tier": "safe",
         "server_compatible": true,
         "args": {
@@ -140,18 +119,10 @@
               "description": "以結構化 JSON 格式輸出檔案清單"
             }
           }
-        },
-        "usage": {
-          "pros": [
-            "檢視空間內受納管之檔案清單、大小與內容雜湊"
-          ],
-          "cons": [
-            "進行語意搜尋時請使用 knowledge-db search"
-          ]
         }
       },
       "diff": {
-        "description": "檢視特定消費者游標相對於當前空間快照之待處理增量變更集",
+        "description": "[Deprecated] 委派 core.space 檢視特定消費者游標相對於當前空間快照之待處理增量變更集",
         "tier": "safe",
         "server_compatible": true,
         "args": {
@@ -193,18 +164,10 @@
               "description": "以結構化 JSON 格式輸出差異明細"
             }
           }
-        },
-        "usage": {
-          "pros": [
-            "查詢特定消費者游標尚未處理之新增、修改與刪除檔案清單"
-          ],
-          "cons": [
-            "預設不會推進游標；若需推進請加 --ack"
-          ]
         }
       },
       "clean": {
-        "description": "清除指定或全空間之 YFP2 二進位指紋快照與消費者游標狀態",
+        "description": "[Deprecated] 委派 core.space 清除指定或全空間之 YFP2 二進位指紋快照與消費者游標狀態",
         "tier": "gated",
         "server_compatible": false,
         "args": {
@@ -241,14 +204,6 @@
               "description": "以結構化 JSON 格式輸出清理結果"
             }
           }
-        },
-        "usage": {
-          "pros": [
-            "重置二進位指紋快照或特定消費者游標水位"
-          ],
-          "cons": [
-            "清理後下次掃描將重新執行全量指紋計算"
-          ]
         }
       }
     }

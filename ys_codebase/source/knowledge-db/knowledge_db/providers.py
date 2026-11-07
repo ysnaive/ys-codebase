@@ -1,12 +1,12 @@
 """
 knowledge-db 模組之 Computed Token Providers
-提供動態解算 KNOWLEDGE_DB_SPACE 空間表格等宣告式資產注入能力（委派至 file_space.providers）。
+提供動態解算 KNOWLEDGE_DB_SPACE 空間表格等宣告式資產注入能力（委派至 core.space.providers）。
 100% Python Standard Library, Zero Third-Party Dependency.
 """
 
 from typing import Any, Optional
 
-from file_space.providers import get_knowledge_db_spaces as _render_knowledge_db_spaces
+from core.space.providers import get_knowledge_db_spaces as _render_knowledge_db_spaces
 
 
 def get_knowledge_db_spaces(context: Optional[Any] = None, **kwargs: Any) -> str:

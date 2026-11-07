@@ -389,7 +389,7 @@
         }
       },
       "clean": {
-        "description": "清除 AST 符號快照與呼叫圖譜快取，並重置 file-space (consumer='ast') 游標水位",
+        "description": "清除 AST 符號快照與呼叫圖譜快取，並重置 core.space (consumer='ast') 游標水位",
         "tier": "gated",
         "server_compatible": false,
         "args": {

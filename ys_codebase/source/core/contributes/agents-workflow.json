@@ -1,5 +1,18 @@
 {
+  "token": [
+    {
+      "name": "FILE_SPACE_REGISTERED_TABLE",
+      "value": "FILE_SPACE_REGISTERED_TABLE",
+      "description": "已註冊邏輯檔案空間總表動態注入錨點"
+    }
+  ],
   "insert": [
+    {
+      "type": "computed",
+      "token": "FILE_SPACE_REGISTERED_TABLE",
+      "value": "code.func://core/core/space/providers:get_registered_file_spaces_table",
+      "mode": "replace"
+    },
     {
       "type": "uri",
       "token": "HOW_TO_CONFIG_MODULES",

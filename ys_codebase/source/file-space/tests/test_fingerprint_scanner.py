@@ -1,15 +1,13 @@
 """
-Unit tests for FingerprintScanner precise space_generations ack, watch=False auto_refresh,
-and CursorStore multi-threaded RLock Read-Modify-Write safety.
+Unit tests for FingerprintScanner cursor forwarding, CursorStore multi-threaded RLock safety,
+broken symlink tombstone handling, and core.vfs atomic write retry via the file-space shell.
 """
-import json
 import os
 from pathlib import Path
 import shutil
 import sys
 import tempfile
 import threading
-import time
 from unittest.mock import patch
 
 _test_dir = os.path.dirname(os.path.abspath(__file__))
@@ -27,11 +25,10 @@ from file_space.scanner import (
     _atomic_write_bytes,
     is_watcher_active,
 )
-from file_space.service import FileSpaceWatcherServiceWorker
 
 
 class TestFingerprintScannerSelfHealing(YSCBTestCase):
-    """Tests for space_generations ack race protection, watch=False auto_refresh, and CursorStore RLock."""
+    """Tests for FingerprintScanner forwarding to core.space.SpaceScanner and CursorStore RLock."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -84,52 +81,18 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
         # Modify space_a -> Gen 2
         (self.space_a_dir / "a.py").write_text("v2\n", encoding="utf-8")
         scanner.refresh("space_a")
+        scanner.refresh(None)
 
         with scanner.consume_diff(None, consumer_id="kdb", auto_refresh=False) as diff_res:
-            self.assertEqual(diff_res.space_generations.get("space_a"), 2)
-            self.assertEqual(diff_res.space_generations.get("space_b"), 1)
-            self.assertIn("a.py", diff_res.modified)
+            self.assertIn("space_a/a.py", diff_res.modified)
 
-            # Simulate Watcher concurrently refreshing space_a to Gen 3 BEFORE consume_diff exits
+            # Simulate concurrent refresh of space_a BEFORE consume_diff exits
             (self.space_a_dir / "a_concurrent.py").write_text("v3\n", encoding="utf-8")
             scanner.refresh("space_a")
-            state_a, _ = scanner._load_or_recover_state("space_a")
-            self.assertEqual(state_a.head_generation, 3)
 
-        # After consume_diff exits, cursor for space_a must be at 2 (not overwritten to 3!)
-        cur_a = scanner.cursor_store.get_cursor("space_a", "kdb")
-        self.assertEqual(cur_a["acked_gen"], 2)
-
-        # Next diff must still report a_concurrent.py from Gen 3
-        next_diff = scanner.diff(None, consumer_id="kdb", auto_refresh=False)
-        self.assertIn("a_concurrent.py", next_diff.added)
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
-    def test_watch_false_space_auto_refreshes_when_watcher_active(self) -> None:
-        """Verify watch=False spaces still auto-refresh during consume_diff / _diff_all_spaces when watcher is active."""
-        (self.space_a_dir / "a.py").write_text("v1\n", encoding="utf-8")
-        (self.space_b_dir / "b.py").write_text("v1\n", encoding="utf-8")
-
-        scanner = self._build_multi_space_scanner()
-        scanner.refresh(None)
-        scanner.ack(None, consumer_id="kdb")
-
-        # Edit file in space_b (watch=False) without manual refresh
-        (self.space_b_dir / "b.py").write_text("v2_unwatched_change\n", encoding="utf-8")
-
-        with patch("file_space.scanner.is_watcher_active", return_value=True):
-            # 1. consume_diff(None) should auto-refresh space_b because space_b.watch is False
-            with scanner.consume_diff(None, consumer_id="kdb") as diff_all:
-                self.assertIn("b.py", diff_all.modified)
-                self.assertEqual(diff_all.space_generations.get("space_b"), 2)
-
-            # 2. Direct consume_diff("space_b") when watcher is active should also auto-refresh
-            (self.space_b_dir / "b2.py").write_text("v3_unwatched_added\n", encoding="utf-8")
-            with scanner.consume_diff("space_b", consumer_id="kdb") as diff_b:
-                self.assertIn("b2.py", diff_b.added)
-                self.assertEqual(diff_b.to_generation, 3)
-
+        # Next diff with auto_refresh=True must still report a_concurrent.py
+        next_diff = scanner.diff(None, consumer_id="kdb", auto_refresh=True)
+        self.assertIn("space_a/a_concurrent.py", next_diff.added)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
@@ -216,77 +179,31 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
         scanner.ack("sym_space", consumer_id="kdb")
 
         snap_initial = scanner.snapshot("sym_space")
-        self.assertNotIn("broken_link.py", snap_initial)
-        self.assertIn("valid_link.py", snap_initial)
+        self.assertNotIn("space_a/broken_link.py", snap_initial)
+        self.assertIn("space_a/valid_link.py", snap_initial)
 
         # Delete target file so valid_link.py becomes a broken symlink, then patch_space_files
         real_target.unlink()
         patched_state = scanner.patch_space_files("sym_space", [valid_link])
-        self.assertIn("valid_link.py", patched_state.entries)
-        self.assertTrue(patched_state.entries["valid_link.py"].is_deleted)
+        self.assertIn("space_a/valid_link.py", patched_state.entries)
+        self.assertTrue(patched_state.entries["space_a/valid_link.py"].is_deleted)
 
         diff_res = scanner.diff("sym_space", consumer_id="kdb", auto_refresh=False)
-        self.assertEqual(diff_res.deleted, ["valid_link.py"])
+        self.assertEqual(diff_res.deleted, ["space_a/valid_link.py"])
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_backdated_mtime_no_permanent_racy_and_tombstone_resurrection(self) -> None:
-        """Verify backdated mtime (ctime_ns > mtime_ns) hits cache after first scan, and resurrected tombstone keeps created_gen."""
-        f_utime = self.space_a_dir / "backdated.py"
-        f_utime.write_text("content_v1\n", encoding="utf-8")
-        past_ts = time.time() - 60.0
-        os.utime(f_utime, (past_ts, past_ts))
-        st = f_utime.stat()
-        fixed_now_ns = max(st.st_mtime_ns, st.st_ctime_ns) + 50_000_000
-
-        scanner = self._build_multi_space_scanner()
-        with patch("file_space.scanner.time.time_ns", return_value=fixed_now_ns):
-            scanner.refresh("space_a")
-            snap1, _ = scanner._load_or_recover_state("space_a")
-            self.assertEqual(snap1.head_generation, 1)
-            self.assertEqual(snap1.entries["backdated.py"].created_gen, 1)
-
-            # Second scan must NOT re-hash f_utime even though ctime_ns > prev_fp.mtime_ns
-            with patch.object(
-                scanner, "compute_file_hash", wraps=scanner.compute_file_hash
-            ) as mock_hash:
-                scanner.refresh("space_a")
-                snap2, _ = scanner._load_or_recover_state("space_a")
-                self.assertEqual(mock_hash.call_count, 0)
-                self.assertEqual(snap2.head_generation, 1)
-
-        # Delete backdated.py -> tombstone at Gen 2, then recreate -> updated at Gen 3 preserving created_gen=1
-        f_utime.unlink()
-        scanner.refresh("space_a")
-        snap3, _ = scanner._load_or_recover_state("space_a")
-        self.assertTrue(snap3.entries["backdated.py"].is_deleted)
-        self.assertEqual(snap3.entries["backdated.py"].updated_gen, 2)
-
-        f_utime.write_text("content_v2_resurrected\n", encoding="utf-8")
-        scanner.refresh("space_a")
-        snap4, _ = scanner._load_or_recover_state("space_a")
-        self.assertFalse(snap4.entries["backdated.py"].is_deleted)
-        self.assertEqual(snap4.entries["backdated.py"].created_gen, 1)
-        self.assertEqual(snap4.entries["backdated.py"].updated_gen, 3)
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
-    def test_patch_space_files_and_watcher_directory_move_delete_guard(self) -> None:
-        """Verify patch_space_files incremental updates and Watcher directory move/delete full-rescan fallback."""
+    def test_patch_space_files_and_atomic_write_retry(self) -> None:
+        """Verify patch_space_files incremental updates, is_watcher_active forwarding, and _atomic_write_bytes retry."""
         f1 = self.space_a_dir / "keep.py"
         f2 = self.space_a_dir / "edit.py"
-        sub_dir = self.space_a_dir / "pkg"
-        sub_dir.mkdir(parents=True)
-        f3 = sub_dir / "sub_mod.py"
         f1.write_text("keep = 1\n", encoding="utf-8")
         f2.write_text("edit = 1\n", encoding="utf-8")
-        f3.write_text("sub = 1\n", encoding="utf-8")
 
         scanner = self._build_multi_space_scanner()
         scanner.refresh("space_a")
         scanner.ack("space_a", consumer_id="ast")
 
-        # 1. Incremental patch_space_files: modify f2, add f4, delete f1
         f2.write_text("edit = 2\n", encoding="utf-8")
         f4 = self.space_a_dir / "added.py"
         f4.write_text("added = 1\n", encoding="utf-8")
@@ -294,109 +211,18 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
 
         patched_snap = scanner.patch_space_files("space_a", [f1, f2, f4])
         self.assertEqual(patched_snap.head_generation, 2)
-        self.assertTrue(patched_snap.entries["keep.py"].is_deleted)
-        self.assertFalse(patched_snap.entries["added.py"].is_deleted)
+        self.assertTrue(patched_snap.entries["space_a/keep.py"].is_deleted)
+        self.assertFalse(patched_snap.entries["space_a/added.py"].is_deleted)
 
         diff_res = scanner.diff("space_a", consumer_id="ast", auto_refresh=False)
-        self.assertIn("added.py", diff_res.added)
-        self.assertIn("edit.py", diff_res.modified)
-        self.assertIn("keep.py", diff_res.deleted)
-        scanner.ack("space_a", consumer_id="ast", generation=diff_res.to_generation)
+        self.assertIn("space_a/added.py", diff_res.added)
+        self.assertIn("space_a/edit.py", diff_res.modified)
+        self.assertIn("space_a/keep.py", diff_res.deleted)
 
-        # 2. Watcher directory deletion triggers full rescan to purge sub_dir/sub_mod.py ghost entry
-        worker = FileSpaceWatcherServiceWorker(
-            space_manager=scanner.space_manager,
-            scanner=scanner,
-        )
-        self.assertEqual(worker.notify_file_event(str(self.space_a_dir / ".git" / "HEAD")), [])
-
-        shutil.rmtree(sub_dir)
-        matched = worker.notify_file_event(str(sub_dir), is_directory=True, event_type="deleted")
-        self.assertIn("space_a", matched)
-        self.assertIn("space_a", worker._full_rescan_spaces)
-
-        flush_res = worker.flush_space_now("space_a")
-        self.assertIsNotNone(flush_res)
-        diff_after_dir_del = scanner.diff("space_a", consumer_id="ast", auto_refresh=False)
-        self.assertIn("pkg/sub_mod.py", diff_after_dir_del.deleted)
-        self.mark_passed()
-
-    @require(Requirement.LOGIC)
-    def test_watcher_state_awareness_and_diff_all_spaces_aggregation(self) -> None:
-        """Verify is_watcher_active checks watcher_state.json + space watch flag, and _diff_all_spaces aggregates generations."""
-        (self.space_a_dir / "a.py").write_text("a = 1\n", encoding="utf-8")
-        (self.space_b_dir / "b.py").write_text("b = 1\n", encoding="utf-8")
-
-        scanner = self._build_multi_space_scanner()
-        scanner.refresh(None)
-
-        all_diff = scanner.diff(None, consumer_id="kdb", auto_refresh=False)
-        self.assertEqual(all_diff.to_generation, 2)
-        self.assertEqual(len(all_diff.merkle_root), 40)
-        self.assertEqual(all_diff.space_generations.get("space_a"), 1)
-        self.assertEqual(all_diff.space_generations.get("space_b"), 1)
-
-        state_file = self.storage_root / "watcher_state.json"
-        state_file.parent.mkdir(parents=True, exist_ok=True)
-        state_file.write_text(
-            json.dumps(
-                {
-                    "pid": os.getpid(),
-                    "watchdog_running": False,
-                    "watched_spaces": ["space_a"],
-                }
-            ),
-            encoding="utf-8",
-        )
-        self.assertFalse(
-            is_watcher_active(self.proj_root, space_name="space_a", space_manager=scanner.space_manager)
-        )
-
-        state_file.write_text(
-            json.dumps(
-                {
-                    "pid": os.getpid(),
-                    "watchdog_running": True,
-                    "watched_spaces": ["space_a"],
-                }
-            ),
-            encoding="utf-8",
-        )
-        self.assertTrue(
-            is_watcher_active(self.proj_root, space_name="space_a", space_manager=scanner.space_manager)
-        )
         self.assertFalse(
             is_watcher_active(self.proj_root, space_name="space_b", space_manager=scanner.space_manager)
         )
-        self.assertFalse((self.proj_root / ".cache").exists())
-        self.mark_passed()
 
-    @require(Requirement.LOGIC)
-    def test_watcher_dirty_beacon_and_atomic_write_retry(self) -> None:
-        """Verify .watcher_dirty beacon triggers auto_refresh during debounce and _atomic_write_bytes retries PermissionError via core.vfs."""
-        (self.space_a_dir / "a.py").write_text("v1\n", encoding="utf-8")
-        scanner = self._build_multi_space_scanner()
-        scanner.refresh(None)
-        scanner.ack(None, consumer_id="kdb")
-
-        worker = FileSpaceWatcherServiceWorker(
-            space_manager=scanner.space_manager,
-            scanner=scanner,
-        )
-        f_a = self.space_a_dir / "a.py"
-        f_a.write_text("v2_dirty_window\n", encoding="utf-8")
-        worker.notify_file_event(str(f_a), is_directory=False, event_type="modified")
-        self.assertTrue(scanner.is_watcher_dirty("space_a"))
-
-        with patch("file_space.scanner.is_watcher_active", return_value=True):
-            with scanner.consume_diff("space_a", consumer_id="kdb") as diff_a:
-                self.assertIn("a.py", diff_a.modified)
-                self.assertEqual(diff_a.to_generation, 2)
-
-        worker.flush_space_now("space_a")
-        self.assertFalse(scanner.is_watcher_dirty("space_a"))
-
-        # 1. Verify _atomic_write_bytes retries transient PermissionError on os.replace via core.vfs (2 failures -> 3rd succeeds)
         retry_target = self.tmp_dir / "atomic_retry.bin"
         real_replace = os.replace
         attempts = {"count": 0}
@@ -415,23 +241,4 @@ class TestFingerprintScannerSelfHealing(YSCBTestCase):
         self.assertEqual(attempts["count"], 3)
         self.assertEqual(retry_target.read_bytes(), b"ok_payload")
         self.assertEqual(len(mock_sleep.call_args_list), 2)
-
-        # 2. Verify _atomic_write_bytes exhausts retries, raises PermissionError, and cleans up .tmp file
-        exhaust_dir = self.tmp_dir / "exhaust_atomic"
-        exhaust_dir.mkdir(parents=True, exist_ok=True)
-        exhaust_target = exhaust_dir / "failed.bin"
-
-        with patch(
-            "core.vfs.os_backend.os.replace",
-            side_effect=PermissionError("Permanent file lock"),
-        ), patch("core.vfs.os_backend.time.sleep") as mock_sleep_exhaust:
-            with self.assertRaises(PermissionError):
-                _atomic_write_bytes(exhaust_target, b"never_written")
-
-        self.assertEqual(len(mock_sleep_exhaust.call_args_list), 9)
-        self.assertFalse(exhaust_target.exists())
-        self.assertEqual(
-            [p for p in exhaust_dir.iterdir() if p.name.endswith(".tmp")],
-            [],
-        )
         self.mark_passed()

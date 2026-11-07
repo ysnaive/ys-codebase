@@ -17,4 +17,4 @@
 | 目標模組 | 宣告檔案 | 貢獻內容摘要 |
 | :--- | :--- | :--- |
 | **`core`** | `contributes/core.json` | 註冊 `ast.storage://` 與 `ast.cache://` URI Scheme；發布 `on_ast_index_updated` 域事件；掛載 `ast` CLI 命令群（`outline`, `callers`, `callees`, `impact`, `status`, `clean`）。 |
-| **`file-space`** | `contributes/file-space.json` | 對齊工作空間檔案類型與 `ast` 增量游標消費契約。 |
+| **`agents-workflow`** | `contributes/agents-workflow.json` | 貢獻 `ast` 設定體檢片段 (`config_guide`) 供 `/how-to-config-yscb` 聚合檢索。 |

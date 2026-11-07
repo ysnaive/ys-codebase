@@ -1,34 +1,53 @@
 """
-Public SDK entry point for the file-space module.
+Deprecated facade entry point for the file-space module.
+All operations delegate 100% to `core.space`.
+Please update `core` to `>=1.2.7.5` and run `python yscb.py remove file-space`.
 """
 from contextlib import contextmanager
 from pathlib import Path
 import threading
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
-from .exceptions import (
-    FingerprintCorruptedError,
-    InvalidFileSpaceConfigError,
-    FileSpaceError,
-    FileSpaceNotFoundError,
-)
-from .manager import DEFAULT_EXCLUDES, DEFAULT_FILE_PATTERNS, FileSpaceManager
-from .scanner import (
+from core.space import (
     BinarySnapshotManager,
+    CompiledRuleSet,
     CursorStore,
-    FingerprintScanner,
-    SnapshotState,
-    compute_merkle_root,
-)
-from .schema import (
     FileFingerprint,
+    FileHashEntry,
+    GitignoreEvaluator,
     HashPolicy,
+    MatchExplainResult,
+    PresetConfig,
+    RuleItem,
     ScanDiffDetail,
     ScanDiffResult,
-    FileSpaceConfig,
-    FileSpaceOrigin,
+    SnapshotState,
+    SpaceConfig,
+    SpaceCycleError,
+    SpaceError,
+    SpaceFileEntry,
+    SpaceHashResult,
+    SpaceMatchDetail,
+    SpaceNotFoundError,
+    SpaceRegistry,
+    SpaceScanner,
+    get_knowledge_db_spaces,
+    get_registered_file_spaces_table,
+    is_watcher_active,
+    reset_default_instances,
 )
+from .exceptions import (
+    FileSpaceError,
+    FileSpaceNotFoundError,
+    FingerprintCorruptedError,
+    InvalidFileSpaceConfigError,
+)
+from .manager import DEFAULT_EXCLUDES, DEFAULT_FILE_PATTERNS, FileSpaceManager
+from .scanner import FingerprintScanner, compute_merkle_root
+from .schema import FileSpaceConfig, FileSpaceOrigin
 from .service import FileSpaceWatcherServiceWorker, clear_subscribers, subscribe
+
+__version__ = "1.0.1.5"
 
 _SINGLETON_LOCK = threading.RLock()
 _DEFAULT_MANAGER: Optional[FileSpaceManager] = None
@@ -50,9 +69,7 @@ def configure_default_file_space(
     spaces_config: Optional[Dict[str, Dict[str, Any]]] = None,
     contributed_spaces: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Tuple[FileSpaceManager, FingerprintScanner]:
-    """
-    Configure or reset the default module-level FileSpaceManager and FingerprintScanner singletons.
-    """
+    """Configure or reset the default FileSpaceManager and FingerprintScanner forwarding instances."""
     global _DEFAULT_MANAGER, _DEFAULT_SCANNER
     with _SINGLETON_LOCK:
         _DEFAULT_MANAGER = FileSpaceManager(
@@ -68,11 +85,8 @@ def configure_default_file_space(
         return _DEFAULT_MANAGER, _DEFAULT_SCANNER
 
 
-# ----------------------------------------------------------------------
-# ISpaceRegistry Top-Level Facade
-# ----------------------------------------------------------------------
 def list_spaces() -> List[str]:
-    """Return all registered workspace names."""
+    """Return registered workspace short names."""
     return _get_default_scanner().space_manager.list_spaces()
 
 
@@ -82,12 +96,10 @@ def get_space(name: str) -> FileSpaceConfig:
 
 
 def define_ephemeral_space(
-    name: str, config: Union[FileSpaceConfig, Dict[str, Any]]
+    name: str, config: Union[FileSpaceConfig, SpaceConfig, Dict[str, Any]]
 ) -> FileSpaceConfig:
-    """Register an ephemeral in-memory workspace on the default FileSpaceManager."""
-    return _get_default_scanner().space_manager.define_ephemeral_space(
-        name, config
-    )
+    """Register an ephemeral in-memory workspace."""
+    return _get_default_scanner().space_manager.define_ephemeral_space(name, config)
 
 
 def resolve_file_path(
@@ -102,15 +114,12 @@ def resolve_file_path(
 def iter_space_files(
     space_name: Optional[str] = None,
 ) -> Iterator[Tuple[str, Path, Path]]:
-    """Iterate over (rel_path, abs_path, source_root) across one or all workspaces."""
+    """Iterate over (rel_path, abs_path, entry_path) across one or all workspaces."""
     return _get_default_scanner().space_manager.iter_space_files(
         space_name=space_name
     )
 
 
-# ----------------------------------------------------------------------
-# ISnapshotProvider Top-Level Facade
-# ----------------------------------------------------------------------
 def refresh(
     space_name: Optional[str] = None,
     *,
@@ -123,10 +132,19 @@ def refresh(
     )
 
 
+def scan(
+    space_name: Optional[str] = None,
+    *,
+    force: bool = False,
+) -> ScanDiffResult:
+    """Alias for refresh(space_name, force=force)."""
+    return _get_default_scanner().scan(space_name=space_name, force=force)
+
+
 def snapshot(
     space_name: Optional[str] = None, *, refresh_first: bool = False
 ) -> Dict[str, FileFingerprint]:
-    """Return active FileFingerprint map for the specified workspace (or all workspaces)."""
+    """Return active FileFingerprint map for the specified workspace."""
     return _get_default_scanner().snapshot(
         space_name=space_name, refresh_first=refresh_first
     )
@@ -135,15 +153,12 @@ def snapshot(
 def merkle_root(
     space_name: Optional[str] = None, *, refresh_first: bool = False
 ) -> str:
-    """Return the Merkle root hex digest for the specified workspace (or all workspaces)."""
+    """Return the Merkle root hex digest for the specified workspace."""
     return _get_default_scanner().merkle_root(
         space_name=space_name, refresh_first=refresh_first
     )
 
 
-# ----------------------------------------------------------------------
-# IChangeCursor Top-Level Facade
-# ----------------------------------------------------------------------
 def diff(
     space_name: Optional[str] = None,
     consumer_id: str = "default",
@@ -164,7 +179,7 @@ def ack(
     generation: Optional[int] = None,
     space_generations: Optional[Dict[str, int]] = None,
 ) -> int:
-    """確認消費者已處理完畢，推進游標世代號。"""
+    """Advance a consumer's watermark cursor."""
     return _get_default_scanner().ack(
         space_name=space_name,
         consumer_id=consumer_id,
@@ -190,10 +205,7 @@ def consume_diff(
     *,
     auto_refresh: Optional[bool] = None,
 ) -> Iterator[ScanDiffResult]:
-    """
-    Transactional context manager that yields ScanDiffResult for a consumer
-    and automatically calls ack() on normal exit, or preserves the cursor on exception.
-    """
+    """Transactional context manager that yields ScanDiffResult and acknowledges on normal exit."""
     with _get_default_scanner().consume_diff(
         space_name=space_name,
         consumer_id=consumer_id,
@@ -204,23 +216,38 @@ def consume_diff(
 
 __all__ = [
     "BinarySnapshotManager",
+    "CompiledRuleSet",
     "CursorStore",
     "DEFAULT_EXCLUDES",
     "DEFAULT_FILE_PATTERNS",
     "FileFingerprint",
-    "FingerprintCorruptedError",
-    "FingerprintScanner",
-    "HashPolicy",
-    "InvalidFileSpaceConfigError",
-    "ScanDiffDetail",
-    "ScanDiffResult",
-    "SnapshotState",
+    "FileHashEntry",
     "FileSpaceConfig",
     "FileSpaceError",
     "FileSpaceManager",
     "FileSpaceNotFoundError",
     "FileSpaceOrigin",
     "FileSpaceWatcherServiceWorker",
+    "FingerprintCorruptedError",
+    "FingerprintScanner",
+    "GitignoreEvaluator",
+    "HashPolicy",
+    "InvalidFileSpaceConfigError",
+    "MatchExplainResult",
+    "PresetConfig",
+    "RuleItem",
+    "ScanDiffDetail",
+    "ScanDiffResult",
+    "SnapshotState",
+    "SpaceConfig",
+    "SpaceCycleError",
+    "SpaceError",
+    "SpaceFileEntry",
+    "SpaceHashResult",
+    "SpaceMatchDetail",
+    "SpaceNotFoundError",
+    "SpaceRegistry",
+    "SpaceScanner",
     "ack",
     "clear_subscribers",
     "compute_merkle_root",
@@ -228,13 +255,18 @@ __all__ = [
     "consume_diff",
     "define_ephemeral_space",
     "diff",
+    "get_knowledge_db_spaces",
+    "get_registered_file_spaces_table",
     "get_space",
+    "is_watcher_active",
     "iter_space_files",
     "list_spaces",
     "merkle_root",
     "refresh",
     "reset_cursor",
+    "reset_default_instances",
     "resolve_file_path",
+    "scan",
     "snapshot",
     "subscribe",
 ]

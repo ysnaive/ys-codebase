@@ -16,7 +16,7 @@ description: 於本地端透過 `yscb gdrive` (`module:gdrive-support`) 操作 G
 | 區域 | 雲端相對路徑 | 本地同步行為 | 允許之 CLI 指令 |
 | :--- | :--- | :--- | :--- |
 | **① 純雲端自由儲存區 (Pure Cloud Storage)** | `<root_folder_id>/**/*`（**不含 `<repo_sync_root>/`**） | **絕不拉到本地自動同步**；平時不占本地硬碟與 Git 版控空間，按需單點讀寫 | 原子指令：`ls`, `get`, `put`, `rm`, `mkdir`, `shortcut`（**無論 `repo_sync.enable` 為 true 或 false 皆可隨時使用**） |
-| **② 受控分支同步倉 (`<repo_sync_root>/`，預設 `repo/`)** | `<root_folder_id>/<repo_sync_root>/`（含 `.yscb_gdrive.json`、`main/`、`<branch>/`、`.history/`、`.trash/`） | 僅在 `repo_sync.enable: true` 時與本地 `file-space` 受管空間進行三方對帳雙向同步 | 倉庫與同步指令：`init`, `branch`, `checkout`, `pull`, `push`, `sync`（**當 `repo_sync.enable: false` 時一律拒絕執行**） |
+| **② 受控分支同步倉 (`<repo_sync_root>/`，預設 `repo/`)** | `<root_folder_id>/<repo_sync_root>/`（含 `.yscb_gdrive.json`、`main/`、`<branch>/`、`.history/`、`.trash/`） | 僅在 `repo_sync.enable: true` 時與本地 `core.space` 受管空間進行三方對帳雙向同步 | 倉庫與同步指令：`init`, `branch`, `checkout`, `pull`, `push`, `sync`（**當 `repo_sync.enable: false` 時一律拒絕執行**） |
 
 > [!IMPORTANT]
 > **操作鐵律**：

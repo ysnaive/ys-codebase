@@ -38,8 +38,15 @@ def _migrate_dir_contents(src_dir: str, dst_dir: str) -> None:
 def migrate(context: Dict[str, Any]) -> bool:
     """
     Idempotently migrates non-lock files from `<yscb_dir>/.cache/knowledge-db/{models,indices,bundles}`
-    into `<storage_local_dir>/{models,indices,bundles}`.
+    into `<storage_local_dir>/{models,indices,bundles}` and resets consumer cursors.
     """
+    try:
+        from core.space import reset_cursor
+
+        reset_cursor(None, consumer_id="knowledge-db")
+    except Exception:
+        pass
+
     yscb_dir = context.get("yscb_dir")
     if not yscb_dir:
         try:

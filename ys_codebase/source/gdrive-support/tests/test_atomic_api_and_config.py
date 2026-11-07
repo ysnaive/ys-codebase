@@ -169,7 +169,7 @@ class TestGDriveAtomicApiAndConfig(YSCBTestCase):
         self.assertEqual(len(cfg.sync_spaces), 2)
         docs_spec, src_spec = cfg.sync_spaces[0], cfg.sync_spaces[1]
 
-        # Simulate FileSpaceManager returning inc_root-relative "README.md" for single-root "docs"
+        # Simulate SpaceRegistry returning SpaceFileEntry or tuple for single-root "docs"
         fake_mgr = _FakeFileSpaceManager(
             {
                 "docs": [("README.md", readme_f, docs_dir)],

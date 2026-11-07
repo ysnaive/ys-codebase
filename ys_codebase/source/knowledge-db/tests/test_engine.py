@@ -15,9 +15,9 @@ _pkg_root = os.path.dirname(_test_dir)
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 
+from core.space import SpaceConfig, SpaceNotFoundError
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from file_space import FileSpaceConfig, FileSpaceNotFoundError
 from knowledge_db.engine import KnowledgeEngine
 from knowledge_db.retrieval import SearchResult
 from tests import write_text_and_advance_mtime
@@ -43,11 +43,16 @@ class TestEngine(YSCBTestCase):
                 encoding="utf-8",
             )
 
-            space_cfg = FileSpaceConfig(name="demo_space", include=[str(src_dir)])
+            space_cfg = SpaceConfig(
+                qualified_name="project/demo_space",
+                owner="project",
+                short_name="demo_space",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
                 contributes_data={
-                    "spaces": {"demo_space": space_cfg.to_dict()},
+                    "spaces": {"demo_space": space_cfg},
                 },
             )
 
@@ -91,10 +96,15 @@ class TestEngine(YSCBTestCase):
             src_dir.mkdir(parents=True)
             (src_dir / "motor.py").write_text("class MotorGroup: pass", encoding="utf-8")
 
-            space_cfg = FileSpaceConfig(name="motor_space", include=[str(src_dir)])
+            space_cfg = SpaceConfig(
+                qualified_name="project/motor_space",
+                owner="project",
+                short_name="motor_space",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 storage_dir=temp_path / "storage",
-                contributes_data={"spaces": {"motor_space": space_cfg.to_dict()}},
+                contributes_data={"spaces": {"motor_space": space_cfg}},
             )
 
             results = engine.search("MotorGroup", space="motor_space")
@@ -105,10 +115,10 @@ class TestEngine(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_non_existent_space_error(self):
-        """驗證操作不存在空間拋出 FileSpaceNotFoundError"""
+        """驗證操作不存在空間拋出 SpaceNotFoundError"""
         with tempfile.TemporaryDirectory() as temp_dir:
             engine = KnowledgeEngine(storage_dir=temp_dir)
-            with self.assertRaises(FileSpaceNotFoundError):
+            with self.assertRaises(SpaceNotFoundError):
                 engine.status(space="non_existent_12345")
 
         self.mark_passed()
@@ -238,10 +248,15 @@ class TestEngine(YSCBTestCase):
                     "\n".join(lines) + "\n", encoding="utf-8"
                 )
 
-            space_cfg = FileSpaceConfig(name="test_space", include=[str(src_dir)])
+            space_cfg = SpaceConfig(
+                qualified_name="project/test_space",
+                owner="project",
+                short_name="test_space",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 storage_dir=temp_path / "storage",
-                contributes_data={"spaces": {"test_space": space_cfg.to_dict()}},
+                contributes_data={"spaces": {"test_space": space_cfg}},
             )
 
             results = engine.search(
@@ -437,10 +452,15 @@ class TestEngine(YSCBTestCase):
                 encoding="utf-8",
             )
 
-            space_cfg = FileSpaceConfig(name="pipe_space", include=[str(src_dir)])
+            space_cfg = SpaceConfig(
+                qualified_name="project/pipe_space",
+                owner="project",
+                short_name="pipe_space",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 storage_dir=temp_path / "storage",
-                contributes_data={"spaces": {"pipe_space": space_cfg.to_dict()}},
+                contributes_data={"spaces": {"pipe_space": space_cfg}},
             )
 
             self.assertIsInstance(engine.pipeline, IndexingPipeline)
@@ -536,10 +556,15 @@ class TestEngine(YSCBTestCase):
                 "def alpha():\n    beta()\n\ndef beta():\n    return 1\n",
                 encoding="utf-8",
             )
-            sp = FileSpaceConfig(name="main_sp", include=[str(src_dir)])
+            sp = SpaceConfig(
+                qualified_name="project/main_sp",
+                owner="project",
+                short_name="main_sp",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 storage_dir=storage_dir,
-                contributes_data={"spaces": {"main_sp": sp.to_dict()}},
+                contributes_data={"spaces": {"main_sp": sp}},
                 embedding_mock_mode=True,
             )
             engine.build_unified_index(force=True)
@@ -588,10 +613,15 @@ class TestEngine(YSCBTestCase):
                     encoding="utf-8",
                 )
 
-            space_cfg = FileSpaceConfig(name="opt_space", include=[str(src_dir)])
+            space_cfg = SpaceConfig(
+                qualified_name="project/opt_space",
+                owner="project",
+                short_name="opt_space",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 storage_dir=temp_path / "storage",
-                contributes_data={"spaces": {"opt_space": space_cfg.to_dict()}},
+                contributes_data={"spaces": {"opt_space": space_cfg}},
             )
 
             # 建置索引並確認 unified.meta.json 生成
@@ -642,12 +672,8 @@ class TestEngine(YSCBTestCase):
 
             contributes = {
                 "spaces": {
-                    "sp_a": FileSpaceConfig(
-                        name="sp_a", include=[str(sp_a_dir)]
-                    ).to_dict(),
-                    "sp_b": FileSpaceConfig(
-                        name="sp_b", include=[str(sp_b_dir)]
-                    ).to_dict(),
+                    "sp_a": {"entries": [str(sp_a_dir)]},
+                    "sp_b": {"entries": [str(sp_b_dir)]},
                 }
             }
             storage_dir = temp_path / "storage"
@@ -703,11 +729,16 @@ class TestEngine(YSCBTestCase):
                 "def initial_func():\n    return 0\n", encoding="utf-8"
             )
 
-            sp = FileSpaceConfig(name="main", include=[str(src_dir)])
+            sp = SpaceConfig(
+                qualified_name="project/main",
+                owner="project",
+                short_name="main",
+                entries=(str(src_dir),),
+            )
             engine = KnowledgeEngine(
                 project_root=temp_path,
                 storage_dir=storage_dir,
-                contributes_data={"spaces": {"main": sp.to_dict()}},
+                contributes_data={"spaces": {"main": sp}},
                 embedding_mock_mode=True,
             )
             engine.build_unified_index(force=True)

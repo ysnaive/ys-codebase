@@ -1,7 +1,7 @@
 """
 Subsystem tests for GrammarProvisioner stderr isolation & negative cache (`ast_engine.provisioner`),
 ASTEngine JIT incremental hot-patching (`ast_engine.engine`), CLI commands (`scripts/cli.py`),
-and lifecycle hooks (`scripts/hook.file-space.py`, `scripts/hook.dev.py`, `scripts/migrations/1.0.1.x.py`).
+and lifecycle hooks (`scripts/hook.core.py`, `scripts/hook.dev.py`, `scripts/migrations/1.0.1.x.py`).
 """
 
 import io
@@ -176,8 +176,8 @@ class TestProvisionerAndJit(ASTTestCase):
 
     @require(Requirement.LOGIC)
     def test_file_space_hook_lifecycle_and_generation_fallback(self) -> None:
-        """Verify scripts/hook.file-space.py handles cloud ignore, persisted generation fallback, rebuilt/patched/noop paths, and broadcast."""
-        hook_mod = load_ast_script("scripts/hook.file-space.py", "ast_hook_file_space")
+        """Verify scripts/hook.core.py handles cloud ignore, persisted generation fallback, rebuilt/patched/noop paths, and broadcast."""
+        hook_mod = load_ast_script("scripts/hook.core.py", "ast_hook_core")
 
         res_empty = hook_mod.on_file_space_changed(diff_detail={})
         self.assertEqual(res_empty.get("status"), "skipped")

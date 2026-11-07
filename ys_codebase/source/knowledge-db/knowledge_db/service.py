@@ -3,7 +3,7 @@ KnowledgeDBServiceWorker: Background two-stage incremental indexing,
 automatic vector model download, micro-batched vector self-healing,
 and elapsed busy millisecond probe (`is_worker_busy() -> int`).
 
-File system monitoring (`watchdog`) is delegated 100% to `module:file-space` (`file-space-watcher`).
+File system monitoring (`watchdog`) is delegated 100% to `core.space` (`space-watcher`).
 """
 
 import json
@@ -286,7 +286,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
         return self._engine
 
     def notify_space_changed(self) -> None:
-        """Non-blocking O(1) wakeup signal when `file-space-watcher` broadcasts `on_file_space_changed`."""
+        """Non-blocking O(1) wakeup signal when `space-watcher` broadcasts `on_file_space_changed`."""
         self._wake_event.set()
 
     def start(self, context: Optional[Dict[str, Any]] = None) -> None:

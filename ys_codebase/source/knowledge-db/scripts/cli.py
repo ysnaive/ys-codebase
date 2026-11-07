@@ -9,11 +9,11 @@ from typing import Any, Callable, Dict, List, Tuple, Union
 
 from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
+from core.space import SpaceNotFoundError
 import knowledge_db.config as kdb_config
 from knowledge_db.engine import KnowledgeEngine, get_engine
 from knowledge_db.exceptions import KnowledgeDBError
 from knowledge_db.formatter import TerminalStyler
-from file_space import FileSpaceNotFoundError
 
 
 def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
@@ -75,7 +75,7 @@ def _prepare_command(cmd_bags: Any, default_cmd: str) -> Tuple[CmdBags, Knowledg
 
 def _handle_cli_exception(exc: Exception, action_label: str = "操作失敗") -> int:
     """統一格式化 CLI 例外錯誤並輸出至 stderr。"""
-    if isinstance(exc, FileSpaceNotFoundError):
+    if isinstance(exc, SpaceNotFoundError):
         print(f"[knowledge-db] 空間不存在: {exc}", file=sys.stderr)
     elif isinstance(exc, KnowledgeDBError):
         print(f"[knowledge-db] {action_label}: {exc}", file=sys.stderr)

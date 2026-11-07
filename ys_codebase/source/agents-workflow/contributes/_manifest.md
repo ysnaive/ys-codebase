@@ -4,8 +4,9 @@
 
 ## 1. 外部注入清冊 (Egress Contributions)
 
-### 1.1 `core.json`（微內核指令與 URI 擴充）
+### 1.1 `core.json`（微內核指令、URI 與邏輯空間擴充）
 - **語意 URI**：`workflow.plans://`（活躍計畫空間）、`workflow.archived://`（封存歷史空間）、`workflow.docs://`（專案文檔空間）、`workflow.roadmap://`（路線圖空間）。
+- **邏輯檔案空間 (`spaces`)**：向 `core.space` 註冊 `docs`（`workflow.docs://`）與 `plans`（`workflow.plans://`）工作空間幾何、排除規則與分級雜湊策略。
 - **CLI 指令樹**：
   - `plan status` / `plan search` / `plan check` / `plan verify` / `plan archive`：Dev Plans 計畫生命週期管理工具鏈。
   - `session-trace`：三級漸進式對話軌跡與五大硬性摩擦訊號提取引擎（供 `/session-audit` 調用）。
@@ -17,10 +18,7 @@
 - 導出 20 大領域、工作流與引導教練純 Skill 技能包（`.agents/skills/` 或 `.claude/skills/`），含 `/how-to-config-yscb`、`/how-to-yscb`、`/skill-creator`、`/session-audit`、`/code-optimizer` 與 `/blind-subagent`。
 - 導出 16 個標準計畫模板（P00~P07、Fast Track、Umbrella、Roadmap、Todo、Changelog 等）與 6 大核心標準規範（`AgentsStandards`、`CodeQualityStandards`、`SkillDesignStandards`、`YscbSkillDesignToolStandards`、`SubagentStandards`、`BlindSubagentStandards`，含 `PROJECT_ROLE_AND_BOUNDARIES`、`SESSION_AUDIT_STANDARDS` 與 `CODE_OPTIMIZER_STANDARDS` 錨點）。
 
-### 1.3 `file-space.json`（工作空間幾何註冊）
-- 向 `file-space` 模組註冊 `docs`（`workflow.docs://`）與 `plans`（`workflow.plans://`）工作空間幾何、排除規則與分級雜湊策略。
-
-### 1.4 `knowledge-db.json`（知識庫檢索空間權重）
+### 1.3 `knowledge-db.json`（知識庫檢索空間權重）
 - 向 `knowledge-db` 模組注入 `docs` 與 `plans` 邏輯空間之檢索加權係數（`space_weights`）。
 
 ## 2. 開放擴充點清冊 (Ingress Points)

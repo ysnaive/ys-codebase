@@ -240,7 +240,7 @@ def _discover_remote_modules(engine: AtomicEngine, provider_url: str, installed:
     if not available_modules:
         candidate_mods = set(
             list(installed.keys())
-            + ["core", "dev", "server", "file-space", "ast", "knowledge-db", "agents-workflow"]
+            + ["core", "dev", "server", "ast", "knowledge-db", "agents-workflow"]
         )
         for m in sorted(candidate_mods):
             ok, res = engine.act_fetch(provider_url, f"{m}/index.json")

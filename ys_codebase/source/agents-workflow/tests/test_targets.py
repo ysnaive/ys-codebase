@@ -392,12 +392,12 @@ class TestReleaseTargets(YSCBTestCase):
             agents_md_text = all_multi[agents_md_abs]
             self.assertIn(".agents/skills/development-sop/SKILL.md / .cursor/skills/development-sop/SKILL.md", agents_md_text)
 
-            kdb_skill_abs = os.path.normpath(
-                os.path.join(temp_dir, ".agents", "skills", "knowledge-db-search", "SKILL.md")
+            co_skill_abs = os.path.normpath(
+                os.path.join(temp_dir, ".agents", "skills", "code-optimizer", "SKILL.md")
             )
-            self.assertIn(kdb_skill_abs, all_multi)
-            kdb_skill_text = all_multi[kdb_skill_abs]
-            self.assertIn("read_file (StartLine/EndLine) / read_file", kdb_skill_text)
+            self.assertIn(co_skill_abs, all_multi)
+            co_skill_text = all_multi[co_skill_abs]
+            self.assertIn("read_file (StartLine/EndLine) / read_file", co_skill_text)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

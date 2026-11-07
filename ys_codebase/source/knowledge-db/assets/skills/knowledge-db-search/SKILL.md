@@ -43,5 +43,5 @@ description: 透過 knowledge-db search 與 ast (outline/callers/callees/impact)
 
 - **指令路由分流**：全文/語意搜尋位於 `yscb.py knowledge-db search`；單檔大綱與呼叫拓撲 (`outline` / `callers` / `callees` / `impact`) 統一路由至 `yscb.py ast <subcmd>`。
 - **嚴禁讀取因 `-s` 輸出過大而被宿主截斷轉存的暫存檔（如 `output.txt`）**：一旦發生截斷，應立即縮小查詢關鍵字、移除 `-s` 或改用 `ast outline` + 區段讀檔。
-- **JIT 雙水位線熱自癒**：`file-space` $\to$ `ast` $\to$ `knowledge-db` 具備 Pull-Based JIT 自動增量同步，日常修改程式碼後直接查詢即可（0 手動 `index`）。
+- **JIT 雙水位線熱自癒**：`core.space` $\to$ `ast` $\to$ `knowledge-db` 具備 Pull-Based JIT 自動增量同步，日常修改程式碼後直接查詢即可（0 手動 `index`）。
 - **嚴禁繞過 Venv**：一律透過 `python __${project://yscb.py}__` 執行，嚴禁直接呼叫系統裸 `python` 載入模組內部腳本。

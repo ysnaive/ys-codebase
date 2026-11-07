@@ -1,5 +1,5 @@
 """
-Configuration parsing, file-space integration, and path mapping validation for gdrive-support.
+Configuration parsing, core.space integration, and path mapping validation for gdrive-support.
 """
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -84,7 +84,7 @@ class PathMappingRule:
 @dataclass(frozen=True)
 class SyncSpaceSpec:
     """
-    Validated synchronization specification binding a registered file-space and optional mappings.
+    Validated synchronization specification binding a registered core.space and optional mappings.
     """
 
     space: str
@@ -267,12 +267,20 @@ def _load_space_include_roots(
             for k, v in explicit_include_roots.items()
         }
     try:
-        from file_space.manager import FileSpaceManager
+        from core.space import SpaceRegistry, resolve_semantic_or_rel_path
 
-        mgr = FileSpaceManager(project_root=proj_root)
+        reg = SpaceRegistry(project_root=proj_root)
         result: Dict[str, List[Path]] = {}
-        for s_name in mgr.list_spaces():
-            result[s_name] = [p.resolve() for p in mgr.resolve_space_include(s_name)]
+        for s_cfg in reg.list_spaces():
+            roots: List[Path] = []
+            for raw_ent in s_cfg.entries:
+                resolved_p = resolve_semantic_or_rel_path(raw_ent, proj_root)
+                if resolved_p is not None:
+                    roots.append(Path(resolved_p).resolve())
+            if s_cfg.short_name:
+                result[s_cfg.short_name] = roots
+            if s_cfg.qualified_name:
+                result[s_cfg.qualified_name] = roots
         return result
     except Exception:
         return {}
@@ -280,14 +288,17 @@ def _load_space_include_roots(
 
 def _load_space_thresholds_mb(proj_root: Path) -> Dict[str, int]:
     try:
-        from file_space.manager import FileSpaceManager
+        from core.space import SpaceRegistry
 
-        mgr = FileSpaceManager(project_root=proj_root)
+        reg = SpaceRegistry(project_root=proj_root)
         thresholds: Dict[str, int] = {}
-        for s_name in mgr.list_spaces():
-            s_cfg = mgr.get_space(s_name)
+        for s_cfg in reg.list_spaces():
             val = getattr(s_cfg, "large_file_threshold_mb", 10)
-            thresholds[s_name] = int(val) if isinstance(val, (int, float)) and val > 0 else 10
+            thresh = int(val) if isinstance(val, (int, float)) and val > 0 else 10
+            if s_cfg.short_name:
+                thresholds[s_cfg.short_name] = thresh
+            if s_cfg.qualified_name:
+                thresholds[s_cfg.qualified_name] = thresh
         return thresholds
     except Exception:
         return {}
@@ -343,7 +354,7 @@ def parse_sync_spaces(
     space_thresholds_mb: Optional[Dict[str, int]] = None,
 ) -> Tuple[SyncSpaceSpec, ...]:
     """
-    Validate and compile raw sync_spaces declarations against registered file-space include roots.
+    Validate and compile raw sync_spaces declarations against registered core.space include roots.
     """
     thresholds_map = space_thresholds_mb or {}
     specs: List[SyncSpaceSpec] = []
@@ -355,7 +366,7 @@ def parse_sync_spaces(
             raise GDriveConfigError("Each sync_spaces entry must specify a non-empty 'space' name.")
         if space_name not in space_include_roots:
             raise GDriveConfigError(
-                f"Sync space '{space_name}' is not registered in file-space. "
+                f"Sync space '{space_name}' is not registered in core.space. "
                 f"Available spaces: {sorted(space_include_roots.keys())}"
             )
         inc_roots = space_include_roots[space_name]
@@ -382,7 +393,7 @@ def parse_sync_spaces(
                 allowed_str = ", ".join(p.as_posix() for p in inc_roots)
                 raise GDriveConfigError(
                     f"Mapping local path '{local_uri_str}' (resolved to '{target_abs.as_posix()}') "
-                    f"is outside the include roots of file-space '{space_name}' ([{allowed_str}])."
+                    f"is outside the include roots of space '{space_name}' ([{allowed_str}])."
                 )
             try:
                 local_rel = target_abs.relative_to(proj_root).as_posix()
@@ -551,33 +562,42 @@ def collect_space_local_files_with_stat(
     file_space_manager: Optional[Any] = None,
 ) -> Dict[str, Tuple[Path, Optional[int], Optional[int]]]:
     """
-    Enumerate files in the target file-space along with pre-collected (mtime_ns, size) metadata
-    when supported by the file-space manager, avoiding per-file Path.resolve() and redundant stat() calls.
+    Enumerate files in the target space along with pre-collected (mtime_ns, size) metadata
+    when supported by SpaceRegistry or the space manager, avoiding per-file Path.resolve() and redundant stat() calls.
     Returns a dict of {remote_rel_path: (abs_local_path, mtime_ns, size)}.
     """
     proj_root = _resolve_project_root(project_root)
     if file_space_manager is None:
-        from file_space.manager import FileSpaceManager
+        from core.space import SpaceRegistry
 
-        file_space_manager = FileSpaceManager(project_root=proj_root)
+        file_space_manager = SpaceRegistry(project_root=proj_root)
 
     mapped_files: Dict[str, Tuple[Path, Optional[int], Optional[int]]] = {}
+    raw_items: List[Tuple[Path, Optional[int], Optional[int]]] = []
     if hasattr(file_space_manager, "iter_space_files_with_stat"):
-        raw_iter = (
-            (abs_path, int(mtime_ns), int(size))
-            for _rel_p, abs_path, _src_root, mtime_ns, _ctime_ns, size in file_space_manager.iter_space_files_with_stat(
-                spec.space
-            )
-        )
+        for _rel_p, abs_path, _src_root, mtime_ns, _ctime_ns, size in file_space_manager.iter_space_files_with_stat(
+            spec.space
+        ):
+            raw_items.append((Path(abs_path), int(mtime_ns), int(size)))
     else:
-        raw_iter = (
-            (abs_path, None, None)
-            for _rel_p, abs_path, _src_root in file_space_manager.iter_space_files(
-                spec.space
-            )
-        )
+        for item in file_space_manager.iter_space_files(spec.space):
+            if hasattr(item, "abs_path"):
+                m_ns = getattr(item, "mtime_ns", None)
+                sz = getattr(item, "size", None)
+                raw_items.append(
+                    (
+                        item.abs_path if isinstance(item.abs_path, Path) else Path(item.abs_path),
+                        int(m_ns) if m_ns is not None else None,
+                        int(sz) if sz is not None else None,
+                    )
+                )
+            else:
+                _rel_p, abs_path, _src_root = item[0], item[1], item[2]
+                raw_items.append(
+                    (abs_path if isinstance(abs_path, Path) else Path(abs_path), None, None)
+                )
 
-    for abs_path, mtime_ns, size in raw_iter:
+    for abs_path, mtime_ns, size in raw_items:
         local_abs = abs_path if isinstance(abs_path, Path) else Path(abs_path)
         if is_sensitive_credential_path(local_abs, proj_root):
             continue

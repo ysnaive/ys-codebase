@@ -94,8 +94,8 @@ class ScanDiffDetail:
 
     @property
     def dirty_files(self) -> Set[str]:
-        """Return union of added, modified, and deleted relative paths."""
-        return self.added | self.modified | self.deleted
+        """Return union of added and modified relative paths (excluding deleted)."""
+        return self.added | self.modified
 
     @property
     def has_changes(self) -> bool:
@@ -397,14 +397,17 @@ class CursorStore:
         spaces = self.load_consumer(consumer_id)
         rec = spaces.get(space_key)
         if isinstance(rec, dict):
+            acked_val = int(rec.get("acked_generation", rec.get("acked_gen", 0)))
             return {
-                "acked_generation": int(rec.get("acked_generation", 0)),
+                "acked_generation": acked_val,
+                "acked_gen": acked_val,
                 "merkle_root": str(rec.get("merkle_root", "")),
                 "config_hash": str(rec.get("config_hash", "")),
                 "updated_at": float(rec.get("updated_at", 0.0)),
             }
         return {
             "acked_generation": 0,
+            "acked_gen": 0,
             "merkle_root": "",
             "config_hash": "",
             "updated_at": 0.0,
@@ -549,6 +552,8 @@ class SpaceScanner:
     ) -> Path:
         if explicit_lock_dir is not None:
             return Path(os.path.normpath(os.path.abspath(str(explicit_lock_dir))))
+        if self._explicit_storage_root is not None:
+            return self._storage_root / "locks"
         res = resolve_semantic_or_rel_path(
             "cache://core/space/locks",
             self._registry.project_root,
@@ -563,7 +568,7 @@ class SpaceScanner:
             return self.UNIFIED_KEY
         q = str(space_query).strip()
         resolved = self._registry.resolve_spaces(q)
-        if len(resolved) == 1 and resolved[0].is_ephemeral:
+        if len(resolved) == 1:
             return resolved[0].qualified_name
         return q
 
@@ -1385,6 +1390,8 @@ class SpaceScanner:
                     config_hash=sub_state.config_hash,
                     is_ephemeral=sub_ephem,
                 )
+            if target_gen == 0:
+                target_gen = max((int(g) for g in space_generations.values()), default=0)
         return target_gen
 
     def reset_cursor(
@@ -1443,11 +1450,22 @@ class SpaceScanner:
         for s_cfg in target_spaces:
             q_name = s_cfg.qualified_name
             state = self._load_snapshot_state(q_name, is_ephemeral=s_cfg.is_ephemeral)
+            if state.head_generation == 0 and s_cfg.short_name != q_name:
+                short_state = self._load_snapshot_state(
+                    s_cfg.short_name, is_ephemeral=s_cfg.is_ephemeral
+                )
+                if short_state.head_generation > 0:
+                    state = short_state
             active_count = len(state.active_entries())
             snap_file = self._snapshot_path(q_name)
+            short_snap_file = self._snapshot_path(s_cfg.short_name)
             cursors_info: Dict[str, Any] = {}
             for cid in consumers:
                 c_rec = self._get_cursor_record(q_name, cid, is_ephemeral=s_cfg.is_ephemeral)
+                if c_rec.get("acked_generation", 0) == 0 and s_cfg.short_name != q_name:
+                    c_rec = self._get_cursor_record(
+                        s_cfg.short_name, cid, is_ephemeral=s_cfg.is_ephemeral
+                    )
                 if c_rec.get("acked_generation", 0) > 0:
                     cursors_info[cid] = c_rec
 
@@ -1459,9 +1477,9 @@ class SpaceScanner:
                     "config_hash": state.config_hash,
                     "active_file_count": active_count,
                     "snapshot_exists": (
-                        q_name in self._ephemeral_snapshots
+                        (q_name in self._ephemeral_snapshots or s_cfg.short_name in self._ephemeral_snapshots)
                         if s_cfg.is_ephemeral
-                        else snap_file.is_file()
+                        else (snap_file.is_file() or short_snap_file.is_file())
                     ),
                     "cursors": cursors_info,
                 }
@@ -1511,6 +1529,8 @@ class SpaceScanner:
             }
 
         if space_query is not None and str(space_query).strip() not in ("", "*"):
+            # Resolve spaces first so SpaceNotFoundError is raised if space_query is invalid
+            resolved_spaces = self._registry.resolve_spaces(space_query)
             space_key = self._canonical_space_key(space_query)
             self._ephemeral_snapshots.pop(space_key, None)
             snap_p = self._snapshot_path(space_key)
@@ -1521,7 +1541,7 @@ class SpaceScanner:
                 except Exception:
                     pass
             # Also clean resolved qualified spaces if space_query was a short name
-            for s_cfg in self._registry.resolve_spaces(space_query):
+            for s_cfg in resolved_spaces:
                 self._ephemeral_snapshots.pop(s_cfg.qualified_name, None)
                 sp = self._snapshot_path(s_cfg.qualified_name)
                 if sp.is_file():
@@ -1531,8 +1551,19 @@ class SpaceScanner:
                             removed_snapshots.append(sp.name)
                     except Exception:
                         pass
+                short_sp = self._snapshot_path(s_cfg.short_name)
+                if short_sp.is_file():
+                    try:
+                        vfs.remove(str(short_sp))
+                        if short_sp.name not in removed_snapshots:
+                            removed_snapshots.append(short_sp.name)
+                    except Exception:
+                        pass
             for cid in self._cursor_store.list_consumers():
                 self._cursor_store.reset_cursor(space_key, consumer_id=cid)
+                for s_cfg in resolved_spaces:
+                    self._cursor_store.reset_cursor(s_cfg.qualified_name, consumer_id=cid)
+                    self._cursor_store.reset_cursor(s_cfg.short_name, consumer_id=cid)
                 reset_consumers.append(cid)
             return {
                 "status": "ok",

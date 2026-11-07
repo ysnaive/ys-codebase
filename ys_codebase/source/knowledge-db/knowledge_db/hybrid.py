@@ -171,7 +171,10 @@ class HybridSearchEngine:
                 continue
             if norm_ftypes and _extract_file_ext(sym.file_path) not in norm_ftypes:
                 continue
-            if spaces and not any(s in spaces for s in getattr(sym, "spaces", [])):
+            if spaces and not any(
+                s in spaces or s.split("/")[-1] in {f.split("/")[-1] for f in spaces}
+                for s in getattr(sym, "spaces", [])
+            ):
                 continue
             if kinds and sym.kind not in kinds:
                 continue

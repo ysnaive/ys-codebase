@@ -1,6 +1,6 @@
 """
 Space event subscriber hook for module:knowledge-db.
-Listens to `on_file_space_changed` emitted by `module:file-space` and triggers
+Listens to `on_file_space_changed` emitted by `core.space` and triggers
 transactional cursor consumption (`consume_diff(consumer_id="knowledge-db")`)
 and incremental hot-patching of the unified semantic index.
 """
@@ -8,9 +8,9 @@ and incremental hot-patching of the unified semantic index.
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
+from core.space import ScanDiffResult, consume_diff
 from knowledge_db.engine import KnowledgeEngine, get_engine
 from knowledge_db.service import get_active_worker
-from file_space import ScanDiffResult, consume_diff
 
 
 @contextmanager
@@ -20,34 +20,35 @@ def _resolve_consume_diff(
     consumer_id: str = "knowledge-db",
     auto_refresh: Optional[bool] = None,
 ) -> Iterator[ScanDiffResult]:
-    """透過 engine.scanner 或全域 file_space.consume_diff 開啟增量變更消費交易"""
+    """透過 engine.scanner 或全域 core.space.consume_diff 開啟增量變更消費交易"""
     scanner = getattr(engine, "scanner", None)
     if scanner is not None and hasattr(scanner, "consume_diff"):
         if auto_refresh is not None:
             with scanner.consume_diff(
-                space_name=space_name, consumer_id=consumer_id, auto_refresh=auto_refresh
+                space_name, consumer_id=consumer_id, auto_refresh=auto_refresh
             ) as diff_res:
                 yield diff_res
         else:
             with scanner.consume_diff(
-                space_name=space_name, consumer_id=consumer_id
+                space_name, consumer_id=consumer_id
             ) as diff_res:
                 yield diff_res
     elif scanner is not None and hasattr(scanner, "diff") and hasattr(scanner, "ack"):
         diff_res = scanner.diff(
-            space_name=space_name,
+            space_name,
             consumer_id=consumer_id,
             auto_refresh=False if auto_refresh is False else True,
         )
         yield diff_res
         scanner.ack(
-            space_name=space_name,
+            space_name,
             consumer_id=consumer_id,
-            generation=diff_res.to_generation,
+            to_generation=diff_res.to_generation,
+            space_generations=getattr(diff_res, "space_generations", None),
         )
     else:
         with consume_diff(
-            space_name=space_name, consumer_id=consumer_id
+            space_name, consumer_id=consumer_id
         ) as diff_res:
             yield diff_res
 
@@ -59,7 +60,7 @@ def on_file_space_changed(
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """
-    當 `file-space` 模組完成二進位指紋快照更新並廣播 `on_file_space_changed` 時觸發。
+    當 `core.space` 完成二進位指紋快照更新並廣播 `on_file_space_changed` 時觸發。
     使用 `consume_diff(consumer_id="knowledge-db")` 拉取自上次游標水位以來的增量變更，
     並對全域統一索引執行 4 階段熱修補（若基礎索引尚未建置則觸發全量建置）。
     """
@@ -81,7 +82,6 @@ def on_file_space_changed(
     if target_space is None and spaces and len(spaces) == 1:
         target_space = spaces[0]
 
-    # 若專屬常駐 KnowledgeDBServiceWorker 在線且未顯式指定獨立測試 engine，透過 O(1) Event 喚醒由後台兩階段處理
     if explicit_engine_obj is None:
         active_worker = get_active_worker()
         if active_worker is not None and (not hasattr(active_worker, "is_alive") or active_worker.is_alive()):

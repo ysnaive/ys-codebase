@@ -3,9 +3,9 @@ GDriveSyncServiceWorker: Optional background service worker gated by auto_sync (
 
 Invariants:
 - When config.auto_sync is False (default), enters standby_mode=True without starting a polling
-  thread or registering file-space subscriptions, while health_check() returns True so
+  thread or registering core.space subscriptions, while health_check() returns True so
   'yscb server status' reports healthy standby rather than a dead worker.
-- When config.auto_sync is True, subscribes to file_space.service.subscribe and deterministically
+- When config.auto_sync is True, subscribes to core.space.subscribe and deterministically
   invokes _unsubscribe() upon stop().
 """
 import logging
@@ -98,7 +98,7 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
         sub_fn = self._subscribe_fn
         if sub_fn is None:
             try:
-                from file_space.service import subscribe as fs_subscribe
+                from core.space import subscribe as fs_subscribe
 
                 sub_fn = fs_subscribe
             except Exception:
@@ -153,7 +153,7 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
             return None
 
     def stop(self) -> None:
-        """Gracefully stop background thread and deterministically unsubscribe from file-space."""
+        """Gracefully stop background thread and deterministically unsubscribe from core.space."""
         self._stop_event.set()
         self._wake_event.set()
         if self._unsubscribe is not None:

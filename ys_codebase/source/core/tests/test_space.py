@@ -716,35 +716,20 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
             self.assertEqual(rc_err_t, 1)
             self.assertIn("not registered", buf_err_txt.getvalue())
 
-        # 7. Verify dispatcher top-level collision avoidance when external `file-space` module is installed
+        # 7. Verify dispatcher routes both top-level `file-space` and `fs` directly to `core`
         dispatcher.clear_cache()
         try:
             core_src_contrib = Path(uri.resolve("module.source://core/contributes/core.json"))
             self._write_module_core_contrib("core", vfs.read_json(str(core_src_contrib)))
-            self._write_module_core_contrib(
-                "file-space",
-                {
-                    "commands": {
-                        "description": "Legacy external file-space module",
-                        "cmd": {
-                            "status": {
-                                "description": "Legacy status",
-                                "tier": "safe",
-                                "server_compatible": False,
-                            }
-                        },
-                    }
-                },
-            )
             with uri.host_scope(str(self.proj_root), str(self.yscb_root)):
                 with (
                     patch("core.commands.dispatcher._try_hot_dispatch", return_value=None),
                     patch("core.commands.dispatcher.dispatch_local", return_value=0) as mock_dl,
                 ):
-                    # Top-level `file-space status` without `core` prefix yields to installed external `file-space` module
                     rc1 = dispatcher.dispatch(["file-space", "status"])
                     self.assertEqual(rc1, 0)
-                    self.assertEqual(mock_dl.call_args[1]["module_name"], "file-space")
+                    self.assertEqual(mock_dl.call_args[1]["module_name"], "core")
+                    self.assertEqual(mock_dl.call_args[1]["cmd_name"], ["file-space", "status"])
 
                     # Explicit `core file-space spaces` routes to `core`
                     rc2 = dispatcher.dispatch(["core", "file-space", "spaces"])
@@ -1366,6 +1351,65 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         self.assertEqual(d_dirty.to_generation, 3)
         sc.mark_watcher_dirty(False)
         self.assertFalse(sc.has_watcher_dirty_marker())
+
+        # 6. Verify `ScanDiffDetail.dirty_files` excludes `deleted`, `providers` tables, and `1.2.7.x.py` config migration
+        from core.space.providers import (
+            get_knowledge_db_spaces,
+            get_registered_file_spaces_table,
+        )
+        from core.space.scanner import ScanDiffDetail
+        import importlib.util
+
+        detail_check = ScanDiffDetail(
+            added={"a.py"}, modified={"b.py"}, deleted={"c.py"}
+        )
+        self.assertEqual(detail_check.dirty_files, {"a.py", "b.py"})
+        self.assertNotIn("c.py", detail_check.dirty_files)
+
+        tbl_reg = get_registered_file_spaces_table(
+            context={"project_root": str(self.proj_root), "yscb_dir": str(self.yscb_root)}
+        )
+        self.assertIn("`core/source`", tbl_reg)
+        tbl_kdb = get_knowledge_db_spaces(
+            context={"project_root": str(self.proj_root), "yscb_dir": str(self.yscb_root)}
+        )
+        self.assertIn("`core/source`", tbl_kdb)
+
+        # Test `1.2.7.x.py` migration of `config/file-space/contribute.json` -> `config/core/contribute.json`
+        legacy_fs_cfg = self.yscb_root / "config" / "file-space" / "contribute.json"
+        legacy_fs_cfg.parent.mkdir(parents=True, exist_ok=True)
+        vfs.write_json(
+            str(legacy_fs_cfg),
+            {
+                "spaces": {
+                    "migrated_src": {
+                        "description": "Migrated legacy space",
+                        "include": ["project://src"],
+                        "file_patterns": ["*.py"],
+                        "exclude": ["__pycache__"],
+                        "watch": True,
+                    }
+                }
+            },
+        )
+        mig_script_path = Path(
+            uri.resolve("module.source://core/scripts/migrations/1.2.7.x.py")
+        )
+        spec = importlib.util.spec_from_file_location("_test_core_mig_127", mig_script_path)
+        self.assertIsNotNone(spec)
+        mig_mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(mig_mod)  # type: ignore[union-attr]
+        self.assertTrue(mig_mod.migrate({"yscb_dir": str(self.yscb_root)}))
+        self.assertFalse(legacy_fs_cfg.exists())
+        migrated_core_cfg = vfs.read_json(
+            str(self.yscb_root / "config" / "core" / "contribute.json")
+        )
+        self.assertEqual(
+            migrated_core_cfg["spaces"]["migrated_src"]["entries"], ["project://src"]
+        )
+        self.assertEqual(
+            migrated_core_cfg["spaces"]["migrated_src"]["include"], ["*.py"]
+        )
         self.mark_passed()
 
 

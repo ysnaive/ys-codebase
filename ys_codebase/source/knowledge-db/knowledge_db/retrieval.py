@@ -55,9 +55,22 @@ def resolve_space_weight(
     sp_list = list(item_spaces)
     if not sp_list:
         return 1.0
-    relevant = [s for s in sp_list if s in spaces_filter] if spaces_filter else sp_list
+    if spaces_filter:
+        filter_shorts = {f.split("/")[-1] for f in spaces_filter}
+        relevant = [s for s in sp_list if s in spaces_filter or s.split("/")[-1] in filter_shorts]
+    else:
+        relevant = sp_list
     target = relevant or sp_list
-    return max((float(space_weights.get(s, 1.0)) for s in target), default=1.0)
+
+    def _w(s: str) -> float:
+        if s in space_weights:
+            return float(space_weights[s])
+        s_short = s.split("/")[-1]
+        if s_short in space_weights:
+            return float(space_weights[s_short])
+        return 1.0
+
+    return max((_w(s) for s in target), default=1.0)
 
 
 def format_symbol_summary(sym: UnifiedSymbol, max_chars: int = 120) -> str:
@@ -321,29 +334,27 @@ class SnippetExtractor:
         if self.space_manager:
             try:
                 if hasattr(self.space_manager, "resolve_file_path"):
-                    resolved = self.space_manager.resolve_file_path(str(file_path), space_name=space)
+                    resolved = self.space_manager.resolve_file_path(str(file_path), space)
                     if resolved is not None and resolved.exists():
                         return resolved
+                proj_root = getattr(self.space_manager, "project_root", None)
                 spaces_raw = (
-                    [self.space_manager.get_space(space)]
+                    self.space_manager.resolve_spaces(space)
                     if space
-                    else (
-                        list(self.space_manager.get_all_spaces().values())
-                        if hasattr(self.space_manager, "get_all_spaces")
-                        else self.space_manager.list_spaces()
-                    )
+                    else self.space_manager.list_spaces()
                 )
                 for sp in spaces_raw:
-                    sp_name = sp if isinstance(sp, str) else sp.name
-                    for root in self.space_manager.resolve_space_include(sp_name):
-                        if root.is_file():
-                            if root.name == p.name:
-                                return root
+                    for _, abs_root, exists in sp.resolve_entries(proj_root):
+                        if abs_root is None or not exists:
+                            continue
+                        if abs_root.is_file():
+                            if abs_root.name == p.name:
+                                return abs_root
                         else:
-                            cand = root / p
+                            cand = abs_root / p
                             if cand.exists():
                                 return cand
-                            cand_parent = root.parent / p
+                            cand_parent = abs_root.parent / p
                             if cand_parent.exists():
                                 return cand_parent
             except Exception:
@@ -905,7 +916,10 @@ class BM25Engine:
                         posting_spaces = getattr(posting, "spaces", None) or (
                             [posting.space] if posting.space else []
                         )
-                        if flt.spaces and not any(s in flt.spaces for s in posting_spaces):
+                        if flt.spaces and not any(
+                            s in flt.spaces or s.split("/")[-1] in {f.split("/")[-1] for f in flt.spaces}
+                            for s in posting_spaces
+                        ):
                             is_eligible = False
                         elif flt.languages and sym.language not in flt.languages:
                             is_eligible = False

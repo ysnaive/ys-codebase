@@ -1127,7 +1127,7 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
         finally:
             self.transport.list_files = orig_list_files  # type: ignore[method-assign]
 
-        # (c) Verify zero-redundant stat() when file_space_manager provides iter_space_files_with_stat
+        # (c) Verify zero-redundant stat() when space manager provides SpaceFileEntry or iter_space_files_with_stat
         class _StatProvidingFileSpaceManager:
             def __init__(self, root_dir: Path) -> None:
                 self.root_dir = root_dir

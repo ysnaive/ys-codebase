@@ -8,7 +8,7 @@
 
 其他生態系模組可於其 `contributes/gdrive-support.json`（或宿主專案於 `ys_codebase/config/gdrive-support/contribute.json`）中，依據 `_format.json` 規範向 `gdrive-support` 註冊同步空間與選填路徑映射：
 
-- **`sync_spaces`** (`list[SyncSpaceDef]`)：定義欲納入 Google Drive `repo_sync`（`<root_folder_id>/<repo_sync_root>/<branch>/`，預設 `repo_sync_root = "repo"`）同步之 `file-space` 名稱 (`space`) 與選填之本地至雲端路徑重映射清單 (`mapping: [{local, remote}]`)。僅於 `repo_sync.enable: true` 時生效。
+- **`sync_spaces`** (`list[SyncSpaceDef]`)：定義欲納入 Google Drive `repo_sync`（`<root_folder_id>/<repo_sync_root>/<branch>/`，預設 `repo_sync_root = "repo"`）同步之 `core.space` 名稱 (`space`) 與選填之本地至雲端路徑重映射清單 (`mapping: [{local, remote}]`)。僅於 `repo_sync.enable: true` 時生效。
 
 ---
 

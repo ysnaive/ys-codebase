@@ -17,7 +17,7 @@
 - **Hooks**:
   - `dev`: `on_test_setup` (`scripts/hook.dev.py`) — 沙盒測試初始化時準備 `.storage.local/knowledge-db/` 與 `.cache/knowledge-db/` 目錄結構。
   - `server`: `on_Context_build` (`scripts/hook.server.py`) — 常駐服務啟動時掛載單例 `KnowledgeEngine` 並預熱索引。
-  - `file-space`: `on_file_space_changed` (`scripts/hook.file-space.py`) — 監聽 `file-space` 模組空間指紋變更事件，透過 `consume_diff` 執行熱增量索引修補。
+  - `core`: `on_file_space_changed` (`scripts/hook.core.py`) — 監聽 `core.space` 空間指紋變更事件，透過 `consume_diff` 執行熱增量索引修補。
 
 ---
 
@@ -25,4 +25,4 @@
 
 其他模組可透過 `contributes/knowledge-db.json`（或專案於 `ys_codebase/config/knowledge-db/contribute.json`）向本模組注入以下擴充：
 
-- **`space_weights`**: 定義各邏輯空間之檢索加權係數（`dict[str, float]`，權重值須 `> 0`）。空間幾何範圍統一向 `file-space` 模組註冊，語法與語言擴充統一向 `ast` 模組註冊。
+- **`space_weights`**: 定義各邏輯空間之檢索加權係數（`dict[str, float]`，權重值須 `> 0`）。空間幾何範圍統一向 `core` 模組 (`core.space`) 註冊，語法與語言擴充統一向 `ast` 模組註冊。

@@ -1,75 +1,75 @@
 """
-ast 1.0.1.x migration hook.
-Migrates legacy `<yscb_dir>/.cache/ast/{indices,bundles}` non-lock files into
-`<storage_local_dir>/{indices,bundles}` when upgrading `ast` to >= 1.0.1.0.
+Migration script for module `ast` upgrading to >= 1.0.1.0.
+1. Automatically migrates legacy `.cache/ast/{indices,bundles}` to `.storage.local/ast/{indices,bundles}`
+   (skipping transient `.lock` files) and cleans up migrated files.
+2. Resets the `ast` consumer cursor in `core.space` so upgrading cleanly re-baselines space snapshots.
 """
-import os
+
 import shutil
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any
 
 
-def _migrate_dir_contents(src_dir: str, dst_dir: str) -> None:
-    if not os.path.isdir(src_dir):
-        return
+def migrate(context: Any) -> bool:
     try:
-        os.makedirs(dst_dir, exist_ok=True)
-        entries = sorted(os.listdir(src_dir))
-    except OSError:
-        return
-    for entry in entries:
-        if entry.endswith(".lock"):
-            continue
-        src_path = os.path.join(src_dir, entry)
-        dst_path = os.path.join(dst_dir, entry)
-        if os.path.isdir(src_path):
-            _migrate_dir_contents(src_path, dst_path)
-        elif os.path.isfile(src_path):
-            if not os.path.exists(dst_path):
-                try:
-                    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-                    shutil.move(src_path, dst_path)
-                except OSError:
-                    pass
-            else:
-                try:
-                    os.remove(src_path)
-                except OSError:
-                    pass
-    try:
-        if not os.listdir(src_dir):
-            os.rmdir(src_dir)
-    except OSError:
+        from core.space import reset_cursor
+
+        reset_cursor(None, consumer_id="ast")
+    except Exception:
         pass
 
+    if isinstance(context, dict):
+        yscb_dir_raw = context.get("yscb_dir")
+        storage_local_raw = context.get("storage_local_dir")
+        project_root_raw = context.get("project_root")
+    else:
+        yscb_dir_raw = getattr(context, "yscb_dir", None)
+        storage_local_raw = getattr(context, "storage_local_dir", None)
+        project_root_raw = getattr(context, "project_root", None)
 
-def migrate(context: Dict[str, Any]) -> bool:
-    """
-    Idempotently migrates non-lock files from `<yscb_dir>/.cache/ast/{indices,bundles}`
-    into `<storage_local_dir>/{indices,bundles}`.
-    """
-    ctx = context if isinstance(context, dict) else {}
-    yscb_dir = ctx.get("yscb_dir")
-    if not yscb_dir:
-        try:
-            from core import uri
+    legacy_cache_dir = None
+    target_storage_dir = None
 
-            yscb_dir = uri.resolve_yscb_root()
-        except Exception:
-            return True
+    if yscb_dir_raw:
+        yscb_path = Path(str(yscb_dir_raw))
+        legacy_cache_dir = yscb_path / ".cache" / "ast"
+        target_storage_dir = (
+            Path(str(storage_local_raw))
+            if storage_local_raw
+            else (yscb_path / ".storage.local" / "ast")
+        )
+    elif project_root_raw:
+        proj_path = Path(str(project_root_raw))
+        legacy_cache_dir = proj_path / "ys_codebase" / ".cache" / "ast"
+        if not legacy_cache_dir.exists():
+            legacy_cache_dir = proj_path / ".cache" / "ast"
+        if storage_local_raw:
+            target_storage_dir = Path(str(storage_local_raw))
+        elif (proj_path / "ys_codebase").is_dir():
+            target_storage_dir = proj_path / "ys_codebase" / ".storage.local" / "ast"
+        else:
+            target_storage_dir = proj_path / ".storage.local" / "ast"
 
-    storage_local_dir = ctx.get("storage_local_dir") or os.path.join(
-        str(yscb_dir), ".storage.local", "ast"
-    )
-    legacy_cache_dir = os.path.join(str(yscb_dir), ".cache", "ast")
-    if not os.path.isdir(legacy_cache_dir):
+    if not legacy_cache_dir or not legacy_cache_dir.exists() or not target_storage_dir:
         return True
 
-    for subdir in ("indices", "bundles"):
-        src_sub = os.path.join(legacy_cache_dir, subdir)
-        dst_sub = os.path.join(str(storage_local_dir), subdir)
-        try:
-            _migrate_dir_contents(src_sub, dst_sub)
-        except OSError:
-            pass
+    target_storage_dir.mkdir(parents=True, exist_ok=True)
+
+    for subdir_name in ("indices", "bundles"):
+        src_sub = legacy_cache_dir / subdir_name
+        dst_sub = target_storage_dir / subdir_name
+        if src_sub.is_dir():
+            dst_sub.mkdir(parents=True, exist_ok=True)
+            for item in list(src_sub.iterdir()):
+                if item.name.endswith(".lock") or item.name.startswith(".ast_index"):
+                    continue
+                target_item = dst_sub / item.name
+                if not target_item.exists():
+                    shutil.move(str(item), str(target_item))
+                else:
+                    if item.is_file():
+                        item.unlink(missing_ok=True)
+                    elif item.is_dir():
+                        shutil.rmtree(item, ignore_errors=True)
 
     return True

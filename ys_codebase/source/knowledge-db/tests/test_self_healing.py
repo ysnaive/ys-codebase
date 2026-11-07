@@ -17,9 +17,9 @@ _pkg_root = os.path.dirname(_test_dir)
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 
+from core.space import SpaceConfig
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from file_space import FileSpaceConfig
 from knowledge_db.embedding import format_symbol_embedding_text
 from knowledge_db.engine import KnowledgeEngine
 from knowledge_db.io_utils import is_dirty_file_match, normalize_dirty_paths
@@ -57,11 +57,16 @@ class TestKnowledgeDBSelfHealing(YSCBTestCase):
             encoding="utf-8",
         )
 
-        sp = FileSpaceConfig(name="source", include=[src_dir.as_posix()])
+        sp = SpaceConfig(
+            qualified_name="project/source",
+            owner="project",
+            short_name="source",
+            entries=(src_dir.as_posix(),),
+        )
         engine = KnowledgeEngine(
             project_root=self.proj_root,
             storage_dir=self.storage_dir,
-            contributes_data={"spaces": {"source": sp.to_dict()}},
+            contributes_data={"spaces": {"source": sp}},
             embedding_mock_mode=True,
         )
 
@@ -143,16 +148,26 @@ class TestKnowledgeDBSelfHealing(YSCBTestCase):
         init_a.write_text("class ModAInitSymbol:\n    pass\n", encoding="utf-8")
         init_b.write_text("class ModBInitSymbol:\n    pass\n", encoding="utf-8")
 
-        sp_a = FileSpaceConfig(name="space_a", include=[mod_a_dir.as_posix()])
-        sp_b = FileSpaceConfig(name="space_b", include=[mod_b_dir.as_posix()])
+        sp_a = SpaceConfig(
+            qualified_name="project/space_a",
+            owner="project",
+            short_name="space_a",
+            entries=(mod_a_dir.as_posix(),),
+        )
+        sp_b = SpaceConfig(
+            qualified_name="project/space_b",
+            owner="project",
+            short_name="space_b",
+            entries=(mod_b_dir.as_posix(),),
+        )
 
         engine = KnowledgeEngine(
             project_root=self.proj_root,
             storage_dir=self.storage_dir,
             contributes_data={
                 "spaces": {
-                    "space_a": sp_a.to_dict(),
-                    "space_b": sp_b.to_dict(),
+                    "space_a": sp_a,
+                    "space_b": sp_b,
                 }
             },
             embedding_mock_mode=True,
@@ -162,12 +177,12 @@ class TestKnowledgeDBSelfHealing(YSCBTestCase):
         key_b = str(init_b.resolve()).replace("\\", "/")
         orig_b_cached = engine.bundler._file_symbols_cache[key_b][0]
 
-        # Modify only mod_a/__init__.py (which yields rel_path="__init__.py" in space_a)
+        # Modify only mod_a/__init__.py (which yields rel_path="mod_a/__init__.py" in space_a)
         write_text_and_advance_mtime(init_a, "class ModAInitUpdated:\n    pass\n")
         with engine.scanner.consume_diff(
             "space_a", consumer_id="knowledge-db"
         ) as diff_a:
-            self.assertEqual(diff_a.modified, ["__init__.py"])
+            self.assertEqual(diff_a.modified, ["mod_a/__init__.py"])
             res = engine.pipeline.hot_patch_unified_index(diff_a.detail)
             self.assertTrue(res.success)
 
@@ -183,7 +198,7 @@ class TestKnowledgeDBSelfHealing(YSCBTestCase):
         with engine.scanner.consume_diff(
             "space_a", consumer_id="knowledge-db"
         ) as diff_del:
-            self.assertEqual(diff_del.deleted, ["__init__.py"])
+            self.assertEqual(diff_del.deleted, ["mod_a/__init__.py"])
             res_del = engine.pipeline.hot_patch_unified_index(diff_del.detail)
             self.assertTrue(res_del.success)
 

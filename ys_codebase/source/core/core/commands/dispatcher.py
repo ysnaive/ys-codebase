@@ -750,14 +750,8 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
         "contributes", "gitignore", "file-space", "fs",
     }
 
-    # 2. 判斷是否為 core 的快捷指令 (例如 yscb status, yscb list, yscb fs)
-    # 當頂層 first_token 未冠上 'core' 前綴，但同時與某個已安裝非 'core' 外部模組同名時（例如過渡期之 file-space），
-    # 優先交由該外部模組處理，確保 yscb.py core file-space 與 yscb.py fs 直通 core 且舊模組零衝突。
-    resolved_non_core_mod = registry.resolve_module_name(first_token)
-    if resolved_non_core_mod is None and first_token != "core" and _find_module_cli(first_token, yscb_abs):
-        resolved_non_core_mod = first_token
-
-    if first_token in core_commands and resolved_non_core_mod in (None, "core"):
+    # 2. 判斷是否為 core 的快捷指令 (例如 yscb status, yscb list, yscb file-space, yscb fs)
+    if first_token in core_commands:
         module_name = "core"
         target_tokens = argv
     elif first_token == "core":
@@ -765,7 +759,7 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
         target_tokens = rest_tokens
     else:
         # 3. 模組名稱或模組別名
-        resolved_mod = resolved_non_core_mod or registry.resolve_module_name(first_token)
+        resolved_mod = registry.resolve_module_name(first_token)
         if resolved_mod is not None:
             module_name = resolved_mod
             target_tokens = rest_tokens

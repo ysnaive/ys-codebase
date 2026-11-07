@@ -1,7 +1,7 @@
 # YS-Codebase Knowledge-DB 知識庫與語意檢索模組 (Knowledge Database & Retrieval Engine)
 
 > 模組名稱：`knowledge-db`  
-> 職責定位：Layer 3 知識庫與跨空間混合檢索引擎（`file-space -> ast -> knowledge-db` 三階單向無環圖）。直接透過 **Single-Parse Symbol Sharing** 消費 `module:ast` 產出之 `ASTSnapshot` 符號快照，提供增量指紋比對、多語言分詞 (`MultilingualTokenizer`)、BM25 + FastEmbed ONNX 雙軌向量 RRF 複合檢索 (`HybridSearchEngine`) 與代碼切片預覽。  
+> 職責定位：Layer 3 知識庫與跨空間混合檢索引擎（`core.space -> ast -> knowledge-db` 三階單向無環圖）。直接透過 **Single-Parse Symbol Sharing** 消費 `module:ast` 產出之 `ASTSnapshot` 符號快照，提供增量指紋比對、多語言分詞 (`MultilingualTokenizer`)、BM25 + FastEmbed ONNX 雙軌向量 RRF 複合檢索 (`HybridSearchEngine`) 與代碼切片預覽。  
 > *(註：單檔符號大綱 `outline` 與靜態呼叫拓撲 `callers` / `callees` / `impact` 已獨立收斂至 Layer 2 [`module:ast`](../ast/README.md) 之 `yscb ast` 指令集。)*
 
 ---
@@ -12,7 +12,7 @@
 > **[Pre-flight Check] AI Agent 初始化確認**：初次為下游專案設定 `knowledge-db` 前，請先向開發者確認：**① 欲納入檢索的原始碼目錄（如 `src/`, `lib/`）與副檔名**，以及 **② 是否下載本地 ONNX 向量模型（或關閉向量檢索改用輕量極速之純 BM25 模式）**。
 
 ```bash
-# 1. 設定專案工作空間幾何 (於 config/file-space/contribute.json 宣告) 與檢索加權係數 (於 config/knowledge-db/contribute.json 宣告；僅宣告於 space_weights 之空間會納入資料庫索引)
+# 1. 設定專案工作空間幾何 (於 config/core/contribute.json 宣告) 與檢索加權係數 (於 config/knowledge-db/contribute.json 宣告；僅宣告於 space_weights 之空間會納入資料庫索引)
 # config/knowledge-db/contribute.json:
 # {
 #   "space_weights": {
@@ -46,7 +46,7 @@ graph TD
     CLI["CLI 入口<br/><code>python yscb.py knowledge-db &lt;command&gt;</code>"]:::main
 
     subgraph KnowledgeDBModule ["Knowledge-DB 模組 (module:knowledge-db - Layer 3)"]
-        Scanner["多消費者游標增量與兩階段背景 Worker (module:file-space + knowledge-db-worker)<br/><i>YFP2 二進位快照 + consume_diff(consumer_id='knowledge-db') / Stage 1 快篩 + Stage 2 微批次向量補齊</i>"]:::sub
+        Scanner["多消費者游標增量與兩階段背景 Worker (core.space + knowledge-db-worker)<br/><i>YFP2 二進位快照 + consume_diff(consumer_id='knowledge-db') / Stage 1 快篩 + Stage 2 微批次向量補齊</i>"]:::sub
         ASTConsumer["單次解析符號共享 (Single-Parse Symbol Sharing via module:ast)<br/><i>消費 ASTEngine.ensure_jit_synced() 之 ASTSnapshot (acked_ast_generation 水位線對齊)</i>"]:::sub
         Tokenizer["中英混雜分詞 (MultilingualTokenizer)<br/><i>CJK 1/2-gram / 駝峰蛇形拆解</i>"]:::sub
         Retrieval["複合檢索引擎 (HybridSearchEngine)<br/><i>BM25 預先過濾下推 + FastEmbed ONNX 向量 (預設 512-dim) RRF 融合 + is_worker_busy 動態容差</i>"]:::sub
@@ -168,7 +168,7 @@ indices = engine.build_index()
 
 ### 5.2 空間檢索加權與宣告式擴充 (`contribute.json`)
 
-工作空間幾何範圍統一向 `file-space` 模組註冊（於 `config/file-space/contribute.json` 宣告 `spaces`），語言與語法擴充統一向 `ast` 模組註冊（於 `config/ast/contribute.json` 宣告 `languages`），而各邏輯空間之檢索加權係數 (`space_weights`) 則由 `config/knowledge-db/contribute.json` 託管：
+工作空間幾何範圍統一向 `core` 模組 (`core.space`) 註冊（於 `config/core/contribute.json` 宣告 `spaces`），語言與語法擴充統一向 `ast` 模組註冊（於 `config/ast/contribute.json` 宣告 `languages`），而各邏輯空間之檢索加權係數 (`space_weights`) 則由 `config/knowledge-db/contribute.json` 託管：
 
 ```json
 {

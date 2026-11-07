@@ -46,7 +46,7 @@ from ast_engine.schema import (
     SymbolKind,
     UnifiedSymbol,
 )
-from file_space.schema import FileSpaceConfig
+from core.space import SpaceConfig
 from tests import ASTTestCase, Requirement, require
 
 
@@ -446,8 +446,18 @@ class TestASTEngineCore(ASTTestCase):
         st_a = file_a.stat()
         os.utime(file_b, ns=(st_a.st_atime_ns, st_a.st_mtime_ns + 5_000_000))
 
-        sp_cfg_a = FileSpaceConfig(name="space_a", include=[space_a])
-        sp_cfg_b = FileSpaceConfig(name="space_b", include=[space_b])
+        sp_cfg_a = SpaceConfig(
+            qualified_name="project/space_a",
+            owner="project",
+            short_name="space_a",
+            entries=(str(space_a),),
+        )
+        sp_cfg_b = SpaceConfig(
+            qualified_name="project/space_b",
+            owner="project",
+            short_name="space_b",
+            entries=(str(space_b),),
+        )
 
         engine = ASTEngine(project_root=self.temp_dir, storage_dir=self.temp_dir / ".ast_store_mtime")
         resolved = engine.bundler._resolve_dirty_files_only(

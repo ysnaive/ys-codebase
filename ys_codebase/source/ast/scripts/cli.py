@@ -338,7 +338,7 @@ def _serialize_call_edges_json(
 
 def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) -> int:
     from ast_engine.exceptions import ASTError
-    from file_space import FileSpaceNotFoundError
+    from core.space import SpaceNotFoundError
 
     guard_dispatch("ast")
     _setup_stream_encodings()
@@ -407,7 +407,7 @@ def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) 
             )
         )
         return 0
-    except FileSpaceNotFoundError as exc:
+    except SpaceNotFoundError as exc:
         if bags.has_option("json"):
             print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
         else:
@@ -476,7 +476,7 @@ def status(cmd_bags: Any) -> int:
 
 
 def clean(cmd_bags: Any) -> int:
-    """Clean AST snapshot and call graph caches and reset `file-space` cursor (`consumer='ast'`)."""
+    """Clean AST snapshot and call graph caches and reset `core.space` cursor (`consumer='ast'`)."""
     guard_dispatch("ast")
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "clean")

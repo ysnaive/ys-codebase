@@ -9,17 +9,21 @@ import logging
 import os
 from pathlib import Path
 import threading
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ast_engine import ASTEngine, SemanticBundle, SemanticBundler
-from file_space import (
-    FileSpaceConfig,
-    FileSpaceManager,
-    FileSpaceNotFoundError,
-    FingerprintScanner,
-    InvalidFileSpaceConfigError,
+from core.space import (
+    ScanDiffDetail,
+    ScanDiffResult,
+    SpaceConfig,
+    SpaceError,
+    SpaceFileEntry,
+    SpaceNotFoundError,
+    SpaceRegistry,
+    SpaceScanner,
     consume_diff,
     reset_cursor,
+    resolve_semantic_or_rel_path,
 )
 
 from .embedding import EmbeddingService
@@ -41,6 +45,117 @@ from .tokenizer import MultilingualTokenizer
 logger = logging.getLogger("knowledge-db.engine")
 
 
+def _normalize_raw_space_def(
+    s_key: str,
+    s_val: Any,
+    default_owner: str = "project",
+) -> Tuple[str, str, Dict[str, Any]]:
+    """將各型態之空間定義正規化為 `(owner, short_name, raw_space_dict)` 供 `SpaceRegistry` 建構。"""
+    if isinstance(s_val, SpaceConfig):
+        owner = s_val.owner or default_owner
+        short_name = s_val.short_name or (s_key.split("/", 1)[-1] if "/" in s_key else s_key)
+        return (
+            owner,
+            short_name,
+            {
+                "description": s_val.description,
+                "entries": [str(p) for p in s_val.entries],
+                "compose": list(s_val.compose),
+                "presets": list(s_val.presets),
+                "include": list(s_val.include),
+                "exclude": list(s_val.exclude),
+                "hash_policy": getattr(s_val.hash_policy, "value", str(s_val.hash_policy)),
+                "large_file_threshold_mb": s_val.large_file_threshold_mb,
+                "follow_symlinks": s_val.follow_symlinks,
+                "watch": s_val.watch,
+            },
+        )
+    if isinstance(s_val, dict):
+        if "/" in s_key:
+            owner, short_name = s_key.split("/", 1)
+        else:
+            raw_origin = str(s_val.get("origin", s_val.get("owner", "")) or "").strip()
+            if raw_origin.startswith("module:"):
+                owner = raw_origin.split(":", 1)[1].strip() or default_owner
+            elif raw_origin:
+                owner = raw_origin
+            else:
+                owner = default_owner
+            short_name = s_key.strip()
+
+        if "entries" in s_val or "compose" in s_val or "include_entries" in s_val:
+            entries = [str(p) for p in (s_val.get("entries") or s_val.get("include_entries") or [])]
+            inc_globs = [str(p) for p in (s_val.get("include") or s_val.get("file_patterns") or [])]
+        else:
+            entries = [str(p) for p in (s_val.get("include") or [])]
+            inc_globs = [str(p) for p in (s_val.get("file_patterns") or [])]
+
+        return (
+            owner,
+            short_name,
+            {
+                "description": str(s_val.get("description", "") or ""),
+                "entries": entries,
+                "compose": list(s_val.get("compose") or []),
+                "presets": list(s_val.get("presets") or []),
+                "include": inc_globs,
+                "exclude": list(s_val.get("exclude") or []),
+                "hash_policy": s_val.get("hash_policy", "adaptive"),
+                "large_file_threshold_mb": int(s_val.get("large_file_threshold_mb", 10)),
+                "follow_symlinks": bool(s_val.get("follow_symlinks", False)),
+                "watch": bool(s_val.get("watch", True)),
+            },
+        )
+    short_name = s_key.split("/", 1)[-1] if "/" in s_key else s_key
+    owner = s_key.split("/", 1)[0] if "/" in s_key else default_owner
+    return owner, short_name, {"entries": [str(s_val)]}
+
+
+def _collect_raw_spaces_for_registry(
+    config_dir: Optional[Union[str, Path]] = None,
+    contributes_data: Optional[Dict[str, Any]] = None,
+    custom_spaces: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Dict[str, Any]]]:
+    """合併 contributes_data、config_dir 與 custom_spaces 中之空間定義為 SpaceRegistry raw_spaces。"""
+    has_explicit_spaces = False
+    by_short_name: Dict[str, Tuple[str, Dict[str, Any]]] = {}
+
+    if isinstance(contributes_data, dict) and "spaces" in contributes_data and isinstance(contributes_data["spaces"], dict):
+        has_explicit_spaces = True
+        for s_k, s_v in contributes_data["spaces"].items():
+            owner, s_short, norm_d = _normalize_raw_space_def(str(s_k), s_v, default_owner="project")
+            by_short_name[s_short] = (owner, norm_d)
+
+    if config_dir is not None:
+        cfg_dir_path = Path(config_dir).resolve()
+        for cfg_cand in (
+            cfg_dir_path / "contribute.json",
+            cfg_dir_path / "core" / "contribute.json",
+            cfg_dir_path / "knowledge-db" / "contribute.json",
+        ):
+            if cfg_cand.is_file():
+                try:
+                    with open(cfg_cand, "r", encoding="utf-8") as f:
+                        file_data = json.load(f)
+                    if isinstance(file_data, dict) and isinstance(file_data.get("spaces"), dict):
+                        has_explicit_spaces = True
+                        for s_k, s_v in file_data["spaces"].items():
+                            owner, s_short, norm_d = _normalize_raw_space_def(str(s_k), s_v, default_owner="project")
+                            by_short_name[s_short] = (owner, norm_d)
+                except Exception:
+                    pass
+
+    if isinstance(custom_spaces, dict):
+        has_explicit_spaces = True
+        for s_k, s_v in custom_spaces.items():
+            owner, s_short, norm_d = _normalize_raw_space_def(str(s_k), s_v, default_owner="project")
+            by_short_name[s_short] = (owner, norm_d)
+
+    if not has_explicit_spaces:
+        return None
+    return {f"{owner}/{s_short}": norm_d for s_short, (owner, norm_d) in by_short_name.items()}
+
+
 class KnowledgeEngine:
     """
     knowledge-db 模組頂層統一門面 Facade SDK (Layer 3 Pure Hybrid Retrieval Consumer)。
@@ -60,14 +175,14 @@ class KnowledgeEngine:
         project_root: Optional[Union[str, Path]] = None,
         custom_spaces: Optional[Dict[str, Any]] = None,
         space_weights: Optional[Dict[str, float]] = None,
-        space_manager: Optional[FileSpaceManager] = None,
+        space_manager: Optional[SpaceRegistry] = None,
         ast_engine: Optional[ASTEngine] = None,
         core_context: Optional[Any] = None,
     ):
         proj_root_path = Path(project_root).resolve() if project_root is not None else None
         if storage_dir is not None:
             self._storage_dir = Path(storage_dir).resolve()
-            space_storage_dir: Optional[Path] = self._storage_dir / "file-space"
+            space_storage_dir: Optional[Path] = self._storage_dir / "space"
             ast_storage_dir: Optional[Path] = self._storage_dir / "ast"
         else:
             self._storage_dir = _resolve_default_knowledge_storage_dir(proj_root_path)
@@ -85,15 +200,18 @@ class KnowledgeEngine:
                 merged_spaces.update(custom_spaces)
                 merged_contributes["spaces"] = merged_spaces
 
+        raw_spaces_override = _collect_raw_spaces_for_registry(
+            config_dir=config_dir,
+            contributes_data=contributes_data,
+            custom_spaces=custom_spaces,
+        )
+
         if space_manager is not None:
             self.space_manager = space_manager
         else:
-            self.space_manager = FileSpaceManager(
+            self.space_manager = SpaceRegistry(
                 project_root=proj_root_path,
-                config_dir=config_dir,
-                storage_dir=space_storage_dir,
-                contributes_data=merged_contributes,
-                core_context=core_context,
+                raw_spaces=raw_spaces_override,
             )
 
         self.space_weights: Dict[str, float] = self._load_and_merge_space_weights(
@@ -104,7 +222,10 @@ class KnowledgeEngine:
         )
 
         self.tokenizer = MultilingualTokenizer()
-        self.scanner = FingerprintScanner(self.space_manager)
+        self.scanner = SpaceScanner(
+            registry=self.space_manager,
+            storage_root=space_storage_dir,
+        )
 
         if ast_engine is not None:
             self.ast_engine = ast_engine
@@ -207,7 +328,7 @@ class KnowledgeEngine:
                         data = item.get("data", item) if isinstance(item, dict) else {}
                         if isinstance(data, dict) and "space_weights" in data:
                             weights.update(validate_space_weights(data["space_weights"]))
-            except (InvalidFileSpaceConfigError, InvalidConfigError):
+            except (SpaceError, InvalidConfigError):
                 raise
             except Exception:
                 pass
@@ -240,8 +361,9 @@ class KnowledgeEngine:
                         elif isinstance(file_data.get("spaces"), dict):
                             for s_name, s_val in file_data["spaces"].items():
                                 if isinstance(s_val, dict) and "weight" in s_val and s_val["weight"] is not None:
-                                    weights.update(validate_space_weights({s_name: s_val["weight"]}))
-                except (InvalidFileSpaceConfigError, InvalidConfigError):
+                                    s_short = str(s_name).split("/", 1)[-1]
+                                    weights.update(validate_space_weights({s_short: s_val["weight"]}))
+                except (SpaceError, InvalidConfigError):
                     raise
                 except Exception:
                     pass
@@ -256,12 +378,13 @@ class KnowledgeEngine:
             if isinstance(raw_dict, dict):
                 if not has_explicit_dict_weights and isinstance(raw_dict.get("spaces"), dict):
                     for s_name, s_val in raw_dict["spaces"].items():
-                        if isinstance(s_val, FileSpaceConfig):
-                            weights.update(validate_space_weights({s_name: s_val.weight}))
+                        s_short = str(s_name).split("/", 1)[-1]
+                        if isinstance(s_val, SpaceConfig):
+                            weights.update(validate_space_weights({s_short: 1.0}))
                         elif isinstance(s_val, dict):
                             w_val = s_val.get("weight", 1.0)
                             if w_val is not None:
-                                weights.update(validate_space_weights({s_name: w_val}))
+                                weights.update(validate_space_weights({s_short: w_val}))
                 if "space_weights" in raw_dict and raw_dict["space_weights"] is not None:
                     weights.update(validate_space_weights(raw_dict["space_weights"]))
 
@@ -270,19 +393,21 @@ class KnowledgeEngine:
 
         return weights
 
-    def get_indexed_spaces(self) -> Dict[str, FileSpaceConfig]:
+    def _resolve_space_display_key(self, sp: SpaceConfig) -> str:
+        if sp.qualified_name in self.space_weights:
+            return sp.qualified_name
+        if sp.short_name in self.space_weights:
+            return sp.short_name
+        return sp.short_name or sp.qualified_name
+
+    def get_indexed_spaces(self) -> Dict[str, SpaceConfig]:
         """取得已宣告 `space_weights` 且納入資料庫索引之邏輯空間映射表。"""
         try:
-            loaded_spaces = (
-                self.space_manager.get_all_spaces()
-                if hasattr(self.space_manager, "get_all_spaces")
-                else self.space_manager.load_spaces()
-            )
-            return {
-                sp_name: sp_cfg
-                for sp_name, sp_cfg in loaded_spaces.items()
-                if sp_name in self.space_weights
-            }
+            result: Dict[str, SpaceConfig] = {}
+            for sp in self.space_manager.list_spaces():
+                if sp.qualified_name in self.space_weights or sp.short_name in self.space_weights:
+                    result[self._resolve_space_display_key(sp)] = sp
+            return result
         except Exception:
             return {}
 
@@ -290,10 +415,15 @@ class KnowledgeEngine:
         """取得指定邏輯空間之檢索加權係數（預設為 1.0）"""
         if space_name in self.space_weights:
             return float(self.space_weights[space_name])
+        short_key = space_name.split("/", 1)[-1]
+        if short_key in self.space_weights:
+            return float(self.space_weights[short_key])
         try:
-            sp = self.space_manager.get_space(space_name)
-            if hasattr(sp, "weight") and sp.weight is not None:
-                return float(sp.weight)
+            for sp in self.space_manager.resolve_spaces(space_name):
+                if sp.qualified_name in self.space_weights:
+                    return float(self.space_weights[sp.qualified_name])
+                if sp.short_name in self.space_weights:
+                    return float(self.space_weights[sp.short_name])
         except Exception:
             pass
         return 1.0
@@ -391,22 +521,14 @@ class KnowledgeEngine:
         space: Optional[str] = None,
     ) -> Dict[str, Any]:
         """獲取全系統空間、後台 Worker、核心索引、AST 水位線、檢索模式、組態與空間游標同步詳盡統計摘要。"""
-        all_spaces = (
-            self.space_manager.get_all_spaces()
-            if hasattr(self.space_manager, "get_all_spaces")
-            else self.space_manager.load_spaces()
-        )
         if space is not None:
-            if space not in all_spaces:
-                raise FileSpaceNotFoundError(space, list(all_spaces.keys()))
-            sp = all_spaces[space]
-            spaces = {sp.name: sp}
-        else:
-            spaces = {
-                sp_name: sp_cfg
-                for sp_name, sp_cfg in all_spaces.items()
-                if sp_name in self.space_weights
+            resolved_list = self.space_manager.resolve_spaces(space)
+            spaces: Dict[str, SpaceConfig] = {
+                (space if len(resolved_list) == 1 else self._resolve_space_display_key(sp)): sp
+                for sp in resolved_list
             }
+        else:
+            spaces = self.get_indexed_spaces()
         indices_dir = self.pipeline.get_indices_dir()
 
         bin_unified = indices_dir / "unified.index.bin.gz"
@@ -506,23 +628,29 @@ class KnowledgeEngine:
             acked_gen = 0
             in_sync = False
             try:
-                snap_path = self.scanner.get_snapshot_path(sp_name)
+                snap_key = sp.qualified_name or sp_name
+                snap_path = self.scanner._snapshot_path(snap_key)
+                if not snap_path.exists() and sp_name != snap_key:
+                    snap_path = self.scanner._snapshot_path(sp_name)
                 if snap_path.exists():
-                    snap_state = self.scanner.snapshot_mgr.load_state(snap_path)
+                    snap_state = self.scanner._snapshot_mgr.load_state(snap_path)
                     head_gen = int(snap_state.head_generation)
                     entries = getattr(snap_state, "entries", None)
                     if isinstance(entries, dict):
                         file_count = sum(
                             1 for fp in entries.values() if not getattr(fp, "is_deleted", False)
                         )
-                cur_data = self.scanner.cursor_store.get_cursor(sp_name, "knowledge-db")
+                cur_data = self.scanner.cursor_store.get_cursor(snap_key, "knowledge-db")
                 acked_gen = int(cur_data.get("acked_gen", cur_data.get("acked_generation", 0)) or 0)
+                if acked_gen == 0 and sp_name != snap_key:
+                    cur_short = self.scanner.cursor_store.get_cursor(sp_name, "knowledge-db")
+                    acked_gen = int(cur_short.get("acked_gen", cur_short.get("acked_generation", 0)) or 0)
             except Exception:
                 pass
 
             if file_count is None:
                 try:
-                    file_count = sum(1 for _ in self.space_manager.iter_space_files(sp_name))
+                    file_count = len(self.space_manager.iter_space_files(sp.qualified_name or sp_name))
                 except Exception:
                     file_count = 0
 
@@ -531,12 +659,13 @@ class KnowledgeEngine:
             has_index = bin_idx.exists() or has_unified_index
 
             space_details[sp_name] = {
-                "origin": getattr(sp.origin, "value", str(sp.origin)),
+                "origin": sp.owner,
                 "description": sp.description,
-                "include": [p.as_posix() if isinstance(p, Path) else str(p) for p in sp.include],
+                "entries": list(sp.entries),
+                "include": list(sp.entries),
                 "exclude": list(sp.exclude),
-                "include_count": len(sp.include),
-                "file_patterns": list(sp.file_patterns) if sp.file_patterns else [],
+                "include_count": len(sp.entries),
+                "file_patterns": list(sp.include) if sp.include else [],
                 "weight": self.get_space_weight(sp_name),
                 "cached_files": file_count,
                 "has_index": has_index,
@@ -642,9 +771,13 @@ class KnowledgeEngine:
         from datetime import datetime, timezone
 
         if space is not None:
-            targets = [self.space_manager.get_space(space)]
+            resolved_list = self.space_manager.resolve_spaces(space)
+            targets = [
+                (space if len(resolved_list) == 1 else self._resolve_space_display_key(sp), sp)
+                for sp in resolved_list
+            ]
         else:
-            targets = list(self.get_indexed_spaces().values())
+            targets = list(self.get_indexed_spaces().items())
 
         snapshot = self.ast_engine.ensure_jit_synced()
         created_at = datetime.now(timezone.utc).isoformat()
@@ -653,11 +786,11 @@ class KnowledgeEngine:
             b_unified = self._build_unified_semantic_bundle(snapshot, created_at, source_count=0)
             self.bundler.export_bundle(b_unified, target_path=export_path)
             return [b_unified]
-        for sp in targets:
-            sp_name = sp.name
+        for sp_name, sp in targets:
+            match_keys = {sp_name, sp.short_name, sp.qualified_name}
             sp_syms = [
                 sym for sym in snapshot.symbols.values()
-                if not sym.spaces or sp_name in sym.spaces
+                if not sym.spaces or any(s in match_keys for s in sym.spaces)
             ]
             sp_files = {sym.file_path for sym in sp_syms if sym.file_path}
             b = SemanticBundle(
@@ -666,19 +799,20 @@ class KnowledgeEngine:
                 created_at=created_at,
                 symbols=sp_syms,
                 metadata={
-                    "source_count": len(sp.include),
+                    "source_count": len(sp.entries),
                     "file_count": len(sp_files),
-                    "origin": sp.origin,
+                    "origin": sp.owner,
                     "ast_generation": snapshot.ast_generation,
                 },
             )
             if export_path is not None:
                 if len(targets) > 1:
                     exp_p = Path(export_path)
+                    safe_name = sp_name.replace("/", "_")
                     if exp_p.suffix:
-                        target_export_path = exp_p.with_name(f"{exp_p.stem}_{sp_name}{exp_p.suffix}")
+                        target_export_path = exp_p.with_name(f"{exp_p.stem}_{safe_name}{exp_p.suffix}")
                     else:
-                        target_export_path = exp_p / f"{sp_name}.bundle.json"
+                        target_export_path = exp_p / f"{safe_name}.bundle.json"
                 else:
                     target_export_path = export_path
                 self.bundler.export_bundle(b, target_path=target_export_path)
@@ -689,7 +823,7 @@ class KnowledgeEngine:
             exp_p = Path(export_path)
             if exp_p.suffix and not exp_p.exists():
                 b_unified = self._build_unified_semantic_bundle(
-                    snapshot, created_at, source_count=sum(len(t.include) for t in targets)
+                    snapshot, created_at, source_count=sum(len(t.entries) for _, t in targets)
                 )
                 self.bundler.export_bundle(b_unified, target_path=export_path)
         return bundles
@@ -788,10 +922,15 @@ __all__ = [
     "get_engine",
     "get_worker_busy_ms",
     "is_worker_running",
-    "FileSpaceManager",
-    "FingerprintScanner",
+    "SpaceConfig",
+    "SpaceError",
+    "SpaceFileEntry",
+    "SpaceNotFoundError",
+    "SpaceRegistry",
+    "SpaceScanner",
+    "ScanDiffDetail",
+    "ScanDiffResult",
     "consume_diff",
     "reset_cursor",
-    "FileSpaceNotFoundError",
-    "InvalidFileSpaceConfigError",
+    "resolve_semantic_or_rel_path",
 ]

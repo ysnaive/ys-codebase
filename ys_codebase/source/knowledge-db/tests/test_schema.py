@@ -4,6 +4,7 @@ Unit Tests for knowledge-db Schema, Enums, and Data Models.
 
 from dataclasses import FrozenInstanceError
 import os
+from pathlib import Path
 import sys
 import unittest
 
@@ -12,9 +13,9 @@ _pkg_root = os.path.dirname(_test_dir)
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 
+from core.space import HashPolicy, SpaceConfig, SpaceError
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-from file_space import FileSpaceConfig, FileSpaceOrigin, InvalidFileSpaceConfigError
 from knowledge_db.exceptions import InvalidConfigError, SchemaValidationError
 from knowledge_db.schema import (
     KnowledgeDBContributes,
@@ -34,8 +35,8 @@ class TestSchema(YSCBTestCase):
         self.assertEqual(SymbolKind.DOC_HEADING_1.value, "doc_heading_1")
         self.assertEqual(LanguageType.PYTHON.value, "python")
         self.assertEqual(LanguageType.MARKDOWN.value, "markdown")
-        self.assertEqual(FileSpaceOrigin.PROJECT.value, "project")
-        self.assertEqual(FileSpaceOrigin.MODULE.value, "module")
+        self.assertEqual(HashPolicy.ADAPTIVE.value, "adaptive")
+        self.assertEqual(HashPolicy.STAT_ONLY.value, "stat_only")
 
         member = MemberInfo(
             name="run_cli",
@@ -127,23 +128,30 @@ class TestSchema(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_space_weights_and_contributes_schema(self):
-        """驗證 KnowledgeDBContributes (space_weights) 與 FileSpaceConfig 校驗"""
-        cfg_all = FileSpaceConfig.from_dict(
-            name="project_main",
-            data={
-                "description": "全部檔案空間",
-                "include": ["project://source"],
-                "exclude": ["**/__pycache__/**"],
-            },
+        """驗證 KnowledgeDBContributes (space_weights) 與 SpaceConfig 校驗"""
+        cfg_all = SpaceConfig(
+            qualified_name="project/project_main",
+            owner="project",
+            short_name="project_main",
+            description="全部檔案空間",
+            entries=("project://source",),
+            exclude=("**/__pycache__/**",),
         )
-        self.assertEqual(cfg_all.file_patterns, [])
-        self.assertTrue(cfg_all.is_file_included("test.py"))
-        self.assertTrue(cfg_all.is_file_included("doc.md"))
+        self.assertEqual(cfg_all.include, ())
+        self.assertTrue(
+            cfg_all.is_file_matched_fast(Path("test.py"), Path("."), Path("."))
+        )
+        self.assertTrue(
+            cfg_all.is_file_matched_fast(Path("doc.md"), Path("."), Path("."))
+        )
 
-        with self.assertRaises(InvalidFileSpaceConfigError):
-            FileSpaceConfig.from_dict(
-                "invalid",
-                {"include": ["project://source"], "hash_policy": "invalid_policy"},
+        with self.assertRaises(SpaceError):
+            SpaceConfig(
+                qualified_name="project/invalid",
+                owner="project",
+                short_name="invalid",
+                entries=("project://source",),
+                hash_policy="invalid_policy",  # type: ignore[arg-type]
             )
 
         contributes = KnowledgeDBContributes.from_dict(

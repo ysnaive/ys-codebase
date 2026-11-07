@@ -25,6 +25,28 @@
       "description": "指向 agents-workflow 長期技術路線圖與策略資產目錄"
     }
   ],
+  "spaces": {
+    "docs": {
+      "description": "專案架構與核心知識文檔空間",
+      "entries": ["workflow.docs://"],
+      "exclude": [".git", "archive"],
+      "include": ["*.md", "*.txt", "*.json", "*.yaml", "*.yml"],
+      "hash_policy": "adaptive",
+      "large_file_threshold_mb": 10,
+      "follow_symlinks": false,
+      "watch": true
+    },
+    "plans": {
+      "description": "專案演進與開發計畫空間",
+      "entries": ["workflow.plans://"],
+      "exclude": [".git", "archive"],
+      "include": ["*.md"],
+      "hash_policy": "adaptive",
+      "large_file_threshold_mb": 10,
+      "follow_symlinks": false,
+      "watch": true
+    }
+  },
   "commands": {
     "module_alias": [],
     "description": "YS-Codebase Multi-Agent Workflow, Standards, Templates & Dev Plans Subsystem",

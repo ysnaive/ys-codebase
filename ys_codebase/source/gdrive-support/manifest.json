@@ -6,8 +6,7 @@
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.7.3",
-    "file-space": ">=1.0.1.4"
+    "core": ">=1.2.7.4"
   },
   "optional": {
     "server": {

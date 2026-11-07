@@ -33,14 +33,14 @@ last_updated: "2026-11-07"
 # Core 微內核架構手冊 (Core Microkernel Overview)
 
 > 模組名稱：`core`  
-> 模組版本：`1.2.7.0`  
-> 職責定位：YS-Codebase 系統微內核基礎設施、套件生命週期、VFS 檔案系統、語意 URI 系統、SemVer 運算與依賴注入引擎。
+> 模組版本：`1.2.7.5`  
+> 職責定位：YS-Codebase 系統微內核基礎設施、套件生命週期、VFS 檔案系統、語意 URI 系統、Layer 1 邏輯檔案空間與指紋底座 (`core.space`)、SemVer 運算與依賴注入引擎。
 
 ---
 
 ## 1. Core 微內核架構設計與專題導航 (Microkernel Architecture & Topic Navigation)
 
-`core` 模組由七大核心子系統組成：
+`core` 模組由八大核心子系統組成：
 
 ```mermaid
 graph TD
@@ -48,6 +48,7 @@ graph TD
     
     subgraph CoreModule ["Core 微內核系統 (module:core)"]
         VFS["First-Class VFS & URI<br/><code>core.uri</code> / <code>core.vfs</code><br/><i>語意路徑解算、JIT 熱補齊、Quick Fix 提示、自省清冊與原子 I/O</i>"]:::sub
+        Space["邏輯檔案空間與指紋底座<br/><code>core.space</code><br/><i>命名空間隔離、compose 代數、YFP2 快照與多消費者游標</i>"]:::sub
         SemVer["SemVer 2.0.0 運算器<br/><code>core.semver</code><br/><i>數值排序、約束匹配與依賴求解</i>"]:::sub
         Context["執行上下文 SSOT<br/><code>core.context</code><br/><i>不可變 ExecutionContext 載體</i>"]:::sub
         Engine["AtomicEngine 引擎<br/><code>core.engine</code><br/><i>12 大原子操作、OS 原子鎖與雙層快照</i>"]:::sub

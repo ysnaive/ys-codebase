@@ -20,12 +20,12 @@ import threading
 import time
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
-from file_space import (
-    FileSpaceConfig,
-    FileSpaceManager,
-    FingerprintScanner,
+from core.space import (
     ScanDiffDetail,
     ScanDiffResult,
+    SpaceConfig,
+    SpaceRegistry,
+    SpaceScanner,
     consume_diff,
     reset_cursor,
 )
@@ -35,6 +35,7 @@ from .bundler import (
     _extract_unaggregated_partial_state,
     _is_partial_symbol,
     _resolve_default_ast_storage_dir,
+    _space_logical_name,
     aggregate_partial_symbols,
     ensure_unique_overload_ids,
     restore_unaggregated_partial_symbol,
@@ -379,8 +380,8 @@ class ASTEngine:
         project_root: Optional[Union[str, Path]] = None,
         storage_dir: Optional[Union[str, Path]] = None,
         contributes_data: Optional[Dict[str, Any]] = None,
-        space_manager: Optional[FileSpaceManager] = None,
-        scanner: Optional[FingerprintScanner] = None,
+        space_manager: Optional[SpaceRegistry] = None,
+        scanner: Optional[SpaceScanner] = None,
         parser_registry: Optional[ParserRegistry] = None,
         custom_spaces: Optional[Dict[str, Any]] = None,
     ) -> None:
@@ -400,37 +401,62 @@ class ASTEngine:
         self.graph_index_path = self.indices_dir / "unified.graph.bin.gz"
         self.meta_index_path = self.indices_dir / "unified.meta.json"
 
+        use_isolated_scanner = False
         if space_manager is not None:
             self.space_manager = space_manager
+            if self._custom_storage_dir:
+                use_isolated_scanner = True
         else:
             sm_kwargs: Dict[str, Any] = {"project_root": self.project_root}
             if custom_spaces:
                 norm_spaces: Dict[str, Any] = {}
                 for k, v in custom_spaces.items():
-                    if isinstance(v, FileSpaceConfig):
-                        norm_spaces[k] = {"include": [str(p) for p in v.include]}
+                    if isinstance(v, SpaceConfig):
+                        norm_spaces[k] = {
+                            "entries": [str(p) for p in v.entries],
+                            "include": list(v.include),
+                            "exclude": list(v.exclude),
+                        }
                     elif isinstance(v, dict):
-                        inc = v.get("include") or ([str(v["root"])] if "root" in v else [str(self.project_root)])
-                        norm_spaces[k] = {"include": inc}
+                        ents = (
+                            v.get("entries")
+                            or v.get("include")
+                            or ([str(v["root"])] if "root" in v else [str(self.project_root)])
+                        )
+                        norm_spaces[k] = {
+                            "entries": [str(p) for p in ents],
+                            "include": list(v.get("patterns") or ["**/*"]),
+                            "exclude": list(v.get("exclude") or []),
+                        }
                     else:
-                        norm_spaces[k] = {"include": [str(v)]}
-                sm_kwargs["spaces_config"] = norm_spaces
+                        norm_spaces[k] = {"entries": [str(v)]}
+                sm_kwargs["raw_spaces"] = norm_spaces
+                use_isolated_scanner = True
             elif project_root is not None:
-                default_proj = self._resolve_default_project_root()
-                if self.project_root != default_proj:
-                    default_sp_cfg: Dict[str, Any] = {"include": [str(self.project_root)]}
-                    try:
-                        rel_st = self.storage_dir.resolve().relative_to(self.project_root.resolve()).as_posix()
-                        if rel_st and rel_st != ".":
-                            default_sp_cfg["exclude"] = [f"{rel_st}/**", f"**/{rel_st}/**"]
-                    except ValueError:
-                        pass
-                    sm_kwargs["spaces_config"] = {"default": default_sp_cfg}
-                    sm_kwargs["contributed_spaces"] = {}
-                    sm_kwargs["storage_root"] = self.storage_dir / "file_space"
-            self.space_manager = FileSpaceManager(**sm_kwargs)
+                default_sp_cfg: Dict[str, Any] = {
+                    "entries": [str(self.project_root)],
+                    "exclude": [".ast_store*", ".ast_index.lock"],
+                }
+                try:
+                    rel_st = self.storage_dir.resolve().relative_to(self.project_root.resolve()).as_posix()
+                    if rel_st and rel_st != ".":
+                        default_sp_cfg["exclude"].extend([rel_st, f"{rel_st}/**", f"**/{rel_st}/**"])
+                except ValueError:
+                    pass
+                sm_kwargs["raw_spaces"] = {"default": default_sp_cfg}
+                use_isolated_scanner = True
+            self.space_manager = SpaceRegistry(**sm_kwargs)
 
-        self.scanner = scanner or FingerprintScanner(self.space_manager)
+        if scanner is not None:
+            self.scanner = scanner
+        elif use_isolated_scanner or self._custom_storage_dir:
+            self.scanner = SpaceScanner(
+                registry=self.space_manager,
+                storage_root=self.storage_dir / "space",
+            )
+        else:
+            self.scanner = SpaceScanner(registry=self.space_manager)
+
         self.parser_registry = parser_registry or ParserRegistry(
             register_defaults=True,
             contributes_data=contributes_data,
@@ -466,27 +492,27 @@ class ASTEngine:
         if self.scanner is not None and hasattr(self.scanner, "consume_diff"):
             if auto_refresh is not None:
                 with self.scanner.consume_diff(
-                    space_name=space_name,
+                    space_name,
                     consumer_id=self.CONSUMER_ID,
                     auto_refresh=auto_refresh,
                 ) as diff_res:
                     yield diff_res
             else:
                 with self.scanner.consume_diff(
-                    space_name=space_name,
+                    space_name,
                     consumer_id=self.CONSUMER_ID,
                 ) as diff_res:
                     yield diff_res
         else:
-            with consume_diff(space_name=space_name, consumer_id=self.CONSUMER_ID) as diff_res:
+            with consume_diff(space_name, consumer_id=self.CONSUMER_ID) as diff_res:
                 yield diff_res
 
     def _reset_consumer_cursor(self, space_name: Optional[str] = None) -> None:
         try:
             if self.scanner is not None and hasattr(self.scanner, "reset_cursor"):
-                self.scanner.reset_cursor(space_name=space_name, consumer_id=self.CONSUMER_ID)
+                self.scanner.reset_cursor(space_name, consumer_id=self.CONSUMER_ID)
             else:
-                reset_cursor(space_name=space_name, consumer_id=self.CONSUMER_ID)
+                reset_cursor(space_name, consumer_id=self.CONSUMER_ID)
         except Exception as exc:
             logger.debug(f"Reset cursor for consumer='{self.CONSUMER_ID}' skipped: {exc}")
 
@@ -517,22 +543,35 @@ class ASTEngine:
             existing_files_map = self._snapshot.files_map if self._snapshot is not None else {}
 
             for sp_cfg in target_cfgs:
-                sp_name = sp_cfg.name
-                snap_st = None
-                if self.scanner is not None and hasattr(self.scanner, "_load_or_recover_state"):
-                    try:
-                        snap_st, _ = self.scanner._load_or_recover_state(sp_name)
-                    except Exception:
-                        snap_st = None
+                sp_name = _space_logical_name(sp_cfg)
+                q_name = sp_cfg.qualified_name or sp_name
+                snap_entries = None
+                snap_gen = 1
+                if self.scanner is not None:
+                    if hasattr(self.scanner, "_load_snapshot_state"):
+                        try:
+                            st = self.scanner._load_snapshot_state(
+                                q_name, is_ephemeral=bool(getattr(sp_cfg, "is_ephemeral", False))
+                            )
+                            if st is not None:
+                                snap_entries = getattr(st, "entries", None)
+                                snap_gen = int(getattr(st, "generation", 1) or 1)
+                        except Exception:
+                            snap_entries = None
+                    if not snap_entries and hasattr(self.scanner, "snapshot"):
+                        try:
+                            snap_entries = self.scanner.snapshot(q_name, refresh_first=False)
+                        except Exception:
+                            snap_entries = None
 
                 rel_files: Optional[List[str]] = None
                 if incremental_detail is not None:
-                    if snap_st is not None and getattr(snap_st, "entries", None):
+                    if snap_entries:
                         rel_from_snap: List[str] = []
-                        for rel_k, fp_rec in snap_st.entries.items():
+                        for rel_k, fp_rec in snap_entries.items():
                             if getattr(fp_rec, "is_deleted", False):
                                 continue
-                            src_root_str = getattr(fp_rec, "source_root", "")
+                            src_root_str = getattr(fp_rec, "entry_path", "") or getattr(fp_rec, "source_root", "")
                             if src_root_str:
                                 src_root = Path(src_root_str)
                                 rel_from_snap.append(self.bundler._get_project_relpath(src_root / rel_k, src_root))
@@ -564,20 +603,14 @@ class ASTEngine:
                     rel_files = sorted(set(walked))
 
                 files_map[sp_name] = rel_files
-                if self.scanner is not None and hasattr(self.scanner, "get_cursor_status"):
+                if self.scanner is not None and hasattr(self.scanner, "cursor_store"):
                     try:
-                        st = self.scanner.get_cursor_status(sp_name, consumer_id=self.CONSUMER_ID)
-                        if isinstance(st, dict):
-                            space_gens[sp_name] = int(st.get("head_generation") or st.get("acked_generation") or 1)
-                            continue
+                        acked_gen = self.scanner.cursor_store.get_cursor(q_name, self.CONSUMER_ID)
+                        space_gens[sp_name] = int(snap_gen or acked_gen or 1)
+                        continue
                     except Exception:
                         pass
-                if snap_st is not None:
-                    space_gens[sp_name] = int(
-                        getattr(snap_st, "head_generation", getattr(snap_st, "generation", 1))
-                    )
-                    continue
-                space_gens[sp_name] = 1
+                space_gens[sp_name] = int(snap_gen or 1)
         except Exception as exc:
             logger.debug(f"Collecting space generations fallback: {exc}")
         return space_gens, files_map
@@ -743,13 +776,6 @@ class ASTEngine:
             linker = TopologyLinker(symbols_map=symbols_map)
             graph_idx = linker.build_graph(call_sites=call_sites, imports_map=imports_map)
 
-            try:
-                target_sp = spaces[0] if (spaces and len(spaces) == 1) else None
-                with self._consume_space_diff(space_name=target_sp):
-                    pass
-            except Exception as exc:
-                logger.debug(f"Cursor alignment after build_index skipped: {exc}")
-
             space_gens, files_map = self._collect_space_generations_and_files_map(spaces=spaces)
             snapshot = ASTSnapshot(
                 ast_generation=prev_gen + 1,
@@ -760,6 +786,12 @@ class ASTEngine:
                 created_at=time.time(),
             )
             self._save_snapshot_and_graph(snapshot, graph_idx)
+            try:
+                target_sp = spaces[0] if (spaces and len(spaces) == 1) else None
+                with self._consume_space_diff(space_name=target_sp):
+                    pass
+            except Exception as exc:
+                logger.debug(f"Cursor alignment after build_index skipped: {exc}")
             return snapshot
 
     @staticmethod
@@ -987,14 +1019,6 @@ class ASTEngine:
                     spaces=spaces,
                 )
 
-                if not _cursor_already_consumed:
-                    try:
-                        target_sp = spaces[0] if (spaces and len(spaces) == 1) else None
-                        with self._consume_space_diff(space_name=target_sp):
-                            pass
-                    except Exception as exc:
-                        logger.debug(f"Cursor alignment after hot_patch_index skipped: {exc}")
-
                 space_gens, files_map = self._collect_space_generations_and_files_map(
                     spaces=spaces, incremental_detail=detail
                 )
@@ -1005,6 +1029,13 @@ class ASTEngine:
                 self._snapshot.created_at = time.time()
 
                 self._save_snapshot_and_graph(self._snapshot, self._graph)
+                if not _cursor_already_consumed:
+                    try:
+                        target_sp = spaces[0] if (spaces and len(spaces) == 1) else None
+                        with self._consume_space_diff(space_name=target_sp):
+                            pass
+                    except Exception as exc:
+                        logger.debug(f"Cursor alignment after hot_patch_index skipped: {exc}")
                 return self._snapshot
             except Exception as exc:
                 logger.warning(f"Hot-patch failed ({exc}), falling back to full build_index.")
@@ -1072,11 +1103,13 @@ class ASTEngine:
         if not raw:
             raise FileNotFoundError("Empty file path provided to outline().")
 
-        loaded_spaces = (
-            self.space_manager.get_all_spaces()
-            if hasattr(self.space_manager, "get_all_spaces")
-            else self.space_manager.load_spaces()
-        )
+        loaded_spaces: Dict[str, SpaceConfig] = {}
+        for sp in self.space_manager.list_spaces():
+            if sp.qualified_name:
+                loaded_spaces[sp.qualified_name] = sp
+            if sp.short_name and sp.short_name not in loaded_spaces:
+                loaded_spaces[sp.short_name] = sp
+
         if "://" in raw:
             scheme, rest = raw.split("://", 1)
             rest_clean = rest.replace("\\", "/").lstrip("/")
@@ -1116,11 +1149,14 @@ class ASTEngine:
         rel_path = self.bundler._get_project_relpath(p, self.project_root)
         matched_space = "project"
         try:
-            for sp_name, sp_cfg in loaded_spaces.items():
-                for inc_root in self.space_manager.resolve_space_include(sp_name):
+            for sp_cfg in self.space_manager.list_spaces():
+                sp_label = _space_logical_name(sp_cfg)
+                for _, inc_root, exists in sp_cfg.resolve_entries(self.project_root):
+                    if inc_root is None or not exists:
+                        continue
                     try:
                         p.relative_to(Path(inc_root).resolve())
-                        matched_space = sp_name
+                        matched_space = sp_label
                         break
                     except ValueError:
                         continue
@@ -1304,7 +1340,7 @@ class ASTEngine:
             }
 
     def clean(self, space: Optional[str] = None, space_name: Optional[str] = None) -> Dict[str, Any]:
-        """Remove persisted AST snapshot/graph caches and reset `file-space` cursor (`consumer='ast'`)."""
+        """Remove persisted AST snapshot/graph caches and reset `core.space` cursor (`consumer='ast'`)."""
         target_space = space or space_name
         removed: List[str] = []
 

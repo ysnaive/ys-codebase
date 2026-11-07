@@ -19,13 +19,18 @@ import time
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 from ast_engine import ASTEngine, SemanticBundler
-from file_space import (
-    FileSpaceManager,
-    FingerprintScanner,
+from core.space import (
     ScanDiffDetail,
     ScanDiffResult,
+    SpaceConfig,
+    SpaceError,
+    SpaceFileEntry,
+    SpaceNotFoundError,
+    SpaceRegistry,
+    SpaceScanner,
     consume_diff,
     reset_cursor,
+    resolve_semantic_or_rel_path,
 )
 
 from .embedding import EmbeddingService, VectorIndex, format_symbol_embedding_text
@@ -114,8 +119,11 @@ def _symbol_matches_filters(
     """無狀態純函式：檢驗符號是否通過搜尋過濾條件"""
     if sym is None or score <= 0:
         return False
-    if target_spaces and not any(s in target_spaces for s in getattr(sym, "spaces", [])):
-        return False
+    if target_spaces:
+        sym_spaces = getattr(sym, "spaces", []) or []
+        target_shorts = {t.split("/")[-1] for t in target_spaces}
+        if not any(s in target_spaces or s.split("/")[-1] in target_shorts for s in sym_spaces):
+            return False
     if kinds and sym.kind not in kinds:
         return False
     if languages and sym.language not in languages:
@@ -128,9 +136,9 @@ class IndexingPipeline:
 
     def __init__(
         self,
-        space_manager: FileSpaceManager,
+        space_manager: SpaceRegistry,
         bundler: SemanticBundler,
-        scanner: FingerprintScanner,
+        scanner: SpaceScanner,
         tokenizer: MultilingualTokenizer,
         bm25_engine: BM25Engine,
         embedding_service: EmbeddingService,
@@ -209,9 +217,9 @@ class IndexingPipeline:
     def _reset_consumer_cursor(self, space_name: Optional[str] = None, consumer_id: str = "knowledge-db") -> None:
         """重置消費者增量游標"""
         if self.scanner is not None and hasattr(self.scanner, "reset_cursor"):
-            self.scanner.reset_cursor(space_name=space_name, consumer_id=consumer_id)
+            self.scanner.reset_cursor(space_name, consumer_id=consumer_id)
         else:
-            reset_cursor(space_name=space_name, consumer_id=consumer_id)
+            reset_cursor(space_name, consumer_id=consumer_id)
 
     @contextmanager
     def _consume_space_diff(
@@ -219,10 +227,10 @@ class IndexingPipeline:
     ) -> Iterator[ScanDiffResult]:
         """以交易式 Context Manager 消費空間指紋差異並於無異常時自動推進游標"""
         if self.scanner is not None and hasattr(self.scanner, "consume_diff"):
-            with self.scanner.consume_diff(space_name=space_name, consumer_id=consumer_id) as diff_res:
+            with self.scanner.consume_diff(space_name, consumer_id=consumer_id) as diff_res:
                 yield diff_res
         else:
-            with consume_diff(space_name=space_name, consumer_id=consumer_id) as diff_res:
+            with consume_diff(space_name, consumer_id=consumer_id) as diff_res:
                 yield diff_res
 
     def _ensure_indices_loaded(
@@ -527,7 +535,11 @@ class IndexingPipeline:
         indexed_spaces = self._get_indexed_space_names()
         all_target_spaces = self.bundler._resolve_target_spaces(None)
         target_spaces = (
-            [sp for sp in all_target_spaces if sp.name in indexed_spaces]
+            [
+                sp
+                for sp in all_target_spaces
+                if sp.short_name in indexed_spaces or sp.qualified_name in indexed_spaces
+            ]
             if indexed_spaces
             else all_target_spaces
         )
@@ -1005,10 +1017,20 @@ class IndexingPipeline:
             idx = self.build_unified_index(force=force, interactive=interactive)
             return {"unified": idx}
 
-        sp = self.space_manager.get_space(space)
+        resolved_list = self.space_manager.resolve_spaces(space)
+        sp = resolved_list[0]
         indices_dir = self.get_indices_dir()
-        sp_name = sp.name
-        bin_file = indices_dir / f"{sp_name}.index.bin.gz"
+        weights = self._resolve_space_weights()
+        if space in weights:
+            sp_name = space
+        elif sp.short_name in weights:
+            sp_name = sp.short_name
+        elif sp.qualified_name in weights:
+            sp_name = sp.qualified_name
+        else:
+            sp_name = sp.short_name or sp.qualified_name
+        safe_name = sp_name.replace("/", "_")
+        bin_file = indices_dir / f"{safe_name}.index.bin.gz"
 
         if not force and bin_file.exists():
             try:
@@ -1019,9 +1041,10 @@ class IndexingPipeline:
                 logger.warning(f"Failed loading binary cached index for '{sp_name}', rebuilding: {e}")
 
         snapshot = self._sync_ast_snapshot(force=force)
+        match_keys = {space, sp_name, sp.short_name, sp.qualified_name}
         space_symbols = [
             sym for sym in snapshot.symbols.values()
-            if not sym.spaces or sp_name in sym.spaces
+            if not sym.spaces or any(s in match_keys for s in sym.spaces)
         ]
         idx = InvertedIndex(space_name=sp_name)
         idx.build(
@@ -1048,31 +1071,29 @@ class IndexingPipeline:
 
     def _clean_locked(self, space: Optional[str] = None) -> None:
         if space is not None:
-            targets = [self.space_manager.get_space(space)]
+            targets = self.space_manager.resolve_spaces(space)
         else:
-            loaded_spaces = (
-                self.space_manager.get_all_spaces()
-                if hasattr(self.space_manager, "get_all_spaces")
-                else self.space_manager.load_spaces()
-            )
-            targets = list(loaded_spaces.values())
+            targets = list(self.space_manager.list_spaces())
         for sp in targets:
-            sp_name = sp.name
-            bundle_file = self.storage_dir / "bundles" / f"{sp_name}.bundle.json"
-            if bundle_file.exists():
-                try:
-                    bundle_file.unlink()
-                except OSError:
-                    pass
+            for candidate_name in {sp.short_name, sp.qualified_name.replace("/", "_")}:
+                if not candidate_name:
+                    continue
+                bundle_file = self.storage_dir / "bundles" / f"{candidate_name}.bundle.json"
+                if bundle_file.exists():
+                    try:
+                        bundle_file.unlink()
+                    except OSError:
+                        pass
 
-            idx_file = self.storage_dir / "indices" / f"{sp_name}.index.bin.gz"
-            if idx_file.exists():
-                try:
-                    idx_file.unlink()
-                except OSError:
-                    pass
+                idx_file = self.storage_dir / "indices" / f"{candidate_name}.index.bin.gz"
+                if idx_file.exists():
+                    try:
+                        idx_file.unlink()
+                    except OSError:
+                        pass
 
-            self._index_cache.pop(sp_name, None)
+                self._index_cache.pop(candidate_name, None)
+            self._index_cache.pop(sp.qualified_name, None)
 
         for fn in [
             "unified.index.bin.gz",
@@ -1183,7 +1204,12 @@ class IndexingPipeline:
 
                 elapsed_ms = max(1, int((time.time() - t0) * 1000))
                 if verbose:
-                    total_files = diff_res.total_changed + diff_res.unchanged_count
+                    total_files = (
+                        diff_res.added_count
+                        + diff_res.modified_count
+                        + diff_res.deleted_count
+                        + diff_res.unchanged_count
+                    )
                     print(
                         f"[knowledge-db:auto-rebuild] Index updated in {elapsed_ms}ms ({total_files} files).",
                         file=sys.stderr,
@@ -1221,8 +1247,19 @@ class IndexingPipeline:
         return {}
 
     def _get_indexed_space_names(self) -> Set[str]:
-        """取得已宣告 `space_weights` 之受索引空間名稱集合。"""
-        return set(self._resolve_space_weights().keys())
+        """取得已宣告 `space_weights` 之受索引空間名稱集合（含 short_name 與 qualified_name）。"""
+        weights = self._resolve_space_weights()
+        names = set(weights.keys())
+        try:
+            for sp in self.space_manager.list_spaces():
+                if sp.qualified_name in weights or sp.short_name in weights:
+                    if sp.short_name:
+                        names.add(sp.short_name)
+                    if sp.qualified_name:
+                        names.add(sp.qualified_name)
+        except Exception:
+            pass
+        return names
 
     def _filter_symbol_for_indexed_spaces(
         self, sym: UnifiedSymbol, indexed_spaces: Set[str]
@@ -1233,10 +1270,17 @@ class IndexingPipeline:
         raw_spaces = list(getattr(sym, "spaces", []) or [])
         if not raw_spaces:
             return sym
-        valid_spaces = [s for s in raw_spaces if s in indexed_spaces]
+        weights = self._resolve_space_weights()
+        valid_spaces: List[str] = []
+        for s in raw_spaces:
+            s_short = s.split("/")[-1]
+            if s in indexed_spaces or s_short in indexed_spaces:
+                norm_s = s if s in weights else (s_short if s_short in weights else s_short)
+                if norm_s not in valid_spaces:
+                    valid_spaces.append(norm_s)
         if not valid_spaces:
             return None
-        if len(valid_spaces) == len(raw_spaces):
+        if valid_spaces == raw_spaces:
             return sym
         new_meta = dict(sym.metadata or {})
         new_meta["spaces"] = valid_spaces
