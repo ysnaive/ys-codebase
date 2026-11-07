@@ -2,7 +2,7 @@
 
 > 計畫名稱：2026_11_07_2052_jupyter_style_runtime_isolation_and_static_guardrails  
 > 建立日期：2026-11-07  
-> 計畫狀態：Planning  
+> 計畫狀態：In Progress  
 > Umbrella 模式：Pre-planned (預先規劃型)  
 > 模型：Gemini 3.1 Pro  
 > 模板版本：v1.2  
@@ -27,7 +27,7 @@
 
 | 子計畫編號 | 子計畫目錄名稱 | 分流層級 | 當前狀態 | 核心範疇說明 |
 | :---: | :--- | :---: | :---: | :--- |
-| **sub_01** | `sub_01_core_log_pipeline_and_streamer_unification` | Full Track | `Pending` | 建立 `core/core/log.py`（`log*` 調用者終端串流與 `logFile*` 可配置滾動視窗增量檔案紀錄），收編 `ServerLogger`（含 `os.rename` 升級 `os.replace`）與 `telemetry.py` 輪替邏輯，並完成 `core` 內部 346 處輸出遷移（豁免 `yscb.py` 單檔 Bootstrap 原生輸出） |
+| **sub_01** | `sub_01_core_log_pipeline_and_streamer_unification` | Full Track | `In Progress` | 建立 `core/core/log.py`（`log*` 調用者終端串流與 `log_file*` 可配置滾動視窗增量檔案紀錄），一併收編 `ServerLogger`（含 `os.rename` 升級 `os.replace`）、`DebouncedIOStreamer` 與 `telemetry.py` 輪替邏輯，並完成 `core` 內部 346 處輸出遷移（豁免 `yscb.py` 單檔 Bootstrap 原生輸出） |
 | **sub_02** | `sub_02_core_runtime_context_and_namespace_loader` | Full Track | `Pending` | 擴充 `RuntimeContext` 與 `ContextVar`（含 `virtual_cwd` 與請求級 `env`）收斂 `core` 29 個頂層可變快取並消除 10 處 `global`、2 處 `Path.cwd()` 與非啟動器 `sys.exit()`；凍結 `core` 9 個未設 `frozen=True` 之 `@dataclass` 與 `MappingProxyType` 唯讀視圖；建立受保護模組命名空間載入器統一替換 5 處 `spec_from_file_location` / `sys.modules` 邏輯 |
 | **sub_03** | `sub_03_server_three_plane_and_managed_worker_threads` | Full Track | `Pending` | 解耦 `server` 控制與執行通道，移除 `WarmWorker` 全域 `sys.stdout` 劫持、`os.chdir()` 與 `os.environ` 突變；於 `BaseServiceWorker` 內建受管獨立執行緒與非阻塞狀態機，收編 3 個常駐服務並刪除 `file-space`/`knowledge-db` 之 `hook.server.py` 野執行緒；落地 KDB `has_local_model()` 離線預檢、拔除背景自動下載、解耦 `kdb model download` CLI 並修復 `pipeline.py` 前景搜尋搶鎖阻塞 |
 | **sub_04** | `sub_04_ecosystem_modules_compliance_migration` | Full Track | `Pending` | 將上層 7 大業務模組（`dev`, `file-space`, `ast`, `knowledge-db`, `agents-workflow`, `vscode-support`, `gdrive-support`）共 531 處原生輸出與 `logging` 遷移至 `core.log`；消除 24 處 `os.chdir`/`os.getcwd`/`Path.cwd`、11 處 `os.environ` 突變、2 處缺 `timeout=` 之 `subprocess.run` 與裸 `input()`；收斂 47 處頂層可變容器/`global` 與 48 處非凍結 `@dataclass`/類別可變屬性（`ast` 僅執行薄層機械合規調整，留待 Tier 2 重構） |
