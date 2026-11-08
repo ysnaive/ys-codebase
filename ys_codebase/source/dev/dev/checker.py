@@ -1,18 +1,15 @@
 """
 Compliance & Architecture Checker for YS-Codebase modules.
-Implements 8-step compliance check pipeline, 3-tier severity classification,
-and AST static security/anti-pattern analysis.
+Implements a pure static 7-step compliance check pipeline, 3-tier severity classification,
+and single-pass AST runtime isolation guardrail analysis.
 """
 import os
-import sys
 import ast
 import json
-import importlib
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import Tuple, List, Dict, Optional, Any, Set
+from typing import Tuple, List, Dict, Optional, Any, Set, FrozenSet
 from core import uri, vfs, semver, contributes
-from core.symbols import parse_code_func_uri, resolve_callable
 
 
 class CheckSeverity(Enum):
@@ -302,6 +299,573 @@ def _is_core_spec_at_least_1_2_0(core_spec: Any) -> bool:
         return False
 
 
+_GUARDRAIL_EXEMPTIONS: FrozenSet[Tuple[str, str, str]] = frozenset({
+    ("A1", "core", "core/log.py"),
+    ("A1", "dev", "dev/testing/runner.py"),
+    ("A2", "server", "server/worker.py"),
+    ("B3", "server", "server/master.py"),
+    ("B4", "core", "core/context.py"),
+    ("B4", "core", "core/platform/venv.py"),
+    ("B5", "core", "core/platform/venv.py"),
+    ("B6", "server", "server/master.py"),
+    ("D10_SYS_MODULES", "core", "core/loader.py"),
+    ("D10_SYS_MODULES", "core", "core/platform/venv.py"),
+    ("D10_SYS_MODULES", "dev", "dev/testing/runner.py"),
+    ("D10_SPEC", "core", "core/loader.py"),
+    ("F13_SUBPROCESS", "core", "core/platform/process.py"),
+    ("F13_THREAD", "server", "server/service.py"),
+    ("F13_THREAD", "server", "server/master.py"),
+    ("F13_THREAD", "server", "server/watcher.py"),
+    ("F13_THREAD", "dev", "dev/testing/runner.py"),
+    ("F13_THREAD", "core", "core/log.py"),
+})
+
+_MUTABLE_CONSTRUCTORS: FrozenSet[str] = frozenset({
+    "list",
+    "dict",
+    "set",
+    "bytearray",
+    "defaultdict",
+    "OrderedDict",
+    "Counter",
+    "deque",
+    "SimpleNamespace",
+})
+
+_SYS_PATH_MUTATING_METHODS: FrozenSet[str] = frozenset({
+    "insert",
+    "append",
+    "extend",
+    "remove",
+    "pop",
+    "clear",
+    "sort",
+    "reverse",
+})
+
+_DICT_MUTATING_METHODS: FrozenSet[str] = frozenset({
+    "pop",
+    "popitem",
+    "clear",
+    "update",
+    "setdefault",
+})
+
+
+def _is_mutable_expr(node: ast.AST) -> bool:
+    """Return True if an AST expression constructs a mutable container or namespace."""
+    if isinstance(node, (ast.List, ast.Dict, ast.Set, ast.ListComp, ast.DictComp, ast.SetComp)):
+        return True
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in _MUTABLE_CONSTRUCTORS:
+            return True
+        if isinstance(func, ast.Attribute) and func.attr in _MUTABLE_CONSTRUCTORS:
+            return True
+    return False
+
+
+class _SourceGuardrailVisitor(ast.NodeVisitor):
+    """
+    Single-pass AST static guardrail analyzer for module source files.
+    Enforces Jupyter-style runtime isolation guardrails (A1~F13), Zero Probing,
+    import alias tracking, and reflection defense.
+    """
+
+    def __init__(self, module_name: str, rel_path: str, is_test_file: bool, report: CheckReport) -> None:
+        self.module_name = module_name
+        self.rel_path = rel_path
+        self.is_test_file = is_test_file
+        self.report = report
+        self.module_aliases: Dict[str, str] = {
+            "os": "os",
+            "sys": "sys",
+            "subprocess": "subprocess",
+            "threading": "threading",
+            "signal": "signal",
+            "logging": "logging",
+            "pprint": "pprint",
+            "traceback": "traceback",
+            "builtins": "builtins",
+            "importlib": "importlib",
+            "pathlib": "pathlib",
+        }
+        self.symbol_imports: Dict[str, Tuple[str, str]] = {
+            "Path": ("pathlib", "Path"),
+        }
+        self.doc_nodes: Set[int] = set()
+        self.scope_stack: List[str] = ["module"]
+        self._seen_issues: Set[Tuple[Optional[int], str]] = set()
+
+    def _exempt(self, key: str) -> bool:
+        return (key, self.module_name, self.rel_path) in _GUARDRAIL_EXEMPTIONS
+
+    def _record_issue(
+        self,
+        lineno: Optional[int],
+        message: str,
+        category: str = "ANTIPATTERN",
+        severity: CheckSeverity = CheckSeverity.FAIL,
+    ) -> None:
+        dedup_key = (lineno, message)
+        if dedup_key in self._seen_issues:
+            return
+        self._seen_issues.add(dedup_key)
+        self.report.issues.append(
+            CheckIssue(
+                severity=severity,
+                category=category,
+                message=message,
+                file_path=self.rel_path,
+                line_number=lineno,
+            )
+        )
+
+    def _collect_imports_and_docs(self, tree: ast.Module) -> None:
+        if tree.body and isinstance(tree.body[0], ast.Expr) and isinstance(tree.body[0].value, ast.Constant):
+            self.doc_nodes.add(id(tree.body[0].value))
+        for n in ast.walk(tree):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant):
+                    self.doc_nodes.add(id(n.body[0].value))
+            elif isinstance(n, ast.Import):
+                for alias in n.names:
+                    bound = alias.asname or alias.name.split(".")[0]
+                    if alias.name == "importlib.util" and alias.asname:
+                        self.module_aliases[alias.asname] = "importlib.util"
+                    else:
+                        self.module_aliases[bound] = alias.name
+            elif isinstance(n, ast.ImportFrom) and n.module:
+                for alias in n.names:
+                    bound = alias.asname or alias.name
+                    self.symbol_imports[bound] = (n.module, alias.name)
+
+    def _resolve_target(self, expr: ast.AST) -> str:
+        """Resolve an AST expression to a canonical dotted path (supporting import aliases and getattr literals)."""
+        if isinstance(expr, ast.Name):
+            if expr.id in self.symbol_imports:
+                mod, sym = self.symbol_imports[expr.id]
+                return f"{mod}.{sym}"
+            if expr.id in self.module_aliases:
+                return self.module_aliases[expr.id]
+            return expr.id
+        if isinstance(expr, ast.Attribute):
+            base = self._resolve_target(expr.value)
+            if base:
+                return f"{base}.{expr.attr}"
+            return f"*.{expr.attr}"
+        if (
+            isinstance(expr, ast.Call)
+            and isinstance(expr.func, ast.Name)
+            and expr.func.id == "getattr"
+            and len(expr.args) >= 2
+            and isinstance(expr.args[1], ast.Constant)
+            and isinstance(expr.args[1].value, str)
+        ):
+            base = self._resolve_target(expr.args[0])
+            if base:
+                return f"{base}.{expr.args[1].value}"
+        return ""
+
+    def _check_top_level_stmts(self, stmts: List[ast.stmt], in_except_handler: bool = False) -> None:
+        for stmt in stmts:
+            if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+                targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+                val = stmt.value
+                if val is None:
+                    continue
+                for t in targets:
+                    if isinstance(t, ast.Name) and t.id != "__all__":
+                        if _is_mutable_expr(val):
+                            self._record_issue(
+                                stmt.lineno,
+                                f"[C8] Forbidden top-level mutable state '{t.id}' in '{self.rel_path}:{stmt.lineno}'. Use immutable constants (frozenset/tuple) or 'core.context.get_runtime_context()'.",
+                            )
+                        elif isinstance(val, ast.Constant) and val.value is None and not in_except_handler:
+                            self._record_issue(
+                                stmt.lineno,
+                                f"[C8] Forbidden top-level mutable None singleton '{t.id}' in '{self.rel_path}:{stmt.lineno}'. Store runtime singletons in 'core.context.get_runtime_context()'.",
+                            )
+            elif isinstance(stmt, ast.AugAssign):
+                if isinstance(stmt.target, ast.Name) and stmt.target.id != "__all__":
+                    self._record_issue(
+                        stmt.lineno,
+                        f"[C8] Forbidden top-level augmented assignment to '{stmt.target.id}' in '{self.rel_path}:{stmt.lineno}'.",
+                    )
+            elif isinstance(stmt, ast.If):
+                self._check_top_level_stmts(stmt.body, in_except_handler=in_except_handler)
+                self._check_top_level_stmts(stmt.orelse, in_except_handler=in_except_handler)
+            elif isinstance(stmt, ast.Try):
+                self._check_top_level_stmts(stmt.body, in_except_handler=in_except_handler)
+                for h in stmt.handlers:
+                    self._check_top_level_stmts(h.body, in_except_handler=True)
+                self._check_top_level_stmts(stmt.orelse, in_except_handler=in_except_handler)
+                self._check_top_level_stmts(stmt.finalbody, in_except_handler=in_except_handler)
+            elif isinstance(stmt, ast.With):
+                self._check_top_level_stmts(stmt.body, in_except_handler=in_except_handler)
+
+    def analyze(self, tree: ast.Module) -> None:
+        self._collect_imports_and_docs(tree)
+        if not self.is_test_file:
+            self._check_top_level_stmts(tree.body)
+        self.visit(tree)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.type is None:
+            lineno = getattr(node, "lineno", None)
+            self._record_issue(
+                lineno,
+                f"Bare 'except:' clause detected in '{self.rel_path}:{lineno or 0}'. Catch 'Exception' or specific exception types instead.",
+                category="ANTIPATTERN",
+                severity=CheckSeverity.WARN,
+            )
+        self.generic_visit(node)
+
+    def visit_Constant(self, node: ast.Constant) -> None:
+        if id(node) in self.doc_nodes:
+            return
+        if not self.is_test_file and self.module_name not in ("dev", "core") and isinstance(node.value, str):
+            s_val = node.value
+            lineno = getattr(node, "lineno", None)
+            if "module.source://" in s_val:
+                self._record_issue(
+                    lineno,
+                    f"Zero Probing violation: 'module.source://' access detected in '{self.rel_path}:{lineno}'.",
+                    category="PROBING",
+                )
+            if s_val in ("config.project.json", "config.local.json"):
+                self._record_issue(
+                    lineno,
+                    f"Reinventing the wheel: direct access to '{s_val}' detected in '{self.rel_path}:{lineno}'. Use 'core.config.get()' / 'core.config.set()' SDK instead.",
+                    category="ANTIPATTERN",
+                )
+            elif s_val == "contributes.merged.json":
+                self._record_issue(
+                    lineno,
+                    f"Direct contributes probing: access to '{s_val}' detected in '{self.rel_path}:{lineno}'. Use 'core.contributes.get()' SDK instead.",
+                    category="ANTIPATTERN",
+                )
+        self.generic_visit(node)
+
+    def visit_Global(self, node: ast.Global) -> None:
+        if not self.is_test_file:
+            self._record_issue(
+                node.lineno,
+                f"[C8] Forbidden 'global' statement ({', '.join(node.names)}) in '{self.rel_path}:{node.lineno}'. Store mutable state in 'core.context.get_runtime_context()'.",
+            )
+        self.generic_visit(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        if not self.is_test_file:
+            is_dc = False
+            is_frozen = False
+            for dec in node.decorator_list:
+                dec_target = self._resolve_target(dec.func if isinstance(dec, ast.Call) else dec)
+                if dec_target in ("dataclass", "dataclasses.dataclass"):
+                    is_dc = True
+                    if isinstance(dec, ast.Call):
+                        for kw in dec.keywords:
+                            if kw.arg == "frozen" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                                is_frozen = True
+            if is_dc and not is_frozen:
+                self._record_issue(
+                    node.lineno,
+                    f"[C9] @dataclass '{node.name}' in '{self.rel_path}:{node.lineno}' must specify 'frozen=True'.",
+                )
+
+            is_enum = any(
+                self._resolve_target(b) in ("Enum", "enum.Enum", "IntEnum", "enum.IntEnum", "Flag", "enum.Flag", "IntFlag", "enum.IntFlag")
+                for b in node.bases
+            )
+            if not is_dc and not is_enum:
+                for bstmt in node.body:
+                    if isinstance(bstmt, (ast.Assign, ast.AnnAssign)) and bstmt.value is not None:
+                        if _is_mutable_expr(bstmt.value):
+                            self._record_issue(
+                                bstmt.lineno,
+                                f"[C9] Forbidden mutable class attribute in '{node.name}' ('{self.rel_path}:{bstmt.lineno}'). Initialize mutable attributes inside '__init__'.",
+                            )
+
+        self.scope_stack.append("class")
+        self.generic_visit(node)
+        self.scope_stack.pop()
+
+    def _visit_func(self, node: ast.AST) -> None:
+        if not self.is_test_file:
+            args_obj = getattr(node, "args", None)
+            func_name = getattr(node, "name", "")
+            lineno = getattr(node, "lineno", 0)
+            if args_obj is not None:
+                defaults = list(args_obj.defaults) + [x for x in args_obj.kw_defaults if x is not None]
+                for d in defaults:
+                    if _is_mutable_expr(d):
+                        self._record_issue(
+                            lineno,
+                            f"[C7] Forbidden mutable default argument in function '{func_name}' ('{self.rel_path}:{lineno}'). Use 'None' and initialize inside the function body.",
+                        )
+            scope_tag = "dunder_getattr" if func_name == "__getattr__" and self.scope_stack[-1] == "module" else "func"
+        else:
+            scope_tag = "func"
+        self.scope_stack.append(scope_tag)
+        self.generic_visit(node)
+        self.scope_stack.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_func(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_func(node)
+
+    def _check_mutation_target(self, target: ast.AST, lineno: int, is_delete: bool = False) -> None:
+        if self.is_test_file:
+            return
+        if isinstance(target, ast.Subscript):
+            val_target = self._resolve_target(target.value)
+            if val_target == "os.environ" and not self._exempt("B5"):
+                self._record_issue(
+                    lineno,
+                    f"[B5] Forbidden direct mutation of 'os.environ' in '{self.rel_path}:{lineno}'. Use 'core.context.get_env()' or 'ExecutionContext.env'.",
+                )
+            elif val_target == "sys.modules" and not self._exempt("D10_SYS_MODULES"):
+                self._record_issue(
+                    lineno,
+                    f"[D10] Forbidden direct mutation of 'sys.modules' in '{self.rel_path}:{lineno}'. Delegate module loading to 'core.loader'.",
+                )
+            elif val_target == "sys.path" and self.module_name != "core":
+                action_desc = "deletion on sys.path" if is_delete else "assignment to sys.path"
+                self._record_issue(
+                    lineno,
+                    f"Forbidden direct sys.path mutation in '{self.rel_path}:{lineno}' ({action_desc}). Runtime sys.path management must be delegated to 'core.platform'.",
+                )
+            elif isinstance(target.value, ast.Call) and self._resolve_target(target.value.func) in ("globals", "builtins.globals"):
+                if self.scope_stack[-1] != "dunder_getattr":
+                    self._record_issue(
+                        lineno,
+                        f"[C8] Forbidden dynamic mutation of 'globals()[...]' in '{self.rel_path}:{lineno}'. Store runtime state in 'core.context.get_runtime_context()'.",
+                    )
+        else:
+            val_target = self._resolve_target(target)
+            if val_target == "os.environ" and not self._exempt("B5"):
+                self._record_issue(
+                    lineno,
+                    f"[B5] Forbidden direct mutation of 'os.environ' in '{self.rel_path}:{lineno}'.",
+                )
+            elif val_target == "sys.modules" and not self._exempt("D10_SYS_MODULES"):
+                self._record_issue(
+                    lineno,
+                    f"[D10] Forbidden direct mutation of 'sys.modules' in '{self.rel_path}:{lineno}'.",
+                )
+            elif val_target == "sys.path" and self.module_name != "core":
+                action_desc = "deletion on sys.path" if is_delete else "assignment to sys.path"
+                self._record_issue(
+                    lineno,
+                    f"Forbidden direct sys.path mutation in '{self.rel_path}:{lineno}' ({action_desc}). Runtime sys.path management must be delegated to 'core.platform'.",
+                )
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        for t in node.targets:
+            self._check_mutation_target(t, node.lineno)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self._check_mutation_target(node.target, node.lineno)
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self._check_mutation_target(node.target, node.lineno)
+        self.generic_visit(node)
+
+    def visit_Delete(self, node: ast.Delete) -> None:
+        for t in node.targets:
+            self._check_mutation_target(t, node.lineno, is_delete=True)
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if self.is_test_file:
+            self.generic_visit(node)
+            return
+
+        lineno = node.lineno
+        target = self._resolve_target(node.func)
+
+        if target in ("setattr", "builtins.setattr", "delattr", "builtins.delattr") and len(node.args) >= 2:
+            if isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str):
+                reflected = f"{self._resolve_target(node.args[0])}.{node.args[1].value}"
+                if reflected == "sys.path" and self.module_name != "core":
+                    self._record_issue(
+                        lineno,
+                        f"Forbidden direct sys.path mutation in '{self.rel_path}:{lineno}' (reflection on sys.path). Runtime sys.path management must be delegated to 'core.platform'.",
+                    )
+                elif reflected == "sys.modules" and not self._exempt("D10_SYS_MODULES"):
+                    self._record_issue(
+                        lineno,
+                        f"[D10] Forbidden reflected mutation of 'sys.modules' in '{self.rel_path}:{lineno}'.",
+                    )
+                elif reflected == "os.environ" and not self._exempt("B5"):
+                    self._record_issue(
+                        lineno,
+                        f"[B5] Forbidden reflected mutation of 'os.environ' in '{self.rel_path}:{lineno}'.",
+                    )
+
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("setdefault", "update", "clear")
+            and isinstance(node.func.value, ast.Call)
+            and self._resolve_target(node.func.value.func) in ("globals", "builtins.globals")
+        ):
+            self._record_issue(
+                lineno,
+                f"[C8] Forbidden dynamic mutation via 'globals().{node.func.attr}()' in '{self.rel_path}:{lineno}'.",
+            )
+
+        if not self._exempt("A1"):
+            if target in ("print", "builtins.print", "pprint.pprint", "pprint", "traceback.print_exc", "traceback.print_exception"):
+                self._record_issue(
+                    lineno,
+                    f"[A1] Forbidden unmanaged output call '{target}()' in '{self.rel_path}:{lineno}'. Use 'core.log' instead.",
+                )
+            elif target.startswith(("sys.stdout.", "sys.stderr.", "sys.__stdout__.", "sys.__stderr__.")) and target.split(".")[-1] in ("write", "writelines", "flush"):
+                self._record_issue(
+                    lineno,
+                    f"[A1] Forbidden direct stream output '{target}()' in '{self.rel_path}:{lineno}'. Use 'core.log' instead.",
+                )
+            elif target.startswith("logging.") or (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in ("logger", "_logger", "LOG")
+            ):
+                self._record_issue(
+                    lineno,
+                    f"[A1] Forbidden stdlib logging call '{target}()' in '{self.rel_path}:{lineno}'. Use 'core.log' instead.",
+                )
+
+        if not self._exempt("A2"):
+            if target in ("input", "builtins.input") or target.startswith(("sys.stdin.", "sys.__stdin__.")):
+                self._record_issue(
+                    lineno,
+                    f"[A2] Forbidden blocking stdin call '{target}()' in '{self.rel_path}:{lineno}'.",
+                )
+
+        if not self._exempt("B3"):
+            if target in ("sys.exit", "os._exit", "exit", "builtins.exit", "quit", "builtins.quit"):
+                self._record_issue(
+                    lineno,
+                    f"[B3] Forbidden process exit call '{target}()' in '{self.rel_path}:{lineno}'. Return an exit status code instead.",
+                )
+
+        if not self._exempt("B4"):
+            if target in ("os.chdir", "os.fchdir", "os.getcwd", "os.getcwdb", "pathlib.Path.cwd"):
+                self._record_issue(
+                    lineno,
+                    f"[B4] Forbidden process CWD call '{target}()' in '{self.rel_path}:{lineno}'. Use 'core.context.get_cwd()' or 'uri.resolve()'.",
+                )
+
+        if not self._exempt("B5"):
+            if target in ("os.putenv", "os.unsetenv") or (
+                target.startswith("os.environ.") and target.split(".")[-1] in _DICT_MUTATING_METHODS
+            ):
+                self._record_issue(
+                    lineno,
+                    f"[B5] Forbidden 'os.environ' mutation '{target}()' in '{self.rel_path}:{lineno}'.",
+                )
+
+        if not self._exempt("B6"):
+            if target == "signal.signal":
+                self._record_issue(
+                    lineno,
+                    f"[B6] Forbidden 'signal.signal()' registration in '{self.rel_path}:{lineno}'.",
+                )
+
+        if target.startswith("sys.path.") and target.split(".")[-1] in _SYS_PATH_MUTATING_METHODS:
+            if self.module_name != "core":
+                method_name = target.split(".")[-1]
+                self._record_issue(
+                    lineno,
+                    f"Forbidden direct sys.path mutation in '{self.rel_path}:{lineno}' (sys.path.{method_name}()). Runtime sys.path management must be delegated to 'core.platform'.",
+                )
+
+        if target.startswith("sys.modules.") and target.split(".")[-1] in _DICT_MUTATING_METHODS:
+            if not self._exempt("D10_SYS_MODULES"):
+                self._record_issue(
+                    lineno,
+                    f"[D10] Forbidden 'sys.modules' mutation '{target}()' in '{self.rel_path}:{lineno}'.",
+                )
+
+        if target.endswith("spec_from_file_location") or target == "spec_from_file_location":
+            if not self._exempt("D10_SPEC"):
+                self._record_issue(
+                    lineno,
+                    f"[D10] Forbidden unmanaged dynamic loader '{target}()' in '{self.rel_path}:{lineno}'. Use 'core.loader' instead.",
+                )
+
+        if target in ("eval", "builtins.eval", "exec", "builtins.exec", "__import__", "builtins.__import__", "importlib.__import__"):
+            self._record_issue(
+                lineno,
+                f"[D11] Forbidden dynamic code execution '{target}()' in '{self.rel_path}:{lineno}'.",
+            )
+
+        if target in ("os.rename", "os.renames", "pathlib.Path.rename") or (
+            isinstance(node.func, ast.Attribute) and node.func.attr == "rename"
+        ):
+            self._record_issue(
+                lineno,
+                f"[E12] Forbidden non-atomic rename '{target or '*.rename'}()' in '{self.rel_path}:{lineno}'. Use 'os.replace()' or 'Path.replace()'.",
+            )
+
+        if target in ("subprocess.run", "subprocess.call", "subprocess.check_call", "subprocess.check_output"):
+            if not self._exempt("F13_SUBPROCESS"):
+                has_timeout = any(kw.arg == "timeout" for kw in node.keywords)
+                if not has_timeout:
+                    self._record_issue(
+                        lineno,
+                        f"[F13] Subprocess call '{target}()' in '{self.rel_path}:{lineno}' missing required 'timeout=' keyword argument.",
+                    )
+
+        if target in ("os.system", "os.popen"):
+            self._record_issue(
+                lineno,
+                f"[F13] Forbidden unmanaged shell execution '{target}()' in '{self.rel_path}:{lineno}'.",
+            )
+
+        if target in ("threading.Thread", "threading.Timer"):
+            if not self._exempt("F13_THREAD"):
+                self._record_issue(
+                    lineno,
+                    f"[F13] Forbidden unmanaged thread creation '{target}()' in '{self.rel_path}:{lineno}'.",
+                )
+
+        if target in ("getattr", "builtins.getattr") and len(node.args) >= 2:
+            if isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str):
+                ref_target = f"{self._resolve_target(node.args[0])}.{node.args[1].value}"
+                if ref_target in ("os.environ", "os.putenv", "os.unsetenv") and not self._exempt("B5"):
+                    self._record_issue(
+                        lineno,
+                        f"[B5] Forbidden reflection access '{ref_target}' in '{self.rel_path}:{lineno}'.",
+                    )
+                elif ref_target in ("os.chdir", "os.fchdir", "os.getcwd", "os.getcwdb", "pathlib.Path.cwd") and not self._exempt("B4"):
+                    self._record_issue(
+                        lineno,
+                        f"[B4] Forbidden reflection access '{ref_target}' in '{self.rel_path}:{lineno}'.",
+                    )
+                elif ref_target in ("sys.exit", "os._exit") and not self._exempt("B3"):
+                    self._record_issue(
+                        lineno,
+                        f"[B3] Forbidden reflection access '{ref_target}' in '{self.rel_path}:{lineno}'.",
+                    )
+                elif ref_target == "sys.modules" and not self._exempt("D10_SYS_MODULES"):
+                    self._record_issue(
+                        lineno,
+                        f"[D10] Forbidden reflection access '{ref_target}' in '{self.rel_path}:{lineno}'.",
+                    )
+                elif ref_target == "sys.path" and self.module_name != "core":
+                    self._record_issue(
+                        lineno,
+                        f"Forbidden direct sys.path mutation in '{self.rel_path}:{lineno}' (reflection on sys.path). Runtime sys.path management must be delegated to 'core.platform'.",
+                    )
+
+        self.generic_visit(node)
+
+
 class Checker:
     def __init__(self) -> None:
         self._parsed_py_cache: Dict[str, Any] = {}
@@ -367,7 +931,6 @@ class Checker:
             self._check_test_classes(name, real_dir, report)
             self._check_sandbox_hooks(name, real_dir, report)
             self._check_docs_pollution(name, real_dir, report)
-            self._check_custom_rules(name, real_dir, report)
 
         if report.has_fails and report.agent_directive:
             report.issues.append(
@@ -967,83 +1530,6 @@ class Checker:
                 )
             )
 
-    _SYS_PATH_MUTATING_METHODS = frozenset({
-        "insert",
-        "append",
-        "extend",
-        "remove",
-        "pop",
-        "clear",
-        "sort",
-        "reverse",
-    })
-
-    @staticmethod
-    def _find_sys_path_mutations(tree: ast.AST) -> List[Tuple[int, str]]:
-        sys_aliases = {"sys"}
-        path_aliases = set()
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name == "sys":
-                        sys_aliases.add(alias.asname or "sys")
-            elif isinstance(node, ast.ImportFrom) and node.module == "sys":
-                for alias in node.names:
-                    if alias.name == "path":
-                        path_aliases.add(alias.asname or "path")
-
-        def _is_sys_path_expr(expr: ast.AST) -> bool:
-            if (
-                isinstance(expr, ast.Attribute)
-                and expr.attr == "path"
-                and isinstance(expr.value, ast.Name)
-                and expr.value.id in sys_aliases
-            ):
-                return True
-            if isinstance(expr, ast.Name) and expr.id in path_aliases:
-                return True
-            return False
-
-        def _is_sys_path_target(target: ast.AST) -> bool:
-            if _is_sys_path_expr(target):
-                return True
-            if isinstance(target, ast.Subscript) and _is_sys_path_expr(target.value):
-                return True
-            return False
-
-        violations: List[Tuple[int, str]] = []
-        seen = set()
-
-        for node in ast.walk(tree):
-            lineno = getattr(node, "lineno", 0) or 0
-            detail = None
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr in Checker._SYS_PATH_MUTATING_METHODS
-                and _is_sys_path_expr(node.func.value)
-            ):
-                detail = f"sys.path.{node.func.attr}()"
-            elif isinstance(node, ast.Assign):
-                if any(_is_sys_path_target(t) for t in node.targets):
-                    detail = "assignment to sys.path"
-            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
-                if _is_sys_path_target(node.target):
-                    detail = "assignment to sys.path"
-            elif isinstance(node, ast.Delete):
-                if any(_is_sys_path_target(t) for t in node.targets):
-                    detail = "deletion on sys.path"
-
-            if detail is not None:
-                key = (lineno, detail)
-                if key not in seen:
-                    seen.add(key)
-                    violations.append(key)
-
-        violations.sort(key=lambda item: item[0])
-        return violations
-
     def _check_source_files(self, name: str, real_dir: str, report: CheckReport) -> None:
         for root, dirs, files in os.walk(real_dir):
             dirs[:] = sorted(d for d in dirs if d not in ("__pycache__", ".pytest_cache", ".git"))
@@ -1061,76 +1547,8 @@ class Checker:
                     self._record_syntax_issue(report, os.path.abspath(full_p), rel_p, e)
                     continue
 
-                doc_nodes = set()
-                if tree.body and isinstance(tree.body[0], ast.Expr) and isinstance(tree.body[0].value, ast.Constant):
-                    doc_nodes.add(tree.body[0].value)
-                for n in ast.walk(tree):
-                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                        if n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant):
-                            doc_nodes.add(n.body[0].value)
-
-                if name != "core" and not is_test_file:
-                    for mut_line, mut_detail in self._find_sys_path_mutations(tree):
-                        report.issues.append(
-                            CheckIssue(
-                                severity=CheckSeverity.FAIL,
-                                category="ANTIPATTERN",
-                                message=f"Forbidden direct sys.path mutation in '{rel_p}:{mut_line}' ({mut_detail}). Runtime sys.path management must be delegated to 'core.platform'.",
-                                file_path=rel_p,
-                                line_number=mut_line,
-                            )
-                        )
-
-                for node in ast.walk(tree):
-                    if node in doc_nodes:
-                        continue
-                    if isinstance(node, ast.ExceptHandler) and node.type is None:
-                        lineno = getattr(node, "lineno", None)
-                        report.issues.append(
-                            CheckIssue(
-                                severity=CheckSeverity.WARN,
-                                category="ANTIPATTERN",
-                                message=f"Bare 'except:' clause detected in '{rel_p}:{lineno or 0}'. Catch 'Exception' or specific exception types instead.",
-                                file_path=rel_p,
-                                line_number=lineno,
-                            )
-                        )
-                    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                        s_val = node.value
-                        lineno = getattr(node, "lineno", None)
-
-                        if name not in ("dev", "core") and not is_test_file:
-                            if "module.source://" in s_val:
-                                report.issues.append(
-                                    CheckIssue(
-                                        severity=CheckSeverity.FAIL,
-                                        category="PROBING",
-                                        message=f"Zero Probing violation: 'module.source://' access detected in '{rel_p}:{lineno}'.",
-                                        file_path=rel_p,
-                                        line_number=lineno,
-                                    )
-                                )
-
-                            if s_val in ("config.project.json", "config.local.json"):
-                                report.issues.append(
-                                    CheckIssue(
-                                        severity=CheckSeverity.FAIL,
-                                        category="ANTIPATTERN",
-                                        message=f"Reinventing the wheel: direct access to '{s_val}' detected in '{rel_p}:{lineno}'. Use 'core.config.get()' / 'core.config.set()' SDK instead.",
-                                        file_path=rel_p,
-                                        line_number=lineno,
-                                    )
-                                )
-                            elif s_val == "contributes.merged.json":
-                                report.issues.append(
-                                    CheckIssue(
-                                        severity=CheckSeverity.FAIL,
-                                        category="ANTIPATTERN",
-                                        message=f"Direct contributes probing: access to '{s_val}' detected in '{rel_p}:{lineno}'. Use 'core.contributes.get()' SDK instead.",
-                                        file_path=rel_p,
-                                        line_number=lineno,
-                                    )
-                                )
+                visitor = _SourceGuardrailVisitor(name, rel_p, is_test_file, report)
+                visitor.analyze(tree)
 
     def _check_test_classes(self, name: str, real_dir: str, report: CheckReport) -> None:
         tests_dir = os.path.join(real_dir, "tests")
@@ -1159,48 +1577,57 @@ class Checker:
                     _check_require_decorator_node(node, t_file, report)
 
     def _check_sandbox_hooks(self, name: str, real_dir: str, report: CheckReport) -> None:
-        hook_path = os.path.join(real_dir, "scripts", "hook.dev.py")
-        if not os.path.exists(hook_path):
+        scripts_dir = os.path.join(real_dir, "scripts")
+        if not os.path.isdir(scripts_dir):
             return
 
-        rel_p = "scripts/hook.dev.py"
         try:
-            _, tree = self._get_parsed_py(hook_path, filename=rel_p)
-        except Exception as e:
-            self._record_syntax_issue(report, os.path.abspath(hook_path), rel_p, e)
+            script_files = sorted(os.listdir(scripts_dir))
+        except OSError:
             return
 
-        for node in tree.body:
-            if isinstance(node, (ast.Import, ast.ImportFrom, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    if node.name in ("on_test_setup", "on_test_teardown", "on_module_released", "module_released"):
-                        total_args = len(node.args.args) + (1 if node.args.vararg else 0)
-                        if total_args < 1:
-                            report.issues.append(
-                                CheckIssue(
-                                    severity=CheckSeverity.FAIL,
-                                    category="STRUCTURE",
-                                    message=f"Hook function '{node.name}' in {rel_p}:{node.lineno} must accept at least 1 parameter ('context').",
-                                    file_path=rel_p,
-                                    line_number=node.lineno,
+        for s_file in script_files:
+            if not (s_file.startswith("hook.") and s_file.endswith(".py")):
+                continue
+            hook_path = os.path.join(scripts_dir, s_file)
+            rel_p = f"scripts/{s_file}"
+            try:
+                _, tree = self._get_parsed_py(hook_path, filename=rel_p)
+            except Exception as e:
+                self._record_syntax_issue(report, os.path.abspath(hook_path), rel_p, e)
+                continue
+
+            for node in tree.body:
+                if isinstance(node, (ast.Import, ast.ImportFrom, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        if node.name.startswith("on_") or node.name in ("pre_cli_dispatch", "post_cli_dispatch"):
+                            total_args = len(node.args.args) + (1 if node.args.vararg else 0) + (1 if node.args.kwarg else 0)
+                            if total_args < 1:
+                                report.issues.append(
+                                    CheckIssue(
+                                        severity=CheckSeverity.FAIL,
+                                        category="STRUCTURE",
+                                        message=f"Hook function '{node.name}' in {rel_p}:{node.lineno} must accept at least 1 parameter ('context').",
+                                        file_path=rel_p,
+                                        line_number=node.lineno,
+                                    )
                                 )
-                            )
-            elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-                continue
-            elif isinstance(node, ast.Assign):
-                continue
-            else:
-                stmt_type = type(node).__name__
-                lineno = getattr(node, "lineno", 0)
-                report.issues.append(
-                    CheckIssue(
-                        severity=CheckSeverity.FAIL,
-                        category="ANTIPATTERN",
-                        message=f"Forbidden top-level statement '{stmt_type}' in {rel_p}:{lineno}. Hook scripts must only declare imports, functions, or classes.",
-                        file_path=rel_p,
-                        line_number=lineno,
+                elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                    continue
+                elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    continue
+                else:
+                    stmt_type = type(node).__name__
+                    lineno = getattr(node, "lineno", 0)
+                    report.issues.append(
+                        CheckIssue(
+                            severity=CheckSeverity.FAIL,
+                            category="ANTIPATTERN",
+                            message=f"Forbidden top-level statement '{stmt_type}' in {rel_p}:{lineno}. Hook scripts must only declare imports, functions, or classes.",
+                            file_path=rel_p,
+                            line_number=lineno,
+                        )
                     )
-                )
 
     def _check_docs_pollution(self, name: str, real_dir: str, report: CheckReport) -> None:
         docs_dir = os.path.join(real_dir, "docs")
@@ -1229,126 +1656,6 @@ class Checker:
                                 )
                 except OSError:
                     pass
-
-    def _check_custom_rules(self, name: str, real_dir: str, report: CheckReport) -> None:
-        try:
-            rules = contributes.get("dev", "custom_checks")
-            if not rules or not isinstance(rules, list):
-                return
-            for rule in rules:
-                if not isinstance(rule, dict):
-                    continue
-                c_func = rule.get("checker_func")
-                if not c_func or not isinstance(c_func, str):
-                    continue
-
-                donor = None
-                func_name = None
-
-                if c_func.startswith("code.func://"):
-                    try:
-                        donor, _, func_name = parse_code_func_uri(c_func)
-                    except Exception as e:
-                        report.issues.append(
-                            CheckIssue(
-                                severity=CheckSeverity.WARN,
-                                category="CONTRIBUTES",
-                                message=f"Failed to parse custom check URI '{c_func}': {e}",
-                                file_path="contributes/core.json",
-                            )
-                        )
-                        continue
-                elif ":" in c_func:
-                    donor, func_name = c_func.split(":", 1)
-                elif "." in c_func:
-                    donor, func_name = c_func.rsplit(".", 1)
-                else:
-                    donor = c_func
-                    func_name = "check"
-
-                donor_pkg = donor.split(".")[0]
-                donor_candidates = list(dict.fromkeys([
-                    donor_pkg,
-                    donor_pkg.replace("_", "-"),
-                    donor_pkg.replace("-", "_"),
-                ]))
-                donor_real = None
-                priority_mod_name = donor_pkg
-                for cand_pkg in donor_candidates:
-                    donor_uri = f"module://{cand_pkg}"
-                    if vfs.exists(donor_uri):
-                        try:
-                            donor_real = uri.resolve(donor_uri)
-                            priority_mod_name = cand_pkg
-                            break
-                        except Exception:
-                            donor_real = None
-
-                from core.platform import ensure_installed_modules_path, restore_sys_path
-
-                orig_sys_path = list(sys.path)
-                try:
-                    ensure_installed_modules_path(
-                        priority_module=priority_mod_name,
-                        extra_paths=[donor_real] if (donor_real and os.path.isdir(donor_real)) else None,
-                    )
-
-                    def _import_with_normalized_fallback(mod_target: str) -> Any:
-                        try:
-                            return importlib.import_module(mod_target)
-                        except ModuleNotFoundError:
-                            parts = mod_target.split(".")
-                            norm_first = parts[0].replace("-", "_")
-                            norm_target = ".".join([norm_first] + parts[1:])
-                            if norm_target != mod_target:
-                                return importlib.import_module(norm_target)
-                            alt_first = parts[0].replace("_", "-")
-                            alt_target = ".".join([alt_first] + parts[1:])
-                            if alt_target != mod_target:
-                                return importlib.import_module(alt_target)
-                            raise
-
-                    if c_func.startswith("code.func://"):
-                        fn = resolve_callable(c_func, use_cache=False)
-                    elif "." in c_func and ":" not in c_func:
-                        mod_path, fn_name = c_func.rsplit(".", 1)
-                        mod = _import_with_normalized_fallback(mod_path)
-                        fn = getattr(mod, fn_name)
-                    else:
-                        mod = _import_with_normalized_fallback(donor)
-                        fn = getattr(mod, func_name)
-
-                    if not callable(fn):
-                        report.issues.append(
-                            CheckIssue(
-                                severity=CheckSeverity.WARN,
-                                category="CONTRIBUTES",
-                                message=f"Custom check '{c_func}' is not callable.",
-                                file_path="contributes/core.json",
-                            )
-                        )
-                    else:
-                        fn(name, real_dir, report)
-                except Exception as e:
-                    report.issues.append(
-                        CheckIssue(
-                            severity=CheckSeverity.WARN,
-                            category="CONTRIBUTES",
-                            message=f"Failed to execute custom rule '{c_func}': {e}",
-                            file_path="contributes/core.json",
-                        )
-                    )
-                finally:
-                    restore_sys_path(orig_sys_path)
-        except Exception as e:
-            report.issues.append(
-                CheckIssue(
-                    severity=CheckSeverity.WARN,
-                    category="CONTRIBUTES",
-                    message=f"Failed to load custom checks: {e}",
-                    file_path="contributes/core.json",
-                )
-            )
 
     def check_all(self) -> Dict[str, CheckReport]:
         return {mod: self.check_module(mod) for mod in discover_source_modules()}

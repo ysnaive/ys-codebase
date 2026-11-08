@@ -14,6 +14,7 @@ import functools
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Set
 from core import uri, vfs, semver, events, PipManager
+from core.context import get_runtime_context
 from dev.checker import discover_source_modules
 
 
@@ -126,12 +127,28 @@ def hello(cmd_bags: Any) -> int:
         return pkg_ver_dir
 
 
-class SandboxProvisioner:
+class _SandboxStateMeta(type):
+    @property
+    def _ACTIVE_SANDBOXES(cls) -> Set[str]:
+        return get_runtime_context().get_module_state("dev.sandbox.active_sandboxes", set)
+
+    @_ACTIVE_SANDBOXES.setter
+    def _ACTIVE_SANDBOXES(cls, val: Set[str]) -> None:
+        get_runtime_context().set_module_state("dev.sandbox.active_sandboxes", set(val))
+
+    @property
+    def _ADAPTED_SPECS(cls) -> Set[str]:
+        return get_runtime_context().get_module_state("dev.sandbox.adapted_specs", set)
+
+    @_ADAPTED_SPECS.setter
+    def _ADAPTED_SPECS(cls, val: Set[str]) -> None:
+        get_runtime_context().set_module_state("dev.sandbox.adapted_specs", set(val))
+
+
+class SandboxProvisioner(metaclass=_SandboxStateMeta):
     """Sandbox environment lifecycle manager and provisioner (dev op-mksb engine)."""
-    _ACTIVE_SANDBOXES = set()
     _SANDBOX_LOCK = threading.RLock()
     _PIP_LOCK = threading.Lock()
-    _ADAPTED_SPECS = set()
 
     @staticmethod
     def _sort_zip_filenames_by_semver(filenames: List[str]) -> List[str]:

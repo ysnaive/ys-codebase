@@ -312,18 +312,23 @@ class TestDevChecker(YSCBTestCase):
         self.mark_passed()
 
     def test_sandbox_hook_compliance(self):
-        """Verify hook.dev.py parameter count, top-level statement prohibition, and syntax error handling."""
+        """Verify hook.*.py parameter count, top-level statement prohibition, and syntax error handling."""
         mod_dir = self._make_mod(
             "mock_hook_compliance_mod",
-            files={"scripts/hook.dev.py": "def on_test_setup():\n    pass\n"},
+            files={
+                "scripts/hook.dev.py": "def on_test_setup():\n    pass\n",
+                "scripts/hook.core.py": "def on_reload():\n    pass\n",
+            },
         )
         report = self.checker.check_module("mock_hook_compliance_mod")
         self.assertFalse(report.passed)
         self.assertTrue(report.has_fails)
-        self.assertTrue(any("must accept at least 1 parameter" in e for e in report.errors))
+        self.assertTrue(any("on_test_setup" in e and "must accept at least 1 parameter" in e for e in report.errors))
+        self.assertTrue(any("on_reload" in e and "must accept at least 1 parameter" in e for e in report.errors))
 
+        os.remove(os.path.join(mod_dir, "scripts", "hook.core.py"))
         with open(os.path.join(mod_dir, "scripts", "hook.dev.py"), "w", encoding="utf-8") as f:
-            f.write("def on_test_setup(context):\n    pass\nprint('forbidden top level')\n")
+            f.write("def on_test_setup(context):\n    pass\n1 + 1\n")
         report2 = self.checker.check_module("mock_hook_compliance_mod")
         self.assertFalse(report2.passed)
         self.assertTrue(report2.has_fails)
@@ -488,54 +493,112 @@ class TestDevChecker(YSCBTestCase):
         self.assertTrue(any("Invalid version specification" in e for e in rep2.errors))
         self.mark_passed()
 
-    def test_checker_custom_rules_dispatch_and_isolation(self):
-        """Verify custom rules support code.func://, isolate sys.path, and convert errors to WARN."""
-        rep = CheckReport("mock_target")
-        with patch("core.contributes.get", return_value=[{"checker_func": "non_existent_pkg.checker.non_existent_func"}]):
-            orig_path = list(sys.path)
-            self.checker._check_custom_rules("mock_target", "/dummy", rep)
-            self.assertEqual(sys.path, orig_path)
-            self.assertTrue(rep.passed)
-            self.assertFalse(rep.has_fails)
-            self.assertTrue(rep.has_warns)
-            self.assertTrue(any("Failed to execute custom rule" in w for w in rep.warnings))
+    def test_checker_runtime_isolation_guardrails_a_to_f(self):
+        """Verify _SourceGuardrailVisitor enforces A1~F13, import alias resolution, and reflection defense."""
+        mod_dir = self._make_mod(
+            "mock_guardrail_mod",
+            files={
+                "mock_guardrail_mod/bad_io.py": (
+                    "import logging\n"
+                    "import pprint as pp\n"
+                    "import sys as s\n"
+                    "def run():\n"
+                    "    print('hi')\n"
+                    "    pp.pprint({'a': 1})\n"
+                    "    s.stdout.write('x')\n"
+                    "    logging.info('msg')\n"
+                    "    input('prompt')\n"
+                    "    s.stdin.readline()\n"
+                ),
+                "mock_guardrail_mod/bad_proc.py": (
+                    "import os as _os\n"
+                    "import sys\n"
+                    "import signal as sig\n"
+                    "from pathlib import Path as P\n"
+                    "def run():\n"
+                    "    sys.exit(1)\n"
+                    "    _os.chdir('/tmp')\n"
+                    "    P.cwd()\n"
+                    "    _os.environ['X'] = '1'\n"
+                    "    _os.putenv('Y', '2')\n"
+                    "    sig.signal(1, lambda a, b: None)\n"
+                    "    getattr(_os, 'environ')\n"
+                ),
+                "mock_guardrail_mod/bad_state.py": (
+                    "from dataclasses import dataclass\n"
+                    "MUT_LIST = []\n"
+                    "MUT_NONE = None\n"
+                    "@dataclass\n"
+                    "class UnfrozenBox:\n"
+                    "    val: int = 1\n"
+                    "class MutableClass:\n"
+                    "    shared = {}\n"
+                    "def fn(items=[]):\n"
+                    "    global MUT_NONE\n"
+                    "    globals()['MUT_NONE'] = 1\n"
+                ),
+                "mock_guardrail_mod/bad_dyn_fs_thread.py": (
+                    "import os\n"
+                    "import subprocess as sp\n"
+                    "from threading import Thread as T\n"
+                    "from importlib.util import spec_from_file_location as sffl\n"
+                    "import sys\n"
+                    "def run():\n"
+                    "    sys.modules['x'] = None\n"
+                    "    sffl('x', '/tmp/x.py')\n"
+                    "    eval('1+1')\n"
+                    "    os.rename('a', 'b')\n"
+                    "    sp.run(['echo', 'hi'])\n"
+                    "    os.system('ls')\n"
+                    "    T(target=lambda: None)\n"
+                ),
+            },
+        )
+        rep = self.checker.check_module("mock_guardrail_mod")
+        self.assertFalse(rep.passed)
+        err_text = "\n".join(rep.errors)
+        for expected_tag in (
+            "[A1]",
+            "[A2]",
+            "[B3]",
+            "[B4]",
+            "[B5]",
+            "[B6]",
+            "[C7]",
+            "[C8]",
+            "[C9]",
+            "[D10]",
+            "[D11]",
+            "[E12]",
+            "[F13]",
+        ):
+            self.assertIn(expected_tag, err_text, f"Missing expected guardrail tag {expected_tag} in:\n{err_text}")
 
-        rep2 = CheckReport("mock_target")
-        with patch("core.contributes.get", return_value=[{"checker_func": "code.func://bad_uri"}]):
-            self.checker._check_custom_rules("mock_target", "/dummy", rep2)
-            self.assertTrue(rep2.passed)
-            self.assertFalse(rep2.has_fails)
-            self.assertTrue(rep2.has_warns)
-            self.assertTrue(any("Failed to parse custom check URI" in w for w in rep2.warnings))
+        for bad_f in ("bad_io.py", "bad_proc.py", "bad_state.py", "bad_dyn_fs_thread.py"):
+            os.remove(os.path.join(mod_dir, "mock_guardrail_mod", bad_f))
 
-        dummy_mod = types.ModuleType("mock_donor_rule_pkg")
-
-        def custom_rule_fn(mod_name, mod_dir, report):
-            report.issues.append(CheckIssue(CheckSeverity.WARN, "CUSTOM", f"Custom rule fired for {mod_name}"))
-
-        dummy_mod.custom_rule_fn = custom_rule_fn
-        sys.modules["mock_donor_rule_pkg"] = dummy_mod
-        try:
-            rep3 = CheckReport("mock_target")
-            with patch(
-                "core.contributes.get",
-                return_value=[
-                    {"checker_func": "mock_donor_rule_pkg:custom_rule_fn", "_contribute_by": "core"},
-                    {"checker_func": "mock-donor-rule-pkg:custom_rule_fn", "_contribute_by": "core"},
-                    {"checker_func": "code.func://core/mock_donor_rule_pkg.py:custom_rule_fn"},
-                ],
-            ):
-                orig_path3 = list(sys.path)
-                self.checker._check_custom_rules("mock_target", "/dummy", rep3)
-                self.assertEqual(sys.path, orig_path3)
-                self.assertTrue(rep3.passed)
-                self.assertFalse(rep3.has_fails)
-                self.assertFalse(any("module.source://" in p or "/source" in p for p in sys.path if p not in orig_path3))
-                custom_msgs = [i.message for i in rep3.issues if i.category == "CUSTOM"]
-                self.assertEqual(len(custom_msgs), 3)
-        finally:
-            sys.modules.pop("mock_donor_rule_pkg", None)
-
+        with open(os.path.join(mod_dir, "mock_guardrail_mod", "clean.py"), "w", encoding="utf-8") as f:
+            f.write(
+                "from dataclasses import dataclass\n"
+                "from enum import Enum\n"
+                "import subprocess\n"
+                "IMMUTABLE = ('a', 'b')\n"
+                "try:\n"
+                "    import non_existent_opt_pkg\n"
+                "except ImportError:\n"
+                "    non_existent_opt_pkg = None\n"
+                "class Color(Enum):\n"
+                "    RED = 'red'\n"
+                "@dataclass(frozen=True)\n"
+                "class FrozenCfg:\n"
+                "    name: str = 'ok'\n"
+                "def safe_run(items=None):\n"
+                "    subprocess.run(['echo', 'ok'], timeout=5)\n"
+                "    return items or []\n"
+            )
+        rep_clean = self.checker.check_module("mock_guardrail_mod")
+        self.assertTrue(rep_clean.passed, f"Expected clean module to pass, got: {rep_clean.errors}")
+        self.assertFalse(rep_clean.has_fails)
         self.mark_passed()
 
     def test_checker_core_injection_format_priority(self):

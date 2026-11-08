@@ -41,11 +41,6 @@
       "version": "1.0.1.build",
       "installed_at": "2026-11-08 12:39:59",
       "provider": "./ys_codebase/release"
-    },
-    "file-space": {
-      "version": "1.0.1.build",
-      "installed_at": "2026-11-08 12:42:50",
-      "provider": "./ys_codebase/release"
     }
   }
 }

@@ -17,7 +17,7 @@ related_docs:
   - "./topics/release_governance.md"
   - "./reference/contributes_format.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-03"
+last_updated: "2026-11-08"
 ---
 
 # Dev 開發者工具鏈概覽手冊 (Developer Toolchain Overview)
@@ -36,7 +36,7 @@ graph TD
     
     subgraph DevModule ["Dev 開發者模組 (module:dev)"]
         Scaffold["模組腳手架<br/><code>dev.scaffold</code><br/><i>標準模板一鍵生成</i>"]:::sub
-        Checker["靜態合規檢查器<br/><code>dev.checker</code><br/><i>8 步檢核 / 3-Tier 嚴重度</i>"]:::sub
+        Checker["靜態合規檢查器<br/><code>dev.checker</code><br/><i>7 步純靜態檢核 / 13 項 AST 隔離守門</i>"]:::sub
         Builder["建置與打包引擎<br/><code>dev.builder</code><br/><i>自動 clean / 3-Revision 滑動窗口治理</i>"]:::sub
         Tester["測試調度引擎<br/><code>dev.tester</code><br/><i>自動前置 build / 虛擬沙盒跑測</i>"]:::sub
         Releaser["發布調度引擎<br/><code>dev.releaser</code><br/><i>3-Gate 守門 / DAG 拓撲 / release-git 流水線</i>"]:::sub
@@ -50,7 +50,7 @@ graph TD
 | 指令群組 | 指令語法 | 核心職責說明 |
 | :--- | :--- | :--- |
 | **模組建立** | `python yscb.py dev create <name> [--desc="..."]` | 一鍵生成標準模組骨架與 Contributes 契約設定（預設版號 `0.1.0.0`） |
-| **合規檢查** | `python yscb.py dev check [name \| --all\|-a] [--json]` | 執行 8 步靜態合規檢核（`manifest.json`、Contributes、`scripts/cli.py`、AST Zero-Probing、裸 `except:` 反模式警告等），支援 `--json` 結構化輸出 |
+| **合規檢查** | `python yscb.py dev check [name \| --all\|-a] [--json]` | 執行 7 步純靜態合規檢核（`manifest.json`、Contributes、`scripts/cli.py`、13 項 AST 運行期隔離守門 A1~F13、AST Zero-Probing、裸 `except:` 反模式警告等），支援 `--json` 結構化輸出 |
 | **開發建置** | `python yscb.py dev build [name \| --all]` | 自動清空目標目錄，採用確定性壓縮（Deterministic Zip）打包 `<ver>.build.zip`（保留 `tests/`） |
 | **版本管理** | `python yscb.py dev bump-[major\|minor\|patch\|revision] <name>` | 對模組 `manifest.json` 版本號進行單向遞增 |
 | **發布預檢** | `python yscb.py dev release-check [name \| --all\|-a] [--force\|-f]` | 獨立執行 3-Gate 發布就緒校驗（合規、不可變、單調性，支援 `--all` 批次預檢與 `--force` 放行同版本） |

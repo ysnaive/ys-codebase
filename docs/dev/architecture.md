@@ -8,7 +8,6 @@ source_paths:
   - "yscb://source/dev/dev/builder.py"
   - "yscb://source/dev/dev/tester.py"
   - "yscb://source/dev/dev/releaser.py"
-  - "yscb://source/dev/contributes/_format.json"
   - "yscb://source/dev/contributes/agents-workflow.json"
 related_docs:
   - "./README.md"
@@ -16,7 +15,7 @@ related_docs:
   - "./testing_guide.md"
   - "./topics/release_governance.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-10-15"
+last_updated: "2026-11-08"
 ---
 
 # Dev 模組架構規格說明書 (Architecture Specification)
@@ -55,7 +54,7 @@ last_updated: "2026-10-15"
 │      - build_module() (自動清空 .build/<mod>/，保留 tests/)                 │
 │      - package_release() (純淨打包，3-Revision 滑動窗口淘汰，index.json SSOT)│
 │    • dev/checker.py: Checker                                                │
-│      - check_module() (8 步靜態合規檢核管線與 3-Tier 嚴重度分級)            │
+│      - check_module() (7 步純靜態合規檢核管線與 3-Tier 嚴重度分級)          │
 │    • core/semver.py                                                         │
 │      - bump_version() (版本單向遞增 major/minor/patch/revision)             │
 │      - compare_semver(), match_constraint()                                 │
@@ -64,23 +63,22 @@ last_updated: "2026-10-15"
 
 ---
 
-## 2. Checker 8 步靜態合規檢核管線與 3-Tier 嚴重度 (`PASS` / `WARN` / `FAIL`)
+## 2. Checker 7 步純靜態合規檢核管線與 3-Tier 嚴重度 (`PASS` / `WARN` / `FAIL`)
 
-`dev/checker.py` 中的 `Checker.check_module(name)` 對目標模組執行 8 步靜態合規檢核管線，並將問題歸類為三階嚴重度 (`CheckSeverity`)：
+`dev/checker.py` 中的 `Checker.check_module(name)` 對目標模組執行 7 步封閉式純靜態合規檢核管線（零動態 `importlib` 載入外部模組），並將問題歸類為三階嚴重度 (`CheckSeverity`)：
 - **`PASS`**：完全合規，無任何警告與錯誤。
 - **`WARN`**：存在非阻斷性建議或棄用提醒（如缺少 `contributes/core.json`、遺留暫存檔、測試方法漏寫 `self.mark_passed()`），`CheckReport.passed` 仍為 `True`。
-- **`FAIL`**：違反剛性契約或架構紅線（如語法錯誤、Schema 違規、Zero-Probing 違規、直接繼承 `unittest.TestCase`），`CheckReport.passed` 為 `False` 並阻斷發布（Gate 1）。
+- **`FAIL`**：違反剛性契約或架構紅線（如語法錯誤、Schema 違規、Zero-Probing 違規、13 項運行期隔離紅線 A1~F13 違規、直接繼承 `unittest.TestCase`），`CheckReport.passed` 為 `False` 並阻斷發布（Gate 1）。
 
 | 步驟 | 檢核方法 | 分類標籤 (`category`) | 檢核重點與規則 |
 | :---: | :--- | :--- | :--- |
 | **Step 1** | `_check_manifest` | `MANIFEST` | 驗證 `manifest.json` 必填欄位 (`name`, `version`, `entry`, `dependencies`)、目錄名稱一致性、SemVer 合法性、非 `core` 模組強制依賴 `core`、`optional` 與 `onboarding` 格式，並透過 `_check_pip_dependencies` 驗證 `pip_dependencies` 字典型態與規格。 |
 | **Step 2** | `_check_core_injection` | `CONTRIBUTES` | 整合 `core.validator.ContributesValidator` 走訪 `contributes/`：<br/>1. **Meta-Check**：檢核 `_format.json` 型別表達式與 Schema DSL 合法性。<br/>2. **Ingress / Egress 邊界檢核**：對所有 `<target>.json` 依據目標模組 `_format.json` 執行嚴格校驗（`strict_points=True`），未知擴充點、型別不符或跨模組越權注入一律判定 `FAIL`。 |
 | **Step 3** | `_check_file_structure` | `STRUCTURE` / `CONTRIBUTES` | 檢核 `scripts/cli.py` 存在性與雙軌命令契約（`_check_cli_compliance`：禁止 `def main`、禁止 `if __name__ == "__main__":`、禁止頂層裸執行敘述）、攔截根目錄散落之 `config.*.json`（強制收斂於 `configurable/`）、檢查殘留暫存檔 (`.tmp`/`.bak`)，以及當存在 `contributes/` 時強制要求 `contributes/_manifest.md`。 |
-| **Step 4** | `_check_source_files` | `SYNTAX` / `PROBING` / `ANTIPATTERN` | 遞迴解析所有 `.py` 檔案之 AST（豁免模組/類別/函式首行 Docstring 節點）：<br/>• **Zero Probing (`PROBING`)**：非 `core`/`dev` 生產代碼嚴禁存取 `module.source://`。<br/>• **Anti-Pattern (`ANTIPATTERN`)**：非 `core`/`dev` 生產代碼嚴禁直接讀寫 `config.project.json`、`config.local.json` 或 `contributes.merged.json`，強制使用 `core.config` / `core.contributes` SDK。<br/>• **禁止私自變動 `sys.path` (`ANTIPATTERN` / `FAIL`)**：透過 `_find_sys_path_mutations` 掃描所有 `name != "core" and not is_test_file` 的源碼檔，凡直接對 `sys.path`（含別名）呼叫變動方法（`insert`/`append`/`extend`/`remove`/`pop`/`clear`/`sort`/`reverse`）、賦值或切片賦值、`del` 者一律判定 `FAIL`（零模組豁免白名單），強制委派 `core.platform`。 |
+| **Step 4** | `_check_source_files` | `SYNTAX` / `PROBING` / `ANTIPATTERN` | 以單次遍歷 `_SourceGuardrailVisitor(ast.NodeVisitor)` 掃描所有 `.py` 檔案（含 `from ... import ... as ...` 符號追蹤與 `getattr`/`setattr`/`delattr`/`globals()` 反射防禦）：<br/>• **A1~A2 標準串流守門**：禁止 `print`/`pprint`/`sys.stdout.write`/`logging.*`（豁免 `core/log.py`、`dev/testing/runner.py`）與 `input`/`sys.stdin`（豁免 `server/worker.py`）。<br/>• **B3~B6 進程與系統環境守門**：禁止 `sys.exit`/`os._exit`（豁免 `server/master.py`）、`os.chdir`/`os.getcwd`/`Path.cwd`（豁免 `core/context.py`、`core/platform/venv.py`）、`os.environ` 寫入（豁免 `core/platform/venv.py`）與 `signal.signal`（豁免 `server/master.py`）。<br/>• **C7~C9 狀態與可變全域守門**：禁止可變預設參數、模組頂層可變單例/容器、`global` 與非 `__getattr__` 之 `globals()[...]` 寫入、未設 `frozen=True` 之 `@dataclass` 及一般類別可變屬性。<br/>• **D10~D11 動態載入與命名空間守門**：非 `core` 嚴禁變動 `sys.path`；禁止直接寫入 `sys.modules`、私自呼叫 `spec_from_file_location` 及 `eval`/`exec`/`__import__`。<br/>• **E12~F13 檔案系統與並發守門**：禁止非原子 `os.rename`/`Path.rename`、無 `timeout=` 之 `subprocess.run/call/check_call/check_output`、`os.system`/`os.popen` 與未受控 `threading.Thread`/`Timer`。<br/>• **Zero Probing 與裸 `except:`**：攔截 `module.source://`、直接讀寫 `config.*.json`/`contributes.merged.json` 與裸 `except:`。 |
 | **Step 5** | `_check_test_classes` | `STRUCTURE` / `ANTIPATTERN` | AST 掃描 `tests/test_*.py`：<br/>• 嚴禁直接繼承 `unittest.TestCase`（強制繼承 `YSCBTestCase`，否則 `FAIL`）。<br/>• 檢查 `test_*` 方法是否呼叫 `self.mark_passed()`（未標記 `@require(Requirement.NONE)` 且缺失時發出 `WARN`）。<br/>• 攔截同時標記 `LOGIC` 與 `ISOLATED_SANDBOX` 之反模式（`WARN`）。 |
-| **Step 6** | `_check_sandbox_hooks` | `SYNTAX` / `STRUCTURE` / `ANTIPATTERN` | 若存在 `scripts/hook.dev.py`，以 AST 驗證無頂層裸執行語句，且 `on_test_setup` / `on_test_teardown` 必須接受至少 1 個參數 (`context`)。 |
+| **Step 6** | `_check_sandbox_hooks` | `SYNTAX` / `STRUCTURE` / `ANTIPATTERN` | 掃描 `scripts/hook.*.py`（如 `hook.core.py`、`hook.dev.py`），以 AST 驗證無頂層裸執行語句，且生命週期事件函式（`on_*`、`pre_cli_dispatch`、`post_cli_dispatch`）必須接受至少 1 個參數 (`context`)。 |
 | **Step 7** | `_check_docs_pollution` | `DOCUMENTATION` | 掃描模組內 `docs/*.md`，若發現硬編碼 `project://source/` 則發出 `WARN`，引導改用 `module://<mod>/` 語意 URI。 |
-| **Step 8** | `_check_custom_rules` | 依規則定義 | 讀取 `core.contributes.get("dev", "custom_checks")` 註冊之領域自訂檢查器（透過 `importlib` 動態載入 `checker_func(name, real_dir, report)` 執行）。 |
 
 ---
 
@@ -155,9 +153,9 @@ last_updated: "2026-10-15"
 ### 6.1 本機建置產物直裝通道 (`install <mod>@build`)
 - 當 `core.engine.PackageManager` 解析到版本約束為 `@build`（或 revision 為 `build`）時，特例直連本地端 `module.build://<mod>/` 安裝由 `dev build` 產出之 `*.build.zip`（若尚未建置則拋出明確引導提示），免除日常自引用調試 (Dogfooding) 需先執行正式 `release` 的繁瑣流程。
 
-### 6.2 Contributes 雙向擴充契約 (Ingress & Egress)
-- **Ingress（輸入擴充點 `contributes/_format.json`）**：
-  - `dev` 模組開放 `custom_checks` 擴充點（型別 `$CheckRuleDef`，含 `name`, `description`, `severity`, `checker_func`），允許其他模組向 `dev check` 管線（Step 8 `_check_custom_rules`）註冊領域專屬靜態檢查規則。
+### 6.2 Contributes 對外擴充契約 (Egress)
+- **封閉式純靜態檢核（無 Ingress 動態擴充點）**：
+  - `dev` 模組之靜態合規檢查管線完全收斂於 `dev/checker.py` 內部之 AST 語法樹分析，不開放動態注入或 `importlib` 外部規則執行。
 - **Egress（對外能力貢獻）**：
   - `contributes/core.json`：向 `core` 註冊 `dev` 命名空間下所有 CLI 子指令、參數規格、安全分級 (`tier`) 與使用正反例 (`usage.pros` / `usage.cons`)。
   - `contributes/agents-workflow.json`：向 `agents-workflow` 匯出 (`export`) `yscb-module-dev` 專屬技能包（位於 `module://dev/assets/skills/yscb-module-dev`），並透過 `insert`（`mode: "below"`）將生態系模組開發與 Dogfooding 觸發條件動態注入至全域 `AGENTS_SKILL_ROUTING` 路由錨點。

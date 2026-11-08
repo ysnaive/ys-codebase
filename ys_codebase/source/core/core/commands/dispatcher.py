@@ -430,13 +430,14 @@ def _spawn_server_daemon(host_dir: str, yscb_abs: str) -> Optional[int]:
 
 def _get_auto_spawn_warned() -> bool:
     if "_AUTO_SPAWN_WARNED" in globals():
-        return bool(globals()["_AUTO_SPAWN_WARNED"])
+        val = bool(globals().pop("_AUTO_SPAWN_WARNED"))
+        get_runtime_context().dispatcher_auto_spawn_warned = val
+        return val
     return get_runtime_context().dispatcher_auto_spawn_warned
 
 
 def _set_auto_spawn_warned(val: bool) -> None:
-    if "_AUTO_SPAWN_WARNED" in globals():
-        globals()["_AUTO_SPAWN_WARNED"] = val
+    globals().pop("_AUTO_SPAWN_WARNED", None)
     get_runtime_context().dispatcher_auto_spawn_warned = val
 
 

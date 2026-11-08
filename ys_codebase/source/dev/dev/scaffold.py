@@ -36,16 +36,16 @@ class Scaffolder:
 CLI Entry point for module {name}.
 """
 from typing import Any
-import sys
 
 from core.guard import guard_dispatch
 from core.commands import CmdBags
+from core.log import log
 from core import uri
 
 
 def hello(cmd_bags: Any) -> int:
     guard_dispatch("{name}")
-    print(f"[{name}] Hello from YSCB module {name}!")
+    log(f"[{name}] Hello from YSCB module {name}!")
     return 0
 '''
         vfs.write_text(f"{target_src_uri}/scripts/cli.py", cli_content)

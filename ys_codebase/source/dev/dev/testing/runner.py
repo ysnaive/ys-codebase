@@ -183,7 +183,7 @@ class TestDiscovery:
             tests_dir = os.path.join(src_real, "tests")
             if os.path.isdir(tests_dir):
                 pkg_name = "ast_engine" if module_name == "ast" else module_name.replace("-", "_")
-                mods_map = getattr(sys, "modules")
+                mods_map = sys.modules
                 for mod_k in list(mods_map.keys()):
                     if mod_k in ("core", "dev.testing") or mod_k.startswith(("core.", "dev.testing.")):
                         continue

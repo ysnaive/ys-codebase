@@ -2,7 +2,7 @@
 
 > 計畫名稱：2026_11_07_2052_jupyter_style_runtime_isolation_and_static_guardrails  
 > 建立日期：2026-11-07  
-> 計畫狀態：In Progress  
+> 計畫狀態：Completed  
 > Umbrella 模式：Pre-planned (預先規劃型)  
 > 模型：Gemini 3.1 Pro  
 > 模板版本：v1.2  
@@ -31,7 +31,7 @@
 | **sub_02** | `sub_02_core_runtime_context_and_namespace_loader` | Full Track | `Completed` | 擴充 `RuntimeContext` 與 `ContextVar`（含 `virtual_cwd` 與請求級 `env`）收斂 `core` 29 個頂層可變快取並消除 10 處 `global`、2 處 `Path.cwd()` 與非啟動器 `sys.exit()`；凍結 `core` 9 個未設 `frozen=True` 之 `@dataclass` 與 `MappingProxyType` 唯讀視圖；建立受保護模組命名空間載入器統一替換 5 處 `spec_from_file_location` / `sys.modules` 邏輯 |
 | **sub_03** | `sub_03_server_three_plane_and_managed_worker_threads` | Full Track | `Completed` | 解耦 `server` 控制與執行通道，移除 `WarmWorker` 全域 `sys.stdout` 劫持、`os.chdir()` 與 `os.environ` 突變；於 `BaseServiceWorker` 內建受管獨立執行緒與非阻塞狀態機，收編 3 個常駐服務並刪除 `file-space`/`knowledge-db` 之 `hook.server.py` 野執行緒；落地 KDB `has_local_model()` 離線預檢、保留背景受管執行緒非阻塞自動下載、解耦手動 `kdb model download` CLI 並修復 `pipeline.py` 前景搜尋搶鎖阻塞 |
 | **sub_04** | `sub_04_ecosystem_modules_compliance_migration` | Full Track | `Completed` | 將上層 7 大業務模組（`dev`, `file-space`, `ast`, `knowledge-db`, `agents-workflow`, `vscode-support`, `gdrive-support`）共 531 處原生輸出與 `logging` 遷移至 `core.log`；消除 24 處 `os.chdir`/`os.getcwd`/`Path.cwd`、11 處 `os.environ` 突變、2 處缺 `timeout=` 之 `subprocess.run` 與裸 `input()`；收斂 47 處頂層可變容器/`global` 與 48 處非凍結 `@dataclass`/類別可變屬性（`ast` 僅執行薄層機械合規調整，留待 Tier 2 重構） |
-| **sub_05** | `sub_05_dev_closed_loop_ast_static_guardrails` | Full Track | `Pending` | 物理刪除 `dev/contributes/_format.json` 與 `dev/checker.py` 之 `_check_custom_rules`；將 `_check_source_files` 重構為封閉式單次遍歷（Single-Pass `ast.NodeVisitor`）管線，正式啟用 6 大類 13 項 AST 靜態守門規則（A1~F13 強制 `FAIL`），補齊正負向單元測試並完成全倉 9 大模組零違規驗收 |
+| **sub_05** | `sub_05_dev_closed_loop_ast_static_guardrails` | Full Track | `Completed` | 物理刪除 `dev/contributes/_format.json` 與 `dev/checker.py` 之 `_check_custom_rules`；將 `_check_source_files` 重構為封閉式單次遍歷（Single-Pass `ast.NodeVisitor`）管線，正式啟用 6 大類 13 項 AST 靜態守門規則（A1~F13 強制 `FAIL`），補齊正負向單元測試並完成全倉 9 大模組零違規驗收 |
 
 ---
 
@@ -41,4 +41,4 @@
 - [x] **里程碑 2 (`sub_02`)**：完成 `RuntimeContext` 隔離容器、`MappingProxyType` / `frozen=True` 唯讀契約與受保護模組命名空間載入器
 - [x] **里程碑 3 (`sub_03`)**：完成 `server` 常駐三平面解耦、`BaseServiceWorker` 受管獨立執行緒、移除 `hook.server.py` 野執行緒與 KDB 離線非阻塞守門
 - [x] **里程碑 4 (`sub_04`)**：完成上層 7 大業務模組存量語法與狀態合規遷移
-- [ ] **里程碑 5 (`sub_05`)**：完成 `module:dev` 封閉式單次遍歷 13 項 AST 靜態守門管線與全倉 `dev check` 零違規結案
+- [x] **里程碑 5 (`sub_05`)**：完成 `module:dev` 封閉式單次遍歷 13 項 AST 靜態守門管線與全倉 `dev check` 零違規結案

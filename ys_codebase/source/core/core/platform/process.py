@@ -20,13 +20,14 @@ _TRUTHY_ENV_VALUES = ("1", "true", "True")
 
 def _get_can_spawn_cache() -> Optional[bool]:
     if "_CAN_SPAWN_DAEMON_CACHE" in globals():
-        return globals()["_CAN_SPAWN_DAEMON_CACHE"]
+        val = globals().pop("_CAN_SPAWN_DAEMON_CACHE")
+        get_runtime_context().process_can_spawn_daemon_cache = val
+        return val
     return get_runtime_context().process_can_spawn_daemon_cache
 
 
 def _set_can_spawn_cache(val: Optional[bool]) -> None:
-    if "_CAN_SPAWN_DAEMON_CACHE" in globals():
-        globals()["_CAN_SPAWN_DAEMON_CACHE"] = val
+    globals().pop("_CAN_SPAWN_DAEMON_CACHE", None)
     get_runtime_context().process_can_spawn_daemon_cache = val
 
 

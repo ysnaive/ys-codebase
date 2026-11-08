@@ -24,8 +24,4 @@
 ### 1.2 `agents-workflow.json`（技能匯出與路由注入）
 - 匯出 `yscb-module-dev` 模組開發技能，並向 `AGENTS_SKILL_ROUTING`、`HOW_TO_CONFIG_MODULES` 與 `HOW_TO_YSCB_MODULES` 錨點注入生態系模組開發路由、體檢與使用指南。
 
-## 2. 內部擴充清冊 (Ingress Contributions)
-
-### 2.1 `custom_checks`（領域專屬靜態檢查規則）
-- 允許其他生態系模組向 `dev check` 靜態合規引擎動態註冊領域專屬靜態檢查規則 (`CheckRuleDef`: name, description, severity, checker_func)。
 
