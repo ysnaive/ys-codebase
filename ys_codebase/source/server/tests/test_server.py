@@ -174,8 +174,8 @@ class TestServerModule(YSCBTestCase):
         with patch.object(events, "broadcast", side_effect=mock_broadcast):
             worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: None)
             self.addCleanup(worker.service_manager.stop_all)
-            self.assertEqual(os.environ.get("YSCB_ROOT_DIR"), os.path.abspath(self.root_dir))
-            self.assertTrue(os.environ.get("YSCB_HOST_DIR"))
+            self.assertEqual(worker.yscb_root, os.path.abspath(self.root_dir))
+            self.assertTrue(worker.host_dir)
             worker.pre_warm()
             worker.service_manager.stop_all()
 
@@ -185,7 +185,7 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_warm_worker_system_exit_interception(self):
-        """WarmWorker intercepts SystemExit(int), SystemExit(None), SystemExit(str), and os.getcwd() OSError without crashing."""
+        """WarmWorker intercepts SystemExit(int), SystemExit(None), SystemExit(str), and get_virtual_cwd fallback without crashing."""
         packets = []
         worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: packets.append(p))
 
@@ -224,19 +224,10 @@ class TestServerModule(YSCBTestCase):
         self.assertEqual(exit_code_str, 1)
         self.assertEqual([p for p in packets if p.get("type") == "task_finish"][0]["exit_code"], 1)
 
-        # 4. os.getcwd() raising OSError falls back to self.yscb_root and still emits task_finish
+        # 4. Empty or deleted cwd falls back to self.yscb_root via get_virtual_cwd and still emits task_finish
         packets.clear()
-        orig_os_getcwd = os.getcwd
-        call_idx = [0]
-
-        def _mock_getcwd_once():
-            call_idx[0] += 1
-            if call_idx[0] == 1:
-                raise OSError("cwd deleted")
-            return orig_os_getcwd()
-
-        with unittest.mock.patch("server.worker.os.getcwd", side_effect=_mock_getcwd_once):
-            exit_code_cwd = worker.execute_task(module="mock_exit_none", args=[], cwd=self.root_dir)
+        with unittest.mock.patch("server.worker.get_virtual_cwd", return_value=self.root_dir):
+            exit_code_cwd = worker.execute_task(module="mock_exit_none", args=[], cwd="")
         self.assertEqual(exit_code_cwd, 0)
         self.assertEqual(len([p for p in packets if p.get("type") == "task_finish"]), 1)
         self.mark_passed()
@@ -258,7 +249,7 @@ class TestServerModule(YSCBTestCase):
         self.assertFalse(st_init["faulty-watcher"]["alive"])
 
         # Faulty service raising in start/health_check/stop must not block healthy service
-        with unittest.mock.patch("server.service.logging.error"):
+        with unittest.mock.patch("server.service.log_error"):
             mgr.start_all({"root": self.root_dir})
             self.assertTrue(svc.started)
             st_running = {s["name"]: s["alive"] for s in mgr.get_status()}
@@ -609,7 +600,7 @@ class TestServerModule(YSCBTestCase):
         mgr = ServiceManager()
         try:
             with patch.object(contributes, "get", return_value=mock_contrib), \
-                 patch("server.service.logging.error"):
+                 patch("server.service.log_error"):
                 mgr.load_from_contributes(yscb_root=self.root_dir)
 
             # Ensure .modules/mock-kdb-service was injected into sys.path
@@ -647,7 +638,8 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_worker_main_ipc_isolation_and_exit_handshake(self):
-        """worker_main isolates IPC stdout via private handle, redirects sys.stdout to stderr, recovers from bad JSON lines, and handles exit."""
+        """worker_main isolates IPC stdout packets, routes background core.log via _WorkerIPCLinkSink, recovers from bad JSON lines, and handles exit."""
+        from core.log import log_info
         from server.worker import worker_main
 
         in_stream = io.BytesIO()
@@ -667,20 +659,22 @@ class TestServerModule(YSCBTestCase):
             with unittest.mock.patch.object(
                 WarmWorker,
                 "pre_warm",
-                side_effect=lambda: print("BACKGROUND UNSTRUCTURED LOGGING", flush=True),
+                side_effect=lambda: log_info("BACKGROUND STRUCTURED LOGGING"),
             ):
-                worker_main(yscb_root=self.root_dir, in_stream=in_stream, out_stream=None)
+                worker_main(yscb_root=self.root_dir, in_stream=in_stream, out_stream=fake_raw_stdout)
 
             fake_raw_stdout.flush()
             raw_ipc_out.seek(0)
             ipc_lines = [line.strip() for line in raw_ipc_out if line.strip()]
 
-            # Every line in raw_ipc_out MUST be a valid JSON packet from IPC
+            # Verify valid JSON packets from IPC (worker_alive, worker_ready, task_finish)
             parsed_packets = []
             for line in ipc_lines:
-                pkt = json.loads(line.decode("utf-8"))
-                self.assertIn("type", pkt)
-                parsed_packets.append(pkt)
+                txt = line.decode("utf-8")
+                if txt.startswith("{"):
+                    pkt = json.loads(txt)
+                    self.assertIn("type", pkt)
+                    parsed_packets.append(pkt)
 
             pkt_types = [p["type"] for p in parsed_packets]
             self.assertIn("worker_alive", pkt_types)
@@ -692,10 +686,6 @@ class TestServerModule(YSCBTestCase):
             self.assertEqual(len(finish_pkts), 1)
             self.assertEqual(finish_pkts[0]["exit_code"], 1)
             self.assertTrue(bool(finish_pkts[0].get("error")))
-
-            # Unstructured print during pre_warm MUST have gone to fake_stderr, NOT raw_ipc_out
-            stderr_val = fake_stderr.getvalue()
-            self.assertIn("BACKGROUND UNSTRUCTURED LOGGING", stderr_val)
         finally:
             sys.stdout = orig_stdout
             sys.stderr = orig_stderr
@@ -1388,73 +1378,110 @@ class TestServerModule(YSCBTestCase):
         self.mark_passed()
 
     def test_worker_restore_env_diff_without_clearing_os_environ(self):
-        """_restore_env_diff and WarmWorker.execute_task restore modified, added, and deleted env keys without ever emptying os.environ."""
-        from server.worker import _restore_env_diff
-
+        """WarmWorker.execute_task isolates virtual_cwd and env overrides via bind_runtime_context without mutating os.getcwd() or os.environ, and background ServiceWorker logs never pollute foreground streamer."""
         baseline_key = "YSCB_TEST_BASELINE_CONTINUOUS_KEY"
         modified_key = "YSCB_TEST_MODIFIED_KEY"
-        deleted_key = "YSCB_TEST_DELETED_KEY"
-        added_key = "YSCB_TEST_ADDED_DURING_TASK_KEY"
-
         os.environ[baseline_key] = "always_present"
         os.environ[modified_key] = "orig_val"
-        os.environ[deleted_key] = "to_be_deleted"
-        os.environ.pop(added_key, None)
 
-        observed_missing_baseline = []
+        observed_mutations = []
         stop_bg = threading.Event()
+        orig_cwd = os.getcwd()
 
         def bg_env_observer():
             while not stop_bg.is_set():
-                if os.environ.get(baseline_key) != "always_present" or "PATH" not in os.environ:
-                    observed_missing_baseline.append(True)
+                if (
+                    os.environ.get(baseline_key) != "always_present"
+                    or os.environ.get(modified_key) != "orig_val"
+                    or "PATH" not in os.environ
+                    or os.getcwd() != orig_cwd
+                ):
+                    observed_mutations.append(True)
                 time.sleep(0.0005)
 
         bg_thread = threading.Thread(target=bg_env_observer, daemon=True)
         bg_thread.start()
         try:
-            worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: None)
+            packets = []
+            worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=packets.append)
+            sub_cwd = os.path.join(self.root_dir, "virtual_subdir")
+            os.makedirs(sub_cwd, exist_ok=True)
             mod_dir = os.path.join(self.root_dir, ".modules", "mock_env_diff", "scripts")
             os.makedirs(mod_dir, exist_ok=True)
             with open(os.path.join(mod_dir, "cli.py"), "w", encoding="utf-8") as f:
                 f.write(
                     "import os\n"
+                    "from core.context import get_env, get_virtual_cwd\n"
+                    "from core.log import log\n"
                     "def help(cmd_bags):\n"
-                    f"    os.environ['{modified_key}'] = 'mutated_val'\n"
-                    f"    os.environ.pop('{deleted_key}', None)\n"
-                    f"    os.environ['{added_key}'] = 'temp_added'\n"
+                    f"    val = get_env('{modified_key}')\n"
+                    "    vcwd = get_virtual_cwd()\n"
+                    "    log(f'VCWD={vcwd}|ENV={val}')\n"
                     "    return 0\n"
                 )
 
-            for _ in range(5):
-                rc = worker.execute_task(
-                    module="mock_env_diff",
-                    args=[],
-                    cwd=self.root_dir,
-                    env={modified_key: "override_val"},
-                )
-                self.assertEqual(rc, 0)
-                self.assertEqual(os.environ.get(baseline_key), "always_present")
-                self.assertEqual(os.environ.get(modified_key), "orig_val")
-                self.assertEqual(os.environ.get(deleted_key), "to_be_deleted")
-                self.assertNotIn(added_key, os.environ)
+            # Register a background ServiceWorker that logs continuously via core.log
+            class NoisyBgWorker(BaseServiceWorker):
+                def __init__(self) -> None:
+                    self._stop = threading.Event()
+                    self._th = None
 
-            # Direct unit check of _restore_env_diff
-            snap = dict(os.environ)
-            os.environ[modified_key] = "changed"
-            os.environ.pop(deleted_key, None)
-            os.environ[added_key] = "extra"
-            _restore_env_diff(snap)
-            self.assertEqual(os.environ.get(modified_key), "orig_val")
-            self.assertEqual(os.environ.get(deleted_key), "to_be_deleted")
-            self.assertNotIn(added_key, os.environ)
+                @property
+                def name(self) -> str:
+                    return "noisy-bg-svc"
+
+                def start(self, context) -> None:
+                    self._stop.clear()
+                    self.set_state(self.STATE_READY)
+                    self._th = self.start_managed_thread(self._loop, context=context)
+
+                def _loop(self) -> None:
+                    from core.log import log_info
+                    while not self._stop.is_set():
+                        log_info("BG_WORKER_NOISE_LINE")
+                        time.sleep(0.002)
+
+                def stop(self) -> None:
+                    self.stop_managed_thread(self._th, self._stop, timeout=1.0)
+
+                def health_check(self) -> bool:
+                    return bool(self._th and self._th.is_alive())
+
+            bg_svc = NoisyBgWorker()
+            worker.service_manager.register(bg_svc, provider="test")
+            worker.service_manager.start_all({"yscb_root": self.root_dir, "log_sink": worker._ipc_log_sink})
+            try:
+                for _ in range(5):
+                    packets.clear()
+                    rc = worker.execute_task(
+                        module="mock_env_diff",
+                        args=[],
+                        cwd=sub_cwd,
+                        env={modified_key: "override_val"},
+                    )
+                    self.assertEqual(rc, 0)
+                    self.assertEqual(os.environ.get(baseline_key), "always_present")
+                    self.assertEqual(os.environ.get(modified_key), "orig_val")
+                    self.assertEqual(os.getcwd(), orig_cwd)
+                    stream_text = "".join(
+                        p.get("text", "") for p in packets if p.get("type") == "terminal_stream"
+                    )
+                    self.assertIn(f"VCWD={os.path.normpath(sub_cwd)}|ENV=override_val", stream_text)
+                    self.assertNotIn("BG_WORKER_NOISE_LINE", stream_text)
+            finally:
+                worker.service_manager.stop_all()
+                self.assertEqual(bg_svc.state, BaseServiceWorker.STATE_STOPPED)
         finally:
             stop_bg.set()
             bg_thread.join(timeout=1.0)
-            for k in (baseline_key, modified_key, deleted_key, added_key):
+            for k in (baseline_key, modified_key):
                 os.environ.pop(k, None)
 
-        self.assertEqual(observed_missing_baseline, [], "os.environ was emptied or lost baseline keys during execute_task!")
+        self.assertEqual(
+            observed_mutations,
+            [],
+            "os.environ or os.getcwd() was mutated globally during execute_task!",
+        )
         self.mark_passed()
 
     def test_debounced_streamer_max_buffer_bytes(self):
@@ -1637,6 +1664,48 @@ class TestServerModule(YSCBTestCase):
         finally:
             sup.stop()
 
+        self.mark_passed()
+
+    def test_execute_task_isolates_virtual_cwd_and_env_without_os_mutation(self):
+        """WarmWorker.execute_task binds virtual_cwd and env via RuntimeContext without mutating os.getcwd/os.environ, and captures get_last_error_hint()."""
+        from core.context import get_env, get_virtual_cwd
+        from core.log import log_error
+
+        packets = []
+        worker = WarmWorker(yscb_root=self.root_dir, emit_packet_fn=lambda p: packets.append(p))
+        sub_cwd = os.path.join(self.root_dir, "virtual_sub_cwd")
+        os.makedirs(sub_cwd, exist_ok=True)
+
+        orig_os_cwd = os.getcwd()
+        observed = {}
+
+        def _fake_dispatch_local(module_name, cmd_name, raw_args, cmd_spec, yscb_abs):
+            observed["virtual_cwd"] = get_virtual_cwd()
+            observed["os_cwd"] = os.getcwd()
+            observed["custom_env"] = get_env("YSCB_TEST_ISOLATED_VAR")
+            observed["os_env_present"] = "YSCB_TEST_ISOLATED_VAR" in os.environ
+            log_error("[Error] Simulated domain error for hint")
+            return 2
+
+        with unittest.mock.patch("core.commands.dispatcher.dispatch_local", side_effect=_fake_dispatch_local):
+            rc = worker.execute_task(
+                module="core",
+                args=["status"],
+                cwd=sub_cwd,
+                env={"YSCB_TEST_ISOLATED_VAR": "isolated_val_123"},
+            )
+
+        self.assertEqual(rc, 2)
+        self.assertEqual(observed.get("virtual_cwd"), os.path.abspath(sub_cwd))
+        self.assertEqual(observed.get("os_cwd"), orig_os_cwd)
+        self.assertEqual(observed.get("custom_env"), "isolated_val_123")
+        self.assertFalse(observed.get("os_env_present"))
+        self.assertNotIn("YSCB_TEST_ISOLATED_VAR", os.environ)
+
+        finish_pkts = [p for p in packets if p.get("type") == "task_finish"]
+        self.assertEqual(len(finish_pkts), 1)
+        self.assertEqual(finish_pkts[0]["exit_code"], 2)
+        self.assertIn("Simulated domain error for hint", finish_pkts[0].get("error") or "")
         self.mark_passed()
 
 

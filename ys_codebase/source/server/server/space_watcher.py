@@ -7,13 +7,13 @@ and `on_file_space_changed` (`emit_module="core"`) event broadcasting.
 
 from __future__ import annotations
 
-import logging
 import os
 from pathlib import Path
 import threading
 import time
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
+from core.log import log_error, log_warn
 from core.platform.lock import InterProcessLock
 from core.space.registry import SpaceConfig, SpaceRegistry, get_default_registry
 from core.space.scanner import ScanDiffResult, SpaceScanner, get_default_scanner
@@ -29,8 +29,6 @@ from core.space.watcher import (
 )
 
 from .service import BaseServiceWorker
-
-logger = logging.getLogger("server.space_watcher")
 
 _FAST_IGNORED_SEGMENTS: FrozenSet[str] = frozenset(
     {
@@ -235,11 +233,13 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
             except Exception:
                 pass
         self._stop_event.clear()
+        self.set_state(self.STATE_STARTING)
         register_active_watcher(self)
-        self._thread = threading.Thread(
-            target=self.run, name=f"Worker-{self.name}", daemon=True
+        self._thread = self.start_managed_thread(
+            self.run,
+            context=self.context,
+            thread_name=f"Worker-{self.name}",
         )
-        self._thread.start()
 
     def stop(self, timeout: float = 1.0) -> None:
         """Stop background watcher thread and release watchdog observer."""
@@ -248,8 +248,11 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
             register_active_watcher(None)
         self._stop_watchdog_observer()
         self._remove_watcher_state_file()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=timeout)
+        self.stop_managed_thread(
+            self._thread,
+            self._stop_event,
+            timeout=timeout,
+        )
 
     def is_alive(self) -> bool:
         """Return whether the background thread is alive."""
@@ -558,7 +561,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                 last_dict = diff_res.to_dict()
             except Exception as exc:
                 self._rollback_space_batch(q_name, dirty_paths, full_rescan)
-                logger.error("Error flushing space '%s' immediately: %s", q_name, exc)
+                log_error(f"Error flushing space '{q_name}' immediately: {exc}")
 
         self._finalize_dirty_marker()
         return last_dict
@@ -594,17 +597,22 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
 
         batch_set = set(target_spaces)
         results: Dict[str, ScanDiffResult] = {}
-        for q_name in target_spaces:
-            s_dirty = dirty_batch.get(q_name, set())
-            s_full = q_name in full_rescan_batch
-            try:
-                diff_res = self._refresh_or_patch_space(
-                    q_name, s_dirty, s_full, batch_qnames=batch_set
-                )
-                results[q_name] = diff_res
-            except Exception as exc:
-                self._rollback_space_batch(q_name, s_dirty, s_full)
-                logger.error("Error refreshing dirty space '%s': %s", q_name, exc)
+        self.set_state(self.STATE_UPDATING)
+        try:
+            for q_name in target_spaces:
+                s_dirty = dirty_batch.get(q_name, set())
+                s_full = q_name in full_rescan_batch
+                try:
+                    diff_res = self._refresh_or_patch_space(
+                        q_name, s_dirty, s_full, batch_qnames=batch_set
+                    )
+                    results[q_name] = diff_res
+                except Exception as exc:
+                    self._rollback_space_batch(q_name, s_dirty, s_full)
+                    log_error(f"Error refreshing dirty space '{q_name}': {exc}")
+        finally:
+            if not self._stop_event.is_set():
+                self.set_state(self.STATE_READY)
 
         self._finalize_dirty_marker()
         return results
@@ -666,7 +674,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                         obs.start()
                         self._observer = obs
                     except Exception as exc:
-                        logger.warning("Failed to start watchdog observer: %s", exc)
+                        log_warn(f"Failed to start watchdog observer: {exc}")
                         self._observer = None
 
                 if self._observer is not None:
@@ -680,10 +688,8 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                                 )
                                 self._scheduled_dirs.add(norm_k)
                             except Exception as exc:
-                                logger.warning(
-                                    "Failed to schedule watchdog on '%s': %s",
-                                    w_dir,
-                                    exc,
+                                log_warn(
+                                    f"Failed to schedule watchdog on '{w_dir}': {exc}"
                                 )
 
         if self.is_alive() or self._observer is not None:
@@ -705,6 +711,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
 
     def run(self) -> None:
         """Main background loop for CoreSpaceWatcherServiceWorker."""
+        self.set_state(self.STATE_STARTING)
         register_active_watcher(self)
         if not self._stop_event.is_set():
             self.sync_watched_directories()
@@ -718,7 +725,10 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                 if not self.scanner._has_existing_snapshot(q_name):
                     self.scanner.scan(q_name)
         except Exception as exc:
-            logger.warning("Initial core.space snapshot warm-up failed: %s", exc)
+            log_warn(f"Initial core.space snapshot warm-up failed: {exc}")
+
+        if not self._stop_event.is_set():
+            self.set_state(self.STATE_READY)
 
         poll_interval = min(0.1, max(0.02, self.debounce_seconds / 4.0))
         try:
@@ -726,6 +736,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                 self.flush_dirty_spaces(force=False)
                 self._stop_event.wait(timeout=poll_interval)
         finally:
+            self.set_state(self.STATE_STOPPED)
             if get_active_watcher_safe() is self:
                 register_active_watcher(None)
             self._stop_watchdog_observer()

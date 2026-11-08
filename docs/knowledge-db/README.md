@@ -5,13 +5,15 @@ status: "active"
 source_paths:
   - "yscb://source/knowledge-db/knowledge_db/engine.py"
   - "yscb://source/knowledge-db/knowledge_db/pipeline.py"
+  - "yscb://source/knowledge-db/knowledge_db/service.py"
+  - "yscb://source/knowledge-db/knowledge_db/embedding.py"
   - "yscb://source/knowledge-db/knowledge_db/config.py"
   - "yscb://source/knowledge-db/scripts/cli.py"
 related_docs:
   - "./architecture.md"
   - "./retrieval.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-07"
+last_updated: "2026-11-08"
 ---
 
 # Knowledge Database 模組手冊 (Knowledge-DB Overview)
@@ -27,7 +29,9 @@ last_updated: "2026-11-07"
 - **三階單向 DAG 與單次解析符號共享 (`module:ast` `ASTSnapshot`)**：語法樹解析、7 大官方方言隔離 (`dialects/<lang>`)、C# `partial class` 雙層分部聚合、單檔大綱 (`yscb ast outline`) 與呼叫拓撲 (`yscb ast callers/callees/impact`) 統一由 [`module:ast`](../ast/README.md) 負責；`knowledge-db` 直接讀取 `ASTEngine.ensure_jit_synced()` 產出之 `ASTSnapshot` 與 `CallGraphIndex`，**零重複 AST 解析**。
 - **跨模組空間協同與顯式 Opt-in 檢索加權 (`core.space` & `space_weights`)**：空間目錄幾何統一委由微內核 `core.space` (`contributes/core.json` 與 `config/core/contribute.json`) 雙軌聚合；`knowledge-db` 則採**顯式 Opt-in 權重制**，唯有於 `space_weights`（如 `source: 1.0`, `docs: 1.2`, `plans: 0.85`）明確宣告權重的空間才會納入資料庫索引與檢索（未宣告權重的空間，如純雲端同步空間，自動排除於資料庫索引之外）。
 - **全空間聯集處理 (Union Scope)**：無單一 `default_space` 強制約定，全系統以所有有效空間之聯集作為全域處理範圍，並對重疊實體檔案進行 100% 唯一解析去重。
-- **`YFP2` + `acked_ast_generation` 雙水位線與雙階段背景 Worker (`knowledge-db-worker`)**：透過 `core.space.consume_diff(consumer_id="knowledge-db")` 與 `InvertedIndex.acked_ast_generation` 雙重水位線感知變更；常駐背景服務 `KnowledgeDBServiceWorker` (`knowledge-db-worker`) 採兩階段非阻塞同步（Stage 1 快篩秒級更新 BM25 並 Ack 游標、Stage 2 微批次自動補齊向量與背景自動下載模型），搭配 `is_worker_busy() -> int` 已運行毫秒探針與 `jit_vector_timeout_ms` 動態容差等待／瞬時降級。
+- **`YFP2` + `acked_ast_generation` 雙水位線與受管雙階段背景 Worker (`knowledge-db-worker`)**：透過 `core.space.consume_diff(consumer_id="knowledge-db")` 與 `InvertedIndex.acked_ast_generation` 雙重水位線感知變更；常駐背景服務 `KnowledgeDBServiceWorker` (`knowledge-db-worker`) 運行於 `BaseServiceWorker` 受管背景執行緒中，具備明確五態狀態機（`STARTING`, `UPDATING`, `READY`, `DEGRADED_OFFLINE`, `STOPPED`）與 `core.log` 背景日誌流隔離：
+  - **Stage 1 快篩同步**：秒級更新 AST/BM25 倒排索引並立即釋放 `_index_lock`。
+  - **Stage 2 向量補齊與受管背景自動下載**：在釋放 `_index_lock` 後，若 `EmbeddingService.has_local_model()` 為 `False` 則於受管背景執行緒自動拉取模型（離線或失敗時切換為 `DEGRADED_OFFLINE` 並設 60 秒重試冷卻），下載就緒後以微批次補齊向量並轉為 `READY`；當 `unified.index.bin.gz` 已存在且背景 Worker 忙碌或無本地模型時，前台 `search` 採非阻塞快篩路徑（`< 1ms` 瞬時回傳純 BM25 結果），絕不等待 `_index_lock` 或網路下載。手动 `yscb kdb model download` 標註 `server_compatible: false`，強制於獨立冷啟動進程執行。
 - **雙軌 RRF 複合檢索與平滑降級 (Hybrid Search)**：結合中英混排分詞 (`MultilingualTokenizer`)、多欄位加權 BM25 與 FastEmbed ONNX 離線向量推論（動態維度解析，預設 `BAAI/bge-small-zh-v1.5` 為 `512-dim`），透過倒數排名融合 (RRF $k=60$) 精準召回，並具備 100% 剛性平滑降級純 BM25 保證。
 
 ---

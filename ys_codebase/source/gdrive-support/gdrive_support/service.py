@@ -26,9 +26,54 @@ except ImportError:
     class BaseServiceWorker:  # type: ignore[no-redef]
         """Fallback base worker when server module is not installed."""
 
+        STATE_STARTING = "STARTING"
+        STATE_UPDATING = "UPDATING"
+        STATE_READY = "READY"
+        STATE_DEGRADED_OFFLINE = "DEGRADED_OFFLINE"
+        STATE_STOPPED = "STOPPED"
+        _state = STATE_STOPPED
+
         @property
         def name(self) -> str:
             return "gdrive-sync"
+
+        @property
+        def state(self) -> str:
+            return self._state
+
+        def set_state(self, new_state: str) -> None:
+            self._state = str(new_state)
+
+        def start_managed_thread(
+            self,
+            target: Callable[[], None],
+            *,
+            context: Optional[Dict[str, Any]] = None,
+            thread_name: Optional[str] = None,
+        ) -> threading.Thread:
+            t = threading.Thread(
+                target=target,
+                name=thread_name or f"Worker-{self.name}",
+                daemon=True,
+            )
+            t.start()
+            return t
+
+        def stop_managed_thread(
+            self,
+            thread: Optional[threading.Thread],
+            stop_event: Optional[threading.Event] = None,
+            *,
+            wake_event: Optional[threading.Event] = None,
+            timeout: float = 2.0,
+        ) -> None:
+            if stop_event is not None:
+                stop_event.set()
+            if wake_event is not None:
+                wake_event.set()
+            if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+                thread.join(timeout=timeout)
+            self.set_state(self.STATE_STOPPED)
 
         def start(self, context: Dict[str, Any]) -> None:
             pass
@@ -67,6 +112,7 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
         self._started: bool = False
         self._sync_runs: int = 0
         self._last_error: str = ""
+        self.set_state(self.STATE_STOPPED)
 
     @property
     def name(self) -> str:
@@ -78,16 +124,19 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
         """
         self._stop_event.clear()
         self._wake_event.clear()
+        self.set_state(self.STATE_STARTING)
         cfg = self._explicit_config or load_gdrive_config()
         self._config = cfg
         self._started = True
 
         if not cfg.auto_sync:
             self.standby_mode = True
+            self.set_state(self.STATE_READY)
             return
 
         if not cfg.root_folder_id and not cfg.sandbox_dir:
             self.standby_mode = True
+            self.set_state(self.STATE_READY)
             return
 
         self.standby_mode = False
@@ -111,10 +160,12 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
             )
 
         if self._thread is None or not self._thread.is_alive():
-            self._thread = threading.Thread(
-                target=self._run_loop, name="Worker-gdrive-sync", daemon=True
+            self.set_state(self.STATE_READY)
+            self._thread = self.start_managed_thread(
+                self._run_loop,
+                context=context,
+                thread_name="Worker-gdrive-sync",
             )
-            self._thread.start()
 
     def _on_file_space_changed(self, space_name: str, _diff: Any = None) -> None:
         self._wake_event.set()
@@ -122,6 +173,7 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
     def _run_loop(self) -> None:
         assert self._config is not None
         interval = max(1.0, float(self._config.poll_interval_sec))
+        self.set_state(self.STATE_READY)
         while not self._stop_event.is_set():
             self._wake_event.wait(timeout=interval)
             if self._stop_event.is_set():
@@ -133,6 +185,7 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
         """Execute a single non-blocking background sync cycle."""
         if self.standby_mode or self._coordinator is None:
             return None
+        self.set_state(self.STATE_UPDATING)
         try:
             try:
                 self.touch_activity()
@@ -146,9 +199,13 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
             )
             self._sync_runs += 1
             self._last_error = ""
+            if not self._stop_event.is_set():
+                self.set_state(self.STATE_READY)
             return report.to_dict()
         except Exception as exc:
             self._last_error = str(exc)
+            if not self._stop_event.is_set():
+                self.set_state(self.STATE_DEGRADED_OFFLINE)
             logger.debug("Background gdrive sync deferred/failed: %s", exc)
             return None
 
@@ -161,10 +218,15 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
                 self._unsubscribe()
             finally:
                 self._unsubscribe = None
-        if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=5.0)
+        self.stop_managed_thread(
+            self._thread,
+            self._stop_event,
+            wake_event=self._wake_event,
+            timeout=5.0,
+        )
         self._thread = None
         self._started = False
+        self.set_state(self.STATE_STOPPED)
 
     def health_check(self) -> bool:
         """
@@ -180,6 +242,7 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
         return {
             "name": self.name,
             "started": self._started,
+            "state": self.state,
             "mode": "standby" if self.standby_mode else "active",
             "healthy": self.health_check(),
             "subscribed": self._unsubscribe is not None,

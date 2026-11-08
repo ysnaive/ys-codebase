@@ -168,6 +168,10 @@ class RuntimeContext:
         self.log_error_chunks: List[str] = []
         self.log_file_op_lock = threading.RLock()
 
+        # 12. server.service touch activity state
+        self.server_touch_lock = threading.Lock()
+        self.server_last_touch_by_root: Dict[str, float] = {}
+
     def reset_all_caches(self) -> None:
         """
         Clears all mutable caches in-place so existing dictionary/list references held
@@ -206,6 +210,8 @@ class RuntimeContext:
                 self.space_active_watcher_worker = None
             with self.log_error_lock:
                 self.log_error_chunks.clear()
+            with self.server_touch_lock:
+                self.server_last_touch_by_root.clear()
 
 
 @lru_cache(maxsize=1)

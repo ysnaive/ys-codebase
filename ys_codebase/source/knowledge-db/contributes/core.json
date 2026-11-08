@@ -279,7 +279,7 @@
           "download": {
             "description": "顯式下載 FastEmbed 向量模型權重至本地快取",
             "tier": "conditional",
-            "server_compatible": true,
+            "server_compatible": false,
             "options": {
               "force": {
                 "force": {

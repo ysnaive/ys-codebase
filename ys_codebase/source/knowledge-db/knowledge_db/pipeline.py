@@ -1141,9 +1141,52 @@ class IndexingPipeline:
         auto_rebuild: bool = True,
         verbose: bool = False,
     ) -> InvertedIndex:
+        indices_dir = self.get_indices_dir()
+        bin_file = indices_dir / "unified.index.bin.gz"
+        worker_active = is_worker_running(indices_dir)
+        worker_busy = get_worker_busy_ms(indices_dir) > 0
+        emb_svc = getattr(self, "embedding_service", None)
+        has_local_model = True
+        if emb_svc is not None and not getattr(emb_svc, "mock_mode", False):
+            has_local_model = (
+                emb_svc.has_local_model()
+                if hasattr(emb_svc, "has_local_model")
+                else emb_svc.is_model_downloaded()
+            )
+        eff_require_vectors = bool(require_vectors and has_local_model)
+
+        if bin_file.exists():
+            if worker_active or worker_busy:
+                if worker_active:
+                    active_w = get_active_worker()
+                    if active_w is not None:
+                        active_w.notify_space_changed()
+                self._ensure_indices_loaded(load_vectors=eff_require_vectors)
+                if self._unified_index is not None:
+                    return self._unified_index
+            acquired = self._index_lock.acquire(blocking=False)
+            if not acquired:
+                self._ensure_indices_loaded(load_vectors=eff_require_vectors)
+                if self._unified_index is not None:
+                    return self._unified_index
+                with self._index_lock:
+                    return self._ensure_jit_index_ready_locked(
+                        require_vectors=eff_require_vectors,
+                        auto_rebuild=auto_rebuild,
+                        verbose=verbose,
+                    )
+            try:
+                return self._ensure_jit_index_ready_locked(
+                    require_vectors=eff_require_vectors,
+                    auto_rebuild=auto_rebuild,
+                    verbose=verbose,
+                )
+            finally:
+                self._index_lock.release()
+
         with self._index_lock:
             return self._ensure_jit_index_ready_locked(
-                require_vectors=require_vectors,
+                require_vectors=eff_require_vectors,
                 auto_rebuild=auto_rebuild,
                 verbose=verbose,
             )
@@ -1299,8 +1342,9 @@ class IndexingPipeline:
 
         indices_dir = self.get_indices_dir()
         worker_active = is_worker_running(indices_dir)
-        if hasattr(self, "embedding_service") and self.embedding_service is not None:
-            self.embedding_service.suppress_guard_prompt = bool(worker_active)
+        emb_svc = getattr(self, "embedding_service", None)
+        if emb_svc is not None:
+            emb_svc.suppress_guard_prompt = bool(worker_active)
 
         timeout_ms = int(getattr(self.config, "jit_vector_timeout_ms", 3000) or 0)
         elapsed_ms = get_worker_busy_ms(indices_dir)
@@ -1318,6 +1362,20 @@ class IndexingPipeline:
                 sys.stderr.flush()
                 return False
             self._ensure_indices_loaded(load_vectors=True, force_reload=True)
+
+        if emb_svc is not None and not getattr(emb_svc, "mock_mode", False):
+            has_local = emb_svc.has_local_model() if hasattr(emb_svc, "has_local_model") else emb_svc.is_model_downloaded()
+            if not has_local:
+                if worker_active:
+                    active_w = get_active_worker()
+                    if active_w is not None:
+                        active_w.notify_space_changed()
+                    sys.stderr.write("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]\n")
+                    sys.stderr.flush()
+                    return False
+                # Trigger standard offline/missing-model notice in _init_model without downloading
+                _ = emb_svc.is_available
+                return False
 
         if worker_active and not self.hybrid_engine.is_vector_available:
             active_w = get_active_worker()

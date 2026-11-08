@@ -122,8 +122,11 @@ class EmbeddingService:
         self._dimension = dim
         return dim
 
-    def is_model_downloaded(self) -> bool:
-        """檢查本地快取目錄中特定模型權重目錄與檔案是否存在。"""
+    def has_local_model(self) -> bool:
+        """
+        < 1ms 純本地檔案系統探針：檢查 `self.cache_dir` 中目標模型 (`self.model_name`)
+        之 ONNX 權重目錄與 `.onnx` 檔案是否已完整存在，零網路 I/O、零 `fastembed` 初始化。
+        """
         if not self.cache_dir.exists():
             return False
 
@@ -148,15 +151,14 @@ class EmbeddingService:
                 if model_short in path_str or model_clean in path_str:
                     self._verified_onnx_path = f
                     return True
-
-            sub_entries = list(self.cache_dir.iterdir())
-            if all_onnx and len(sub_entries) <= 3:
-                self._verified_onnx_path = all_onnx[0]
-                return True
         except Exception as e:
             logger.debug(f"Error while probing local model weights: {e}")
 
         return False
+
+    def is_model_downloaded(self) -> bool:
+        """檢查本地快取目錄中特定模型權重目錄與檔案是否存在 (委派至 has_local_model)。"""
+        return self.has_local_model()
 
     def _load_fastembed_instance(self, validate_supported: bool = False) -> int:
         """在鎖保護下實例化 FastEmbed TextEmbedding 並解析模型維度 (SSOT)。"""

@@ -23,9 +23,54 @@ except ImportError:
     class BaseServiceWorker:  # type: ignore[no-redef]
         """Fallback base worker when server module is not installed."""
 
+        STATE_STARTING = "STARTING"
+        STATE_UPDATING = "UPDATING"
+        STATE_READY = "READY"
+        STATE_DEGRADED_OFFLINE = "DEGRADED_OFFLINE"
+        STATE_STOPPED = "STOPPED"
+        _state = STATE_STOPPED
+
         @property
         def name(self) -> str:
             return "knowledge-db-worker"
+
+        @property
+        def state(self) -> str:
+            return self._state
+
+        def set_state(self, new_state: str) -> None:
+            self._state = str(new_state)
+
+        def start_managed_thread(
+            self,
+            target: Any,
+            *,
+            context: Optional[Dict[str, Any]] = None,
+            thread_name: Optional[str] = None,
+        ) -> threading.Thread:
+            t = threading.Thread(
+                target=target,
+                name=thread_name or f"Worker-{self.name}",
+                daemon=True,
+            )
+            t.start()
+            return t
+
+        def stop_managed_thread(
+            self,
+            thread: Optional[threading.Thread],
+            stop_event: Optional[threading.Event] = None,
+            *,
+            wake_event: Optional[threading.Event] = None,
+            timeout: float = 2.0,
+        ) -> None:
+            if stop_event is not None:
+                stop_event.set()
+            if wake_event is not None:
+                wake_event.set()
+            if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+                thread.join(timeout=timeout)
+            self.set_state(self.STATE_STOPPED)
 
         def start(self, context: Dict[str, Any]) -> None:
             pass
@@ -103,18 +148,20 @@ def write_worker_state(
     """Atomically persist worker state to `indices/.kdb_worker_state.json` and update in-process state."""
     global _IN_PROCESS_BUSY_START_TS, _IN_PROCESS_PHASE, _IN_PROCESS_PROGRESS
     now = time.time()
+    eff_phase = phase if (busy or phase not in ("", "idle")) else "idle"
+    eff_progress = progress if (busy or phase not in ("", "idle")) else ""
     with _WORKER_LOCK:
         if busy:
             if start_ts <= 0.0:
                 start_ts = _IN_PROCESS_BUSY_START_TS if _IN_PROCESS_BUSY_START_TS > 0.0 else now
             _IN_PROCESS_BUSY_START_TS = start_ts
-            _IN_PROCESS_PHASE = phase
-            _IN_PROCESS_PROGRESS = progress
+            _IN_PROCESS_PHASE = eff_phase
+            _IN_PROCESS_PROGRESS = eff_progress
             _IDLE_EVENT.clear()
         else:
             _IN_PROCESS_BUSY_START_TS = 0.0
-            _IN_PROCESS_PHASE = "idle"
-            _IN_PROCESS_PROGRESS = ""
+            _IN_PROCESS_PHASE = eff_phase
+            _IN_PROCESS_PROGRESS = eff_progress
             _IDLE_EVENT.set()
 
     p = get_worker_state_path(indices_dir)
@@ -127,22 +174,28 @@ def write_worker_state(
             "start_ts": float(start_ts if busy else 0.0),
             "updated_ts": now,
             "pid": os.getpid(),
-            "phase": phase if busy else "idle",
-            "progress": progress if busy else "",
+            "phase": eff_phase,
+            "progress": eff_progress,
         }
         vfs.write_json(str(p), payload, indent=None, atomic=True)
     except Exception as exc:
         logger.debug("Failed writing worker state file %s: %s", p, exc)
 
 
-def clear_worker_state(indices_dir: Union[str, Path], *, worker_running: bool = False) -> None:
-    """Reset busy state to idle (or remove state file when worker stops)."""
+def clear_worker_state(
+    indices_dir: Union[str, Path],
+    *,
+    worker_running: bool = False,
+    phase: str = "idle",
+    progress: str = "",
+) -> None:
+    """Reset busy state to idle (or degraded_offline) or remove state file when worker stops."""
     write_worker_state(
         indices_dir,
         busy=False,
         start_ts=0.0,
-        phase="idle",
-        progress="",
+        phase=phase,
+        progress=progress,
         worker_running=worker_running,
     )
 
@@ -199,8 +252,8 @@ def read_worker_state(indices_dir: Union[str, Path]) -> Dict[str, Any]:
             "busy": False,
             "start_ts": 0.0,
             "elapsed_ms": 0,
-            "phase": "idle",
-            "progress": "",
+            "phase": _IN_PROCESS_PHASE or "idle",
+            "progress": _IN_PROCESS_PROGRESS or "",
             "pid": os.getpid() if active else 0,
         }
 
@@ -273,6 +326,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
         self._space_diffs_processed: int = 0
         self._vector_batches_processed: int = 0
         self._last_sync_at: Optional[float] = None
+        self.set_state(self.STATE_STOPPED)
 
     @property
     def name(self) -> str:
@@ -298,20 +352,24 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 return
             self._stop_event.clear()
             self._wake_event.set()
+            self.set_state(self.STATE_STARTING)
             _ACTIVE_WORKER = self
-            self._thread = threading.Thread(
-                target=self.run,
-                name=f"Worker-{self.name}",
-                daemon=True,
+            self._thread = self.start_managed_thread(
+                self.run,
+                context=self.context,
+                thread_name=f"Worker-{self.name}",
             )
-            self._thread.start()
 
     def stop(self, timeout: float = 5.0) -> None:
         global _ACTIVE_WORKER
         self._stop_event.set()
         self._wake_event.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=timeout)
+        self.stop_managed_thread(
+            self._thread,
+            self._stop_event,
+            wake_event=self._wake_event,
+            timeout=timeout,
+        )
         with _WORKER_LOCK:
             if _ACTIVE_WORKER is self:
                 _ACTIVE_WORKER = None
@@ -320,6 +378,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             clear_worker_state(engine.pipeline.get_indices_dir(), worker_running=False)
         except Exception:
             pass
+        self.set_state(self.STATE_STOPPED)
 
     def is_alive(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
@@ -329,6 +388,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
 
     def run(self) -> None:
         """Main background loop executing Stage 1 (Fast AST/BM25/Graph) and Stage 2 (Micro-batched Vector Sync)."""
+        self.set_state(self.STATE_STARTING)
         try:
             engine = self._get_engine()
             indices_dir = engine.pipeline.get_indices_dir()
@@ -336,6 +396,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             if hasattr(engine, "embedding_service") and engine.embedding_service is not None:
                 engine.embedding_service.suppress_guard_prompt = True
         except Exception as exc:
+            self.set_state(self.STATE_STOPPED)
             logger.warning("[knowledge-db-worker] Failed to initialize engine in worker: %s", exc)
             return
 
@@ -348,6 +409,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 # Wait for next `on_file_space_changed` wakeup or periodic self-check
                 self._wake_event.wait(timeout=2.0)
         finally:
+            self.set_state(self.STATE_STOPPED)
             try:
                 clear_worker_state(indices_dir, worker_running=False)
             except Exception:
@@ -356,11 +418,15 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
     def _run_sync_cycle(self, engine: Any, indices_dir: Path) -> None:
         """Execute a full background synchronization cycle (Stage 1 + Auto Model Download + Stage 2)."""
         busy_start_ts: float = 0.0
+        final_state: str = self.STATE_READY
+        final_phase: str = "idle"
+        final_progress: str = ""
 
         def _mark_busy(phase: str, progress: str = "") -> None:
             nonlocal busy_start_ts
             if busy_start_ts <= 0.0:
                 busy_start_ts = time.time()
+            self.set_state(self.STATE_UPDATING)
             try:
                 self.touch_activity()
             except Exception:
@@ -397,9 +463,14 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
 
             # Check if there is any vector deficit before downloading/loading model
             deficit_info = engine.pipeline.get_vector_deficit_info()
-            needs_vectors = deficit_info["missing_count"] > 0 or deficit_info["stale_count"] > 0 or not deficit_info["compatible"]
+            needs_vectors = (
+                deficit_info["missing_count"] > 0
+                or deficit_info["stale_count"] > 0
+                or not deficit_info["compatible"]
+            )
 
-            if not emb_svc.mock_mode and not emb_svc.is_model_downloaded():
+            has_model = emb_svc.has_local_model() if hasattr(emb_svc, "has_local_model") else emb_svc.is_model_downloaded()
+            if not emb_svc.mock_mode and not has_model:
                 now = time.time()
                 if (now - self._last_download_attempt_ts) >= self.MODEL_DOWNLOAD_RETRY_COOLDOWN_SEC:
                     self._last_download_attempt_ts = now
@@ -408,12 +479,21 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                         emb_svc.download_model(force=False)
                         needs_vectors = True
                     except Exception as dl_err:
+                        final_state = self.STATE_DEGRADED_OFFLINE
+                        final_phase = "degraded_offline"
+                        final_progress = f"向量模型下載失敗或離線降級: {dl_err}"
                         logger.warning("[knowledge-db-worker] Background model download failed: %s", dl_err)
                         return
                 else:
+                    final_state = self.STATE_DEGRADED_OFFLINE
+                    final_phase = "degraded_offline"
+                    final_progress = f"等待向量模型重試冷卻 ({emb_svc.model_name})"
                     return
 
             if not emb_svc.is_available:
+                final_state = self.STATE_DEGRADED_OFFLINE
+                final_phase = "degraded_offline"
+                final_progress = f"向量模型不可用 ({emb_svc.model_name})"
                 return
 
             if not needs_vectors:
@@ -485,8 +565,15 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                     engine.pipeline.flush_vector_index()
             except Exception as flush_err:
                 logger.warning("[knowledge-db-worker] Flush vector index on exit warning: %s", flush_err)
-            if busy_start_ts > 0.0:
-                clear_worker_state(indices_dir, worker_running=not self._stop_event.is_set())
+            if not self._stop_event.is_set():
+                self.set_state(final_state)
+            if busy_start_ts > 0.0 or final_phase != "idle":
+                clear_worker_state(
+                    indices_dir,
+                    worker_running=not self._stop_event.is_set(),
+                    phase=final_phase if not self._stop_event.is_set() else "idle",
+                    progress=final_progress if not self._stop_event.is_set() else "",
+                )
 
     def _has_pending_space_work(self, engine: Any, indices_dir: Path) -> bool:
         bin_file = indices_dir / "unified.index.bin.gz"
@@ -552,6 +639,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
         except Exception:
             st = {"busy": False, "elapsed_ms": 0, "phase": "idle", "progress": ""}
         return {
+            "state": self.state,
             "busy": st.get("busy", False),
             "busy_elapsed_ms": st.get("elapsed_ms", 0),
             "phase": st.get("phase", "idle"),

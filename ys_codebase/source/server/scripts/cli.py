@@ -6,13 +6,14 @@ No legacy process(args) fallback.
 
 import json
 import os
-import sys
 import time
 import urllib.request
 from typing import Any, Dict, Optional
 
 from core.commands.bags import CmdBags
+from core.context import get_env, get_virtual_cwd
 from core.guard import guard_dispatch
+from core.log import log, log_error
 from core.platform import InterProcessLock, daemon_probe, is_process_alive, kill_process_tree
 from server.config import ServerConfig
 from server.logger import ServerLogger
@@ -55,7 +56,7 @@ def _get_yscb_root() -> str:
         cand = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         if os.path.isdir(os.path.join(cand, ".modules")) or os.path.isdir(os.path.join(cand, "source")):
             return cand
-        return os.environ.get("YSCB_HOST_DIR", os.getcwd())
+        return get_env("YSCB_HOST_DIR") or get_virtual_cwd()
 
 
 def _http_request(
@@ -82,7 +83,7 @@ def _http_request(
 
 def _print_running_banner(state: ServerDaemonState) -> None:
     status_info = _http_request(state, "/api/status") or build_fallback_status_payload(state)
-    print(format_startup_banner(status_info))
+    log(format_startup_banner(status_info))
 
 
 def _cleanup_stale_state_file(yscb_root: str) -> None:
@@ -120,31 +121,31 @@ def start(cmd_bags: CmdBags) -> int:
             if ttl < 0:
                 raise ValueError("TTL must be non-negative")
         except ValueError:
-            print(f"[Server] Error: Invalid TTL value '{raw_ttl}'. Must be a non-negative number.", file=sys.stderr)
+            log_error(f"[Server] Error: Invalid TTL value '{raw_ttl}'. Must be a non-negative number.", stream="stderr")
             return 1
 
     state = read_daemon_state(yscb_root)
     if state and is_process_alive(state.pid):
-        print(f"[Server] Daemon is already running (PID: {state.pid}, Port: {state.port}).")
+        log(f"[Server] Daemon is already running (PID: {state.pid}, Port: {state.port}).")
         _print_running_banner(state)
         return 0
 
     cfg = ServerConfig.load()
     if not cfg.enable:
-        print("[Server] Server is disabled in configuration ('enable': false). Aborting start.")
+        log("[Server] Server is disabled in configuration ('enable': false). Aborting start.")
         return 1
 
     enable_console = _resolve_enable_console(console_arg, daemon_arg, cfg.enable_console)
     effective_ttl = ttl if ttl is not None else cfg.idle_timeout_sec
 
     if enable_console:
-        print(f"[*] Starting Server in foreground console mode (Root: {yscb_root}, TTL: {effective_ttl}s)...")
+        log(f"[*] Starting Server in foreground console mode (Root: {yscb_root}, TTL: {effective_ttl}s)...")
         sup = MasterSupervisor(yscb_root=yscb_root, idle_timeout_sec=effective_ttl)
         sup.start(foreground=True)
         return 0
 
     pid = spawn_detached_master(yscb_root=yscb_root, idle_timeout_sec=effective_ttl)
-    print(f"[Server] Starting background daemon (PID: {pid})...")
+    log(f"[Server] Starting background daemon (PID: {pid})...")
 
     for _ in range(30):
         time.sleep(0.1)
@@ -155,9 +156,9 @@ def start(cmd_bags: CmdBags) -> int:
 
     # Distinguish a still-booting daemon from one that died during startup
     if is_process_alive(pid):
-        print(f"[Server] Daemon (PID: {pid}) is still starting up; readiness probe timed out. Check 'server status' shortly.")
+        log(f"[Server] Daemon (PID: {pid}) is still starting up; readiness probe timed out. Check 'server status' shortly.")
         return 0
-    print(f"[Server] Error: Daemon (PID: {pid}) exited before becoming ready. See log under .cache/server/log.", file=sys.stderr)
+    log_error(f"[Server] Error: Daemon (PID: {pid}) exited before becoming ready. See log under .cache/server/log.", stream="stderr")
     return 1
 
 
@@ -169,12 +170,12 @@ def stop(cmd_bags: CmdBags) -> int:
 
     state = read_daemon_state(yscb_root)
     if not state or not is_process_alive(state.pid):
-        print("[Server] Daemon is not running.")
+        log("[Server] Daemon is not running.")
         _cleanup_stale_state_file(yscb_root)
         return 0
 
     if not force_flag:
-        print(f"[Server] Sending graceful shutdown request to daemon (PID: {state.pid})...")
+        log(f"[Server] Sending graceful shutdown request to daemon (PID: {state.pid})...")
         resp = _http_request(state, "/api/shutdown", method="POST", timeout=2.0)
         summary = (resp or {}).get("summary")
         if resp:
@@ -182,12 +183,12 @@ def stop(cmd_bags: CmdBags) -> int:
                 time.sleep(0.1)
                 if not is_process_alive(state.pid):
                     if summary:
-                        print(format_shutdown_summary(summary))
+                        log(format_shutdown_summary(summary))
                     else:
-                        print("[Server] Daemon stopped gracefully.")
+                        log("[Server] Daemon stopped gracefully.")
                     return 0
 
-    print(f"[Server] Terminating process tree for PID: {state.pid}...")
+    log(f"[Server] Terminating process tree for PID: {state.pid}...")
     kill_process_tree(state.pid, timeout_sec=2.0)
     _cleanup_stale_state_file(yscb_root)
     # User-initiated stop is not environment reaping: reset empirical detection
@@ -203,7 +204,7 @@ def stop(cmd_bags: CmdBags) -> int:
         "reason": "Force CLI termination" if force_flag else "Graceful shutdown timeout (forced)",
         "archive_log": archived_log or os.path.join(state.root, ".cache", "server", "log"),
     }
-    print(format_shutdown_summary(fallback_summary))
+    log(format_shutdown_summary(fallback_summary))
     return 0
 
 
@@ -222,36 +223,38 @@ def _render_status_dashboard(info: Dict[str, Any], state: ServerDaemonState) -> 
     uptime = info.get("uptime_seconds")
     uptime_str = format_uptime(float(uptime)) if uptime is not None else "N/A"
 
-    print("======================================================================")
-    print("YS-Codebase Server Daemon Status")
-    print("======================================================================")
+    log("======================================================================")
+    log("YS-Codebase Server Daemon Status")
+    log("======================================================================")
     state_label = str(info.get("state", "ready")).upper()
     if info.get("warming_elapsed_sec") is not None:
         state_label += f" (pre-warming {float(info['warming_elapsed_sec']):.1f}s)"
-    print(f"[*] State         : {state_label}")
-    print(f"[*] Master PID    : {info.get('pid')}")
-    print(f"[*] Worker PID    : {info.get('worker_pid')} ({'Alive' if is_process_alive(info.get('worker_pid', 0)) else 'Restarting'})")
-    print(f"[*] Port          : {info.get('port')}")
-    print(f"[*] Workspace Root: {info.get('root')}")
-    print(f"[*] Uptime        : {uptime_str}")
-    print(f"[*] Tasks Handled : {info.get('tasks_executed')}")
-    print(f"[*] Idle TTL Left : {ttl_str}")
-    print(f"[*] Current Task  : {_format_current_task(info.get('current_task'))}")
-    print(f"[*] Real-time Log : {info.get('log_file', os.path.join(state.root, '.cache', 'server', 'log'))}")
+    log(f"[*] State         : {state_label}")
+    log(f"[*] Master PID    : {info.get('pid')}")
+    log(f"[*] Worker PID    : {info.get('worker_pid')} ({'Alive' if is_process_alive(info.get('worker_pid', 0)) else 'Restarting'})")
+    log(f"[*] Port          : {info.get('port')}")
+    log(f"[*] Workspace Root: {info.get('root')}")
+    log(f"[*] Uptime        : {uptime_str}")
+    log(f"[*] Tasks Handled : {info.get('tasks_executed')}")
+    log(f"[*] Idle TTL Left : {ttl_str}")
+    log(f"[*] Current Task  : {_format_current_task(info.get('current_task'))}")
+    log(f"[*] Real-time Log : {info.get('log_file', os.path.join(state.root, '.cache', 'server', 'log'))}")
 
     watcher = info.get("watcher")
     if watcher:
-        print(f"[*] Modules Watcher: {format_watcher_status(watcher)}")
+        log(f"[*] Modules Watcher: {format_watcher_status(watcher)}")
 
     services = info.get("services", [])
     if services:
-        print("----------------------------------------------------------------------")
-        print(f"[*] Background Services ({len(services)} registered):")
+        log("----------------------------------------------------------------------")
+        log(f"[*] Background Services ({len(services)} registered):")
         for svc in services:
             prov = f" (module: {svc.get('provider')})" if svc.get("provider") else ""
             status_txt = "RUNNING" if svc.get("alive") else "STOPPED"
-            print(f"    ├── [{svc['name']}]{prov} : {status_txt}")
-    print("======================================================================")
+            svc_state = str(svc.get("state") or "").strip().upper()
+            state_suffix = f" ({svc_state})" if svc_state and svc_state != status_txt else ""
+            log(f"    ├── [{svc['name']}]{prov} : {status_txt}{state_suffix}")
+    log("======================================================================")
 
 
 def status(cmd_bags: CmdBags) -> int:
@@ -262,14 +265,14 @@ def status(cmd_bags: CmdBags) -> int:
     if not state or not is_process_alive(state.pid):
         cfg = ServerConfig.load()
         if not cfg.enable:
-            print("[Server] Status: Disabled ('enable': false in config).")
+            log("[Server] Status: Disabled ('enable': false in config).")
         else:
-            print("[Server] Status: Stopped (No active daemon found).")
+            log("[Server] Status: Stopped (No active daemon found).")
         return 0
 
     info = _http_request(state, "/api/status", method="GET", timeout=1.5)
     if not info:
-        print(f"[Server] Daemon PID {state.pid} alive but HTTP not responding (Port: {state.port}).")
+        log(f"[Server] Daemon PID {state.pid} alive but HTTP not responding (Port: {state.port}).")
         return 1
 
     _render_status_dashboard(info, state)
@@ -282,13 +285,13 @@ def reload(cmd_bags: CmdBags) -> int:
     yscb_root = _get_yscb_root()
     state = read_daemon_state(yscb_root)
     if not state or not is_process_alive(state.pid):
-        print("[Server] Daemon is not running. Nothing to reload.")
+        log("[Server] Daemon is not running. Nothing to reload.")
         return 1
 
-    print(f"[Server] Requesting warm worker hot reload (PID: {state.pid})...")
+    log(f"[Server] Requesting warm worker hot reload (PID: {state.pid})...")
     resp = _http_request(state, "/api/reload", method="POST", timeout=3.0)
     if resp and "new_worker_pid" in resp:
-        print(f"[Server] Worker reloaded successfully (New Worker PID: {resp['new_worker_pid']}).")
+        log(f"[Server] Worker reloaded successfully (New Worker PID: {resp['new_worker_pid']}).")
         return 0
-    print("[Server] Worker reload request failed or timed out.")
+    log("[Server] Worker reload request failed or timed out.")
     return 1

@@ -41,9 +41,6 @@ file_space_cli = _load_script_module(
 hook_dev = _load_script_module(
     "file_space_scripts_hook_dev", os.path.join("scripts", "hook.dev.py")
 )
-hook_server = _load_script_module(
-    "file_space_scripts_hook_server", os.path.join("scripts", "hook.server.py")
-)
 migration_101x = _load_script_module(
     "file_space_migrations_101x",
     os.path.join("migrations", "1.0.1.x.py"),
@@ -327,7 +324,7 @@ class TestServiceAndCli(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_hooks_and_migration_scripts(self) -> None:
-        """Verify hook.dev.py, hook.server.py background warming, and migrations/1.0.1.x.py."""
+        """Verify hook.dev.py, absence of legacy hook.server.py wild thread hook, and migrations/1.0.1.x.py."""
         sb_dir = self.tmp_dir / "dev_sandbox"
         ctx = SimpleNamespace(sandbox_dir=str(sb_dir))
         hook_dev.on_test_setup(ctx)
@@ -336,25 +333,10 @@ class TestServiceAndCli(YSCBTestCase):
         self.assertTrue((sb_dir / ".cache" / "file-space").is_dir())
         hook_dev.on_test_teardown(ctx)
 
-        done_ev = threading.Event()
-        refresh_calls: List[bool] = []
-
-        def _sync_refresh(*, background: bool = False, **kwargs: Any) -> None:
-            refresh_calls.append(background)
-            done_ev.set()
-
-        if hasattr(hook_server, "_PREWARM_RUNNING"):
-            hook_server._PREWARM_RUNNING = False
-
-        with patch("file_space.refresh", side_effect=_sync_refresh):
-            status_str = hook_server.on_server_worker_warming({})
-            self.assertEqual(status_str, "warming_started")
-            self.assertTrue(done_ev.wait(timeout=2.0))
-            for t in list(threading.enumerate()):
-                if t.name == "file-space-prewarm":
-                    t.join(timeout=2.0)
-
-        self.assertEqual(refresh_calls, [True])
+        self.assertFalse(
+            os.path.exists(os.path.join(_pkg_root, "scripts", "hook.server.py")),
+            "Legacy wild-thread hook.server.py must remain removed",
+        )
 
         yscb_dir = self.tmp_dir / "mig_yscb"
         legacy_snap = yscb_dir / ".cache" / "file-space" / "snapshots"

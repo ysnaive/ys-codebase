@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from urllib.parse import urlparse
 
 from core import vfs
+from core.log import log
 from core.platform import (
     InterProcessLock,
     build_runtime_pythonpath,
@@ -40,7 +41,7 @@ class WorkerSpawnError(RuntimeError):
     """Raised when a warm worker fails the `worker_alive` handshake (crashed or hung at startup)."""
 
 
-@dataclass
+@dataclass(frozen=True)
 class ServerDaemonState:
     pid: int
     worker_pid: int
@@ -388,7 +389,7 @@ class MasterSupervisor:
         if foreground:
             self.logger.echo_console = True
             banner = format_startup_banner(self.get_status_dict())
-            print(banner, flush=True)
+            log(banner, flush=True)
             try:
                 if self._httpd:
                     self._httpd.serve_forever()

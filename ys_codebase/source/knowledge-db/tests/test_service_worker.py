@@ -26,6 +26,7 @@ from dev.testing.requirement import Requirement, require
 import knowledge_db.engine as kdb_engine
 import knowledge_db.pipeline as kdb_pipeline
 from knowledge_db import service as svc_mod
+from knowledge_db.embedding import EmbeddingService
 from knowledge_db.engine import KnowledgeEngine, get_engine
 from knowledge_db.pipeline import HotPatchResult, IndexingPipeline, _GLOBAL_INDEX_CACHE
 from knowledge_db.retrieval import InvertedIndex
@@ -34,6 +35,7 @@ from knowledge_db.service import (
     KnowledgeDBServiceWorker,
     clear_worker_state,
     get_worker_busy_ms,
+    read_worker_state,
     write_worker_state,
 )
 from knowledge_db.tokenizer import MultilingualTokenizer
@@ -299,33 +301,23 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_hook_server_no_duplicate_watcher(self):
-        """驗證 scripts/hook.server.py 透過背景執行緒呼叫 KnowledgeEngine.pre_warm 且異常時安全降級不崩潰"""
-        hook_mod = load_script_module("hook.server.py")
-        self.assertFalse(hasattr(hook_mod, "_watcher_instance"))
+        """驗證 scripts/hook.server.py 野執行緒已移除，背景預熱與增量索引統一由受管 KnowledgeDBServiceWorker 承擔"""
+        hook_server_path = Path(_pkg_root) / "scripts" / "hook.server.py"
+        self.assertFalse(
+            hook_server_path.exists(),
+            "scripts/hook.server.py must be removed to prevent unmanaged prewarm threads",
+        )
+        fs_hook_server_path = Path(_pkg_root).parent / "file-space" / "scripts" / "hook.server.py"
+        self.assertFalse(
+            fs_hook_server_path.exists(),
+            "file-space/scripts/hook.server.py must be removed to prevent unmanaged prewarm threads",
+        )
 
-        done_evt = threading.Event()
-        with patch.object(
-            KnowledgeEngine, "pre_warm", side_effect=lambda *a, **kw: done_evt.set()
-        ) as mock_pw:
-            ret = hook_mod.on_worker_warming({"workspace_root": str(self.root_path)})
-            self.assertEqual(ret, "warming_started")
-            self.assertTrue(done_evt.wait(timeout=2.0))
-            self.assertTrue(mock_pw.called)
-
-        # 驗證 pre_warm 拋出例外時背景執行緒捕獲並記錄 warning，不向外崩潰
-        err_evt = threading.Event()
-
-        def _fail_pre_warm(*_a, **_kw):
-            err_evt.set()
-            raise RuntimeError("Simulated pre_warm failure")
-
-        with patch.object(KnowledgeEngine, "pre_warm", side_effect=_fail_pre_warm):
-            ret2 = hook_mod.on_server_worker_warming(
-                {"workspace_root": str(self.root_path)}
-            )
-            self.assertEqual(ret2, "warming_started")
-            self.assertTrue(err_evt.wait(timeout=2.0))
-
+        # Verify model download CLI is marked server_compatible: false
+        core_json_path = Path(_pkg_root) / "contributes" / "core.json"
+        core_data = json.loads(core_json_path.read_text(encoding="utf-8"))
+        dl_spec = core_data["commands"]["cmd"]["model"]["cmd"]["download"]
+        self.assertIs(dl_spec.get("server_compatible"), False)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
@@ -581,12 +573,12 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
             self.assertEqual(deficit_deleted["embedded_count"], 0)
             self.assertGreater(deficit_deleted["missing_count"], 0)
 
-            # 驗證背景自動模型下載 (當 mock_mode=False 且 is_model_downloaded()=False 時由 Worker 自動呼叫 download_model 且不印 [GUARD])
+            # 驗證背景自動模型下載 (當 mock_mode=False 且 has_local_model()=False 時由 Worker 自動呼叫 download_model 且不印 [GUARD])
             worker._stop_event.clear()
             engine.embedding_service.mock_mode = False
             dl_flag = {"downloaded": False}
 
-            def _fake_is_downloaded():
+            def _fake_has_local():
                 return dl_flag["downloaded"]
 
             def _fake_download(force: bool = False):
@@ -596,8 +588,8 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
 
             with patch.object(
                 engine.embedding_service,
-                "is_model_downloaded",
-                side_effect=_fake_is_downloaded,
+                "has_local_model",
+                side_effect=_fake_has_local,
             ), patch.object(
                 engine.embedding_service, "download_model", side_effect=_fake_download
             ) as mock_dl:
@@ -607,6 +599,23 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
                     worker._run_sync_cycle(engine, engine.pipeline.get_indices_dir())
                 self.assertTrue(mock_dl.called)
                 self.assertNotIn("[GUARD]", err_buf.getvalue())
+                self.assertEqual(worker.state, worker.STATE_READY)
+
+            # 驗證離線下載失敗時進入 DEGRADED_OFFLINE 狀態，且前景 search 不阻塞於 _index_lock (< 1ms 純 BM25)
+            engine.embedding_service.mock_mode = False
+            with patch.object(
+                engine.embedding_service, "has_local_model", return_value=False
+            ), patch.object(
+                engine.embedding_service,
+                "download_model",
+                side_effect=RuntimeError("Offline network unreachable"),
+            ):
+                worker._last_download_attempt_ts = 0.0
+                worker._run_sync_cycle(engine, engine.pipeline.get_indices_dir())
+                self.assertEqual(worker.state, worker.STATE_DEGRADED_OFFLINE)
+                self.assertEqual(
+                    worker.get_custom_metrics()["phase"], "degraded_offline"
+                )
         finally:
             engine.embedding_service.mock_mode = True
             worker.stop()
@@ -713,6 +722,127 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
             pre_aggregated=True,
         )
         self.assertNotIn("uniquetoken0", idx.index)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_has_local_model_is_fast_and_strict(self):
+        """驗證 EmbeddingService.has_local_model() < 1ms 純本地嚴格檢查，且不將鬆散空目錄誤判為已下載"""
+        cache_dir = self.root_path / "emb_cache_strict"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        svc = EmbeddingService(
+            model_name="BAAI/bge-small-zh-v1.5",
+            cache_dir=cache_dir,
+            mock_mode=False,
+        )
+
+        t0 = time.perf_counter()
+        has_before = svc.has_local_model()
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        self.assertFalse(has_before)
+        self.assertLess(elapsed_ms, 5.0)
+
+        # 建立僅含 2 個無關檔案的子目錄（無 .onnx 權重），驗證嚴格返回 False
+        fake_sub = cache_dir / "models--BAAI--bge-small-zh-v1.5"
+        fake_sub.mkdir(parents=True, exist_ok=True)
+        (fake_sub / "README.md").write_text("placeholder", encoding="utf-8")
+        self.assertFalse(svc.has_local_model())
+        self.assertFalse(svc.is_model_downloaded())
+
+        # 建立真實結構與大於 1024 bytes 的 .onnx 檔案後應返回 True
+        snap_dir = fake_sub / "snapshots" / "main"
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        (snap_dir / "model_optimized.onnx").write_bytes(b"X" * 2048)
+        self.assertTrue(svc.has_local_model())
+        self.assertTrue(svc.is_model_downloaded())
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_stage2_auto_download_and_degraded_offline_state(self):
+        """驗證 KnowledgeDBServiceWorker Stage 2 自動下載模型保留，且離線失敗時轉為 DEGRADED_OFFLINE 狀態"""
+        src_dir = self.root_path / "src_offline_deg"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        (src_dir / "mod.py").write_text("class OfflineNode:\n    pass\n", encoding="utf-8")
+        storage_dir = self.root_path / "storage_offline_deg"
+
+        sp = SpaceConfig(
+            qualified_name="project/off_space",
+            owner="project",
+            short_name="off_space",
+            entries=(str(src_dir),),
+        )
+        engine = KnowledgeEngine(
+            storage_dir=storage_dir,
+            local_config={"knowledge-db": {"enable_vector_search": True}},
+            contributes_data={"spaces": {"off_space": sp}},
+            embedding_mock_mode=False,
+        )
+
+        worker = KnowledgeDBServiceWorker(engine=engine)
+
+        with patch.object(engine.embedding_service, "has_local_model", return_value=False), patch.object(
+            engine.embedding_service, "download_model", return_value=False
+        ) as mock_dl:
+            worker._run_sync_cycle(engine, engine.pipeline.get_indices_dir())
+            mock_dl.assert_called_once_with(force=False)
+            self.assertEqual(worker.state, KnowledgeDBServiceWorker.STATE_DEGRADED_OFFLINE)
+            st = read_worker_state(engine.pipeline.get_indices_dir())
+            self.assertEqual(st.get("phase"), "degraded_offline")
+            self.assertEqual(worker.get_custom_metrics().get("state"), KnowledgeDBServiceWorker.STATE_DEGRADED_OFFLINE)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_foreground_search_fast_path_skips_lock_when_worker_busy(self):
+        """驗證當 unified.index.bin.gz 存在且背景 Worker 運行中或持有 _index_lock 時，前台 _ensure_jit_index_ready 走非阻塞快速路徑"""
+        src_dir = self.root_path / "src_fast_path"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        (src_dir / "fast.py").write_text("class FastPathTarget:\n    pass\n", encoding="utf-8")
+        storage_dir = self.root_path / "storage_fast_path"
+
+        sp = SpaceConfig(
+            qualified_name="project/fp_space",
+            owner="project",
+            short_name="fp_space",
+            entries=(str(src_dir),),
+        )
+        engine = KnowledgeEngine(
+            storage_dir=storage_dir,
+            contributes_data={"spaces": {"fp_space": sp}},
+            embedding_mock_mode=True,
+        )
+        engine.build_unified_index(force=True)
+        indices_dir = engine.pipeline.get_indices_dir()
+
+        # 情境 A：Worker 處於 running (例如 degraded_offline idle)，前台不應搶 _consume_space_diff
+        clear_worker_state(indices_dir, worker_running=True, phase="degraded_offline")
+        with patch.object(engine.pipeline, "_consume_space_diff") as spy_consume:
+            idx = engine.pipeline._ensure_jit_index_ready(require_vectors=False)
+            self.assertIsNotNone(idx)
+            spy_consume.assert_not_called()
+
+        # 情境 B：背景執行緒持有 _index_lock 時，前台併發呼叫 _ensure_jit_index_ready 不阻塞等待鎖
+        clear_worker_state(indices_dir, worker_running=False, phase="idle")
+        lock_held = threading.Event()
+        release_lock = threading.Event()
+
+        def _hold_lock():
+            with engine.pipeline._index_lock:
+                lock_held.set()
+                release_lock.wait(timeout=3.0)
+
+        t = threading.Thread(target=_hold_lock)
+        t.start()
+        self.assertTrue(lock_held.wait(timeout=1.0))
+        try:
+            t0 = time.perf_counter()
+            idx2 = engine.pipeline._ensure_jit_index_ready(require_vectors=False)
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            self.assertIsNotNone(idx2)
+            self.assertLess(dt_ms, 100.0)
+        finally:
+            release_lock.set()
+            t.join(timeout=1.0)
+
         self.mark_passed()
 
 

@@ -2,26 +2,26 @@
 Server Module - Service Worker Base & Lifecycle Manager.
 
 Provides abstract interface BaseServiceWorker for domain background tasks
-(such as knowledge-db file watcher) and unifies their lifecycle to follow
+(such as knowledge-db worker, space-watcher, and gdrive-sync) and unifies their
+lifecycle, state machine (`STARTING`, `UPDATING`, `READY`, `DEGRADED_OFFLINE`, `STOPPED`),
+managed daemon threads, and `core.log` background stream isolation to follow
 the server's idle TTL and shutdown policy.
 """
 
 from abc import ABC, abstractmethod
 import importlib
 import json
-import logging
 import os
 import threading
 import time
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
+from core.context import get_env, get_runtime_context, get_virtual_cwd
+from core.log import bind_log_context, log_error, log_warn
 from core.platform import ensure_installed_modules_path
 
-_LAST_TOUCH_TS: float = 0.0
-_LAST_TOUCH_BY_ROOT: Dict[str, float] = {}
 _TOUCH_MIN_INTERVAL_SEC: float = 1.0
-_TOUCH_LOCK = threading.Lock()
 
 
 def _resolve_service_root(yscb_root: Optional[str]) -> str:
@@ -39,7 +39,21 @@ def _resolve_service_root(yscb_root: Optional[str]) -> str:
     cand = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     if os.path.isdir(os.path.join(cand, ".cache")):
         return cand
-    return os.environ.get("YSCB_HOST_DIR", os.getcwd())
+    return get_env("YSCB_HOST_DIR") or get_virtual_cwd()
+
+
+def _get_touch_state() -> tuple[threading.Lock, Dict[str, float]]:
+    """Returns `(server_touch_lock, server_last_touch_by_root)` bound to the active RuntimeContext."""
+    ctx = get_runtime_context()
+    lock = getattr(ctx, "server_touch_lock", None)
+    if lock is None:
+        lock = threading.Lock()
+        setattr(ctx, "server_touch_lock", lock)
+    touch_map = getattr(ctx, "server_last_touch_by_root", None)
+    if touch_map is None:
+        touch_map = {}
+        setattr(ctx, "server_last_touch_by_root", touch_map)
+    return lock, touch_map
 
 
 def touch_activity(
@@ -53,23 +67,19 @@ def touch_activity(
 
     Reads `.cache/server/daemon.json` and sends an authenticated `POST /api/touch`
     (debounced to at most once per 1.0s unless `force=True`) to the MasterSupervisor so
-    background workers (`file-space-watcher`, `knowledge-db-worker`, `gdrive-sync`) and
+    background workers (`core-space-watcher`, `knowledge-db-worker`, `gdrive-sync`) and
     external SDK callers keep the server alive without corrupting the worker stdout pipe.
 
     Returns True if the activity timestamp was refreshed (or throttled within 1s), False if no
     active daemon was reachable.
     """
-    global _LAST_TOUCH_TS
     now = time.monotonic()
     resolved_root = _resolve_service_root(yscb_root)
     root_key = os.path.normcase(os.path.abspath(resolved_root))
+    touch_lock, touch_map = _get_touch_state()
     if not force:
-        with _TOUCH_LOCK:
-            last_ts = (
-                0.0
-                if (_LAST_TOUCH_TS == 0.0 and not _LAST_TOUCH_BY_ROOT)
-                else _LAST_TOUCH_BY_ROOT.get(root_key, 0.0)
-            )
+        with touch_lock:
+            last_ts = touch_map.get(root_key, 0.0)
             if last_ts > 0.0 and (now - last_ts) < _TOUCH_MIN_INTERVAL_SEC:
                 return True
 
@@ -97,9 +107,8 @@ def touch_activity(
         with urllib.request.urlopen(req, timeout=1.5) as resp:
             if resp.status != 200:
                 return False
-        with _TOUCH_LOCK:
-            _LAST_TOUCH_TS = now
-            _LAST_TOUCH_BY_ROOT[root_key] = now
+        with touch_lock:
+            touch_map[root_key] = now
         return True
     except Exception:
         return False
@@ -142,28 +151,121 @@ class BaseServiceWorker(ABC):
     """
     Abstract base class for domain background service workers.
 
-    Lifecycle Iron Rule:
-    Service workers MUST strictly follow the server daemon's lifecycle.
-    They share the server's idle TTL and are gracefully terminated upon
-    server shutdown. They MUST NOT persist independently.
+    Lifecycle & Managed Thread Contract:
+    1. Service workers MUST strictly follow the server daemon's lifecycle.
+       They share the server's idle TTL and are gracefully terminated upon
+       server shutdown.
+    2. Each active service worker runs inside a dedicated managed daemon thread
+       (`start_managed_thread` / `stop_managed_thread`) with `bind_log_context`
+       stream isolation so background logs never pollute foreground CLI streams.
+    3. Standardized worker state machine:
+       `STARTING` -> `UPDATING` -> `READY` -> `DEGRADED_OFFLINE` -> `STOPPED`.
     """
+
+    STATE_STARTING: str = "STARTING"
+    STATE_UPDATING: str = "UPDATING"
+    STATE_READY: str = "READY"
+    STATE_DEGRADED_OFFLINE: str = "DEGRADED_OFFLINE"
+    STATE_STOPPED: str = "STOPPED"
+
+    _state: str = STATE_STOPPED
+    _log_sink: Optional[Any] = None
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """Unique service worker identifier (e.g. 'knowledge-db-watcher')."""
+        """Unique service worker identifier (e.g. 'knowledge-db-worker')."""
         pass
+
+    @property
+    def state(self) -> str:
+        """Returns the current worker lifecycle state."""
+        raw_st = getattr(self, "_state", None)
+        if raw_st and raw_st != self.STATE_STOPPED:
+            try:
+                if not self.health_check():
+                    return self.STATE_STOPPED
+            except Exception:
+                return self.STATE_STOPPED
+            return str(raw_st)
+        try:
+            if self.health_check():
+                return self.STATE_READY
+        except Exception:
+            pass
+        return self.STATE_STOPPED
+
+    def set_state(self, new_state: str) -> None:
+        """Updates the worker's lifecycle state."""
+        self._state = str(new_state)
+
+    def bind_worker_log_context(self, context: Optional[Dict[str, Any]] = None) -> Any:
+        """
+        Returns a `bind_log_context` context manager isolating background worker output
+        to `background_sink` (if configured on the worker or in `context`).
+        """
+        sink = getattr(self, "_log_sink", None)
+        if sink is None and isinstance(context, dict):
+            sink = context.get("log_sink")
+            if sink is not None:
+                self._log_sink = sink
+        return bind_log_context(
+            background_sink=sink,
+            component=self.name,
+            isolated_error_scope=True,
+        )
+
+    def start_managed_thread(
+        self,
+        target: Callable[[], None],
+        *,
+        context: Optional[Dict[str, Any]] = None,
+        thread_name: Optional[str] = None,
+    ) -> threading.Thread:
+        """
+        Spawns and starts a managed daemon `threading.Thread` wrapped in `bind_worker_log_context`
+        so all `core.log` calls on the worker thread route to the background sink.
+        """
+        if isinstance(context, dict) and context.get("log_sink") is not None:
+            self._log_sink = context.get("log_sink")
+
+        def _wrapped_entry() -> None:
+            with self.bind_worker_log_context(context):
+                target()
+
+        t_name = thread_name or f"Worker-{self.name}"
+        t = threading.Thread(target=_wrapped_entry, name=t_name, daemon=True)
+        t.start()
+        return t
+
+    def stop_managed_thread(
+        self,
+        thread: Optional[threading.Thread],
+        stop_event: Optional[threading.Event] = None,
+        *,
+        wake_event: Optional[threading.Event] = None,
+        timeout: float = 2.0,
+    ) -> None:
+        """Signals `stop_event` (and optional `wake_event`), joins `thread`, and transitions state to `STOPPED`."""
+        if stop_event is not None:
+            stop_event.set()
+        if wake_event is not None:
+            wake_event.set()
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
+        self.set_state(self.STATE_STOPPED)
 
     @abstractmethod
     def start(self, context: Dict[str, Any]) -> None:
         """
-        Starts background work in a thread or subprocess.
+        Starts background work in a managed daemon thread.
 
         Args:
             context: Server daemon execution context dictionary containing:
                 - "yscb_root" (str): Absolute path to the YSCB project root directory.
                 - "workspace_root" (str, optional): Host workspace root directory.
                 - "config" (dict, optional): Server and module configuration dict.
+                - "log_sink" (optional): Background log sink for `bind_log_context`.
         """
         pass
 
@@ -239,9 +341,9 @@ class ServiceManager:
                     for item in sdata.get("services", []):
                         self._load_service_item(item, provider=mod_name, yscb_root=yscb_root)
                 except (OSError, ValueError) as ex:
-                    logging.warning(f"[Server Service] Error reading {srv_json}: {ex}")
+                    log_warn(f"[Server Service] Error reading {srv_json}: {ex}")
         except Exception as e:
-            logging.warning(f"[Server Service] Failed to load contributes services: {e}")
+            log_warn(f"[Server Service] Failed to load contributes services: {e}")
 
     def _load_service_item(self, item: Dict[str, Any], provider: str = "unknown", yscb_root: Optional[str] = None) -> None:
         worker_cls_str = item.get("worker_class")
@@ -267,26 +369,40 @@ class ServiceManager:
                 auto_start=bool(auto_start),
             )
         except Exception as e:
-            logging.error(f"[Server Service] Failed to instantiate service '{service_name}': {e}")
+            log_error(f"[Server Service] Failed to instantiate service '{service_name}': {e}")
 
     def start_all(self, context: Dict[str, Any]) -> None:
+        sink = context.get("log_sink") if isinstance(context, dict) else None
         with self._lock:
             for name, worker in self._services.items():
                 meta = self._metadata.get(name, {})
                 if not meta.get("auto_start", True):
                     continue
                 try:
-                    worker.start(context)
+                    if sink is not None:
+                        setattr(worker, "_log_sink", sink)
+                    with bind_log_context(
+                        background_sink=sink,
+                        component=name,
+                        isolated_error_scope=True,
+                    ):
+                        worker.start(context)
                 except Exception as e:
-                    logging.error(f"[Server Service] Failed to start worker '{name}': {e}")
+                    log_error(f"[Server Service] Failed to start worker '{name}': {e}")
 
     def stop_all(self) -> None:
         with self._lock:
             for name, worker in self._services.items():
                 try:
-                    worker.stop()
+                    sink = getattr(worker, "_log_sink", None)
+                    with bind_log_context(
+                        background_sink=sink,
+                        component=name,
+                        isolated_error_scope=True,
+                    ):
+                        worker.stop()
                 except Exception as e:
-                    logging.error(f"[Server Service] Failed to stop worker '{name}': {e}")
+                    log_error(f"[Server Service] Failed to stop worker '{name}': {e}")
 
     def get_status(self) -> List[Dict[str, Any]]:
         status_list: List[Dict[str, Any]] = []
@@ -297,10 +413,25 @@ class ServiceManager:
                     alive = worker.health_check()
                 except Exception:
                     alive = False
+                try:
+                    worker_state = getattr(worker, "state", BaseServiceWorker.STATE_READY if alive else BaseServiceWorker.STATE_STOPPED)
+                except Exception:
+                    worker_state = BaseServiceWorker.STATE_READY if alive else BaseServiceWorker.STATE_STOPPED
                 status_list.append({
                     "name": name,
                     "provider": meta.get("provider", "unknown"),
                     "description": meta.get("description", ""),
                     "alive": alive,
+                    "state": worker_state,
                 })
         return status_list
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 backward-compatible attribute delegation to active `RuntimeContext`."""
+    if name == "_LAST_TOUCH_BY_ROOT":
+        return _get_touch_state()[1]
+    if name == "_LAST_TOUCH_TS":
+        vals = list(_get_touch_state()[1].values())
+        return max(vals) if vals else 0.0
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

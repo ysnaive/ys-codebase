@@ -55,7 +55,7 @@ def _parse_float(val: Any, default: float, allow_zero: bool = True) -> float:
     return f_val
 
 
-@dataclass
+@dataclass(frozen=True)
 class ServerConfig:
     enable: bool = DEFAULT_ENABLE
     enable_console: bool = DEFAULT_ENABLE_CONSOLE
