@@ -1,17 +1,20 @@
 {
   "_types": {
     "LanguageDef": {
-      "id": "str! @desc(語言唯一識別碼 (如 python, csharp, typescript))",
-      "name": "str! @desc(語言顯示名稱)",
+      "id": "str! @desc(語言或規則唯一識別碼 (如 python, csharp, typescript))",
+      "name": "str! @desc(語言或規則顯示名稱)",
       "extensions": "list[str]! @desc(支援之檔案副檔名清單 (含點號，如 .py))",
       "mode": "enum(tree_sitter, custom)! @desc(語法解析引擎模式 (tree_sitter 或 custom))",
       "grammar": "uri? @desc(Tree-sitter 語法動態庫或定義檔 URI 路徑)",
       "query_file": "uri? @desc(Tree-sitter S-expression 符號提取查詢檔 URI 路徑)",
+      "query_files": "list[uri]? | extend @desc(多份平權 Tree-sitter S-expression 查詢檔 URI 清單 (含官方 tags.scm 與擴充 .scm))",
+      "spaces": "list[str]? | extend @desc(規則適用之 core.space 空間清單 (如 core/contributes)；未指定預設對 project:// 全範圍生效)",
+      "processors": "list[str]? | extend @desc(平權注入之 SymbolProcessor 類別入口清單 (module:ClassName 或 uri://...:ClassName))",
       "parser_entry": "str? @desc(自訂解析器入口類別路徑 (當 mode=custom 時使用))"
     }
   },
   "languages": {
-    "description": "向 AST 引擎註冊支援的程式語言、Tree-sitter 語法查詢或自訂 AST 解析器與副檔名對映",
+    "description": "向 AST 引擎註冊支援的程式語言、Tree-sitter 語法查詢、core.space 範圍綁定、SymbolProcessor 或自訂 AST 解析器",
     "merge": "merge",
     "format": {
       "*": "$LanguageDef | merge"

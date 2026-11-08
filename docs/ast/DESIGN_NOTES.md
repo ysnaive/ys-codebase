@@ -4,21 +4,24 @@ doc_type: "design_notes"
 status: "active"
 source_paths:
   - "yscb://source/ast/ast_engine/__init__.py"
+  - "yscb://source/ast/ast_engine/schema.py"
   - "yscb://source/ast/ast_engine/engine.py"
   - "yscb://source/ast/ast_engine/bundler.py"
   - "yscb://source/ast/ast_engine/resolver.py"
   - "yscb://source/ast/ast_engine/provisioner.py"
+  - "yscb://source/ast/ast_engine/parsers/treesitter.py"
+  - "yscb://source/ast/ast_engine/parsers/registry.py"
 related_docs:
   - "./README.md"
   - "../file-space/DESIGN_NOTES.md"
   - "../knowledge-db/DESIGN_NOTES.md"
-last_updated: "2026-11-02"
+last_updated: "2026-11-08"
 ---
 
 # ast 設計決策與工程妥協手冊 (Design Notes)
 
 > 模組名稱：`ast`  
-> 職責定位：記錄 `module:ast` 中屬於「維度 ⑤ 工程妥協與防坑」之非直覺設計、標準庫 `ast` 命名空間防遮蔽、雙層分部符號儲存、同名異載群組定址與按需 Grammar 離線圍欄不變量。
+> 職責定位：記錄 `module:ast` 中屬於「維度 ⑤ 工程妥協與防坑」之非直覺設計、標準庫 `ast` 命名空間防遮蔽、雙層分部符號儲存、同名異載群組定址、按需 Grammar 離線圍欄與多 `.scm` 交換律合流不變量。
 
 ---
 
@@ -30,6 +33,7 @@ last_updated: "2026-11-02"
 | **DN-AST-02** | C# `partial class` 雙層無損儲存 (`children` vs `metadata["_own_*"]`) 與 `outline` 姊妹檔提示 | `bundler.py`, `engine.py` | 🚨 CRITICAL |
 | **DN-AST-03** | 無 BM25 確定性符號定位器：同父型別 Overload 群組展開 vs 跨父型別結構化歧義攔截 | `resolver.py`, `linker.py` | ⚠️ WARNING |
 | **DN-AST-04** | `GrammarProvisioner` 標準錯誤流 (`stderr`) 強制隔離與會話級離線負快取 | `provisioner.py` | ⚠️ WARNING |
+| **DN-AST-05** | 多 `.scm` 以 `@name` 物理座標為錨點之交換律合流與 `core.space` 規則範圍綁定 | `schema.py`, `treesitter.py`, `registry.py` | ⚠️ WARNING |
 
 ---
 
@@ -76,4 +80,19 @@ last_updated: "2026-11-02"
   若在首次執行 `yscb ast outline <file> --json` 時觸發動態 `pip install tree-sitter-<lang>`，一旦 `pip` 輸出寫入 `stdout` 將直接破壞 JSON 結構；且在斷網沙盒中若每次解析檔案皆重複嘗試連線安裝，將造成嚴重超時卡頓。
 - **工程妥協與解法**：
   `GrammarProvisioner` 執行 `subprocess.run` 時強制指定 `stdout=sys.stderr, stderr=sys.stderr`，並維護進程級 `_FAILED_PACKAGES` 負快取；一旦安裝失敗或離線，當次進程不再重試該套件，僅向 `stderr` 發出結構化 Warning 並優雅跳過該語言解析。
+
+---
+
+### [DN-AST-05] 多 `.scm` 以 `@name` 物理座標為錨點之交換律合流與 `core.space` 規則範圍綁定
+
+- **背景與根因**：
+  1. 當官方 `tags.scm` 與外部模組掛載之領域 `.scm`（例如擷取裝飾器/CLI 路由或型別槽位的伴隨查詢）同時作用於同一來源檔時，兩組 `.scm` 所捕獲的外層 CST 節點範圍（如含裝飾器的 `decorated_definition` vs 內層 `function_definition`）往往不一致。若以外層定義節點之 `(start_byte, end_byte)` 去重，將導致同一函式分裂為兩個重複符號；若依賴載入順序覆蓋，又會破壞多來源規則之確定性。
+  2. 此外，針對通用副檔名（如 `.json` 或 `.yaml`）掛載領域專屬提取器時，若對全工作區所有同副檔名檔案無差別執行，會污染無關配置檔。
+- **工程妥協與解法**：
+  1. **以 `@name` / `@part.name` 物理 `Span(start_byte, end_byte)` 為唯一合流錨點**：`TreeSitterDriver._commutatively_merge_raw_items()` 將同檔案內凡 `@name` 槽位座標完全相同的捕獲項自動歸併為單一符號，對 `kinds`（集合聯集）、外層 `span`（Bounding Box 聯集）、`parts`（依槽位名聯集）、`facets`（確定性字典/集合聯集）與 `provenance`（依 `(provider_id, action, rule_or_hook, detail)` 字典序排序聯集）執行交換律合併，保證 $A \cup B = B \cup A$。
+  2. **`core.space` 規則範圍短路與過濾**：`LanguageConfig.spaces` 預設為空 tuple `()`（短路直接放行，零額外 I/O）；唯有顯式配置非空 `spaces: ["core/contributes", ...]` 時，`ParserRegistry._matches_configured_spaces()` 才調用 `core.space.get_default_registry().match_path(file_path, list(spaces))` 驗證檔案是否隸屬目標空間。
+
+> [!CAUTION]
+> **嚴禁在 `.scm` 合流邏輯中依賴 `query_files` 列表順序決定最終屬性覆蓋結果，亦嚴禁在 `SymbolNode` / `FileSymbolGraph` 中儲存可變 `dict` 或 `list`！** 所有內部映射必須於 `__post_init__` 封裝為 `MappingProxyType` 並將容器欄位標註 `hash=False`，以同時滿足 `dev check` `C9` 不可變規範與 `hash(node)` 雜湊契約。
+
 

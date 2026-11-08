@@ -6,9 +6,437 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
-from typing import Any, Dict, List, Optional, Tuple
+from types import MappingProxyType
+from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Tuple
 
 from .exceptions import SchemaValidationError
+
+
+@dataclass(frozen=True)
+class Span:
+    """Exact physical source range supporting O(1) byte slicing and 1-based line/0-based col indexing."""
+
+    start_byte: int
+    end_byte: int
+    start_line: int
+    start_col: int
+    end_line: int
+    end_col: int
+
+    def contains(self, other: "Span") -> bool:
+        """Return True if this Span physically encloses `other`."""
+        return self.start_byte <= other.start_byte and other.end_byte <= self.end_byte
+
+    def union(self, other: "Span") -> "Span":
+        """Compute the bounding-box Span union of `self` and `other` (commutative)."""
+        if self.start_byte < other.start_byte:
+            sb, sl, sc = self.start_byte, self.start_line, self.start_col
+        elif other.start_byte < self.start_byte:
+            sb, sl, sc = other.start_byte, other.start_line, other.start_col
+        else:
+            sb = self.start_byte
+            sl = min(self.start_line, other.start_line)
+            sc = min(self.start_col, other.start_col) if self.start_line == other.start_line else (
+                self.start_col if self.start_line < other.start_line else other.start_col
+            )
+
+        if self.end_byte > other.end_byte:
+            eb, el, ec = self.end_byte, self.end_line, self.end_col
+        elif other.end_byte > self.end_byte:
+            eb, el, ec = other.end_byte, other.end_line, other.end_col
+        else:
+            eb = self.end_byte
+            el = max(self.end_line, other.end_line)
+            ec = max(self.end_col, other.end_col) if self.end_line == other.end_line else (
+                self.end_col if self.end_line > other.end_line else other.end_col
+            )
+
+        return Span(
+            start_byte=sb,
+            end_byte=eb,
+            start_line=sl,
+            start_col=sc,
+            end_line=el,
+            end_col=ec,
+        )
+
+    def slice_bytes(self, source_bytes: bytes) -> bytes:
+        """Perform O(1) lossless byte slice from `source_bytes`."""
+        sb = max(0, min(self.start_byte, len(source_bytes)))
+        eb = max(sb, min(self.end_byte, len(source_bytes)))
+        return source_bytes[sb:eb]
+
+    def slice_text(self, source_bytes: bytes, encoding: str = "utf-8") -> str:
+        """Perform O(1) lossless UTF-8 text slice from `source_bytes`."""
+        return self.slice_bytes(source_bytes).decode(encoding, errors="replace")
+
+    def to_dict(self) -> Dict[str, int]:
+        return {
+            "start_byte": self.start_byte,
+            "end_byte": self.end_byte,
+            "start_line": self.start_line,
+            "start_col": self.start_col,
+            "end_line": self.end_line,
+            "end_col": self.end_col,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Span":
+        if not isinstance(data, dict):
+            raise SchemaValidationError("Span data must be a dict.")
+        for req in ("start_byte", "end_byte", "start_line", "end_line"):
+            if req not in data:
+                raise SchemaValidationError(f"Span missing required field '{req}'.")
+        try:
+            sb = int(data["start_byte"])
+            eb = int(data["end_byte"])
+            sl = int(data["start_line"])
+            sc = int(data.get("start_col", 0))
+            el = int(data["end_line"])
+            ec = int(data.get("end_col", 0))
+        except (ValueError, TypeError) as exc:
+            raise SchemaValidationError(f"Span coordinate fields must be integers: {exc}") from exc
+        if sb < 0 or eb < sb or sl < 1 or el < sl or sc < 0 or ec < 0:
+            raise SchemaValidationError(f"Invalid Span coordinates: start_byte={sb}, end_byte={eb}, start_line={sl}, end_line={el}.")
+        return cls(
+            start_byte=sb,
+            end_byte=eb,
+            start_line=sl,
+            start_col=sc,
+            end_line=el,
+            end_col=ec,
+        )
+
+
+@dataclass(frozen=True)
+class ProvenanceStep:
+    """Immutable provenance audit entry recording a rule extraction or processor refinement."""
+
+    provider_id: str
+    action: str
+    rule_or_hook: str
+    detail: Optional[str] = None
+
+    def sort_key(self) -> Tuple[str, str, str, str]:
+        """Return deterministic lexicographical sort key for commutative ordering."""
+        return (self.provider_id, self.action, self.rule_or_hook, self.detail or "")
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "provider_id": self.provider_id,
+            "action": self.action,
+            "rule_or_hook": self.rule_or_hook,
+        }
+        if self.detail is not None:
+            d["detail"] = self.detail
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ProvenanceStep":
+        if not isinstance(data, dict):
+            raise SchemaValidationError("ProvenanceStep data must be a dict.")
+        for req in ("provider_id", "action", "rule_or_hook"):
+            if req not in data:
+                raise SchemaValidationError(f"ProvenanceStep missing required field '{req}'.")
+        det = data.get("detail")
+        return cls(
+            provider_id=str(data["provider_id"]),
+            action=str(data["action"]),
+            rule_or_hook=str(data["rule_or_hook"]),
+            detail=str(det) if det is not None else None,
+        )
+
+
+def _freeze_facets_dict(raw_facets: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    """Normalize a facets mapping into an immutable MappingProxyType."""
+    if not raw_facets or not isinstance(raw_facets, Mapping):
+        return MappingProxyType({})
+    normalized: Dict[str, Any] = {}
+    for k, v in raw_facets.items():
+        key_str = str(k)
+        if isinstance(v, list):
+            normalized[key_str] = tuple(
+                dict(x) if isinstance(x, Mapping) else x for x in v
+            )
+        elif isinstance(v, set):
+            normalized[key_str] = frozenset(v)
+        elif isinstance(v, Mapping) and not isinstance(v, MappingProxyType):
+            normalized[key_str] = MappingProxyType(dict(v))
+        else:
+            normalized[key_str] = v
+    return MappingProxyType(normalized)
+
+
+@dataclass(frozen=True)
+class SymbolNode:
+    """Single recursive isomorphic AST symbol node with multi-kinds, lossless part spans, and provenance."""
+
+    id: str
+    name: str
+    scope_path: Tuple[str, ...]
+    kinds: FrozenSet[str]
+    language: str
+    span: Span
+    parts: Mapping[str, Span] = field(default_factory=lambda: MappingProxyType({}), hash=False)
+    facets: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}), hash=False)
+    children: Tuple["SymbolNode", ...] = field(default=(), hash=False)
+    provenance: Tuple[ProvenanceStep, ...] = field(default=(), hash=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "scope_path", tuple(str(s) for s in (self.scope_path or ())))
+        object.__setattr__(
+            self,
+            "kinds",
+            frozenset(str(k) for k in (self.kinds or ()) if str(k)),
+        )
+        raw_parts = self.parts
+        if isinstance(raw_parts, Mapping):
+            parts_clean: Dict[str, Span] = {}
+            for k, v in raw_parts.items():
+                if isinstance(v, Span):
+                    parts_clean[str(k)] = v
+                elif isinstance(v, dict):
+                    parts_clean[str(k)] = Span.from_dict(v)
+                else:
+                    raise SchemaValidationError(f"SymbolNode.parts['{k}'] must be a Span or dict, got {type(v).__name__}.")
+            object.__setattr__(self, "parts", MappingProxyType(parts_clean))
+        elif raw_parts is None:
+            object.__setattr__(self, "parts", MappingProxyType({}))
+        else:
+            raise SchemaValidationError(f"SymbolNode.parts must be a Mapping, got {type(raw_parts).__name__}.")
+
+        object.__setattr__(self, "facets", _freeze_facets_dict(self.facets))
+        object.__setattr__(self, "children", tuple(self.children) if self.children else ())
+        if self.provenance:
+            dedup_prov = sorted(set(self.provenance), key=lambda p: p.sort_key())
+            object.__setattr__(self, "provenance", tuple(dedup_prov))
+        else:
+            object.__setattr__(self, "provenance", ())
+
+    @property
+    def fqn(self) -> str:
+        """Render the fully-qualified name using `facets.get('scope_separator', '.')`."""
+        sep = str(self.facets.get("scope_separator", ".")) if isinstance(self.facets, Mapping) else "."
+        if self.scope_path:
+            return sep.join((*self.scope_path, self.name))
+        return self.name
+
+    @staticmethod
+    def compute_canonical_id(
+        file_path: str,
+        fqn: str,
+        overload_suffix: str = "",
+    ) -> str:
+        """Compute canonical space-agnostic and line-agnostic URI `{canonical_path}::{fqn}[({overload})]`."""
+        norm_path = str(file_path).replace("\\", "/").strip()
+        base_id = f"{norm_path}::{fqn}"
+        if overload_suffix:
+            suffix_clean = overload_suffix.strip()
+            if not suffix_clean.startswith("("):
+                suffix_clean = f"({suffix_clean})"
+            return f"{base_id}{suffix_clean}"
+        return base_id
+
+    def to_dict(self) -> Dict[str, Any]:
+        facets_out: Dict[str, Any] = {}
+        for k, v in self.facets.items():
+            if isinstance(v, (tuple, frozenset, set)):
+                facets_out[k] = list(v)
+            elif isinstance(v, Mapping):
+                facets_out[k] = dict(v)
+            else:
+                facets_out[k] = v
+        return {
+            "id": self.id,
+            "name": self.name,
+            "scope_path": list(self.scope_path),
+            "kinds": sorted(self.kinds),
+            "language": self.language,
+            "span": self.span.to_dict(),
+            "parts": {k: v.to_dict() for k, v in self.parts.items()},
+            "facets": facets_out,
+            "children": [c.to_dict() for c in self.children],
+            "provenance": [p.to_dict() for p in self.provenance],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SymbolNode":
+        if not isinstance(data, dict):
+            raise SchemaValidationError("SymbolNode data must be a dict.")
+        for req in ("id", "name", "kinds", "language", "span"):
+            if req not in data:
+                raise SchemaValidationError(f"SymbolNode missing required field '{req}'.")
+        raw_span = data["span"]
+        span_obj = raw_span if isinstance(raw_span, Span) else Span.from_dict(raw_span)
+        raw_scope = data.get("scope_path") or ()
+        scope_tup = tuple(str(s) for s in raw_scope) if isinstance(raw_scope, (list, tuple)) else ()
+        raw_kinds = data.get("kinds") or ()
+        kinds_set = frozenset(str(k) for k in raw_kinds) if isinstance(raw_kinds, (list, tuple, set, frozenset)) else frozenset()
+        raw_parts = data.get("parts") or {}
+        parts_map: Dict[str, Span] = {}
+        if isinstance(raw_parts, Mapping):
+            for pk, pv in raw_parts.items():
+                parts_map[str(pk)] = pv if isinstance(pv, Span) else Span.from_dict(pv)
+        raw_facets = data.get("facets") or {}
+        facets_map = dict(raw_facets) if isinstance(raw_facets, Mapping) else {}
+        raw_children = data.get("children") or ()
+        children_tup = tuple(
+            c if isinstance(c, SymbolNode) else cls.from_dict(c)
+            for c in (raw_children if isinstance(raw_children, (list, tuple)) else ())
+        )
+        raw_prov = data.get("provenance") or ()
+        prov_tup = tuple(
+            p if isinstance(p, ProvenanceStep) else ProvenanceStep.from_dict(p)
+            for p in (raw_prov if isinstance(raw_prov, (list, tuple)) else ())
+        )
+        return cls(
+            id=str(data["id"]),
+            name=str(data["name"]),
+            scope_path=scope_tup,
+            kinds=kinds_set,
+            language=str(data["language"]),
+            span=span_obj,
+            parts=parts_map,
+            facets=facets_map,
+            children=children_tup,
+            provenance=prov_tup,
+        )
+
+
+@dataclass(frozen=True)
+class RelationEdge:
+    """Directed semantic relation edge (imports, inherits, implements, calls, references, documents)."""
+
+    source_id: str
+    target_expr: str
+    edge_kind: str
+    span: Span
+    resolution_status: str = "unresolved"
+    resolved_target_ids: Tuple[str, ...] = ()
+    provenance: Tuple[ProvenanceStep, ...] = field(default=(), hash=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "resolved_target_ids",
+            tuple(str(tid) for tid in (self.resolved_target_ids or ())),
+        )
+        if self.provenance:
+            dedup_prov = sorted(set(self.provenance), key=lambda p: p.sort_key())
+            object.__setattr__(self, "provenance", tuple(dedup_prov))
+        else:
+            object.__setattr__(self, "provenance", ())
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "source_id": self.source_id,
+            "target_expr": self.target_expr,
+            "edge_kind": self.edge_kind,
+            "span": self.span.to_dict(),
+            "resolution_status": self.resolution_status,
+            "resolved_target_ids": list(self.resolved_target_ids),
+            "provenance": [p.to_dict() for p in self.provenance],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RelationEdge":
+        if not isinstance(data, dict):
+            raise SchemaValidationError("RelationEdge data must be a dict.")
+        for req in ("source_id", "target_expr", "edge_kind", "span"):
+            if req not in data:
+                raise SchemaValidationError(f"RelationEdge missing required field '{req}'.")
+        raw_span = data["span"]
+        span_obj = raw_span if isinstance(raw_span, Span) else Span.from_dict(raw_span)
+        raw_targets = data.get("resolved_target_ids") or ()
+        targets_tup = tuple(str(t) for t in raw_targets) if isinstance(raw_targets, (list, tuple)) else ()
+        raw_prov = data.get("provenance") or ()
+        prov_tup = tuple(
+            p if isinstance(p, ProvenanceStep) else ProvenanceStep.from_dict(p)
+            for p in (raw_prov if isinstance(raw_prov, (list, tuple)) else ())
+        )
+        return cls(
+            source_id=str(data["source_id"]),
+            target_expr=str(data["target_expr"]),
+            edge_kind=str(data["edge_kind"]),
+            span=span_obj,
+            resolution_status=str(data.get("resolution_status") or "unresolved"),
+            resolved_target_ids=targets_tup,
+            provenance=prov_tup,
+        )
+
+
+@dataclass(frozen=True)
+class FileSymbolGraph:
+    """Immutable single-file AST symbol subgraph extracted in a single pass."""
+
+    file_path: str
+    content_hash: str
+    language: str
+    root_nodes: Tuple[SymbolNode, ...] = field(default=(), hash=False)
+    all_nodes_by_id: Mapping[str, SymbolNode] = field(default_factory=lambda: MappingProxyType({}), hash=False)
+    outgoing_edges: Tuple[RelationEdge, ...] = field(default=(), hash=False)
+
+    def __post_init__(self) -> None:
+        roots_tup = tuple(self.root_nodes) if self.root_nodes else ()
+        object.__setattr__(self, "root_nodes", roots_tup)
+        object.__setattr__(self, "outgoing_edges", tuple(self.outgoing_edges) if self.outgoing_edges else ())
+
+        index_map: Dict[str, SymbolNode] = {}
+        if isinstance(self.all_nodes_by_id, Mapping) and self.all_nodes_by_id:
+            for k, v in self.all_nodes_by_id.items():
+                if isinstance(v, SymbolNode):
+                    index_map[str(k)] = v
+
+        def _walk_nodes(nodes: Tuple[SymbolNode, ...]) -> None:
+            for n in nodes:
+                index_map[n.id] = n
+                if n.children:
+                    _walk_nodes(n.children)
+
+        if roots_tup:
+            _walk_nodes(roots_tup)
+        object.__setattr__(self, "all_nodes_by_id", MappingProxyType(index_map))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "file_path": self.file_path,
+            "content_hash": self.content_hash,
+            "language": self.language,
+            "root_nodes": [n.to_dict() for n in self.root_nodes],
+            "all_nodes_by_id": {nid: n.to_dict() for nid, n in self.all_nodes_by_id.items()},
+            "outgoing_edges": [e.to_dict() for e in self.outgoing_edges],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FileSymbolGraph":
+        if not isinstance(data, dict):
+            raise SchemaValidationError("FileSymbolGraph data must be a dict.")
+        for req in ("file_path", "content_hash", "language"):
+            if req not in data:
+                raise SchemaValidationError(f"FileSymbolGraph missing required field '{req}'.")
+        raw_roots = data.get("root_nodes") or ()
+        roots_tup = tuple(
+            n if isinstance(n, SymbolNode) else SymbolNode.from_dict(n)
+            for n in (raw_roots if isinstance(raw_roots, (list, tuple)) else ())
+        )
+        raw_all = data.get("all_nodes_by_id") or {}
+        all_map: Dict[str, SymbolNode] = {}
+        if isinstance(raw_all, Mapping):
+            for k, v in raw_all.items():
+                all_map[str(k)] = v if isinstance(v, SymbolNode) else SymbolNode.from_dict(v)
+        raw_edges = data.get("outgoing_edges") or ()
+        edges_tup = tuple(
+            e if isinstance(e, RelationEdge) else RelationEdge.from_dict(e)
+            for e in (raw_edges if isinstance(raw_edges, (list, tuple)) else ())
+        )
+        return cls(
+            file_path=str(data["file_path"]),
+            content_hash=str(data["content_hash"]),
+            language=str(data["language"]),
+            root_nodes=roots_tup,
+            all_nodes_by_id=all_map,
+            outgoing_edges=edges_tup,
+        )
 
 
 class SymbolKind(str, Enum):
@@ -61,7 +489,7 @@ class MemberInfo:
     fqn: str = ""
     parent_id: str = ""
     return_type: str = ""
-    parameters: Tuple[Dict[str, str], ...] = ()
+    parameters: Tuple[Dict[str, str], ...] = field(default=(), hash=False)
 
     @property
     def line(self) -> int:
@@ -123,8 +551,24 @@ class LanguageConfig:
     mode: str = "tree_sitter"  # "tree_sitter" | "custom"
     grammar: Optional[str] = None
     query_file: Optional[str] = None
+    query_files: Tuple[str, ...] = ()
+    spaces: Tuple[str, ...] = ()
+    processors: Tuple[str, ...] = ()
     parser_entry: Optional[str] = None
-    custom_kinds: Tuple[Dict[str, str], ...] = ()
+    custom_kinds: Tuple[Dict[str, str], ...] = field(default=(), hash=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "extensions", tuple(str(e) for e in (self.extensions or ())))
+        q_files: List[str] = []
+        if self.query_file:
+            q_files.append(str(self.query_file))
+        for qf in (self.query_files or ()):
+            qf_str = str(qf)
+            if qf_str and qf_str not in q_files:
+                q_files.append(qf_str)
+        object.__setattr__(self, "query_files", tuple(q_files))
+        object.__setattr__(self, "spaces", tuple(str(s) for s in (self.spaces or ()) if str(s).strip()))
+        object.__setattr__(self, "processors", tuple(str(p) for p in (self.processors or ()) if str(p).strip()))
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -134,6 +578,9 @@ class LanguageConfig:
             "mode": self.mode,
             "grammar": self.grammar,
             "query_file": self.query_file,
+            "query_files": list(self.query_files),
+            "spaces": list(self.spaces),
+            "processors": list(self.processors),
             "parser_entry": self.parser_entry,
             "custom_kinds": [dict(k) for k in self.custom_kinds],
         }
@@ -146,6 +593,9 @@ class LanguageConfig:
             raise SchemaValidationError("LanguageConfig requires 'id' and 'extensions'.")
         raw_exts = data.get("extensions") or []
         raw_kinds = data.get("custom_kinds") or []
+        raw_qfiles = data.get("query_files") or []
+        raw_spaces = data.get("spaces") or []
+        raw_procs = data.get("processors") or []
         return cls(
             id=str(data["id"]),
             name=str(data.get("name") or data["id"]),
@@ -153,6 +603,9 @@ class LanguageConfig:
             mode=str(data.get("mode") or "tree_sitter"),
             grammar=data.get("grammar"),
             query_file=data.get("query_file"),
+            query_files=tuple(str(q) for q in raw_qfiles) if isinstance(raw_qfiles, (list, tuple, set)) else (),
+            spaces=tuple(str(s) for s in raw_spaces) if isinstance(raw_spaces, (list, tuple, set)) else (),
+            processors=tuple(str(p) for p in raw_procs) if isinstance(raw_procs, (list, tuple, set)) else (),
             parser_entry=data.get("parser_entry"),
             custom_kinds=tuple(dict(k) for k in raw_kinds if isinstance(k, dict)) if isinstance(raw_kinds, (list, tuple)) else (),
         )
@@ -174,19 +627,24 @@ class UnifiedSymbol:
     fqn: str = ""
     scope_path: str = ""
     parent_id: Optional[str] = None
-    children: Tuple[Any, ...] = ()
-    parameters: Tuple[Dict[str, Any], ...] = ()
+    children: Tuple[Any, ...] = field(default=(), hash=False)
+    parameters: Tuple[Dict[str, Any], ...] = field(default=(), hash=False)
     return_type: str = ""
     search_payload: str = ""
     visibility: str = "public"
-    members: Tuple[Any, ...] = ()
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    members: Tuple[Any, ...] = field(default=(), hash=False)
+    metadata: Dict[str, Any] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
-        if not self.children and self.members:
-            object.__setattr__(self, "children", tuple(self.members))
-        elif not self.members and self.children:
-            object.__setattr__(self, "members", tuple(self.children))
+        children_tup = tuple(self.children) if self.children else ()
+        members_tup = tuple(self.members) if self.members else ()
+        if not children_tup and members_tup:
+            children_tup = members_tup
+        elif not members_tup and children_tup:
+            members_tup = children_tup
+        object.__setattr__(self, "children", children_tup)
+        object.__setattr__(self, "members", members_tup)
+        object.__setattr__(self, "parameters", tuple(self.parameters) if self.parameters else ())
 
     @property
     def spaces(self) -> List[str]:
@@ -400,8 +858,8 @@ class SemanticBundle:
     version: str
     space_name: str
     created_at: str
-    symbols: List[UnifiedSymbol] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    symbols: List[UnifiedSymbol] = field(default_factory=list, hash=False)
+    metadata: Dict[str, Any] = field(default_factory=dict, hash=False)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -553,8 +1011,8 @@ class OutlineNode:
     fqn: str = ""
     is_partial: bool = False
     is_static: bool = False
-    children: List[Any] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    children: List[Any] = field(default_factory=list, hash=False)
+    metadata: Dict[str, Any] = field(default_factory=dict, hash=False)
 
     def to_dict(self) -> Dict[str, Any]:
         children_serialized = [c.to_dict() if hasattr(c, "to_dict") else c for c in self.children]
@@ -610,10 +1068,10 @@ class OutlineResult:
     file_path: str
     language: str = "unknown"
     merged: bool = False
-    symbols: List[Dict[str, Any]] = field(default_factory=list)
-    partial_siblings: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
-    warnings: List[str] = field(default_factory=list)
-    filters: Dict[str, Any] = field(default_factory=dict)
+    symbols: List[Dict[str, Any]] = field(default_factory=list, hash=False)
+    partial_siblings: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict, hash=False)
+    warnings: List[str] = field(default_factory=list, hash=False)
+    filters: Dict[str, Any] = field(default_factory=dict, hash=False)
     error: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -670,7 +1128,12 @@ class OutlineResult:
         )
 
 
-__all__ = [
+__all__ = (
+    "Span",
+    "ProvenanceStep",
+    "SymbolNode",
+    "RelationEdge",
+    "FileSymbolGraph",
     "SymbolKind",
     "LanguageType",
     "MemberInfo",
@@ -681,4 +1144,4 @@ __all__ = [
     "ASTSnapshot",
     "OutlineNode",
     "OutlineResult",
-]
+)

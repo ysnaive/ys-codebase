@@ -2,7 +2,7 @@
 Multi-language AST and domain parsers for module:ast (`ast_engine.parsers`).
 """
 
-from .base import BaseParser
+from .base import BaseParser, SymbolProcessor
 from .css_parser import CssParser
 from .html_parser import HtmlParser
 from .markdown import MarkdownParser
@@ -11,8 +11,9 @@ from .registry import DEFAULT_LANGUAGES, ParserRegistry
 from .spice_parser import SpiceParser
 from .treesitter import BUILTIN_QUERIES, TreeSitterDriver
 
-__all__ = [
+__all__ = (
     "BaseParser",
+    "SymbolProcessor",
     "TreeSitterDriver",
     "PythonASTParser",
     "MarkdownParser",
@@ -22,4 +23,4 @@ __all__ = [
     "ParserRegistry",
     "DEFAULT_LANGUAGES",
     "BUILTIN_QUERIES",
-]
+)

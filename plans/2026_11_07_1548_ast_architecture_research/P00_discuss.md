@@ -5,7 +5,7 @@
 > 所屬主計畫：無  
 > 狀態：Confirmed  
 > 模型：Gemini 3.1 Pro  
-> 計畫類型：Research  
+> 計畫類型：Umbrella  
 > 模板版本：v1.2  
 
 ---

@@ -37,13 +37,18 @@ from ast_engine.parsers.python_ast import PythonASTParser
 from ast_engine.resolver import SnippetExtractor
 from ast_engine.schema import (
     ASTSnapshot,
+    FileSymbolGraph,
     LanguageConfig,
     MemberInfo,
     OutlineNode,
     OutlineResult,
+    ProvenanceStep,
+    RelationEdge,
     SemanticBundle,
+    Span,
     SymbolCallSite,
     SymbolKind,
+    SymbolNode,
     UnifiedSymbol,
 )
 from core.space import SpaceConfig
@@ -188,11 +193,11 @@ class TestASTEngineCore(ASTTestCase):
 
     @require(Requirement.LOGIC)
     def test_ast_engine_all_56_public_symbols_lazy_loading(self) -> None:
-        """Verify all 56 exported symbols in ast_engine.__all__ resolve via PEP 562 __getattr__ and match manifest version."""
+        """Verify all 62 exported symbols in ast_engine.__all__ resolve via PEP 562 __getattr__ and match manifest version."""
         manifest_path = Path(_AST_ROOT) / "manifest.json"
         manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(ast_engine.__version__, manifest_data["version"])
-        self.assertEqual(len(ast_engine.__all__), 56)
+        self.assertEqual(len(ast_engine.__all__), 62)
 
         for sym_name in ast_engine.__all__:
             self.assertIn(sym_name, dir(ast_engine))
@@ -612,6 +617,132 @@ class TestASTEngineCore(ASTTestCase):
             lock_path = eng._resolve_index_lock_path()
             self.assertEqual(lock_path, (fake_yscb_root / ".cache" / "ast" / ".ast_index.lock").resolve())
             self.assertFalse((fake_proj / ".cache").exists())
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_unified_symbol_tuple_coercion_hashability_and_snapshot_generations(self) -> None:
+        """Verify UnifiedSymbol normalizes children/members/parameters to tuples, supports hash(), and _collect_space_generations_and_files_map handles head_generation and dict cursor."""
+        from unittest.mock import MagicMock
+
+        sym = UnifiedSymbol(
+            id="sym_hash_1",
+            name="DemoClass",
+            kind=SymbolKind.CLASS,
+            file_path="demo.py",
+            line_number=1,
+            language="python",
+            children=[{"name": "m1", "kind": "method"}],  # type: ignore[arg-type]
+            parameters=[{"name": "x", "type": "int"}],  # type: ignore[arg-type]
+        )
+        self.assertIsInstance(sym.children, tuple)
+        self.assertIsInstance(sym.members, tuple)
+        self.assertIsInstance(sym.parameters, tuple)
+        self.assertEqual(sym.children, sym.members)
+        self.assertIsInstance(hash(sym), int)
+
+        eng = ASTEngine(project_root=self.temp_dir, storage_dir=self.temp_dir / ".ast_gen_test")
+        sp_cfg = SpaceConfig(
+            qualified_name="project/gen_sp",
+            owner="project",
+            short_name="gen_sp",
+            entries=(str(self.temp_dir),),
+        )
+        fake_st = MagicMock()
+        fake_st.entries = {}
+        fake_st.head_generation = 42
+        del fake_st.generation
+
+        fake_scanner = MagicMock()
+        fake_scanner._load_snapshot_state.side_effect = lambda q_name: fake_st
+        fake_scanner.cursor_store.get_cursor.return_value = {"acked_generation": 42, "space_generations": {}}
+        eng.scanner = fake_scanner
+
+        space_gens, _ = eng._collect_space_generations_and_files_map([sp_cfg])
+        self.assertEqual(space_gens.get("gen_sp"), 42)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_atomic_kernel_schema_immutability_serialization_and_canonical_id(self) -> None:
+        """Verify Span, ProvenanceStep, SymbolNode, RelationEdge, and FileSymbolGraph immutability, slicing, canonical IDs, and validation."""
+        from dataclasses import FrozenInstanceError
+
+        src = b"def calculate(a: int, b: int) -> int:\n    return a + b\n"
+        sp_name = Span(start_byte=4, end_byte=13, start_line=1, start_col=4, end_line=1, end_col=13)
+        sp_params = Span(start_byte=13, end_byte=29, start_line=1, start_col=13, end_line=1, end_col=29)
+        sp_outer = sp_name.union(sp_params)
+        self.assertEqual(sp_name.slice_text(src), "calculate")
+        self.assertEqual(sp_params.slice_bytes(src), b"(a: int, b: int)")
+        self.assertTrue(sp_outer.contains(sp_name))
+        self.assertEqual(sp_name.union(sp_params), sp_params.union(sp_name))
+
+        prov1 = ProvenanceStep(provider_id="core:cli.scm", action="extract", rule_or_hook="@def.cli_command")
+        prov2 = ProvenanceStep(provider_id="ast:python/tags.scm", action="extract", rule_or_hook="@definition.function")
+        sym_id = SymbolNode.compute_canonical_id("pkg/math.py", "Math.calculate", "(int, int)")
+        self.assertEqual(sym_id, "pkg/math.py::Math.calculate(int, int)")
+
+        node = SymbolNode(
+            id=sym_id,
+            name="calculate",
+            scope_path=("Math",),
+            kinds=frozenset({"function", "cli_command"}),
+            language="python",
+            span=sp_outer,
+            parts={"name": sp_name, "parameters": sp_params},
+            facets={"visibility": "public", "modifiers": ["static"]},
+            provenance=(prov1, prov2, prov1),
+        )
+        self.assertEqual(node.fqn, "Math.calculate")
+        # Provenance must be deduplicated and sorted lexicographically by provider_id
+        self.assertEqual(len(node.provenance), 2)
+        self.assertEqual(node.provenance[0].provider_id, "ast:python/tags.scm")
+        self.assertEqual(node.provenance[1].provider_id, "core:cli.scm")
+        self.assertIsInstance(hash(node), int)
+        with self.assertRaises(FrozenInstanceError):
+            node.name = "mutated"  # type: ignore[misc]
+        with self.assertRaises(TypeError):
+            node.parts["extra"] = sp_name  # type: ignore[index]
+
+        edge = RelationEdge(
+            source_id=sym_id,
+            target_expr="helper",
+            edge_kind="calls",
+            span=sp_name,
+            provenance=(prov1, prov2),
+        )
+        graph = FileSymbolGraph(
+            file_path="pkg/math.py",
+            content_hash="0123456789abcdef0123456789abcdef",
+            language="python",
+            root_nodes=(node,),
+            outgoing_edges=(edge,),
+        )
+        self.assertIn(sym_id, graph.all_nodes_by_id)
+        restored_graph = FileSymbolGraph.from_dict(graph.to_dict())
+        self.assertEqual(restored_graph.file_path, "pkg/math.py")
+        self.assertEqual(restored_graph.root_nodes[0].id, sym_id)
+        self.assertEqual(restored_graph.root_nodes[0].kinds, frozenset({"function", "cli_command"}))
+        self.assertEqual(restored_graph.outgoing_edges[0].target_expr, "helper")
+        self.assertIsInstance(hash(restored_graph), int)
+
+        for atomic_cls in (Span, ProvenanceStep, SymbolNode, RelationEdge, FileSymbolGraph):
+            with self.assertRaises(SchemaValidationError):
+                atomic_cls.from_dict("not_a_dict")  # type: ignore[arg-type]
+            with self.assertRaises(SchemaValidationError):
+                atomic_cls.from_dict({})
+        with self.assertRaises(SchemaValidationError):
+            Span.from_dict({"start_byte": "bad", "end_byte": 10, "start_line": 1, "end_line": 1})
+        with self.assertRaises(SchemaValidationError):
+            Span.from_dict({"start_byte": 15, "end_byte": 10, "start_line": 1, "end_line": 1})
+        with self.assertRaises(SchemaValidationError):
+            SymbolNode(
+                id="f.py::x",
+                name="x",
+                scope_path=(),
+                kinds=frozenset({"function"}),
+                language="python",
+                span=sp_name,
+                parts={"name": "not_a_span"},  # type: ignore[dict-item]
+            )
         self.mark_passed()
 
 

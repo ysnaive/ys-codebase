@@ -403,3 +403,219 @@ class TestDialectsAndParsers(ASTTestCase):
         py_ast_parser = PythonASTParser()
         self.assertEqual(py_ast_parser.parse("bad.py", "def broken_syntax(:\n", space="code"), [])
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_commutative_multi_scm_merge_recursive_hierarchy_and_space_scoping(self) -> None:
+        """Verify peer .scm commutative merging (A U B == B U A), deep recursive hierarchy, SymbolProcessor refinement, and core.space rule scoping."""
+        from ast_engine.parsers.base import SymbolProcessor
+        from ast_engine.parsers.treesitter import TreeSitterDriver
+        from ast_engine.schema import LanguageConfig, ProvenanceStep, Span, SymbolNode
+        from unittest.mock import MagicMock
+
+        # 1. Verify end-to-end commutative merging ($A \cup B = B \cup A$) across real `.scm` files
+        # including official `tags.scm` directives (`#strip!`, `#select-adjacent!`) and extended `@def.*` / `@part.*` / `@facet.*`
+        tags_scm_path = self.temp_dir / "official_tags.scm"
+        tags_scm_path.write_text(
+            '(\n'
+            '  (comment)+ @doc\n'
+            '  .\n'
+            '  (function_definition\n'
+            '    name: (identifier) @name) @definition.function\n'
+            '  (#strip! @doc "^[\\\\s#]+")\n'
+            '  (#select-adjacent! @doc @definition.function)\n'
+            ')\n'
+            '(class_definition name: (identifier) @name) @definition.class\n'
+            '(call function: (identifier) @name) @reference.call\n',
+            encoding="utf-8",
+        )
+        domain_scm_path = self.temp_dir / "domain_cli.scm"
+        domain_scm_path.write_text(
+            '(class_definition name: (identifier) @part.name) @def.actor\n'
+            '(function_definition\n'
+            '  name: (identifier) @part.name\n'
+            '  parameters: (parameters) @part.parameters\n'
+            '  body: (block) @part.body @facet.cli_route\n'
+            ') @def.cli_command\n',
+            encoding="utf-8",
+        )
+        broken_scm_path = self.temp_dir / "broken_syntax.scm"
+        broken_scm_path.write_text("(unclosed_query (identifier) @name", encoding="utf-8")
+
+        sample_py_code = (
+            "# Unrelated top header comment\n\n"
+            "# Adjacent doc line 1\n"
+            "# Adjacent doc line 2\n"
+            "def handle_cmd(ctx: Context) -> int:\n"
+            "    return run_helper(ctx)\n"
+        )
+        with patch("sys.stderr", new_callable=io.StringIO) as err_buf:
+            driver_ab = TreeSitterDriver(
+                LanguageConfig(
+                    id="python",
+                    name="Python",
+                    extensions=(".py",),
+                    grammar="tree_sitter_python",
+                    query_files=(str(tags_scm_path), str(domain_scm_path), str(broken_scm_path)),
+                )
+            )
+            driver_ba = TreeSitterDriver(
+                LanguageConfig(
+                    id="python",
+                    name="Python",
+                    extensions=(".py",),
+                    grammar="tree_sitter_python",
+                    query_files=(str(domain_scm_path), str(tags_scm_path)),
+                )
+            )
+            self.assertIn("broken_syntax.scm", err_buf.getvalue())
+
+        graph_ab = driver_ab.extract_file_graph("pkg/cli.py", sample_py_code)
+        graph_ba = driver_ba.extract_file_graph("pkg/cli.py", sample_py_code)
+        self.assertEqual(graph_ab.to_dict(), graph_ba.to_dict())
+        self.assertEqual(len(graph_ab.root_nodes), 1)
+        merged_fn = graph_ab.root_nodes[0]
+        self.assertEqual(merged_fn.name, "handle_cmd")
+        self.assertEqual(merged_fn.kinds, frozenset({"function", "cli_command"}))
+        self.assertIn("parameters", merged_fn.parts)
+        self.assertIn("body", merged_fn.parts)
+        self.assertIn("cli_route", merged_fn.facets)
+        # Verify #select-adjacent! excluded the top header comment and #strip! stripped leading `# `
+        doc_val = str(merged_fn.facets.get("docstring") or "")
+        self.assertIn("Adjacent doc line 1", doc_val)
+        self.assertIn("Adjacent doc line 2", doc_val)
+        self.assertNotIn("Unrelated top header comment", doc_val)
+        self.assertTrue(any(e.edge_kind == "calls" and e.target_expr == "run_helper" for e in graph_ab.outgoing_edges))
+
+        # Verify parse() also commutatively merges multi-query definitions without duplicate symbols
+        syms_ab = driver_ab.parse("pkg/cli.py", sample_py_code, space="code")
+        syms_ba = driver_ba.parse("pkg/cli.py", sample_py_code, space="code")
+        self.assertEqual(len(syms_ab), 1)
+        self.assertEqual(syms_ab[0].id, syms_ba[0].id)
+
+        # 2. Verify deep recursive hierarchy (>2 levels: OuterClass -> InnerClass -> DeepMethod) and SymbolProcessor refinement
+        class CustomMarkerProcessor(SymbolProcessor):
+            provider_id = "test:marker_processor"
+
+            def refine_node(self, node: SymbolNode, source_bytes: bytes) -> SymbolNode:
+                new_facets = dict(node.facets)
+                new_facets["processed_by_marker"] = True
+                new_prov = (*node.provenance, ProvenanceStep(provider_id=self.provider_id, action="refine", rule_or_hook="CustomMarkerProcessor"))
+                return SymbolNode(
+                    id=node.id,
+                    name=node.name,
+                    scope_path=node.scope_path,
+                    kinds=node.kinds,
+                    language=node.language,
+                    span=node.span,
+                    parts=node.parts,
+                    facets=new_facets,
+                    children=node.children,
+                    provenance=new_prov,
+                )
+
+        proc_driver = TreeSitterDriver(
+            LanguageConfig(id="python", name="Python", extensions=(".py",), grammar="tree_sitter_python", query_file="assets/queries/python.scm"),
+            processors=(CustomMarkerProcessor(),),
+        )
+        py_src = (
+            "import os\n"
+            "class OuterService(BaseSvc):\n"
+            "    class InnerHandler:\n"
+            "        def execute_task(self, x: int) -> bool:\n"
+            "            return helper_fn(x)\n"
+        )
+        f_graph = proc_driver.extract_file_graph("svc/nested.py", py_src)
+        self.assertEqual(f_graph.file_path, "svc/nested.py")
+        self.assertEqual(len(f_graph.root_nodes), 1)
+        outer_node = f_graph.root_nodes[0]
+        self.assertEqual(outer_node.name, "OuterService")
+        self.assertEqual(outer_node.id, "svc/nested.py::OuterService")
+        self.assertTrue(outer_node.facets.get("processed_by_marker"))
+        self.assertEqual(len(outer_node.children), 1)
+        inner_node = outer_node.children[0]
+        self.assertEqual(inner_node.name, "InnerHandler")
+        self.assertEqual(inner_node.id, "svc/nested.py::OuterService.InnerHandler")
+        self.assertEqual(len(inner_node.children), 1)
+        deep_method = inner_node.children[0]
+        self.assertEqual(deep_method.name, "execute_task")
+        self.assertEqual(deep_method.id, "svc/nested.py::OuterService.InnerHandler.execute_task")
+        self.assertIn("method", deep_method.kinds)
+        self.assertIn(deep_method.id, f_graph.all_nodes_by_id)
+        self.assertTrue(any(e.edge_kind == "inherits" and e.target_expr == "BaseSvc" for e in f_graph.outgoing_edges))
+        self.assertTrue(any(e.edge_kind == "imports" and e.target_expr == "os" for e in f_graph.outgoing_edges))
+        self.assertTrue(any(e.edge_kind == "calls" and e.target_expr == "helper_fn" and e.source_id == deep_method.id for e in f_graph.outgoing_edges))
+
+        # 2b. Verify EC-03: same-scope C# method overloads receive deterministic parameter-suffix IDs in extract_file_graph
+        cs_driver = TreeSitterDriver(
+            LanguageConfig(id="c_sharp", name="C#", extensions=(".cs",), grammar="tree_sitter_c_sharp", query_file="assets/queries/c_sharp.scm")
+        )
+        cs_overload_src = (
+            "public class Window {\n"
+            "    public void Open(string title) {}\n"
+            "    public void Open(string title, int width) {}\n"
+            "}\n"
+        )
+        cs_graph = cs_driver.extract_file_graph("ui/Window.cs", cs_overload_src)
+        self.assertEqual(len(cs_graph.root_nodes), 1)
+        win_node = cs_graph.root_nodes[0]
+        overload_ids = sorted(c.id for c in win_node.children)
+        self.assertEqual(
+            overload_ids,
+            [
+                "ui/Window.cs::Window.Open(string title)",
+                "ui/Window.cs::Window.Open(string title, int width)",
+            ],
+        )
+
+        # 2c. Verify EC-02: broken processor runtime isolation logs warning and preserves extracted graph
+        class BrokenRuntimeProcessor(SymbolProcessor):
+            provider_id = "test:broken_processor"
+
+            def refine_file_graph(self, graph, source_bytes):
+                raise RuntimeError("Simulated processor failure")
+
+        resilient_driver = TreeSitterDriver(
+            LanguageConfig(id="python", name="Python", extensions=(".py",), grammar="tree_sitter_python", query_file="assets/queries/python.scm"),
+            processors=(BrokenRuntimeProcessor(), CustomMarkerProcessor()),
+        )
+        with patch("sys.stderr", new_callable=io.StringIO) as proc_err_buf:
+            res_graph = resilient_driver.extract_file_graph("svc/nested.py", py_src)
+            self.assertIn("Simulated processor failure", proc_err_buf.getvalue())
+        self.assertEqual(len(res_graph.root_nodes), 1)
+        self.assertTrue(res_graph.root_nodes[0].facets.get("processed_by_marker"))
+
+        # 3. Verify `spaces` rule scoping via `core.space`
+        scoped_parser_file = self.temp_dir / "scoped_json_parser.py"
+        scoped_parser_file.write_text(
+            "from ast_engine.parsers.base import BaseParser\n"
+            "from ast_engine.schema import UnifiedSymbol\n"
+            "class ScopedJsonParser(BaseParser):\n"
+            "    def can_parse(self, file_path):\n"
+            "        return str(file_path).endswith('.json')\n"
+            "    def parse(self, file_path, content, space):\n"
+            "        return [UnifiedSymbol(id='j1', name='ContributeSpec', kind='class', file_path=file_path, line_number=1, language='json')]\n",
+            encoding="utf-8",
+        )
+        scoped_contributes = {
+            "languages": {
+                "contributes_json": {
+                    "id": "contributes_json",
+                    "name": "Contributes JSON",
+                    "extensions": [".json"],
+                    "spaces": ["core/contributes"],
+                    "mode": "custom",
+                    "parser_entry": f"{scoped_parser_file}:ScopedJsonParser",
+                }
+            }
+        }
+        scoped_reg = ParserRegistry(register_defaults=False, contributes_data=scoped_contributes)
+        fake_space_reg = MagicMock()
+        fake_space_reg.match_path.side_effect = lambda fp, sp: MagicMock(matched=("contributes/" in str(fp)))
+        with patch("core.space.get_default_registry", return_value=fake_space_reg):
+            matched_g = scoped_reg.extract_file_graph("mod/contributes/ast.json", "{}")
+            self.assertEqual(len(matched_g.root_nodes), 1)
+            self.assertEqual(matched_g.root_nodes[0].name, "ContributeSpec")
+
+            unmatched_g = scoped_reg.extract_file_graph("mod/package.json", "{}")
+            self.assertEqual(len(unmatched_g.root_nodes), 0)
+        self.mark_passed()

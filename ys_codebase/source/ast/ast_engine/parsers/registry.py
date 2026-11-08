@@ -17,8 +17,16 @@ from core.context import get_virtual_cwd
 from core.loader import load_module_from_path
 from core.log import log_debug, log_warn
 
-from ..schema import LanguageConfig, SymbolCallSite, UnifiedSymbol
-from .base import BaseParser
+from ..schema import (
+    FileSymbolGraph,
+    LanguageConfig,
+    ProvenanceStep,
+    RelationEdge,
+    SymbolCallSite,
+    SymbolNode,
+    UnifiedSymbol,
+)
+from .base import BaseParser, SymbolProcessor, compute_content_hash
 from .treesitter import TreeSitterDriver
 
 DEFAULT_LANGUAGES: Mapping[str, Dict[str, Any]] = MappingProxyType({
@@ -117,8 +125,8 @@ class ParserRegistry:
         self._language_configs: Dict[str, LanguageConfig] = {}
         self.load_errors: Dict[str, str] = {}
 
-        if register_defaults:
-            self._load_from_contributes(contributes_data=contributes_data)
+        if register_defaults or contributes_data is not None:
+            self._load_from_contributes(contributes_data=contributes_data, include_defaults=register_defaults)
 
     @staticmethod
     def _ensure_search_paths(provider: Optional[str] = None) -> None:
@@ -241,10 +249,14 @@ class ParserRegistry:
         parser_cls = getattr(mod, cls_name)
         return parser_cls()
 
-    def _load_from_contributes(self, contributes_data: Optional[Dict[str, Any]] = None) -> None:
+    def _load_from_contributes(
+        self,
+        contributes_data: Optional[Dict[str, Any]] = None,
+        include_defaults: bool = True,
+    ) -> None:
         """Load `languages` from `contributes_data`, `contributes.get("ast")`, or built-in defaults."""
         self.load_errors.clear()
-        languages_dict: Dict[str, Any] = copy.deepcopy(dict(DEFAULT_LANGUAGES))
+        languages_dict: Dict[str, Any] = copy.deepcopy(dict(DEFAULT_LANGUAGES)) if include_defaults else {}
 
         overlay_langs: Dict[str, Any] = {}
         if contributes_data and isinstance(contributes_data, dict):
@@ -270,14 +282,24 @@ class ParserRegistry:
                         if isinstance(m_data, dict) and isinstance(m_data.get("languages"), dict):
                             overlay_langs = m_data["languages"]
                 except Exception as exc:
-                    log_warn(f"ParserRegistry: Failed to load contributes/ast.json: {exc}")
+                    log_warn(f"ParserRegistry: Failed to load contributes/ast.json: {exc}", stream="stderr")
 
         for lang_id, lang_cfg in overlay_langs.items():
             if not isinstance(lang_cfg, dict):
                 continue
             if lang_id in languages_dict and isinstance(languages_dict[lang_id], dict):
                 merged = dict(languages_dict[lang_id])
-                merged.update(lang_cfg)
+                for list_key in ("query_files", "spaces", "processors", "extensions"):
+                    if list_key in merged and list_key in lang_cfg:
+                        base_list = list(merged[list_key]) if isinstance(merged[list_key], (list, tuple)) else []
+                        add_list = list(lang_cfg[list_key]) if isinstance(lang_cfg[list_key], (list, tuple)) else []
+                        for elem in add_list:
+                            if elem not in base_list:
+                                base_list.append(elem)
+                        merged[list_key] = base_list
+                for k, v in lang_cfg.items():
+                    if k not in ("query_files", "spaces", "processors", "extensions") or k not in merged:
+                        merged[k] = v
                 languages_dict[lang_id] = merged
             else:
                 languages_dict[lang_id] = dict(lang_cfg)
@@ -293,9 +315,25 @@ class ParserRegistry:
                 cfg = LanguageConfig.from_dict(cfg_data)
                 self._language_configs[cfg.id] = cfg
 
+                proc_instances: List[SymbolProcessor] = []
+                for proc_entry in cfg.processors:
+                    try:
+                        proc_obj = self._instantiate_custom_parser(proc_entry, provider=provider)
+                        if isinstance(proc_obj, SymbolProcessor) or hasattr(proc_obj, "refine_file_graph"):
+                            proc_instances.append(proc_obj)  # type: ignore[arg-type]
+                        else:
+                            err_msg = f"Processor '{proc_entry}' does not implement SymbolProcessor"
+                            self.load_errors[f"{cfg.id}:{proc_entry}"] = err_msg
+                            log_warn(err_msg, stream="stderr")
+                    except Exception as exc:
+                        err_msg = f"Failed to instantiate processor '{proc_entry}': {exc}"
+                        self.load_errors[f"{cfg.id}:{proc_entry}"] = err_msg
+                        log_warn(err_msg, stream="stderr")
+
                 if cfg.mode == "tree_sitter":
-                    driver = TreeSitterDriver(cfg)
+                    driver = TreeSitterDriver(cfg, processors=tuple(proc_instances))
                     self._bind_configured_extensions(driver, cfg.extensions)
+                    driver.SPACES = cfg.spaces
                     if driver._language is None or driver._parser is None:
                         err_msg = f"Failed to load tree-sitter grammar '{cfg.grammar}' or query '{cfg.query_file}'"
                         self.load_errors[cfg.id] = err_msg
@@ -304,15 +342,18 @@ class ParserRegistry:
                     try:
                         parser_inst = self._instantiate_custom_parser(cfg.parser_entry, provider=provider)
                         self._bind_configured_extensions(parser_inst, cfg.extensions)
+                        parser_inst.SPACES = cfg.spaces
+                        if proc_instances:
+                            parser_inst._processors = tuple(proc_instances)  # type: ignore[attr-defined]
                         self.register_parser(parser_inst, priority=100)
                     except Exception as exc:
                         err_msg = f"Failed to instantiate custom parser '{cfg.parser_entry}': {exc}"
                         self.load_errors[cfg.id] = err_msg
-                        log_warn(err_msg)
+                        log_warn(err_msg, stream="stderr")
             except Exception as exc:
                 err_msg = f"Error loading language config '{lang_id}': {exc}"
                 self.load_errors[str(lang_id)] = err_msg
-                log_warn(err_msg)
+                log_warn(err_msg, stream="stderr")
 
     def register_parser(self, parser: BaseParser, priority: int = 100) -> None:
         """Register a parser instance with priority (higher value takes precedence)."""
@@ -341,15 +382,45 @@ class ParserRegistry:
                     exts.add(ext_clean)
         return exts
 
+    @staticmethod
+    def _matches_configured_spaces(parser: BaseParser, file_path: Union[str, Path]) -> bool:
+        """
+        Check if `file_path` satisfies `parser.SPACES` via `core.space.match_path`.
+        When `parser.SPACES` is empty (default), returns True immediately without I/O.
+        """
+        spaces = getattr(parser, "SPACES", ())
+        if not spaces:
+            return True
+        try:
+            from core.space import get_default_registry
+
+            reg = get_default_registry()
+            res = reg.match_path(file_path, list(spaces))
+            return bool(res.matched)
+        except Exception as exc:
+            log_debug(f"Space match check failed for '{file_path}' against {spaces}: {exc}")
+            return False
+
     def get_parser(self, file_path: Union[str, Path]) -> Optional[BaseParser]:
-        """Return the highest-priority parser that supports `file_path`, or None."""
+        """Return the highest-priority parser that supports `file_path` and its `spaces` scope, or None."""
         for _, parser in self._parsers:
             try:
-                if parser.can_parse(file_path):
+                if parser.can_parse(file_path) and self._matches_configured_spaces(parser, file_path):
                     return parser
             except Exception as exc:
-                log_warn(f"Error checking can_parse for {parser}: {exc}")
+                log_warn(f"Error checking can_parse for {parser}: {exc}", stream="stderr")
         return None
+
+    def get_applicable_parsers(self, file_path: Union[str, Path]) -> List[BaseParser]:
+        """Return all registered parsers that match `file_path` extension and `spaces` scope."""
+        matched: List[BaseParser] = []
+        for _, parser in self._parsers:
+            try:
+                if parser.can_parse(file_path) and self._matches_configured_spaces(parser, file_path):
+                    matched.append(parser)
+            except Exception as exc:
+                log_warn(f"Error checking can_parse for {parser}: {exc}", stream="stderr")
+        return matched
 
     def parse_file(self, file_path: str, content: str, space: str) -> List[UnifiedSymbol]:
         """Parse `file_path` content and return extracted UnifiedSymbol list."""
@@ -359,7 +430,7 @@ class ParserRegistry:
         try:
             return parser.parse(file_path=file_path, content=content, space=space)
         except Exception as exc:
-            log_warn(f"Unexpected error during parse_file '{file_path}' in space '{space}': {exc}")
+            log_warn(f"Unexpected error during parse_file '{file_path}' in space '{space}': {exc}", stream="stderr")
             return []
 
     def extract_call_sites(
@@ -395,3 +466,171 @@ class ParserRegistry:
         except Exception as exc:
             log_debug(f"Error extracting imports from '{file_path}': {exc}")
             return {}
+
+    @staticmethod
+    def _merge_symbol_nodes_commutative(
+        node_a: SymbolNode,
+        node_b: SymbolNode,
+        id_remap: Optional[Dict[str, str]] = None,
+    ) -> SymbolNode:
+        """Commutatively merge two `SymbolNode` instances sharing the same `@name` physical span or ID."""
+        merged_span = node_a.span.union(node_b.span)
+        merged_kinds = frozenset(node_a.kinds | node_b.kinds)
+        merged_parts = dict(node_a.parts)
+        for slot, sp_val in node_b.parts.items():
+            merged_parts[slot] = merged_parts[slot].union(sp_val) if slot in merged_parts else sp_val
+
+        merged_facets = dict(node_a.facets)
+        for fk, fv in node_b.facets.items():
+            if fk not in merged_facets or not merged_facets[fk]:
+                merged_facets[fk] = fv
+            elif isinstance(merged_facets[fk], (set, frozenset, list, tuple)) and isinstance(fv, (set, frozenset, list, tuple)):
+                merged_facets[fk] = tuple(sorted({str(x) for x in (*merged_facets[fk], *fv)}))
+            elif str(fv) > str(merged_facets[fk]):
+                merged_facets[fk] = fv
+
+        child_by_key: Dict[Tuple[int, int, str], SymbolNode] = {}
+        for ch in (*node_a.children, *node_b.children):
+            nsp = ch.parts.get("name", ch.span)
+            ckey = (nsp.start_byte, nsp.end_byte, ch.name)
+            if ckey in child_by_key:
+                child_by_key[ckey] = ParserRegistry._merge_symbol_nodes_commutative(
+                    child_by_key[ckey],
+                    ch,
+                    id_remap=id_remap,
+                )
+            else:
+                child_by_key[ckey] = ch
+        merged_children = tuple(
+            sorted(child_by_key.values(), key=lambda c: (c.span.start_byte, -c.span.end_byte, c.name))
+        )
+        merged_prov = tuple(sorted(set(node_a.provenance) | set(node_b.provenance), key=lambda p: p.sort_key()))
+        # Prefer the richer (overload-disambiguated or deeper-scoped) ID deterministically
+        chosen_id = max((node_a.id, node_b.id), key=lambda s: (len(s), s))
+        if id_remap is not None:
+            if node_a.id != chosen_id:
+                id_remap[node_a.id] = chosen_id
+            if node_b.id != chosen_id:
+                id_remap[node_b.id] = chosen_id
+        chosen_scope = max((node_a.scope_path, node_b.scope_path), key=lambda sp: (len(sp), sp))
+        return SymbolNode(
+            id=chosen_id,
+            name=node_a.name,
+            scope_path=chosen_scope,
+            kinds=merged_kinds,
+            language=node_a.language,
+            span=merged_span,
+            parts=merged_parts,
+            facets=merged_facets,
+            children=merged_children,
+            provenance=merged_prov,
+        )
+
+    def extract_file_graph(
+        self,
+        file_path: str,
+        content: str,
+        *,
+        space: str = "unified",
+    ) -> FileSymbolGraph:
+        """
+        Extract and commutatively merge `FileSymbolGraph` across all applicable parsers
+        matching `file_path` extension and `core.space` scope.
+        """
+        norm_path = str(file_path).replace("\\", "/")
+        content_bytes = (content or "").encode("utf-8", errors="replace")
+        c_hash = compute_content_hash(content_bytes)
+        applicable = self.get_applicable_parsers(file_path)
+        if not applicable:
+            return FileSymbolGraph(
+                file_path=norm_path,
+                content_hash=c_hash,
+                language="unknown",
+            )
+
+        graphs: List[FileSymbolGraph] = []
+        for parser in applicable:
+            try:
+                g = parser.extract_file_graph(file_path=norm_path, content=content, space=space)
+                for proc in getattr(parser, "_processors", ()):
+                    if not isinstance(parser, TreeSitterDriver):
+                        g = proc.refine_file_graph(g, content_bytes)
+                graphs.append(g)
+            except Exception as exc:
+                log_warn(f"Unexpected error during extract_file_graph '{file_path}': {exc}", stream="stderr")
+
+        if not graphs:
+            return FileSymbolGraph(
+                file_path=norm_path,
+                content_hash=c_hash,
+                language="unknown",
+            )
+        if len(graphs) == 1:
+            return graphs[0]
+
+        id_remap: Dict[str, str] = {}
+        root_by_key: Dict[Tuple[int, int, str], SymbolNode] = {}
+        for g in graphs:
+            for rnode in g.root_nodes:
+                nsp = rnode.parts.get("name", rnode.span)
+                rkey = (nsp.start_byte, nsp.end_byte, rnode.name)
+                if rkey in root_by_key:
+                    root_by_key[rkey] = self._merge_symbol_nodes_commutative(
+                        root_by_key[rkey],
+                        rnode,
+                        id_remap=id_remap,
+                    )
+                else:
+                    root_by_key[rkey] = rnode
+
+        def _resolve_remapped_id(raw_id: str) -> str:
+            curr = raw_id
+            visited: Set[str] = set()
+            while curr in id_remap and curr not in visited:
+                visited.add(curr)
+                curr = id_remap[curr]
+            return curr
+
+        edge_by_key: Dict[Tuple[str, str, str, int, int], RelationEdge] = {}
+        for g in graphs:
+            for ed in g.outgoing_edges:
+                eff_src_id = _resolve_remapped_id(ed.source_id)
+                ekey = (eff_src_id, ed.target_expr, ed.edge_kind, ed.span.start_byte, ed.span.end_byte)
+                if ekey in edge_by_key:
+                    prev_ed = edge_by_key[ekey]
+                    u_prov = tuple(sorted(set(prev_ed.provenance) | set(ed.provenance), key=lambda p: p.sort_key()))
+                    edge_by_key[ekey] = RelationEdge(
+                        source_id=eff_src_id,
+                        target_expr=prev_ed.target_expr,
+                        edge_kind=prev_ed.edge_kind,
+                        span=prev_ed.span.union(ed.span),
+                        resolution_status=prev_ed.resolution_status,
+                        resolved_target_ids=prev_ed.resolved_target_ids,
+                        provenance=u_prov,
+                    )
+                elif eff_src_id != ed.source_id:
+                    edge_by_key[ekey] = RelationEdge(
+                        source_id=eff_src_id,
+                        target_expr=ed.target_expr,
+                        edge_kind=ed.edge_kind,
+                        span=ed.span,
+                        resolution_status=ed.resolution_status,
+                        resolved_target_ids=ed.resolved_target_ids,
+                        provenance=ed.provenance,
+                    )
+                else:
+                    edge_by_key[ekey] = ed
+
+        merged_roots = tuple(
+            sorted(root_by_key.values(), key=lambda n: (n.span.start_byte, -n.span.end_byte, n.name))
+        )
+        merged_edges = tuple(
+            sorted(edge_by_key.values(), key=lambda e: (e.span.start_byte, e.edge_kind, e.target_expr))
+        )
+        return FileSymbolGraph(
+            file_path=norm_path,
+            content_hash=c_hash,
+            language=graphs[0].language,
+            root_nodes=merged_roots,
+            outgoing_edges=merged_edges,
+        )

@@ -38,6 +38,7 @@ _LAZY_EXPORTS: Mapping[str, Tuple[str, str]] = MappingProxyType({
     "TopologyLinker": (".linker", "TopologyLinker"),
     "expand_contract_symbol_ids": (".linker", "expand_contract_symbol_ids"),
     "BaseParser": (".parsers", "BaseParser"),
+    "SymbolProcessor": (".parsers", "SymbolProcessor"),
     "CssParser": (".parsers", "CssParser"),
     "HtmlParser": (".parsers", "HtmlParser"),
     "MarkdownParser": (".parsers", "MarkdownParser"),
@@ -57,18 +58,23 @@ _LAZY_EXPORTS: Mapping[str, Tuple[str, str]] = MappingProxyType({
     "query_callers": (".resolver", "query_callers"),
     "query_impact": (".resolver", "query_impact"),
     "ASTSnapshot": (".schema", "ASTSnapshot"),
+    "FileSymbolGraph": (".schema", "FileSymbolGraph"),
     "LanguageConfig": (".schema", "LanguageConfig"),
     "LanguageType": (".schema", "LanguageType"),
     "MemberInfo": (".schema", "MemberInfo"),
     "OutlineNode": (".schema", "OutlineNode"),
     "OutlineResult": (".schema", "OutlineResult"),
+    "ProvenanceStep": (".schema", "ProvenanceStep"),
+    "RelationEdge": (".schema", "RelationEdge"),
     "SemanticBundle": (".schema", "SemanticBundle"),
+    "Span": (".schema", "Span"),
     "SymbolCallSite": (".schema", "SymbolCallSite"),
     "SymbolKind": (".schema", "SymbolKind"),
+    "SymbolNode": (".schema", "SymbolNode"),
     "UnifiedSymbol": (".schema", "UnifiedSymbol"),
 })
 
-__all__ = [
+__all__ = (
     "ASTCorruptedError",
     "ASTEngine",
     "ASTError",
@@ -81,6 +87,7 @@ __all__ = [
     "CssParser",
     "DeterministicSymbolResolver",
     "DialectAdapter",
+    "FileSymbolGraph",
     "GrammarProvisioner",
     "HtmlParser",
     "InvalidConfigError",
@@ -92,14 +99,19 @@ __all__ = [
     "OutlineResult",
     "ParsedSelector",
     "ParserRegistry",
+    "ProvenanceStep",
     "PythonASTParser",
+    "RelationEdge",
     "SchemaValidationError",
     "SemanticBundle",
     "SemanticBundler",
     "SnippetExtractor",
+    "Span",
     "SpiceParser",
     "SymbolCallSite",
     "SymbolKind",
+    "SymbolNode",
+    "SymbolProcessor",
     "SymbolResolutionResult",
     "SymbolSelector",
     "TerminalStyler",
@@ -125,7 +137,7 @@ __all__ = [
     "reset_default_engine",
     "resolve_project_root",
     "restore_unaggregated_partial_symbol",
-]
+)
 
 
 def __getattr__(name: str) -> Any:

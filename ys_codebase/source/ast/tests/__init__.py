@@ -690,6 +690,96 @@ def _build_brace_language_matches(
     return matches
 
 
+def _project_matches_for_query_scm(
+    base_matches: List[Tuple[int, Dict[str, List[_FallbackNode]]]],
+    query_scm: str,
+    content_bytes: bytes,
+) -> List[Tuple[int, Dict[str, List[_FallbackNode]]]]:
+    """
+    Adapt base fallback matches when a custom `.scm` query uses official `tags.scm` captures
+    (`@definition.<kind>`, `@name`, `@doc`, `@reference.call`) or extended captures
+    (`@def.<kind>`, `@part.<slot>`, `@facet.<key>`, `@edge.<kind>`).
+    """
+    has_custom_def = bool(re.search(r"@def\.[A-Za-z0-9_]+", query_scm))
+    has_part_or_facet = bool(re.search(r"@(?:part|facet|edge)\.[A-Za-z0-9_]+", query_scm))
+    has_doc_capture = "@doc" in query_scm
+    has_ref_call = "@reference.call" in query_scm
+    if not (has_custom_def or has_part_or_facet or has_doc_capture or has_ref_call):
+        return base_matches
+
+    text = content_bytes.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    line_offsets = _line_byte_offsets(content_bytes)
+    all_comment_nodes: List[_FallbackNode] = []
+    if has_doc_capture:
+        for idx, line in enumerate(lines):
+            s = line.strip()
+            if s.startswith(("#", "//", "/*", "*", "*/")) and not s.startswith("#include"):
+                sb = line_offsets[idx]
+                eb = sb + len(line.encode("utf-8"))
+                all_comment_nodes.append(
+                    _FallbackNode(
+                        node_type="comment",
+                        text=line.encode("utf-8"),
+                        start_point=(idx, 0),
+                        end_point=(idx, len(line)),
+                        start_byte=sb,
+                        end_byte=eb,
+                    )
+                )
+
+    custom_func_kinds = [
+        m.group(1)
+        for m in re.finditer(r"function_definition\b[\s\S]*?@(def\.[A-Za-z0-9_]+|definition\.[A-Za-z0-9_]+)", query_scm)
+    ]
+    custom_class_kinds = [
+        m.group(1)
+        for m in re.finditer(r"class_definition\b[\s\S]*?@(def\.[A-Za-z0-9_]+|definition\.[A-Za-z0-9_]+)", query_scm)
+    ]
+    facet_keys = [m.group(1) for m in re.finditer(r"@facet\.([A-Za-z0-9_]+)", query_scm)]
+    part_slots = [m.group(1) for m in re.finditer(r"@part\.([A-Za-z0-9_]+)", query_scm)]
+
+    projected: List[Tuple[int, Dict[str, List[_FallbackNode]]]] = []
+    for pat_idx, cap in base_matches:
+        new_cap: Dict[str, List[_FallbackNode]] = dict(cap)
+        if "symbol.name" in cap and ("@name" in query_scm or "@part.name" in query_scm):
+            if "@name" in query_scm:
+                new_cap["name"] = cap["symbol.name"]
+            if "@part.name" in query_scm:
+                new_cap["part.name"] = cap["symbol.name"]
+
+        if "definition.function" in cap:
+            def_n = cap["definition.function"][0]
+            if custom_func_kinds:
+                new_cap.pop("definition.function", None)
+                for ck in custom_func_kinds:
+                    new_cap[ck] = [def_n]
+            if has_doc_capture and all_comment_nodes:
+                new_cap["doc"] = list(all_comment_nodes)
+            if "parameters" in part_slots and "symbol.signature" in cap:
+                new_cap["part.parameters"] = cap["symbol.signature"]
+            if "body" in part_slots:
+                new_cap["part.body"] = [def_n]
+            for fk in facet_keys:
+                val_b = f"{fk}_val".encode("utf-8")
+                new_cap[f"facet.{fk}"] = [
+                    _FallbackNode("string", val_b, def_n.start_point, def_n.start_point, def_n.start_byte, def_n.start_byte + len(val_b))
+                ]
+
+        if "definition.class" in cap and custom_class_kinds:
+            def_n = cap["definition.class"][0]
+            new_cap.pop("definition.class", None)
+            for ck in custom_class_kinds:
+                new_cap[ck] = [def_n]
+
+        if "call.name" in cap and has_ref_call:
+            new_cap["name"] = cap["call.name"]
+            new_cap["reference.call"] = cap.get("call.site") or cap["call.name"]
+
+        projected.append((pat_idx, new_cap))
+    return projected
+
+
 class _FallbackQueryCursor:
     def __init__(self, query: _FallbackQuery) -> None:
         self.query = query
@@ -697,8 +787,10 @@ class _FallbackQueryCursor:
     def matches(self, root_node: _FallbackNode) -> List[Tuple[int, Dict[str, List[_FallbackNode]]]]:
         lang_key = getattr(root_node, "_lang_key", None) or self.query.language.lang_key
         if lang_key == "python":
-            return _build_python_matches(root_node.text)
-        return _build_brace_language_matches(lang_key, root_node.text)
+            base = _build_python_matches(root_node.text)
+        else:
+            base = _build_brace_language_matches(lang_key, root_node.text)
+        return _project_matches_for_query_scm(base, self.query.query_scm, root_node.text)
 
 
 def _install_offline_treesitter_fallback_if_needed() -> None:
