@@ -24,7 +24,7 @@ from core.platform.venv import (
     restore_sys_path,
 )
 
-__all__ = [
+__all__ = (
     "daemon_probe",
     "can_spawn_background_daemon",
     "spawn_detached",
@@ -43,4 +43,4 @@ __all__ = [
     "init_subprocess_sys_path",
     "activate_test_module_source_path",
     "restore_sys_path",
-]
+)

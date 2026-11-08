@@ -84,7 +84,7 @@ from .providers import (
     get_registered_file_spaces_table,
 )
 
-__all__ = [
+__all__ = (
     "BinarySnapshotManager",
     "CompiledRuleSet",
     "CursorStore",
@@ -149,4 +149,4 @@ __all__ = [
     "subscribe",
     "unregister_space",
     "write_watcher_state",
-]
+)

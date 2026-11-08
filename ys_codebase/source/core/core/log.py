@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 import io
 import json
 import os
@@ -34,7 +35,7 @@ PathTarget = Union[str, Path]
 MAX_ERROR_HINT_CHUNKS: int = 16
 
 
-@dataclass
+@dataclass(frozen=True)
 class LogExecutionScope:
     """
     Execution scope bound via `ContextVar` to route `log*` calls across planes:
@@ -53,8 +54,14 @@ class LogExecutionScope:
 _ACTIVE_LOG_SCOPE: ContextVar[Optional[LogExecutionScope]] = ContextVar(
     "_ACTIVE_LOG_SCOPE", default=None
 )
-_GLOBAL_ERROR_LOCK = threading.RLock()
-_GLOBAL_ERROR_CHUNKS: List[str] = []
+
+
+def _get_fallback_log_state() -> Tuple[threading.RLock, List[str], threading.RLock]:
+    """Returns process-level fallback error hint buffer and file lock from `RuntimeContext`."""
+    from core.context import get_runtime_context
+
+    ctx = get_runtime_context()
+    return (ctx.log_error_lock, ctx.log_error_chunks, ctx.log_file_op_lock)
 
 
 def get_current_log_scope() -> Optional[LogExecutionScope]:
@@ -87,7 +94,9 @@ def bind_log_context(
     elif parent is not None:
         eff_debug = parent.debug_enabled
     else:
-        eff_debug = os.environ.get("YSCB_DEBUG", "").strip() == "1"
+        from core.context import get_env
+
+        eff_debug = get_env("YSCB_DEBUG", "").strip() == "1"
 
     if isolated_error_scope or parent is None:
         err_list: List[str] = []
@@ -137,9 +146,10 @@ def record_error_hint(text: str) -> None:
     if scope is not None:
         if len(scope.error_chunks) < MAX_ERROR_HINT_CHUNKS:
             scope.error_chunks.append(cleaned)
-    with _GLOBAL_ERROR_LOCK:
-        if len(_GLOBAL_ERROR_CHUNKS) < MAX_ERROR_HINT_CHUNKS:
-            _GLOBAL_ERROR_CHUNKS.append(cleaned)
+    err_lock, err_chunks, _ = _get_fallback_log_state()
+    with err_lock:
+        if len(err_chunks) < MAX_ERROR_HINT_CHUNKS:
+            err_chunks.append(cleaned)
 
 
 def get_last_error_hint(max_len: int = 200) -> str:
@@ -149,8 +159,9 @@ def get_last_error_hint(max_len: int = 200) -> str:
     if scope is not None and scope.error_chunks:
         chunks = list(scope.error_chunks)
     else:
-        with _GLOBAL_ERROR_LOCK:
-            chunks = list(_GLOBAL_ERROR_CHUNKS)
+        err_lock, err_chunks, _ = _get_fallback_log_state()
+        with err_lock:
+            chunks = list(err_chunks)
     if not chunks:
         return ""
     combined = "\n".join(chunks)
@@ -162,8 +173,9 @@ def clear_error_hint() -> None:
     scope = _ACTIVE_LOG_SCOPE.get()
     if scope is not None:
         scope.error_chunks.clear()
-    with _GLOBAL_ERROR_LOCK:
-        _GLOBAL_ERROR_CHUNKS.clear()
+    err_lock, err_chunks, _ = _get_fallback_log_state()
+    with err_lock:
+        err_chunks.clear()
 
 
 # ==============================================================================
@@ -319,10 +331,12 @@ def log_debug(
     Logs a diagnostic debug message line when `YSCB_DEBUG=1` or `scope.debug_enabled` is True,
     or when running inside a background `RollingFileLogger` scope.
     """
+    from core.context import get_env
+
     scope = _ACTIVE_LOG_SCOPE.get()
     is_debug = (
         (scope is not None and (scope.debug_enabled or scope.background_sink is not None))
-        or os.environ.get("YSCB_DEBUG", "").strip() == "1"
+        or get_env("YSCB_DEBUG", "").strip() == "1"
     )
     if not is_debug:
         return
@@ -611,7 +625,12 @@ class RollingFileLogger:
             log_dir: Optional custom log directory path. Defaults to yscb_root/.cache/server.
             echo_console: If True, echoes written log lines to the active stdout stream.
         """
-        self.yscb_root = os.path.abspath(yscb_root) if yscb_root else os.getcwd()
+        if yscb_root:
+            self.yscb_root = os.path.abspath(yscb_root)
+        else:
+            from core.context import get_virtual_cwd
+
+            self.yscb_root = os.path.abspath(get_virtual_cwd())
         if log_dir:
             resolved_dir = _resolve_log_target(log_dir) if "://" in str(log_dir) else Path(os.path.abspath(log_dir))
             self.log_dir = str(resolved_dir) if resolved_dir else os.path.abspath(log_dir)
@@ -846,8 +865,6 @@ class RollingFileLogger:
 # 5. Functional Rolling File & JSONL Ledger Helpers
 # ==============================================================================
 
-_FILE_OP_LOCK = threading.RLock()
-
 
 def _parse_jsonl_dict_line(line: str) -> Optional[Dict[str, Any]]:
     """Parses a single JSONL line; returns the dict if valid, else None."""
@@ -914,7 +931,8 @@ def log_file(
         path = _resolve_log_target(target)
         if path is None:
             return False
-        with _FILE_OP_LOCK:
+        _, _, file_op_lock = _get_fallback_log_state()
+        with file_op_lock:
             path.parent.mkdir(parents=True, exist_ok=True)
             out = line if line.endswith("\n") else f"{line}\n"
             with open(path, "a", encoding="utf-8") as f:
@@ -944,7 +962,8 @@ def log_file_jsonl(
         if path is None:
             return False
         line_str = json.dumps(record, ensure_ascii=False) + "\n"
-        with _FILE_OP_LOCK:
+        _, _, file_op_lock = _get_fallback_log_state()
+        with file_op_lock:
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "a", encoding="utf-8") as f:
                 f.write(line_str)
@@ -1037,7 +1056,7 @@ def read_log_file_tail(
         return "", last_offset, last_inode
 
 
-__all__ = [
+__all__ = (
     "PathTarget",
     "LogExecutionScope",
     "bind_log_context",
@@ -1061,4 +1080,4 @@ __all__ = [
     "log_file_jsonl",
     "read_log_file_jsonl",
     "read_log_file_tail",
-]
+)

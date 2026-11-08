@@ -10,14 +10,32 @@ import os
 import copy
 from typing import Any, Dict, List, Optional, Set, Tuple
 from core import uri, vfs
+from core.context import get_runtime_context
 from core.log import log_warn
 
 
-class ConfigManager:
+class _ConfigManagerMeta(type):
+    """Metaclass delegating class-level `_cache` and `_mtimes` attribute lookups to `RuntimeContext`."""
+
+    @property
+    def _cache(cls) -> Dict[Any, Dict[str, Any]]:
+        return get_runtime_context().config_cache
+
+    @property
+    def _mtimes(cls) -> Dict[Any, Tuple[float, float]]:
+        return get_runtime_context().config_mtimes
+
+
+class ConfigManager(metaclass=_ConfigManagerMeta):
     """微內核設定管理器：負責模組組態之雙層合併、自愈快取與原子讀寫。"""
 
-    _cache: Dict[Any, Dict[str, Any]] = {}
-    _mtimes: Dict[Any, Tuple[float, float]] = {}
+    @staticmethod
+    def _get_cache() -> Dict[Any, Dict[str, Any]]:
+        return get_runtime_context().config_cache
+
+    @staticmethod
+    def _get_mtimes() -> Dict[Any, Tuple[float, float]]:
+        return get_runtime_context().config_mtimes
 
     @staticmethod
     def _clone_if_container(val: Any) -> Any:
@@ -124,17 +142,19 @@ class ConfigManager:
         l_mtime = os.path.getmtime(local_path) if os.path.isfile(local_path) else 0.0
 
         cache_key = cls._get_cache_key(module)
-        cached_mtimes = cls._mtimes.get(cache_key)
-        if cache_key in cls._cache and cached_mtimes == (p_mtime, l_mtime):
-            return cls._cache[cache_key]
+        cache = cls._get_cache()
+        mtimes = cls._get_mtimes()
+        cached_mtimes = mtimes.get(cache_key)
+        if cache_key in cache and cached_mtimes == (p_mtime, l_mtime):
+            return cache[cache_key]
 
         # 重新載入並深層合併
         proj_data = cls._read_json_file(proj_path)
         local_data = cls._read_json_file(local_path)
         merged = cls._deep_merge(proj_data, local_data)
 
-        cls._cache[cache_key] = merged
-        cls._mtimes[cache_key] = (p_mtime, l_mtime)
+        cache[cache_key] = merged
+        mtimes[cache_key] = (p_mtime, l_mtime)
         return merged
 
     @classmethod
@@ -187,8 +207,10 @@ class ConfigManager:
     @classmethod
     def reload(cls, module: Optional[str] = None) -> None:
         """手動強制清空快取。"""
+        cache = cls._get_cache()
+        mtimes = cls._get_mtimes()
         if module:
-            for store in (cls._cache, cls._mtimes):
+            for store in (cache, mtimes):
                 keys_to_remove = [
                     k for k in list(store.keys())
                     if k == module or (isinstance(k, tuple) and len(k) == 2 and k[1] == module)
@@ -196,8 +218,8 @@ class ConfigManager:
                 for k in keys_to_remove:
                     store.pop(k, None)
         else:
-            cls._cache.clear()
-            cls._mtimes.clear()
+            cache.clear()
+            mtimes.clear()
 
     @classmethod
     def get_raw(

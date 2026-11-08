@@ -16,13 +16,13 @@ import hashlib
 import shutil
 import zipfile
 import urllib.request
-import importlib.util
 from contextlib import contextmanager
 from typing import Dict, Any, List, Optional, Tuple, Set, Generator, Sequence, Union
 
 from core import uri
 from core import vfs
 from core.context import ExecutionContext
+from core.loader import load_module_from_path
 from core import semver
 from core.contributes import ContributesAggregator
 from core import events
@@ -2330,21 +2330,17 @@ class AtomicEngine:
             mod_script_uri = f"module://{module_name}/{script_rel}"
             script_real = uri.resolve(mod_script_uri)
             safe_stem = fname[:-3].replace(".", "_")
-            mod_key = f"_yscb_migrate_{module_name}_{safe_stem}"
+            mod_key = f"_yscb_mod_migrate_{module_name.replace('-', '_')}_{safe_stem}"
             try:
-                spec = importlib.util.spec_from_file_location(mod_key, script_real)
-                if spec and spec.loader:
-                    migrate_mod = importlib.util.module_from_spec(spec)
-                    sys.modules[mod_key] = migrate_mod
-                    try:
-                        spec.loader.exec_module(migrate_mod)
-                    except Exception:
-                        sys.modules.pop(mod_key, None)
-                        raise
-                    if hasattr(migrate_mod, "migrate"):
-                        res = migrate_mod.migrate(context)
-                        if not res:
-                            raise RuntimeError(f"Migration script '{script_rel}' returned False.")
+                migrate_mod = load_module_from_path(
+                    mod_key,
+                    script_real,
+                    reload_if_changed=True,
+                )
+                if hasattr(migrate_mod, "migrate"):
+                    res = migrate_mod.migrate(context)
+                    if not res:
+                        raise RuntimeError(f"Migration script '{script_rel}' returned False.")
             except Exception as e:
                 raise RuntimeError(f"Migration step '{script_rel}' failed for module '{module_name}': {e}")
 

@@ -33,7 +33,7 @@ open_file = vfs.open
 assert_safe_path = vfs.assert_safe_path
 path = vfs.path
 
-__all__ = [
+__all__ = (
     "VFS",
     "VFSBackend",
     "OSBackend",
@@ -60,4 +60,4 @@ __all__ = [
     "path",
     "robust_rmtree",
     "robust_replace",
-]
+)

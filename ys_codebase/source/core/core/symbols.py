@@ -8,11 +8,12 @@ across installed Zip modules and source development workspaces.
 import os
 import sys
 import importlib
-import importlib.util
 from typing import Any, Callable, Optional, Tuple, Dict
 
 from core import uri
 from core import vfs
+from core.context import get_runtime_context
+from core.loader import load_module_from_path
 
 
 class SymbolError(Exception):
@@ -30,8 +31,8 @@ class SymbolNotFoundError(SymbolError):
     pass
 
 
-# Cache resolved modules to prevent redundant disk I/O and imports
-_RESOLVED_CALLABLE_CACHE: Dict[Any, Callable[..., Any]] = {}
+def _get_callable_cache() -> Dict[Any, Callable[..., Any]]:
+    return get_runtime_context().symbols_callable_cache
 
 
 def parse_code_func_uri(uri_str: str) -> Tuple[str, str, str]:
@@ -109,11 +110,12 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
     except Exception:
         yscb_root_key = ""
     cache_key = (yscb_root_key, uri_str)
+    callable_cache = _get_callable_cache()
     if use_cache:
-        if cache_key in _RESOLVED_CALLABLE_CACHE:
-            return _RESOLVED_CALLABLE_CACHE[cache_key]
-        if uri_str in _RESOLVED_CALLABLE_CACHE:
-            return _RESOLVED_CALLABLE_CACHE[uri_str]
+        if cache_key in callable_cache:
+            return callable_cache[cache_key]
+        if uri_str in callable_cache:
+            return callable_cache[uri_str]
 
     module_name, subpath, function_name = parse_code_func_uri(uri_str)
     mod_pkg = module_name.replace("-", "_")
@@ -175,26 +177,15 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
                             sub_stem = os.path.splitext(os.path.basename(real_file_path))[0]
                             pkg_mod_name = pkg_name if sub_stem == "__init__" else f"{pkg_name}.{sub_stem}"
                             loaded_mod = importlib.import_module(pkg_mod_name)
-                            sys.modules[mod_unique_key] = loaded_mod
                             break
 
-                        spec = importlib.util.spec_from_file_location(mod_unique_key, real_file_path)
-                        if spec and spec.loader:
-                            mod_obj = importlib.util.module_from_spec(spec)
-                            prev_full = sys.modules.get(full_mod_name)
-                            sys.modules[mod_unique_key] = mod_obj
-                            sys.modules[full_mod_name] = mod_obj
-                            try:
-                                spec.loader.exec_module(mod_obj)
-                            except Exception:
-                                sys.modules.pop(mod_unique_key, None)
-                                if prev_full is None:
-                                    sys.modules.pop(full_mod_name, None)
-                                else:
-                                    sys.modules[full_mod_name] = prev_full
-                                raise
-                            loaded_mod = mod_obj
-                            break
+                        loaded_mod = load_module_from_path(
+                            mod_unique_key,
+                            real_file_path,
+                            alias_keys=(full_mod_name,),
+                            reload_if_changed=True,
+                        )
+                        break
                     except Exception as e:
                         raise SymbolNotFoundError(
                             f"Failed to load module file '{real_file_path}' for symbol URI '{uri_str}': {e}"
@@ -218,11 +209,18 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
         )
 
     if use_cache:
-        _RESOLVED_CALLABLE_CACHE[cache_key] = target_fn
+        callable_cache[cache_key] = target_fn
 
     return target_fn
 
 
 def clear_callable_cache() -> None:
     """清理已載入的 Callable 快取。"""
-    _RESOLVED_CALLABLE_CACHE.clear()
+    _get_callable_cache().clear()
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 backward-compatible attribute delegation to active `RuntimeContext`."""
+    if name == "_RESOLVED_CALLABLE_CACHE":
+        return _get_callable_cache()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

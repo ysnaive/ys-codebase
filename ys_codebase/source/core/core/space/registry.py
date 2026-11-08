@@ -14,6 +14,7 @@ from pathlib import Path
 import threading
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
+from core.context import get_runtime_context, get_virtual_cwd
 from .exceptions import SpaceCycleError, SpaceError, SpaceNotFoundError
 from .schema import (
     HashPolicy,
@@ -309,7 +310,7 @@ class SpaceRegistry:
             if default_yscb is not None and default_yscb.name == "ys_codebase":
                 default_proj = default_yscb.parent
             else:
-                default_proj = Path(os.path.normpath(os.path.abspath(os.getcwd())))
+                default_proj = Path(os.path.normpath(os.path.abspath(get_virtual_cwd())))
 
         if default_yscb is None:
             cand = default_proj / "ys_codebase"
@@ -556,7 +557,7 @@ class SpaceRegistry:
                 if not self._lookup_spaces_non_throwing(target_ref):
                     if comp_ref not in unresolved_c:
                         unresolved_c.append(comp_ref)
-            space_cfg.unresolved_compose = tuple(unresolved_c)
+            object.__setattr__(space_cfg, "unresolved_compose", tuple(unresolved_c))
 
     def _discover_raw_definitions(
         self,
@@ -1841,10 +1842,6 @@ class SpaceRegistry:
         ]
 
 
-_DEFAULT_REGISTRIES_LOCK = threading.RLock()
-_DEFAULT_REGISTRIES: Dict[Tuple[str, str], SpaceRegistry] = {}
-
-
 def get_default_registry(
     project_root: Optional[Union[str, Path]] = None,
     yscb_dir: Optional[Union[str, Path]] = None,
@@ -1859,18 +1856,20 @@ def get_default_registry(
         os.path.normcase(str(eff_proj)),
         os.path.normcase(str(eff_yscb)),
     )
-    with _DEFAULT_REGISTRIES_LOCK:
-        reg = _DEFAULT_REGISTRIES.get(key)
+    ctx = get_runtime_context()
+    with ctx.space_registries_lock:
+        reg = ctx.space_default_registries.get(key)
         if reg is None:
             reg = SpaceRegistry(project_root=eff_proj, yscb_dir=eff_yscb)
-            _DEFAULT_REGISTRIES[key] = reg
+            ctx.space_default_registries[key] = reg
         return reg
 
 
 def reset_default_registry() -> None:
     """Clear all cached process-level default SpaceRegistry instances."""
-    with _DEFAULT_REGISTRIES_LOCK:
-        _DEFAULT_REGISTRIES.clear()
+    ctx = get_runtime_context()
+    with ctx.space_registries_lock:
+        ctx.space_default_registries.clear()
 
 
 def match_path(
@@ -1960,3 +1959,13 @@ def define_ephemeral_space(
         project_root=project_root,
         yscb_dir=yscb_dir,
     )
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 backward-compatible attribute delegation to active `RuntimeContext`."""
+    ctx = get_runtime_context()
+    if name == "_DEFAULT_REGISTRIES":
+        return ctx.space_default_registries
+    if name == "_DEFAULT_REGISTRIES_LOCK":
+        return ctx.space_registries_lock
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

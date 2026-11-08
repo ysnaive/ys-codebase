@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple, Union
 
 from core import vfs
+from core.context import get_runtime_context
 from core.platform.lock import InterProcessLock
 
 from .exceptions import SpaceError
@@ -59,7 +60,7 @@ def _sanitize_target_key(key: str) -> str:
     )
 
 
-@dataclass
+@dataclass(frozen=True)
 class FileFingerprint:
     """Persistent per-file fingerprint record with monotonic generation tracking."""
 
@@ -88,7 +89,7 @@ class FileFingerprint:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class ScanDiffDetail:
     """Categorized file relative paths produced by a scan or consumer diff."""
 
@@ -117,7 +118,7 @@ class ScanDiffDetail:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class ScanDiffResult:
     """Summary and detailed delta between two generations or a scan pass."""
 
@@ -177,7 +178,7 @@ class ScanDiffResult:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class SnapshotState:
     """Complete snapshot state for a target space query."""
 
@@ -650,13 +651,13 @@ class SpaceScanner:
                 sub_res = self._scan_single_query(s_cfg.qualified_name, force=force)
                 space_gens[s_cfg.qualified_name] = sub_res.to_generation
             unified_res = self._scan_single_query(None, force=force)
-            unified_res.space_generations = space_gens
+            object.__setattr__(unified_res, "space_generations", space_gens)
             if self.has_watcher_dirty_marker():
                 self.mark_watcher_dirty(False)
             return unified_res
 
         res = self._scan_single_query(space_query, force=force)
-        res.space_generations = {res.space_name or str(space_query): res.to_generation}
+        object.__setattr__(res, "space_generations", {res.space_name or str(space_query): res.to_generation})
         return res
 
     def refresh(
@@ -860,14 +861,14 @@ class SpaceScanner:
             if prev_state.head_generation == 0:
                 scan_res = self._scan_single_query(eff_query)
                 st = self._load_snapshot_state(space_key)
-                st.last_diff = scan_res
+                object.__setattr__(st, "last_diff", scan_res)
                 return st
 
             curr_cfg_hash = self._registry.compute_config_hash(eff_query)
             if prev_state.config_hash != curr_cfg_hash:
                 scan_res = self._scan_single_query(eff_query, force=True)
                 st = self._load_snapshot_state(space_key)
-                st.last_diff = scan_res
+                object.__setattr__(st, "last_diff", scan_res)
                 return st
 
             participating_spaces = self._registry._collect_participating_spaces(eff_query)
@@ -1003,17 +1004,21 @@ class SpaceScanner:
 
             if not any_mutated:
                 active_count = sum(1 for fp in prev_state.entries.values() if not fp.is_deleted)
-                prev_state.last_diff = ScanDiffResult(
-                    added_count=0,
-                    modified_count=0,
-                    deleted_count=0,
-                    unchanged_count=active_count,
-                    detail=detail,
-                    from_generation=prev_state.head_generation,
-                    to_generation=prev_state.head_generation,
-                    merkle_root=prev_state.merkle_root,
-                    space_name=space_key,
-                    space_generations={space_key: prev_state.head_generation},
+                object.__setattr__(
+                    prev_state,
+                    "last_diff",
+                    ScanDiffResult(
+                        added_count=0,
+                        modified_count=0,
+                        deleted_count=0,
+                        unchanged_count=active_count,
+                        detail=detail,
+                        from_generation=prev_state.head_generation,
+                        to_generation=prev_state.head_generation,
+                        merkle_root=prev_state.merkle_root,
+                        space_name=space_key,
+                        space_generations={space_key: prev_state.head_generation},
+                    ),
                 )
                 return prev_state
 
@@ -1570,9 +1575,6 @@ class SpaceScanner:
 # Module-level Convenience Facade Functions & Default Shared Instances
 # =========================================================================
 
-_DEFAULT_SCANNERS_LOCK = threading.RLock()
-_DEFAULT_SCANNERS: Dict[Tuple[str, str, str], SpaceScanner] = {}
-
 
 def get_default_scanner(
     registry: Optional[SpaceRegistry] = None,
@@ -1600,18 +1602,20 @@ def get_default_scanner(
         os.path.normcase(str(reg.yscb_dir)),
         storage_key,
     )
-    with _DEFAULT_SCANNERS_LOCK:
-        sc = _DEFAULT_SCANNERS.get(key)
+    ctx = get_runtime_context()
+    with ctx.space_scanners_lock:
+        sc = ctx.space_default_scanners.get(key)
         if sc is None:
             sc = SpaceScanner(registry=reg, storage_root=storage_root)
-            _DEFAULT_SCANNERS[key] = sc
+            ctx.space_default_scanners[key] = sc
         return sc
 
 
 def reset_default_instances() -> None:
     """Clear all cached process-level default SpaceScanner and SpaceRegistry instances."""
-    with _DEFAULT_SCANNERS_LOCK:
-        _DEFAULT_SCANNERS.clear()
+    ctx = get_runtime_context()
+    with ctx.space_scanners_lock:
+        ctx.space_default_scanners.clear()
     reset_default_registry()
 
 
@@ -1808,3 +1812,13 @@ def clean(
     """Convenience primitive to clean persisted snapshots and/or consumer cursors."""
     sc = _default_scanner(scanner, registry, project_root, yscb_dir, storage_root)
     return sc.clean(space_query=space_query, consumer_id=consumer_id)
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 backward-compatible attribute delegation to active `RuntimeContext`."""
+    ctx = get_runtime_context()
+    if name == "_DEFAULT_SCANNERS":
+        return ctx.space_default_scanners
+    if name == "_DEFAULT_SCANNERS_LOCK":
+        return ctx.space_scanners_lock
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

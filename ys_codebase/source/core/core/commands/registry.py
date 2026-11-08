@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 
-@dataclass
+@dataclass(frozen=True)
 class ArgSpec:
     """規格定義：參數規格 (指令位置參數或選項參數)。"""
     name: str
@@ -15,7 +15,7 @@ class ArgSpec:
     choice: Optional[List[str]] = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class OptionSpec:
     """規格定義：單一命令選項。"""
     canonical_name: str
@@ -29,7 +29,7 @@ class OptionSpec:
         return bool(self.args)
 
 
-@dataclass
+@dataclass(frozen=True)
 class CommandSpec:
     """規格定義：單一子命令。"""
     name: str
@@ -45,7 +45,7 @@ class CommandSpec:
     cmd: Dict[str, "CommandSpec"] = field(default_factory=dict)          # 遞迴同構子指令樹
 
 
-@dataclass
+@dataclass(frozen=True)
 class ModuleSpec:
     """規格定義：單一模組及其 CLI 指令清單。"""
     module_name: str
@@ -162,21 +162,24 @@ class CommandsRegistry:
         server_compatible = bool(raw_spec.get("server_compatible", False))
         cmd_args = self._parse_args_dict(raw_spec.get("args"))
 
+        usage_pros: List[str] = []
+        usage_cons: List[str] = []
+        usage_data = raw_spec.get("usage", {})
+        if isinstance(usage_data, dict):
+            pros = usage_data.get("pros", [])
+            cons = usage_data.get("cons", [])
+            usage_pros = [str(p) for p in pros] if isinstance(pros, list) else ([str(pros)] if pros else [])
+            usage_cons = [str(c) for c in cons] if isinstance(cons, list) else ([str(cons)] if cons else [])
+
         cmd_spec = CommandSpec(
             name=cmd_name,
             description=desc,
             tier=tier,
             server_compatible=server_compatible,
             args=cmd_args,
+            usage_pros=usage_pros,
+            usage_cons=usage_cons,
         )
-
-        # 解析 usage
-        usage_data = raw_spec.get("usage", {})
-        if isinstance(usage_data, dict):
-            pros = usage_data.get("pros", [])
-            cons = usage_data.get("cons", [])
-            cmd_spec.usage_pros = [str(p) for p in pros] if isinstance(pros, list) else ([str(pros)] if pros else [])
-            cmd_spec.usage_cons = [str(c) for c in cons] if isinstance(cons, list) else ([str(cons)] if cons else [])
 
         # 解析正交選項群組 options: { <group_name>: { <option_name>: { ... } } }
         raw_options = raw_spec.get("options", {})

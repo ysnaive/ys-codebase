@@ -6,10 +6,10 @@ Scans module://{mod}/scripts/hook.{emit_module}.py or specified search roots.
 from typing import List, Dict, Any, Optional
 import os
 import sys
-import importlib.util
 from core import uri
 from core import vfs
-from core.context import ExecutionContext
+from core.context import ExecutionContext, get_env
+from core.loader import load_module_from_path
 from core.log import log_error, log_info, log_stream, log_warn
 
 
@@ -53,8 +53,8 @@ def broadcast(
         verbose
         if verbose is not None
         else (
-            os.environ.get("YSCB_VERBOSE") == "1"
-            or os.environ.get("YSCB_DEBUG") == "1"
+            get_env("YSCB_VERBOSE") == "1"
+            or get_env("YSCB_DEBUG") == "1"
             or "--verbose" in sys.argv
             or "--debug" in sys.argv
         )
@@ -110,31 +110,27 @@ def broadcast(
                     priority_module=mod_name,
                     extra_paths=[hook_root] if os.path.isdir(hook_root) else None,
                 )
-                spec = importlib.util.spec_from_file_location(mod_key, hook_real_path)
-                if spec and spec.loader:
-                    hook_mod = importlib.util.module_from_spec(spec)
-                    sys.modules[mod_key] = hook_mod
-                    try:
-                        spec.loader.exec_module(hook_mod)
-                    except Exception:
-                        sys.modules.pop(mod_key, None)
-                        raise
+                hook_mod = load_module_from_path(
+                    mod_key,
+                    hook_real_path,
+                    reload_if_changed=True,
+                )
 
-                    hook_func = None
-                    for fname in candidate_funcs:
-                        fn = getattr(hook_mod, fname, None)
-                        if callable(fn):
-                            hook_func = fn
-                            break
+                hook_func = None
+                for fname in candidate_funcs:
+                    fn = getattr(hook_mod, fname, None)
+                    if callable(fn):
+                        hook_func = fn
+                        break
 
-                    if callable(hook_func):
-                        h_res = hook_func(ctx)
-                        results[mod_name] = h_res if h_res is not None else "success"
-                        if is_verbose:
-                            log_info(
-                                f"[{emit_module}:events] Hook '{mod_name}:hook.{emit_module}.py' executed '{event_name}' -> {results[mod_name]}",
-                                stream="stderr",
-                            )
+                if callable(hook_func):
+                    h_res = hook_func(ctx)
+                    results[mod_name] = h_res if h_res is not None else "success"
+                    if is_verbose:
+                        log_info(
+                            f"[{emit_module}:events] Hook '{mod_name}:hook.{emit_module}.py' executed '{event_name}' -> {results[mod_name]}",
+                            stream="stderr",
+                        )
             except Exception as e:
                 results[mod_name] = f"warning: {e}"
                 log_warn(

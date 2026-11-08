@@ -11,6 +11,7 @@ Security Boundary & Design Contract:
 
 import os
 import sys
+from core.context import get_env
 from core.log import log_error
 
 GUARD_ENV_TOKEN: str = "YSCB_HOST_DISPATCH_TOKEN"
@@ -25,12 +26,12 @@ def guard_dispatch(module_name: str) -> None:
     immediately with exit code 126.
     """
     # 1. Safe exemption for test execution
-    if os.environ.get(GUARD_ENV_TESTING) == "1":
+    if get_env(GUARD_ENV_TESTING) == "1":
         return
 
     # 2. Validate dispatch credentials
-    token = os.environ.get(GUARD_ENV_TOKEN)
-    host_dir = os.environ.get(GUARD_ENV_HOST)
+    token = get_env(GUARD_ENV_TOKEN)
+    host_dir = get_env(GUARD_ENV_HOST)
 
     if not token or not host_dir:
         invoked_cmd = " ".join(sys.argv)
@@ -43,4 +44,4 @@ def guard_dispatch(module_name: str) -> None:
         log_error("--> 請一律透過專案唯一宿主入口調用：", stream="stderr")
         log_error(f"   {guide_cmd}", stream="stderr")
         log_error("=" * 66 + "\n", stream="stderr")
-        sys.exit(126)
+        raise SystemExit(126)

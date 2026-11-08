@@ -10,6 +10,7 @@ import copy
 import time
 from core import uri
 from core import vfs
+from core.context import get_runtime_context
 from core.log import log_warn
 
 
@@ -228,15 +229,21 @@ def _get_contributes_meta_uri() -> str:
     return "cache://core/contributes.meta.json"
 
 
-# In-memory cache: (yscb_root, target_module) -> (meta_mtime, merged_mtime, merged_dict)
-_MERGED_MEMORY_CACHE: Dict[Tuple[str, str], Tuple[float, float, Dict[str, Any]]] = {}
-# In-memory per-file JSON cache: norm_path -> (mtime_ns, size, parsed_data)
-_JSON_FILE_CACHE: Dict[str, Tuple[int, int, Any]] = {}
-# Monotonic timestamp of last verified clean input scan per yscb_root
-_LAST_CLEAN_SCAN_TS: Dict[str, Tuple[float, float]] = {}
 # Short window (seconds) within which consecutive get() calls skip full directory walk
 # provided contributes.meta.json and contributes.merged.json mtimes have not changed.
 _CLEAN_SCAN_WINDOW_SEC: float = 0.25
+
+
+def _get_merged_memory_cache() -> Dict[Tuple[str, str], Tuple[float, float, Dict[str, Any]]]:
+    return get_runtime_context().contributes_merged_cache
+
+
+def _get_json_file_cache() -> Dict[str, Tuple[int, int, Any]]:
+    return get_runtime_context().contributes_json_file_cache
+
+
+def _get_last_clean_scan_ts() -> Dict[str, Tuple[float, float]]:
+    return get_runtime_context().contributes_last_clean_scan_ts
 
 
 def _read_json_cached(path_or_uri: str) -> Any:
@@ -246,20 +253,21 @@ def _read_json_cached(path_or_uri: str) -> Any:
     """
     resolved = uri.resolve(path_or_uri, interactive=False) if "://" in str(path_or_uri) else str(path_or_uri)
     norm_path = os.path.normpath(os.path.abspath(resolved))
+    json_cache = _get_json_file_cache()
     try:
         st = os.stat(norm_path)
         mtime_ns = getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))
         size = st.st_size
     except OSError:
-        _JSON_FILE_CACHE.pop(norm_path, None)
+        json_cache.pop(norm_path, None)
         return vfs.read_json(path_or_uri)
 
-    cached = _JSON_FILE_CACHE.get(norm_path)
+    cached = json_cache.get(norm_path)
     if cached is not None and cached[0] == mtime_ns and cached[1] == size:
         return copy.deepcopy(cached[2])
 
     data = vfs.read_json(path_or_uri)
-    _JSON_FILE_CACHE[norm_path] = (mtime_ns, size, copy.deepcopy(data))
+    json_cache[norm_path] = (mtime_ns, size, copy.deepcopy(data))
     return data
 
 
@@ -268,18 +276,20 @@ def invalidate_cache(target_module: Optional[str] = None) -> None:
     手動清空 contributes 程序內記憶體快取與免掃時窗標記。
     若指定 target_module 則僅清除該目標模組之已合併字典快取，並重置免掃時窗。
     """
-    _LAST_CLEAN_SCAN_TS.clear()
-    _JSON_FILE_CACHE.clear()
-    uri._TOKEN_MAP_CACHE.clear()
+    _get_last_clean_scan_ts().clear()
+    _get_json_file_cache().clear()
+    merged_cache = _get_merged_memory_cache()
+    ctx = get_runtime_context()
+    ctx.uri_token_map_cache.clear()
     if target_module:
-        stale_keys = [k for k in _MERGED_MEMORY_CACHE if k[1] == target_module]
+        stale_keys = [k for k in merged_cache if k[1] == target_module]
         for k in stale_keys:
-            _MERGED_MEMORY_CACHE.pop(k, None)
+            merged_cache.pop(k, None)
         if target_module == "core":
-            uri._SCHEMES_CACHE.clear()
+            ctx.uri_schemes_cache.clear()
     else:
-        _MERGED_MEMORY_CACHE.clear()
-        uri._SCHEMES_CACHE.clear()
+        merged_cache.clear()
+        ctx.uri_schemes_cache.clear()
 
 
 def _safe_file_mtime(file_path: str) -> float:
@@ -452,8 +462,10 @@ def get(target_module: str, key: Optional[str] = None, default: Any = None) -> A
     merged_mtime = _safe_file_mtime(merged_abs) if merged_abs else 0.0
 
     now_mono = time.monotonic()
-    cached_entry = _MERGED_MEMORY_CACHE.get(cache_key)
-    last_clean = _LAST_CLEAN_SCAN_TS.get(yscb_root)
+    merged_cache = _get_merged_memory_cache()
+    last_clean_map = _get_last_clean_scan_ts()
+    cached_entry = merged_cache.get(cache_key)
+    last_clean = last_clean_map.get(yscb_root)
 
     if (
         cached_entry is not None
@@ -475,7 +487,7 @@ def get(target_module: str, key: Optional[str] = None, default: Any = None) -> A
         meta_mtime = _safe_file_mtime(meta_abs) if meta_abs else 0.0
         merged_mtime = _safe_file_mtime(merged_abs) if merged_abs else 0.0
         if meta_mtime > 0.0:
-            _LAST_CLEAN_SCAN_TS[yscb_root] = (meta_mtime, time.monotonic())
+            last_clean_map[yscb_root] = (meta_mtime, time.monotonic())
         if (
             cached_entry is not None
             and meta_mtime > 0.0
@@ -493,7 +505,7 @@ def get(target_module: str, key: Optional[str] = None, default: Any = None) -> A
                     if isinstance(loaded, dict):
                         data = loaded
                         if meta_mtime > 0.0 and merged_mtime > 0.0:
-                            _MERGED_MEMORY_CACHE[cache_key] = (meta_mtime, merged_mtime, data)
+                            merged_cache[cache_key] = (meta_mtime, merged_mtime, data)
             except Exception:
                 data = None
             finally:
@@ -506,9 +518,9 @@ def get(target_module: str, key: Optional[str] = None, default: Any = None) -> A
         meta_mtime = _safe_file_mtime(meta_abs) if meta_abs else 0.0
         merged_mtime = _safe_file_mtime(merged_abs) if merged_abs else 0.0
         if meta_mtime > 0.0:
-            _LAST_CLEAN_SCAN_TS[yscb_root] = (meta_mtime, time.monotonic())
+            last_clean_map[yscb_root] = (meta_mtime, time.monotonic())
             if merged_mtime > 0.0 and isinstance(data, dict):
-                _MERGED_MEMORY_CACHE[cache_key] = (meta_mtime, merged_mtime, data)
+                merged_cache[cache_key] = (meta_mtime, merged_mtime, data)
 
     res = data.get(key, default) if key is not None else (data if data else default)
     return copy.deepcopy(res) if isinstance(res, (dict, list)) else res
@@ -769,3 +781,15 @@ class ContributesAggregator:
         self._apply_project_overrides_and_persist(aggregated, core_modules_locales)
         invalidate_cache()
         return aggregated
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 backward-compatible attribute delegation to active `RuntimeContext`."""
+    ctx = get_runtime_context()
+    if name == "_MERGED_MEMORY_CACHE":
+        return ctx.contributes_merged_cache
+    if name == "_JSON_FILE_CACHE":
+        return ctx.contributes_json_file_cache
+    if name == "_LAST_CLEAN_SCAN_TS":
+        return ctx.contributes_last_clean_scan_ts
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

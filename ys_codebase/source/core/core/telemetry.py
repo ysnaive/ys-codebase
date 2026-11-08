@@ -26,7 +26,9 @@ KEEP_TELEMETRY_LINES: int = 1500
 def _safe_getcwd() -> str:
     """安全取得當前工作目錄，若目錄已被刪除則回傳空字串。"""
     try:
-        return os.getcwd()
+        from core.context import get_virtual_cwd
+
+        return get_virtual_cwd()
     except OSError:
         return ""
 

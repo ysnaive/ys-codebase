@@ -8,68 +8,59 @@ and provides JIT prompt & auto-reconciliation for !undefined configurations.
 import os
 import sys
 import time
+import types
 import threading
 from contextlib import contextmanager
-from typing import Optional, List, Dict, Any, Tuple, Generator, Set
+from typing import Optional, List, Dict, Any, Tuple, Generator, Set, Mapping
 
-# Import ExecutionContext from SSOT context.py
-from core.context import ExecutionContext
+# Import ExecutionContext & RuntimeContext from SSOT context.py
+from core.context import (
+    ExecutionContext,
+    get_current_scope,
+    get_env,
+    get_runtime_context,
+    _ThreadLocalSet,
+)
 
 CONFIG_FILENAME = "yscb.config.json"
 
 
-class _ThreadLocalSet:
-    """Thread-local set proxy for URI reconciliation reentrancy tracking."""
-
-    def __init__(self, tls: threading.local, attr: str) -> None:
-        self._tls = tls
-        self._attr = attr
-
-    def _get_set(self) -> Set[str]:
-        s = getattr(self._tls, self._attr, None)
-        if s is None:
-            s = set()
-            setattr(self._tls, self._attr, s)
-        return s
-
-    def add(self, item: str) -> None:
-        self._get_set().add(item)
-
-    def discard(self, item: str) -> None:
-        self._get_set().discard(item)
-
-    def clear(self) -> None:
-        self._get_set().clear()
-
-    def __contains__(self, item: object) -> bool:
-        return item in self._get_set()
-
-    def __iter__(self):
-        return iter(self._get_set())
-
-    def __len__(self) -> int:
-        return len(self._get_set())
+def _get_uri_tls() -> threading.local:
+    return get_runtime_context().uri_tls
 
 
-_URI_TLS = threading.local()
-_reconciling_tokens: _ThreadLocalSet = _ThreadLocalSet(_URI_TLS, "reconciling_tokens")
+def _get_reconciling_tokens() -> _ThreadLocalSet:
+    return get_runtime_context().uri_reconciling_tokens
+
+
+def _get_token_map_cache() -> Dict[str, Tuple[float, Dict[str, Dict[str, Any]]]]:
+    return get_runtime_context().uri_token_map_cache
+
+
+def _get_schemes_cache() -> Dict[str, Tuple[float, float, List[Dict[str, Any]]]]:
+    return get_runtime_context().uri_schemes_cache
+
+
+def _get_uri_reentrancy() -> threading.local:
+    return get_runtime_context().uri_reentrancy
+
 
 # Bootstrap fallback schemes (Option B: Canonical Rooted Schemes)
-_BOOTSTRAP_FALLBACK_SCHEMES: List[Dict[str, Any]] = [
-    {"token": "yscb.host", "type": "const", "value": "{yscb_host}"},
-    {"token": "module.mirror", "type": "const", "value": "yscb://.mirror/"},
-    {"token": "snapshot", "type": "const", "value": "yscb://.snapshots/"},
-    {"token": "module", "type": "const", "value": "yscb://.modules/"},
-    {"token": "config", "type": "const", "value": "yscb://config/"},
-    {"token": "config.local", "type": "const", "value": "yscb://.config.local/"},
-    {"token": "cache", "type": "const", "value": "yscb://.cache/"},
-    {"token": "storage", "type": "const", "value": "yscb://storage/"},
-    {"token": "storage.local", "type": "const", "value": "yscb://.storage.local/"},
-    {"token": "module.source", "type": "const", "value": "yscb://source/"},
-    {"token": "module.build", "type": "const", "value": "yscb://.build/"},
-    {"token": "module.release", "type": "const", "value": "yscb://release/"},
-    {"token": "yscb.venv", "type": "const", "value": "yscb://.venv/"},
-]
+_BOOTSTRAP_FALLBACK_SCHEMES: Tuple[Mapping[str, Any], ...] = (
+    types.MappingProxyType({"token": "yscb.host", "type": "const", "value": "{yscb_host}"}),
+    types.MappingProxyType({"token": "module.mirror", "type": "const", "value": "yscb://.mirror/"}),
+    types.MappingProxyType({"token": "snapshot", "type": "const", "value": "yscb://.snapshots/"}),
+    types.MappingProxyType({"token": "module", "type": "const", "value": "yscb://.modules/"}),
+    types.MappingProxyType({"token": "config", "type": "const", "value": "yscb://config/"}),
+    types.MappingProxyType({"token": "config.local", "type": "const", "value": "yscb://.config.local/"}),
+    types.MappingProxyType({"token": "cache", "type": "const", "value": "yscb://.cache/"}),
+    types.MappingProxyType({"token": "storage", "type": "const", "value": "yscb://storage/"}),
+    types.MappingProxyType({"token": "storage.local", "type": "const", "value": "yscb://.storage.local/"}),
+    types.MappingProxyType({"token": "module.source", "type": "const", "value": "yscb://source/"}),
+    types.MappingProxyType({"token": "module.build", "type": "const", "value": "yscb://.build/"}),
+    types.MappingProxyType({"token": "module.release", "type": "const", "value": "yscb://release/"}),
+    types.MappingProxyType({"token": "yscb.venv", "type": "const", "value": "yscb://.venv/"}),
+)
 
 
 class UndefinedModuleContextError(ValueError):
@@ -129,11 +120,17 @@ class CyclicURIDependencyError(ValueError):
 
 
 def set_module_context(module_name: Optional[str]) -> None:
-    _URI_TLS.active_module_context = module_name
+    _get_uri_tls().active_module_context = module_name
 
 
 def get_module_context() -> Optional[str]:
-    return getattr(_URI_TLS, "active_module_context", None)
+    tls_mod = getattr(_get_uri_tls(), "active_module_context", None)
+    if tls_mod:
+        return tls_mod
+    scope = get_current_scope()
+    if scope is not None and scope.active_module:
+        return scope.active_module
+    return None
 
 
 @contextmanager
@@ -142,25 +139,29 @@ def module_scope(module_name: Optional[str]) -> Generator[None, None, None]:
     模組上下文安全作用域 (Context Manager)：
     退出區塊時以 finally 100% 保證還原舊執行緒本地 active_module_context，防止測試與 Hook 污染。
     """
-    old = get_module_context()
+    tls = _get_uri_tls()
+    old = getattr(tls, "active_module_context", None)
     set_module_context(module_name)
     try:
         yield
     finally:
-        set_module_context(old)
+        tls.active_module_context = old
 
 
 def set_host_dir(host_dir: Optional[str]) -> None:
     """Explicitly inject host directory."""
-    _URI_TLS.active_host_dir = os.path.normpath(os.path.abspath(host_dir)) if host_dir else None
+    _get_uri_tls().active_host_dir = os.path.normpath(os.path.abspath(host_dir)) if host_dir else None
 
 
 def get_host_dir() -> Optional[str]:
-    """Get active host directory from thread-local memory context or YSCB_HOST_DIR environment variable."""
-    active_host = getattr(_URI_TLS, "active_host_dir", None)
+    """Get active host directory from thread-local memory context, RuntimeScope, or YSCB_HOST_DIR environment variable."""
+    active_host = getattr(_get_uri_tls(), "active_host_dir", None)
     if active_host:
         return active_host
-    env_dir = os.environ.get("YSCB_HOST_DIR")
+    scope = get_current_scope()
+    if scope is not None and scope.active_host_dir:
+        return scope.active_host_dir
+    env_dir = get_env("YSCB_HOST_DIR")
     if env_dir and os.path.isdir(env_dir):
         return os.path.normpath(os.path.abspath(env_dir))
     return None
@@ -172,8 +173,9 @@ def host_scope(host_dir: Optional[str], yscb_dir: Optional[str] = None) -> Gener
     宿主目錄安全作用域 (Context Manager)：
     退出區塊時以 finally 100% 保證還原舊執行緒本地 active_host_dir（與可選之 active_yscb_dir）。
     """
-    old_host = getattr(_URI_TLS, "active_host_dir", None)
-    old_yscb = getattr(_URI_TLS, "active_yscb_dir", None)
+    tls = _get_uri_tls()
+    old_host = getattr(tls, "active_host_dir", None)
+    old_yscb = getattr(tls, "active_yscb_dir", None)
     set_host_dir(host_dir)
     if yscb_dir is not None:
         if host_dir and not os.path.isabs(yscb_dir):
@@ -183,22 +185,25 @@ def host_scope(host_dir: Optional[str], yscb_dir: Optional[str] = None) -> Gener
     try:
         yield
     finally:
-        _URI_TLS.active_host_dir = old_host
+        tls.active_host_dir = old_host
         if yscb_dir is not None:
-            _URI_TLS.active_yscb_dir = old_yscb
+            tls.active_yscb_dir = old_yscb
 
 
 def set_yscb_root(yscb_dir: Optional[str]) -> None:
     """Explicitly inject YSCB toolchain root directory."""
-    _URI_TLS.active_yscb_dir = os.path.normpath(os.path.abspath(yscb_dir)) if yscb_dir else None
+    _get_uri_tls().active_yscb_dir = os.path.normpath(os.path.abspath(yscb_dir)) if yscb_dir else None
 
 
 def get_yscb_root() -> Optional[str]:
-    """Get active YSCB toolchain root directory from thread-local memory context or YSCB_ROOT_DIR environment variable."""
-    active_yscb = getattr(_URI_TLS, "active_yscb_dir", None)
+    """Get active YSCB toolchain root directory from thread-local memory context, RuntimeScope, or YSCB_ROOT_DIR environment variable."""
+    active_yscb = getattr(_get_uri_tls(), "active_yscb_dir", None)
     if active_yscb:
         return active_yscb
-    env_dir = os.environ.get("YSCB_ROOT_DIR")
+    scope = get_current_scope()
+    if scope is not None and scope.active_yscb_dir:
+        return scope.active_yscb_dir
+    env_dir = get_env("YSCB_ROOT_DIR")
     if env_dir and os.path.isdir(env_dir):
         return os.path.normpath(os.path.abspath(env_dir))
     return None
@@ -210,12 +215,13 @@ def yscb_scope(yscb_dir: Optional[str]) -> Generator[None, None, None]:
     工具庫核心目錄安全作用域 (Context Manager)：
     退出區塊時以 finally 100% 保證還原舊執行緒本地 active_yscb_dir。
     """
-    old = getattr(_URI_TLS, "active_yscb_dir", None)
+    tls = _get_uri_tls()
+    old = getattr(tls, "active_yscb_dir", None)
     set_yscb_root(yscb_dir)
     try:
         yield
     finally:
-        _URI_TLS.active_yscb_dir = old
+        tls.active_yscb_dir = old
 
 
 def resolve_yscb_root() -> str:
@@ -280,29 +286,16 @@ def _get_project_dir(host_dir: str, yscb_dir: str) -> Optional[str]:
     return None
 
 
-_TOKEN_MAP_CACHE: Dict[str, Tuple[float, Dict[str, Dict[str, Any]]]] = {}
 _TOKEN_MAP_TTL_SEC: float = 0.1
-
-
-class _SchemesCacheDict(dict):
-    def clear(self) -> None:
-        super().clear()
-        _TOKEN_MAP_CACHE.clear()
-
-
-_SCHEMES_CACHE: Dict[str, Tuple[float, float, List[Dict[str, Any]]]] = _SchemesCacheDict()
-_URI_REENTRANCY = threading.local()
 
 
 def invalidate_uri_cache() -> None:
     """Clears in-memory URI schemes, token map, and contributes scan/merged caches."""
-    _SCHEMES_CACHE.clear()
-    _TOKEN_MAP_CACHE.clear()
+    _get_schemes_cache().clear()
+    _get_token_map_cache().clear()
     try:
         from . import contributes
-        contributes._LAST_CLEAN_SCAN_TS.clear()
-        contributes._JSON_FILE_CACHE.clear()
-        contributes._MERGED_MEMORY_CACHE.clear()
+        contributes.invalidate_cache()
     except Exception:
         pass
 
@@ -312,7 +305,8 @@ def _get_merged_uri_schemes(yscb_dir: str) -> List[Dict[str, Any]]:
     Reads contributed URI schemes from merged cache with in-memory (merged_mtime, cfg_mtime, data) cache
     and thread-local reentrancy-guarded JIT dirty check.
     """
-    if getattr(_URI_REENTRANCY, "active", False):
+    reentrancy = _get_uri_reentrancy()
+    if getattr(reentrancy, "active", False):
         return [dict(s) for s in _BOOTSTRAP_FALLBACK_SCHEMES]
 
     merged_cfg = os.path.join(yscb_dir, ".cache", "core", "contributes.merged.json")
@@ -320,11 +314,12 @@ def _get_merged_uri_schemes(yscb_dir: str) -> List[Dict[str, Any]]:
     merged_mtime = os.path.getmtime(merged_cfg) if os.path.isfile(merged_cfg) else -1.0
     cfg_mtime = os.path.getmtime(cfg_core_contrib) if os.path.isfile(cfg_core_contrib) else -1.0
 
-    cached = _SCHEMES_CACHE.get(yscb_dir)
+    schemes_cache = _get_schemes_cache()
+    cached = schemes_cache.get(yscb_dir)
     if cached and cached[0] == merged_mtime and cached[1] == cfg_mtime and merged_mtime > 0:
         return cached[2]
 
-    _URI_REENTRANCY.active = True
+    reentrancy.active = True
     try:
         try:
             from . import contributes
@@ -342,22 +337,23 @@ def _get_merged_uri_schemes(yscb_dir: str) -> List[Dict[str, Any]]:
                 data = vfs.read_json(merged_cfg)
                 schemes = data.get("uri_schemes", [])
                 if isinstance(schemes, list) and len(schemes) > 0:
-                    _SCHEMES_CACHE[yscb_dir] = (merged_mtime, cfg_mtime, schemes)
+                    schemes_cache[yscb_dir] = (merged_mtime, cfg_mtime, schemes)
                     return schemes
         except Exception:
             pass
     finally:
-        _URI_REENTRANCY.active = False
+        reentrancy.active = False
 
     return [dict(s) for s in _BOOTSTRAP_FALLBACK_SCHEMES]
 
 
 def _build_scheme_token_map(yscb_dir: str) -> Dict[str, Dict[str, Any]]:
     """Builds combined URI scheme lookup dictionary from merged cache and fallback schemes."""
-    is_reentrant = getattr(_URI_REENTRANCY, "active", False)
+    is_reentrant = getattr(_get_uri_reentrancy(), "active", False)
+    token_map_cache = _get_token_map_cache()
     if not is_reentrant:
         now_mono = time.monotonic()
-        cached_entry = _TOKEN_MAP_CACHE.get(yscb_dir)
+        cached_entry = token_map_cache.get(yscb_dir)
         if cached_entry is not None and (now_mono - cached_entry[0]) < _TOKEN_MAP_TTL_SEC:
             return {k: dict(v) for k, v in cached_entry[1].items()}
 
@@ -368,7 +364,7 @@ def _build_scheme_token_map(yscb_dir: str) -> Dict[str, Dict[str, Any]]:
             token_map[fb["token"]] = dict(fb)
 
     if not is_reentrant:
-        _TOKEN_MAP_CACHE[yscb_dir] = (time.monotonic(), {k: dict(v) for k, v in token_map.items()})
+        token_map_cache[yscb_dir] = (time.monotonic(), {k: dict(v) for k, v in token_map.items()})
     return token_map
 
 
@@ -480,59 +476,17 @@ def reconcile_undefined_uri(
     interactive: bool = True
 ) -> str:
     """
-    執行 !undefined 協議之 JIT 終端互動、輸入解析、寫回設定檔與熱重載。
+    處理 !undefined 協議：
+    檢查循環依賴後，統一拋出結構化 UndefinedURIError（附帶單行 CLI Quick Fix 指令提示），
+    杜絕阻塞式 stdin 互動與非啟動器 sys.exit。
     """
-    from core.log import log, log_error
-    global _reconciling_tokens
-    if scheme_token in _reconciling_tokens:
+    reconciling = _get_reconciling_tokens()
+    if scheme_token in reconciling:
         raise CyclicURIDependencyError(f"Cyclic or self-referencing URI dependency detected for '{scheme_token}://'")
 
     provider_name = provider or "core"
     binding_key = config_binding or ("project_root" if scheme_token == "project" else "unknown")
-    desc = description or ("指向專案最頂層根目錄" if scheme_token == "project" else "")
-
-    is_test_env = os.environ.get("YSCB_TEST_SANDBOX") == "1"
-    is_tty = hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
-    if is_test_env or not interactive or not is_tty:
-        raise UndefinedURIError(scheme=scheme_token, provider=provider_name, binding=binding_key)
-
-    yscb_dir = resolve_yscb_root()
-
-    while True:
-        _print_reconcile_prompt(provider_name, scheme_token, desc, binding_key)
-        try:
-            ans = input("請輸入 [-y <path> / -n / --help]: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            log(f"\n[{provider_name}] 操作已取消。")
-            sys.exit(1)
-
-        if ans == "-n":
-            log(f"[{provider_name}] 協議 '{scheme_token}://' 未配置，已由使用者終止運行。")
-            sys.exit(1)
-        elif ans == "--help":
-            _print_schemes_summary_table()
-            continue
-        elif ans.startswith("-y "):
-            input_val = ans[3:].strip()
-            if not input_val:
-                log_error("錯誤: 請在 -y 後指定路徑 (例如: -y ./plans 或 -y project://plans)")
-                continue
-
-            _reconciling_tokens.add(scheme_token)
-            try:
-                if "://" in input_val:
-                    resolved_target = resolve(input_val, interactive=True)
-                elif os.path.isabs(input_val) or (len(input_val) > 1 and input_val[1] == ":"):
-                    resolved_target = os.path.normpath(input_val)
-                else:
-                    resolved_target = os.path.normpath(os.path.join(yscb_dir, input_val))
-            finally:
-                _reconciling_tokens.discard(scheme_token)
-
-            _persist_reconciled_uri_config(yscb_dir, provider_name, binding_key, input_val, resolved_target)
-            return resolved_target
-        else:
-            log_error("無效的輸入選項，請輸入 -y <path>、-n 或 --help。")
+    raise UndefinedURIError(scheme=scheme_token, provider=provider_name, binding=binding_key)
 
 
 def _expand_module_placeholder_in_rel(rel: str, active_mod: Optional[str], raw_uri: str) -> str:
@@ -773,3 +727,19 @@ def to_uri(abs_path: str, current_module: Optional[str] = None) -> str:
             return prefix + sub
 
     return norm
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 backward-compatible attribute delegation to active `RuntimeContext`."""
+    ctx = get_runtime_context()
+    if name == "_URI_TLS":
+        return ctx.uri_tls
+    if name == "_reconciling_tokens":
+        return ctx.uri_reconciling_tokens
+    if name == "_TOKEN_MAP_CACHE":
+        return ctx.uri_token_map_cache
+    if name == "_SCHEMES_CACHE":
+        return ctx.uri_schemes_cache
+    if name == "_URI_REENTRANCY":
+        return ctx.uri_reentrancy
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

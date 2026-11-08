@@ -11,12 +11,23 @@ import signal
 import subprocess
 import sys
 import time
-from typing import Dict, List, Optional
-
-_CAN_SPAWN_DAEMON_CACHE: Optional[bool] = None
+from typing import Any, Dict, List, Optional
+from core.context import get_runtime_context
 
 
 _TRUTHY_ENV_VALUES = ("1", "true", "True")
+
+
+def _get_can_spawn_cache() -> Optional[bool]:
+    if "_CAN_SPAWN_DAEMON_CACHE" in globals():
+        return globals()["_CAN_SPAWN_DAEMON_CACHE"]
+    return get_runtime_context().process_can_spawn_daemon_cache
+
+
+def _set_can_spawn_cache(val: Optional[bool]) -> None:
+    if "_CAN_SPAWN_DAEMON_CACHE" in globals():
+        globals()["_CAN_SPAWN_DAEMON_CACHE"] = val
+    get_runtime_context().process_can_spawn_daemon_cache = val
 
 
 def can_spawn_background_daemon(force_reprobe: bool = False, yscb_root: Optional[str] = None) -> bool:
@@ -38,7 +49,6 @@ def can_spawn_background_daemon(force_reprobe: bool = False, yscb_root: Optional
     Returns:
         bool: True if background daemon spawning is supported, False otherwise.
     """
-    global _CAN_SPAWN_DAEMON_CACHE
     if os.environ.get("YSCB_FORCE_DAEMON") in _TRUTHY_ENV_VALUES:
         return True
 
@@ -52,8 +62,9 @@ def can_spawn_background_daemon(force_reprobe: bool = False, yscb_root: Optional
         # Daemon liveness (daemon.json / daemon.lock) is probed lazily inside, only when needed
         return not daemon_probe.is_reaping_env(yscb_root)
 
-    if _CAN_SPAWN_DAEMON_CACHE is not None and not force_reprobe:
-        return _CAN_SPAWN_DAEMON_CACHE
+    cached = _get_can_spawn_cache()
+    if cached is not None and not force_reprobe:
+        return cached
 
     try:
         import ctypes
@@ -66,7 +77,7 @@ def can_spawn_background_daemon(force_reprobe: bool = False, yscb_root: Optional
         in_job = wintypes.BOOL(0)
         res = k32.IsProcessInJob(k32.GetCurrentProcess(), None, ctypes.byref(in_job))
         if res and not bool(in_job.value):
-            _CAN_SPAWN_DAEMON_CACHE = True
+            _set_can_spawn_cache(True)
             return True
 
         CREATE_BREAKAWAY_FROM_JOB = 0x01000000
@@ -87,13 +98,13 @@ def can_spawn_background_daemon(force_reprobe: bool = False, yscb_root: Optional
                 close_fds=True,
             )
             probe_proc.wait(timeout=2.0)
-            _CAN_SPAWN_DAEMON_CACHE = True
+            _set_can_spawn_cache(True)
             return True
         except OSError:
-            _CAN_SPAWN_DAEMON_CACHE = False
+            _set_can_spawn_cache(False)
             return False
     except Exception:
-        _CAN_SPAWN_DAEMON_CACHE = False
+        _set_can_spawn_cache(False)
         return False
 
 
@@ -462,3 +473,10 @@ def terminate_popen_tree(proc: subprocess.Popen, timeout_sec: float = 2.0) -> bo
     except subprocess.TimeoutExpired:
         return False
     return True
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 backward-compatible attribute delegation to active `RuntimeContext`."""
+    if name == "_CAN_SPAWN_DAEMON_CACHE":
+        return _get_can_spawn_cache()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

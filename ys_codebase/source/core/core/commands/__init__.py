@@ -21,7 +21,7 @@ from core.commands.resolver import (
     OptionResolver,
 )
 
-__all__ = [
+__all__ = (
     "dispatch",
     "dispatch_local",
     "CmdBags",
@@ -38,4 +38,4 @@ __all__ = [
     "InvalidChoiceError",
     "MissingArgumentError",
     "HelpRenderer",
-]
+)

@@ -27,7 +27,7 @@ from core.log import log, log_error, log_info, log_warn
 
 INTERNAL_IGNORE_BEGIN = "# === YSCB INTERNAL IGNORE BEGIN ==="
 INTERNAL_IGNORE_END = "# === YSCB INTERNAL IGNORE END ==="
-INTERNAL_IGNORE_PATTERNS = [
+INTERNAL_IGNORE_PATTERNS = (
     "/.modules/",
     "/.build/",
     "/.mirror/",
@@ -42,7 +42,7 @@ INTERNAL_IGNORE_PATTERNS = [
     "*.pyc",
     "yscb.py.bak",
     "*.bak",
-]
+)
 
 
 def generate_internal_gitignore(yscb_dir: str) -> None:

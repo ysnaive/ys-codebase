@@ -14,6 +14,7 @@ import time
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from core import vfs
+from core.context import get_runtime_context, get_virtual_cwd
 from core.log import log_debug, log_warn
 
 from .schema import resolve_semantic_or_rel_path
@@ -21,12 +22,6 @@ from .schema import resolve_semantic_or_rel_path
 if TYPE_CHECKING:
     from .registry import SpaceRegistry
     from .scanner import ScanDiffResult
-
-_SUBSCRIBER_LOCK = threading.RLock()
-_SUBSCRIBERS: List[Tuple[Callable[[str, Any], Any], Optional[Set[str]]]] = []
-
-_WATCHER_LOCK = threading.RLock()
-_ACTIVE_WATCHER_WORKER: Optional[Any] = None
 
 
 def subscribe(
@@ -45,21 +40,24 @@ def subscribe(
         space_filter = cleaned if cleaned else set()
 
     entry = (callback, space_filter)
-    with _SUBSCRIBER_LOCK:
-        _SUBSCRIBERS.append(entry)
+    ctx = get_runtime_context()
+    with ctx.space_subscriber_lock:
+        ctx.space_subscribers.append(entry)
 
     def _unsubscribe() -> None:
-        with _SUBSCRIBER_LOCK:
-            if entry in _SUBSCRIBERS:
-                _SUBSCRIBERS.remove(entry)
+        curr_ctx = get_runtime_context()
+        with curr_ctx.space_subscriber_lock:
+            if entry in curr_ctx.space_subscribers:
+                curr_ctx.space_subscribers.remove(entry)
 
     return _unsubscribe
 
 
 def clear_subscribers() -> None:
     """Remove all registered in-process space change subscribers."""
-    with _SUBSCRIBER_LOCK:
-        _SUBSCRIBERS.clear()
+    ctx = get_runtime_context()
+    with ctx.space_subscriber_lock:
+        ctx.space_subscribers.clear()
 
 
 def _matches_space_filter(space_name: str, space_filter: Optional[Set[str]]) -> bool:
@@ -80,8 +78,9 @@ def _matches_space_filter(space_name: str, space_filter: Optional[Set[str]]) -> 
 
 def notify_subscribers(space_name: str, diff_result: "ScanDiffResult") -> None:
     """Invoke all matching in-process subscribers for `space_name`."""
-    with _SUBSCRIBER_LOCK:
-        current = list(_SUBSCRIBERS)
+    ctx = get_runtime_context()
+    with ctx.space_subscriber_lock:
+        current = list(ctx.space_subscribers)
 
     for callback, space_filter in current:
         if not _matches_space_filter(space_name, space_filter):
@@ -135,15 +134,16 @@ def broadcast_file_space_changed(
 
 def register_active_watcher(worker: Optional[Any]) -> None:
     """Register or clear the active in-process space watcher worker instance."""
-    global _ACTIVE_WATCHER_WORKER
-    with _WATCHER_LOCK:
-        _ACTIVE_WATCHER_WORKER = worker
+    ctx = get_runtime_context()
+    with ctx.space_watcher_lock:
+        ctx.space_active_watcher_worker = worker
 
 
 def get_active_watcher() -> Optional[Any]:
     """Return the active in-process space watcher worker instance if running."""
-    with _WATCHER_LOCK:
-        return _ACTIVE_WATCHER_WORKER
+    ctx = get_runtime_context()
+    with ctx.space_watcher_lock:
+        return ctx.space_active_watcher_worker
 
 
 def notify_space_registered(space_name: str) -> None:
@@ -166,7 +166,7 @@ def resolve_watcher_cache_dir(
     yscb_dir: Optional[Union[str, Path]] = None,
 ) -> Path:
     """Resolve `cache://core/space` directory anchored strictly inside `yscb_root/.cache/core/space`."""
-    p_root = Path(os.path.abspath(str(project_root or Path.cwd())))
+    p_root = Path(os.path.abspath(str(project_root or Path(get_virtual_cwd()))))
     y_dir = Path(os.path.abspath(str(yscb_dir))) if yscb_dir is not None else None
     res = resolve_semantic_or_rel_path("cache://core/space", p_root, y_dir)
     if res is not None:
@@ -341,3 +341,17 @@ def is_watcher_active(
         return False
 
     return all(_space_covered(s) for s in spaces)
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 backward-compatible attribute delegation to active `RuntimeContext`."""
+    ctx = get_runtime_context()
+    if name == "_SUBSCRIBERS":
+        return ctx.space_subscribers
+    if name == "_SUBSCRIBER_LOCK":
+        return ctx.space_subscriber_lock
+    if name == "_ACTIVE_WATCHER_WORKER":
+        return ctx.space_active_watcher_worker
+    if name == "_ACTIVE_WATCHER_LOCK":
+        return ctx.space_watcher_lock
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

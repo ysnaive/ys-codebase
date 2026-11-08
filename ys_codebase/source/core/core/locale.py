@@ -13,60 +13,57 @@ import locale as _py_locale
 import os
 import re
 import sys
+import types
 
+from core.context import get_runtime_context
 from core.log import log_warn
 from core.validator import ValidationIssue, ValidationResult
 
-DEFAULT_LOCALE_CHAIN: List[str] = ["zh"]
+_DEFAULT_LOCALE_CHAIN: Tuple[str, ...] = ("zh",)
 MAX_INTERPOLATION_DEPTH: int = 5
 
-DEFAULT_HOST_DIALECT_RULES: List[Dict[str, Any]] = [
-    {
+DEFAULT_HOST_DIALECT_RULES: Tuple[Mapping[str, Any], ...] = (
+    types.MappingProxyType({
         "dialect": "nouns-claude",
-        "env_keys": ["CLAUDECODE", "CLAUDE_CODE"],
-        "env_prefixes": ["CLAUDE_CODE_"],
-    },
-    {
+        "env_keys": ("CLAUDECODE", "CLAUDE_CODE"),
+        "env_prefixes": ("CLAUDE_CODE_",),
+    }),
+    types.MappingProxyType({
         "dialect": "nouns-codex",
-        "env_keys": ["CODEX_SANDBOX", "CODEX_CI", "CODEX_CLI"],
-        "env_prefixes": ["CODEX_"],
-    },
-    {
+        "env_keys": ("CODEX_SANDBOX", "CODEX_CI", "CODEX_CLI"),
+        "env_prefixes": ("CODEX_",),
+    }),
+    types.MappingProxyType({
         "dialect": "nouns-antigravity",
-        "env_keys": ["ANTIGRAVITY_AGENT", "ANTIGRAVITY_CLI_ALIAS"],
-        "env_prefixes": ["ANTIGRAVITY_"],
-    },
-    {
+        "env_keys": ("ANTIGRAVITY_AGENT", "ANTIGRAVITY_CLI_ALIAS"),
+        "env_prefixes": ("ANTIGRAVITY_",),
+    }),
+    types.MappingProxyType({
         "dialect": "nouns-cursor",
-        "env_keys": ["CURSOR_TRACE_ID"],
-        "env_prefixes": ["CURSOR_"],
-    },
-    {
+        "env_keys": ("CURSOR_TRACE_ID",),
+        "env_prefixes": ("CURSOR_",),
+    }),
+    types.MappingProxyType({
         "dialect": "nouns-windsurf",
-        "env_keys": ["WINDSURF_AGENT"],
-        "env_prefixes": ["WINDSURF_", "CODEIUM_"],
-    },
-    {
+        "env_keys": ("WINDSURF_AGENT",),
+        "env_prefixes": ("WINDSURF_", "CODEIUM_"),
+    }),
+    types.MappingProxyType({
         "dialect": "nouns-copilot",
-        "env_keys": ["GITHUB_COPILOT_CLI"],
-        "env_prefixes": ["COPILOT_"],
-    },
-    {
+        "env_keys": ("GITHUB_COPILOT_CLI",),
+        "env_prefixes": ("COPILOT_",),
+    }),
+    types.MappingProxyType({
         "dialect": "nouns-opencode",
-        "env_keys": ["OPENCODE"],
-        "env_prefixes": ["OPENCODE_"],
-    },
-    {
+        "env_keys": ("OPENCODE",),
+        "env_prefixes": ("OPENCODE_",),
+    }),
+    types.MappingProxyType({
         "dialect": "nouns-roo",
-        "env_keys": ["ROO_CODE"],
-        "env_prefixes": ["ROO_"],
-    },
-]
-
-# Memory cache: abs_file_path -> (mtime, parsed_dict)
-_LOCALE_FILE_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-_MODULE_BASE_DIR_CACHE: Dict[Any, str] = {}
-_SAFE_SUBPATH_CACHE: Dict[Tuple[str, str], Tuple[bool, str]] = {}
+        "env_keys": ("ROO_CODE",),
+        "env_prefixes": ("ROO_",),
+    }),
+)
 
 # Sentinel strings for protecting escaped braces '{{' and '}}'
 _ESCAPED_LBRACE = "\x00YSCB_LBRACE\x00"
@@ -74,11 +71,23 @@ _ESCAPED_RBRACE = "\x00YSCB_RBRACE\x00"
 _PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z0-9_.:-]+)\}")
 
 
+def _get_locale_file_cache() -> Dict[str, Tuple[float, Dict[str, Any]]]:
+    return get_runtime_context().locale_file_cache
+
+
+def _get_module_base_dir_cache() -> Dict[Any, str]:
+    return get_runtime_context().locale_module_base_dir_cache
+
+
+def _get_safe_subpath_cache() -> Dict[Tuple[str, str], Tuple[bool, str]]:
+    return get_runtime_context().locale_safe_subpath_cache
+
+
 def clear_cache() -> None:
     """Clear the in-memory locale JSON cache."""
-    _LOCALE_FILE_CACHE.clear()
-    _MODULE_BASE_DIR_CACHE.clear()
-    _SAFE_SUBPATH_CACHE.clear()
+    _get_locale_file_cache().clear()
+    _get_module_base_dir_cache().clear()
+    _get_safe_subpath_cache().clear()
 
 
 def parse_locale_chain(raw_chain: Optional[Union[str, List[str]]]) -> List[str]:
@@ -179,7 +188,7 @@ def get_host_dialect_rules() -> List[Dict[str, Any]]:
                     custom_rules.append(r)
     except Exception:
         pass
-    return custom_rules + list(DEFAULT_HOST_DIALECT_RULES)
+    return custom_rules + [dict(r) for r in DEFAULT_HOST_DIALECT_RULES]
 
 
 def detect_active_host_dialect(
@@ -244,7 +253,7 @@ def get_active_chain(explicit_chain: Optional[Union[str, List[str]]] = None) -> 
         pass
 
     if not base_chain:
-        base_chain = list(DEFAULT_LOCALE_CHAIN)
+        base_chain = list(_DEFAULT_LOCALE_CHAIN)
 
     host_dialect = detect_active_host_dialect()
     if host_dialect and host_dialect not in base_chain:
@@ -275,8 +284,9 @@ def _resolve_module_base_dir(module: str, base_dir: Optional[str] = None) -> Opt
     except Exception:
         yscb_root_key = ""
     cache_key = (yscb_root_key, module)
-    if cache_key in _MODULE_BASE_DIR_CACHE:
-        cached_dir = _MODULE_BASE_DIR_CACHE[cache_key]
+    base_dir_cache = _get_module_base_dir_cache()
+    if cache_key in base_dir_cache:
+        cached_dir = base_dir_cache[cache_key]
         if os.path.isdir(cached_dir):
             return cached_dir
     resolved: Optional[str] = None
@@ -309,7 +319,7 @@ def _resolve_module_base_dir(module: str, base_dir: Optional[str] = None) -> Opt
         except Exception:
             pass
     if resolved and os.path.isdir(resolved):
-        _MODULE_BASE_DIR_CACHE[cache_key] = resolved
+        base_dir_cache[cache_key] = resolved
     return resolved
 
 
@@ -321,33 +331,35 @@ def _is_safe_subpath(base_dir: str, rel_path: str) -> Tuple[bool, str]:
     if not isinstance(rel_path, str) or not rel_path.strip():
         return False, ""
     cache_key = (base_dir, rel_path)
-    cached = _SAFE_SUBPATH_CACHE.get(cache_key)
+    subpath_cache = _get_safe_subpath_cache()
+    cached = subpath_cache.get(cache_key)
     if cached is not None:
         return cached
     norm_base = os.path.realpath(os.path.abspath(base_dir))
     # Reject explicit parent traversal segments or absolute paths
     if os.path.isabs(rel_path):
         res = (False, os.path.abspath(rel_path))
-        _SAFE_SUBPATH_CACHE[cache_key] = res
+        subpath_cache[cache_key] = res
         return res
     candidate = os.path.realpath(os.path.abspath(os.path.join(norm_base, rel_path)))
     is_inside = candidate == norm_base or candidate.startswith(norm_base + os.sep)
     res = (is_inside, candidate)
-    _SAFE_SUBPATH_CACHE[cache_key] = res
+    subpath_cache[cache_key] = res
     return res
 
 
 def _load_json_cached(abs_path: str) -> Optional[Dict[str, Any]]:
     """Load a JSON object with (abs_path, mtime) caching."""
+    file_cache = _get_locale_file_cache()
     try:
         mtime = os.stat(abs_path).st_mtime
-        cached = _LOCALE_FILE_CACHE.get(abs_path)
+        cached = file_cache.get(abs_path)
         if cached is not None and cached[0] == mtime:
             return cached[1]
         with open(abs_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
-            _LOCALE_FILE_CACHE[abs_path] = (mtime, data)
+            file_cache[abs_path] = (mtime, data)
             return data
     except FileNotFoundError:
         return None
@@ -884,3 +896,17 @@ def validate_module_locales(
 
     is_valid = len([i for i in issues if i.severity == "ERROR"]) == 0
     return ValidationResult(is_valid=is_valid, issues=issues, payload=locales_decl)
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 backward-compatible attribute delegation to active `RuntimeContext`."""
+    if name == "DEFAULT_LOCALE_CHAIN":
+        return list(_DEFAULT_LOCALE_CHAIN)
+    ctx = get_runtime_context()
+    if name == "_LOCALE_FILE_CACHE":
+        return ctx.locale_file_cache
+    if name == "_MODULE_BASE_DIR_CACHE":
+        return ctx.locale_module_base_dir_cache
+    if name == "_SAFE_SUBPATH_CACHE":
+        return ctx.locale_safe_subpath_cache
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

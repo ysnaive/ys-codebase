@@ -2,12 +2,13 @@
 YS-Codebase Update Checker with 12-Hour Throttling & Non-Blocking Tips.
 100% Python Standard Library, Zero External Dependencies.
 """
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Mapping
 import hashlib
 import os
 import re
 import json
 import time
+import types
 import urllib.request
 from core import uri
 from core import vfs
@@ -20,7 +21,7 @@ DEFAULT_TIMEOUT_SECONDS: float = 2.0
 DEFAULT_SELF_UPDATE_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases/yscb.py"
 HOST_SCRIPT_KEY: str = "yscb.py"
 _VERSION_RE = re.compile(r"""^__version__\s*(?::\s*str\s*)?=\s*['"]([^'"]+)['"]""", re.MULTILINE)
-KNOWN_URGENCIES: Dict[str, int] = {"optional": 1, "recommended": 2, "critical": 3}
+KNOWN_URGENCIES: Mapping[str, int] = types.MappingProxyType({"optional": 1, "recommended": 2, "critical": 3})
 
 
 def normalize_release_metadata(entry: Optional[Dict[str, Any]]) -> Dict[str, Any]:

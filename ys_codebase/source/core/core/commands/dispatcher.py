@@ -4,7 +4,6 @@ Core Commands - CLI Pipeline Dispatcher & Dual-Track Router.
 """
 import difflib
 import errno
-import importlib.util
 import json
 import os
 import sys
@@ -12,7 +11,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from core.commands.bags import CmdBags
 from core.commands.help import HelpRenderer
@@ -21,6 +20,13 @@ from core.commands.resolver import (
     OptionResolutionError,
     OptionResolver,
 )
+from core.context import (
+    bind_runtime_context,
+    get_env,
+    get_runtime_context,
+    get_virtual_cwd,
+)
+from core.loader import load_module_from_path
 from core.log import (
     clear_error_hint,
     extract_error_hint,
@@ -35,32 +41,35 @@ from core.log import (
 from core.platform import InterProcessLock, can_spawn_background_daemon, daemon_probe, is_process_alive, spawn_detached
 from core.telemetry import record_cli_event
 
-# 快取已載入之 Contributes Registry
-_GLOBAL_REGISTRY: Optional[CommandsRegistry] = None
-_GLOBAL_REGISTRY_ROOT: Optional[str] = None
-_MODULE_CACHE: Dict[str, Any] = {}
-_AUTO_SPAWN_WARNED: bool = False
 # strict 模式 auto-spawn 後等待 daemon 活躍之上限秒數
 _STRICT_SPAWN_WAIT_SEC: float = 10.0
+
+
+def _get_module_cache() -> Dict[str, Any]:
+    return get_runtime_context().dispatcher_module_cache
 
 
 def _safe_getcwd() -> str:
     """安全取得當前工作目錄，若目錄已被刪除則回傳空字串。"""
     try:
-        return os.getcwd()
+        return get_virtual_cwd()
     except OSError:
         return ""
 
 
 def clear_cache() -> None:
     """清空已快取之 CommandsRegistry 與 CLI 模組快取。"""
-    global _GLOBAL_REGISTRY, _GLOBAL_REGISTRY_ROOT
-    _GLOBAL_REGISTRY = None
-    _GLOBAL_REGISTRY_ROOT = None
-    _MODULE_CACHE.clear()
+    ctx = get_runtime_context()
+    ctx.dispatcher_global_registry = None
+    ctx.dispatcher_global_registry_root = None
+    ctx.dispatcher_module_cache.clear()
+    ctx.loaded_modules_cache.clear()
+    globals().pop("_GLOBAL_REGISTRY", None)
+    globals().pop("_GLOBAL_REGISTRY_ROOT", None)
+
 
 # 環境與模組生命週期變異指令（執行前禁止自動拉起背景 Server，防範解壓/重載中途引發重啟風暴）
-_LIFECYCLE_MUTATION_COMMANDS = {
+_LIFECYCLE_MUTATION_COMMANDS: FrozenSet[str] = frozenset({
     "install",
     "update",
     "remove",
@@ -70,7 +79,7 @@ _LIFECYCLE_MUTATION_COMMANDS = {
     "bootstrap",
     "init",
     "self-update",
-}
+})
 
 
 def _get_yscb_root() -> Tuple[str, str]:
@@ -85,10 +94,10 @@ def _get_yscb_root() -> Tuple[str, str]:
 
 def _load_registry(yscb_abs: str) -> CommandsRegistry:
     """聚合工作區所有模組之 contributes/core.json 或 contributes/*.json。"""
-    global _GLOBAL_REGISTRY, _GLOBAL_REGISTRY_ROOT
+    ctx = get_runtime_context()
     norm_root = os.path.normcase(os.path.abspath(yscb_abs)) if yscb_abs else ""
-    if _GLOBAL_REGISTRY is not None and _GLOBAL_REGISTRY_ROOT == norm_root:
-        return _GLOBAL_REGISTRY
+    if ctx.dispatcher_global_registry is not None and ctx.dispatcher_global_registry_root == norm_root:
+        return ctx.dispatcher_global_registry
 
     registry = CommandsRegistry()
 
@@ -126,8 +135,8 @@ def _load_registry(yscb_abs: str) -> CommandsRegistry:
                     except Exception:
                         pass
 
-    _GLOBAL_REGISTRY = registry
-    _GLOBAL_REGISTRY_ROOT = norm_root
+    ctx.dispatcher_global_registry = registry
+    ctx.dispatcher_global_registry_root = norm_root
     return registry
 
 
@@ -412,22 +421,33 @@ def _spawn_server_daemon(host_dir: str, yscb_abs: str) -> Optional[int]:
             cwd=host_dir,
         )
     except OSError as err:
-        if os.environ.get("YSCB_VERBOSE") == "1" or os.environ.get("YSCB_DEBUG") == "1":
+        if get_env("YSCB_VERBOSE") == "1" or get_env("YSCB_DEBUG") == "1":
             log_warn(f"[core:dispatcher] Warning: Failed to auto-spawn server daemon: {err}", stream="stderr")
         return None
     daemon_probe.record_spawn(yscb_abs, pid)
     return pid
 
 
+def _get_auto_spawn_warned() -> bool:
+    if "_AUTO_SPAWN_WARNED" in globals():
+        return bool(globals()["_AUTO_SPAWN_WARNED"])
+    return get_runtime_context().dispatcher_auto_spawn_warned
+
+
+def _set_auto_spawn_warned(val: bool) -> None:
+    if "_AUTO_SPAWN_WARNED" in globals():
+        globals()["_AUTO_SPAWN_WARNED"] = val
+    get_runtime_context().dispatcher_auto_spawn_warned = val
+
+
 def _warn_daemon_unavailable_once(strict: bool = False) -> None:
     """每進程僅輸出一次 [BLOCKER]（strict 文案則每次阻斷皆輸出）。"""
-    global _AUTO_SPAWN_WARNED
     if strict:
-        _AUTO_SPAWN_WARNED = True
+        _set_auto_spawn_warned(True)
         _print_agent_daemon_blocker(strict=True)
         return
-    if not _AUTO_SPAWN_WARNED:
-        _AUTO_SPAWN_WARNED = True
+    if not _get_auto_spawn_warned():
+        _set_auto_spawn_warned(True)
         _print_agent_daemon_blocker(strict=False)
 
 
@@ -437,7 +457,7 @@ def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
     僅在 server 模組存在、非 server/dev 指令、非測試環境、且 config/server/config.project.json enable != false 時觸發。
     當偵測到環境無開立背景守護進程權限（含實證回收偵測）時，輸出一次 advisory [BLOCKER] 並照常冷派發（exit code 不變）。
     """
-    if os.environ.get("YSCB_TESTING") == "1" or os.environ.get("YSCB_TEST_SANDBOX") == "1":
+    if get_env("YSCB_TESTING") == "1" or get_env("YSCB_TEST_SANDBOX") == "1":
         return
 
     if _is_server_daemon_active_or_locked(yscb_abs):
@@ -531,8 +551,8 @@ def _ensure_hooks(hook_name: str, verbose: Optional[bool] = None) -> Dict[str, A
         verbose
         if verbose is not None
         else (
-            os.environ.get("YSCB_VERBOSE") == "1"
-            or os.environ.get("YSCB_DEBUG") == "1"
+            get_env("YSCB_VERBOSE") == "1"
+            or get_env("YSCB_DEBUG") == "1"
             or "--verbose" in sys.argv
             or "--debug" in sys.argv
         )
@@ -568,8 +588,8 @@ def dispatch_local(
     5. 觸發 post_cli_dispatch Hook（頂層 try...finally 對稱保證）
     """
     is_verbose = (
-        os.environ.get("YSCB_VERBOSE") == "1"
-        or os.environ.get("YSCB_DEBUG") == "1"
+        get_env("YSCB_VERBOSE") == "1"
+        or get_env("YSCB_DEBUG") == "1"
         or any(arg in ("--verbose", "--debug") for arg in raw_args)
     )
     _ensure_hooks("pre_cli_dispatch", verbose=is_verbose)
@@ -626,32 +646,25 @@ def dispatch_local(
         )
 
         # 載入模組
-        if target_cli in _MODULE_CACHE:
-            mod = _MODULE_CACHE[target_cli]
+        mod_cache = _get_module_cache()
+        if target_cli in mod_cache:
+            mod = mod_cache[target_cli]
         else:
             mod_pkg = module_name.replace("-", "_")
             script_stem = os.path.splitext(os.path.basename(target_cli))[0].replace(".", "_")
             unique_mod_name = f"_yscb_mod_{mod_pkg}_{script_stem}"
-            spec = importlib.util.spec_from_file_location(
-                unique_mod_name,
-                target_cli,
-            )
-            if spec is None or spec.loader is None:
-                log_error(f"[yscb] Error: Cannot load spec for '{target_cli}'.")
-                primary_error_hint = get_last_error_hint()
-                return 1
-            mod = importlib.util.module_from_spec(spec)
-            sys.modules[spec.name] = mod
             try:
-                spec.loader.exec_module(mod)
+                mod = load_module_from_path(
+                    unique_mod_name,
+                    target_cli,
+                    reload_if_changed=True,
+                )
             except Exception as load_err:
-                # 載入期例外（含 SyntaxError）移除半初始化模組並回傳 1
-                sys.modules.pop(spec.name, None)
                 err_msg = f"[yscb] Error loading CLI for '{module_name}': {type(load_err).__name__}: {load_err}"
                 log_error(err_msg)
                 primary_error_hint = get_last_error_hint()
                 return 1
-            _MODULE_CACHE[target_cli] = mod
+            mod_cache[target_cli] = mod
 
         exit_code = 0
         orig_argv = list(sys.argv)
@@ -709,7 +722,7 @@ def dispatch_local(
 
 def _maybe_check_and_print_updates() -> None:
     """於任意 CLI 指令執行完畢後觸發非阻塞 12 小時節流版本檢查與提示（含 yscb.py 入口檔自檢）。"""
-    if os.environ.get("YSCB_TESTING") == "1" or os.environ.get("YSCB_TEST_SANDBOX") == "1":
+    if get_env("YSCB_TESTING") == "1" or get_env("YSCB_TEST_SANDBOX") == "1":
         return
     try:
         from core.update_checker import UpdateChecker
@@ -735,17 +748,22 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
 
-    if "--verbose" in argv:
-        os.environ["YSCB_VERBOSE"] = "1"
-    if "--debug" in argv:
-        os.environ["YSCB_DEBUG"] = "1"
-
     host_dir, yscb_abs = _get_yscb_root()
-    if "YSCB_HOST_DIR" not in os.environ:
-        os.environ["YSCB_HOST_DIR"] = host_dir
-    if "YSCB_HOST_DISPATCH_TOKEN" not in os.environ:
-        os.environ["YSCB_HOST_DISPATCH_TOKEN"] = "yscb_auth_dispatch"
+    env_overrides: Dict[str, str] = {}
+    if "--verbose" in argv:
+        env_overrides["YSCB_VERBOSE"] = "1"
+    if "--debug" in argv:
+        env_overrides["YSCB_DEBUG"] = "1"
+    if not get_env("YSCB_HOST_DIR"):
+        env_overrides["YSCB_HOST_DIR"] = host_dir
+    if not get_env("YSCB_HOST_DISPATCH_TOKEN"):
+        env_overrides["YSCB_HOST_DISPATCH_TOKEN"] = "yscb_auth_dispatch"
 
+    with bind_runtime_context(env=env_overrides):
+        return _dispatch_inner(argv, host_dir, yscb_abs)
+
+
+def _dispatch_inner(argv: List[str], host_dir: str, yscb_abs: str) -> int:
     t_start = time.perf_counter()
     registry = _load_registry(yscb_abs)
 
@@ -936,3 +954,17 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
     )
     _maybe_check_and_print_updates()
     return ret
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 backward-compatible attribute delegation to active `RuntimeContext`."""
+    ctx = get_runtime_context()
+    if name == "_MODULE_CACHE":
+        return ctx.dispatcher_module_cache
+    if name == "_AUTO_SPAWN_WARNED":
+        return ctx.dispatcher_auto_spawn_warned
+    if name == "_GLOBAL_REGISTRY":
+        return ctx.dispatcher_global_registry
+    if name == "_GLOBAL_REGISTRY_ROOT":
+        return ctx.dispatcher_global_registry_root
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

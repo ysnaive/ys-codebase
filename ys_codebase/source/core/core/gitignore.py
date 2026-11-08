@@ -11,10 +11,10 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
 from core import events, uri, vfs
-from core.context import ExecutionContext
+from core.context import ExecutionContext, get_runtime_context, get_virtual_cwd
 
 GITIGNORE_BEGIN_MARKER = "# === YSCB MANAGED GITIGNORE BEGIN ==="
 GITIGNORE_END_MARKER = "# === YSCB MANAGED GITIGNORE END ==="
@@ -26,7 +26,7 @@ LEGACY_AW_END = "# === YSCB AGENTS_WORKFLOW IGNORE END ==="
 
 DYNAMIC_CACHE_URI = "storage.local://core/gitignore_dynamic.json"
 
-LEGACY_UNANCHORED_LINES: Set[str] = {
+LEGACY_UNANCHORED_LINES: FrozenSet[str] = frozenset({
     "# YS-Codebase Autonomous Internal Ignore Rules",
     "/.modules/",
     "/.build/",
@@ -42,11 +42,11 @@ LEGACY_UNANCHORED_LINES: Set[str] = {
     "*.pyc",
     "yscb.py.bak",
     "*.bak",
-}
+})
 
-# In-memory overlay for custom/sandboxed proj_root invocations:
-# norm_proj_root -> {module_name: [raw_patterns]}
-_CUSTOM_ROOT_DYNAMIC_STORE: Dict[str, Dict[str, List[str]]] = {}
+
+def _get_custom_root_dynamic_store() -> Dict[str, Dict[str, List[str]]]:
+    return get_runtime_context().gitignore_custom_root_store
 
 
 def _validate_module_name(module: str) -> str:
@@ -73,7 +73,7 @@ def _resolve_roots(
             host_d, _ = uri._get_host_config()
             default_proj = os.path.abspath(host_d)
         except Exception:
-            default_proj = os.path.abspath(os.getcwd())
+            default_proj = os.path.abspath(get_virtual_cwd())
 
     try:
         default_yscb = os.path.abspath(uri.resolve("yscb://", interactive=False))
@@ -203,7 +203,7 @@ def _load_dynamic_registry(
 ) -> Dict[str, List[str]]:
     """Loads active runtime-registered patterns per module from memory."""
     norm_key = os.path.normcase(os.path.abspath(proj_root))
-    store = _CUSTOM_ROOT_DYNAMIC_STORE.setdefault(norm_key, {})
+    store = _get_custom_root_dynamic_store().setdefault(norm_key, {})
     if not is_custom_root and not store:
         migrated = _migrate_legacy_dynamic_cache_if_needed(is_custom_root)
         if migrated:
@@ -218,7 +218,7 @@ def _save_dynamic_registry(
 ) -> None:
     """Stores runtime-registered patterns per module in memory and removes legacy disk cache if present."""
     norm_key = os.path.normcase(os.path.abspath(proj_root))
-    _CUSTOM_ROOT_DYNAMIC_STORE[norm_key] = dict(registry)
+    _get_custom_root_dynamic_store()[norm_key] = dict(registry)
     if not is_custom_root:
         try:
             if vfs.exists(DYNAMIC_CACHE_URI):
@@ -860,4 +860,11 @@ def status(
         "total_patterns": len(flat_patterns),
         "patterns": flat_patterns,
     }
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 backward-compatible attribute delegation to active `RuntimeContext`."""
+    if name == "_CUSTOM_ROOT_DYNAMIC_STORE":
+        return _get_custom_root_dynamic_store()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

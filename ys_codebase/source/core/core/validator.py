@@ -2,10 +2,12 @@
 Contributes Schema Validator and Lightweight DSL Engine.
 100% Python Standard Library, Zero Third-Party Dependencies.
 """
-from typing import Dict, Any, List, Optional, Tuple, NamedTuple
+from typing import Dict, Any, List, Optional, Tuple, NamedTuple, Mapping
 import difflib
 import copy
 import re
+import types
+from core.context import get_runtime_context
 
 
 class ValidationIssue(NamedTuple):
@@ -56,22 +58,33 @@ class ValidationResult:
         return "\n".join(lines)
 
 
-class ContributesValidator:
+class _ContributesValidatorMeta(type):
+    """Metaclass delegating `_SIGNATURE_PARSE_CACHE` to `RuntimeContext`."""
+
+    @property
+    def _SIGNATURE_PARSE_CACHE(cls) -> Dict[str, Dict[str, Any]]:
+        return get_runtime_context().validator_signature_cache
+
+
+class ContributesValidator(metaclass=_ContributesValidatorMeta):
     """
     Lightweight Type Signature DSL Parser & Rigid Validator for YSCB Contributes.
     """
     MAX_RECURSION_DEPTH = 20
 
     # Type alias normalization map
-    TYPE_ALIASES = {
+    TYPE_ALIASES: Mapping[str, str] = types.MappingProxyType({
         "string": "str",
         "boolean": "bool",
         "integer": "int",
         "number": "float",
-    }
+    })
 
     VALID_MERGE_STRATEGIES = ("merge", "extend", "replace", "unique")
-    _SIGNATURE_PARSE_CACHE: Dict[str, Dict[str, Any]] = {}
+
+    @staticmethod
+    def _get_signature_cache() -> Dict[str, Dict[str, Any]]:
+        return get_runtime_context().validator_signature_cache
 
     @staticmethod
     def _parse_default_literal(def_str: str) -> Any:
@@ -136,7 +149,8 @@ class ContributesValidator:
         - "dict[str, str]" -> type: "dict", key_type: "str", value_type: "str"
         - "uri! @desc(欄位說明)" -> type: "uri", required: True, description: "欄位說明", attributes: {"desc": "欄位說明"}
         """
-        cached_sig = cls._SIGNATURE_PARSE_CACHE.get(sig)
+        cache = cls._get_signature_cache()
+        cached_sig = cache.get(sig)
         if cached_sig is not None:
             return copy.deepcopy(cached_sig)
 
@@ -198,7 +212,7 @@ class ContributesValidator:
         else:
             norm_type = cls.TYPE_ALIASES.get(raw.lower(), raw.lower())
             res = {**base_meta, "type": norm_type}
-        cls._SIGNATURE_PARSE_CACHE[sig] = copy.deepcopy(res)
+        cache[sig] = copy.deepcopy(res)
         return res
 
     @staticmethod
@@ -545,3 +559,10 @@ class ContributesValidator:
 
         is_valid = len([i for i in issues if i.severity == "ERROR"]) == 0
         return ValidationResult(is_valid=is_valid, issues=issues)
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 backward-compatible attribute delegation to active `RuntimeContext`."""
+    if name == "_SIGNATURE_PARSE_CACHE":
+        return get_runtime_context().validator_signature_cache
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -4,6 +4,8 @@ doc_type: "readme"
 status: "active"
 source_paths:
   - "yscb://source/core/core/__init__.py"
+  - "yscb://source/core/core/context.py"
+  - "yscb://source/core/core/loader.py"
   - "yscb://source/core/core/uri.py"
   - "yscb://source/core/core/engine.py"
   - "yscb://source/core/core/installer.py"
@@ -52,7 +54,7 @@ graph TD
         VFS["First-Class VFS & URI<br/><code>core.uri</code> / <code>core.vfs</code><br/><i>語意路徑解算、JIT 熱補齊、Quick Fix 提示、自省清冊與原子 I/O</i>"]:::sub
         Space["邏輯檔案空間與指紋底座<br/><code>core.space</code><br/><i>命名空間隔離、compose 代數、YFP2 快照與多消費者游標</i>"]:::sub
         SemVer["SemVer 2.0.0 運算器<br/><code>core.semver</code><br/><i>數值排序、約束匹配與依賴求解</i>"]:::sub
-        Context["執行上下文 SSOT<br/><code>core.context</code><br/><i>不可變 ExecutionContext 載體</i>"]:::sub
+        Context["執行期隔離與模組載入器<br/><code>core.context</code> / <code>core.loader</code><br/><i>RuntimeContext、ContextVar 隔離與受保護命名空間載入</i>"]:::sub
         Engine["AtomicEngine 引擎<br/><code>core.engine</code><br/><i>12 大原子操作、OS 原子鎖與雙層快照</i>"]:::sub
         Installer["套件生命週期調度器<br/><code>core.installer</code><br/><i>安裝、更新、移除、快照回滾與 Onboarding Next Steps 引導</i>"]:::sub
         Contributes["Contribute 依賴注入器<br/><code>core.contributes</code> / <code>core.validator</code><br/><i>__provider__ 標記、__modules__ 分桶、拓撲聚合與 Schema 驗證</i>"]:::sub
@@ -179,6 +181,14 @@ with uri.module_scope("core"):
   1. **全空間預設監聽 (`watch=True`)**：除 `gitignore` 預設 `watch=False` 外，所有靜態空間與執行期空間（`register_space(name, config, *, watch=None)`）皆預設開啟 `watch=True`；當同進程 Watcher 活躍時，自動通知 Watcher 將其入口目錄納入 `watchdog` 監聽。
   2. **無感背景加速與純標準庫退化**：`core` 本體維持 100% 純標準庫零外部依賴；當常駐 `server` 啟動 [`CoreSpaceWatcherServiceWorker`](../server/hot_reload_and_services.md) 時，透過 `cache://core/space/watcher_state.json` 與 `.watcher_dirty` 跨進程信標無感加速快照更新；當 `server` 未啟動時，100% 本地獨立執行 Pull-based 掃描。
   3. **進程內訂閱與跨模組事件廣播**：提供 `subscribe(callback, *, spaces=None)`（同時支援 `<owner>/<space>`、`/short` 與 `<space>` 短名過濾）與 `broadcast_file_space_changed`，透過 `core.events.broadcast("on_file_space_changed", payload, emit_module="core")` 觸發各模組之 `scripts/hook.core.py`。
+
+### 3.9 執行期狀態隔離容器 (`core.context`) 與受保護命名空間模組載入器 (`core.loader`)
+- **執行期狀態隔離與 `ContextVar` 範疇綁定 ([`core/context.py`](../../ys_codebase/source/core/core/context.py))**：
+  1. **`RuntimeContext` 統一快取與狀態收斂**：將 `core` 內部所有跨模組動態快取（`uri`、`config`、`contributes`、`locale`、`symbols`、`loader`、`gitignore`、`validator`、`dispatcher`、`platform`、`space`、`log`）集中納管於 `RuntimeContext`，徹底消除模組頂層可變全域變數與 `global` 賦值，並透過 `reset_all_caches()` 提供保物件參考（In-Place）之一鍵清空能力，以及 PEP 562 模組級 `__getattr__` 向後相容代理。
+  2. **`RuntimeScope` 與 `bind_runtime_context` 請求級隔離**：基於 `ContextVar` 提供執行緒與協程安全的 `virtual_cwd`（統一由 `get_virtual_cwd()` 讀取，為全系統唯一合法呼叫 `os.getcwd()` 之邊界）、`env` 覆寫快照（由 `get_env()` / `get_env_snapshot()` 讀取，避免執行期直接突變 `os.environ`）與活躍 URI 根路徑（`host_dir`、`yscb_dir`、`module_name`），並強制 `ExecutionContext` 與全模組 12 個 `@dataclass(frozen=True)` 實例不可變。
+- **單點受保護命名空間模組載入器 ([`core/loader.py`](../../ys_codebase/source/core/core/loader.py))**：
+  1. 統一收斂 `dispatcher.py`（CLI 腳本）、`events.py`（Hook 腳本）、`engine.py`（Migration 腳本）與 `symbols.py`（`code.func://` 動態符號）之檔案級動態載入至 `load_module_from_path(module_key, file_path, *, reload_if_changed=True)`。
+  2. 強制校驗受保護命名空間前綴 `_yscb_mod_*`，內建 `(st_mtime_ns, st_size)` 指紋比對快取與熱重載，並於 `exec_module` 拋出例外時自動原子回滾 `sys.modules` 快照，杜絕半初始化之殭屍模組殘留。
 
 ---
 

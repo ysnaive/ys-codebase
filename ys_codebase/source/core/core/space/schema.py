@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 from typing import Any, Dict, FrozenSet, List, Optional, Pattern, Sequence, Set, Tuple, Union
 
+from core.context import get_virtual_cwd
 from .exceptions import SpaceError
 
 
@@ -577,7 +578,7 @@ def _compute_norm_rel(target_abs: Path, base_abs: Path) -> Optional[str]:
         return None
 
 
-@dataclass
+@dataclass(frozen=True)
 class SpaceConfig:
     """
     Configuration, expanded rules, and precompiled three-coordinate matchers for a single space definition.
@@ -603,7 +604,7 @@ class SpaceConfig:
     unresolved_compose: Tuple[str, ...] = ()
     uri_warnings: Tuple[str, ...] = ()
 
-    _project_root: Path = field(default_factory=Path.cwd, repr=False, compare=False)
+    _project_root: Path = field(default_factory=lambda: Path(get_virtual_cwd()), repr=False, compare=False)
     _yscb_dir: Optional[Path] = field(default=None, repr=False, compare=False)
     _compiled_include: Optional[CompiledRuleSet] = field(default=None, init=False, repr=False, compare=False)
     _compiled_exclude: Optional[CompiledRuleSet] = field(default=None, init=False, repr=False, compare=False)
@@ -611,7 +612,7 @@ class SpaceConfig:
     def __post_init__(self) -> None:
         if isinstance(self.hash_policy, str):
             try:
-                self.hash_policy = HashPolicy(self.hash_policy)
+                object.__setattr__(self, "hash_policy", HashPolicy(self.hash_policy))
             except ValueError as exc:
                 raise SpaceError(
                     f"Invalid hash_policy '{self.hash_policy}' for space '{self.qualified_name}'."
@@ -620,7 +621,7 @@ class SpaceConfig:
         try:
             if isinstance(self.large_file_threshold_mb, bool):
                 raise TypeError("boolean is not a valid threshold")
-            self.large_file_threshold_mb = int(self.large_file_threshold_mb)
+            object.__setattr__(self, "large_file_threshold_mb", int(self.large_file_threshold_mb))
         except (TypeError, ValueError) as exc:
             raise SpaceError(
                 f"Invalid large_file_threshold_mb '{self.large_file_threshold_mb}' for space '{self.qualified_name}'."
@@ -630,40 +631,56 @@ class SpaceConfig:
                 f"Space '{self.qualified_name}' large_file_threshold_mb must be positive, got {self.large_file_threshold_mb}."
             )
 
-        self.entries = tuple(str(e) for e in self.entries if str(e).strip())
-        self.compose = tuple(str(c) for c in self.compose if str(c).strip())
-        self.presets = tuple(str(p) for p in self.presets if str(p).strip())
-        self.include = tuple(str(i) for i in self.include if str(i).strip())
-        self.exclude = tuple(str(x) for x in self.exclude if str(x).strip())
+        object.__setattr__(self, "entries", tuple(str(e) for e in self.entries if str(e).strip()))
+        object.__setattr__(self, "compose", tuple(str(c) for c in self.compose if str(c).strip()))
+        object.__setattr__(self, "presets", tuple(str(p) for p in self.presets if str(p).strip()))
+        object.__setattr__(self, "include", tuple(str(i) for i in self.include if str(i).strip()))
+        object.__setattr__(self, "exclude", tuple(str(x) for x in self.exclude if str(x).strip()))
 
         if not self.effective_include:
             raw_inc = self.include if self.include else ("*",)
-            self.effective_include = tuple(
-                RuleItem(raw_pattern=pat, source=f"space:{self.qualified_name}")
-                for pat in raw_inc
+            object.__setattr__(
+                self,
+                "effective_include",
+                tuple(
+                    RuleItem(raw_pattern=pat, source=f"space:{self.qualified_name}")
+                    for pat in raw_inc
+                ),
             )
         if not self.effective_exclude and self.exclude:
-            self.effective_exclude = tuple(
-                RuleItem(raw_pattern=pat, source=f"space:{self.qualified_name}")
-                for pat in self.exclude
+            object.__setattr__(
+                self,
+                "effective_exclude",
+                tuple(
+                    RuleItem(raw_pattern=pat, source=f"space:{self.qualified_name}")
+                    for pat in self.exclude
+                ),
             )
 
         self._compile_matchers()
 
     def _compile_matchers(self) -> None:
-        self._compiled_include = CompiledRuleSet(
-            self.effective_include,
-            self._project_root,
-            self._yscb_dir,
-            owner_module=self.owner,
-            is_exclude=False,
+        object.__setattr__(
+            self,
+            "_compiled_include",
+            CompiledRuleSet(
+                self.effective_include,
+                self._project_root,
+                self._yscb_dir,
+                owner_module=self.owner,
+                is_exclude=False,
+            ),
         )
-        self._compiled_exclude = CompiledRuleSet(
-            self.effective_exclude,
-            self._project_root,
-            self._yscb_dir,
-            owner_module=self.owner,
-            is_exclude=True,
+        object.__setattr__(
+            self,
+            "_compiled_exclude",
+            CompiledRuleSet(
+                self.effective_exclude,
+                self._project_root,
+                self._yscb_dir,
+                owner_module=self.owner,
+                is_exclude=True,
+            ),
         )
 
     def resolve_entries(

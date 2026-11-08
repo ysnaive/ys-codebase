@@ -5,10 +5,12 @@ Core Platform - Cross-Platform Python Environment & Runtime sys.path Authority.
 import os
 import platform
 import sys
-from typing import List, Optional, Sequence, Set, Tuple
+from typing import Any, List, Optional, Sequence, Set, Tuple
+from core.context import get_runtime_context
 
 
-_ACTIVE_TEST_SOURCE_PATHS: List[Tuple[str, str]] = []
+def _get_active_test_source_paths() -> List[Tuple[str, str]]:
+    return get_runtime_context().venv_active_test_source_paths
 
 
 def _norm_abs(path: str) -> str:
@@ -293,7 +295,7 @@ def ensure_installed_modules_path(
             _add_front(ep, allow_source=True)
 
     current_root_key = _norm_key(root) if root and os.path.isdir(root) else ""
-    for active_src, active_root_key in list(_ACTIVE_TEST_SOURCE_PATHS):
+    for active_src, active_root_key in list(_get_active_test_source_paths()):
         if not active_root_key or active_root_key == current_root_key:
             _add_front(active_src, allow_source=True)
 
@@ -408,22 +410,23 @@ def activate_test_module_source_path(
     real_src_key = _norm_key(norm_src_real)
     resolved_root = _resolve_yscb_root(yscb_root)
     target_root_key = _norm_key(resolved_root) if resolved_root and os.path.isdir(resolved_root) else ""
+    active_paths = _get_active_test_source_paths()
 
     if src_root:
         real_root_key = _norm_key(src_root)
         root_prefix = real_root_key + os.sep
-        _ACTIVE_TEST_SOURCE_PATHS[:] = [
-            (p, rk) for p, rk in _ACTIVE_TEST_SOURCE_PATHS
+        active_paths[:] = [
+            (p, rk) for p, rk in active_paths
             if not (
                 (_norm_key(p) == real_root_key or _norm_key(p).startswith(root_prefix))
                 and _norm_key(p) != real_src_key
             )
         ]
 
-    _ACTIVE_TEST_SOURCE_PATHS[:] = [
-        (p, rk) for p, rk in _ACTIVE_TEST_SOURCE_PATHS if _norm_key(p) != real_src_key
+    active_paths[:] = [
+        (p, rk) for p, rk in active_paths if _norm_key(p) != real_src_key
     ]
-    _ACTIVE_TEST_SOURCE_PATHS.insert(0, (norm_src_real, target_root_key))
+    active_paths.insert(0, (norm_src_real, target_root_key))
 
     ensure_installed_modules_path(yscb_root=yscb_root)
 
@@ -454,6 +457,14 @@ def restore_sys_path(snapshot: Sequence[str]) -> None:
     """
     sys.path[:] = list(snapshot)
     snapshot_keys = {_norm_key(p) for p in snapshot if p}
-    _ACTIVE_TEST_SOURCE_PATHS[:] = [
-        (p, rk) for p, rk in _ACTIVE_TEST_SOURCE_PATHS if _norm_key(p) in snapshot_keys
+    active_paths = _get_active_test_source_paths()
+    active_paths[:] = [
+        (p, rk) for p, rk in active_paths if _norm_key(p) in snapshot_keys
     ]
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 backward-compatible attribute delegation to active `RuntimeContext`."""
+    if name == "_ACTIVE_TEST_SOURCE_PATHS":
+        return _get_active_test_source_paths()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

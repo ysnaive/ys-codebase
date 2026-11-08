@@ -2,13 +2,16 @@
 Core Module Package Exports (PEP 562 Lazy Loading Architecture).
 100% Python Standard Library.
 """
-from typing import TYPE_CHECKING
 import importlib
+import types
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core import uri
     from core import semver
-    from core.context import ExecutionContext
+    from core import context
+    from core.context import ExecutionContext, RuntimeContext, RuntimeScope, bind_runtime_context, get_runtime_context
+    from core import loader
     from core.engine import AtomicEngine
     from core.contributes import ContributesAggregator
     from core.installer import Installer, generate_internal_gitignore
@@ -33,10 +36,16 @@ if TYPE_CHECKING:
     from core import space
     from core import log
 
-_MODULE_MAP = {
+_MODULE_MAP = types.MappingProxyType({
     "uri": ("core.uri", None),
     "semver": ("core.semver", None),
+    "context": ("core.context", None),
     "ExecutionContext": ("core.context", "ExecutionContext"),
+    "RuntimeContext": ("core.context", "RuntimeContext"),
+    "RuntimeScope": ("core.context", "RuntimeScope"),
+    "bind_runtime_context": ("core.context", "bind_runtime_context"),
+    "get_runtime_context": ("core.context", "get_runtime_context"),
+    "loader": ("core.loader", None),
     "AtomicEngine": ("core.engine", "AtomicEngine"),
     "ContributesAggregator": ("core.contributes", "ContributesAggregator"),
     "Installer": ("core.installer", "Installer"),
@@ -66,7 +75,7 @@ _MODULE_MAP = {
     "gitignore": ("core.gitignore", None),
     "space": ("core.space", None),
     "log": ("core.log", None),
-}
+})
 
 
 def __getattr__(name: str):
@@ -84,10 +93,16 @@ def __dir__():
     return sorted(list(globals().keys()) + list(_MODULE_MAP.keys()))
 
 
-__all__ = [
+__all__ = (
     "uri",
     "semver",
+    "context",
     "ExecutionContext",
+    "RuntimeContext",
+    "RuntimeScope",
+    "bind_runtime_context",
+    "get_runtime_context",
+    "loader",
     "AtomicEngine",
     "ContributesAggregator",
     "Installer",
@@ -117,4 +132,4 @@ __all__ = [
     "gitignore",
     "space",
     "log",
-]
+)
