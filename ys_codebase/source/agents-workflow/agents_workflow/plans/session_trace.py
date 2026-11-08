@@ -28,6 +28,7 @@ from ._trace_renderer import (
 )
 from .scanner import PlanScanner
 from .status import PlanStatusResolver
+from core.context import get_env
 
 
 def _resolve_uri_safe(uri_str: str, default_rel: str = "") -> Path:
@@ -35,7 +36,7 @@ def _resolve_uri_safe(uri_str: str, default_rel: str = "") -> Path:
     return resolve_plan_uri(
         uri_str,
         default_fallback=default_rel,
-        host_dir=os.environ.get("YSCB_HOST_DIR") or None,
+        host_dir=get_env("YSCB_HOST_DIR") or None,
     )
 
 
@@ -144,7 +145,7 @@ class SessionTraceEngine:
         candidates: List[Tuple[str, Path, float]] = []
         home = Path.home()
 
-        env_dirs = os.environ.get("YSCB_TRANSCRIPT_DIRS", "").strip()
+        env_dirs = (get_env("YSCB_TRANSCRIPT_DIRS", "") or "").strip()
         search_map: Dict[str, List[Path]] = {}
         if self.custom_transcript_dirs is not None:
             search_map = self.custom_transcript_dirs

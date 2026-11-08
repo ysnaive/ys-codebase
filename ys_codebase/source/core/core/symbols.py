@@ -12,8 +12,8 @@ from typing import Any, Callable, Optional, Tuple, Dict
 
 from core import uri
 from core import vfs
-from core.context import get_runtime_context
-from core.loader import load_module_from_path
+from core.context import get_env, get_runtime_context
+from core.loader import _file_generation, get_cached_module, load_module_from_path
 
 
 class SymbolError(Exception):
@@ -31,8 +31,19 @@ class SymbolNotFoundError(SymbolError):
     pass
 
 
-def _get_callable_cache() -> Dict[Any, Callable[..., Any]]:
+def _get_callable_cache() -> Dict[Any, Any]:
     return get_runtime_context().symbols_callable_cache
+
+
+def _unpack_callable_entry(
+    entry: Any,
+) -> Tuple[Optional[Callable[..., Any]], Optional[Tuple[str, int, int]]]:
+    """Unpacks a `callable_cache` value into `(callable_obj, (file_path, mtime_ns, size) | None)`."""
+    if isinstance(entry, tuple) and len(entry) == 4 and callable(entry[0]):
+        return entry[0], (str(entry[1]), int(entry[2]), int(entry[3]))
+    if callable(entry):
+        return entry, None
+    return None, None
 
 
 def parse_code_func_uri(uri_str: str) -> Tuple[str, str, str]:
@@ -112,10 +123,17 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
     cache_key = (yscb_root_key, uri_str)
     callable_cache = _get_callable_cache()
     if use_cache:
-        if cache_key in callable_cache:
-            return callable_cache[cache_key]
-        if uri_str in callable_cache:
-            return callable_cache[uri_str]
+        for ck in (cache_key, uri_str):
+            if ck in callable_cache:
+                cached_fn, file_meta = _unpack_callable_entry(callable_cache[ck])
+                if cached_fn is not None:
+                    if file_meta is None:
+                        return cached_fn
+                    f_path, c_mtime, c_size = file_meta
+                    cur_mtime, cur_size = _file_generation(f_path)
+                    if cur_mtime != -1 and cur_mtime == c_mtime and cur_size == c_size:
+                        return cached_fn
+                callable_cache.pop(ck, None)
 
     module_name, subpath, function_name = parse_code_func_uri(uri_str)
     mod_pkg = module_name.replace("-", "_")
@@ -124,6 +142,7 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
     ensure_installed_modules_path(priority_module=module_name)
 
     loaded_mod = None
+    resolved_file_meta: Optional[Tuple[str, int, int]] = None
 
     # --- 軌道 1: 嘗試標準 Package Import ---
     # 嘗試模組名與 subpath 的組合（例：agents_workflow.providers 或 agents_workflow）
@@ -137,8 +156,13 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
 
     for imp_cand in import_candidates:
         try:
-            loaded_mod = importlib.import_module(imp_cand)
-            if loaded_mod:
+            cand_mod = importlib.import_module(imp_cand)
+            if cand_mod is not None:
+                # 若該模組係由 Track 2 VFS loader 先前載入，交由 Track 2 執行 (mtime_ns, size) 校驗與重載
+                cand_name = getattr(cand_mod, "__name__", "")
+                if cand_name.startswith("_yscb_") or get_cached_module(f"_yscb_mod_{mod_pkg}_{subpath.replace('/', '_').replace('.', '_')}") is cand_mod:
+                    continue
+                loaded_mod = cand_mod
                 break
         except (ImportError, ModuleNotFoundError):
             continue
@@ -149,7 +173,7 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
             f"module://{module_name}/{subpath}.py",
             f"module://{module_name}/{mod_pkg}/{subpath}.py",
         ]
-        if os.environ.get("YSCB_TEST_SANDBOX") == "1":
+        if get_env("YSCB_TEST_SANDBOX") == "1":
             file_candidates.extend([
                 f"module.source://{module_name}/{mod_pkg}/{subpath}.py",
                 f"module.source://{module_name}/{subpath}.py",
@@ -159,6 +183,9 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
             if vfs.exists(f_uri):
                 real_file_path = uri.resolve(f_uri)
                 if os.path.isfile(real_file_path):
+                    norm_real_path = os.path.normpath(os.path.abspath(real_file_path))
+                    cur_mtime, cur_size = _file_generation(norm_real_path)
+                    resolved_file_meta = (norm_real_path, cur_mtime, cur_size)
                     script_stem = subpath.replace("/", "_").replace(".", "_")
                     mod_unique_key = f"_yscb_mod_{mod_pkg}_{script_stem}"
                     dot_name = subpath.replace("/", ".")
@@ -176,13 +203,14 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
                             pkg_name = os.path.basename(mod_dir)
                             sub_stem = os.path.splitext(os.path.basename(real_file_path))[0]
                             pkg_mod_name = pkg_name if sub_stem == "__init__" else f"{pkg_name}.{sub_stem}"
-                            loaded_mod = importlib.import_module(pkg_mod_name)
-                            break
+                            if get_cached_module(mod_unique_key) is None:
+                                loaded_mod = importlib.import_module(pkg_mod_name)
+                                break
 
                         loaded_mod = load_module_from_path(
                             mod_unique_key,
                             real_file_path,
-                            alias_keys=(full_mod_name,),
+                            alias_keys=(full_mod_name, subpath.replace("/", ".")),
                             reload_if_changed=True,
                         )
                         break
@@ -209,7 +237,15 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
         )
 
     if use_cache:
-        callable_cache[cache_key] = target_fn
+        if resolved_file_meta is not None:
+            callable_cache[cache_key] = (
+                target_fn,
+                resolved_file_meta[0],
+                resolved_file_meta[1],
+                resolved_file_meta[2],
+            )
+        else:
+            callable_cache[cache_key] = target_fn
 
     return target_fn
 

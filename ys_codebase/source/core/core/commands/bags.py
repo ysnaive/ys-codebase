@@ -11,18 +11,18 @@ class CmdOption:
     Structured Command Option representation.
     """
     name: str          # Canonical option name (without leading dashes)
-    params: Any = True # Value associated with option (True for flags, value for parameterized options)
+    params: Any = field(default=True, compare=False) # Value associated with option (True for flags, value for parameterized options)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class CmdBags:
     """
     Structured and immutable Command Context Bag passed to command handlers.
     """
     raw_cmd: str = ""                                  # Full raw command line / arguments string
     command: str = ""                                  # Target command name
-    args: List[str] = field(default_factory=list)     # Positional arguments
-    options: Dict[str, CmdOption] = field(default_factory=dict) # Options indexed by canonical name
+    args: List[str] = field(default_factory=list, compare=False)     # Positional arguments
+    options: Dict[str, CmdOption] = field(default_factory=dict, compare=False) # Options indexed by canonical name
 
     def has_option(self, name: str) -> bool:
         """Check if option is present."""

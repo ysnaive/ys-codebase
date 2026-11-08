@@ -394,6 +394,37 @@ class TestCoreSpaceWatcherService(YSCBTestCase):
                     self.assertEqual(d2.from_generation, 1)
                     self.assertEqual(d2.to_generation, 2)
                     self.assertEqual(d2.modified, [".agents/skills/demo/SKILL.md"])
+            self.assertEqual(worker.state, worker.STATE_READY)
+
+            # Verify Watchdog handler binds worker RuntimeScope & LogExecutionScope on callback
+            from core.context import get_current_scope
+            from server.space_watcher import _CoreSpaceWatchdogHandler
+
+            captured_scope = {}
+            orig_notify = worker.notify_file_event
+
+            def _spy_notify(path_arg, is_directory=False, event_type="modified"):
+                sc = get_current_scope()
+                captured_scope["host_dir"] = sc.active_host_dir if sc else None
+                captured_scope["yscb_dir"] = sc.active_yscb_dir if sc else None
+                return orig_notify(path_arg, is_directory=is_directory, event_type=event_type)
+
+            class _DummyEvt:
+                is_directory = False
+                event_type = "modified"
+                src_path = str(skill_file)
+                dest_path = None
+
+            handler = _CoreSpaceWatchdogHandler(worker)
+            with patch.object(worker, "notify_file_event", side_effect=_spy_notify):
+                handler.on_any_event(_DummyEvt())
+
+            self.assertEqual(captured_scope.get("host_dir"), str(self.proj_root.resolve()))
+            self.assertEqual(captured_scope.get("yscb_dir"), str(self.yscb_root.resolve()))
+
+            worker.stop()
+            self.assertIsNone(worker._thread)
+            self.assertEqual(worker.state, worker.STATE_STOPPED)
         finally:
             register_active_watcher(None)
         self.mark_passed()

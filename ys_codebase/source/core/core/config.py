@@ -21,9 +21,23 @@ class _ConfigManagerMeta(type):
     def _cache(cls) -> Dict[Any, Dict[str, Any]]:
         return get_runtime_context().config_cache
 
+    @_cache.setter
+    def _cache(cls, value: Dict[Any, Dict[str, Any]]) -> None:
+        cache = get_runtime_context().config_cache
+        cache.clear()
+        if isinstance(value, dict):
+            cache.update(value)
+
     @property
     def _mtimes(cls) -> Dict[Any, Tuple[float, float]]:
         return get_runtime_context().config_mtimes
+
+    @_mtimes.setter
+    def _mtimes(cls, value: Dict[Any, Tuple[float, float]]) -> None:
+        mtimes = get_runtime_context().config_mtimes
+        mtimes.clear()
+        if isinstance(value, dict):
+            mtimes.update(value)
 
 
 class ConfigManager(metaclass=_ConfigManagerMeta):

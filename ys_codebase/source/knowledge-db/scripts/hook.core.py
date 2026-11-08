@@ -55,7 +55,7 @@ def _resolve_consume_diff(
         scanner.ack(
             space_name,
             consumer_id=consumer_id,
-            to_generation=diff_res.to_generation,
+            generation=diff_res.to_generation,
             space_generations=getattr(diff_res, "space_generations", None),
         )
     else:

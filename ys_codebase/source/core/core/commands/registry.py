@@ -6,22 +6,22 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ArgSpec:
     """規格定義：參數規格 (指令位置參數或選項參數)。"""
     name: str
     description: str = ""
     required: bool = True
-    choice: Optional[List[str]] = None
+    choice: Optional[List[str]] = field(default=None, compare=False)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class OptionSpec:
     """規格定義：單一命令選項。"""
     canonical_name: str
     description: str = ""
-    alias: List[str] = field(default_factory=list)
-    args: Dict[str, ArgSpec] = field(default_factory=dict)
+    alias: List[str] = field(default_factory=list, compare=False)
+    args: Dict[str, ArgSpec] = field(default_factory=dict, compare=False)
     group_name: str = "default"
 
     @property
@@ -29,29 +29,29 @@ class OptionSpec:
         return bool(self.args)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class CommandSpec:
     """規格定義：單一子命令。"""
     name: str
     description: str = ""
     tier: str = "safe"
     server_compatible: bool = False
-    args: Dict[str, ArgSpec] = field(default_factory=dict)
-    options: Dict[str, OptionSpec] = field(default_factory=dict)         # 規範名及別名均索引至對應 OptionSpec
-    canonical_options: Dict[str, OptionSpec] = field(default_factory=dict) # 僅以規範名索引
-    groups: Dict[str, List[str]] = field(default_factory=dict)           # group_name -> list of canonical names
-    usage_pros: List[str] = field(default_factory=list)
-    usage_cons: List[str] = field(default_factory=list)
-    cmd: Dict[str, "CommandSpec"] = field(default_factory=dict)          # 遞迴同構子指令樹
+    args: Dict[str, ArgSpec] = field(default_factory=dict, compare=False)
+    options: Dict[str, OptionSpec] = field(default_factory=dict, compare=False)         # 規範名及別名均索引至對應 OptionSpec
+    canonical_options: Dict[str, OptionSpec] = field(default_factory=dict, compare=False) # 僅以規範名索引
+    groups: Dict[str, List[str]] = field(default_factory=dict, compare=False)           # group_name -> list of canonical names
+    usage_pros: List[str] = field(default_factory=list, compare=False)
+    usage_cons: List[str] = field(default_factory=list, compare=False)
+    cmd: Dict[str, "CommandSpec"] = field(default_factory=dict, compare=False)          # 遞迴同構子指令樹
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ModuleSpec:
     """規格定義：單一模組及其 CLI 指令清單。"""
     module_name: str
     description: str = ""
-    module_alias: List[str] = field(default_factory=list)
-    commands: Dict[str, CommandSpec] = field(default_factory=dict)
+    module_alias: List[str] = field(default_factory=list, compare=False)
+    commands: Dict[str, CommandSpec] = field(default_factory=dict, compare=False)
 
 
 class CommandsRegistry:

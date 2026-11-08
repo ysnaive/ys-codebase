@@ -263,6 +263,13 @@ class WarmWorker:
                 exit_code, err_text = self._record_task_exception(ex, module, args, streamer, stop_capture=True)
             finally:
                 duration_ms = (time.time() - start_time) * 1000.0
+                try:
+                    self.emit_packet_fn({
+                        "type": "service_status",
+                        "services": self.service_manager.get_status(),
+                    })
+                except Exception:
+                    pass
                 streamer.send_task_finish(exit_code=exit_code, duration_ms=duration_ms, error=err_text)
 
             return exit_code
@@ -301,47 +308,76 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
         # 兩段式握手第一段，啟動即宣告存活（pre_warm 可能耗時，由 worker_ready 宣告就緒）
         emit_fn({"type": "worker_alive", "worker_pid": os.getpid()})
         worker = WarmWorker(yscb_root=yscb_root, emit_packet_fn=emit_fn)
-        worker.pre_warm()
 
-        emit_fn({
-            "type": "worker_ready",
-            "worker_pid": os.getpid(),
-            "services": worker.service_manager.get_status(),
-        })
+        with bind_runtime_context(
+            virtual_cwd=worker.yscb_root,
+            env={
+                "YSCB_ROOT_DIR": worker.yscb_root,
+                GUARD_ENV_HOST: worker.host_dir,
+            },
+            host_dir=worker.host_dir,
+            yscb_dir=worker.yscb_root,
+            module_name="server",
+        ), bind_log_context(
+            background_sink=worker._ipc_log_sink,  # type: ignore[arg-type]
+            component="worker",
+            isolated_error_scope=True,
+        ):
+            worker.pre_warm()
 
-        while True:
-            try:
-                line = in_io.readline()
-                if not line:
+            emit_fn({
+                "type": "worker_ready",
+                "worker_pid": os.getpid(),
+                "services": worker.service_manager.get_status(),
+            })
+
+            while True:
+                try:
+                    line = in_io.readline()
+                    if not line:
+                        break
+
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8", errors="replace")
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    req = json.loads(line)
+                    cmd = req.get("action")
+                    if cmd == "exit":
+                        break
+
+                    if cmd == "dispatch":
+                        worker.execute_task(
+                            module=req["module"],
+                            args=req.get("args", []),
+                            cwd=req.get("cwd", yscb_root),
+                            env=req.get("env"),
+                        )
+
+                except (KeyboardInterrupt, BrokenPipeError):
                     break
-
-                if isinstance(line, bytes):
-                    line = line.decode("utf-8", errors="replace")
-                line = line.strip()
-                if not line:
-                    continue
-
-                req = json.loads(line)
-                cmd = req.get("action")
-                if cmd == "exit":
-                    break
-
-                if cmd == "dispatch":
-                    worker.execute_task(
-                        module=req["module"],
-                        args=req.get("args", []),
-                        cwd=req.get("cwd", yscb_root),
-                        env=req.get("env"),
-                    )
-
-            except (KeyboardInterrupt, BrokenPipeError):
-                break
-            except Exception as err:
-                emit_fn({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(err)})
+                except Exception as err:
+                    emit_fn({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(err)})
     finally:
         if worker is not None:
             try:
-                worker.service_manager.stop_all()
+                with bind_runtime_context(
+                    virtual_cwd=worker.yscb_root,
+                    env={
+                        "YSCB_ROOT_DIR": worker.yscb_root,
+                        GUARD_ENV_HOST: worker.host_dir,
+                    },
+                    host_dir=worker.host_dir,
+                    yscb_dir=worker.yscb_root,
+                    module_name="server",
+                ), bind_log_context(
+                    background_sink=worker._ipc_log_sink,  # type: ignore[arg-type]
+                    component="worker",
+                    isolated_error_scope=True,
+                ):
+                    worker.service_manager.stop_all()
             except Exception:
                 pass
 

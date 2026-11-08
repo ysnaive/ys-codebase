@@ -551,7 +551,8 @@ class TestJITReleaseAndHooks(YSCBTestCase):
         hook_dev = load_hook_dev_module("aw_hook_dev_pub")
 
         out_buf = io.StringIO()
-        with redirect_stdout(out_buf):
+        err_reload_buf = io.StringIO()
+        with redirect_stdout(out_buf), redirect_stderr(err_reload_buf):
             with patch("agents_workflow.publisher.ReleasePublisher.release_all") as mock_rel:
                 mock_rel.return_value = {
                     "success": True,
@@ -581,10 +582,11 @@ class TestJITReleaseAndHooks(YSCBTestCase):
                 hook_core.on_reload(None)
 
         out_text = out_buf.getvalue()
+        err_reload_text = err_reload_buf.getvalue()
         self.assertIn("Auto-released on reload", out_text)
         self.assertIn("Auto-release skipped on reload", out_text)
-        self.assertIn("Auto-release failed on reload: mock reload fail", out_text)
-        self.assertIn("Auto-release on reload failed: unexpected crash", out_text)
+        self.assertIn("Auto-release failed on reload: mock reload fail", err_reload_text)
+        self.assertIn("Auto-release on reload failed: unexpected crash", err_reload_text)
 
         with patch("agents_workflow.publisher.ensure_jit_release", return_value=True):
             self.assertTrue(hook_core.on_pre_cli_dispatch())

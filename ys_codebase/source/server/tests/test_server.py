@@ -1708,6 +1708,90 @@ class TestServerModule(YSCBTestCase):
         self.assertIn("Simulated domain error for hint", finish_pkts[0].get("error") or "")
         self.mark_passed()
 
+    def test_managed_thread_contextvar_propagation_and_service_status_sync(self):
+        """Verify BaseServiceWorker.start_managed_thread propagates RuntimeScope/LogExecutionScope across threads and synchronizes service_status IPC packets to MasterSupervisor._worker_services."""
+        from core.context import bind_runtime_context, get_current_scope, get_env, get_virtual_cwd
+        from core.log import log_info
+
+        emitted_packets = []
+
+        class _FakeSink:
+            def __init__(self, emit_fn):
+                self.emit_packet_fn = emit_fn
+
+            def log(self, level, msg, component="service"):
+                self.emit_packet_fn({"type": "log", "level": level, "component": component, "msg": str(msg)})
+
+        sink = _FakeSink(emitted_packets.append)
+        observed_thread_ctx = {}
+        done_evt = threading.Event()
+
+        class _CtxProbeWorker(BaseServiceWorker):
+            def __init__(self) -> None:
+                self._th = None
+
+            @property
+            def name(self) -> str:
+                return "ctx-probe-svc"
+
+            def start(self, context) -> None:
+                self.set_state(self.STATE_STARTING)
+                self._th = self.start_managed_thread(self._run, context=context)
+
+            def _run(self) -> None:
+                scope = get_current_scope()
+                observed_thread_ctx["virtual_cwd"] = get_virtual_cwd()
+                observed_thread_ctx["host_dir"] = scope.active_host_dir if scope else None
+                observed_thread_ctx["yscb_dir"] = scope.active_yscb_dir if scope else None
+                observed_thread_ctx["parent_env"] = get_env("YSCB_TEST_PARENT_CTXVAR")
+                log_info("probe thread background log")
+                self.set_state(self.STATE_DEGRADED_OFFLINE)
+                done_evt.set()
+
+            def stop(self) -> None:
+                self.stop_managed_thread(self._th, timeout=1.0)
+                self._th = None
+
+            def health_check(self) -> bool:
+                return True
+
+        mgr = ServiceManager()
+        probe_worker = _CtxProbeWorker()
+        mgr.register(probe_worker, name="ctx-probe-svc", provider="test-mod", description="Probe service")
+
+        custom_host = os.path.join(self.root_dir, "host_ws")
+        os.makedirs(custom_host, exist_ok=True)
+        with bind_runtime_context(
+            virtual_cwd=self.root_dir,
+            env={"YSCB_TEST_PARENT_CTXVAR": "inherited_from_parent"},
+            host_dir=custom_host,
+            yscb_dir=self.root_dir,
+        ):
+            mgr.start_all({
+                "yscb_root": self.root_dir,
+                "workspace_root": custom_host,
+                "log_sink": sink,
+            })
+            self.assertTrue(done_evt.wait(timeout=2.0))
+            mgr.stop_all()
+
+        self.assertEqual(observed_thread_ctx.get("virtual_cwd"), os.path.abspath(self.root_dir))
+        self.assertEqual(observed_thread_ctx.get("host_dir"), os.path.abspath(custom_host))
+        self.assertEqual(observed_thread_ctx.get("yscb_dir"), os.path.abspath(self.root_dir))
+        self.assertEqual(observed_thread_ctx.get("parent_env"), "inherited_from_parent")
+
+        svc_status_pkts = [p for p in emitted_packets if p.get("type") == "service_status"]
+        self.assertGreaterEqual(len(svc_status_pkts), 2)
+        states_seen = [p.get("state") for p in svc_status_pkts]
+        self.assertIn(BaseServiceWorker.STATE_DEGRADED_OFFLINE, states_seen)
+
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
+        sup._worker_services = [{"name": "ctx-probe-svc", "provider": "test-mod", "description": "Probe service", "alive": True, "state": "STARTING"}]
+        degraded_pkt = [p for p in svc_status_pkts if p.get("state") == BaseServiceWorker.STATE_DEGRADED_OFFLINE][-1]
+        self.assertTrue(sup._handle_worker_control_packet(degraded_pkt))
+        self.assertEqual(sup.get_status_dict()["services"][0]["state"], BaseServiceWorker.STATE_DEGRADED_OFFLINE)
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

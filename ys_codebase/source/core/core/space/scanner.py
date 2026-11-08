@@ -89,14 +89,14 @@ class FileFingerprint:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ScanDiffDetail:
     """Categorized file relative paths produced by a scan or consumer diff."""
 
-    added: Set[str] = field(default_factory=set)
-    modified: Set[str] = field(default_factory=set)
-    deleted: Set[str] = field(default_factory=set)
-    unchanged: Set[str] = field(default_factory=set)
+    added: Set[str] = field(default_factory=set, compare=False)
+    modified: Set[str] = field(default_factory=set, compare=False)
+    deleted: Set[str] = field(default_factory=set, compare=False)
+    unchanged: Set[str] = field(default_factory=set, compare=False)
 
     @property
     def dirty_files(self) -> Set[str]:
@@ -118,7 +118,7 @@ class ScanDiffDetail:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ScanDiffResult:
     """Summary and detailed delta between two generations or a scan pass."""
 
@@ -126,12 +126,12 @@ class ScanDiffResult:
     modified_count: int = 0
     deleted_count: int = 0
     unchanged_count: int = 0
-    detail: ScanDiffDetail = field(default_factory=ScanDiffDetail)
+    detail: ScanDiffDetail = field(default_factory=ScanDiffDetail, compare=False)
     from_generation: int = 0
     to_generation: int = 0
     merkle_root: str = ""
     space_name: Optional[str] = None
-    space_generations: Dict[str, int] = field(default_factory=dict)
+    space_generations: Dict[str, int] = field(default_factory=dict, compare=False)
 
     @property
     def has_changes(self) -> bool:
@@ -178,16 +178,16 @@ class ScanDiffResult:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class SnapshotState:
     """Complete snapshot state for a target space query."""
 
     head_generation: int = 0
     merkle_root: str = ""
     config_hash: str = ""
-    entries: Dict[str, FileFingerprint] = field(default_factory=dict)
+    entries: Dict[str, FileFingerprint] = field(default_factory=dict, compare=False)
 
-    last_diff: Optional[ScanDiffResult] = None
+    last_diff: Optional[ScanDiffResult] = field(default=None, compare=False)
 
     def active_entries(self) -> Dict[str, FileFingerprint]:
         """Return only non-deleted FileFingerprint entries."""

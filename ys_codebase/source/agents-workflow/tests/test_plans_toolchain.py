@@ -2411,6 +2411,41 @@ class TestPlansModelRecord(_BasePlansToolchainTestCase):
             self.assertEqual(aw_cli.plan(["verify", "2026_11_01_1000_consolidated_auto", "--json"]), 0)
             self.assertEqual(aw_cli.plan(["archive"]), 1)
             self.assertEqual(aw_cli.plan(["unknown_subcmd"]), 1)
+
+        # Verify SessionTraceEngine reads YSCB_TRANSCRIPT_DIRS from RuntimeContext (get_env) and hook.core.py logs reload errors to stderr
+        from core.context import bind_runtime_context
+
+        ctx_transcript_dir = self.root / "ctx_transcripts"
+        ctx_transcript_dir.mkdir(parents=True, exist_ok=True)
+        (ctx_transcript_dir / "session.jsonl").write_text(
+            json.dumps({"step_index": 1, "created_at": "2026-11-01T10:00:00Z", "type": "USER_INPUT", "content": "ctx test"}) + "\n",
+            encoding="utf-8",
+        )
+        with bind_runtime_context(env={"YSCB_TRANSCRIPT_DIRS": str(ctx_transcript_dir)}):
+            ctx_eng = SessionTraceEngine(
+                plans_dir=self.plans_dir,
+                archive_dir=self.archive_dir,
+                project_root=self.root,
+            )
+            cands = ctx_eng._collect_candidate_jsonls(["antigravity"])
+            self.assertTrue(any(p.name == "session.jsonl" for _, p, _ in cands))
+
+        import importlib.util
+
+        aw_hook_path = PKG_ROOT / "scripts" / "hook.core.py"
+        aw_spec = importlib.util.spec_from_file_location("aw_hook_core_test", aw_hook_path)
+        assert aw_spec is not None and aw_spec.loader is not None
+        aw_hook_mod = importlib.util.module_from_spec(aw_spec)
+        aw_spec.loader.exec_module(aw_hook_mod)
+
+        logged_streams = []
+        with patch.object(aw_hook_mod, "ReleasePublisher") as mock_pub, patch.object(
+            aw_hook_mod, "log", side_effect=lambda msg, **kw: logged_streams.append((msg, kw.get("stream")))
+        ):
+            mock_pub.return_value.release_all.return_value = {"success": False, "error": "simulated failure"}
+            aw_hook_mod.on_reload()
+        self.assertEqual(len(logged_streams), 1)
+        self.assertEqual(logged_streams[0][1], "stderr")
         self.mark_passed()
 
 

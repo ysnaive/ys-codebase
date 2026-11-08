@@ -57,7 +57,9 @@ class ExecutionContext:
     module_name: str
     command: Optional[str] = None
     args: Optional[Union[Tuple[str, ...], List[str]]] = ()
-    metadata: Mapping[str, Any] = field(default_factory=lambda: types.MappingProxyType({}))
+    metadata: Mapping[str, Any] = field(
+        default_factory=lambda: types.MappingProxyType({}), compare=False
+    )
 
     def __post_init__(self) -> None:
         if self.args is None:
@@ -80,7 +82,7 @@ class RuntimeScope:
 
     virtual_cwd: Optional[str] = None
     env_overrides: Mapping[str, Optional[str]] = field(
-        default_factory=lambda: types.MappingProxyType({})
+        default_factory=lambda: types.MappingProxyType({}), compare=False
     )
     active_host_dir: Optional[str] = None
     active_yscb_dir: Optional[str] = None
@@ -194,6 +196,8 @@ class RuntimeContext:
         by callers or white-box unit tests remain valid and empty.
         """
         with self.lock:
+            self.uri_tls.__dict__.clear()
+            self.uri_reentrancy.__dict__.clear()
             self.uri_reconciling_tokens.clear()
             self.uri_schemes_cache.clear()
             self.uri_token_map_cache.clear()
@@ -206,8 +210,9 @@ class RuntimeContext:
             self.locale_module_base_dir_cache.clear()
             self.locale_safe_subpath_cache.clear()
             self.symbols_callable_cache.clear()
-            with self.loader_lock:
-                self.loaded_modules_cache.clear()
+            from core.loader import clear_loaded_modules
+
+            clear_loaded_modules()
             self.gitignore_custom_root_store.clear()
             self.validator_signature_cache.clear()
             self.dispatcher_global_registry = None
@@ -265,7 +270,8 @@ def bind_runtime_context(
 
     eff_cwd: Optional[str] = parent.virtual_cwd if parent else None
     if virtual_cwd is not None:
-        eff_cwd = os.path.normpath(os.path.abspath(str(virtual_cwd)))
+        cwd_str = str(virtual_cwd).strip()
+        eff_cwd = os.path.normpath(os.path.abspath(cwd_str)) if cwd_str else None
 
     merged_env: Dict[str, Optional[str]] = (
         dict(parent.env_overrides) if parent and parent.env_overrides else {}

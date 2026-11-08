@@ -443,7 +443,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 engine.embedding_service.suppress_guard_prompt = True
         except Exception as exc:
             self.set_state(self.STATE_STOPPED)
-            log_warn(f"[knowledge-db-worker] Failed to initialize engine in worker: {exc}")
+            log_warn(f"[knowledge-db-worker] Failed to initialize engine in worker: {exc}", stream="stderr")
             return
 
         try:
@@ -528,7 +528,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                         final_state = self.STATE_DEGRADED_OFFLINE
                         final_phase = "degraded_offline"
                         final_progress = f"向量模型下載失敗或離線降級: {dl_err}"
-                        log_warn(f"[knowledge-db-worker] Background model download failed: {dl_err}")
+                        log_warn(f"[knowledge-db-worker] Background model download failed: {dl_err}", stream="stderr")
                         return
                 else:
                     final_state = self.STATE_DEGRADED_OFFLINE
@@ -604,13 +604,13 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 # Brief yield between micro-batches
                 time.sleep(0.005)
         except Exception as exc:
-            log_warn(f"[knowledge-db-worker] Sync cycle warning: {exc}")
+            log_warn(f"[knowledge-db-worker] Sync cycle warning: {exc}", stream="stderr")
         finally:
             try:
                 if getattr(engine.pipeline, "_vector_index_dirty", False):
                     engine.pipeline.flush_vector_index()
             except Exception as flush_err:
-                log_warn(f"[knowledge-db-worker] Flush vector index on exit warning: {flush_err}")
+                log_warn(f"[knowledge-db-worker] Flush vector index on exit warning: {flush_err}", stream="stderr")
             if not self._stop_event.is_set():
                 self.set_state(final_state)
             if busy_start_ts > 0.0 or final_phase != "idle":

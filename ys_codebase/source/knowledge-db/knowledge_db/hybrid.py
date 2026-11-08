@@ -158,7 +158,7 @@ class HybridSearchEngine:
             query_vec = self.embedding_service.embed_query(query)
             raw_vector_hits = self.vector_index.search(query_vec, top_k=fetch_limit)
         except Exception as e:
-            log_warn(f"Vector search failed ({e}), falling back to pure BM25.")
+            log_warn(f"Vector search failed ({e}), falling back to pure BM25.", stream="stderr")
             return self._build_bm25_results(bm25_hits, symbols_map, limit, mode="fallback_bm25")
 
         # 依 file_types、spaces、kinds、languages 與純語意相似度門檻過濾向量候選集

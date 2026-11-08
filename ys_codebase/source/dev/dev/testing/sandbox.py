@@ -68,11 +68,12 @@ CLI Entry point for mock module {name}.
 from typing import Any
 from core.guard import guard_dispatch
 from core.commands import CmdBags
+from core.log import log
 
 
 def hello(cmd_bags: Any) -> int:
     guard_dispatch("{name}")
-    print(f"[{name}] Running mock cli hello")
+    log(f"[{name}] Running mock cli hello")
     return 0
 '''
         with open(os.path.join(pkg_ver_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:

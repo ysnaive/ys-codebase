@@ -26,7 +26,11 @@ from core.context import (
     get_runtime_context,
     get_virtual_cwd,
 )
-from core.loader import load_module_from_path
+from core.loader import (
+    clear_loaded_modules,
+    get_cached_module,
+    load_module_from_path,
+)
 from core.log import (
     clear_error_hint,
     extract_error_hint,
@@ -63,7 +67,7 @@ def clear_cache() -> None:
     ctx.dispatcher_global_registry = None
     ctx.dispatcher_global_registry_root = None
     ctx.dispatcher_module_cache.clear()
-    ctx.loaded_modules_cache.clear()
+    clear_loaded_modules()
     globals().pop("_GLOBAL_REGISTRY", None)
     globals().pop("_GLOBAL_REGISTRY_ROOT", None)
 
@@ -215,7 +219,7 @@ def _hot_dispatch_attempt(module_name: str, cmd_path_or_name: Any, args: List[st
     )
     captured_err: List[str] = []
     try:
-        timeout_sec = float(os.environ.get("YSCB_DISPATCH_TIMEOUT", "120.0"))
+        timeout_sec = float(get_env("YSCB_DISPATCH_TIMEOUT", "120.0") or "120.0")
     except (TypeError, ValueError):
         timeout_sec = 120.0
     try:
@@ -647,13 +651,15 @@ def dispatch_local(
         )
 
         # 載入模組
+        mod_pkg = module_name.replace("-", "_")
+        script_stem = os.path.splitext(os.path.basename(target_cli))[0].replace(".", "_")
+        unique_mod_name = f"_yscb_mod_{mod_pkg}_{script_stem}"
         mod_cache = _get_module_cache()
-        if target_cli in mod_cache:
-            mod = mod_cache[target_cli]
+        cached_mod = mod_cache.get(target_cli)
+        loader_mod = get_cached_module(unique_mod_name)
+        if cached_mod is not None and cached_mod is not loader_mod:
+            mod = cached_mod
         else:
-            mod_pkg = module_name.replace("-", "_")
-            script_stem = os.path.splitext(os.path.basename(target_cli))[0].replace(".", "_")
-            unique_mod_name = f"_yscb_mod_{mod_pkg}_{script_stem}"
             try:
                 mod = load_module_from_path(
                     unique_mod_name,
@@ -721,15 +727,20 @@ def dispatch_local(
             record_error_hint(primary_error_hint)
 
 
-def _maybe_check_and_print_updates() -> None:
+def _maybe_check_and_print_updates(argv: Optional[List[str]] = None) -> None:
     """於任意 CLI 指令執行完畢後觸發非阻塞 12 小時節流版本檢查與提示（含 yscb.py 入口檔自檢）。"""
     if get_env("YSCB_TESTING") == "1" or get_env("YSCB_TEST_SANDBOX") == "1":
         return
+    eff_argv = argv if argv is not None else sys.argv[1:]
+    is_json_mode = any(
+        str(a) in ("--json", "-j") or str(a).startswith("--json=") for a in eff_argv
+    )
     try:
         from core.update_checker import UpdateChecker
         checker = UpdateChecker()
         checker.check_updates(force=False)
-        checker.print_tips_if_available()
+        if not is_json_mode:
+            checker.print_tips_if_available()
     except Exception:
         pass
 
@@ -924,7 +935,7 @@ def _dispatch_inner(argv: List[str], host_dir: str, yscb_abs: str) -> int:
                 error_hint=get_last_error_hint() if hot_res != 0 else "",
                 yscb_abs=yscb_abs,
             )
-            _maybe_check_and_print_updates()
+            _maybe_check_and_print_updates(argv)
             return hot_res
         # 熱派發通訊失敗或常駐離線，透明降級至本地冷派發
 
@@ -953,7 +964,7 @@ def _dispatch_inner(argv: List[str], host_dir: str, yscb_abs: str) -> int:
         error_hint=get_last_error_hint() if ret != 0 else "",
         yscb_abs=yscb_abs,
     )
-    _maybe_check_and_print_updates()
+    _maybe_check_and_print_updates(argv)
     return ret
 
 

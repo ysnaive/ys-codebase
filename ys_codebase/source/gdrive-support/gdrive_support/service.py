@@ -8,10 +8,13 @@ Invariants:
 - When config.auto_sync is True, subscribes to core.space.subscribe and deterministically
   invokes _unsubscribe() upon stop().
 """
+import contextvars
+import os
 import threading
 import time
 from typing import Any, Callable, Dict, Optional
 
+from core.context import bind_runtime_context
 from core.log import bind_log_context, log_debug
 
 try:
@@ -48,9 +51,19 @@ except ImportError:
 
             sink = context.get("log_sink") if isinstance(context, dict) else None
             comp = getattr(self, "name", "worker")
+            raw_yscb = context.get("yscb_root") or context.get("yscb_dir") if isinstance(context, dict) else None
+            raw_host = context.get("workspace_root") or context.get("project_root") if isinstance(context, dict) else None
+            yscb_dir = os.path.abspath(str(raw_yscb)) if raw_yscb else None
+            host_dir = os.path.abspath(str(raw_host)) if raw_host else None
+            vcwd = yscb_dir or host_dir
+            ctx = contextvars.copy_context()
 
             def _wrapped() -> None:
-                with bind_log_context(
+                with bind_runtime_context(
+                    virtual_cwd=vcwd,
+                    host_dir=host_dir,
+                    yscb_dir=yscb_dir,
+                ), bind_log_context(
                     background_sink=sink,
                     component=comp,
                     isolated_error_scope=True,
@@ -61,7 +74,7 @@ except ImportError:
                 max_workers=1,
                 thread_name_prefix=thread_name or f"Worker-{comp}",
             )
-            fut = pool.submit(_wrapped)
+            fut = pool.submit(ctx.run, _wrapped)
 
             class _ManagedHandle:
                 def __init__(self, f: Any, p: Any) -> None:
@@ -173,7 +186,7 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
             )
 
         if self._thread is None or not self._thread.is_alive():
-            self.set_state(self.STATE_READY)
+            self.set_state(self.STATE_STARTING)
             self._thread = self.start_managed_thread(
                 self._run_loop,
                 context=context,

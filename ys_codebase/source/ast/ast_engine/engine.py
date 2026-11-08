@@ -574,12 +574,14 @@ class ASTEngine:
                 if self.scanner is not None:
                     if hasattr(self.scanner, "_load_snapshot_state"):
                         try:
-                            st = self.scanner._load_snapshot_state(
-                                q_name, is_ephemeral=bool(getattr(sp_cfg, "is_ephemeral", False))
-                            )
+                            st = self.scanner._load_snapshot_state(q_name)
                             if st is not None:
                                 snap_entries = getattr(st, "entries", None)
-                                snap_gen = int(getattr(st, "generation", 1) or 1)
+                                snap_gen = int(
+                                    getattr(st, "head_generation", 0)
+                                    or getattr(st, "generation", 0)
+                                    or 0
+                                )
                         except Exception:
                             snap_entries = None
                     if not snap_entries and hasattr(self.scanner, "snapshot"):
@@ -629,7 +631,13 @@ class ASTEngine:
                 files_map[sp_name] = rel_files
                 if self.scanner is not None and hasattr(self.scanner, "cursor_store"):
                     try:
-                        acked_gen = self.scanner.cursor_store.get_cursor(q_name, self.CONSUMER_ID)
+                        acked_raw = self.scanner.cursor_store.get_cursor(q_name, self.CONSUMER_ID)
+                        if isinstance(acked_raw, dict):
+                            acked_gen = int(
+                                acked_raw.get("acked_generation", acked_raw.get("acked_gen", 0)) or 0
+                            )
+                        else:
+                            acked_gen = int(acked_raw or 0)
                         space_gens[sp_name] = int(snap_gen or acked_gen or 1)
                         continue
                     except Exception:
@@ -719,7 +727,7 @@ class ASTEngine:
                 self._symbols_mtime = s_mtime
             return self._snapshot is not None
         except Exception as exc:
-            log_warn(f"Failed loading AST snapshot from disk: {exc}")
+            log_warn(f"Failed loading AST snapshot from disk: {exc}", stream="stderr")
             return False
 
     def _ensure_graph_loaded(self, force_reload: bool = False) -> bool:
@@ -732,7 +740,7 @@ class ASTEngine:
                 self._graph_mtime = g_mtime
             return self._graph is not None
         except Exception as exc:
-            log_warn(f"Failed loading AST call graph from disk: {exc}")
+            log_warn(f"Failed loading AST call graph from disk: {exc}", stream="stderr")
             return False
 
     def _ensure_loaded_from_disk(self, force_reload: bool = False) -> bool:
@@ -1062,7 +1070,7 @@ class ASTEngine:
                         log_debug(f"Cursor alignment after hot_patch_index skipped: {exc}")
                 return self._snapshot
             except Exception as exc:
-                log_warn(f"Hot-patch failed ({exc}), falling back to full build_index.")
+                log_warn(f"Hot-patch failed ({exc}), falling back to full build_index.", stream="stderr")
                 return self.build_index(spaces=spaces, allow_parallel=False)
 
     def ensure_jit_synced(
@@ -1419,7 +1427,11 @@ def get_engine(
         return ASTEngine(project_root=project_root, storage_dir=storage_dir)
     with _ENGINE_LOCK:
         inst = _get_default_engine_instance()
-        if inst is None:
+        expected_root = ASTEngine._resolve_default_project_root()
+        if (
+            inst is None
+            or (isinstance(inst, ASTEngine) and getattr(inst, "project_root", None) != expected_root)
+        ):
             inst = ASTEngine()
             _set_default_engine_instance(inst)
         return inst

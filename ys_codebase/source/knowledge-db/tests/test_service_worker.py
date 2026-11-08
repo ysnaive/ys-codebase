@@ -845,6 +845,70 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
 
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_offline_vector_fast_return_model_status_and_hook_ack_keyword(self):
+        """驗證離線無本地模型時 _resolve_vector_availability_with_worker_tolerance 0ms 瞬時返回、model_status 不觸發載入、以及 hook.core.py ack 傳遞 generation="""
+        src_dir = self.root_path / "src_offline_check"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        (src_dir / "item.py").write_text("def sample(): pass\n", encoding="utf-8")
+        storage_dir = self.root_path / "storage_offline_check"
+        sp = SpaceConfig(
+            qualified_name="project/off_space",
+            owner="project",
+            short_name="off_space",
+            entries=(str(src_dir),),
+        )
+        engine = KnowledgeEngine(
+            storage_dir=storage_dir,
+            contributes_data={"spaces": {"off_space": sp}},
+            embedding_mock_mode=False,
+        )
+        with patch.object(engine.embedding_service, "has_local_model", return_value=False), patch.object(
+            engine.embedding_service, "is_model_downloaded", return_value=False
+        ), patch("knowledge_db.pipeline.wait_until_worker_idle") as spy_wait:
+            avail = engine.pipeline._resolve_vector_availability_with_worker_tolerance(True)
+            self.assertFalse(avail)
+            spy_wait.assert_not_called()
+
+            with patch.object(engine.embedding_service, "_ensure_model") as spy_ensure:
+                st = engine.model_status()
+                self.assertFalse(st["is_available"])
+                self.assertFalse(st["is_downloaded"])
+                spy_ensure.assert_not_called()
+
+        # Verify scripts/hook.core.py fallback scanner.ack passes generation= keyword
+        import importlib.util
+
+        hook_path = Path(_pkg_root) / "scripts" / "hook.core.py"
+        spec = importlib.util.spec_from_file_location("kdb_hook_core_test", hook_path)
+        assert spec is not None and spec.loader is not None
+        hook_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook_mod)
+
+        ack_calls = []
+
+        class _FakeDiffRes:
+            has_changes = False
+            to_generation = 7
+            space_generations = {"project/off_space": 7}
+
+        class _FakeScanner:
+            def diff(self, *_a, **_kw):
+                return _FakeDiffRes()
+
+            def ack(self, space_query, **kwargs):
+                ack_calls.append((space_query, kwargs))
+
+        class _FakePipe:
+            scanner = _FakeScanner()
+
+        with hook_mod._resolve_consume_diff(_FakePipe(), space_name="project/off_space") as dres:
+            self.assertEqual(dres.to_generation, 7)
+        self.assertEqual(len(ack_calls), 1)
+        self.assertEqual(ack_calls[0][1].get("generation"), 7)
+        self.assertNotIn("to_generation", ack_calls[0][1])
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

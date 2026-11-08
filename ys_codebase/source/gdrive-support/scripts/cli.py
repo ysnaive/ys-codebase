@@ -1,6 +1,7 @@
 """
 CLI Entry point for module:gdrive-support (atomic operations, branch management, and 3-way sync).
 """
+from dataclasses import replace
 import json
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -79,7 +80,7 @@ def _build_coordinator(sandbox_dir: str = "") -> Any:
     cfg = load_gdrive_config()
     effective_sandbox = str(sandbox_dir or cfg.sandbox_dir or "").strip()
     if effective_sandbox:
-        object.__setattr__(cfg, "sandbox_dir", effective_sandbox)
+        cfg = replace(cfg, sandbox_dir=effective_sandbox)
         sbx_root = Path(effective_sandbox).resolve()
         transport = create_transport(cfg, sandbox_dir=effective_sandbox)
         return SyncCoordinator(

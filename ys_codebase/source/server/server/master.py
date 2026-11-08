@@ -258,8 +258,42 @@ class MasterSupervisor:
         chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": error_msg})
         return 1
 
+    def _update_worker_service_status(self, packet: Dict[str, Any]) -> None:
+        """Synchronizes `_worker_services` from a `service_status` IPC packet."""
+        services_list = packet.get("services")
+        if isinstance(services_list, list):
+            self._worker_services = list(services_list)
+            return
+        svc_name = packet.get("name")
+        if not isinstance(svc_name, str) or not svc_name:
+            return
+        svc_state = str(packet.get("state") or "READY")
+        svc_alive = bool(packet.get("alive", svc_state != "STOPPED"))
+        updated: List[Dict[str, Any]] = []
+        found = False
+        for item in self._worker_services or []:
+            entry = dict(item)
+            if entry.get("name") == svc_name:
+                entry["state"] = svc_state
+                entry["alive"] = svc_alive
+                if "provider" in packet and packet["provider"]:
+                    entry["provider"] = packet["provider"]
+                if "description" in packet and packet["description"] is not None:
+                    entry["description"] = packet["description"]
+                found = True
+            updated.append(entry)
+        if not found:
+            updated.append({
+                "name": svc_name,
+                "provider": str(packet.get("provider") or "unknown"),
+                "description": str(packet.get("description") or ""),
+                "alive": svc_alive,
+                "state": svc_state,
+            })
+        self._worker_services = updated
+
     def _handle_worker_control_packet(self, packet: Dict[str, Any]) -> bool:
-        """Handles control IPC packets ('touch_activity' and 'log') from the warm worker."""
+        """Handles control IPC packets ('touch_activity', 'log', and 'service_status') from the warm worker."""
         pkt_type = packet.get("type")
         if pkt_type == "touch_activity":
             self.touch_activity(source=str(packet.get("source") or "worker"))
@@ -270,6 +304,9 @@ class MasterSupervisor:
                 packet.get("msg", ""),
                 component=packet.get("component", "worker"),
             )
+            return True
+        if pkt_type == "service_status":
+            self._update_worker_service_status(packet)
             return True
         return False
 
@@ -690,6 +727,8 @@ class MasterSupervisor:
                 chunk_emitter(packet)
 
                 if packet.get("type") == "task_finish":
+                    if "services" in packet and isinstance(packet["services"], list):
+                        self._worker_services = packet["services"]
                     exit_code = packet.get("exit_code", 0)
                     dur_ms = packet.get("duration_ms", 0.0)
                     self.logger.info(f"Task dispatch finished: module='{target_mod}', exit_code={exit_code}, duration={dur_ms:.1f}ms")

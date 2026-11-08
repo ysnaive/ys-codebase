@@ -87,6 +87,9 @@ def config_list(cmd_bags: CmdBags) -> int:
 
     mods = [mod_filter] if mod_filter else core_config.list_modules()
     if not mods:
+        if json_output:
+            log(json.dumps({}, indent=2, ensure_ascii=False))
+            return 0
         log_info("[core:config] No configuration found for any module.")
         return 0
 

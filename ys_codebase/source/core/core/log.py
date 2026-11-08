@@ -48,7 +48,8 @@ class LogExecutionScope:
     background_sink: Optional["RollingFileLogger"] = None
     component: str = "core"
     debug_enabled: bool = False
-    error_chunks: List[str] = field(default_factory=list)
+    error_chunks: List[str] = field(default_factory=list, compare=False)
+    isolated_error_scope: bool = False
 
 
 _ACTIVE_LOG_SCOPE: ContextVar[Optional[LogExecutionScope]] = ContextVar(
@@ -103,12 +104,19 @@ def bind_log_context(
     else:
         err_list = parent.error_chunks
 
+    eff_isolated = (
+        True
+        if isolated_error_scope
+        else (parent.isolated_error_scope if parent is not None else False)
+    )
+
     scope = LogExecutionScope(
         streamer=eff_streamer,
         background_sink=eff_sink,
         component=eff_comp,
         debug_enabled=eff_debug,
         error_chunks=err_list,
+        isolated_error_scope=eff_isolated,
     )
     token: Token = _ACTIVE_LOG_SCOPE.set(scope)
     try:
@@ -146,6 +154,8 @@ def record_error_hint(text: str) -> None:
     if scope is not None:
         if len(scope.error_chunks) < MAX_ERROR_HINT_CHUNKS:
             scope.error_chunks.append(cleaned)
+        if scope.isolated_error_scope:
+            return
     err_lock, err_chunks, _ = _get_fallback_log_state()
     with err_lock:
         if len(err_chunks) < MAX_ERROR_HINT_CHUNKS:
@@ -156,7 +166,7 @@ def get_last_error_hint(max_len: int = 200) -> str:
     """Extracts the highest-priority error summary from accumulated error chunks in the current dispatch."""
     scope = _ACTIVE_LOG_SCOPE.get()
     chunks: List[str] = []
-    if scope is not None and scope.error_chunks:
+    if scope is not None and (scope.isolated_error_scope or scope.error_chunks):
         chunks = list(scope.error_chunks)
     else:
         err_lock, err_chunks, _ = _get_fallback_log_state()
@@ -173,6 +183,8 @@ def clear_error_hint() -> None:
     scope = _ACTIVE_LOG_SCOPE.get()
     if scope is not None:
         scope.error_chunks.clear()
+        if scope.isolated_error_scope:
+            return
     err_lock, err_chunks, _ = _get_fallback_log_state()
     with err_lock:
         err_chunks.clear()
@@ -224,8 +236,6 @@ def _write_to_active_target(
         # target_stream_obj will differ from expected_proxy -> write to the inner stream!
         if target_stream_obj is expected_proxy or target_stream_obj is None:
             scope.streamer.write(norm_stream, text)
-            if flush:
-                scope.streamer.flush()
             return
 
     if target_stream_obj is not None:
@@ -359,6 +369,16 @@ class _StreamProxy(io.TextIOBase):
     def write(self, s: str) -> int:
         if not s:
             return 0
+        scope = _ACTIVE_LOG_SCOPE.get()
+        if scope is not None and scope.background_sink is not None:
+            sink = scope.background_sink
+            comp = scope.component or "service"
+            lvl = "WARNING" if self._stream_name == "stderr" else "INFO"
+            stripped = s.rstrip("\r\n")
+            if stripped:
+                for ln in stripped.splitlines():
+                    sink.log(lvl, ln, component=comp)
+            return len(s)
         if self._stream_name == "stderr":
             record_error_hint(s)
         self._streamer.write(self._stream_name, s)
@@ -482,6 +502,8 @@ class DebouncedIOStreamer:
 
     def start_capture(self) -> "DebouncedIOStreamer":
         with self._lock:
+            if self._scope_token is not None and not self._is_closed:
+                return self
             self._is_closed = False
             self._orig_stdout = sys.stdout
             self._orig_stderr = sys.stderr
@@ -490,10 +512,11 @@ class DebouncedIOStreamer:
             parent = _ACTIVE_LOG_SCOPE.get()
             new_scope = LogExecutionScope(
                 streamer=self,
-                background_sink=parent.background_sink if parent else None,
+                background_sink=None,
                 component=parent.component if parent else "worker",
                 debug_enabled=parent.debug_enabled if parent else False,
-                error_chunks=parent.error_chunks if parent else [],
+                error_chunks=[],
+                isolated_error_scope=False,
             )
             self._scope_token = _ACTIVE_LOG_SCOPE.set(new_scope)
         return self
@@ -808,7 +831,19 @@ class RollingFileLogger:
             self._file.write(line)
             self._file.flush()
             if self.echo_console:
-                log_stream(line, stream="stdout", flush=True)
+                scope = _ACTIVE_LOG_SCOPE.get()
+                if scope is not None and scope.background_sink is self:
+                    target_out = sys.stdout
+                    if isinstance(target_out, _StreamProxy):
+                        target_out = target_out._streamer._orig_stdout
+                    if target_out is not None and not isinstance(target_out, _StreamProxy):
+                        try:
+                            target_out.write(line)
+                            target_out.flush()
+                        except OSError:
+                            pass
+                else:
+                    log_stream(line, stream="stdout", flush=True)
 
     def log(
         self,
@@ -885,34 +920,39 @@ def _rotate_lines_file(
     jsonl_only: bool = False,
 ) -> None:
     """Atomically truncates `target_path` to retain only the newest `keep_lines` lines."""
-    try:
-        raw_lines = target_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        target_keep = max(1, keep_lines)
-        kept_reversed: List[str] = []
-        for ln in reversed(raw_lines):
-            if jsonl_only:
-                if _parse_jsonl_dict_line(ln) is not None:
-                    kept_reversed.append(ln.strip())
-            else:
-                if ln.strip():
-                    kept_reversed.append(ln)
-            if len(kept_reversed) >= target_keep:
-                break
-
-        kept_reversed.reverse()
-        kept = kept_reversed
-        tmp_path = target_path.with_suffix(f".tmp.{os.getpid()}")
+    _, _, file_op_lock = _get_fallback_log_state()
+    with file_op_lock:
         try:
-            tmp_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
-            _safe_replace_file(str(tmp_path), str(target_path))
-        finally:
-            if tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
-    except Exception:
-        pass
+            raw_text = target_path.read_text(encoding="utf-8", errors="replace")
+            raw_lines = [ln.rstrip("\r") for ln in raw_text.split("\n")]
+            target_keep = max(1, keep_lines)
+            kept_reversed: List[str] = []
+            for ln in reversed(raw_lines):
+                if jsonl_only:
+                    if _parse_jsonl_dict_line(ln) is not None:
+                        kept_reversed.append(ln.strip())
+                else:
+                    if ln.strip():
+                        kept_reversed.append(ln)
+                if len(kept_reversed) >= target_keep:
+                    break
+
+            kept_reversed.reverse()
+            kept = kept_reversed
+            tmp_path = target_path.with_suffix(
+                f".tmp.{os.getpid()}.{threading.get_ident()}"
+            )
+            try:
+                tmp_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+                _safe_replace_file(str(tmp_path), str(target_path))
+            finally:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
+        except Exception:
+            pass
 
 
 def log_file(

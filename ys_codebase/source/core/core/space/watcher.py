@@ -309,7 +309,14 @@ def is_watcher_active(
     worker = get_active_watcher()
     if worker is not None:
         is_alive_fn = getattr(worker, "is_alive", None)
-        if callable(is_alive_fn) and is_alive_fn():
+        worker_proj = getattr(worker, "project_root", None)
+        worker_obs = getattr(worker, "_observer", None)
+        proj_matches = (
+            worker_proj is not None
+            and os.path.normcase(os.path.abspath(str(worker_proj)))
+            == os.path.normcase(os.path.abspath(str(reg.project_root)))
+        )
+        if callable(is_alive_fn) and is_alive_fn() and proj_matches and worker_obs is not None:
             return True
 
     state = read_watcher_state(

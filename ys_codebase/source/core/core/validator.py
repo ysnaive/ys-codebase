@@ -65,6 +65,13 @@ class _ContributesValidatorMeta(type):
     def _SIGNATURE_PARSE_CACHE(cls) -> Dict[str, Dict[str, Any]]:
         return get_runtime_context().validator_signature_cache
 
+    @_SIGNATURE_PARSE_CACHE.setter
+    def _SIGNATURE_PARSE_CACHE(cls, value: Dict[str, Dict[str, Any]]) -> None:
+        cache = get_runtime_context().validator_signature_cache
+        cache.clear()
+        if isinstance(value, dict):
+            cache.update(value)
+
 
 class ContributesValidator(metaclass=_ContributesValidatorMeta):
     """

@@ -79,8 +79,10 @@ def load_module_from_path(
 
     with ctx.loader_lock:
         cached = ctx.loaded_modules_cache.get(module_key)
+        prev_aliases: Tuple[str, ...] = ()
         if cached is not None:
-            c_path, c_mtime, c_size, c_mod = cached
+            c_path, c_mtime, c_size, c_mod = cached[:4]
+            prev_aliases = cached[4] if len(cached) > 4 else ()
             if c_path == real_path and (
                 not reload_if_changed or (c_mtime == mtime_ns and c_size == size and mtime_ns != -1)
             ):
@@ -88,6 +90,18 @@ def load_module_from_path(
                 for ak in alias_keys:
                     if ak:
                         sys.modules[ak] = c_mod
+                if alias_keys:
+                    merged_aliases = tuple(
+                        dict.fromkeys([*prev_aliases, *(ak for ak in alias_keys if ak)])
+                    )
+                    if merged_aliases != prev_aliases:
+                        ctx.loaded_modules_cache[module_key] = (
+                            c_path,
+                            c_mtime,
+                            c_size,
+                            c_mod,
+                            merged_aliases,
+                        )
                 return c_mod
 
         spec = importlib.util.spec_from_file_location(module_key, real_path)
@@ -95,7 +109,10 @@ def load_module_from_path(
             raise ImportError(f"Cannot create module spec for '{real_path}' (key='{module_key}')")
 
         mod_obj = importlib.util.module_from_spec(spec)
-        all_keys = (module_key, *(ak for ak in alias_keys if ak))
+        merged_aliases = tuple(
+            dict.fromkeys([*prev_aliases, *(ak for ak in alias_keys if ak)])
+        )
+        all_keys = (module_key, *merged_aliases)
         prev_entries: Dict[str, Optional[types.ModuleType]] = {
             k: sys.modules.get(k) for k in all_keys
         }
@@ -111,10 +128,19 @@ def load_module_from_path(
                     sys.modules.pop(k, None)
                 else:
                     sys.modules[k] = prev_mod
-            ctx.loaded_modules_cache.pop(module_key, None)
+            if cached is not None:
+                ctx.loaded_modules_cache[module_key] = cached
+            else:
+                ctx.loaded_modules_cache.pop(module_key, None)
             raise
 
-        ctx.loaded_modules_cache[module_key] = (real_path, mtime_ns, size, mod_obj)
+        ctx.loaded_modules_cache[module_key] = (
+            real_path,
+            mtime_ns,
+            size,
+            mod_obj,
+            merged_aliases,
+        )
         return mod_obj
 
 
@@ -127,19 +153,22 @@ def get_cached_module(module_key: str) -> Optional[types.ModuleType]:
 
 
 def clear_loaded_modules(prefix: Optional[str] = None) -> None:
-    """Clears cached module entries (and removes matching `_yscb_` keys from `sys.modules`)."""
+    """Clears cached module entries (and removes matching `_yscb_` and alias keys from `sys.modules`)."""
     ctx = get_runtime_context()
     with ctx.loader_lock:
         if prefix is None:
-            keys = list(ctx.loaded_modules_cache.keys())
+            items = list(ctx.loaded_modules_cache.items())
             ctx.loaded_modules_cache.clear()
         else:
             keys = [k for k in ctx.loaded_modules_cache if k.startswith(prefix)]
-            for k in keys:
-                ctx.loaded_modules_cache.pop(k, None)
-        for k in keys:
+            items = [(k, ctx.loaded_modules_cache.pop(k, None)) for k in keys]
+        for k, entry in items:
             if k.startswith("_yscb_"):
                 sys.modules.pop(k, None)
+            if isinstance(entry, tuple) and len(entry) > 4:
+                for ak in entry[4]:
+                    if ak:
+                        sys.modules.pop(ak, None)
 
 
 __all__ = (

@@ -1775,6 +1775,62 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
         self.assertIn("docs/journal_recovered.md", main_tracked)
         self.assertNotIn("docs/batch_0.md", main_tracked)
         self.assertFalse(self.coord.state_journal_path.exists())
+
+        # --- 4. Verify ThreadPoolExecutor ContextVar propagation & GDriveSyncServiceWorker state transition ---
+        from core.context import bind_runtime_context, get_env
+
+        observed_worker_envs: list[str] = []
+        orig_upload_check = self.transport.upload_file
+
+        def _ctx_checking_upload(local_path, remote_path, in_place_file_id=None):
+            val = get_env("YSCB_TEST_GDRIVE_POOL_CTX")
+            if val:
+                observed_worker_envs.append(val)
+            return orig_upload_check(local_path, remote_path, in_place_file_id=in_place_file_id)
+
+        (self.docs_dir / "ctx_pool_1.md").write_text("Pool 1\n", encoding="utf-8")
+        (self.docs_dir / "ctx_pool_2.md").write_text("Pool 2\n", encoding="utf-8")
+        self.transport.upload_file = _ctx_checking_upload  # type: ignore[method-assign]
+        try:
+            with bind_runtime_context(env={"YSCB_TEST_GDRIVE_POOL_CTX": "pool_ctx_propagated"}):
+                rep_ctx = self.coord.run_sync(mode="push")
+            self.assertGreaterEqual(len(rep_ctx.pushed), 2)
+            self.assertTrue(all(v == "pool_ctx_propagated" for v in observed_worker_envs))
+            self.assertGreaterEqual(len(observed_worker_envs), 2)
+        finally:
+            self.transport.upload_file = orig_upload_check  # type: ignore[method-assign]
+
+        states_before_thread: list[str] = []
+        active_cfg = GDriveConfig(
+            root_folder_id="sandbox_root",
+            active_branch="main",
+            auto_sync=True,
+            repo_sync_enabled=True,
+            poll_interval_sec=60.0,
+            sandbox_dir=self.sandbox_dir.as_posix(),
+            sync_spaces=(SyncSpaceSpec(space="docs"),),
+        )
+        svc_worker = GDriveSyncServiceWorker(
+            config=active_cfg,
+            coordinator=self.coord,
+            subscribe_fn=lambda cb, spaces=None: (lambda: None),
+        )
+        orig_start_managed = svc_worker.start_managed_thread
+
+        def _spy_start_managed(target, **kwargs):
+            states_before_thread.append(svc_worker._state)
+            return orig_start_managed(target, **kwargs)
+
+        svc_worker.start_managed_thread = _spy_start_managed  # type: ignore[method-assign]
+        svc_worker.start()
+        try:
+            self.assertEqual(states_before_thread, [svc_worker.STATE_STARTING])
+            deadline = time.monotonic() + 2.0
+            while svc_worker.state != svc_worker.STATE_READY and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(svc_worker.state, svc_worker.STATE_READY)
+        finally:
+            svc_worker.stop()
         self.mark_passed()
 
 

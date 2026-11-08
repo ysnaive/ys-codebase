@@ -1051,6 +1051,15 @@ class TestGDriveAtomicApiAndConfig(YSCBTestCase):
         self.assertTrue(hook_mod.on_register_file_spaces({"registry": _DummyReg()}))
         self.assertIn("gdrive-support/cloud", registered_spaces)
         self.assertTrue(registered_spaces["gdrive-support/cloud"]["watch"])
+
+        # 10. Verify cli._build_coordinator uses dataclasses.replace without mutating original GDriveConfig instance
+        from unittest.mock import patch
+
+        orig_cfg = GDriveConfig(root_folder_id="root_1", sandbox_dir="")
+        with patch("gdrive_support.config.load_gdrive_config", return_value=orig_cfg):
+            coord_built = cli._build_coordinator(sandbox_dir=self.sandbox_dir.as_posix())
+        self.assertEqual(orig_cfg.sandbox_dir, "")
+        self.assertEqual(coord_built.config.sandbox_dir, self.sandbox_dir.as_posix())
         self.mark_passed()
 
 

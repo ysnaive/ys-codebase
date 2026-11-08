@@ -9,15 +9,17 @@ the server's idle TTL and shutdown policy.
 """
 
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
+import contextvars
 import importlib
 import json
 import os
 import threading
 import time
 import urllib.request
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, ContextManager, Dict, Iterator, List, Optional
 
-from core.context import get_env, get_runtime_context, get_virtual_cwd
+from core.context import bind_runtime_context, get_env, get_runtime_context, get_virtual_cwd
 from core.log import bind_log_context, log_error, log_warn
 from core.platform import ensure_installed_modules_path
 
@@ -170,6 +172,7 @@ class BaseServiceWorker(ABC):
 
     _state: str = STATE_STOPPED
     _log_sink: Optional[Any] = None
+    _status_notify_fn: Optional[Callable[[str, str, bool], None]] = None
 
     @property
     @abstractmethod
@@ -197,8 +200,45 @@ class BaseServiceWorker(ABC):
         return self.STATE_STOPPED
 
     def set_state(self, new_state: str) -> None:
-        """Updates the worker's lifecycle state."""
-        self._state = str(new_state)
+        """Updates the worker's lifecycle state and notifies the supervisor if changed."""
+        prev_state = getattr(self, "_state", None)
+        target_state = str(new_state)
+        self._state = target_state
+        if prev_state == target_state:
+            return
+        alive = target_state != self.STATE_STOPPED
+        notify_fn = getattr(self, "_status_notify_fn", None)
+        if callable(notify_fn):
+            try:
+                notify_fn(self.name, target_state, alive)
+                return
+            except Exception:
+                pass
+        sink = getattr(self, "_log_sink", None)
+        emit_fn = getattr(sink, "emit_packet_fn", None) if sink is not None else None
+        if callable(emit_fn):
+            try:
+                emit_fn({
+                    "type": "service_status",
+                    "name": self.name,
+                    "state": target_state,
+                    "alive": alive,
+                })
+            except Exception:
+                pass
+
+    def _resolve_worker_runtime_dirs(self, context: Optional[Dict[str, Any]] = None) -> tuple[Optional[str], Optional[str]]:
+        ctx_dict = context if isinstance(context, dict) else getattr(self, "context", None)
+        yscb_dir: Optional[str] = None
+        host_dir: Optional[str] = None
+        if isinstance(ctx_dict, dict):
+            raw_yscb = ctx_dict.get("yscb_root") or ctx_dict.get("yscb_dir")
+            if raw_yscb:
+                yscb_dir = os.path.abspath(str(raw_yscb))
+            raw_host = ctx_dict.get("workspace_root") or ctx_dict.get("project_root") or ctx_dict.get("host_dir")
+            if raw_host:
+                host_dir = os.path.abspath(str(raw_host))
+        return host_dir, yscb_dir
 
     def bind_worker_log_context(self, context: Optional[Dict[str, Any]] = None) -> Any:
         """
@@ -216,6 +256,29 @@ class BaseServiceWorker(ABC):
             isolated_error_scope=True,
         )
 
+    @contextmanager
+    def bind_worker_context(self, context: Optional[Dict[str, Any]] = None) -> Iterator[Any]:
+        """
+        Context manager binding both `RuntimeScope` (`bind_runtime_context`) and
+        `LogExecutionScope` (`bind_worker_log_context`) for background worker threads and callbacks.
+        """
+        host_dir, yscb_dir = self._resolve_worker_runtime_dirs(context)
+        vcwd = yscb_dir or host_dir
+        env_overrides: Optional[Dict[str, Optional[str]]] = None
+        if host_dir or yscb_dir:
+            env_overrides = {}
+            if yscb_dir:
+                env_overrides["YSCB_ROOT_DIR"] = yscb_dir
+            if host_dir:
+                env_overrides["YSCB_HOST_DIR"] = host_dir
+        with bind_runtime_context(
+            virtual_cwd=vcwd,
+            env=env_overrides,
+            host_dir=host_dir,
+            yscb_dir=yscb_dir,
+        ) as runtime_scope, self.bind_worker_log_context(context):
+            yield runtime_scope
+
     def start_managed_thread(
         self,
         target: Callable[[], None],
@@ -224,18 +287,21 @@ class BaseServiceWorker(ABC):
         thread_name: Optional[str] = None,
     ) -> threading.Thread:
         """
-        Spawns and starts a managed daemon `threading.Thread` wrapped in `bind_worker_log_context`
-        so all `core.log` calls on the worker thread route to the background sink.
+        Spawns and starts a managed daemon `threading.Thread` copying parent `contextvars`
+        and wrapping execution in `bind_worker_context` (`bind_runtime_context` + `bind_worker_log_context`)
+        so all `core.uri` and `core.log` calls on the worker thread remain isolated.
         """
         if isinstance(context, dict) and context.get("log_sink") is not None:
             self._log_sink = context.get("log_sink")
 
+        ctx = contextvars.copy_context()
+
         def _wrapped_entry() -> None:
-            with self.bind_worker_log_context(context):
+            with self.bind_worker_context(context):
                 target()
 
         t_name = thread_name or f"Worker-{self.name}"
-        t = threading.Thread(target=_wrapped_entry, name=t_name, daemon=True)
+        t = threading.Thread(target=lambda: ctx.run(_wrapped_entry), name=t_name, daemon=True)
         t.start()
         return t
 
@@ -291,7 +357,7 @@ class ServiceManager:
     def __init__(self) -> None:
         self._services: Dict[str, BaseServiceWorker] = {}
         self._metadata: Dict[str, Dict[str, Any]] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def register(
         self,
@@ -374,22 +440,48 @@ class ServiceManager:
 
     def start_all(self, context: Dict[str, Any]) -> None:
         sink = context.get("log_sink") if isinstance(context, dict) else None
+        emit_fn = getattr(sink, "emit_packet_fn", None) if sink is not None else None
         with self._lock:
-            for name, worker in self._services.items():
-                meta = self._metadata.get(name, {})
-                if not meta.get("auto_start", True):
-                    continue
-                try:
-                    if sink is not None:
-                        setattr(worker, "_log_sink", sink)
-                    with bind_log_context(
-                        background_sink=sink,
-                        component=name,
-                        isolated_error_scope=True,
-                    ):
-                        worker.start(context)
-                except Exception as e:
-                    log_error(f"[Server Service] Failed to start worker '{name}': {e}")
+            items = list(self._services.items())
+            meta_snapshot = {k: dict(v) for k, v in self._metadata.items()}
+
+        for name, worker in items:
+            meta = meta_snapshot.get(name, {})
+            if not meta.get("auto_start", True):
+                continue
+            try:
+                if sink is not None:
+                    setattr(worker, "_log_sink", sink)
+                if callable(emit_fn):
+                    def _make_notifier(reg_name: str, prov: str, desc: str) -> Callable[[str, str, bool], None]:
+                        def _notify(_worker_name: str, state_val: str, alive_val: bool) -> None:
+                            emit_fn({
+                                "type": "service_status",
+                                "name": reg_name,
+                                "provider": prov,
+                                "description": desc,
+                                "state": state_val,
+                                "alive": alive_val,
+                            })
+                        return _notify
+
+                    setattr(
+                        worker,
+                        "_status_notify_fn",
+                        _make_notifier(
+                            name,
+                            str(meta.get("provider", "unknown")),
+                            str(meta.get("description", "")),
+                        ),
+                    )
+                with bind_log_context(
+                    background_sink=sink,
+                    component=name,
+                    isolated_error_scope=True,
+                ):
+                    worker.start(context)
+            except Exception as e:
+                log_error(f"[Server Service] Failed to start worker '{name}': {e}")
 
     def stop_all(self) -> None:
         with self._lock:

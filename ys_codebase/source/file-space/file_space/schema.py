@@ -36,9 +36,9 @@ class FileSpaceConfig:
     """
 
     name: str
-    include: List[Any] = field(default_factory=list)
-    exclude: List[str] = field(default_factory=list)
-    file_patterns: List[str] = field(default_factory=list)
+    include: List[Any] = field(default_factory=list, hash=False)
+    exclude: List[str] = field(default_factory=list, hash=False)
+    file_patterns: List[str] = field(default_factory=list, hash=False)
     description: str = ""
     hash_policy: Union[HashPolicy, str] = HashPolicy.ADAPTIVE
     large_file_threshold_mb: int = 10
@@ -46,8 +46,8 @@ class FileSpaceConfig:
     watch: bool = True
     weight: float = 1.0
     origin: Union[FileSpaceOrigin, str] = FileSpaceOrigin.PROJECT
-    owner_modules: List[str] = field(default_factory=list)
-    raw_include_uris: List[str] = field(default_factory=list)
+    owner_modules: List[str] = field(default_factory=list, hash=False)
+    raw_include_uris: List[str] = field(default_factory=list, hash=False)
 
     def __post_init__(self) -> None:
         if isinstance(self.hash_policy, str):

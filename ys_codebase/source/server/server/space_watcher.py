@@ -69,45 +69,49 @@ class _CoreSpaceWatchdogHandler(FileSystemEventHandler):
         self.worker = worker
 
     def on_any_event(self, event: FileSystemEvent) -> None:
-        is_dir = bool(getattr(event, "is_directory", False))
-        ev_type = str(getattr(event, "event_type", "modified"))
-        if is_dir:
-            if ev_type in ("created", "moved", "deleted"):
-                try:
-                    setattr(event, "_yscb_handled", True)
-                except Exception:
-                    pass
-                self._forward_dir_event(event, ev_type)
-            return
+        with self.worker.bind_worker_context():
+            is_dir = bool(getattr(event, "is_directory", False))
+            ev_type = str(getattr(event, "event_type", "modified"))
+            if is_dir:
+                if ev_type in ("created", "moved", "deleted"):
+                    try:
+                        setattr(event, "_yscb_handled", True)
+                    except Exception:
+                        pass
+                    self._forward_dir_event(event, ev_type)
+                return
 
-        src_path = getattr(event, "src_path", None)
-        if src_path:
-            self.worker.notify_file_event(
-                str(src_path), is_directory=False, event_type=ev_type
-            )
-        dest_path = getattr(event, "dest_path", None)
-        if dest_path:
-            self.worker.notify_file_event(
-                str(dest_path), is_directory=False, event_type=ev_type
-            )
+            src_path = getattr(event, "src_path", None)
+            if src_path:
+                self.worker.notify_file_event(
+                    str(src_path), is_directory=False, event_type=ev_type
+                )
+            dest_path = getattr(event, "dest_path", None)
+            if dest_path:
+                self.worker.notify_file_event(
+                    str(dest_path), is_directory=False, event_type=ev_type
+                )
 
     def on_created(self, event: FileSystemEvent) -> None:
         if getattr(event, "is_directory", False) and not getattr(
             event, "_yscb_handled", False
         ):
-            self._forward_dir_event(event, "created")
+            with self.worker.bind_worker_context():
+                self._forward_dir_event(event, "created")
 
     def on_moved(self, event: FileSystemEvent) -> None:
         if getattr(event, "is_directory", False) and not getattr(
             event, "_yscb_handled", False
         ):
-            self._forward_dir_event(event, "moved")
+            with self.worker.bind_worker_context():
+                self._forward_dir_event(event, "moved")
 
     def on_deleted(self, event: FileSystemEvent) -> None:
         if getattr(event, "is_directory", False) and not getattr(
             event, "_yscb_handled", False
         ):
-            self._forward_dir_event(event, "deleted")
+            with self.worker.bind_worker_context():
+                self._forward_dir_event(event, "deleted")
 
     def _forward_dir_event(self, event: FileSystemEvent, ev_type: str) -> None:
         src_path = getattr(event, "src_path", None)
@@ -253,6 +257,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
             self._stop_event,
             timeout=timeout,
         )
+        self._thread = None
 
     def is_alive(self) -> bool:
         """Return whether the background thread is alive."""
@@ -543,25 +548,30 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
 
         batch_set = set(target_qnames)
         last_dict: Optional[Dict[str, Any]] = None
-        for q_name in target_qnames:
-            with self._lock:
-                is_dirty = q_name in self._dirty_spaces
-                dirty_paths = set(self._dirty_paths_by_space.pop(q_name, set()))
-                full_rescan = q_name in self._full_rescan_spaces
-                self._full_rescan_spaces.discard(q_name)
-                self._dirty_spaces.discard(q_name)
+        self.set_state(self.STATE_UPDATING)
+        try:
+            for q_name in target_qnames:
+                with self._lock:
+                    is_dirty = q_name in self._dirty_spaces
+                    dirty_paths = set(self._dirty_paths_by_space.pop(q_name, set()))
+                    full_rescan = q_name in self._full_rescan_spaces
+                    self._full_rescan_spaces.discard(q_name)
+                    self._dirty_spaces.discard(q_name)
 
-            if not is_dirty and not dirty_paths and not full_rescan:
-                continue
+                if not is_dirty and not dirty_paths and not full_rescan:
+                    continue
 
-            try:
-                diff_res = self._refresh_or_patch_space(
-                    q_name, dirty_paths, full_rescan, batch_qnames=batch_set
-                )
-                last_dict = diff_res.to_dict()
-            except Exception as exc:
-                self._rollback_space_batch(q_name, dirty_paths, full_rescan)
-                log_error(f"Error flushing space '{q_name}' immediately: {exc}")
+                try:
+                    diff_res = self._refresh_or_patch_space(
+                        q_name, dirty_paths, full_rescan, batch_qnames=batch_set
+                    )
+                    last_dict = diff_res.to_dict()
+                except Exception as exc:
+                    self._rollback_space_batch(q_name, dirty_paths, full_rescan)
+                    log_error(f"Error flushing space '{q_name}' immediately: {exc}")
+        finally:
+            if not self._stop_event.is_set():
+                self.set_state(self.STATE_READY)
 
         self._finalize_dirty_marker()
         return last_dict

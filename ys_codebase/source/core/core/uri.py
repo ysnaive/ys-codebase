@@ -124,12 +124,12 @@ def set_module_context(module_name: Optional[str]) -> None:
 
 
 def get_module_context() -> Optional[str]:
-    tls_mod = getattr(_get_uri_tls(), "active_module_context", None)
-    if tls_mod:
-        return tls_mod
     scope = get_current_scope()
     if scope is not None and scope.active_module:
         return scope.active_module
+    tls_mod = getattr(_get_uri_tls(), "active_module_context", None)
+    if tls_mod:
+        return tls_mod
     return None
 
 
@@ -154,13 +154,13 @@ def set_host_dir(host_dir: Optional[str]) -> None:
 
 
 def get_host_dir() -> Optional[str]:
-    """Get active host directory from thread-local memory context, RuntimeScope, or YSCB_HOST_DIR environment variable."""
-    active_host = getattr(_get_uri_tls(), "active_host_dir", None)
-    if active_host:
-        return active_host
+    """Get active host directory from RuntimeScope, thread-local memory context, or YSCB_HOST_DIR environment variable."""
     scope = get_current_scope()
     if scope is not None and scope.active_host_dir:
         return scope.active_host_dir
+    active_host = getattr(_get_uri_tls(), "active_host_dir", None)
+    if active_host:
+        return active_host
     env_dir = get_env("YSCB_HOST_DIR")
     if env_dir and os.path.isdir(env_dir):
         return os.path.normpath(os.path.abspath(env_dir))
@@ -196,13 +196,13 @@ def set_yscb_root(yscb_dir: Optional[str]) -> None:
 
 
 def get_yscb_root() -> Optional[str]:
-    """Get active YSCB toolchain root directory from thread-local memory context, RuntimeScope, or YSCB_ROOT_DIR environment variable."""
-    active_yscb = getattr(_get_uri_tls(), "active_yscb_dir", None)
-    if active_yscb:
-        return active_yscb
+    """Get active YSCB toolchain root directory from RuntimeScope, thread-local memory context, or YSCB_ROOT_DIR environment variable."""
     scope = get_current_scope()
     if scope is not None and scope.active_yscb_dir:
         return scope.active_yscb_dir
+    active_yscb = getattr(_get_uri_tls(), "active_yscb_dir", None)
+    if active_yscb:
+        return active_yscb
     env_dir = get_env("YSCB_ROOT_DIR")
     if env_dir and os.path.isdir(env_dir):
         return os.path.normpath(os.path.abspath(env_dir))

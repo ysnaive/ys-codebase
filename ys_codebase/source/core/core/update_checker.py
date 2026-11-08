@@ -13,6 +13,7 @@ import urllib.request
 from core import uri
 from core import vfs
 from core import semver
+from core.context import get_env
 from core.engine import normalize_legacy_provider_url, resolve_local_provider_path
 
 DEFAULT_CACHE_URI: str = "cache://core/update_check.json"
@@ -131,7 +132,7 @@ class UpdateChecker:
         在 12 小時節流時間內直接返回快取；超過 12 小時或 force=True 時發起輕量探測。
         所有網路例外靜默兜底，不拋出中斷例外。
         """
-        if os.environ.get("YSCB_NO_UPDATE_CHECK") == "1":
+        if get_env("YSCB_NO_UPDATE_CHECK") == "1":
             return {}
 
         now = time.time()
@@ -205,7 +206,7 @@ class UpdateChecker:
         candidates: List[str] = []
         if self.config_path:
             candidates.append(os.path.join(os.path.dirname(os.path.abspath(self.config_path)), "yscb.py"))
-        host_env = os.environ.get("YSCB_HOST_DIR")
+        host_env = get_env("YSCB_HOST_DIR")
         if host_env:
             candidates.append(os.path.join(host_env, "yscb.py"))
         for host_uri in ("yscb.host://", "project://"):
@@ -240,7 +241,7 @@ class UpdateChecker:
             base_d = (
                 os.path.dirname(os.path.abspath(self.config_path))
                 if self.config_path
-                else os.environ.get("YSCB_HOST_DIR")
+                else get_env("YSCB_HOST_DIR")
             )
             resolved_p = resolve_local_provider_path(str(default_provider), base_dir=base_d)
             if resolved_p:

@@ -311,6 +311,7 @@ _GUARDRAIL_EXEMPTIONS: FrozenSet[Tuple[str, str, str]] = frozenset({
     ("D10_SYS_MODULES", "core", "core/loader.py"),
     ("D10_SYS_MODULES", "core", "core/platform/venv.py"),
     ("D10_SYS_MODULES", "dev", "dev/testing/runner.py"),
+    ("D10_SYS_ARGV", "core", "core/commands/dispatcher.py"),
     ("D10_SPEC", "core", "core/loader.py"),
     ("F13_SUBPROCESS", "core", "core/platform/process.py"),
     ("F13_THREAD", "server", "server/service.py"),
@@ -330,6 +331,41 @@ _MUTABLE_CONSTRUCTORS: FrozenSet[str] = frozenset({
     "Counter",
     "deque",
     "SimpleNamespace",
+})
+
+_MUTABLE_TYPE_NAMES: FrozenSet[str] = frozenset({
+    "list",
+    "List",
+    "dict",
+    "Dict",
+    "set",
+    "Set",
+    "bytearray",
+    "defaultdict",
+    " DefaultDict",
+    "OrderedDict",
+    "Counter",
+    "deque",
+    "Deque",
+    "SimpleNamespace",
+    "MutableSequence",
+    "MutableMapping",
+    "MutableSet",
+})
+
+_HOOK_CANDIDATE_NAMES: FrozenSet[str] = frozenset({
+    "pre_cli_dispatch",
+    "post_cli_dispatch",
+    "install",
+    "update",
+    "remove",
+    "reload",
+    "env_synced",
+    "test_setup",
+    "test_teardown",
+    "register_file_spaces",
+    "file_space_changed",
+    "ast_index_updated",
 })
 
 _SYS_PATH_MUTATING_METHODS: FrozenSet[str] = frozenset({
@@ -365,11 +401,69 @@ def _is_mutable_expr(node: ast.AST) -> bool:
     return False
 
 
+def _iter_assigned_names(target: ast.AST) -> List[ast.Name]:
+    """Unpack assignment targets (Name, Tuple, List, Starred) into flat ast.Name nodes."""
+    if isinstance(target, ast.Name):
+        return [target]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: List[ast.Name] = []
+        for elt in target.elts:
+            names.extend(_iter_assigned_names(elt))
+        return names
+    if isinstance(target, ast.Starred):
+        return _iter_assigned_names(target.value)
+    return []
+
+
+def _is_classvar_annotation(ann: Optional[ast.AST]) -> bool:
+    """Return True if an annotation represents ClassVar or typing.ClassVar."""
+    if ann is None:
+        return False
+    base = ann.value if isinstance(ann, ast.Subscript) else ann
+    if isinstance(base, ast.Name) and base.id == "ClassVar":
+        return True
+    if isinstance(base, ast.Attribute) and base.attr == "ClassVar":
+        return True
+    return False
+
+
+def _is_mutable_type_annotation(ann: Optional[ast.AST]) -> bool:
+    """Return True if a type annotation declares a mutable container type (including inside ClassVar[...])."""
+    if ann is None:
+        return False
+    target = ann
+    if _is_classvar_annotation(ann) and isinstance(ann, ast.Subscript):
+        target = ann.slice
+    base = target.value if isinstance(target, ast.Subscript) else target
+    if isinstance(base, ast.Name) and base.id in _MUTABLE_TYPE_NAMES:
+        return True
+    if isinstance(base, ast.Attribute) and base.attr in _MUTABLE_TYPE_NAMES:
+        return True
+    return False
+
+
+def _is_safe_hook_top_level_value(val: Optional[ast.AST]) -> bool:
+    """Return True if a top-level assignment value in scripts/hook.*.py is a constant or immutable tuple/frozenset."""
+    if val is None:
+        return True
+    if isinstance(val, ast.Constant) and val.value is not None:
+        return True
+    if isinstance(val, ast.Tuple):
+        return all(_is_safe_hook_top_level_value(elt) for elt in val.elts)
+    if isinstance(val, ast.Call):
+        func = val.func
+        if isinstance(func, ast.Name) and func.id in ("frozenset", "tuple", "MappingProxyType", "TypeVar"):
+            return True
+        if isinstance(func, ast.Attribute) and func.attr in ("RLock", "Lock", "Event", "Semaphore"):
+            return True
+    return False
+
+
 class _SourceGuardrailVisitor(ast.NodeVisitor):
     """
     Single-pass AST static guardrail analyzer for module source files.
     Enforces Jupyter-style runtime isolation guardrails (A1~F13), Zero Probing,
-    import alias tracking, and reflection defense.
+    scoped import alias tracking, and reflection defense.
     """
 
     def __init__(self, module_name: str, rel_path: str, is_test_file: bool, report: CheckReport) -> None:
@@ -377,7 +471,7 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
         self.rel_path = rel_path
         self.is_test_file = is_test_file
         self.report = report
-        self.module_aliases: Dict[str, str] = {
+        base_module_aliases: Dict[str, str] = {
             "os": "os",
             "sys": "sys",
             "subprocess": "subprocess",
@@ -389,13 +483,39 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
             "builtins": "builtins",
             "importlib": "importlib",
             "pathlib": "pathlib",
+            "urllib": "urllib",
         }
-        self.symbol_imports: Dict[str, Tuple[str, str]] = {
+        base_symbol_imports: Dict[str, Tuple[str, str]] = {
             "Path": ("pathlib", "Path"),
         }
+        self._module_aliases_stack: List[Dict[str, str]] = [base_module_aliases]
+        self._symbol_imports_stack: List[Dict[str, Tuple[str, str]]] = [base_symbol_imports]
+        self._path_vars_stack: List[Set[str]] = [set()]
         self.doc_nodes: Set[int] = set()
         self.scope_stack: List[str] = ["module"]
         self._seen_issues: Set[Tuple[Optional[int], str]] = set()
+
+    @property
+    def module_aliases(self) -> Dict[str, str]:
+        return self._module_aliases_stack[-1]
+
+    @property
+    def symbol_imports(self) -> Dict[str, Tuple[str, str]]:
+        return self._symbol_imports_stack[-1]
+
+    @property
+    def path_vars(self) -> Set[str]:
+        return self._path_vars_stack[-1]
+
+    def _push_alias_scope(self) -> None:
+        self._module_aliases_stack.append(dict(self._module_aliases_stack[-1]))
+        self._symbol_imports_stack.append(dict(self._symbol_imports_stack[-1]))
+        self._path_vars_stack.append(set(self._path_vars_stack[-1]))
+
+    def _pop_alias_scope(self) -> None:
+        self._module_aliases_stack.pop()
+        self._symbol_imports_stack.pop()
+        self._path_vars_stack.pop()
 
     def _exempt(self, key: str) -> bool:
         return (key, self.module_name, self.rel_path) in _GUARDRAIL_EXEMPTIONS
@@ -428,17 +548,38 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 if n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant):
                     self.doc_nodes.add(id(n.body[0].value))
-            elif isinstance(n, ast.Import):
-                for alias in n.names:
-                    bound = alias.asname or alias.name.split(".")[0]
-                    if alias.name == "importlib.util" and alias.asname:
-                        self.module_aliases[alias.asname] = "importlib.util"
-                    else:
-                        self.module_aliases[bound] = alias.name
-            elif isinstance(n, ast.ImportFrom) and n.module:
-                for alias in n.names:
-                    bound = alias.asname or alias.name
-                    self.symbol_imports[bound] = (n.module, alias.name)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            bound = alias.asname or alias.name.split(".")[0]
+            if alias.name in ("importlib.util", "urllib.request") and alias.asname:
+                self.module_aliases[alias.asname] = alias.name
+            else:
+                self.module_aliases[bound] = alias.name
+            self.symbol_imports.pop(bound, None)
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module:
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                self.symbol_imports[bound] = (node.module, alias.name)
+                if node.module == "urllib" and alias.name == "request":
+                    self.module_aliases[bound] = "urllib.request"
+                elif node.module == "importlib" and alias.name == "util":
+                    self.module_aliases[bound] = "importlib.util"
+        self.generic_visit(node)
+
+    def _is_path_constructor_expr(self, expr: ast.AST) -> bool:
+        if isinstance(expr, ast.Call):
+            t = self._resolve_target(expr.func)
+            if t in ("pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath", "pathlib.WindowsPath"):
+                return True
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Div):
+            return self._is_path_constructor_expr(expr.left) or (
+                isinstance(expr.left, ast.Name) and expr.left.id in self.path_vars
+            )
+        return False
 
     def _resolve_target(self, expr: ast.AST) -> str:
         """Resolve an AST expression to a canonical dotted path (supporting import aliases and getattr literals)."""
@@ -467,6 +608,20 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
                 return f"{base}.{expr.args[1].value}"
         return ""
 
+    def _check_top_level_assigned_pair(self, name_node: ast.Name, val: Optional[ast.AST], lineno: int, in_except_handler: bool) -> None:
+        if name_node.id == "__all__" or val is None:
+            return
+        if _is_mutable_expr(val):
+            self._record_issue(
+                lineno,
+                f"[C8] Forbidden top-level mutable state '{name_node.id}' in '{self.rel_path}:{lineno}'. Use immutable constants (frozenset/tuple) or 'core.context.get_runtime_context()'.",
+            )
+        elif isinstance(val, ast.Constant) and val.value is None and not in_except_handler:
+            self._record_issue(
+                lineno,
+                f"[C8] Forbidden top-level mutable None singleton '{name_node.id}' in '{self.rel_path}:{lineno}'. Store runtime singletons in 'core.context.get_runtime_context()'.",
+            )
+
     def _check_top_level_stmts(self, stmts: List[ast.stmt], in_except_handler: bool = False) -> None:
         for stmt in stmts:
             if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
@@ -475,17 +630,13 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
                 if val is None:
                     continue
                 for t in targets:
-                    if isinstance(t, ast.Name) and t.id != "__all__":
-                        if _is_mutable_expr(val):
-                            self._record_issue(
-                                stmt.lineno,
-                                f"[C8] Forbidden top-level mutable state '{t.id}' in '{self.rel_path}:{stmt.lineno}'. Use immutable constants (frozenset/tuple) or 'core.context.get_runtime_context()'.",
-                            )
-                        elif isinstance(val, ast.Constant) and val.value is None and not in_except_handler:
-                            self._record_issue(
-                                stmt.lineno,
-                                f"[C8] Forbidden top-level mutable None singleton '{t.id}' in '{self.rel_path}:{stmt.lineno}'. Store runtime singletons in 'core.context.get_runtime_context()'.",
-                            )
+                    if isinstance(t, (ast.Tuple, ast.List)) and isinstance(val, (ast.Tuple, ast.List)) and len(t.elts) == len(val.elts):
+                        for t_elt, v_elt in zip(t.elts, val.elts):
+                            for n_node in _iter_assigned_names(t_elt):
+                                self._check_top_level_assigned_pair(n_node, v_elt, stmt.lineno, in_except_handler)
+                    else:
+                        for n_node in _iter_assigned_names(t):
+                            self._check_top_level_assigned_pair(n_node, val, stmt.lineno, in_except_handler)
             elif isinstance(stmt, ast.AugAssign):
                 if isinstance(stmt.target, ast.Name) and stmt.target.id != "__all__":
                     self._record_issue(
@@ -577,22 +728,44 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
                 self._resolve_target(b) in ("Enum", "enum.Enum", "IntEnum", "enum.IntEnum", "Flag", "enum.Flag", "IntFlag", "enum.IntFlag")
                 for b in node.bases
             )
-            if not is_dc and not is_enum:
+            if not is_enum:
                 for bstmt in node.body:
-                    if isinstance(bstmt, (ast.Assign, ast.AnnAssign)) and bstmt.value is not None:
+                    if isinstance(bstmt, ast.Assign) and bstmt.value is not None:
                         if _is_mutable_expr(bstmt.value):
                             self._record_issue(
                                 bstmt.lineno,
                                 f"[C9] Forbidden mutable class attribute in '{node.name}' ('{self.rel_path}:{bstmt.lineno}'). Initialize mutable attributes inside '__init__'.",
                             )
+                    elif isinstance(bstmt, ast.AnnAssign):
+                        is_cv = _is_classvar_annotation(bstmt.annotation)
+                        if not is_dc or is_cv:
+                            if (bstmt.value is not None and _is_mutable_expr(bstmt.value)) or (
+                                is_cv and _is_mutable_type_annotation(bstmt.annotation)
+                            ):
+                                self._record_issue(
+                                    bstmt.lineno,
+                                    f"[C9] Forbidden mutable class attribute in '{node.name}' ('{self.rel_path}:{bstmt.lineno}'). Initialize mutable attributes inside '__init__'.",
+                                )
 
+        self._push_alias_scope()
         self.scope_stack.append("class")
         self.generic_visit(node)
         self.scope_stack.pop()
+        self._pop_alias_scope()
 
     def _visit_func(self, node: ast.AST) -> None:
+        self._push_alias_scope()
+        args_obj = getattr(node, "args", None)
+        if args_obj is not None:
+            for arg_list in (args_obj.posonlyargs, args_obj.args, args_obj.kwonlyargs):
+                for a in arg_list:
+                    if _is_mutable_type_annotation(a.annotation):
+                        pass
+                    if a.annotation is not None:
+                        ann_target = self._resolve_target(a.annotation)
+                        if ann_target in ("pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath", "pathlib.WindowsPath"):
+                            self.path_vars.add(a.arg)
         if not self.is_test_file:
-            args_obj = getattr(node, "args", None)
             func_name = getattr(node, "name", "")
             lineno = getattr(node, "lineno", 0)
             if args_obj is not None:
@@ -609,6 +782,7 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
         self.scope_stack.append(scope_tag)
         self.generic_visit(node)
         self.scope_stack.pop()
+        self._pop_alias_scope()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_func(node)
@@ -618,6 +792,13 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
 
     def _check_mutation_target(self, target: ast.AST, lineno: int, is_delete: bool = False) -> None:
         if self.is_test_file:
+            return
+        if isinstance(target, (ast.Tuple, ast.List)):
+            for elt in target.elts:
+                self._check_mutation_target(elt, lineno, is_delete=is_delete)
+            return
+        if isinstance(target, ast.Starred):
+            self._check_mutation_target(target.value, lineno, is_delete=is_delete)
             return
         if isinstance(target, ast.Subscript):
             val_target = self._resolve_target(target.value)
@@ -630,6 +811,11 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
                 self._record_issue(
                     lineno,
                     f"[D10] Forbidden direct mutation of 'sys.modules' in '{self.rel_path}:{lineno}'. Delegate module loading to 'core.loader'.",
+                )
+            elif val_target == "sys.argv" and not self._exempt("D10_SYS_ARGV"):
+                self._record_issue(
+                    lineno,
+                    f"[D10] Forbidden direct mutation of 'sys.argv' in '{self.rel_path}:{lineno}'.",
                 )
             elif val_target == "sys.path" and self.module_name != "core":
                 action_desc = "deletion on sys.path" if is_delete else "assignment to sys.path"
@@ -655,6 +841,11 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
                     lineno,
                     f"[D10] Forbidden direct mutation of 'sys.modules' in '{self.rel_path}:{lineno}'.",
                 )
+            elif val_target == "sys.argv" and not self._exempt("D10_SYS_ARGV"):
+                self._record_issue(
+                    lineno,
+                    f"[D10] Forbidden direct mutation of 'sys.argv' in '{self.rel_path}:{lineno}'.",
+                )
             elif val_target == "sys.path" and self.module_name != "core":
                 action_desc = "deletion on sys.path" if is_delete else "assignment to sys.path"
                 self._record_issue(
@@ -663,11 +854,21 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
                 )
 
     def visit_Assign(self, node: ast.Assign) -> None:
+        if node.value is not None and self._is_path_constructor_expr(node.value):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    self.path_vars.add(t.id)
         for t in node.targets:
             self._check_mutation_target(t, node.lineno)
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if isinstance(node.target, ast.Name):
+            ann_target = self._resolve_target(node.annotation) if node.annotation is not None else ""
+            if ann_target in ("pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath", "pathlib.WindowsPath") or (
+                node.value is not None and self._is_path_constructor_expr(node.value)
+            ):
+                self.path_vars.add(node.target.id)
         self._check_mutation_target(node.target, node.lineno)
         self.generic_visit(node)
 
@@ -700,6 +901,11 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
                     self._record_issue(
                         lineno,
                         f"[D10] Forbidden reflected mutation of 'sys.modules' in '{self.rel_path}:{lineno}'.",
+                    )
+                elif reflected == "sys.argv" and not self._exempt("D10_SYS_ARGV"):
+                    self._record_issue(
+                        lineno,
+                        f"[D10] Forbidden reflected mutation of 'sys.argv' in '{self.rel_path}:{lineno}'.",
                     )
                 elif reflected == "os.environ" and not self._exempt("B5"):
                     self._record_issue(
@@ -757,7 +963,7 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
             if target in ("os.chdir", "os.fchdir", "os.getcwd", "os.getcwdb", "pathlib.Path.cwd"):
                 self._record_issue(
                     lineno,
-                    f"[B4] Forbidden process CWD call '{target}()' in '{self.rel_path}:{lineno}'. Use 'core.context.get_cwd()' or 'uri.resolve()'.",
+                    f"[B4] Forbidden process CWD call '{target}()' in '{self.rel_path}:{lineno}'. Use 'core.context.get_virtual_cwd()' or 'uri.resolve()'.",
                 )
 
         if not self._exempt("B5"):
@@ -784,12 +990,25 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
                     f"Forbidden direct sys.path mutation in '{self.rel_path}:{lineno}' (sys.path.{method_name}()). Runtime sys.path management must be delegated to 'core.platform'.",
                 )
 
+        if target.startswith("sys.argv.") and target.split(".")[-1] in _SYS_PATH_MUTATING_METHODS:
+            if not self._exempt("D10_SYS_ARGV"):
+                self._record_issue(
+                    lineno,
+                    f"[D10] Forbidden 'sys.argv' mutation '{target}()' in '{self.rel_path}:{lineno}'.",
+                )
+
         if target.startswith("sys.modules.") and target.split(".")[-1] in _DICT_MUTATING_METHODS:
             if not self._exempt("D10_SYS_MODULES"):
                 self._record_issue(
                     lineno,
                     f"[D10] Forbidden 'sys.modules' mutation '{target}()' in '{self.rel_path}:{lineno}'.",
                 )
+
+        if target in ("importlib.reload", "reload"):
+            self._record_issue(
+                lineno,
+                f"[D10] Forbidden unmanaged module reload '{target}()' in '{self.rel_path}:{lineno}'. Use 'core.loader' instead.",
+            )
 
         if target.endswith("spec_from_file_location") or target == "spec_from_file_location":
             if not self._exempt("D10_SPEC"):
@@ -804,9 +1023,15 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
                 f"[D11] Forbidden dynamic code execution '{target}()' in '{self.rel_path}:{lineno}'.",
             )
 
-        if target in ("os.rename", "os.renames", "pathlib.Path.rename") or (
-            isinstance(node.func, ast.Attribute) and node.func.attr == "rename"
-        ):
+        is_forbidden_rename = False
+        if target in ("os.rename", "os.renames", "pathlib.Path.rename", "pathlib.PurePath.rename", "pathlib.PosixPath.rename", "pathlib.WindowsPath.rename"):
+            is_forbidden_rename = True
+        elif isinstance(node.func, ast.Attribute) and node.func.attr == "rename":
+            if self._is_path_constructor_expr(node.func.value) or (
+                isinstance(node.func.value, ast.Name) and node.func.value.id in self.path_vars
+            ):
+                is_forbidden_rename = True
+        if is_forbidden_rename:
             self._record_issue(
                 lineno,
                 f"[E12] Forbidden non-atomic rename '{target or '*.rename'}()' in '{self.rel_path}:{lineno}'. Use 'os.replace()' or 'Path.replace()'.",
@@ -814,12 +1039,32 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
 
         if target in ("subprocess.run", "subprocess.call", "subprocess.check_call", "subprocess.check_output"):
             if not self._exempt("F13_SUBPROCESS"):
-                has_timeout = any(kw.arg == "timeout" for kw in node.keywords)
-                if not has_timeout:
+                timeout_kw = next((kw for kw in node.keywords if kw.arg == "timeout"), None)
+                if timeout_kw is None or (isinstance(timeout_kw.value, ast.Constant) and timeout_kw.value.value is None):
                     self._record_issue(
                         lineno,
-                        f"[F13] Subprocess call '{target}()' in '{self.rel_path}:{lineno}' missing required 'timeout=' keyword argument.",
+                        f"[F13] Subprocess call '{target}()' in '{self.rel_path}:{lineno}' missing required non-None 'timeout=' keyword argument.",
                     )
+                shell_kw = next((kw for kw in node.keywords if kw.arg == "shell"), None)
+                if shell_kw is not None and isinstance(shell_kw.value, ast.Constant) and shell_kw.value.value is True:
+                    self._record_issue(
+                        lineno,
+                        f"[F13] Forbidden 'shell=True' in subprocess call '{target}()' in '{self.rel_path}:{lineno}'.",
+                    )
+
+        if target in ("urllib.request.urlopen", "request.urlopen", "urlopen"):
+            timeout_kw = next((kw for kw in node.keywords if kw.arg == "timeout"), None)
+            has_pos_timeout = len(node.args) >= 3 and not (
+                isinstance(node.args[2], ast.Constant) and node.args[2].value is None
+            )
+            has_kw_timeout = timeout_kw is not None and not (
+                isinstance(timeout_kw.value, ast.Constant) and timeout_kw.value.value is None
+            )
+            if not has_pos_timeout and not has_kw_timeout:
+                self._record_issue(
+                    lineno,
+                    f"[F13] Network call '{target}()' in '{self.rel_path}:{lineno}' missing required non-None 'timeout=' argument.",
+                )
 
         if target in ("os.system", "os.popen"):
             self._record_issue(
@@ -845,7 +1090,7 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
                 elif ref_target in ("os.chdir", "os.fchdir", "os.getcwd", "os.getcwdb", "pathlib.Path.cwd") and not self._exempt("B4"):
                     self._record_issue(
                         lineno,
-                        f"[B4] Forbidden reflection access '{ref_target}' in '{self.rel_path}:{lineno}'.",
+                        f"[B4] Forbidden reflection access '{ref_target}' in '{self.rel_path}:{lineno}'. Use 'core.context.get_virtual_cwd()' or 'uri.resolve()'.",
                     )
                 elif ref_target in ("sys.exit", "os._exit") and not self._exempt("B3"):
                     self._record_issue(
@@ -853,6 +1098,16 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
                         f"[B3] Forbidden reflection access '{ref_target}' in '{self.rel_path}:{lineno}'.",
                     )
                 elif ref_target == "sys.modules" and not self._exempt("D10_SYS_MODULES"):
+                    self._record_issue(
+                        lineno,
+                        f"[D10] Forbidden reflection access '{ref_target}' in '{self.rel_path}:{lineno}'.",
+                    )
+                elif ref_target == "sys.argv" and not self._exempt("D10_SYS_ARGV"):
+                    self._record_issue(
+                        lineno,
+                        f"[D10] Forbidden reflection access '{ref_target}' in '{self.rel_path}:{lineno}'.",
+                    )
+                elif ref_target == "importlib.reload":
                     self._record_issue(
                         lineno,
                         f"[D10] Forbidden reflection access '{ref_target}' in '{self.rel_path}:{lineno}'.",
@@ -1600,8 +1855,8 @@ class Checker:
             for node in tree.body:
                 if isinstance(node, (ast.Import, ast.ImportFrom, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        if node.name.startswith("on_") or node.name in ("pre_cli_dispatch", "post_cli_dispatch"):
-                            total_args = len(node.args.args) + (1 if node.args.vararg else 0) + (1 if node.args.kwarg else 0)
+                        if node.name.startswith("on_") or node.name in _HOOK_CANDIDATE_NAMES:
+                            total_args = len(node.args.posonlyargs) + len(node.args.args) + (1 if node.args.vararg else 0)
                             if total_args < 1:
                                 report.issues.append(
                                     CheckIssue(
@@ -1614,7 +1869,7 @@ class Checker:
                                 )
                 elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
                     continue
-                elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                elif isinstance(node, (ast.Assign, ast.AnnAssign)) and _is_safe_hook_top_level_value(node.value):
                     continue
                 else:
                     stmt_type = type(node).__name__

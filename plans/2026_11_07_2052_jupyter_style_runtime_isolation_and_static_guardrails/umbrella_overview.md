@@ -18,8 +18,8 @@
     2. **支柱二：`RuntimeContext` 實例化容器、零拷貝唯讀視圖與受保護模組命名空間載入器**：消滅全倉模組頂層無主可變快取與 `global` 關鍵字，將 URI 映射、Contributes 聚合、Config 組態、語系與虛擬工作目錄（`virtual_cwd` / 請求級 `env`）收斂至 `RuntimeContext` 實例與 `contextvars.ContextVar`；跨模組契約全面採用 `@dataclass(frozen=True)` 與 `types.MappingProxyType` 唯讀視圖；動態模組與腳本統一透過受保護命名空間載入器原子載入（支援 `(mtime_ns, size)` 世代感知熱刷新與失敗回滾）。
     3. **支柱三：Jupyter 式常駐三平面解耦、`BaseServiceWorker` 受管獨立執行緒與 KDB 離線守門**：分離 Control Channel 與 Shell Execution Channel，拔除 `WarmWorker` 熱派發期間的全域 `sys.stdout` 插拔劫持、`os.chdir()` 與 `os.environ` 原地突變；由 `BaseServiceWorker` 原生為每個註冊服務配發專屬受管獨立執行緒與非阻塞狀態機（`STARTING`/`UPDATING`/`READY`/`DEGRADED_OFFLINE`），廢除並物理刪除 `hook.server.py` 私開野執行緒；於 `knowledge-db` 實作純本地 `< 1ms` 之 `has_local_model()` 離線預檢、保留背景受管執行緒於 Stage 1 完成後非阻塞自動下載模型（離線時降級標記 `DEGRADED_OFFLINE`）、將手動 `yscb kdb model download` 解耦為 `server_compatible: false`，並修復 `IndexingPipeline._ensure_jit_index_ready` 前景搶鎖死鎖。
     4. **支柱四：`module:dev` 封閉式單次遍歷 13 項 AST 靜態守門管線**：拔除無外部消費者的 `dev/contributes/_format.json`（`custom_checks`）與動態載入邏輯，將 `dev/checker.py` 重構為純靜態、零動態代碼載入的單次 AST 遍歷管線（Single-Pass `ast.NodeVisitor`），強制執行 6 大類共 13 項 AST 靜態守門規則（A1~F13 違規即判定 `FAIL`）。
-  - **五階段正交子計畫推進策略（`sub_01` ~ `sub_05`）**：
-    - 依「**先立 `core` 輸出與狀態基座（`sub_01`、`sub_02`）$\to$ 再解耦 `server` 三平面與受管 Worker/KDB 離線守門（`sub_03`）$\to$ 接著執行上層 7 大模組機械合規遷移（`sub_04`）$\to$ 最後由 `dev check` 啟用 13 道靜態守門收網（`sub_05`）**」之拓撲順序推進，確保每個子計畫皆可獨立通過 `dev check` 與 `dev test`。
+  - **六階段正交子計畫推進策略（`sub_01` ~ `sub_06`）**：
+    - 依「**先立 `core` 輸出與狀態基座（`sub_01`、`sub_02`）$\to$ 再解耦 `server` 三平面與受管 Worker/KDB 離線守門（`sub_03`）$\to$ 接著執行上層 7 大模組機械合規遷移（`sub_04`）$\to$ 由 `dev check` 啟用 13 道靜態守門收網（`sub_05`）$\to$ 最後針對實作後全倉四軌深潛審計（`R02`）發現之 21 項熱路徑效能退化、執行期契約缺口與靜態守門盲區進行閉環加固（`sub_06`）**」之拓撲順序推進，確保每個子計畫皆可獨立通過 `dev check` 與 `dev test`。
 
 ---
 
@@ -32,6 +32,7 @@
 | **sub_03** | `sub_03_server_three_plane_and_managed_worker_threads` | Full Track | `Completed` | 解耦 `server` 控制與執行通道，移除 `WarmWorker` 全域 `sys.stdout` 劫持、`os.chdir()` 與 `os.environ` 突變；於 `BaseServiceWorker` 內建受管獨立執行緒與非阻塞狀態機，收編 3 個常駐服務並刪除 `file-space`/`knowledge-db` 之 `hook.server.py` 野執行緒；落地 KDB `has_local_model()` 離線預檢、保留背景受管執行緒非阻塞自動下載、解耦手動 `kdb model download` CLI 並修復 `pipeline.py` 前景搜尋搶鎖阻塞 |
 | **sub_04** | `sub_04_ecosystem_modules_compliance_migration` | Full Track | `Completed` | 將上層 7 大業務模組（`dev`, `file-space`, `ast`, `knowledge-db`, `agents-workflow`, `vscode-support`, `gdrive-support`）共 531 處原生輸出與 `logging` 遷移至 `core.log`；消除 24 處 `os.chdir`/`os.getcwd`/`Path.cwd`、11 處 `os.environ` 突變、2 處缺 `timeout=` 之 `subprocess.run` 與裸 `input()`；收斂 47 處頂層可變容器/`global` 與 48 處非凍結 `@dataclass`/類別可變屬性（`ast` 僅執行薄層機械合規調整，留待 Tier 2 重構） |
 | **sub_05** | `sub_05_dev_closed_loop_ast_static_guardrails` | Full Track | `Completed` | 物理刪除 `dev/contributes/_format.json` 與 `dev/checker.py` 之 `_check_custom_rules`；將 `_check_source_files` 重構為封閉式單次遍歷（Single-Pass `ast.NodeVisitor`）管線，正式啟用 6 大類 13 項 AST 靜態守門規則（A1~F13 強制 `FAIL`），補齊正負向單元測試並完成全倉 9 大模組零違規驗收 |
+| **sub_06** | `sub_06_deep_audit_remediation_and_hardening` | Full Track | `Completed` | 收斂實作後四軌深潛審計（`R02`）識別之 21 項缺口（6 P0 + 10 P1 + 5 P2）：修復 `core.log` 防抖擊穿與遞迴、`core.uri` `RuntimeScope` 優先級、檔案 `(mtime_ns, size)` 熱重載穿透、跨執行緒 `contextvars.copy_context()` 傳播、`knowledge-db` 離線零阻塞返回、上層模組 `FrozenInstanceError`/`TypeError` 與 `stderr` 分流，並加固 `dev/checker.py` 單次 AST 遍歷之 A1~F13 零盲區檢測與全倉 828 項沙盒測試 100% 通過 |
 
 ---
 
@@ -42,3 +43,4 @@
 - [x] **里程碑 3 (`sub_03`)**：完成 `server` 常駐三平面解耦、`BaseServiceWorker` 受管獨立執行緒、移除 `hook.server.py` 野執行緒與 KDB 離線非阻塞守門
 - [x] **里程碑 4 (`sub_04`)**：完成上層 7 大業務模組存量語法與狀態合規遷移
 - [x] **里程碑 5 (`sub_05`)**：完成 `module:dev` 封閉式單次遍歷 13 項 AST 靜態守門管線與全倉 `dev check` 零違規結案
+- [x] **里程碑 6 (`sub_06`)**：完成實作後四軌深潛審計（`R02`）21 項缺口（6 P0 + 10 P1 + 5 P2）之閉環修補、AST 守門零盲區強化與全倉驗收

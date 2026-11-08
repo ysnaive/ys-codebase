@@ -29,6 +29,7 @@ from core.space import (
     SpaceNotFoundError,
     SpaceRegistry,
     SpaceScanner,
+    get_default_registry,
     get_knowledge_db_spaces,
     get_registered_file_spaces_table,
     is_watcher_active,
@@ -59,17 +60,42 @@ def _get_default_state() -> Dict[str, Any]:
     if state is None:
         state = {}
         setattr(ctx, "module_states", state)
-    return state.setdefault("file_space.defaults", {"manager": None, "scanner": None})
+    st = state.setdefault(
+        "file_space.defaults",
+        {"manager": None, "scanner": None, "custom_configured": False},
+    )
+    if "_DEFAULT_MANAGER" in globals():
+        mgr_override = globals().pop("_DEFAULT_MANAGER")
+        st["manager"] = mgr_override
+        if mgr_override is None:
+            st["custom_configured"] = False
+            if "_DEFAULT_SCANNER" not in globals():
+                st["scanner"] = None
+    if "_DEFAULT_SCANNER" in globals():
+        scn_override = globals().pop("_DEFAULT_SCANNER")
+        st["scanner"] = scn_override
+        if scn_override is None:
+            st["custom_configured"] = False
+    return st
 
 
 def _get_default_scanner() -> FingerprintScanner:
     with _SINGLETON_LOCK:
         st = _get_default_state()
-        if st["scanner"] is None:
+        scn = st.get("scanner")
+        mgr = st.get("manager")
+        expected_root = get_default_registry().project_root
+        root_mismatch = not st.get("custom_configured", False) and (
+            getattr(mgr, "project_root", None) != expected_root
+            or getattr(getattr(scn, "space_manager", None), "project_root", None) != expected_root
+        )
+        if scn is None or mgr is None or root_mismatch:
             mgr = FileSpaceManager()
+            scn = FingerprintScanner(space_manager=mgr)
             st["manager"] = mgr
-            st["scanner"] = FingerprintScanner(space_manager=mgr)
-        return st["scanner"]
+            st["scanner"] = scn
+            st["custom_configured"] = False
+        return scn
 
 
 def configure_default_file_space(
@@ -93,6 +119,10 @@ def configure_default_file_space(
         )
         st["manager"] = mgr
         st["scanner"] = scn
+        st["custom_configured"] = any(
+            x is not None
+            for x in (project_root, storage_root, spaces_config, contributed_spaces)
+        )
         return mgr, scn
 
 

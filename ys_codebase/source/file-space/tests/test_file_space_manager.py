@@ -254,3 +254,36 @@ class TestFileSpaceManager(YSCBTestCase):
         self.assertGreater(ctime_ns, 0)
         self.assertEqual(size, abs_p.stat().st_size)
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_single_space_weight_and_frozen_hashability(self) -> None:
+        """Verify FileSpaceManager applies space_weights to single-space frozen FileSpaceConfig without FrozenInstanceError and supports hash()."""
+        mgr = FileSpaceManager(
+            project_root=self.proj_root,
+            storage_root=self.storage_root,
+            contributed_spaces={
+                "docs": {
+                    "include": [self.docs_dir.as_posix()],
+                    "file_patterns": ["*.md"],
+                    "weight": 2.5,
+                },
+                "code": {
+                    "include": [self.src_dir.as_posix()],
+                    "file_patterns": ["*.py"],
+                    "weight": 0.75,
+                },
+            },
+        )
+        single_cfg = mgr.get_space("docs")
+        self.assertIsNotNone(single_cfg)
+        self.assertEqual(single_cfg.weight, 2.5)
+        self.assertIsInstance(hash(single_cfg), int)
+
+        loaded_spaces = mgr.load_spaces()
+        self.assertEqual(loaded_spaces["docs"].weight, 2.5)
+        self.assertEqual(loaded_spaces["code"].weight, 0.75)
+
+        all_spaces = mgr.get_all_spaces()
+        self.assertEqual(all_spaces["docs"].weight, 2.5)
+        self.assertEqual(all_spaces["code"].weight, 0.75)
+        self.mark_passed()

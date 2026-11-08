@@ -2,6 +2,7 @@
 Deprecated FileSpaceManager forwarding adapter.
 Delegates workspace registration, path resolution, and file iteration to core.space.SpaceRegistry.
 """
+import dataclasses
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
@@ -191,6 +192,11 @@ class FileSpaceManager:
         result: Dict[str, FileSpaceConfig] = {}
         for s_cfg in self._registry.list_spaces(include_synthetic=False):
             adapted = FileSpaceConfig.from_space_config(s_cfg, self.project_root)
+            w = self._space_weights.get(
+                s_cfg.qualified_name, self._space_weights.get(s_cfg.short_name)
+            )
+            if w is not None:
+                adapted = dataclasses.replace(adapted, weight=float(w))
             result[s_cfg.short_name] = adapted
             result[s_cfg.qualified_name] = adapted
         return result
@@ -207,9 +213,15 @@ class FileSpaceManager:
         """Return mapping of short workspace names to FileSpaceConfig."""
         result: Dict[str, FileSpaceConfig] = {}
         for s_cfg in self._registry.list_spaces(include_synthetic=False):
-            result[s_cfg.short_name] = FileSpaceConfig.from_space_config(
+            adapted = FileSpaceConfig.from_space_config(
                 s_cfg, self.project_root
             )
+            w = self._space_weights.get(
+                s_cfg.qualified_name, self._space_weights.get(s_cfg.short_name)
+            )
+            if w is not None:
+                adapted = dataclasses.replace(adapted, weight=float(w))
+            result[s_cfg.short_name] = adapted
         return result
 
     def _adapt_matched_spaces(self, matched: List[SpaceConfig]) -> FileSpaceConfig:
@@ -229,7 +241,7 @@ class FileSpaceManager:
             cfg = FileSpaceConfig.from_space_config(primary, self.project_root)
             w = self._space_weights.get(primary.qualified_name, self._space_weights.get(primary.short_name))
             if w is not None:
-                cfg.weight = float(w)
+                cfg = dataclasses.replace(cfg, weight=float(w))
             return cfg
 
         merged_inc: List[Path] = []

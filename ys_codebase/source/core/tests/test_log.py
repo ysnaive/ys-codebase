@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import tempfile
 import shutil
+import sys
 from unittest.mock import patch
 
 from dev.testing import Requirement, YSCBTestCase, require
@@ -420,4 +421,93 @@ class TestCoreLogPipeline(YSCBTestCase):
             "[yscb] Error: Cannot find CLI entrypoint for module 'nonexistent_test_module'.",
         )
         self.mark_passed()
+
+    def test_remediation_background_sink_echo_console_and_streamer_debounce(self) -> None:
+        """
+        Verify:
+        1. `RollingFileLogger.write_raw` with `echo_console=True` inside `bind_log_context(background_sink=logger)`
+           writes directly to `sys.stdout` without infinite recursion.
+        2. `_write_to_active_target` writing to `scope.streamer` via `log_stream(..., flush=True)`
+           buffers small chunks instead of immediately flushing on every call.
+        3. `DebouncedIOStreamer.start_capture()` is idempotent on re-entry and isolates `background_sink=None`
+           and `error_chunks=[]`.
+        4. `_StreamProxy.write` redirects to `scope.background_sink` when a background scope is active.
+        5. `isolated_error_scope=True` isolates error chunks from the global fallback buffer.
+        6. `_rotate_lines_file` preserves JSONL lines containing `\\u2028`/`\\u2029` without splitting them.
+        """
+        log_dir = os.path.join(self.tmp_dir, "echo_bg_logs")
+        logger = RollingFileLogger(log_dir, echo_console=True)
+        out_buf = io.StringIO()
+        try:
+            with redirect_stdout(out_buf), bind_log_context(
+                background_sink=logger, component="bg-svc"
+            ):
+                log_info("echo console safe message")
+            self.assertIn("[INFO] [bg-svc] echo console safe message", out_buf.getvalue())
+            with open(logger.log_file, "r", encoding="utf-8") as f:
+                self.assertIn("[INFO] [bg-svc] echo console safe message", f.read())
+
+            # Debounce preservation & start_capture idempotency + background_sink isolation
+            emitted = []
+            streamer = DebouncedIOStreamer(
+                emit_chunk=lambda pkt: emitted.append(pkt),
+                debounce_ms=60000,
+                max_buffer_bytes=4096,
+            )
+            with bind_log_context(background_sink=logger, component="parent-bg"):
+                streamer.start_capture()
+                # Re-entrant start_capture must not overwrite _orig_stdout with _stdout_proxy
+                streamer.start_capture()
+                try:
+                    log_stream("small chunk 1\n", flush=True)
+                    log_stream("small chunk 2\n", flush=True)
+                    # Should still be buffered before flush/stop_capture
+                    self.assertEqual(emitted, [])
+
+                    # Inner background_sink scope writing to sys.stdout (_StreamProxy) routes to logger
+                    with bind_log_context(background_sink=logger, component="inner-bg"):
+                        sys.stdout.write("proxy routed to bg sink\n")
+                        sys.stderr.write("proxy err routed to bg sink\n")
+                    self.assertEqual(emitted, [])
+                finally:
+                    streamer.stop_capture()
+
+            self.assertIsNot(sys.stdout, streamer._stdout_proxy)
+            stream_pkts = [p for p in emitted if p.get("type") == "terminal_stream"]
+            self.assertEqual(len(stream_pkts), 1)
+            self.assertEqual(stream_pkts[0]["text"], "small chunk 1\nsmall chunk 2\n")
+            with open(logger.log_file, "r", encoding="utf-8") as f:
+                bg_content = f.read()
+            self.assertIn("[INFO] [inner-bg] proxy routed to bg sink", bg_content)
+            self.assertIn("[WARNING] [inner-bg] proxy err routed to bg sink", bg_content)
+        finally:
+            logger.close()
+
+        # Isolated error scope does not pollute or clear global error hint
+        clear_error_hint()
+        record_error_hint("[ERROR] Outer primary error")
+        with bind_log_context(isolated_error_scope=True):
+            self.assertEqual(get_last_error_hint(), "")
+            record_error_hint("[FAIL] Isolated inner error")
+            self.assertEqual(get_last_error_hint(), "[FAIL] Isolated inner error")
+            clear_error_hint()
+            self.assertEqual(get_last_error_hint(), "")
+        self.assertEqual(get_last_error_hint(), "[ERROR] Outer primary error")
+
+        # _rotate_lines_file preserves \u2028 and \u2029 inside JSONL lines
+        jsonl_file = os.path.join(self.tmp_dir, "unicode_sep.jsonl")
+        for idx in range(5):
+            log_file_jsonl(
+                jsonl_file,
+                {"idx": idx, "msg": f"line\u2028sep\u2029val_{idx}"},
+                max_bytes=50,
+                keep_lines=3,
+            )
+        rows = read_log_file_jsonl(jsonl_file)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual([r["idx"] for r in rows], [2, 3, 4])
+        self.assertEqual(rows[-1]["msg"], "line\u2028sep\u2029val_4")
+
+        self.mark_passed()
+
 

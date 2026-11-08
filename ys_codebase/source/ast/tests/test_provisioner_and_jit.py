@@ -379,4 +379,29 @@ class TestProvisionerAndJit(ASTTestCase):
         caller_names = {c["name"] for c in callers_res.get("callers", [])}
         self.assertIn("run_beta", caller_names)
         self.assertIn("extra_helper", caller_names)
+
+        # Verify scripts/hook.core.py _resolve_consume_diff aligns UNIFIED_KEY (None) cursor after single-space consume
+        from contextlib import contextmanager
+
+        ack_records = []
+
+        class _FakeDiff:
+            has_changes = False
+            to_generation = 3
+
+        class _FakeScanner:
+            @contextmanager
+            def consume_diff(self, space_name, **_kw):
+                yield _FakeDiff()
+
+            def ack(self, space_query, **kwargs):
+                ack_records.append((space_query, kwargs))
+
+        class _FakeEng:
+            scanner = _FakeScanner()
+
+        hook_core = load_ast_script("scripts/hook.core.py", "ast_hook_core")
+        with hook_core._resolve_consume_diff(_FakeEng(), space_name="project/default", consumer_id="ast"):
+            pass
+        self.assertIn((None, {"consumer_id": "ast"}), ack_records)
         self.mark_passed()

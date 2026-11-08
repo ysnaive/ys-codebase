@@ -6,6 +6,7 @@ and resolves Google Drive Shortcuts to their target file metadata.
 """
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import contextvars
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -1314,7 +1315,10 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
             return resolved
 
         with ThreadPoolExecutor(max_workers=min(8, len(target_ids))) as pool:
-            futs = [pool.submit(_fetch_target, tid) for tid in target_ids]
+            futs = [
+                pool.submit(contextvars.copy_context().run, _fetch_target, tid)
+                for tid in target_ids
+            ]
             for fut in as_completed(futs):
                 pair = fut.result()
                 if pair is not None:
@@ -2046,13 +2050,15 @@ def run_oauth_loopback_flow(
     auth_url = build_oauth_authorize_url(client_id, redirect_uri)
 
     log(
-        f"\n[gdrive-support:auth] Open the following URL in your browser to authorize:\n\n  {auth_url}\n"
+        f"\n[gdrive-support:auth] Open the following URL in your browser to authorize:\n\n  {auth_url}\n",
+        stream="stderr",
     )
     log(
         f"[gdrive-support:auth] Listening on {redirect_uri} (timeout={int(timeout_sec)}s)...\n"
         f"  (Tip: In a headless container, if your browser redirects to {redirect_uri}/?code=... and cannot connect,\n"
         f"   copy that full URL or the 'code' parameter and run:\n"
         f"   python yscb.py gdrive auth --code=\"<CODE_OR_REDIRECT_URL>\" --port={actual_port})\n",
+        stream="stderr",
         flush=True,
     )
     if open_browser:

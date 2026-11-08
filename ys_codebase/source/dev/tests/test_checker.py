@@ -494,7 +494,7 @@ class TestDevChecker(YSCBTestCase):
         self.mark_passed()
 
     def test_checker_runtime_isolation_guardrails_a_to_f(self):
-        """Verify _SourceGuardrailVisitor enforces A1~F13, import alias resolution, and reflection defense."""
+        """Verify _SourceGuardrailVisitor enforces A1~F13, scoped import alias resolution, and reflection defense."""
         mod_dir = self._make_mod(
             "mock_guardrail_mod",
             files={
@@ -526,11 +526,17 @@ class TestDevChecker(YSCBTestCase):
                 ),
                 "mock_guardrail_mod/bad_state.py": (
                     "from dataclasses import dataclass\n"
+                    "from typing import ClassVar, Dict\n"
                     "MUT_LIST = []\n"
                     "MUT_NONE = None\n"
+                    "UNPACK_A, UNPACK_B = [], {}\n"
                     "@dataclass\n"
                     "class UnfrozenBox:\n"
                     "    val: int = 1\n"
+                    "@dataclass(frozen=True)\n"
+                    "class FrozenWithMutableClassVar:\n"
+                    "    shared_cv: ClassVar[Dict[str, int]] = {}\n"
+                    "    untyped_mut = []\n"
                     "class MutableClass:\n"
                     "    shared = {}\n"
                     "def fn(items=[]):\n"
@@ -539,18 +545,33 @@ class TestDevChecker(YSCBTestCase):
                 ),
                 "mock_guardrail_mod/bad_dyn_fs_thread.py": (
                     "import os\n"
+                    "import importlib\n"
                     "import subprocess as sp\n"
+                    "import urllib.request as ureq\n"
                     "from threading import Thread as T\n"
                     "from importlib.util import spec_from_file_location as sffl\n"
+                    "from pathlib import Path\n"
                     "import sys\n"
-                    "def run():\n"
+                    "def run(p: Path):\n"
                     "    sys.modules['x'] = None\n"
+                    "    sys.argv.append('--bad')\n"
+                    "    sys.argv[0] = 'x'\n"
+                    "    importlib.reload(os)\n"
                     "    sffl('x', '/tmp/x.py')\n"
                     "    eval('1+1')\n"
                     "    os.rename('a', 'b')\n"
+                    "    p.rename('c')\n"
                     "    sp.run(['echo', 'hi'])\n"
+                    "    sp.run(['echo', 'hi'], timeout=None)\n"
+                    "    sp.run('echo hi', timeout=5, shell=True)\n"
+                    "    ureq.urlopen('https://example.com')\n"
                     "    os.system('ls')\n"
                     "    T(target=lambda: None)\n"
+                ),
+                "scripts/hook.core.py": (
+                    "BAD_HOOK_STATE = []\n"
+                    "def on_reload(**kwargs):\n"
+                    "    pass\n"
                 ),
             },
         )
@@ -573,15 +594,37 @@ class TestDevChecker(YSCBTestCase):
             "[F13]",
         ):
             self.assertIn(expected_tag, err_text, f"Missing expected guardrail tag {expected_tag} in:\n{err_text}")
+        self.assertIn("core.context.get_virtual_cwd()", err_text)
+        self.assertIn("Forbidden 'sys.argv' mutation", err_text)
+        self.assertIn("Forbidden direct mutation of 'sys.argv'", err_text)
+        self.assertIn("Forbidden unmanaged module reload", err_text)
+        self.assertIn("Forbidden 'shell=True' in subprocess call", err_text)
+        self.assertIn("Network call 'urllib.request.urlopen()'", err_text)
+        self.assertIn("Hook function 'on_reload' in scripts/hook.core.py:2 must accept at least 1 parameter", err_text)
+
+        issue_lines = {(i.file_path, i.line_number) for i in rep.issues if i.severity == CheckSeverity.FAIL}
+        self.assertIn(("mock_guardrail_mod/bad_io.py", 5), issue_lines)
+        self.assertIn(("mock_guardrail_mod/bad_proc.py", 7), issue_lines)
+        self.assertIn(("mock_guardrail_mod/bad_state.py", 5), issue_lines)
+        self.assertIn(("mock_guardrail_mod/bad_state.py", 11), issue_lines)
+        self.assertIn(("mock_guardrail_mod/bad_state.py", 12), issue_lines)
+        self.assertIn(("mock_guardrail_mod/bad_dyn_fs_thread.py", 11), issue_lines)
+        self.assertIn(("mock_guardrail_mod/bad_dyn_fs_thread.py", 13), issue_lines)
+        self.assertIn(("mock_guardrail_mod/bad_dyn_fs_thread.py", 17), issue_lines)
+        self.assertIn(("mock_guardrail_mod/bad_dyn_fs_thread.py", 19), issue_lines)
+        self.assertIn(("mock_guardrail_mod/bad_dyn_fs_thread.py", 20), issue_lines)
+        self.assertIn(("mock_guardrail_mod/bad_dyn_fs_thread.py", 21), issue_lines)
 
         for bad_f in ("bad_io.py", "bad_proc.py", "bad_state.py", "bad_dyn_fs_thread.py"):
             os.remove(os.path.join(mod_dir, "mock_guardrail_mod", bad_f))
+        os.remove(os.path.join(mod_dir, "scripts", "hook.core.py"))
 
         with open(os.path.join(mod_dir, "mock_guardrail_mod", "clean.py"), "w", encoding="utf-8") as f:
             f.write(
                 "from dataclasses import dataclass\n"
                 "from enum import Enum\n"
                 "import subprocess\n"
+                "import urllib.request\n"
                 "IMMUTABLE = ('a', 'b')\n"
                 "try:\n"
                 "    import non_existent_opt_pkg\n"
@@ -589,12 +632,27 @@ class TestDevChecker(YSCBTestCase):
                 "    non_existent_opt_pkg = None\n"
                 "class Color(Enum):\n"
                 "    RED = 'red'\n"
+                "class BranchNode:\n"
+                "    def rename(self, new_name: str) -> str:\n"
+                "        return new_name\n"
                 "@dataclass(frozen=True)\n"
                 "class FrozenCfg:\n"
                 "    name: str = 'ok'\n"
+                "def local_alias_scope():\n"
+                "    import math as P\n"
+                "    return P.floor(1.5)\n"
                 "def safe_run(items=None):\n"
+                "    node = BranchNode()\n"
+                "    node.rename('main')\n"
                 "    subprocess.run(['echo', 'ok'], timeout=5)\n"
+                "    urllib.request.urlopen('https://example.com', timeout=5)\n"
                 "    return items or []\n"
+            )
+        with open(os.path.join(mod_dir, "scripts", "hook.core.py"), "w", encoding="utf-8") as f:
+            f.write(
+                "SAFE_CONST = 'v1'\n"
+                "def on_reload(ctx=None, /):\n"
+                "    return True\n"
             )
         rep_clean = self.checker.check_module("mock_guardrail_mod")
         self.assertTrue(rep_clean.passed, f"Expected clean module to pass, got: {rep_clean.errors}")

@@ -5,8 +5,9 @@ incremental state ledger persistence, 4-stage bidirectional synchronization unde
 and local-cache-driven soft-merge / soft-remove of the root README.md.
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import contextvars
 import copy
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 import json
 import os
@@ -533,7 +534,11 @@ class SyncCoordinator:
                 max_workers=min(PARALLEL_TRANSFER_WORKERS, len(level_dirs))
             ) as pool:
                 fut_map = {
-                    pool.submit(self.transport.mkdir, d_rel): d_rel
+                    pool.submit(
+                        contextvars.copy_context().run,
+                        self.transport.mkdir,
+                        d_rel,
+                    ): d_rel
                     for d_rel in level_dirs
                 }
                 level_results: Dict[str, RemoteEntry] = {}
@@ -989,7 +994,10 @@ class SyncCoordinator:
                 with ThreadPoolExecutor(max_workers=PARALLEL_TRANSFER_WORKERS) as pool:
                     fut_map = {
                         pool.submit(
-                            self.transport.create_shortcut, target_fid, dst_rel
+                            contextvars.copy_context().run,
+                            self.transport.create_shortcut,
+                            target_fid,
+                            dst_rel,
                         ): (sub_rel, target_fid)
                         for sub_rel, dst_rel, target_fid in shortcut_tasks
                     }
@@ -1191,7 +1199,7 @@ class SyncCoordinator:
                 self._save_local_state(state)
 
             self._persist_active_branch_to_config(norm_target)
-            object.__setattr__(self.config, "active_branch", norm_target)
+            self.config = replace(self.config, active_branch=norm_target)
 
             self._append_log(
                 "checkout_branch",
@@ -1841,6 +1849,7 @@ class SyncCoordinator:
         with ThreadPoolExecutor(max_workers=PARALLEL_TRANSFER_WORKERS) as pool:
             fut_map = {
                 pool.submit(
+                    contextvars.copy_context().run,
                     self._upload_single_push_task,
                     task,
                     branch,
@@ -1937,6 +1946,7 @@ class SyncCoordinator:
         with ThreadPoolExecutor(max_workers=PARALLEL_TRANSFER_WORKERS) as pool:
             fut_map = {
                 pool.submit(
+                    contextvars.copy_context().run,
                     self._download_single_pull_task,
                     task,
                     raw_remote_entries,

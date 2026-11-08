@@ -165,7 +165,8 @@ class TestDevTester(YSCBTestCase):
             }
 
         try:
-            with patch.object(self.tester, "_run_single_module_worker", side_effect=mock_worker):
+            with patch.object(SandboxProvisioner, "adapt_build_pip_dependencies"), \
+                 patch.object(self.tester, "_run_single_module_worker", side_effect=mock_worker):
                 ret = self.tester._run_test(["--all", "--contract-only", "--no-build"])
                 self.assertEqual(ret, 0)
                 self.assertFalse(os.path.exists(dummy_sb))

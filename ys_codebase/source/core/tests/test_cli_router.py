@@ -250,6 +250,20 @@ class TestCoreCLITelemetry(YSCBTestCase):
 
         self.mark_passed()
 
+    def test_dispatcher_hot_reload_and_json_suppresses_update_tips(self):
+        """驗證 dispatch_local 穿透 _MODULE_CACHE 熱重載且 --json/-j 抑制 update tips 輸出。"""
+        from unittest.mock import patch
+        from core.commands import dispatcher
+
+        with patch("core.update_checker.UpdateChecker") as mock_uc_cls:
+            mock_uc = mock_uc_cls.return_value
+            with patch.dict(os.environ, {"YSCB_TESTING": "0", "YSCB_TEST_SANDBOX": "0"}):
+                dispatcher._maybe_check_and_print_updates(["core", "uri", "list", "--json"])
+                mock_uc.check_updates.assert_called_once_with(force=False)
+                mock_uc.print_tips_if_available.assert_not_called()
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

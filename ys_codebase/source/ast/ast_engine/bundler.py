@@ -959,7 +959,7 @@ class SemanticBundler:
                             rel = unique_files[c_key][1]
                             progress_callback(rel, idx, total_files)
                         if err:
-                            log_warn(f"Failed parsing file '{c_key}' during parallel bundle: {err}")
+                            log_warn(f"Failed parsing file '{c_key}' during parallel bundle: {err}", stream="stderr")
                             self._file_symbols_cache[c_key] = []
                             self._file_call_sites_cache[c_key] = []
                             self._file_imports_cache[c_key] = {}
@@ -972,7 +972,7 @@ class SemanticBundler:
                         if imps is not None:
                             self._file_imports_cache[c_key] = dict(imps)
             except Exception as pool_err:
-                log_warn(f"ProcessPoolExecutor error, falling back to serial parsing: {pool_err}")
+                log_warn(f"ProcessPoolExecutor error, falling back to serial parsing: {pool_err}", stream="stderr")
                 use_parallel = False
 
         if not use_parallel:
@@ -986,7 +986,7 @@ class SemanticBundler:
                     self._file_call_sites_cache[c_key] = call_sites
                     self._file_imports_cache[c_key] = imps
                 except Exception as err:
-                    log_warn(f"Failed parsing file '{c_key}' during serial bundle: {err}")
+                    log_warn(f"Failed parsing file '{c_key}' during serial bundle: {err}", stream="stderr")
                     self._file_symbols_cache[c_key] = []
                     self._file_call_sites_cache[c_key] = []
                     self._file_imports_cache[c_key] = {}
@@ -1095,7 +1095,7 @@ class SemanticBundler:
                     self._file_imports_cache[c_key] = imps
                     new_symbols_by_file[c_key] = file_symbols
                 except Exception as err:
-                    log_warn(f"Failed parsing dirty file '{c_key}': {err}")
+                    log_warn(f"Failed parsing dirty file '{c_key}': {err}", stream="stderr")
                     self._file_symbols_cache[c_key] = []
                     self._file_call_sites_cache[c_key] = []
                     self._file_imports_cache[c_key] = {}

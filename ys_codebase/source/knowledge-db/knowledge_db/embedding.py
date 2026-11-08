@@ -170,7 +170,8 @@ class EmbeddingService:
                     else:
                         log_warn(
                             f"Requested model '{self.model_name}' is not in FastEmbed supported list. "
-                            f"Falling back to default '{DEFAULT_EMBEDDING_MODEL}'."
+                            f"Falling back to default '{DEFAULT_EMBEDDING_MODEL}'.",
+                            stream="stderr",
                         )
                         self.model_name = DEFAULT_EMBEDDING_MODEL
             except Exception as e:
@@ -216,7 +217,10 @@ class EmbeddingService:
 
             try:
                 self._load_fastembed_instance(validate_supported=False)
-                log_info(f"Successfully downloaded/loaded FastEmbed model '{self.model_name}' (dim={self._dimension})")
+                log_info(
+                    f"Successfully downloaded/loaded FastEmbed model '{self.model_name}' (dim={self._dimension})",
+                    stream="stderr",
+                )
                 return True
             except Exception as e:
                 self._is_available = False
@@ -240,7 +244,10 @@ class EmbeddingService:
                 "message": f"Vector model '{self.model_name}' not found locally in '{self.cache_dir}'",
                 "timestamp": time.time(),
             }
-            log_info("[knowledge-db:embedding] Vector model not found locally. Gracefully fallback to BM25.")
+            log_info(
+                "[knowledge-db:embedding] Vector model not found locally. Gracefully fallback to BM25.",
+                stream="stderr",
+            )
             if self.enable_vector_search and not self.suppress_guard_prompt and is_agents_workflow_installed():
                 log("[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？", stream="stderr", flush=True)
             return
@@ -256,7 +263,10 @@ class EmbeddingService:
                 "message": str(e),
                 "timestamp": time.time(),
             }
-            log_info(f"[knowledge-db:embedding] Vector model unavailable ({type(e).__name__}: {e}). Gracefully fallback to BM25.")
+            log_info(
+                f"[knowledge-db:embedding] Vector model unavailable ({type(e).__name__}: {e}). Gracefully fallback to BM25.",
+                stream="stderr",
+            )
             if self.enable_vector_search and not self.suppress_guard_prompt and is_agents_workflow_installed():
                 log("[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？", stream="stderr", flush=True)
 
@@ -372,7 +382,7 @@ class EmbeddingService:
             norms[norms == 0] = 1.0
             return mat / norms
         except Exception as e:
-            log_warn(f"Error during embed_texts: {e}.")
+            log_warn(f"Error during embed_texts: {e}.", stream="stderr")
             return np.empty((0, self.dimension), dtype=np.float32)
 
     def embed_texts_probe(

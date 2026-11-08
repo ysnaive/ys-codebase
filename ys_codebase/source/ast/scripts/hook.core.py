@@ -51,6 +51,17 @@ def _resolve_consume_diff(
         ) as diff_res:
             yield diff_res
 
+    if space_name is not None:
+        try:
+            if scanner is not None and hasattr(scanner, "ack"):
+                scanner.ack(None, consumer_id=consumer_id)
+            else:
+                from core.space import ack as _space_ack
+
+                _space_ack(None, consumer_id=consumer_id)
+        except Exception:
+            pass
+
 
 def _broadcast_ast_updated(payload: Dict[str, Any]) -> None:
     try:

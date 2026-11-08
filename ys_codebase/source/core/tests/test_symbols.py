@@ -113,6 +113,16 @@ class TestSymbolsProtocol(YSCBTestCase):
             fn = resolve_callable(f"code.func://{mod_name}/sub/worker:run_job", use_cache=False)
             self.assertEqual(fn(10), 11)
 
+            # 驗證檔案內容變更時，resolve_callable(use_cache=True) 自動穿透快取與 Track 1 熱重載
+            fn_cached_v1 = resolve_callable(f"code.func://{mod_name}/sub/worker:run_job", use_cache=True)
+            self.assertEqual(fn_cached_v1(10), 11)
+            vfs.write_text(
+                f"{mod_uri}/sub/worker.py",
+                "NOT_A_FUNC = 42\ndef run_job(x):\n    return x + 100\n",
+            )
+            fn_cached_v2 = resolve_callable(f"code.func://{mod_name}/sub/worker:run_job", use_cache=True)
+            self.assertEqual(fn_cached_v2(10), 110)
+
             with self.assertRaises(SymbolNotFoundError) as ctx_nc:
                 resolve_callable(f"code.func://{mod_name}/sub/worker:NOT_A_FUNC", use_cache=False)
             self.assertIn("not callable", str(ctx_nc.exception))

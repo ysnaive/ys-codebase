@@ -10,8 +10,8 @@ from pathlib import Path
 import threading
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from ast_engine import ASTEngine, SemanticBundle, SemanticBundler
-from core.context import get_runtime_context, get_virtual_cwd
+from ast_engine import ASTEngine, SemanticBundle, SemanticBundler, get_engine as get_ast_engine
+from core.context import get_env, get_runtime_context, get_virtual_cwd
 from core.log import log_info, log_warn
 from core.space import (
     ScanDiffDetail,
@@ -23,6 +23,8 @@ from core.space import (
     SpaceRegistry,
     SpaceScanner,
     consume_diff,
+    get_default_registry,
+    get_default_scanner,
     reset_cursor,
     resolve_semantic_or_rel_path,
 )
@@ -207,11 +209,13 @@ class KnowledgeEngine:
 
         if space_manager is not None:
             self.space_manager = space_manager
-        else:
+        elif raw_spaces_override is not None:
             self.space_manager = SpaceRegistry(
                 project_root=proj_root_path,
                 raw_spaces=raw_spaces_override,
             )
+        else:
+            self.space_manager = get_default_registry(project_root=proj_root_path)
 
         self.space_weights: Dict[str, float] = self._load_and_merge_space_weights(
             config_dir=config_dir,
@@ -221,13 +225,28 @@ class KnowledgeEngine:
         )
 
         self.tokenizer = MultilingualTokenizer()
-        self.scanner = SpaceScanner(
-            registry=self.space_manager,
-            storage_root=space_storage_dir,
-        )
+        if (
+            space_storage_dir is None
+            and raw_spaces_override is None
+            and space_manager is None
+        ):
+            self.scanner = get_default_scanner(project_root=proj_root_path)
+        else:
+            self.scanner = SpaceScanner(
+                registry=self.space_manager,
+                storage_root=space_storage_dir,
+            )
 
         if ast_engine is not None:
             self.ast_engine = ast_engine
+        elif (
+            ast_storage_dir is None
+            and merged_contributes is None
+            and raw_spaces_override is None
+            and space_manager is None
+            and proj_root_path is None
+        ):
+            self.ast_engine = get_ast_engine()
         else:
             self.ast_engine = ASTEngine(
                 project_root=proj_root_path or getattr(self.space_manager, "project_root", None),
@@ -255,9 +274,9 @@ class KnowledgeEngine:
         else:
             mock_mode = bool(
                 get_runtime_context().get_module_state("knowledge_db.mock_embedding")
-                or os.environ.get("KNOWLEDGE_DB_MOCK_EMBEDDING") == "1"
-                or os.environ.get("YSCB_MOCK_EMBEDDING") == "1"
-                or os.environ.get("YSCB_TEST_SANDBOX") == "1"
+                or get_env("KNOWLEDGE_DB_MOCK_EMBEDDING") == "1"
+                or get_env("YSCB_MOCK_EMBEDDING") == "1"
+                or get_env("YSCB_TEST_SANDBOX") == "1"
             )
         self.embedding_service = EmbeddingService(
             cache_dir=models_dir,
@@ -731,10 +750,24 @@ class KnowledgeEngine:
 
     def model_status(self) -> Dict[str, Any]:
         """獲取當前向量推論模型狀態清冊。"""
+        is_downloaded = bool(
+            self.embedding_service.has_local_model()
+            if hasattr(self.embedding_service, "has_local_model")
+            else self.embedding_service.is_model_downloaded()
+        )
+        if not getattr(self.embedding_service, "mock_mode", False) and not is_downloaded:
+            return {
+                "model_name": self.embedding_service.model_name,
+                "cache_dir": str(self.embedding_service.cache_dir),
+                "is_downloaded": False,
+                "is_available": False,
+                "dimension": self.embedding_service._resolve_dimension_mock(),
+                "enable_vector_search": getattr(self.config, "enable_vector_search", True),
+            }
         return {
             "model_name": self.embedding_service.model_name,
             "cache_dir": str(self.embedding_service.cache_dir),
-            "is_downloaded": self.embedding_service.is_model_downloaded(),
+            "is_downloaded": is_downloaded,
             "is_available": self.embedding_service.is_available,
             "dimension": self.embedding_service.dimension,
             "enable_vector_search": getattr(self.config, "enable_vector_search", True),
@@ -870,24 +903,22 @@ class KnowledgeEngine:
     def pre_warm(cls, workspace_root: Optional[Union[str, Path]] = None) -> None:
         """響應 server_worker_warming 事件，預熱 FastEmbed 模型與索引快取。"""
         try:
-            log_info("Pre-warming knowledge-db engine...")
+            log_info("Pre-warming knowledge-db engine...", stream="stderr")
             engine = get_engine()
             enable_vec = bool(getattr(engine.config, "enable_vector_search", True))
             engine.pipeline._ensure_indices_loaded(load_vectors=enable_vec)
             try:
-                from ast_engine import get_engine as get_ast_engine
-
                 ast_eng = get_ast_engine()
                 ast_eng._ensure_loaded_from_disk()
             except Exception as ast_exc:
-                log_warn(f"AST engine pre-warm skipped: {ast_exc}")
+                log_warn(f"AST engine pre-warm skipped: {ast_exc}", stream="stderr")
             if enable_vec and hasattr(engine, "embedding_service") and engine.embedding_service:
                 engine.embedding_service.suppress_guard_prompt = True
                 if not getattr(engine.embedding_service, "mock_mode", False) and engine.embedding_service.is_model_downloaded():
                     engine.embedding_service._ensure_model()
-            log_info("Knowledge-db engine pre-warmed successfully.")
+            log_info("Knowledge-db engine pre-warmed successfully.", stream="stderr")
         except Exception as e:
-            log_warn(f"Knowledge-db engine pre-warm warning: {e}")
+            log_warn(f"Knowledge-db engine pre-warm warning: {e}", stream="stderr")
 
 
 _ENGINE_LOCK = threading.Lock()
@@ -898,11 +929,17 @@ def get_engine() -> KnowledgeEngine:
     with _ENGINE_LOCK:
         ctx = get_runtime_context()
         if "_GLOBAL_ENGINE_INSTANCE" in globals():
-            ctx.set_module_state("knowledge_db.engine.instance", globals().pop("_GLOBAL_ENGINE_INSTANCE"))
+            override_inst = globals().pop("_GLOBAL_ENGINE_INSTANCE")
+            ctx.set_module_state("knowledge_db.engine.instance", override_inst)
+            ctx.set_module_state("knowledge_db.engine.override", override_inst is not None)
         inst = ctx.get_module_state("knowledge_db.engine.instance")
-        if inst is None:
+        is_override = bool(ctx.get_module_state("knowledge_db.engine.override"))
+        expected_root = get_default_registry().project_root
+        inst_root = getattr(getattr(inst, "space_manager", None), "project_root", None) if inst is not None else None
+        if inst is None or (not is_override and isinstance(inst, KnowledgeEngine) and inst_root != expected_root):
             inst = KnowledgeEngine()
             ctx.set_module_state("knowledge_db.engine.instance", inst)
+            ctx.set_module_state("knowledge_db.engine.override", False)
         else:
             try:
                 from .config import KnowledgeDBConfig

@@ -10,7 +10,7 @@ import subprocess
 import concurrent.futures
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple
-from core.context import get_virtual_cwd
+from core.context import get_env, get_virtual_cwd
 from core.log import log
 from dev.testing.runner import (
     TestDiscovery,
@@ -732,7 +732,8 @@ class Tester:
                     log(f"[dev:test] Pre-build failed for module '{m_name}':\n  {msg}", stream="stderr")
                     return 1
 
-        SandboxProvisioner.adapt_build_pip_dependencies(target_modules=modules)
+        if not is_nested and get_env("YSCB_TEST_SANDBOX") != "1":
+            SandboxProvisioner.adapt_build_pip_dependencies(target_modules=modules)
 
         cpu_limit = os.cpu_count() or 4
         max_workers = jobs if (jobs and jobs > 0) else min(cpu_limit, len(modules))

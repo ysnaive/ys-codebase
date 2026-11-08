@@ -6,7 +6,7 @@ import os
 import platform
 import sys
 from typing import Any, List, Optional, Sequence, Set, Tuple
-from core.context import get_runtime_context
+from core.context import get_env, get_runtime_context
 
 
 def _get_active_test_source_paths() -> List[Tuple[str, str]]:
@@ -362,7 +362,7 @@ def build_runtime_pythonpath(
     if include_host_roots:
         candidates.extend(_collect_host_roots(root))
 
-    raw_existing = os.environ.get("PYTHONPATH", "") if existing_pythonpath is None else existing_pythonpath
+    raw_existing = (get_env("PYTHONPATH", "") or "") if existing_pythonpath is None else existing_pythonpath
     if raw_existing:
         for item in raw_existing.split(os.pathsep):
             cleaned = item.strip()

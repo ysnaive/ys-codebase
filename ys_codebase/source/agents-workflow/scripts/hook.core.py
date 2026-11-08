@@ -32,9 +32,9 @@ def on_reload(ctx=None) -> None:
             else:
                 _log_hook(f"[agents-workflow:hook] Auto-released on reload ({res.get('written_count', 0)} written, {res.get('skipped_count', 0)} unchanged, {res.get('removed_count', 0)} removed, targets: {', '.join(res.get('active_targets', []))}).")
         else:
-            _log_hook(f"[agents-workflow:hook] Auto-release failed on reload: {res.get('error', 'Unknown')}")
+            _log_hook(f"[agents-workflow:hook] Auto-release failed on reload: {res.get('error', 'Unknown')}", file=sys.stderr)
     except Exception as e:
-        _log_hook(f"[agents-workflow:hook] Auto-release on reload failed: {e}")
+        _log_hook(f"[agents-workflow:hook] Auto-release on reload failed: {e}", file=sys.stderr)
 
 
 def on_pre_cli_dispatch(ctx=None) -> bool:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -16,7 +17,7 @@ import unittest
 
 import core
 from core import config, contributes, gitignore, guard, loader, locale, symbols, uri, validator
-from core.commands import dispatcher
+from core.commands import bags, dispatcher
 from core.commands.registry import ArgSpec, CommandSpec, ModuleSpec, OptionSpec
 from core.context import (
     ExecutionContext,
@@ -153,6 +154,20 @@ class TestCoreRuntimeContextAndLoader(YSCBTestCase):
             with self.assertRaises(RuntimeError):
                 loader.load_module_from_path(key, mod_file, reload_if_changed=True)
             self.assertIs(sys.modules.get(key), mod3)
+            self.assertIs(loader.get_cached_module(key), mod3)
+
+            # Alias cleanup on clear_loaded_modules
+            alias_key = "_yscb_alias_test_demo_mod"
+            mod_file.write_text("VALUE = 300\n", encoding="utf-8")
+            st = os.stat(mod_file)
+            os.utime(mod_file, ns=(st.st_atime_ns, st.st_mtime_ns + 4_000_000_000))
+            mod4 = loader.load_module_from_path(
+                key, mod_file, alias_keys=(alias_key,), reload_if_changed=True
+            )
+            self.assertIs(sys.modules.get(alias_key), mod4)
+            loader.clear_loaded_modules(prefix=key)
+            self.assertNotIn(key, sys.modules)
+            self.assertNotIn(alias_key, sys.modules)
         self.mark_passed()
 
     def test_ft03_et04_et05_ast_guardrails_pep562_and_frozen_dataclasses(self) -> None:
@@ -352,6 +367,57 @@ class TestCoreRuntimeContextAndLoader(YSCBTestCase):
         snap_state = SnapshotState(head_generation=1, merkle_root="abc")
         with self.assertRaises(FrozenInstanceError):
             snap_state.head_generation = 2  # type: ignore[misc]
+
+        # Verify all frozen dataclasses with container fields are hashable and SpaceConfig normalizes tuples
+        for obj in (
+            exec_ctx,
+            rt_scope,
+            log_scope,
+            arg_spec,
+            opt_spec,
+            cmd_spec,
+            mod_spec,
+            space_cfg,
+            fp,
+            diff_detail,
+            diff_res,
+            snap_state,
+            bags.CmdOption(name="opt", params=["a", "b"]),
+            bags.CmdBags(command="run", args=["x"]),
+        ):
+            self.assertIsInstance(hash(obj), int)
+
+        space_cfg_lists = SpaceConfig(
+            qualified_name="core/list_norm",
+            owner="core",
+            short_name="list_norm",
+            unresolved_presets=["p1"],  # type: ignore[arg-type]
+            unresolved_compose=["c1"],  # type: ignore[arg-type]
+            uri_warnings=["w1"],  # type: ignore[arg-type]
+        )
+        self.assertIsInstance(space_cfg_lists.unresolved_presets, tuple)
+        self.assertIsInstance(space_cfg_lists.unresolved_compose, tuple)
+        self.assertIsInstance(space_cfg_lists.uri_warnings, tuple)
+        self.assertIsInstance(hash(space_cfg_lists), int)
+
+        # Verify metaclass property setters on ConfigManager and ContributesValidator
+        config.ConfigManager._cache = {"custom_mod": {"k": "v"}}
+        self.assertEqual(ctx.config_cache.get("custom_mod"), {"k": "v"})
+        config.ConfigManager._cache = {}
+        validator.ContributesValidator._SIGNATURE_PARSE_CACHE = {"str": {"type": "str"}}
+        self.assertIn("str", ctx.validator_signature_cache)
+        validator.ContributesValidator._SIGNATURE_PARSE_CACHE = {}
+
+        # Verify RuntimeScope priority over uri_tls and empty virtual_cwd filtering
+        uri.set_host_dir("/tmp/stale_tls_host")
+        try:
+            with bind_runtime_context(host_dir="/tmp/scoped_host", virtual_cwd="   "):
+                self.assertEqual(
+                    uri.get_host_dir(), os.path.normpath(os.path.abspath("/tmp/scoped_host"))
+                )
+        finally:
+            reset_runtime_context()
+        self.assertIsNone(getattr(ctx.uri_tls, "active_host_dir", None))
         self.mark_passed()
 
     def test_ft04_et03_uri_reconcile_undefined_and_guard_system_exit(self) -> None:

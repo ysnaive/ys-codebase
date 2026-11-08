@@ -636,6 +636,24 @@ class SpaceConfig:
         object.__setattr__(self, "presets", tuple(str(p) for p in self.presets if str(p).strip()))
         object.__setattr__(self, "include", tuple(str(i) for i in self.include if str(i).strip()))
         object.__setattr__(self, "exclude", tuple(str(x) for x in self.exclude if str(x).strip()))
+        object.__setattr__(self, "effective_include", tuple(self.effective_include))
+        object.__setattr__(self, "effective_exclude", tuple(self.effective_exclude))
+        object.__setattr__(self, "negated_presets", tuple(self.negated_presets))
+        object.__setattr__(
+            self,
+            "unresolved_presets",
+            tuple(str(p) for p in self.unresolved_presets if str(p).strip()),
+        )
+        object.__setattr__(
+            self,
+            "unresolved_compose",
+            tuple(str(c) for c in self.unresolved_compose if str(c).strip()),
+        )
+        object.__setattr__(
+            self,
+            "uri_warnings",
+            tuple(str(w) for w in self.uri_warnings if str(w).strip()),
+        )
 
         if not self.effective_include:
             raw_inc = self.include if self.include else ("*",)

@@ -15,7 +15,7 @@ import re
 import sys
 import types
 
-from core.context import get_runtime_context
+from core.context import get_env, get_env_snapshot, get_runtime_context
 from core.log import log_warn
 from core.validator import ValidationIssue, ValidationResult
 
@@ -132,7 +132,7 @@ def detect_system_locale_chain(raw_tag: Optional[str] = None) -> List[str]:
         candidates.append(raw_tag)
     else:
         for env_key in ("LC_ALL", "LC_MESSAGES", "LANG"):
-            val = os.environ.get(env_key, "").strip()
+            val = (get_env(env_key, "") or "").strip()
             if val:
                 candidates.append(val)
         if not candidates and sys.platform == "win32":
@@ -201,7 +201,7 @@ def detect_active_host_dialect(
     'nouns-cursor', 'nouns-windsurf', 'nouns-copilot', 'nouns-opencode', 'nouns-roo'),
     or None if running in a standard human terminal.
     """
-    env_map = env if env is not None else os.environ
+    env_map = env if env is not None else get_env_snapshot()
     active_rules = rules if rules is not None else get_host_dialect_rules()
 
     non_empty_upper_keys = [k.upper() for k, v in env_map.items() if v]
@@ -235,7 +235,7 @@ def get_active_chain(explicit_chain: Optional[Union[str, List[str]]] = None) -> 
         if parsed:
             return parsed
 
-    env_val = os.environ.get("YSCB_LOCALE", "").strip()
+    env_val = (get_env("YSCB_LOCALE", "") or "").strip()
     if env_val:
         parsed = parse_locale_chain(env_val)
         if parsed:

@@ -40,7 +40,7 @@ def validate_space_weights(raw_weights: Any) -> Dict[str, float]:
 @dataclass(frozen=True)
 class KnowledgeDBContributes:
     """knowledge-db 擴充貢獻結構模型（僅管理 space_weights，語言擴充由 module:ast 管理）"""
-    space_weights: Dict[str, float] = field(default_factory=dict)
+    space_weights: Dict[str, float] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
         validated_weights = validate_space_weights(self.space_weights)
@@ -65,9 +65,9 @@ class AggregatedItem:
 
     symbol: UnifiedSymbol
     score: float
-    matched_terms: List[str]
+    matched_terms: List[str] = field(hash=False)
     snippet: str = ""
-    code_snippet: Optional[Any] = None
+    code_snippet: Optional[Any] = field(default=None, hash=False)
 
     def to_dict(self) -> Dict[str, Any]:
         data = {
@@ -92,8 +92,8 @@ class AggregatedFileResult:
 
     file_path: str
     total_score: float
-    items: List[AggregatedItem]
-    spaces: List[str]
+    items: List[AggregatedItem] = field(hash=False)
+    spaces: List[str] = field(hash=False)
     language: str
 
     def to_dict(self) -> Dict[str, Any]:

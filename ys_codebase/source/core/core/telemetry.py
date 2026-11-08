@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from core.context import get_env
 from core.log import (
     _parse_jsonl_dict_line,
     _rotate_lines_file,
@@ -46,7 +47,7 @@ def resolve_telemetry_path(yscb_abs: Optional[str] = None) -> Path:
     解析 cache://core/telemetry.jsonl 絕對路徑。
     若設定環境變數 YSCB_TELEMETRY_PATH 則優先使用（供單元測試隔離驗證）。
     """
-    env_override = os.environ.get("YSCB_TELEMETRY_PATH", "").strip()
+    env_override = (get_env("YSCB_TELEMETRY_PATH", "") or "").strip()
     if env_override:
         return Path(env_override).resolve()
 
@@ -74,9 +75,9 @@ def should_record_telemetry(
     2. 略過 -h / --help / help 查詢。
     3. 略過 session-trace 自身呼叫，防止自檢動作污染觀測數據。
     """
-    has_override = bool(os.environ.get("YSCB_TELEMETRY_PATH", "").strip())
+    has_override = bool((get_env("YSCB_TELEMETRY_PATH", "") or "").strip())
     if not has_override:
-        if os.environ.get("YSCB_TEST_SANDBOX") == "1" or os.environ.get("YSCB_TESTING") == "1":
+        if get_env("YSCB_TEST_SANDBOX") == "1" or get_env("YSCB_TESTING") == "1":
             return False
 
     tokens = [str(t) for t in (cmd_path or [])] + [str(a) for a in (raw_args or [])]

@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from typing import Any, Dict, List, Optional
-from core.context import get_runtime_context
+from core.context import get_env, get_env_snapshot, get_runtime_context
 
 
 _TRUTHY_ENV_VALUES = ("1", "true", "True")
@@ -50,10 +50,10 @@ def can_spawn_background_daemon(force_reprobe: bool = False, yscb_root: Optional
     Returns:
         bool: True if background daemon spawning is supported, False otherwise.
     """
-    if os.environ.get("YSCB_FORCE_DAEMON") in _TRUTHY_ENV_VALUES:
+    if get_env("YSCB_FORCE_DAEMON") in _TRUTHY_ENV_VALUES:
         return True
 
-    if os.environ.get("YSCB_NO_DAEMON") in _TRUTHY_ENV_VALUES:
+    if get_env("YSCB_NO_DAEMON") in _TRUTHY_ENV_VALUES:
         return False
 
     if sys.platform != "win32":
@@ -125,7 +125,7 @@ def spawn_detached(
     Returns:
         int: Process ID (PID) of the spawned detached process.
     """
-    current_env = os.environ.copy()
+    current_env = dict(get_env_snapshot())
     if env:
         current_env.update(env)
 

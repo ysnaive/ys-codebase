@@ -52,6 +52,7 @@ from .service import (
     get_active_worker,
     get_worker_busy_ms,
     is_worker_running,
+    read_worker_state,
     wait_until_worker_idle,
 )
 from .tokenizer import MultilingualTokenizer
@@ -279,7 +280,7 @@ class IndexingPipeline:
                         cache["unified_mtime"] = mtime
                     self._unified_index = cache["unified_index"]
             except Exception as e:
-                log_warn(f"Failed loading unified index cache: {e}")
+                log_warn(f"Failed loading unified index cache: {e}", stream="stderr")
         else:
             with _CACHE_LOCK:
                 if cache["unified_mtime"] > 0.0:
@@ -298,7 +299,7 @@ class IndexingPipeline:
                         if cache["vector_index"] is not None:
                             self.hybrid_engine.vector_index = cache["vector_index"]
                 except Exception as e:
-                    log_warn(f"Failed loading vector index cache: {e}")
+                    log_warn(f"Failed loading vector index cache: {e}", stream="stderr")
             elif not getattr(self, "_vector_index_dirty", False):
                 with _CACHE_LOCK:
                     if cache["vector_mtime"] > 0.0 or cache["vector_index"] is not None:
@@ -381,10 +382,10 @@ class IndexingPipeline:
                     try:
                         self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
                     except Exception as ve:
-                        log_warn(f"Failed loading unified vector index: {ve}")
+                        log_warn(f"Failed loading unified vector index: {ve}", stream="stderr")
                 return idx
             except Exception as e:
-                log_warn(f"Failed loading unified binary index, rebuilding: {e}")
+                log_warn(f"Failed loading unified binary index, rebuilding: {e}", stream="stderr")
 
         t_all_start = time.time()
 
@@ -444,7 +445,7 @@ class IndexingPipeline:
                 self.hybrid_engine.vector_index = vec_idx
                 _report(3, f"向量特徵嵌入建置 ({len(doc_ids)} 符號向量)", (time.time() - t0) * 1000)
             except Exception as e:
-                log_warn(f"Failed building/saving vector index: {e}")
+                log_warn(f"Failed building/saving vector index: {e}", stream="stderr")
                 _report(3, f"向量特徵嵌入建置失敗: {e}", (time.time() - t0) * 1000)
         else:
             reason_str = ""
@@ -648,7 +649,7 @@ class IndexingPipeline:
             try:
                 self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
             except Exception as ve:
-                log_warn(f"Failed loading vector index for hot patch: {ve}")
+                log_warn(f"Failed loading vector index for hot patch: {ve}", stream="stderr")
 
         vec_idx = self.hybrid_engine.vector_index
         expected_model = getattr(self.config, "embedding_model", "BAAI/bge-small-zh-v1.5")
@@ -677,7 +678,7 @@ class IndexingPipeline:
                 with self._kdb_index_file_lock():
                     vec_idx.save_binary(vector_file)
             except Exception as ve:
-                log_warn(f"Failed saving patched vector index: {ve}")
+                log_warn(f"Failed saving patched vector index: {ve}", stream="stderr")
             return False, None
 
         if num_symbols <= 10:
@@ -689,7 +690,7 @@ class IndexingPipeline:
                     vec_idx.save_binary(vector_file)
                 return False, None
             except Exception as ve:
-                log_warn(f"Failed patching vector index for <=10 symbols: {ve}")
+                log_warn(f"Failed patching vector index for <=10 symbols: {ve}", stream="stderr")
                 return True, f"[knowledge-db:notice] 向量更新失敗已降級為純 BM25 模式: {ve}"
 
         try:
@@ -718,7 +719,7 @@ class IndexingPipeline:
                 vec_idx.save_binary(vector_file)
             return False, None
         except Exception as ve:
-            log_warn(f"Dynamic probe or inference failed: {ve}")
+            log_warn(f"Dynamic probe or inference failed: {ve}", stream="stderr")
             return True, f"[knowledge-db:notice] 向量推論異常已降級為純 BM25 模式: {ve}"
 
     def _persist_patched_indices(
@@ -753,7 +754,7 @@ class IndexingPipeline:
             try:
                 self._unified_index = InvertedIndex.load_binary(bin_file)
             except Exception as e:
-                log_warn(f"Failed loading binary inverted index for hot patch: {e}")
+                log_warn(f"Failed loading binary inverted index for hot patch: {e}", stream="stderr")
 
         if self._unified_index is None:
             return HotPatchResult(success=False, patched_count=0)
@@ -794,7 +795,7 @@ class IndexingPipeline:
                             with self._kdb_index_file_lock():
                                 vec_idx.save_binary(vector_file)
                     except Exception as ve:
-                        log_warn(f"Failed evicting old vectors during skip_vectors hot patch: {ve}")
+                        log_warn(f"Failed evicting old vectors during skip_vectors hot patch: {ve}", stream="stderr")
                 vector_degraded = False
                 degrade_notice = None
             else:
@@ -812,7 +813,7 @@ class IndexingPipeline:
                 degrade_notice=degrade_notice,
             )
         except Exception as e:
-            log_warn(f"Incremental hot patch failed: {e}, falling back to full rebuild.")
+            log_warn(f"Incremental hot patch failed: {e}, falling back to full rebuild.", stream="stderr")
             self._vector_degraded = False
             self._last_degrade_notice = None
             return HotPatchResult(success=False, patched_count=0)
@@ -1058,7 +1059,7 @@ class IndexingPipeline:
                 self._index_cache[sp_name] = idx
                 return {sp_name: idx}
             except Exception as e:
-                log_warn(f"Failed loading binary cached index for '{sp_name}', rebuilding: {e}")
+                log_warn(f"Failed loading binary cached index for '{sp_name}', rebuilding: {e}", stream="stderr")
 
         snapshot = self._sync_ast_snapshot(force=force)
         match_keys = {space, sp_name, sp.short_name, sp.qualified_name}
@@ -1145,12 +1146,6 @@ class IndexingPipeline:
             self._reset_consumer_cursor(space_name=None, consumer_id="knowledge-db")
         except Exception:
             pass
-        try:
-            if space is not None:
-                self._reset_consumer_cursor(space_name=space, consumer_id="knowledge-db")
-            self._reset_consumer_cursor(space_name=None, consumer_id="knowledge-db")
-        except Exception:
-            pass
 
     # ----------------------------------------------------------------------
     # 3 階段檢索編排
@@ -1176,7 +1171,7 @@ class IndexingPipeline:
             )
         eff_require_vectors = bool(require_vectors and has_local_model)
 
-        if bin_file.exists():
+        if bin_file.exists() or self._unified_index is not None:
             if worker_active or worker_busy:
                 if worker_active:
                     active_w = get_active_worker()
@@ -1290,9 +1285,9 @@ class IndexingPipeline:
                         try:
                             self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
                         except Exception as ve:
-                            log_warn(f"Failed loading unified vector index: {ve}")
+                            log_warn(f"Failed loading unified vector index: {ve}", stream="stderr")
                 except Exception as e:
-                    log_warn(f"Failed loading unified binary index: {e}, rebuilding...")
+                    log_warn(f"Failed loading unified binary index: {e}, rebuilding...", stream="stderr")
                     self.build_unified_index(force=True)
             else:
                 self.build_unified_index(force=True)
@@ -1362,10 +1357,34 @@ class IndexingPipeline:
             return False
 
         indices_dir = self.get_indices_dir()
+        worker_st = read_worker_state(indices_dir)
+        worker_phase = str(worker_st.get("phase", "") or "")
         worker_active = is_worker_running(indices_dir)
         emb_svc = getattr(self, "embedding_service", None)
         if emb_svc is not None:
             emb_svc.suppress_guard_prompt = bool(worker_active)
+
+        if emb_svc is not None and not getattr(emb_svc, "mock_mode", False):
+            has_local = (
+                emb_svc.has_local_model()
+                if hasattr(emb_svc, "has_local_model")
+                else emb_svc.is_model_downloaded()
+            )
+            if not has_local:
+                if worker_active or worker_phase == "downloading_model":
+                    active_w = get_active_worker()
+                    if active_w is not None:
+                        active_w.notify_space_changed()
+                    log("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", stream="stderr", flush=True)
+                    return False
+                # Trigger standard offline/missing-model notice in _init_model without downloading
+                _ = emb_svc.is_available
+                return False
+
+        if worker_phase in ("downloading_model", "degraded_offline"):
+            if worker_phase == "downloading_model" or bool(worker_st.get("busy", False)):
+                log("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", stream="stderr", flush=True)
+            return False
 
         timeout_ms = int(getattr(self.config, "jit_vector_timeout_ms", 3000) or 0)
         elapsed_ms = get_worker_busy_ms(indices_dir)
@@ -1381,19 +1400,6 @@ class IndexingPipeline:
                 log("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", stream="stderr", flush=True)
                 return False
             self._ensure_indices_loaded(load_vectors=True, force_reload=True)
-
-        if emb_svc is not None and not getattr(emb_svc, "mock_mode", False):
-            has_local = emb_svc.has_local_model() if hasattr(emb_svc, "has_local_model") else emb_svc.is_model_downloaded()
-            if not has_local:
-                if worker_active:
-                    active_w = get_active_worker()
-                    if active_w is not None:
-                        active_w.notify_space_changed()
-                    log("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", stream="stderr", flush=True)
-                    return False
-                # Trigger standard offline/missing-model notice in _init_model without downloading
-                _ = emb_svc.is_available
-                return False
 
         if worker_active and not self.hybrid_engine.is_vector_available:
             active_w = get_active_worker()
