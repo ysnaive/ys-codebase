@@ -99,8 +99,25 @@ class ReleasePublisher:
         """載入持久化之來源檔案 SHA-1 快取 (storage.local://)。"""
         if vfs and vfs.exists(SHA1_CACHE_URI):
             try:
+                real_p = uri.resolve(SHA1_CACHE_URI, interactive=False) if uri else ""
+                st_ns = os.stat(real_p).st_mtime_ns if (real_p and os.path.isfile(real_p)) else 0
+                from core.context import get_runtime_context
+
+                ctx = get_runtime_context()
+                mem_cache = ctx.get_module_state("agents_workflow.publisher.sha1_mem_cache")
+                if (
+                    isinstance(mem_cache, dict)
+                    and mem_cache.get("path") == real_p
+                    and mem_cache.get("mtime_ns") == st_ns
+                    and isinstance(mem_cache.get("data"), dict)
+                ):
+                    return dict(mem_cache["data"])
                 data = vfs.read_json(SHA1_CACHE_URI)
                 if isinstance(data, dict):
+                    ctx.set_module_state(
+                        "agents_workflow.publisher.sha1_mem_cache",
+                        {"path": real_p, "mtime_ns": st_ns, "data": dict(data)},
+                    )
                     return data
             except Exception:
                 pass
@@ -112,6 +129,14 @@ class ReleasePublisher:
             try:
                 vfs.write_json(SHA1_CACHE_URI, self._sha1_cache)
                 self._sha1_cache_dirty = False
+                real_p = uri.resolve(SHA1_CACHE_URI, interactive=False) if uri else ""
+                st_ns = os.stat(real_p).st_mtime_ns if (real_p and os.path.isfile(real_p)) else 0
+                from core.context import get_runtime_context
+
+                get_runtime_context().set_module_state(
+                    "agents_workflow.publisher.sha1_mem_cache",
+                    {"path": real_p, "mtime_ns": st_ns, "data": dict(self._sha1_cache)},
+                )
             except Exception:
                 pass
 
@@ -1032,11 +1057,17 @@ class ReleasePublisher:
 
         can_short_circuit, short_circuited_files = self._check_short_circuit(tx_ctx)
         if can_short_circuit:
-            self.sync_gitignore(
-                active_targets=active_target_names,
-                published_files=short_circuited_files,
-                proj_root=proj_root,
-            )
+            from core.context import get_runtime_context
+
+            ctx = get_runtime_context()
+            last_gi_fp = ctx.get_module_state("agents_workflow.publisher.last_gitignore_fp")
+            if last_gi_fp != combined_fingerprint:
+                self.sync_gitignore(
+                    active_targets=active_target_names,
+                    published_files=short_circuited_files,
+                    proj_root=proj_root,
+                )
+                ctx.set_module_state("agents_workflow.publisher.last_gitignore_fp", combined_fingerprint)
             self._save_sha1_cache()
             return {
                 "success": True,
@@ -1104,6 +1135,12 @@ class ReleasePublisher:
             published_files=current_published_set,
             proj_root=proj_root,
         )
+        try:
+            from core.context import get_runtime_context
+
+            get_runtime_context().set_module_state("agents_workflow.publisher.last_gitignore_fp", combined_fingerprint)
+        except Exception:
+            pass
 
         self._save_sha1_cache()
         return {

@@ -720,7 +720,8 @@ class TestServerModule(YSCBTestCase):
 
         def mock_popen(cmd, **kwargs):
             nonlocal captured_env
-            captured_env = kwargs.get("env", {})
+            if isinstance(cmd, (list, tuple)) and any("worker.py" in str(x) for x in cmd):
+                captured_env = kwargs.get("env", {})
             fake_proc = unittest.mock.MagicMock()
             fake_proc.pid = 77777
             fake_proc.poll.return_value = None
@@ -1790,6 +1791,75 @@ class TestServerModule(YSCBTestCase):
         degraded_pkt = [p for p in svc_status_pkts if p.get("state") == BaseServiceWorker.STATE_DEGRADED_OFFLINE][-1]
         self.assertTrue(sup._handle_worker_control_packet(degraded_pkt))
         self.assertEqual(sup.get_status_dict()["services"][0]["state"], BaseServiceWorker.STATE_DEGRADED_OFFLINE)
+        self.mark_passed()
+
+    def test_worker_memory_health_monitor_algorithm_and_idle_guard(self):
+        """WorkerMemoryHealthMonitor calibrates baseline, detects bloat/pressure/ratcheting only when completely idle, and respects cooldown."""
+        from server.master import WorkerMemoryHealthMonitor
+
+        mon = WorkerMemoryHealthMonitor()
+        mon.reset_for_new_worker(initial_rss_mb=300.0)
+        self.assertEqual(mon.baseline_rss_mb, 300.0)
+
+        # 1. Busy worker never triggers recycle even at high RSS
+        should_rec, reason = mon.evaluate(
+            1800.0, {"total_mb": 16000.0, "avail_mb": 8000.0, "avail_ratio": 0.5}, is_idle=False
+        )
+        self.assertFalse(should_rec)
+        self.assertEqual(reason, "")
+
+        # 2. Normal fluctuation within working-set bounds does not recycle
+        should_rec, _ = mon.evaluate(
+            520.0, {"total_mb": 16000.0, "avail_mb": 8000.0, "avail_ratio": 0.5}, is_idle=True
+        )
+        self.assertFalse(should_rec)
+
+        # 3. Severe working-set bloat (expansion >= 3.5x and delta >= 512 MB) triggers recycle
+        should_rec, reason = mon.evaluate(
+            1200.0, {"total_mb": 16000.0, "avail_mb": 8000.0, "avail_ratio": 0.5}, is_idle=True
+        )
+        self.assertTrue(should_rec)
+        self.assertIn("Severe working-set bloat", reason)
+        self.assertEqual(mon.recycle_count, 1)
+
+        # 4. Cooldown prevents immediate back-to-back recycle
+        should_rec_cd, _ = mon.evaluate(
+            1300.0, {"total_mb": 16000.0, "avail_mb": 8000.0, "avail_ratio": 0.5}, is_idle=True
+        )
+        self.assertFalse(should_rec_cd)
+
+        # 5. Host memory pressure (< 15% available) + >= 2.2x expansion triggers recycle after cooldown
+        mon.last_recycle_time = 0.0
+        should_rec_press, reason_press = mon.evaluate(
+            700.0, {"total_mb": 16000.0, "avail_mb": 1500.0, "avail_ratio": 0.09375}, is_idle=True
+        )
+        self.assertTrue(should_rec_press)
+        self.assertIn("Host memory pressure", reason_press)
+        self.assertEqual(mon.recycle_count, 2)
+
+        # 6. Sustained monotonic ratcheting across 5 idle windows triggers recycle
+        mon.reset_for_new_worker(initial_rss_mb=300.0)
+        mon.last_recycle_time = 0.0
+        for step_rss in (380.0, 460.0, 540.0, 620.0):
+            r_flag, _ = mon.evaluate(
+                step_rss, {"total_mb": 16000.0, "avail_mb": 8000.0, "avail_ratio": 0.5}, is_idle=True
+            )
+            self.assertFalse(r_flag)
+        r_flag_5, reason_r = mon.evaluate(
+            760.0, {"total_mb": 16000.0, "avail_mb": 8000.0, "avail_ratio": 0.5}, is_idle=True
+        )
+        self.assertTrue(r_flag_5)
+        self.assertIn("Sustained monotonic RSS ratcheting", reason_r)
+
+        # 7. MasterSupervisor._is_worker_completely_idle checks both _current_task and _worker_services
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
+        sup._worker_proc = unittest.mock.MagicMock()
+        sup._worker_proc.poll.return_value = None
+        sup._worker_ready_event.set()
+        sup._worker_services = [{"name": "knowledge-db-worker", "state": "READY", "alive": True, "busy": False}]
+        self.assertTrue(sup._is_worker_completely_idle())
+        sup._worker_services = [{"name": "knowledge-db-worker", "state": "UPDATING", "alive": True, "busy": True}]
+        self.assertFalse(sup._is_worker_completely_idle())
         self.mark_passed()
 
 

@@ -16,6 +16,9 @@
   "events": [
     {
       "on_ast_index_updated": "當 AST 符號快照與雙向呼叫圖譜完成建置或增量熱修補並推進 ast_generation 時觸發"
+    },
+    {
+      "on_register_ast_spaces": "當 ASTEngine 解析預設納管目標空間時觸發，供下游模組（如 knowledge-db）動態注入索引空間"
     }
   ],
   "commands": {

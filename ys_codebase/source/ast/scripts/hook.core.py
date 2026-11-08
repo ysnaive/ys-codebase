@@ -86,10 +86,60 @@ def _get_current_ast_generation(engine: Any) -> int:
     return 0
 
 
-def _is_cloud_space(name: Optional[str]) -> bool:
+def _collect_engine_target_spaces(engine: Any) -> List[str]:
+    """Collect target space names (both qualified and short names) managed by `engine`."""
+    known_spaces: List[str] = []
+    if hasattr(engine, "get_target_spaces"):
+        try:
+            for item in engine.get_target_spaces():
+                s = str(item).strip()
+                if s and s not in known_spaces:
+                    known_spaces.append(s)
+                short = s.split("/", 1)[-1].lstrip("/")
+                if short and short not in known_spaces:
+                    known_spaces.append(short)
+        except Exception:
+            pass
+    if not known_spaces:
+        bundler = getattr(engine, "bundler", None)
+        if bundler is not None and hasattr(bundler, "get_target_space_names"):
+            try:
+                for item in bundler.get_target_space_names():
+                    s = str(item).strip()
+                    if s and s not in known_spaces:
+                        known_spaces.append(s)
+                    short = s.split("/", 1)[-1].lstrip("/")
+                    if short and short not in known_spaces:
+                        known_spaces.append(short)
+            except Exception:
+                pass
+    if not known_spaces:
+        space_mgr = getattr(engine, "space_manager", None)
+        if space_mgr is not None and hasattr(space_mgr, "list_spaces"):
+            try:
+                for item in space_mgr.list_spaces():
+                    if isinstance(item, str):
+                        known_spaces.append(item)
+                    else:
+                        q_name = getattr(item, "qualified_name", "")
+                        s_name = getattr(item, "short_name", "")
+                        if q_name:
+                            known_spaces.append(q_name)
+                        if s_name and s_name not in known_spaces:
+                            known_spaces.append(s_name)
+            except Exception:
+                known_spaces = []
+    return known_spaces
+
+
+def _is_target_space(name: Optional[str], known_spaces: List[str]) -> bool:
     if not name:
-        return False
-    return name == "cloud" or name.endswith("/cloud")
+        return True
+    if not known_spaces:
+        return True
+    norm = str(name).strip()
+    short = norm.split("/", 1)[-1].lstrip("/")
+    return norm in known_spaces or short in known_spaces
 
 
 def on_file_space_changed(
@@ -111,11 +161,17 @@ def on_file_space_changed(
         if isinstance(diff_detail_arg, dict) and not diff_detail_arg:
             return {"status": "skipped", "ast_generation": 0, "patched_count": 0}
         space_name_arg = kwargs.get("space_name") or (spaces[0] if spaces else "default")
-        if _is_cloud_space(str(space_name_arg)):
-            return {"status": "noop", "ast_generation": 0, "patched_count": 0, "to_generation": 0}
         p_root = kwargs.get("project_root") or (context.get("project_root") if isinstance(context, dict) else None)
         s_dir = kwargs.get("storage_dir") or (context.get("storage_dir") if isinstance(context, dict) else None)
         eng = kwargs.get("engine") or get_engine(project_root=p_root, storage_dir=s_dir)
+        known_for_arg = _collect_engine_target_spaces(eng)
+        if not _is_target_space(str(space_name_arg), known_for_arg):
+            return {
+                "status": "noop",
+                "ast_generation": _get_current_ast_generation(eng),
+                "patched_count": 0,
+                "to_generation": 0,
+            }
         normalized_detail = (
             diff_detail_arg
             if "spaces" in diff_detail_arg
@@ -154,27 +210,9 @@ def on_file_space_changed(
     if target_space is None and spaces and len(spaces) == 1:
         target_space = spaces[0]
 
-    known_spaces: List[str] = []
-    space_mgr = getattr(engine, "space_manager", None)
-    if space_mgr is not None and hasattr(space_mgr, "list_spaces"):
-        try:
-            for item in space_mgr.list_spaces():
-                if isinstance(item, str):
-                    if not _is_cloud_space(item):
-                        known_spaces.append(item)
-                else:
-                    q_name = getattr(item, "qualified_name", "")
-                    s_name = getattr(item, "short_name", "")
-                    if q_name and not _is_cloud_space(q_name):
-                        known_spaces.append(q_name)
-                    if s_name and not _is_cloud_space(s_name) and s_name not in known_spaces:
-                        known_spaces.append(s_name)
-        except Exception:
-            known_spaces = []
+    known_spaces = _collect_engine_target_spaces(engine)
 
-    if _is_cloud_space(target_space) or (
-        target_space is not None and known_spaces and target_space not in known_spaces
-    ):
+    if target_space is not None and not _is_target_space(target_space, known_spaces):
         cur_ast_gen = _get_current_ast_generation(engine)
         return {
             "status": "noop",
@@ -184,7 +222,7 @@ def on_file_space_changed(
         }
 
     if isinstance(spaces, list):
-        spaces = [s for s in spaces if not _is_cloud_space(s) and (not known_spaces or s in known_spaces)]
+        spaces = [s for s in spaces if _is_target_space(s, known_spaces)]
         if not spaces and target_space is None:
             cur_ast_gen = _get_current_ast_generation(engine)
             return {

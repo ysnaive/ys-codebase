@@ -4,32 +4,32 @@
   "installed_modules": {
     "core": {
       "version": "1.2.7.build",
-      "installed_at": "2026-11-08 12:41:45",
+      "installed_at": "2026-11-08 16:28:50",
       "provider": "./ys_codebase/release"
     },
     "dev": {
       "version": "1.1.4.build",
-      "installed_at": "2026-11-08 10:10:58",
+      "installed_at": "2026-11-08 15:31:07",
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
       "version": "1.2.4.build",
-      "installed_at": "2026-11-08 10:10:58",
+      "installed_at": "2026-11-08 17:23:38",
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {
       "version": "1.2.1.build",
-      "installed_at": "2026-11-08 12:58:44",
+      "installed_at": "2026-11-08 17:01:07",
       "provider": "./ys_codebase/release"
     },
     "server": {
       "version": "1.0.4.build",
-      "installed_at": "2026-11-08 12:56:59",
+      "installed_at": "2026-11-08 16:31:34",
       "provider": "./ys_codebase/release"
     },
     "ast": {
       "version": "1.0.1.build",
-      "installed_at": "2026-11-08 12:58:44",
+      "installed_at": "2026-11-08 17:24:23",
       "provider": "./ys_codebase/release"
     },
     "vscode-support": {
@@ -39,7 +39,7 @@
     },
     "gdrive-support": {
       "version": "1.0.1.build",
-      "installed_at": "2026-11-08 12:39:59",
+      "installed_at": "2026-11-08 15:19:49",
       "provider": "./ys_codebase/release"
     }
   }

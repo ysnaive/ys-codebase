@@ -56,4 +56,5 @@
 <!-- YSCB_AGENTS_END -->
 
 ## 4. 專案特化工程規範 (Project Specific Standards)
-*(專案特化工程規範填寫於此，不受中央標準庫覆蓋)*
+
+- **單次寫檔行數上限 (Single-Write Line Limit)**：調用檔案寫入或編輯工具時，**單次寫入或替換嚴禁超過 150 行**；若產物或修改超過 150 行，必須拆分為多次增量寫入／分段追加（`Append=True` 或分段 `edit_file`），防止單次過大輸出導致卡頓或超時。

@@ -203,7 +203,7 @@ class FingerprintScanner:
         space_name: Optional[str] = None,
         consumer_id: str = "default",
         *,
-        auto_refresh: bool = True,
+        auto_refresh: Optional[bool] = None,
     ) -> ScanDiffResult:
         try:
             return self._scanner.diff(
@@ -257,12 +257,11 @@ class FingerprintScanner:
         *,
         auto_refresh: Optional[bool] = None,
     ) -> Iterator[ScanDiffResult]:
-        eff_refresh = True if auto_refresh is None else bool(auto_refresh)
         try:
             with self._scanner.consume_diff(
                 space_query=space_name,
                 consumer_id=consumer_id,
-                auto_refresh=eff_refresh,
+                auto_refresh=auto_refresh,
             ) as res:
                 yield res
         except SpaceNotFoundError as exc:

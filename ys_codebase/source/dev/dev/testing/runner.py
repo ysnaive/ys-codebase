@@ -1,15 +1,18 @@
 """
 Test discovery, execution engine and ASCII report formatter for YS-Codebase.
 """
+import atexit
 import os
 import subprocess
 import sys
+import threading
+import time
 import unittest
 from io import StringIO
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Set, Tuple
 from core import uri, vfs
 from core.context import get_runtime_context
-from core.platform.process import terminate_popen_tree
+from core.platform.process import is_process_alive, kill_process_tree, reap_sandbox_processes, terminate_popen_tree
 from dev.checker import discover_source_modules
 from dev.testing.contract import make_contract_suite
 from dev.testing.case import YSCBTestCase
@@ -23,6 +26,73 @@ _CATEGORY_MASK = (
     | Requirement.LOGIC.value
 )
 
+_ACTIVE_POPEN_LOCK = threading.Lock()
+_ACTIVE_POPEN_STATE_KEY = "dev.runner.active_popen_procs"
+_HOOKS_INSTALLED_STATE_KEY = "dev.runner.cleanup_hooks_installed"
+
+
+def _get_active_popen_set() -> Set[subprocess.Popen]:
+    return get_runtime_context().get_module_state(_ACTIVE_POPEN_STATE_KEY, set)
+
+
+def cleanup_active_test_subprocesses() -> int:
+    """Terminates all tracked child subprocesses spawned by `run_subprocess_with_tree_timeout`."""
+    with _ACTIVE_POPEN_LOCK:
+        proc_set = _get_active_popen_set()
+        active = list(proc_set)
+        proc_set.clear()
+    reaped = 0
+    for proc in active:
+        try:
+            if proc.poll() is None:
+                terminate_popen_tree(proc, timeout_sec=1.5)
+                reaped += 1
+        except Exception:
+            pass
+    return reaped
+
+
+def _install_runner_cleanup_hooks() -> None:
+    """Registers `atexit` once to reap active child subprocesses."""
+    with _ACTIVE_POPEN_LOCK:
+        ctx = get_runtime_context()
+        if bool(ctx.get_module_state(_HOOKS_INSTALLED_STATE_KEY, lambda: False)):
+            return
+        ctx.set_module_state(_HOOKS_INSTALLED_STATE_KEY, True)
+
+    atexit.register(cleanup_active_test_subprocesses)
+
+
+def start_parent_death_watchdog(expected_ppid: int) -> threading.Event:
+    """
+    Spawns a daemon watchdog thread inside `dev op-test` that monitors `expected_ppid`
+    (and `os.getppid() == 1`) and reaps the sandbox process tree if the parent test harness dies.
+    """
+    stop_event = threading.Event()
+    if expected_ppid <= 1:
+        return stop_event
+
+    def _watchdog_loop() -> None:
+        while not stop_event.wait(1.0):
+            curr_ppid = os.getppid() if hasattr(os, "getppid") else expected_ppid
+            if curr_ppid == 1 or not is_process_alive(expected_ppid):
+                try:
+                    cleanup_active_test_subprocesses()
+                    sb_dir = os.environ.get("YSCB_SANDBOX_DIR", "")
+                    if sb_dir and os.path.isdir(sb_dir):
+                        reap_sandbox_processes(sb_dir, timeout_sec=1.0)
+                    kill_process_tree(os.getpid(), timeout_sec=1.0)
+                except Exception:
+                    pass
+                break
+
+    threading.Thread(
+        target=_watchdog_loop,
+        daemon=True,
+        name="dev-op-test-parent-watchdog",
+    ).start()
+    return stop_event
+
 
 def run_subprocess_with_tree_timeout(
     cmd: List[str],
@@ -32,8 +102,10 @@ def run_subprocess_with_tree_timeout(
 ) -> Tuple[int, str, str]:
     """
     Executes a child subprocess in its own process group/session and terminates the entire
-    process tree on timeout, preventing orphaned grandchildren from holding stdout/stderr pipes open.
+    process tree on timeout or parent termination, preventing orphaned grandchildren from
+    holding stdout/stderr pipes open or surviving as `PPID=1` zombies.
     """
+    _install_runner_cleanup_hooks()
     popen_kwargs: Dict[str, Any] = {"close_fds": True}
     if sys.platform == "win32":
         flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200) | getattr(
@@ -55,6 +127,8 @@ def run_subprocess_with_tree_timeout(
         errors="replace",
         **popen_kwargs,
     )
+    with _ACTIVE_POPEN_LOCK:
+        _get_active_popen_set().add(proc)
     try:
         out, err = proc.communicate(timeout=timeout_sec)
         return proc.returncode or 0, out or "", err or ""
@@ -66,6 +140,8 @@ def run_subprocess_with_tree_timeout(
             out, err = "", ""
         return -1, out or "", (err or "") + f"\n[dev:runner] Process timed out after {timeout_sec}s"
     finally:
+        with _ACTIVE_POPEN_LOCK:
+            _get_active_popen_set().discard(proc)
         if proc.poll() is None:
             terminate_popen_tree(proc, timeout_sec=2.0)
         for pipe in (proc.stdout, proc.stderr):

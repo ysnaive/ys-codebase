@@ -6,16 +6,20 @@ and process tree termination) across Linux/POSIX and Windows environments.
 """
 
 import errno
+import gc
 import os
+from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from core.context import get_env, get_env_snapshot, get_runtime_context
 
 
 _TRUTHY_ENV_VALUES = ("1", "true", "True")
+_TRIM_STATE_KEY = "core.platform.process.last_trim_ts"
 
 
 def _get_can_spawn_cache() -> Optional[bool]:
@@ -289,7 +293,9 @@ def is_process_alive(pid: int) -> bool:
     else:
         # Check /proc/<pid>/status on Linux for Zombie state
         proc_status = f"/proc/{pid}/status"
-        if os.path.exists(proc_status):
+        if os.path.isdir("/proc"):
+            if not os.path.exists(proc_status):
+                return False
             try:
                 with open(proc_status, "r") as f:
                     for line in f:
@@ -337,9 +343,145 @@ def is_process_alive(pid: int) -> bool:
             return False
 
 
+def _collect_posix_descendants(root_pid: int) -> Tuple[Set[int], Set[int]]:
+    """
+    Recursively collect all descendant PIDs and their PGIDs starting from ``root_pid``
+    on Linux/POSIX by scanning ``/proc/<pid>/task/*/children`` and ``/proc/*/stat`` (PPID).
+    Penetrates ``setsid()`` (``start_new_session=True``) boundaries so detached grandchild
+    processes are never orphaned.
+    """
+    if root_pid <= 0 or sys.platform == "win32":
+        return set(), set()
+
+    children_map: Dict[int, Set[int]] = {}
+    if os.path.isdir("/proc"):
+        try:
+            for entry in os.scandir("/proc"):
+                if not entry.name.isdigit():
+                    continue
+                cpid = int(entry.name)
+                # Fast path 1: /proc/<cpid>/stat PPID
+                stat_file = os.path.join(entry.path, "stat")
+                try:
+                    with open(stat_file, "r", encoding="utf-8", errors="replace") as f:
+                        raw = f.read()
+                    rparen = raw.rfind(")")
+                    if rparen != -1:
+                        fields = raw[rparen + 2 :].split()
+                        if len(fields) >= 2:
+                            ppid = int(fields[1])
+                            children_map.setdefault(ppid, set()).add(cpid)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+    def _read_task_children(p: int) -> Set[int]:
+        found: Set[int] = set()
+        task_dir = f"/proc/{p}/task"
+        if not os.path.isdir(task_dir):
+            return found
+        try:
+            for t_entry in os.scandir(task_dir):
+                ch_path = os.path.join(t_entry.path, "children")
+                try:
+                    with open(ch_path, "r", encoding="utf-8", errors="replace") as cf:
+                        for tok in cf.read().split():
+                            if tok.isdigit():
+                                found.add(int(tok))
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        return found
+
+    descendants: Set[int] = set()
+    pgids: Set[int] = set()
+    queue: List[int] = [root_pid]
+    visited: Set[int] = {root_pid}
+
+    while queue:
+        curr = queue.pop(0)
+        direct = set(children_map.get(curr, set())) | _read_task_children(curr)
+        for ch in direct:
+            if ch <= 1 or ch == os.getpid():
+                continue
+            descendants.add(ch)
+            try:
+                ch_pgid = os.getpgid(ch)
+                if ch_pgid > 1 and ch_pgid != os.getpgid(0):
+                    pgids.add(ch_pgid)
+            except OSError:
+                pass
+            if ch not in visited:
+                visited.add(ch)
+                queue.append(ch)
+
+    if not os.path.isdir("/proc") and shutil.which("pgrep"):
+        try:
+            res = subprocess.run(
+                ["pgrep", "-P", str(root_pid)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=1.0,
+                check=False,
+            )
+            for line in (res.stdout or "").splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    ch = int(line)
+                    if ch > 1 and ch != os.getpid():
+                        descendants.add(ch)
+        except Exception:
+            pass
+
+    return descendants, pgids
+
+
+def _signal_posix_tree(
+    root_pid: int,
+    sig: int,
+    descendants: Optional[Set[int]] = None,
+    pgids: Optional[Set[int]] = None,
+) -> None:
+    """Send ``sig`` to ``root_pid``, its process group (if leader), and all discovered descendants/PGIDs."""
+    curr_desc, curr_pgids = _collect_posix_descendants(root_pid)
+    all_desc = (descendants or set()) | curr_desc
+    all_pgids = (pgids or set()) | curr_pgids
+
+    try:
+        pgid = os.getpgid(root_pid)
+        if pgid == root_pid and pgid > 1:
+            all_pgids.add(pgid)
+    except OSError:
+        pass
+
+    my_pgid = -1
+    try:
+        my_pgid = os.getpgid(0)
+    except OSError:
+        pass
+
+    for target_pgid in all_pgids:
+        if target_pgid > 1 and target_pgid != my_pgid:
+            try:
+                os.killpg(target_pgid, sig)
+            except OSError:
+                pass
+
+    for target_pid in (*all_desc, root_pid):
+        if target_pid > 1 and target_pid != os.getpid():
+            try:
+                os.kill(target_pid, sig)
+            except OSError:
+                pass
+
+
 def kill_process_tree(pid: int, timeout_sec: float = 3.0) -> bool:
     """
-    Gracefully and forcefully terminates the specified process and all its child processes.
+    Gracefully and forcefully terminates the specified process and all its child/descendant
+    processes (penetrating ``setsid()`` / ``start_new_session=True`` boundaries).
 
     Args:
         pid: Root process ID of the tree to kill.
@@ -365,56 +507,34 @@ def kill_process_tree(pid: int, timeout_sec: float = 3.0) -> bool:
         except Exception:
             return not is_process_alive(pid)
     else:
-        try:
-            pgid = os.getpgid(pid)
-        except OSError:
-            pgid = pid
-
-        try:
-            if pgid == pid:
-                os.killpg(pgid, signal.SIGTERM)
-            else:
-                os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
+        descendants, pgids = _collect_posix_descendants(pid)
+        _signal_posix_tree(pid, signal.SIGTERM, descendants=descendants, pgids=pgids)
 
         start_wait = time.time()
         while time.time() - start_wait < timeout_sec:
-            # Try reaping if direct child
             try:
                 os.waitpid(pid, os.WNOHANG)
             except (ChildProcessError, OSError):
                 pass
-            if not is_process_alive(pid):
+            if not is_process_alive(pid) and not any(is_process_alive(d) for d in descendants):
                 return True
             time.sleep(0.05)
 
-        if is_process_alive(pid):
-            try:
-                if pgid == pid:
-                    os.killpg(pgid, signal.SIGKILL)
-                else:
-                    os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
-            try:
-                os.waitpid(pid, os.WNOHANG)
-            except (ChildProcessError, OSError):
-                pass
-            time.sleep(0.05)
+        _signal_posix_tree(pid, signal.SIGKILL, descendants=descendants, pgids=pgids)
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            pass
+        time.sleep(0.05)
 
         return not is_process_alive(pid)
 
 
 def terminate_popen_tree(proc: subprocess.Popen, timeout_sec: float = 2.0) -> bool:
     """
-    Terminates a child ``Popen`` process (and its process group on POSIX) while
-    letting ``Popen`` itself reap the exit status (avoids ``waitpid`` races with
+    Terminates a child ``Popen`` process (and all its descendants/process groups on POSIX)
+    while letting ``Popen`` itself reap the exit status (avoids ``waitpid`` races with
     ``is_process_alive``).
-
-    POSIX: SIGTERM to the process group (the child must be started with
-    ``start_new_session=True``) -> ``proc.wait(timeout)`` -> SIGKILL -> ``proc.wait``.
-    Windows: ``taskkill /T /F`` -> ``proc.wait``.
 
     Args:
         proc: Child process handle.
@@ -447,33 +567,290 @@ def terminate_popen_tree(proc: subprocess.Popen, timeout_sec: float = 2.0) -> bo
                 return False
         return True
 
-    def _signal_group(sig: int) -> None:
-        try:
-            pgid = os.getpgid(proc.pid)
-        except OSError:
-            return
-        try:
-            if pgid == proc.pid:
-                os.killpg(pgid, sig)
-            else:
-                os.kill(proc.pid, sig)
-        except OSError as err:
-            if err.errno != errno.ESRCH:
-                raise
-
-    _signal_group(signal.SIGTERM)
+    descendants, pgids = _collect_posix_descendants(proc.pid)
+    _signal_posix_tree(proc.pid, signal.SIGTERM, descendants=descendants, pgids=pgids)
     try:
         proc.wait(timeout=timeout_sec)
+        # Ensure any detached grandchildren that called setsid() are also reaped
+        if any(is_process_alive(d) for d in descendants):
+            _signal_posix_tree(proc.pid, signal.SIGKILL, descendants=descendants, pgids=pgids)
         return True
     except subprocess.TimeoutExpired:
         pass
 
-    _signal_group(signal.SIGKILL)
+    _signal_posix_tree(proc.pid, signal.SIGKILL, descendants=descendants, pgids=pgids)
     try:
         proc.wait(timeout=timeout_sec)
     except subprocess.TimeoutExpired:
         return False
     return True
+
+
+def get_process_rss_mb(pid: Optional[int] = None) -> float:
+    """
+    Return the current Resident Set Size (RSS) in megabytes (MB) for ``pid``
+    (defaults to ``os.getpid()``). Returns ``0.0`` if unavailable or terminated.
+    """
+    target_pid = os.getpid() if pid is None else int(pid)
+    if target_pid <= 0:
+        return 0.0
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+                _fields_ = (
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                )
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            PROCESS_VM_READ = 0x0010
+            k32 = ctypes.windll.kernel32
+            psapi = ctypes.windll.psapi
+            handle = k32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, False, target_pid
+            )
+            if not handle:
+                return 0.0
+            try:
+                counters = PROCESS_MEMORY_COUNTERS()
+                counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
+                if psapi.GetProcessMemoryInfo(
+                    handle, ctypes.byref(counters), counters.cb
+                ):
+                    return round(float(counters.WorkingSetSize) / (1024.0 * 1024.0), 2)
+            finally:
+                k32.CloseHandle(handle)
+        except Exception:
+            return 0.0
+        return 0.0
+
+    # Linux /proc/<pid>/status VmRSS
+    if os.path.isdir("/proc"):
+        status_path = f"/proc/{target_pid}/status"
+        if os.path.exists(status_path):
+            try:
+                with open(status_path, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        if line.startswith("VmRSS:"):
+                            parts = line.split()
+                            if len(parts) >= 2 and parts[1].isdigit():
+                                return round(float(parts[1]) / 1024.0, 2)
+            except OSError:
+                return 0.0
+        return 0.0
+
+    # Fallback: macOS / BSD `ps -o rss= -p <pid>`
+    try:
+        res = subprocess.run(
+            ["ps", "-o", "rss=", "-p", str(target_pid)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1.0,
+            check=False,
+        )
+        if res.returncode == 0:
+            raw_kb = (res.stdout or "").strip()
+            if raw_kb.isdigit():
+                return round(float(raw_kb) / 1024.0, 2)
+    except Exception:
+        pass
+    return 0.0
+
+
+def get_host_memory_info() -> Dict[str, float]:
+    """
+    Return host physical memory metrics in MB:
+    ``{"total_mb": ..., "available_mb": ..., "available_ratio": ...}``.
+    Returns empty dict if unavailable.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = (
+                    ("dwLength", wintypes.DWORD),
+                    ("dwMemoryLoad", wintypes.DWORD),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                )
+
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                total_mb = float(stat.ullTotalPhys) / (1024.0 * 1024.0)
+                avail_mb = float(stat.ullAvailPhys) / (1024.0 * 1024.0)
+                ratio = (avail_mb / total_mb) if total_mb > 0 else 1.0
+                return {
+                    "total_mb": round(total_mb, 2),
+                    "available_mb": round(avail_mb, 2),
+                    "available_ratio": round(ratio, 4),
+                }
+        except Exception:
+            return {}
+        return {}
+
+    meminfo_path = "/proc/meminfo"
+    if os.path.exists(meminfo_path):
+        try:
+            total_kb = 0.0
+            avail_kb = 0.0
+            free_kb = 0.0
+            cached_kb = 0.0
+            buffers_kb = 0.0
+            with open(meminfo_path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        total_kb = float(line.split()[1])
+                    elif line.startswith("MemAvailable:"):
+                        avail_kb = float(line.split()[1])
+                    elif line.startswith("MemFree:"):
+                        free_kb = float(line.split()[1])
+                    elif line.startswith("Buffers:"):
+                        buffers_kb = float(line.split()[1])
+                    elif line.startswith("Cached:"):
+                        cached_kb = float(line.split()[1])
+            if total_kb > 0:
+                if avail_kb <= 0:
+                    avail_kb = free_kb + buffers_kb + cached_kb
+                total_mb = total_kb / 1024.0
+                avail_mb = avail_kb / 1024.0
+                return {
+                    "total_mb": round(total_mb, 2),
+                    "available_mb": round(avail_mb, 2),
+                    "available_ratio": round(avail_mb / total_mb, 4),
+                }
+        except Exception:
+            pass
+    return {}
+
+
+def trim_process_memory(min_interval_sec: float = 5.0) -> bool:
+    """
+    Run ``gc.collect()`` and release free heap arenas back to the OS kernel
+    (via ``libc.malloc_trim(0)`` on Linux or ``SetProcessWorkingSetSize`` on Windows).
+    Throttled by ``min_interval_sec`` so frequent calls do not incur excessive GC overhead.
+    """
+    now = time.monotonic()
+    ctx = get_runtime_context()
+    last_ts = float(ctx.get_module_state(_TRIM_STATE_KEY, lambda: 0.0) or 0.0)
+    if min_interval_sec > 0 and (now - last_ts) < min_interval_sec:
+        return False
+    ctx.set_module_state(_TRIM_STATE_KEY, now)
+
+    try:
+        gc.collect()
+    except Exception:
+        pass
+
+    if sys.platform.startswith("linux"):
+        try:
+            import ctypes
+            import ctypes.util
+
+            libc_name = ctypes.util.find_library("c") or "libc.so.6"
+            libc = ctypes.CDLL(libc_name)
+            if hasattr(libc, "malloc_trim"):
+                libc.malloc_trim(0)
+                return True
+        except Exception:
+            pass
+    return True
+
+
+def reap_sandbox_processes(sandbox_dir: Union[str, Path], timeout_sec: float = 2.0) -> int:
+    """
+    Scan and terminate any residual processes whose ``cwd``, ``cmdline``, or
+    ``YSCB_SANDBOX_DIR`` environment variable resides inside ``sandbox_dir``.
+    Returns the number of root processes terminated.
+    """
+    if not sandbox_dir or sys.platform == "win32" or not os.path.isdir("/proc"):
+        return 0
+
+    try:
+        norm_sb = os.path.normcase(os.path.normpath(os.path.realpath(str(sandbox_dir))))
+        norm_sb_abs = os.path.normcase(os.path.normpath(os.path.abspath(str(sandbox_dir))))
+    except OSError:
+        return 0
+
+    my_pid = os.getpid()
+    matched_pids: Set[int] = set()
+
+    def _matches_sb(p_str: str) -> bool:
+        if not p_str:
+            return False
+        norm_p = os.path.normcase(os.path.normpath(p_str))
+        return (
+            norm_p == norm_sb
+            or norm_p.startswith(norm_sb + os.sep)
+            or norm_p == norm_sb_abs
+            or norm_p.startswith(norm_sb_abs + os.sep)
+        )
+
+    try:
+        for entry in os.scandir("/proc"):
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            if pid <= 1 or pid == my_pid:
+                continue
+
+            # 1. Check /proc/<pid>/cwd symlink
+            try:
+                cwd_target = os.readlink(os.path.join(entry.path, "cwd"))
+                if _matches_sb(cwd_target):
+                    matched_pids.add(pid)
+                    continue
+            except OSError:
+                pass
+
+            # 2. Check /proc/<pid>/cmdline
+            try:
+                with open(os.path.join(entry.path, "cmdline"), "rb") as f:
+                    raw_cmd = f.read().decode("utf-8", errors="ignore")
+                if norm_sb in raw_cmd or norm_sb_abs in raw_cmd:
+                    matched_pids.add(pid)
+                    continue
+            except OSError:
+                pass
+
+            # 3. Check /proc/<pid>/environ for YSCB_SANDBOX_DIR
+            try:
+                with open(os.path.join(entry.path, "environ"), "rb") as f:
+                    raw_env = f.read().decode("utf-8", errors="ignore")
+                if f"YSCB_SANDBOX_DIR={norm_sb}" in raw_env or f"YSCB_SANDBOX_DIR={norm_sb_abs}" in raw_env:
+                    matched_pids.add(pid)
+                    continue
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+    reaped = 0
+    for pid in sorted(matched_pids):
+        if is_process_alive(pid):
+            kill_process_tree(pid, timeout_sec=timeout_sec)
+            reaped += 1
+    return reaped
 
 
 def __getattr__(name: str) -> Any:

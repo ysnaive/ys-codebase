@@ -350,6 +350,21 @@ class BaseServiceWorker(ABC):
         """Notify the server supervisor that this background worker is actively processing work."""
         return touch_activity(source=self.name)
 
+    def is_busy(self) -> bool:
+        """Returns True if this service worker is actively starting or updating state."""
+        try:
+            st = self.state
+            if st in (self.STATE_STARTING, self.STATE_UPDATING):
+                return True
+            get_metrics = getattr(self, "get_custom_metrics", None)
+            if callable(get_metrics):
+                m = get_metrics()
+                if isinstance(m, dict) and bool(m.get("busy")):
+                    return True
+        except Exception:
+            pass
+        return False
+
 
 class ServiceManager:
     """Manages registered background service workers and synchronizes their lifecycle."""
@@ -462,6 +477,10 @@ class ServiceManager:
                                 "description": desc,
                                 "state": state_val,
                                 "alive": alive_val,
+                                "busy": state_val in (
+                                    BaseServiceWorker.STATE_STARTING,
+                                    BaseServiceWorker.STATE_UPDATING,
+                                ),
                             })
                         return _notify
 
@@ -497,6 +516,22 @@ class ServiceManager:
                 except Exception as e:
                     log_error(f"[Server Service] Failed to stop worker '{name}': {e}")
 
+    def is_any_busy(self) -> bool:
+        """Returns True if any registered background service worker is currently busy."""
+        with self._lock:
+            workers = list(self._services.values())
+        for worker in workers:
+            try:
+                is_busy_fn = getattr(worker, "is_busy", None)
+                if callable(is_busy_fn) and bool(is_busy_fn()):
+                    return True
+                st = getattr(worker, "state", BaseServiceWorker.STATE_STOPPED)
+                if st in (BaseServiceWorker.STATE_STARTING, BaseServiceWorker.STATE_UPDATING):
+                    return True
+            except Exception:
+                continue
+        return False
+
     def get_status(self) -> List[Dict[str, Any]]:
         status_list: List[Dict[str, Any]] = []
         with self._lock:
@@ -510,12 +545,20 @@ class ServiceManager:
                     worker_state = getattr(worker, "state", BaseServiceWorker.STATE_READY if alive else BaseServiceWorker.STATE_STOPPED)
                 except Exception:
                     worker_state = BaseServiceWorker.STATE_READY if alive else BaseServiceWorker.STATE_STOPPED
+                try:
+                    is_busy_fn = getattr(worker, "is_busy", None)
+                    worker_busy = bool(is_busy_fn()) if callable(is_busy_fn) else (
+                        worker_state in (BaseServiceWorker.STATE_STARTING, BaseServiceWorker.STATE_UPDATING)
+                    )
+                except Exception:
+                    worker_busy = worker_state in (BaseServiceWorker.STATE_STARTING, BaseServiceWorker.STATE_UPDATING)
                 status_list.append({
                     "name": name,
                     "provider": meta.get("provider", "unknown"),
                     "description": meta.get("description", ""),
                     "alive": alive,
                     "state": worker_state,
+                    "busy": worker_busy,
                 })
         return status_list
 

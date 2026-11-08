@@ -14,7 +14,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from core import vfs
@@ -24,6 +24,8 @@ from core.platform import (
     build_runtime_pythonpath,
     daemon_probe,
     ensure_private_venv,
+    get_host_memory_info,
+    get_process_rss_mb,
     is_process_alive,
     set_process_title,
     spawn_detached,
@@ -39,6 +41,165 @@ _PREEMPTED_ERROR = "Worker terminated by restart/stop"
 
 class WorkerSpawnError(RuntimeError):
     """Raised when a warm worker fails the `worker_alive` handshake (crashed or hung at startup)."""
+
+
+class WorkerMemoryHealthMonitor:
+    """
+    Algorithmic memory health evaluator for persistent warm workers.
+
+    Instead of enforcing a static MB cap, tracks the worker's post-warm-up working-set
+    baseline (`baseline_rss_mb = max(median(initial_idle_samples), 256.0)`) and evaluates
+    post-trim idle RSS (`current_rss_mb`) across three relative dimensions:
+    1. Severe working-set bloat: expansion >= 3.5x AND delta >= 512 MB.
+    2. Host RAM pressure + bloat: MemAvailable/MemTotal < 15% AND expansion >= 2.2x AND delta >= 256 MB.
+    3. Sustained monotonic ratcheting: >= 5 consecutive idle windows with >= 64 MB growth each,
+       expansion >= 2.5x, AND delta >= 384 MB.
+    """
+
+    MIN_BASELINE_FLOOR_MB: float = 256.0
+    CALIBRATION_SAMPLES: int = 3
+    RATCHET_STEP_MB: float = 64.0
+    RATCHET_WINDOWS_REQUIRED: int = 5
+    RECYCLE_COOLDOWN_SEC: float = 60.0
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.baseline_rss_mb: float = 0.0
+        self.current_rss_mb: float = 0.0
+        self.peak_rss_mb: float = 0.0
+        self.consecutive_growth_windows: int = 0
+        self.recycle_count: int = 0
+        self.last_recycle_reason: Optional[str] = None
+        self.last_recycle_time: float = 0.0
+        self._calibration_samples: List[float] = []
+        self._last_idle_sample_mb: float = 0.0
+
+    def reset_for_new_worker(self, initial_rss_mb: float = 0.0) -> None:
+        """Resets per-worker baseline calibration while preserving cumulative recycle telemetry."""
+        with self._lock:
+            self._calibration_samples.clear()
+            self.consecutive_growth_windows = 0
+            self._last_idle_sample_mb = 0.0
+            self.current_rss_mb = max(0.0, float(initial_rss_mb))
+            self.peak_rss_mb = self.current_rss_mb
+            if initial_rss_mb > 0.0:
+                self._calibration_samples.append(float(initial_rss_mb))
+                self.baseline_rss_mb = max(float(initial_rss_mb), self.MIN_BASELINE_FLOOR_MB)
+                self._last_idle_sample_mb = float(initial_rss_mb)
+            else:
+                self.baseline_rss_mb = 0.0
+
+    def record_sample(self, rss_mb: float, is_idle: bool = False) -> None:
+        """Updates current/peak RSS and refines initial idle baseline when calibrating."""
+        if rss_mb <= 0.0:
+            return
+        with self._lock:
+            val = float(rss_mb)
+            self.current_rss_mb = val
+            if val > self.peak_rss_mb:
+                self.peak_rss_mb = val
+            if is_idle and len(self._calibration_samples) < self.CALIBRATION_SAMPLES:
+                if not self._calibration_samples or val <= self.baseline_rss_mb:
+                    self._calibration_samples.append(val)
+                    sorted_s = sorted(self._calibration_samples)
+                    med = sorted_s[len(sorted_s) // 2]
+                    self.baseline_rss_mb = max(med, self.MIN_BASELINE_FLOOR_MB)
+                if self._last_idle_sample_mb <= 0.0:
+                    self._last_idle_sample_mb = val
+
+    def evaluate(
+        self,
+        current_rss_mb: float,
+        host_mem: Optional[Dict[str, float]] = None,
+        is_idle: bool = True,
+    ) -> Tuple[bool, str]:
+        """
+        Evaluates whether an idle worker exhibits abnormal memory retention requiring auto-recycle.
+
+        Returns `(should_recycle, reason)`. Never triggers when `is_idle` is False.
+        """
+        if current_rss_mb <= 0.0:
+            return False, ""
+        self.record_sample(current_rss_mb, is_idle=is_idle)
+        if not is_idle:
+            return False, ""
+
+        now = time.time()
+        with self._lock:
+            if self.last_recycle_time > 0.0 and (now - self.last_recycle_time) < self.RECYCLE_COOLDOWN_SEC:
+                return False, ""
+
+            base = max(self.baseline_rss_mb, self.MIN_BASELINE_FLOOR_MB)
+            if self.baseline_rss_mb <= 0.0:
+                self.baseline_rss_mb = max(current_rss_mb, self.MIN_BASELINE_FLOOR_MB)
+                base = self.baseline_rss_mb
+
+            if self._last_idle_sample_mb > 0.0:
+                if (current_rss_mb - self._last_idle_sample_mb) >= self.RATCHET_STEP_MB:
+                    self.consecutive_growth_windows += 1
+                    self._last_idle_sample_mb = current_rss_mb
+                elif current_rss_mb < self._last_idle_sample_mb:
+                    self.consecutive_growth_windows = 0
+                    self._last_idle_sample_mb = current_rss_mb
+            else:
+                self._last_idle_sample_mb = current_rss_mb
+
+            expansion = current_rss_mb / base if base > 0.0 else 1.0
+            delta_mb = current_rss_mb - base
+
+            avail_ratio = 1.0
+            if isinstance(host_mem, dict):
+                raw_ratio = host_mem.get("available_ratio", host_mem.get("avail_ratio", 0.0))
+                total_mb = host_mem.get("total_mb", 0.0)
+                if total_mb > 0.0 and raw_ratio > 0.0:
+                    avail_ratio = float(raw_ratio)
+
+            reason = ""
+            if expansion >= 3.5 and delta_mb >= 512.0:
+                reason = (
+                    f"Severe working-set bloat: RSS={current_rss_mb:.1f}MB "
+                    f"(baseline={base:.1f}MB, expansion={expansion:.2f}x, delta=+{delta_mb:.1f}MB)"
+                )
+            elif avail_ratio < 0.15 and expansion >= 2.2 and delta_mb >= 256.0:
+                reason = (
+                    f"Host memory pressure ({avail_ratio * 100.0:.1f}% free) with worker bloat: "
+                    f"RSS={current_rss_mb:.1f}MB (baseline={base:.1f}MB, expansion={expansion:.2f}x)"
+                )
+            elif (
+                self.consecutive_growth_windows >= self.RATCHET_WINDOWS_REQUIRED
+                and expansion >= 2.5
+                and delta_mb >= 384.0
+            ):
+                reason = (
+                    f"Sustained monotonic RSS ratcheting ({self.consecutive_growth_windows} windows): "
+                    f"RSS={current_rss_mb:.1f}MB (baseline={base:.1f}MB, expansion={expansion:.2f}x)"
+                )
+
+            if reason:
+                self.recycle_count += 1
+                self.last_recycle_reason = reason
+                self.last_recycle_time = now
+                self.consecutive_growth_windows = 0
+                return True, reason
+
+            return False, ""
+
+    def to_status_dict(self, live_rss_mb: float = 0.0) -> Dict[str, Any]:
+        """Returns a status snapshot dictionary for `/api/status` and `server status`."""
+        if live_rss_mb > 0.0:
+            self.record_sample(live_rss_mb, is_idle=False)
+        with self._lock:
+            eff_base = max(self.baseline_rss_mb, self.MIN_BASELINE_FLOOR_MB) if self.baseline_rss_mb > 0.0 else 0.0
+            expansion = (self.current_rss_mb / eff_base) if eff_base > 0.0 else 1.0
+            return {
+                "current_rss_mb": round(self.current_rss_mb, 1),
+                "baseline_rss_mb": round(eff_base, 1),
+                "peak_rss_mb": round(self.peak_rss_mb, 1),
+                "expansion_ratio": round(expansion, 2),
+                "consecutive_growth_windows": self.consecutive_growth_windows,
+                "recycle_count": self.recycle_count,
+                "last_recycle_reason": self.last_recycle_reason,
+            }
 
 
 @dataclass(frozen=True)
@@ -231,6 +392,7 @@ class MasterSupervisor:
         self._preempted_pids: Set[int] = set()
         # Currently executing dispatch task snapshot
         self._current_task: Optional[Dict[str, Any]] = None
+        self.memory_monitor = WorkerMemoryHealthMonitor()
 
         self._start_time = time.time()
         self._last_active_time = self._start_time
@@ -258,8 +420,27 @@ class MasterSupervisor:
         chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": error_msg})
         return 1
 
+    def _is_worker_completely_idle(self) -> bool:
+        """Returns True iff no foreground dispatch task is running AND no background service is busy."""
+        if self._current_task is not None:
+            return False
+        if self._worker_state() != "ready":
+            return False
+        for svc in self._worker_services or []:
+            if not isinstance(svc, dict):
+                continue
+            if bool(svc.get("busy")):
+                return False
+            st = str(svc.get("state") or "").strip().upper()
+            if st in ("STARTING", "UPDATING"):
+                return False
+        return True
+
     def _update_worker_service_status(self, packet: Dict[str, Any]) -> None:
-        """Synchronizes `_worker_services` from a `service_status` IPC packet."""
+        """Synchronizes `_worker_services` and optional `worker_rss_mb` from a `service_status` IPC packet."""
+        rss_val = packet.get("worker_rss_mb")
+        if isinstance(rss_val, (int, float)) and float(rss_val) > 0.0:
+            self.memory_monitor.record_sample(float(rss_val), is_idle=False)
         services_list = packet.get("services")
         if isinstance(services_list, list):
             self._worker_services = list(services_list)
@@ -269,6 +450,7 @@ class MasterSupervisor:
             return
         svc_state = str(packet.get("state") or "READY")
         svc_alive = bool(packet.get("alive", svc_state != "STOPPED"))
+        svc_busy = bool(packet.get("busy", svc_state in ("STARTING", "UPDATING")))
         updated: List[Dict[str, Any]] = []
         found = False
         for item in self._worker_services or []:
@@ -276,6 +458,7 @@ class MasterSupervisor:
             if entry.get("name") == svc_name:
                 entry["state"] = svc_state
                 entry["alive"] = svc_alive
+                entry["busy"] = svc_busy
                 if "provider" in packet and packet["provider"]:
                     entry["provider"] = packet["provider"]
                 if "description" in packet and packet["description"] is not None:
@@ -289,6 +472,7 @@ class MasterSupervisor:
                 "description": str(packet.get("description") or ""),
                 "alive": svc_alive,
                 "state": svc_state,
+                "busy": svc_busy,
             })
         self._worker_services = updated
 
@@ -358,6 +542,7 @@ class MasterSupervisor:
             current_task = dict(task)
             current_task["elapsed_sec"] = max(0.0, now - float(task["started_at"]))
         state = self._worker_state()
+        live_worker_rss = get_process_rss_mb(worker_pid) if worker_pid > 0 else 0.0
         status = {
             "status": "running",
             "state": state,
@@ -374,6 +559,7 @@ class MasterSupervisor:
             "services": self._worker_services or [],
             "watcher": watcher_status,
             "current_task": current_task,
+            "worker_memory": self.memory_monitor.to_status_dict(live_rss_mb=live_worker_rss),
         }
         warming_since = self._warming_since
         if state == "warming" and warming_since is not None:
@@ -417,9 +603,8 @@ class MasterSupervisor:
             self.watcher.start()
             self.logger.info(f"ModulesWatcher active on {modules_dir}")
 
-        if self.idle_timeout_sec > 0:
-            ttl_thread = threading.Thread(target=self._idle_ttl_loop, daemon=True, name="idle-ttl")
-            ttl_thread.start()
+        ttl_thread = threading.Thread(target=self._idle_ttl_loop, daemon=True, name="idle-ttl")
+        ttl_thread.start()
 
     def _run_supervisor_main_loop(self, foreground: bool) -> None:
         """Runs HTTP server either in blocking foreground mode or background daemon thread."""
@@ -849,11 +1034,15 @@ class MasterSupervisor:
                 if pkt_type == "worker_ready":
                     if "services" in data and isinstance(data["services"], list):
                         self._worker_services = data["services"]
+                    ready_rss = float(data.get("worker_rss_mb") or 0.0)
+                    if ready_rss <= 0.0 and proc.pid > 0:
+                        ready_rss = get_process_rss_mb(proc.pid)
+                    self.memory_monitor.reset_for_new_worker(initial_rss_mb=ready_rss)
                     alive_event.set()
                     ready_event.set()
                     if self._worker_proc is proc:
                         self._warming_since = None
-                    self.logger.info(f"Warm Worker (PID: {proc.pid}) ready")
+                    self.logger.info(f"Warm Worker (PID: {proc.pid}) ready (RSS: {ready_rss:.1f} MB)")
                     break
         except (OSError, ValueError) as err:
             # Pipe closed by kill: the worker is treated as not ready
@@ -879,6 +1068,7 @@ class MasterSupervisor:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
+        env["YSCB_IN_SERVER_WORKER"] = "1"
 
         env["PYTHONPATH"] = build_runtime_pythonpath(
             yscb_root=self.yscb_root,
@@ -946,6 +1136,30 @@ class MasterSupervisor:
             self._last_active_time = time.time()
             return max(0.0, self.idle_timeout_sec)
 
+    def _evaluate_worker_memory_health(self) -> None:
+        """Evaluates worker memory health during idle windows and triggers seamless auto-recycle if needed."""
+        proc = self._worker_proc
+        if proc is None or proc.poll() is not None:
+            return
+        is_idle = self._is_worker_completely_idle()
+        rss_mb = get_process_rss_mb(proc.pid)
+        if rss_mb <= 0.0:
+            return
+        host_mem = get_host_memory_info() if is_idle else None
+        should_recycle, reason = self.memory_monitor.evaluate(
+            current_rss_mb=rss_mb,
+            host_mem=host_mem,
+            is_idle=is_idle,
+        )
+        if should_recycle:
+            self.logger.warning(
+                f"[MemoryHealthMonitor] Auto-recycling idle Warm Worker (PID: {proc.pid}): {reason}"
+            )
+            try:
+                self.restart_worker()
+            except Exception as err:
+                self.logger.error(f"[MemoryHealthMonitor] Failed to auto-recycle worker: {err}")
+
     def _idle_ttl_loop(self) -> None:
         while self._is_running:
             time.sleep(2.0)
@@ -958,6 +1172,8 @@ class MasterSupervisor:
                 self.logger.info(f"Idle TTL ({self.idle_timeout_sec}s) reached. Initiating automatic shutdown...")
                 threading.Thread(target=self.stop, daemon=True).start()
                 break
+            if idle_seconds >= 2.0:
+                self._evaluate_worker_memory_health()
 
     def _write_state(self) -> None:
         worker_pid = self._worker_proc.pid if self._worker_proc else 0

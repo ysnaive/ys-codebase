@@ -23,7 +23,7 @@ from .config import DEFAULT_EMBEDDING_MODEL, MODEL_SPECS, KnowledgeDBConfig, is_
 from .exceptions import KnowledgeDBError
 from .io_utils import atomic_save_gzip_pickle, load_gzip_pickle
 
-MAX_SYMBOL_DOCSTRING_EMBED_CHARS = 1000
+MAX_SYMBOL_DOCSTRING_EMBED_CHARS = 400
 
 
 def format_symbol_embedding_text(sym: Any, max_doc_chars: int = MAX_SYMBOL_DOCSTRING_EMBED_CHARS) -> str:

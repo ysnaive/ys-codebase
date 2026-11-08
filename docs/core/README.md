@@ -174,9 +174,9 @@ with uri.module_scope("core"):
   2. `iter_space_files` & `resolve_file_path`：基於 `os.scandir` 目錄級剪枝與 `DirEntry.stat()` 複用，跨入口與聯集空間自動依實體路徑去重，並支援將空間內標準相對路徑安全反解為磁碟 `Path`。
   3. `compute_file_hash` / `hash_target`：支援 `stat_only`、`adaptive`（大檔頭中尾稀疏取樣 Blake2b）與 `full_hash` 策略，計算決定性 16-byte Blake2b `merkle_root`。
 - **`YFP2` 單調世代二進位快照 (`SpaceScanner`) 與多消費者交易游標 (`CursorStore` / `consume_diff`)**：
-  1. `BinarySnapshotManager` 將空間快照以 `b"YFP2"` 二進位格式與 16-byte Blake2b Checksum 原子持久化於 `storage.local://core/space/snapshots/<target_key>.yfp2.bin`（並由進程級共享預設單例 `get_default_registry` / `get_default_scanner` 確保跨頂層 SDK 呼叫與背景 Watcher 共享執行期註冊空間 `register_space`）。
-  2. `scan` / `refresh` 採 Stage 1 `(mtime_ns, size)` + `10ms` Racy-Clean 防護與 Stage 2 `core.space.hasher` 增量計算；`patch_files` 支援單點髒路徑免全盤掃描局部修補，並透過 `sync_dependent_snapshots` 自動連動更新既有之 `/<short_name>` 合成空間、`compose` 父組合空間與 `workspace` 統合快照。
-  3. `CursorStore` 於 `storage.local://core/space/cursors/<consumer_id>.json` 維護多消費者獨立水位世代，並提供 `consume_diff(space_query, consumer_id)` At-Least-Once 交易式 Context Manager。
+  1. `BinarySnapshotManager` 將空間快照以 `b"YFP2"` 二進位格式與 16-byte Blake2b Checksum 原子持久化於 `storage.local://core/space/snapshots/<target_key>.yfp2.bin`（並由進程級共享預設單例 `get_default_registry` / `get_default_scanner` 確保跨頂層 SDK 呼叫與背景 Watcher 共享執行期註冊空間 `register_space`，且內建以 `(st_mtime_ns, st_size)` 驗證之 `_snapshot_mem_cache` 記憶體快照快取以避免重複磁碟反序列化）。
+  2. `scan` / `refresh` 採 Stage 1 `(mtime_ns, size)` + `10ms` Racy-Clean 防護與 Stage 2 `core.space.hasher` 增量計算（`scan(None)` 內建實體檔案 `_hash_memo` 跨空間雜湊去重）；`patch_files` 支援單點髒路徑免全盤掃描局部修補，並透過 `sync_dependent_snapshots` / `sync_dependent_snapshots_batch` 自動連動更新既有之 `/<short_name>` 合成空間、`compose` 父組合空間與 `workspace` 統合快照。
+  3. `CursorStore` 於 `storage.local://core/space/cursors/<consumer_id>.json` 維護多消費者獨立水位世代，並提供 `consume_diff(space_query, consumer_id, *, auto_refresh=None)` At-Least-Once 交易式 Context Manager（當背景 Watcher 活躍、`.watcher_dirty` 為乾淨且既有快照存在時，`auto_refresh=None` 自動旁路全盤重掃，直接 O(1) 比對快照世代）。
 - **Watcher 推拉混合協調、`watch=True` 全空間預設監聽與 `on_file_space_changed` 事件廣播 (`core.space.watcher`)**：
   1. **全空間預設監聽 (`watch=True`)**：除 `gitignore` 預設 `watch=False` 外，所有靜態空間與執行期空間（`register_space(name, config, *, watch=None)`）皆預設開啟 `watch=True`；當同進程 Watcher 活躍時，自動通知 Watcher 將其入口目錄納入 `watchdog` 監聽。
   2. **無感背景加速與純標準庫退化**：`core` 本體維持 100% 純標準庫零外部依賴；當常駐 `server` 啟動 [`CoreSpaceWatcherServiceWorker`](../server/hot_reload_and_services.md) 時，透過 `cache://core/space/watcher_state.json` 與 `.watcher_dirty` 跨進程信標無感加速快照更新；當 `server` 未啟動時，100% 本地獨立執行 Pull-based 掃描。

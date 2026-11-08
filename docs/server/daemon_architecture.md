@@ -68,9 +68,10 @@ stateDiagram-v2
 
 `restart_worker()` 與 `stop()` **不先取 `_dispatch_lock`**：先於 `_worker_lock` 內強殺現役 Worker，使進行中 dispatch 阻塞的 `readline()` 得到 EOF 而回傳 `1`（`error="Worker terminated by restart/stop"`）並釋放 `_dispatch_lock`，之後才取 `_dispatch_lock` spawn 新 Worker。因此 Worker 卡住時 reload 仍可於「kill 逾時 + 5s」內返回。被搶占的任務不會被重試。`restart_worker()` 於殺 Worker 前先載入 `ServerConfig`，spawn 失敗時拋 `WorkerSpawnError`（HTTP 層轉 500）。
 
-### 1.3 狀態觀測 (`get_status_dict`)
+### 1.3 狀態觀測 (`get_status_dict`) 與演算法化記憶體健康監控 (`WorkerMemoryHealthMonitor`)
 
-`get_status_dict()` 不取 `_dispatch_lock`，可於任務執行中即時回應：`state ∈ {warming, ready, restarting}`，warming 時附 `warming_elapsed_sec`；`current_task` 為 `{module, args, started_at, elapsed_sec}` 或 `null`。
+- `get_status_dict()` 不取 `_dispatch_lock`，可於任務執行中即時回應：`state ∈ {warming, ready, restarting}`，warming 時附 `warming_elapsed_sec`；`current_task` 為 `{module, args, started_at, elapsed_sec}` 或 `null`；`worker_memory` 呈現 `current_rss_mb`、`baseline_rss_mb`、`peak_rss_mb`、`expansion_ratio`、`consecutive_growth_windows` 與 `recycle_count`。
+- **`WorkerMemoryHealthMonitor` 演算法化守護**：不採用靜態寫死之 MB 絕對上限，而是於 `worker_ready` 後動態採樣校正該工作區之常駐工作集基準線 $B_{\text{base}} = \max(\text{median}, 256\text{ MB})$。僅當無前台任務且所有背景 `ServiceWorker` 均處於非忙碌狀態（`_is_worker_completely_idle() == True`）時，綜合評估相對膨脹倍率（$E = R_{\text{idle}} / B_{\text{base}}$）、連續單調棘輪視窗與宿主 `MemAvailable` 可用記憶體比例，於確認異常滯留時自動執行 `restart_worker()` 無縫回收（冷卻保護 60 秒）。
 
 ---
 

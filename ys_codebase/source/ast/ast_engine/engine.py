@@ -490,6 +490,7 @@ class ASTEngine:
             parser_registry=self.parser_registry,
             scanner=self.scanner,
             storage_dir=self.storage_dir,
+            contributes_data=contributes_data,
         )
         self.snippet_extractor = SnippetExtractor(
             space_manager=self.space_manager,
@@ -502,6 +503,16 @@ class ASTEngine:
         self._symbols_mtime: float = 0.0
         self._graph_mtime: float = 0.0
         self._lock = threading.RLock()
+
+    def register_spaces(self, spaces: Any) -> List[str]:
+        """Register one or more target `core.space` names into this `ASTEngine` instance."""
+        if isinstance(spaces, str):
+            spaces = [s.strip() for s in spaces.split(",") if s.strip()]
+        return self.bundler.register_spaces(spaces)
+
+    def get_target_spaces(self) -> List[str]:
+        """Return deduplicated logical/qualified target space names managed by `ASTEngine`."""
+        return self.bundler.get_target_space_names()
 
     @staticmethod
     def _resolve_default_project_root() -> Path:
@@ -809,6 +820,7 @@ class ASTEngine:
             graph_idx = linker.build_graph(call_sites=call_sites, imports_map=imports_map)
 
             space_gens, files_map = self._collect_space_generations_and_files_map(spaces=spaces)
+            self.bundler.clear_transient_caches()
             snapshot = ASTSnapshot(
                 ast_generation=prev_gen + 1,
                 space_generations=space_gens,
@@ -819,9 +831,25 @@ class ASTEngine:
             )
             self._save_snapshot_and_graph(snapshot, graph_idx)
             try:
-                target_sp = spaces[0] if (spaces and len(spaces) == 1) else None
-                with self._consume_space_diff(space_name=target_sp):
-                    pass
+                use_non_blocking_diff = bool(
+                    not self._custom_storage_dir and is_watcher_active(project_root=self.project_root)
+                )
+                target_cfgs = self.bundler._resolve_target_spaces(spaces)
+                target_qnames = (
+                    [sp.qualified_name or sp.short_name for sp in target_cfgs if (sp.qualified_name or sp.short_name)]
+                    if use_non_blocking_diff
+                    else []
+                )
+                if not target_qnames:
+                    target_sp = spaces[0] if (spaces and len(spaces) == 1) else None
+                    with self._consume_space_diff(space_name=target_sp):
+                        pass
+                else:
+                    for q_sp in target_qnames:
+                        with self._consume_space_diff(space_name=q_sp, auto_refresh=False):
+                            pass
+                    if self.scanner is not None and hasattr(self.scanner, "ack"):
+                        self.scanner.ack(None, consumer_id=self.CONSUMER_ID)
             except Exception as exc:
                 log_debug(f"Cursor alignment after build_index skipped: {exc}")
             return snapshot
@@ -1054,6 +1082,7 @@ class ASTEngine:
                 space_gens, files_map = self._collect_space_generations_and_files_map(
                     spaces=spaces, incremental_detail=detail
                 )
+                self.bundler.clear_transient_caches()
                 self._snapshot.ast_generation += 1
                 self._snapshot.space_generations.update(space_gens)
                 self._snapshot.files_map.update(files_map)
@@ -1063,13 +1092,30 @@ class ASTEngine:
                 self._save_snapshot_and_graph(self._snapshot, self._graph)
                 if not _cursor_already_consumed:
                     try:
-                        target_sp = spaces[0] if (spaces and len(spaces) == 1) else None
-                        with self._consume_space_diff(space_name=target_sp):
-                            pass
+                        use_non_blocking_diff = bool(
+                            not self._custom_storage_dir and is_watcher_active(project_root=self.project_root)
+                        )
+                        target_cfgs = self.bundler._resolve_target_spaces(spaces)
+                        target_qnames = (
+                            [sp.qualified_name or sp.short_name for sp in target_cfgs if (sp.qualified_name or sp.short_name)]
+                            if use_non_blocking_diff
+                            else []
+                        )
+                        if not target_qnames:
+                            target_sp = spaces[0] if (spaces and len(spaces) == 1) else None
+                            with self._consume_space_diff(space_name=target_sp):
+                                pass
+                        else:
+                            for q_sp in target_qnames:
+                                with self._consume_space_diff(space_name=q_sp, auto_refresh=False):
+                                    pass
+                            if self.scanner is not None and hasattr(self.scanner, "ack"):
+                                self.scanner.ack(None, consumer_id=self.CONSUMER_ID)
                     except Exception as exc:
                         log_debug(f"Cursor alignment after hot_patch_index skipped: {exc}")
                 return self._snapshot
             except Exception as exc:
+                self.bundler.clear_transient_caches()
                 log_warn(f"Hot-patch failed ({exc}), falling back to full build_index.", stream="stderr")
                 return self.build_index(spaces=spaces, allow_parallel=False)
 
@@ -1077,12 +1123,13 @@ class ASTEngine:
         self,
         spaces: Optional[Union[str, List[str]]] = None,
         force: bool = False,
+        allow_parallel: bool = True,
     ) -> ASTSnapshot:
         """
         Ensure the AST snapshot and call graph are JIT synchronized:
         - If `force=True` or snapshot files do not exist, runs full `build_index()`.
         - Otherwise consumes incremental diff via `scanner.consume_diff(consumer_id="ast")`
-          and applies `hot_patch_index()` if any files changed.
+          strictly across target spaces and applies `hot_patch_index()` if any files changed.
         """
         with self._lock:
             norm_spaces: Optional[List[str]] = None
@@ -1092,20 +1139,79 @@ class ASTEngine:
                 norm_spaces = [str(s).strip() for s in spaces if str(s).strip()]
 
             if force or not (self.symbols_index_path.exists() and self.graph_index_path.exists()) or not self._ensure_symbols_loaded():
-                return self.build_index(spaces=norm_spaces)
+                return self.build_index(spaces=norm_spaces, allow_parallel=allow_parallel)
 
-            target_sp = norm_spaces[0] if (norm_spaces and len(norm_spaces) == 1) else None
+            try:
+                target_cfgs = self.bundler._resolve_target_spaces(norm_spaces)
+                if self._snapshot is not None and isinstance(self._snapshot.space_generations, dict) and target_cfgs:
+                    expected_keys: Set[str] = set()
+                    for sp in target_cfgs:
+                        if sp.short_name:
+                            expected_keys.add(sp.short_name)
+                        if sp.qualified_name:
+                            expected_keys.add(sp.qualified_name)
+                    stale_space_keys = [
+                        k for k in self._snapshot.space_generations.keys() if k not in expected_keys
+                    ]
+                    if stale_space_keys:
+                        return self.build_index(spaces=norm_spaces, allow_parallel=allow_parallel)
+            except Exception:
+                pass
+
             use_non_blocking_diff = bool(
                 not self._custom_storage_dir and is_watcher_active(project_root=self.project_root)
             )
             try:
-                with self._consume_space_diff(
-                    space_name=target_sp,
-                    auto_refresh=False if use_non_blocking_diff else None,
-                ) as diff_res:
-                    if diff_res and getattr(diff_res, "has_changes", False):
+                target_cfgs = self.bundler._resolve_target_spaces(norm_spaces)
+                target_qnames = (
+                    [
+                        sp.qualified_name or sp.short_name
+                        for sp in target_cfgs
+                        if (sp.qualified_name or sp.short_name)
+                    ]
+                    if use_non_blocking_diff
+                    else []
+                )
+                eff_auto_refresh = False if use_non_blocking_diff else None
+                merged_added: Set[str] = set()
+                merged_modified: Set[str] = set()
+                merged_deleted: Set[str] = set()
+
+                if not target_qnames:
+                    target_sp = norm_spaces[0] if (norm_spaces and len(norm_spaces) == 1) else None
+                    with self._consume_space_diff(
+                        space_name=target_sp,
+                        auto_refresh=eff_auto_refresh,
+                    ) as diff_res:
+                        if diff_res and getattr(diff_res, "has_changes", False):
+                            merged_added.update(diff_res.detail.added)
+                            merged_modified.update(diff_res.detail.modified)
+                            merged_deleted.update(diff_res.detail.deleted)
+                else:
+                    for q_sp in target_qnames:
+                        with self._consume_space_diff(
+                            space_name=q_sp,
+                            auto_refresh=eff_auto_refresh,
+                        ) as diff_res:
+                            if diff_res and getattr(diff_res, "has_changes", False):
+                                merged_added.update(diff_res.detail.added)
+                                merged_modified.update(diff_res.detail.modified)
+                                merged_deleted.update(diff_res.detail.deleted)
+
+                all_dirty = merged_added | merged_modified | merged_deleted
+                if all_dirty:
+                    has_parseable = any(
+                        self.parser_registry.get_parser(str(p)) is not None
+                        for p in all_dirty
+                    )
+                    if has_parseable:
+                        combined_detail = ScanDiffDetail(
+                            added=merged_added,
+                            modified=merged_modified,
+                            deleted=merged_deleted,
+                        )
                         return self.hot_patch_index(
-                            diff_res.detail,
+                            combined_detail,
                             spaces=norm_spaces,
                             _cursor_already_consumed=True,
                         )

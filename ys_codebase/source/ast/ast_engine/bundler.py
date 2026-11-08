@@ -14,7 +14,7 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
-from core.context import get_runtime_context, get_virtual_cwd
+from core.context import get_env, get_runtime_context, get_virtual_cwd
 from core.log import log_debug, log_warn
 from core.space import (
     ScanDiffDetail,
@@ -22,6 +22,7 @@ from core.space import (
     SpaceFileEntry,
     SpaceRegistry,
     SpaceScanner,
+    get_default_scanner,
 )
 from core.vfs import write_bytes
 
@@ -635,10 +636,22 @@ class SemanticBundler:
         parser_registry: Optional[ParserRegistry] = None,
         scanner: Optional[SpaceScanner] = None,
         storage_dir: Optional[Union[str, Path]] = None,
+        contributes_data: Optional[Dict[str, Any]] = None,
     ):
         self.space_manager = space_manager
         self.parser_registry = parser_registry or ParserRegistry(register_defaults=True)
-        self.scanner = scanner or SpaceScanner(registry=space_manager)
+        self._contributes_data = contributes_data
+        self._registered_spaces: List[str] = []
+        self._target_spaces_initialized: bool = False
+        if scanner is not None:
+            self.scanner = scanner
+        elif getattr(space_manager, "_raw_spaces", None) is None:
+            self.scanner = get_default_scanner(
+                project_root=getattr(space_manager, "project_root", None),
+                yscb_dir=getattr(space_manager, "yscb_dir", None),
+            )
+        else:
+            self.scanner = SpaceScanner(registry=space_manager)
         if storage_dir is not None:
             self.storage_dir = _safe_resolve_path(storage_dir)
         else:
@@ -649,6 +662,146 @@ class SemanticBundler:
         self._file_imports_cache: Dict[str, Dict[str, str]] = {}
         self._last_bundle_unique_files: Dict[str, Tuple[Path, str, Set[str]]] = {}
         self._last_bundle_spaces: Set[str] = set()
+
+    @property
+    def registry(self) -> ParserRegistry:
+        """Compatibility alias for `parser_registry`."""
+        return self.parser_registry
+
+    def register_spaces(self, spaces: Iterable[Union[str, SpaceConfig]]) -> List[str]:
+        """
+        SDK / Hook injection entry point to register one or more target `core.space` names
+        into `ASTEngine` / `SemanticBundler`.
+        """
+        for sp in spaces:
+            name = (sp.qualified_name or sp.short_name) if isinstance(sp, SpaceConfig) else str(sp).strip()
+            if name and not name.startswith("_") and name not in self._registered_spaces:
+                self._registered_spaces.append(name)
+        return list(self._registered_spaces)
+
+    def _ensure_declared_spaces_loaded(self) -> None:
+        """
+        Load declarative target spaces from:
+        1. `self._contributes_data` (if explicitly injected)
+        2. `core.contributes.get("ast")` + `config://ast/contribute.json`
+        3. `on_register_ast_spaces` hook broadcast (allowing downstream modules like `knowledge-db` to inject spaces)
+        4. `core.contributes.get("knowledge-db")` / `config://knowledge-db/contribute.json` (`space_weights` keys)
+        """
+        if self._target_spaces_initialized:
+            return
+        self._target_spaces_initialized = True
+
+        def _extract_from_ast_dict(raw_dict: Any) -> None:
+            if not isinstance(raw_dict, dict):
+                return
+            raw_sp = raw_dict.get("spaces")
+            if isinstance(raw_sp, (list, tuple, set)):
+                self.register_spaces(str(s) for s in raw_sp if str(s).strip())
+            elif isinstance(raw_sp, dict):
+                self.register_spaces(str(k) for k in raw_sp.keys() if not str(k).startswith("_"))
+
+        if self._contributes_data is not None:
+            _extract_from_ast_dict(self._contributes_data)
+            return
+
+        if getattr(self.space_manager, "_explicit_spaces", None) is not None or getattr(
+            self.space_manager, "_raw_spaces", None
+        ) is not None:
+            return
+
+        try:
+            from core import contributes as core_contributes
+
+            ast_contrib = core_contributes.get("ast")
+            _extract_from_ast_dict(ast_contrib)
+        except Exception:
+            pass
+
+        try:
+            mod_contrib = Path(__file__).resolve().parents[1] / "contributes" / "ast.json"
+            if mod_contrib.is_file():
+                with open(mod_contrib, "r", encoding="utf-8") as f:
+                    _extract_from_ast_dict(json.load(f))
+        except Exception:
+            pass
+
+        try:
+            from core import uri as core_uri
+
+            cfg_res = core_uri.resolve("config://ast/contribute.json", interactive=False)
+            if cfg_res and not str(cfg_res).startswith("!undefined"):
+                cfg_p = Path(str(cfg_res)).resolve()
+                if cfg_p.is_file():
+                    with open(cfg_p, "r", encoding="utf-8") as f:
+                        _extract_from_ast_dict(json.load(f))
+        except Exception:
+            pass
+
+        try:
+            from core import contributes as core_contributes
+
+            kdb_contrib = core_contributes.get("knowledge-db")
+            if isinstance(kdb_contrib, dict) and isinstance(kdb_contrib.get("space_weights"), dict):
+                self.register_spaces(
+                    str(k) for k in kdb_contrib["space_weights"].keys() if not str(k).startswith("_")
+                )
+        except Exception:
+            pass
+
+        try:
+            from core import uri as core_uri
+
+            kdb_cfg_res = core_uri.resolve("config://knowledge-db/contribute.json", interactive=False)
+            if kdb_cfg_res and not str(kdb_cfg_res).startswith("!undefined"):
+                kdb_cfg_p = Path(str(kdb_cfg_res)).resolve()
+                if kdb_cfg_p.is_file():
+                    with open(kdb_cfg_p, "r", encoding="utf-8") as f:
+                        kdb_data = json.load(f)
+                    if isinstance(kdb_data, dict) and isinstance(kdb_data.get("space_weights"), dict):
+                        self.register_spaces(
+                            str(k) for k in kdb_data["space_weights"].keys() if not str(k).startswith("_")
+                        )
+        except Exception:
+            pass
+
+        try:
+            from core import events as core_events
+
+            hook_results = core_events.broadcast(
+                "on_register_ast_spaces",
+                {"bundler": self, "register_spaces": self.register_spaces},
+                emit_module="ast",
+            )
+            if isinstance(hook_results, dict):
+                for val in hook_results.values():
+                    if isinstance(val, (list, tuple, set)):
+                        self.register_spaces(str(x) for x in val if str(x).strip())
+                    elif isinstance(val, dict) and isinstance(val.get("spaces"), (list, tuple, set)):
+                        self.register_spaces(str(x) for x in val["spaces"] if str(x).strip())
+        except Exception:
+            pass
+
+    def get_target_space_names(self) -> List[str]:
+        """Return deduplicated canonical target space names (`qualified_name`) managed by `ASTEngine`."""
+        resolved_cfgs = self._resolve_target_spaces(None)
+        names: List[str] = []
+        for sp in resolved_cfgs:
+            q_name = sp.qualified_name or _space_logical_name(sp)
+            if q_name and q_name not in names:
+                names.append(q_name)
+        return names
+
+    def clear_transient_caches(self) -> None:
+        """
+        Release per-file transient parsing caches (`_file_symbols_cache`,
+        `_file_call_sites_cache`, `_file_imports_cache`, `_last_bundle_unique_files`)
+        once `ASTSnapshot` and `CallGraphIndex` construction/hot-patching completes.
+        """
+        self._file_symbols_cache.clear()
+        self._file_call_sites_cache.clear()
+        self._file_imports_cache.clear()
+        self._last_bundle_unique_files.clear()
+        self._last_bundle_spaces.clear()
 
     def _has_valid_space_entries(self, sp: SpaceConfig) -> bool:
         if hasattr(self.space_manager, "collect_all_entry_paths"):
@@ -664,13 +817,29 @@ class SemanticBundler:
         self, spaces: Optional[Iterable[Union[str, SpaceConfig]]] = None
     ) -> List[SpaceConfig]:
         if spaces is None:
-            return [
+            self._ensure_declared_spaces_loaded()
+            all_spaces = [
                 sp
                 for sp in self.space_manager.list_spaces()
-                if sp.owner != ""
-                and sp.short_name not in ("cloud", "gitignore", "workspace")
-                and not sp.qualified_name.endswith(("/cloud", "/gitignore", "/workspace"))
-                and self._has_valid_space_entries(sp)
+                if sp.owner != "" and self._has_valid_space_entries(sp)
+            ]
+            if self._registered_spaces:
+                reg_set = set(self._registered_spaces)
+                reg_shorts = {s.split("/", 1)[-1].lstrip("/") for s in self._registered_spaces}
+                matched = [
+                    sp
+                    for sp in all_spaces
+                    if sp.qualified_name in reg_set
+                    or sp.short_name in reg_set
+                    or sp.short_name in reg_shorts
+                ]
+                if matched:
+                    return matched
+            return [
+                sp
+                for sp in all_spaces
+                if sp.short_name not in ("gitignore", "workspace")
+                and not sp.qualified_name.endswith(("/gitignore", "/workspace"))
             ]
         resolved: List[SpaceConfig] = []
         seen_qnames: Set[str] = set()
@@ -930,8 +1099,13 @@ class SemanticBundler:
             for lang_id, cfg in lang_cfgs.items()
         )
         cpu_cnt = os.cpu_count() or 1
+        in_server_worker = (
+            get_env("YSCB_IN_SERVER_WORKER") == "1"
+            or os.environ.get("YSCB_IN_SERVER_WORKER") == "1"
+        )
         use_parallel = (
             allow_parallel
+            and not in_server_worker
             and total_files >= PARALLEL_BUNDLE_THRESHOLD
             and cpu_cnt > 1
             and not has_custom_configs

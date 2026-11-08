@@ -13,6 +13,13 @@
       "parser_entry": "str? @desc(自訂解析器入口類別路徑 (當 mode=custom 時使用))"
     }
   },
+  "spaces": {
+    "description": "向 AST 引擎註冊預設納管解析與索引之 core.space 邏輯檔案空間清單 (如 source, docs, plans)",
+    "merge": "extend",
+    "format": [
+      "str @desc(邏輯檔案空間名稱)"
+    ]
+  },
   "languages": {
     "description": "向 AST 引擎註冊支援的程式語言、Tree-sitter 語法查詢、core.space 範圍綁定、SymbolProcessor 或自訂 AST 解析器",
     "merge": "merge",

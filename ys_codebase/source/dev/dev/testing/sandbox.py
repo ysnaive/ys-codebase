@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List, Set
 from core import uri, vfs, semver, events, PipManager
 from core.context import get_runtime_context
+from core.platform.process import reap_sandbox_processes
 from dev.checker import discover_source_modules
 
 
@@ -714,6 +715,10 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
             with uri.host_scope(ctx.host_dir), uri.yscb_scope(ctx.engine_dir):
                 events.broadcast("on_test_teardown", context=ctx, emit_module="dev", search_roots=scanned_roots)
 
+            try:
+                reap_sandbox_processes(target_abs, timeout_sec=1.5)
+            except Exception:
+                pass
             SandboxProvisioner._unlink_projected_venv(ctx.engine_dir)
             vfs.robust_rmtree(sandbox_dir)
             return True

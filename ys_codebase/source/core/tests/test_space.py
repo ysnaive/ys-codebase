@@ -1461,6 +1461,99 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         )
         self.mark_passed()
 
+    def test_snapshot_mem_cache_watcher_aware_diff_and_batch_sync(self) -> None:
+        """Verify `(mtime_ns, size)`-validated in-memory snapshot cache, `scan(None)` hash memoization, watcher-aware `diff(auto_refresh=None)`, and `sync_dependent_snapshots_batch`."""
+        src_dir = self.proj_root / "src_mem"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        shared_py = src_dir / "shared.py"
+        shared_py.write_text("x = 42\n", encoding="utf-8")
+
+        reg = SpaceRegistry(
+            project_root=self.proj_root,
+            yscb_dir=self.yscb_root,
+            raw_spaces={
+                "mod_a/code": {
+                    "entries": ["src_mem"],
+                    "include": ["*.py"],
+                    "watch": True,
+                },
+                "project/code": {
+                    "entries": ["src_mem"],
+                    "include": ["*.py"],
+                    "watch": True,
+                },
+            },
+        )
+        sc = SpaceScanner(registry=reg)
+
+        # 1. `scan(None)` memoizes physical file hash across overlapping spaces (`mod_a/code`, `project/code`, `/code`, `__all__`)
+        with patch(
+            "core.space.scanner.compute_file_hash", wraps=compute_file_hash
+        ) as spy_hash:
+            sc.scan(None)
+            self.assertEqual(
+                spy_hash.call_count,
+                1,
+                "scan(None) should hash overlapping physical file only once via _hash_memo",
+            )
+
+        # 2. In-memory `_snapshot_mem_cache` avoids repeated `BinarySnapshotManager.load_state` when file is unchanged
+        with patch.object(
+            sc._snapshot_mgr,
+            "load_state",
+            wraps=sc._snapshot_mgr.load_state,
+        ) as spy_read:
+            st1 = sc.snapshot("mod_a/code")
+            st2 = sc.snapshot("mod_a/code")
+            self.assertEqual(len(st1), len(st2))
+            self.assertEqual(
+                spy_read.call_count,
+                0,
+                "Unchanged snapshot should be served from _snapshot_mem_cache without disk deserialization",
+            )
+
+        # 3. Watcher-aware `diff(..., auto_refresh=None)` skips `_scan_single_query` when watcher is active and clean
+        write_watcher_state(
+            watched_spaces=["mod_a/code", "project/code"],
+            watchdog_running=True,
+            project_root=self.proj_root,
+            yscb_dir=self.yscb_root,
+        )
+        sc.mark_watcher_dirty(False)
+        try:
+            with patch.object(
+                sc, "_scan_single_query", wraps=sc._scan_single_query
+            ) as spy_scan:
+                d_res = sc.diff(None, consumer_id="test_consumer")
+                self.assertEqual(
+                    spy_scan.call_count,
+                    0,
+                    "diff(None, auto_refresh=None) must skip full tree walk when watcher is active and clean",
+                )
+                self.assertGreaterEqual(d_res.to_generation, 1)
+        finally:
+            remove_watcher_state(project_root=self.proj_root, yscb_dir=self.yscb_root)
+
+        # 4. `sync_dependent_snapshots_batch` updates `/code` and `__all__` once for a batch of leaf spaces
+        shared_py.write_text("x = 99\n", encoding="utf-8")
+        sc.patch_files("mod_a/code", [shared_py])
+        sc.patch_files("project/code", [shared_py])
+        with patch.object(
+            sc, "patch_files", wraps=sc.patch_files
+        ) as spy_patch:
+            sc.sync_dependent_snapshots_batch(
+                ["mod_a/code", "project/code"],
+                [shared_py],
+                exclude_keys={"mod_a/code", "project/code"},
+            )
+            patched_keys = [call.args[0] for call in spy_patch.call_args_list]
+            self.assertEqual(
+                sorted(patched_keys),
+                sorted(["/code", sc.UNIFIED_KEY]),
+                "Dependent `/code` and `__all__` should each be patched exactly once per batch",
+            )
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

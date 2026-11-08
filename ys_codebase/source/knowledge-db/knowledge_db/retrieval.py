@@ -87,12 +87,16 @@ class SparseFieldFreqs(dict):
 
 
 class Posting:
-    """輕量倒排索引節點 (支援 0..n 整數文檔碼映射與稀疏欄位詞頻，大幅降低常駐記憶體)"""
+    """輕量倒排索引節點 (支援 0..n 整數文檔碼映射與四整數固定欄位詞頻槽位，消除百萬個小字典常駐開銷)"""
 
     __slots__ = (
         "doc_idx",
         "_index_ref",
-        "field_freqs",
+        "_f_name",
+        "_f_sig",
+        "_f_members",
+        "_f_doc",
+        "_extra_freqs",
         "space_idx",
         "space_indices",
         "_doc_id",
@@ -111,12 +115,30 @@ class Posting:
         index_ref: Optional["InvertedIndex"] = None,
         space_idx: int = -1,
         space_indices: Optional[Tuple[int, ...]] = None,
+        f_name: int = 0,
+        f_sig: int = 0,
+        f_members: int = 0,
+        f_doc: int = 0,
     ):
         self.doc_idx: int = doc_idx
         self._index_ref: Optional["InvertedIndex"] = index_ref
-        self.field_freqs: Dict[str, int] = SparseFieldFreqs(
-            {k: v for k, v in (field_freqs or {}).items() if v > 0}
-        )
+        if field_freqs:
+            self._f_name: int = int(field_freqs.get("name", f_name) or 0)
+            self._f_sig: int = int(field_freqs.get("signature", f_sig) or 0)
+            self._f_members: int = int(field_freqs.get("members", f_members) or 0)
+            self._f_doc: int = int(field_freqs.get("docstring", f_doc) or 0)
+            extras = {
+                k: int(v)
+                for k, v in field_freqs.items()
+                if k not in ("name", "signature", "members", "docstring") and int(v) > 0
+            }
+            self._extra_freqs: Optional[Dict[str, int]] = extras if extras else None
+        else:
+            self._f_name = int(f_name or 0)
+            self._f_sig = int(f_sig or 0)
+            self._f_members = int(f_members or 0)
+            self._f_doc = int(f_doc or 0)
+            self._extra_freqs = None
         self.space_idx: int = space_idx
         self.space_indices: Tuple[int, ...] = space_indices if space_indices is not None else ()
         if index_ref is not None and doc_idx >= 0:
@@ -128,6 +150,50 @@ class Posting:
             resolved_space = space or (spaces[0] if spaces else "")
             self._space = resolved_space
             self._spaces = tuple(spaces) if spaces else ((resolved_space,) if resolved_space else ())
+
+    def get_field_freq(self, field_name: str) -> int:
+        """零字典分配讀取指定欄位詞頻。"""
+        if field_name == "name":
+            return self._f_name
+        if field_name == "signature":
+            return self._f_sig
+        if field_name == "members":
+            return self._f_members
+        if field_name == "docstring":
+            return self._f_doc
+        if self._extra_freqs is not None:
+            return self._extra_freqs.get(field_name, 0)
+        return 0
+
+    @property
+    def field_freqs(self) -> Dict[str, int]:
+        """向後相容屬性：按需組裝 SparseFieldFreqs 字典。"""
+        d: Dict[str, int] = {}
+        if self._f_name > 0:
+            d["name"] = self._f_name
+        if self._f_sig > 0:
+            d["signature"] = self._f_sig
+        if self._f_members > 0:
+            d["members"] = self._f_members
+        if self._f_doc > 0:
+            d["docstring"] = self._f_doc
+        if self._extra_freqs:
+            d.update(self._extra_freqs)
+        return SparseFieldFreqs(d)
+
+    @field_freqs.setter
+    def field_freqs(self, value: Optional[Dict[str, int]]) -> None:
+        freqs = value or {}
+        self._f_name = int(freqs.get("name", 0) or 0)
+        self._f_sig = int(freqs.get("signature", 0) or 0)
+        self._f_members = int(freqs.get("members", 0) or 0)
+        self._f_doc = int(freqs.get("docstring", 0) or 0)
+        extras = {
+            k: int(v)
+            for k, v in freqs.items()
+            if k not in ("name", "signature", "members", "docstring") and int(v) > 0
+        }
+        self._extra_freqs = extras if extras else None
 
     @property
     def doc_id(self) -> str:
@@ -620,17 +686,15 @@ class InvertedIndex:
         s_indices = tuple(self._intern_space(s) for s in effective_spaces if s)
 
         for term in all_unique_terms:
-            t_freqs = {
-                f_name: field_freqs_map[f_name][term]
-                for f_name in self.INDEXED_FIELDS
-                if field_freqs_map[f_name][term] > 0
-            }
             posting = Posting(
-                field_freqs=t_freqs,
                 doc_idx=d_idx,
                 index_ref=self,
                 space_idx=s_idx,
                 space_indices=s_indices,
+                f_name=field_freqs_map["name"][term],
+                f_sig=field_freqs_map["signature"][term],
+                f_members=field_freqs_map["members"][term],
+                f_doc=field_freqs_map["docstring"][term],
             )
             self.index[term].append(posting)
 
@@ -670,10 +734,25 @@ class InvertedIndex:
                 self.field_avgdl[f] = 1.0
 
     def to_dict(self) -> Dict[str, Any]:
-        """序列化倒排索引為正規化符號池字典 (包含 doc_lengths)"""
+        """序列化倒排索引為正規化符號池字典 (包含 doc_lengths 與緊湊 4-tuple Postings)"""
         serialized_index = {}
         for term, postings in list(self.index.items()):
-            serialized_index[term] = [p.to_dict() for p in list(postings)]
+            compact_list = []
+            for p in list(postings):
+                if p._extra_freqs:
+                    compact_list.append(p.to_dict())
+                else:
+                    compact_list.append(
+                        (
+                            p.doc_id,
+                            p._f_name,
+                            p._f_sig,
+                            p._f_members,
+                            p._f_doc,
+                            tuple(p.spaces),
+                        )
+                    )
+            serialized_index[term] = compact_list
 
         serialized_symbols = {doc_id: sym.to_dict() for doc_id, sym in list(self.symbols.items())}
 
@@ -690,7 +769,7 @@ class InvertedIndex:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "InvertedIndex":
-        """反序列化正規化倒排索引"""
+        """反序列化正規化倒排索引（同時支援舊版 dict Posting 與新版緊湊 tuple Posting）"""
         if not isinstance(data, dict):
             raise SchemaValidationError("InvertedIndex data must be a dictionary.")
 
@@ -710,9 +789,29 @@ class InvertedIndex:
 
         raw_index = data.get("index", {})
         for term, postings_raw in raw_index.items():
-            idx.index[term] = [
-                Posting.from_dict(p, index_ref=idx) for p in postings_raw if isinstance(p, dict)
-            ]
+            parsed_postings: List[Posting] = []
+            for p in postings_raw:
+                if isinstance(p, (tuple, list)) and len(p) >= 6:
+                    doc_id, f_name, f_sig, f_mem, f_doc, sp_tup = p[0], p[1], p[2], p[3], p[4], p[5]
+                    d_idx = idx._intern_doc_id(doc_id)
+                    sp_first = sp_tup[0] if sp_tup else ""
+                    s_idx = idx._intern_space(sp_first) if sp_first else -1
+                    s_indices = tuple(idx._intern_space(s) for s in sp_tup if s)
+                    parsed_postings.append(
+                        Posting(
+                            doc_idx=d_idx,
+                            index_ref=idx,
+                            space_idx=s_idx,
+                            space_indices=s_indices,
+                            f_name=int(f_name),
+                            f_sig=int(f_sig),
+                            f_members=int(f_mem),
+                            f_doc=int(f_doc),
+                        )
+                    )
+                elif isinstance(p, dict):
+                    parsed_postings.append(Posting.from_dict(p, index_ref=idx))
+            idx.index[term] = parsed_postings
 
         return idx
 
@@ -836,9 +935,17 @@ class InvertedIndex:
 
     @classmethod
     def load_binary(cls, path: Union[str, Path]) -> "InvertedIndex":
-        """自二進位 Gzip 快取反序列化 InvertedIndex"""
+        """自二進位 Gzip 快取反序列化 InvertedIndex，並於載入後主動歸還過渡反序列化堆疊"""
         data = load_gzip_pickle(path, raise_on_missing=True)
-        return cls.from_dict(data)
+        idx = cls.from_dict(data)
+        del data
+        try:
+            from core.platform import trim_process_memory
+
+            trim_process_memory(min_interval_sec=1.0)
+        except Exception:
+            pass
+        return idx
 
 
 class BM25Engine:
@@ -939,7 +1046,7 @@ class BM25Engine:
                 field_scores_sum = 0.0
                 doc_fl = index.doc_lengths.get(doc_id, {})
                 for f_name, weight in self.field_weights.items():
-                    tf = posting.field_freqs.get(f_name, 0)
+                    tf = posting.get_field_freq(f_name) if hasattr(posting, "get_field_freq") else posting.field_freqs.get(f_name, 0)
                     if tf <= 0:
                         continue
                     dl = doc_fl.get(f_name, 1)

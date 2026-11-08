@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from .registry import SpaceRegistry
+from .registry import SpaceRegistry, get_default_registry
 from .schema import SpaceConfig
 
 
@@ -51,7 +51,7 @@ def _resolve_registry_from_context(context: Optional[Any] = None) -> SpaceRegist
             proj_root = Path(str(pr)).resolve()
         if yr:
             yscb_dir = Path(str(yr)).resolve()
-    return SpaceRegistry(project_root=proj_root, yscb_dir=yscb_dir)
+    return get_default_registry(project_root=proj_root, yscb_dir=yscb_dir)
 
 
 def _resolve_knowledge_db_indexed_space_names() -> Optional[Set[str]]:

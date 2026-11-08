@@ -37,7 +37,7 @@ last_updated: "2026-11-08"
 3. **500ms 防抖分流串流協議 (`core.log.DebouncedIOStreamer`)**：攔截模組 `sys.stdout`/`sys.stderr` 並接入 `core.log` 前台日誌管線，以 500ms 防抖緩衝發送 `terminal_stream`、`log` 與 `task_finish` NDJSON 封包。
 4. **按需延遲加載與進程級模組快取 (Lazy Load & Module Cache)**：Worker 啟動時不預載入業務命令腳本，首次派發後快取於 `core.commands.dispatcher._MODULE_CACHE`，並透過 `server_worker_warming` 事件廣播觸發重型模組預熱。
 5. **雙軌模組熱重載 (Hot Reload)**：自動監控 `.modules/` 變動並精確解析模組歸屬；領域模組變動直接重啟全新 Worker，`server`/`core` 模組變動自動優雅重啟整個 Server (Master + Worker)，100% 杜絕 Python reload 幽靈 Bug 與記憶體殘留。
-6. **統一生命週期自毀 (15m Idle TTL)**：支援配置空閒自毀，無操作 15 分鐘後 Master 與所有 Service Worker 一同優雅關閉，零資源浪費。
+6. **統一生命週期自毀 (15m Idle TTL) 與演算法化 Worker 記憶體健康守護 (`WorkerMemoryHealthMonitor`)**：支援配置空閒自毀，無操作 15 分鐘後 Master 與所有 Service Worker 一同優雅關閉；同時由 `WorkerMemoryHealthMonitor` 動態校正預熱後工作集基準線（$B_{\text{base}}$），並於前台與所有背景 `ServiceWorker` 完全閒置時透過相對膨脹倍率、連續單調棘輪漂移與宿主 `MemAvailable` 水位演算法偵測異常記憶體滯留，自動觸發無縫 `restart_worker()` 回收。
 7. **全週期 Console 可觀測性反饋**：
    - **啟動參數橫幅 (`format_startup_banner`)**：`server start`（含背景脫鉤與 `--console` 前台模式）即時回饋結構化 ASCII 橫幅，展示運行模式、Master/Worker PID、IPC Port、Idle TTL、Modules Watcher 狀態、託管背景服務清冊與即時日誌路徑；**當已在運行中再次呼叫 `server start` 時，亦自動輸出提示並附帶當前運行現況橫幅**。
    - **Console 實時日誌回顯**：`--console` 模式下除強制寫入 `.cache/server/log` 外，同步 Tee 輸出至 `sys.stdout`。

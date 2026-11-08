@@ -6,11 +6,15 @@ from core.platform import daemon_probe
 from core.platform.lock import InterProcessLock, LockAcquisitionError
 from core.platform.process import (
     can_spawn_background_daemon,
+    get_host_memory_info,
+    get_process_rss_mb,
     is_process_alive,
     kill_process_tree,
+    reap_sandbox_processes,
     set_process_title,
     spawn_detached,
     terminate_popen_tree,
+    trim_process_memory,
 )
 from core.platform.venv import (
     activate_test_module_source_path,
@@ -33,6 +37,10 @@ __all__ = (
     "kill_process_tree",
     "terminate_popen_tree",
     "set_process_title",
+    "get_process_rss_mb",
+    "get_host_memory_info",
+    "trim_process_memory",
+    "reap_sandbox_processes",
     "InterProcessLock",
     "LockAcquisitionError",
     "ensure_private_venv",

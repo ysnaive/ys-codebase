@@ -16,7 +16,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, Union
 
-from ast_engine import ASTEngine, SemanticBundler
+from ast_engine import ASTEngine, SemanticBundler, get_engine as get_ast_engine
 from core.context import get_runtime_context, get_virtual_cwd
 from core.log import log, log_debug, log_warn
 from core.space import (
@@ -29,6 +29,8 @@ from core.space import (
     SpaceRegistry,
     SpaceScanner,
     consume_diff,
+    get_default_registry,
+    get_default_scanner,
     reset_cursor,
     resolve_semantic_or_rel_path,
 )
@@ -187,10 +189,12 @@ class IndexingPipeline:
 
         if ast_engine is not None:
             self.ast_engine = ast_engine
+        elif not self._custom_storage_dir and getattr(space_manager, "_raw_spaces", None) is None:
+            self.ast_engine = get_ast_engine()
         else:
             self.ast_engine = ASTEngine(
                 project_root=getattr(space_manager, "project_root", None),
-                storage_dir=self._storage_dir / "ast",
+                storage_dir=self._storage_dir / "ast" if self._custom_storage_dir else None,
                 space_manager=space_manager,
                 scanner=scanner,
             )
@@ -240,15 +244,51 @@ class IndexingPipeline:
 
     @contextmanager
     def _consume_space_diff(
-        self, space_name: Optional[str] = None, consumer_id: str = "knowledge-db"
+        self,
+        space_name: Optional[str] = None,
+        consumer_id: str = "knowledge-db",
+        auto_refresh: Optional[bool] = None,
     ) -> Iterator[ScanDiffResult]:
         """以交易式 Context Manager 消費空間指紋差異並於無異常時自動推進游標"""
         if self.scanner is not None and hasattr(self.scanner, "consume_diff"):
-            with self.scanner.consume_diff(space_name, consumer_id=consumer_id) as diff_res:
-                yield diff_res
+            if auto_refresh is not None:
+                with self.scanner.consume_diff(
+                    space_name, consumer_id=consumer_id, auto_refresh=auto_refresh
+                ) as diff_res:
+                    yield diff_res
+            else:
+                with self.scanner.consume_diff(space_name, consumer_id=consumer_id) as diff_res:
+                    yield diff_res
         else:
-            with consume_diff(space_name, consumer_id=consumer_id) as diff_res:
+            with consume_diff(
+                space_name, consumer_id=consumer_id, auto_refresh=auto_refresh
+            ) as diff_res:
                 yield diff_res
+
+    def _align_index_symbols_with_ast_snapshot(self, idx: Optional[InvertedIndex]) -> None:
+        """
+        將反序列化之 InvertedIndex.symbols 與記憶體中已載入之 ASTEngine._snapshot.symbols 共享 UnifiedSymbol 參照，
+        消除常駐進程中 6,800+ 個重複符號實例之雙份 Heap 佔用（若空間權重過濾後 spaces 不同則保留輕量淺拷貝）。
+        """
+        if idx is None or not idx.symbols or self.ast_engine is None:
+            return
+        try:
+            snap = getattr(self.ast_engine, "_snapshot", None)
+            if snap is None and hasattr(self.ast_engine, "_ensure_symbols_loaded"):
+                self.ast_engine._ensure_symbols_loaded()
+                snap = getattr(self.ast_engine, "_snapshot", None)
+            if snap is None or not getattr(snap, "symbols", None):
+                return
+            indexed_spaces = self._get_indexed_space_names()
+            snap_symbols = snap.symbols
+            for doc_id in list(idx.symbols.keys()):
+                ast_sym = snap_symbols.get(doc_id)
+                if ast_sym is not None:
+                    shared_sym = self._filter_symbol_for_indexed_spaces(ast_sym, indexed_spaces)
+                    if shared_sym is not None:
+                        idx.symbols[doc_id] = shared_sym
+        except Exception as exc:
+            log_debug(f"Aligning index symbols with AST snapshot skipped: {exc}")
 
     def _ensure_indices_loaded(
         self,
@@ -276,7 +316,9 @@ class IndexingPipeline:
                 mtime = bin_file.stat().st_mtime
                 with _CACHE_LOCK:
                     if force_reload or cache["unified_index"] is None or mtime > cache["unified_mtime"]:
-                        cache["unified_index"] = InvertedIndex.load_binary(bin_file)
+                        loaded_idx = InvertedIndex.load_binary(bin_file)
+                        self._align_index_symbols_with_ast_snapshot(loaded_idx)
+                        cache["unified_index"] = loaded_idx
                         cache["unified_mtime"] = mtime
                     self._unified_index = cache["unified_index"]
             except Exception as e:
@@ -307,7 +349,7 @@ class IndexingPipeline:
                         cache["vector_mtime"] = 0.0
                         self.hybrid_engine.vector_index = VectorIndex()
 
-    def _sync_ast_snapshot(self, force: bool = False) -> Any:
+    def _sync_ast_snapshot(self, force: bool = False, allow_parallel: bool = True) -> Any:
         """同步並取得最新 ASTSnapshot（僅於無磁碟快取或存在未消費變更時才強制重建）。"""
         ast_has_disk = (
             self.ast_engine._ensure_symbols_loaded()
@@ -317,11 +359,25 @@ class IndexingPipeline:
         has_ast_diff = False
         try:
             if self.scanner is not None and hasattr(self.scanner, "diff"):
-                has_ast_diff = bool(self.scanner.diff(consumer_id="ast", auto_refresh=False).has_changes)
+                target_spaces = (
+                    self.ast_engine.get_target_spaces()
+                    if hasattr(self.ast_engine, "get_target_spaces")
+                    else []
+                )
+                if target_spaces:
+                    has_ast_diff = any(
+                        bool(self.scanner.diff(sp_name, consumer_id="ast", auto_refresh=False).has_changes)
+                        for sp_name in target_spaces
+                    )
+                else:
+                    has_ast_diff = bool(self.scanner.diff(consumer_id="ast", auto_refresh=False).has_changes)
         except Exception:
             has_ast_diff = True
         ast_force = bool(force and (not ast_has_disk or has_ast_diff))
-        return self.ast_engine.ensure_jit_synced(force=ast_force)
+        try:
+            return self.ast_engine.ensure_jit_synced(force=ast_force, allow_parallel=allow_parallel)
+        except TypeError:
+            return self.ast_engine.ensure_jit_synced(force=ast_force)
 
     def get_current_ast_generation(self) -> Optional[int]:
         """優先透過輕量 get_persisted_meta() 讀取當前 AST 快照世代水位，回退至 _ensure_loaded_from_disk()。"""
@@ -351,6 +407,7 @@ class IndexingPipeline:
                 force=force,
                 interactive=interactive,
                 progress_callback=progress_callback,
+                allow_parallel=allow_parallel,
                 skip_vectors=skip_vectors,
             )
 
@@ -359,6 +416,7 @@ class IndexingPipeline:
         force: bool = False,
         interactive: bool = False,
         progress_callback: Optional[Any] = None,
+        allow_parallel: bool = True,
         skip_vectors: bool = False,
     ) -> InvertedIndex:
         indices_dir = self.get_indices_dir()
@@ -376,6 +434,7 @@ class IndexingPipeline:
         if not force and bin_file.exists():
             try:
                 idx = InvertedIndex.load_binary(bin_file)
+                self._align_index_symbols_with_ast_snapshot(idx)
                 self._unified_index = idx
                 vector_file = indices_dir / "unified.vectors.bin.gz"
                 if vector_file.exists():
@@ -391,7 +450,7 @@ class IndexingPipeline:
 
         # Stage 1: Single-Parse Symbol Sharing via ASTEngine
         t0 = time.time()
-        snapshot = self._sync_ast_snapshot(force=force)
+        snapshot = self._sync_ast_snapshot(force=force, allow_parallel=allow_parallel)
         _report(1, f"AST 快照同步與符號共享 (gen={snapshot.ast_generation})", (time.time() - t0) * 1000)
 
         # Stage 2: Build BM25 InvertedIndex directly from ASTSnapshot.symbols (filtered to weighted spaces)
@@ -463,8 +522,24 @@ class IndexingPipeline:
             raise KnowledgeDBError(f"Failed saving unified binary index: {e}") from e
 
         try:
-            with self._consume_space_diff(consumer_id="knowledge-db"):
-                pass
+            if not self._custom_storage_dir and is_watcher_active(
+                project_root=getattr(self.space_manager, "project_root", None)
+            ):
+                indexed_qnames = self._get_indexed_space_qnames()
+                if indexed_qnames:
+                    for q_sp in indexed_qnames:
+                        with self._consume_space_diff(
+                            space_name=q_sp, consumer_id="knowledge-db", auto_refresh=False
+                        ):
+                            pass
+                    if self.scanner is not None and hasattr(self.scanner, "ack"):
+                        self.scanner.ack(None, consumer_id="knowledge-db")
+                else:
+                    with self._consume_space_diff(consumer_id="knowledge-db", auto_refresh=False):
+                        pass
+            else:
+                with self._consume_space_diff(consumer_id="knowledge-db"):
+                    pass
         except Exception as e:
             log_debug(f"Cursor alignment after build_unified_index skipped: {e}")
 
@@ -570,8 +645,23 @@ class IndexingPipeline:
         dirty_keys: Set[str] = set(expanded_added_mod | expanded_deleted)
 
         current_acked_gen = int(getattr(self._unified_index, "acked_ast_generation", 0) or 0) if self._unified_index else 0
-        snapshot = self.ast_engine.ensure_jit_synced()
-        if snapshot.ast_generation <= current_acked_gen and (detail.dirty_files or detail.deleted):
+        parser_reg = getattr(self.ast_engine, "parser_registry", None) or getattr(self.bundler, "parser_registry", None)
+        has_ast_parseable_dirty = True
+        if parser_reg is not None and hasattr(parser_reg, "get_parser"):
+            all_dirty_candidates = set(detail.dirty_files) | set(detail.deleted)
+            if all_dirty_candidates:
+                has_ast_parseable_dirty = any(
+                    parser_reg.get_parser(str(p)) is not None for p in all_dirty_candidates
+                )
+            else:
+                has_ast_parseable_dirty = False
+
+        snapshot = self.ast_engine.ensure_jit_synced(allow_parallel=False)
+        if (
+            snapshot.ast_generation <= current_acked_gen
+            and (detail.dirty_files or detail.deleted)
+            and has_ast_parseable_dirty
+        ):
             snapshot = self.ast_engine.hot_patch_index(detail)
 
         dirty_paths_norm = normalize_dirty_paths(dirty_keys)
@@ -752,7 +842,9 @@ class IndexingPipeline:
 
         if self._unified_index is None and bin_file.exists():
             try:
-                self._unified_index = InvertedIndex.load_binary(bin_file)
+                loaded_idx = InvertedIndex.load_binary(bin_file)
+                self._align_index_symbols_with_ast_snapshot(loaded_idx)
+                self._unified_index = loaded_idx
             except Exception as e:
                 log_warn(f"Failed loading binary inverted index for hot patch: {e}", stream="stderr")
 
@@ -1232,8 +1324,28 @@ class IndexingPipeline:
             return self._unified_index  # type: ignore[return-value]
 
         if auto_rebuild:
-            with self._consume_space_diff(consumer_id="knowledge-db") as diff_res:
-                if not diff_res.has_changes:
+            use_non_blocking_diff = bool(
+                not self._custom_storage_dir
+                and is_watcher_active(project_root=getattr(self.space_manager, "project_root", None))
+            )
+            indexed_qnames = self._get_indexed_space_qnames() if use_non_blocking_diff else []
+            if indexed_qnames:
+                merged_added: Set[str] = set()
+                merged_modified: Set[str] = set()
+                merged_deleted: Set[str] = set()
+                unchanged_total = 0
+                for q_sp in indexed_qnames:
+                    with self._consume_space_diff(
+                        space_name=q_sp, consumer_id="knowledge-db", auto_refresh=False
+                    ) as diff_res:
+                        if diff_res:
+                            unchanged_total += int(getattr(diff_res, "unchanged_count", 0) or 0)
+                            if diff_res.has_changes:
+                                merged_added.update(diff_res.detail.added)
+                                merged_modified.update(diff_res.detail.modified)
+                                merged_deleted.update(diff_res.detail.deleted)
+                has_diff_changes = bool(merged_added or merged_modified or merged_deleted)
+                if not has_diff_changes:
                     self._ensure_indices_loaded(load_vectors=require_vectors)
                     if self._unified_index is not None:
                         ast_gen_now = self.get_current_ast_generation()
@@ -1244,9 +1356,14 @@ class IndexingPipeline:
                             self.build_unified_index(force=True)
                     return self._unified_index  # type: ignore[return-value]
 
+                combined_detail = ScanDiffDetail(
+                    added=merged_added,
+                    modified=merged_modified,
+                    deleted=merged_deleted,
+                )
                 if verbose:
                     log(
-                        f"[knowledge-db:auto-rebuild] Detected changes (+{diff_res.added_count} ~{diff_res.modified_count} -{diff_res.deleted_count}), hot-rebuilding index...",
+                        f"[knowledge-db:auto-rebuild] Detected changes (+{len(merged_added)} ~{len(merged_modified)} -{len(merged_deleted)}), hot-rebuilding index...",
                         stream="stderr",
                         flush=True,
                     )
@@ -1254,7 +1371,7 @@ class IndexingPipeline:
                 patched = False
                 degrade_notice = None
                 if self._unified_index is not None:
-                    res = self.hot_patch_unified_index(diff_res.detail)
+                    res = self.hot_patch_unified_index(combined_detail)
                     patched = bool(res.success)
                     degrade_notice = res.degrade_notice
 
@@ -1263,12 +1380,7 @@ class IndexingPipeline:
 
                 elapsed_ms = max(1, int((time.time() - t0) * 1000))
                 if verbose:
-                    total_files = (
-                        diff_res.added_count
-                        + diff_res.modified_count
-                        + diff_res.deleted_count
-                        + diff_res.unchanged_count
-                    )
+                    total_files = len(merged_added) + len(merged_modified) + len(merged_deleted) + unchanged_total
                     log(
                         f"[knowledge-db:auto-rebuild] Index updated in {elapsed_ms}ms ({total_files} files).",
                         stream="stderr",
@@ -1276,6 +1388,51 @@ class IndexingPipeline:
                     )
                 if degrade_notice:
                     log(degrade_notice, stream="stderr", flush=True)
+            else:
+                with self._consume_space_diff(consumer_id="knowledge-db") as diff_res:
+                    if not diff_res.has_changes:
+                        self._ensure_indices_loaded(load_vectors=require_vectors)
+                        if self._unified_index is not None:
+                            ast_gen_now = self.get_current_ast_generation()
+                            if (
+                                ast_gen_now is not None
+                                and int(getattr(self._unified_index, "acked_ast_generation", 0) or 0) != ast_gen_now
+                            ):
+                                self.build_unified_index(force=True)
+                        return self._unified_index  # type: ignore[return-value]
+
+                    if verbose:
+                        log(
+                            f"[knowledge-db:auto-rebuild] Detected changes (+{diff_res.added_count} ~{diff_res.modified_count} -{diff_res.deleted_count}), hot-rebuilding index...",
+                            stream="stderr",
+                            flush=True,
+                        )
+                    t0 = time.time()
+                    patched = False
+                    degrade_notice = None
+                    if self._unified_index is not None:
+                        res = self.hot_patch_unified_index(diff_res.detail)
+                        patched = bool(res.success)
+                        degrade_notice = res.degrade_notice
+
+                    if not patched:
+                        self.build_unified_index(force=True)
+
+                    elapsed_ms = max(1, int((time.time() - t0) * 1000))
+                    if verbose:
+                        total_files = (
+                            diff_res.added_count
+                            + diff_res.modified_count
+                            + diff_res.deleted_count
+                            + diff_res.unchanged_count
+                        )
+                        log(
+                            f"[knowledge-db:auto-rebuild] Index updated in {elapsed_ms}ms ({total_files} files).",
+                            stream="stderr",
+                            flush=True,
+                        )
+                    if degrade_notice:
+                        log(degrade_notice, stream="stderr", flush=True)
 
         if self._unified_index is None:
             if bin_file.exists():
@@ -1319,6 +1476,20 @@ class IndexingPipeline:
         except Exception:
             pass
         return names
+
+    def _get_indexed_space_qnames(self) -> List[str]:
+        """取得已宣告 `space_weights` 之受索引空間正規化 `qualified_name` 列表。"""
+        weights = self._resolve_space_weights()
+        qnames: List[str] = []
+        try:
+            for sp in self.space_manager.list_spaces(include_synthetic=False):
+                if sp.qualified_name in weights or sp.short_name in weights:
+                    q_name = sp.qualified_name or sp.short_name
+                    if q_name and q_name not in qnames:
+                        qnames.append(q_name)
+        except Exception:
+            pass
+        return qnames
 
     def _filter_symbol_for_indexed_spaces(
         self, sym: UnifiedSymbol, indexed_spaces: Set[str]

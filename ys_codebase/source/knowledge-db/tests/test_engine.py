@@ -795,6 +795,27 @@ class TestEngine(YSCBTestCase):
             self.assertIsNotNone(raw_results[0].code_snippet)
             self.assertGreater(len(raw_results[0].code_snippet.lines), 0)
 
+            # 4. 驗證 ASTEngine._snapshot.symbols 與 InvertedIndex.symbols 共享 UnifiedSymbol 實例，且無 Parser 之純資料檔 (.json/.txt) 變更不觸發 AST hot_patch_index
+            ast_syms = engine.pipeline.ast_engine._snapshot.symbols
+            inv_syms = engine.pipeline.hybrid_engine.inverted_index.symbols
+            shared_ids = set(ast_syms.keys()) & set(inv_syms.keys())
+            self.assertGreater(len(shared_ids), 0)
+            for sid in shared_ids:
+                self.assertIs(ast_syms[sid], inv_syms[sid])
+
+            non_ast_file = src_dir / "config_data.json"
+            write_text_and_advance_mtime(non_ast_file, '{"key": "value"}\n')
+            with patch.object(
+                engine.pipeline.ast_engine,
+                "hot_patch_index",
+                side_effect=AssertionError("Non-parseable file change must not trigger AST hot_patch_index"),
+            ):
+                with engine.scanner.consume_diff(consumer_id="knowledge-db") as diff_non_ast:
+                    non_ast_patch_res = engine.pipeline.hot_patch_unified_index(
+                        diff_non_ast.detail, timeout_seconds=10.0
+                    )
+                self.assertTrue(non_ast_patch_res.success)
+
         self.mark_passed()
 
 

@@ -518,6 +518,8 @@ class SpaceScanner:
         self._snapshot_mgr = BinarySnapshotManager()
         self._cursor_store = CursorStore(self._storage_root, self._lock_dir)
         self._rlock = threading.RLock()
+        self._snapshot_mem_cache: Dict[str, Tuple[int, int, SnapshotState]] = {}
+        self._hash_memo: Optional[Dict[Tuple[str, int, int, str, int], str]] = None
 
     @property
     def registry(self) -> SpaceRegistry:
@@ -591,12 +593,64 @@ class SpaceScanner:
                 yield
 
     def _load_snapshot_state(self, space_key: str) -> SnapshotState:
-        return self._snapshot_mgr.load_state(self._snapshot_path(space_key))
+        snap_p = self._snapshot_path(space_key)
+        cache_key = snap_p.as_posix()
+        try:
+            st = snap_p.stat()
+            mtime_ns = int(st.st_mtime_ns)
+            size = int(st.st_size)
+        except OSError:
+            with self._rlock:
+                self._snapshot_mem_cache.pop(cache_key, None)
+            return SnapshotState()
+
+        with self._rlock:
+            cached = self._snapshot_mem_cache.get(cache_key)
+            if cached is not None and cached[0] == mtime_ns and cached[1] == size:
+                c_state = cached[2]
+                return SnapshotState(
+                    head_generation=c_state.head_generation,
+                    merkle_root=c_state.merkle_root,
+                    config_hash=c_state.config_hash,
+                    entries=dict(c_state.entries),
+                )
+
+        loaded = self._snapshot_mgr.load_state(snap_p)
+        if loaded.head_generation > 0 or loaded.entries:
+            with self._rlock:
+                self._snapshot_mem_cache[cache_key] = (
+                    mtime_ns,
+                    size,
+                    SnapshotState(
+                        head_generation=loaded.head_generation,
+                        merkle_root=loaded.merkle_root,
+                        config_hash=loaded.config_hash,
+                        entries=dict(loaded.entries),
+                    ),
+                )
+        return loaded
 
     def _save_snapshot_state(
         self, space_key: str, state: SnapshotState
     ) -> None:
-        self._snapshot_mgr.save_state(state, self._snapshot_path(space_key))
+        snap_p = self._snapshot_mgr.save_state(state, self._snapshot_path(space_key))
+        cache_key = snap_p.as_posix()
+        try:
+            st = snap_p.stat()
+            with self._rlock:
+                self._snapshot_mem_cache[cache_key] = (
+                    int(st.st_mtime_ns),
+                    int(st.st_size),
+                    SnapshotState(
+                        head_generation=state.head_generation,
+                        merkle_root=state.merkle_root,
+                        config_hash=state.config_hash,
+                        entries=dict(state.entries),
+                    ),
+                )
+        except OSError:
+            with self._rlock:
+                self._snapshot_mem_cache.pop(cache_key, None)
 
     def _get_cursor_record(
         self, space_key: str, consumer_id: str
@@ -641,16 +695,20 @@ class SpaceScanner:
         if space_query is None or str(space_query).strip() in ("", "*"):
             # Scan each non-synthetic watched space with entries/compose + synthetic union spaces + unified "__all__" snapshot
             space_gens: Dict[str, int] = {}
-            for s_cfg in self._registry.list_spaces(include_synthetic=True):
-                if (
-                    not s_cfg.watch
-                    or s_cfg.short_name == "gitignore"
-                    or (not s_cfg.entries and not s_cfg.compose)
-                ):
-                    continue
-                sub_res = self._scan_single_query(s_cfg.qualified_name, force=force)
-                space_gens[s_cfg.qualified_name] = sub_res.to_generation
-            unified_res = self._scan_single_query(None, force=force)
+            self._hash_memo = {}
+            try:
+                for s_cfg in self._registry.list_spaces(include_synthetic=True):
+                    if (
+                        not s_cfg.watch
+                        or s_cfg.short_name == "gitignore"
+                        or (not s_cfg.entries and not s_cfg.compose)
+                    ):
+                        continue
+                    sub_res = self._scan_single_query(s_cfg.qualified_name, force=force)
+                    space_gens[s_cfg.qualified_name] = sub_res.to_generation
+                unified_res = self._scan_single_query(None, force=force)
+            finally:
+                self._hash_memo = None
             object.__setattr__(unified_res, "space_generations", space_gens)
             if self.has_watcher_dirty_marker():
                 self.mark_watcher_dirty(False)
@@ -729,17 +787,31 @@ class SpaceScanner:
                     detail.unchanged.add(rel_p)
                     continue
 
-                # Stage 2: Compute content hash via core.space.hasher
-                try:
-                    c_hash = compute_file_hash(
-                        wf.abs_path,
-                        size=wf.size,
-                        mtime_ns=wf.mtime_ns,
-                        policy=policy,
-                        large_file_threshold_mb=threshold_mb,
+                # Stage 2: Compute content hash via core.space.hasher (with batch memoization when active)
+                memo_key: Optional[Tuple[str, int, int, str, int]] = None
+                c_hash: Optional[str] = None
+                if self._hash_memo is not None:
+                    memo_key = (
+                        wf.abs_path.as_posix(),
+                        wf.size,
+                        wf.mtime_ns,
+                        str(policy.value if hasattr(policy, "value") else policy),
+                        int(threshold_mb),
                     )
-                except OSError:
-                    continue
+                    c_hash = self._hash_memo.get(memo_key)
+                if c_hash is None:
+                    try:
+                        c_hash = compute_file_hash(
+                            wf.abs_path,
+                            size=wf.size,
+                            mtime_ns=wf.mtime_ns,
+                            policy=policy,
+                            large_file_threshold_mb=threshold_mb,
+                        )
+                    except OSError:
+                        continue
+                    if self._hash_memo is not None and memo_key is not None:
+                        self._hash_memo[memo_key] = c_hash
 
                 if prev_fp is None or prev_fp.is_deleted:
                     detail.added.add(rel_p)
@@ -1244,6 +1316,135 @@ class SpaceScanner:
 
         return synced
 
+    def sync_dependent_snapshots_batch(
+        self,
+        changed_qnames: Iterable[str],
+        dirty_paths: Optional[Iterable[Union[str, Path]]] = None,
+        *,
+        exclude_keys: Optional[Iterable[str]] = None,
+    ) -> Dict[str, ScanDiffResult]:
+        """
+        Batch-synchronize existing dependent snapshots for multiple `changed_qnames`
+        in a single pass, ensuring each synthetic short-name space, composite space,
+        and `__all__` is patched/scanned at most once per batch.
+        """
+        qname_list = [str(q).strip() for q in changed_qnames if str(q).strip()]
+        if not qname_list:
+            return {}
+        synced: Dict[str, ScanDiffResult] = {}
+        excluded: Set[str] = {str(k).strip() for k in (exclude_keys or ())}
+        excluded.update(qname_list)
+        dirty_list = list(dirty_paths) if dirty_paths is not None else []
+        use_patch = 0 < len(dirty_list) <= 200
+
+        candidate_keys: List[str] = []
+        for changed_qname in qname_list:
+            if "/" in changed_qname:
+                short_name = changed_qname.split("/", 1)[-1]
+                synth_key = f"/{short_name}" if short_name else ""
+                if (
+                    synth_key
+                    and synth_key != changed_qname
+                    and synth_key not in excluded
+                    and synth_key not in candidate_keys
+                ):
+                    candidate_keys.append(synth_key)
+                if (
+                    short_name
+                    and short_name != changed_qname
+                    and short_name not in excluded
+                    and short_name not in candidate_keys
+                ):
+                    candidate_keys.append(short_name)
+
+        qname_set = set(qname_list)
+        for s_cfg in self._registry.list_spaces():
+            if s_cfg.qualified_name in qname_set or not s_cfg.compose:
+                continue
+            try:
+                deps = self._registry._collect_all_dependency_spaces(
+                    s_cfg.qualified_name
+                )
+            except Exception:
+                continue
+            if any(p.qualified_name in qname_set for p in deps):
+                if (
+                    s_cfg.qualified_name not in candidate_keys
+                    and s_cfg.qualified_name not in excluded
+                ):
+                    candidate_keys.append(s_cfg.qualified_name)
+                if (
+                    s_cfg.short_name
+                    and s_cfg.short_name != s_cfg.qualified_name
+                    and s_cfg.short_name not in candidate_keys
+                    and s_cfg.short_name not in excluded
+                ):
+                    candidate_keys.append(s_cfg.short_name)
+
+        seen_canon: Set[str] = set()
+        for dep_key in candidate_keys:
+            try:
+                canon_dep = self._canonical_space_key(dep_key)
+            except Exception:
+                continue
+            if canon_dep in excluded:
+                continue
+            if canon_dep in seen_canon:
+                if canon_dep in synced:
+                    synced[dep_key] = synced[canon_dep]
+                continue
+            seen_canon.add(canon_dep)
+            if not self._has_existing_snapshot(canon_dep):
+                continue
+            try:
+                if use_patch:
+                    st = self.patch_files(canon_dep, dirty_list)
+                    if st.last_diff is not None:
+                        synced[dep_key] = st.last_diff
+                        synced[canon_dep] = st.last_diff
+                else:
+                    res_dep = self._scan_single_query(canon_dep)
+                    synced[dep_key] = res_dep
+                    synced[canon_dep] = res_dep
+            except Exception:
+                continue
+
+        if self._has_existing_snapshot(self.UNIFIED_KEY) and self.UNIFIED_KEY not in excluded:
+            try:
+                if use_patch:
+                    st_all = self.patch_files(self.UNIFIED_KEY, dirty_list)
+                    if st_all.last_diff is not None:
+                        synced[self.UNIFIED_KEY] = st_all.last_diff
+                else:
+                    synced[self.UNIFIED_KEY] = self._scan_single_query(self.UNIFIED_KEY)
+            except Exception:
+                pass
+
+        return synced
+
+    def _resolve_effective_auto_refresh(
+        self,
+        space_query: Optional[str],
+        space_key: str,
+        auto_refresh: Optional[bool],
+    ) -> bool:
+        """
+        Resolve effective `auto_refresh` policy for `diff` and `consume_diff`:
+        When `auto_refresh` is `None` (default), if using default storage root,
+        `.watcher_dirty` is not set, an initialized snapshot exists for `space_key`,
+        and the file-space watcher is live, skip redundant directory tree walks (`False`).
+        """
+        if auto_refresh is not None:
+            return bool(auto_refresh)
+        if (
+            self._explicit_storage_root is None
+            and not self.has_watcher_dirty_marker()
+            and self._has_existing_snapshot(space_key)
+            and is_watcher_active(space_query, registry=self._registry)
+        ):
+            return False
+        return True
+
     def snapshot(
         self,
         space_query: Optional[str] = None,
@@ -1286,7 +1487,7 @@ class SpaceScanner:
         space_query: Optional[str] = None,
         consumer_id: str = "default",
         *,
-        auto_refresh: bool = True,
+        auto_refresh: Optional[bool] = None,
     ) -> ScanDiffResult:
         """
         Compute the delta between `consumer_id`'s acknowledged watermark generation
@@ -1294,14 +1495,17 @@ class SpaceScanner:
         """
         self._flush_in_process_watcher(space_query)
         space_key = self._canonical_space_key(space_query)
-        if auto_refresh or self.has_watcher_dirty_marker():
+        eff_auto_refresh = self._resolve_effective_auto_refresh(
+            space_query, space_key, auto_refresh
+        )
+        if eff_auto_refresh or self.has_watcher_dirty_marker():
             scan_res = self.scan(space_query)
             space_gens = scan_res.space_generations
         else:
             space_gens = {}
 
         state = self._load_snapshot_state(space_key)
-        if state.head_generation == 0 and not auto_refresh:
+        if state.head_generation == 0 and not eff_auto_refresh:
             scan_res = self.scan(space_query)
             space_gens = scan_res.space_generations
             state = self._load_snapshot_state(space_key)
@@ -1398,7 +1602,7 @@ class SpaceScanner:
         space_query: Optional[str] = None,
         consumer_id: str = "default",
         *,
-        auto_refresh: bool = True,
+        auto_refresh: Optional[bool] = None,
     ) -> Iterator[ScanDiffResult]:
         """
         At-Least-Once transactional diff consumption context manager:
@@ -1512,6 +1716,8 @@ class SpaceScanner:
             resolved_spaces = self._registry.resolve_spaces(space_query)
             space_key = self._canonical_space_key(space_query)
             snap_p = self._snapshot_path(space_key)
+            with self._rlock:
+                self._snapshot_mem_cache.pop(snap_p.as_posix(), None)
             if snap_p.is_file():
                 try:
                     vfs.remove(str(snap_p))
@@ -1526,6 +1732,8 @@ class SpaceScanner:
                     s_cfg.short_name,
                 ):
                     sp = self._snapshot_path(cand_k)
+                    with self._rlock:
+                        self._snapshot_mem_cache.pop(sp.as_posix(), None)
                     if sp.is_file():
                         try:
                             vfs.remove(str(sp))
@@ -1549,6 +1757,8 @@ class SpaceScanner:
             }
 
         # Clean all snapshots and cursors
+        with self._rlock:
+            self._snapshot_mem_cache.clear()
         if self._snapshots_dir.is_dir():
             for name in sorted(os.listdir(self._snapshots_dir)):
                 p = self._snapshots_dir / name
@@ -1716,7 +1926,7 @@ def diff(
     space_query: Optional[str] = None,
     consumer_id: str = "default",
     *,
-    auto_refresh: bool = True,
+    auto_refresh: Optional[bool] = None,
     scanner: Optional[SpaceScanner] = None,
     registry: Optional[SpaceRegistry] = None,
     project_root: Optional[Union[str, Path]] = None,
@@ -1770,7 +1980,7 @@ def consume_diff(
     space_query: Optional[str] = None,
     consumer_id: str = "default",
     *,
-    auto_refresh: bool = True,
+    auto_refresh: Optional[bool] = None,
     scanner: Optional[SpaceScanner] = None,
     registry: Optional[SpaceRegistry] = None,
     project_root: Optional[Union[str, Path]] = None,

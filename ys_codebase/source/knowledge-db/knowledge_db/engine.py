@@ -257,6 +257,11 @@ class KnowledgeEngine:
             )
 
         self.bundler: SemanticBundler = self.ast_engine.bundler
+        if self.space_weights and hasattr(self.ast_engine, "register_spaces"):
+            try:
+                self.ast_engine.register_spaces(list(self.space_weights.keys()))
+            except Exception:
+                pass
         self.bm25_engine = BM25Engine(
             tokenizer=self.tokenizer,
             field_weights=field_weights,
@@ -906,12 +911,12 @@ class KnowledgeEngine:
             log_info("Pre-warming knowledge-db engine...", stream="stderr")
             engine = get_engine()
             enable_vec = bool(getattr(engine.config, "enable_vector_search", True))
-            engine.pipeline._ensure_indices_loaded(load_vectors=enable_vec)
             try:
                 ast_eng = get_ast_engine()
                 ast_eng._ensure_loaded_from_disk()
             except Exception as ast_exc:
                 log_warn(f"AST engine pre-warm skipped: {ast_exc}", stream="stderr")
+            engine.pipeline._ensure_indices_loaded(load_vectors=enable_vec)
             if enable_vec and hasattr(engine, "embedding_service") and engine.embedding_service:
                 engine.embedding_service.suppress_guard_prompt = True
                 if not getattr(engine.embedding_service, "mock_mode", False) and engine.embedding_service.is_model_downloaded():

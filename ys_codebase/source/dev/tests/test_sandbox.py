@@ -629,3 +629,53 @@ class TestSandboxArchitecture(YSCBTestCase):
         self.assertFalse(os.path.exists(os.path.join(ctx_env.engine_dir, ".modules", "mod_top")))
         self.assertFalse(os.path.exists(os.path.join(ctx_env.engine_dir, ".modules", "mod_unrelated")))
         self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_cross_session_grandchild_and_sandbox_process_reaping(self):
+        """Verify terminate_popen_tree and reap_sandbox_processes reap grandchildren across setsid() boundaries."""
+        import subprocess
+        import sys
+        import time
+        from core.platform.process import (
+            is_process_alive,
+            reap_sandbox_processes,
+            terminate_popen_tree,
+        )
+
+        sb_dir = self._mkdtemp()
+        pid_file = os.path.join(sb_dir, "grandchild.pid")
+        code = (
+            "import os, subprocess, sys, time; "
+            "kw = {'start_new_session': True} if sys.platform != 'win32' else {}; "
+            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], **kw); "
+            f"open({pid_file!r}, 'w').write(str(p.pid)); "
+            "time.sleep(60)"
+        )
+        popen_kw = {"start_new_session": True} if sys.platform != "win32" else {}
+        proc = subprocess.Popen([sys.executable, "-c", code], cwd=sb_dir, **popen_kw)
+        grandchild_pid = 0
+        try:
+            for _ in range(40):
+                if os.path.isfile(pid_file):
+                    raw = open(pid_file, "r", encoding="utf-8").read().strip()
+                    if raw.isdigit():
+                        grandchild_pid = int(raw)
+                        break
+                time.sleep(0.05)
+            self.assertGreater(grandchild_pid, 0)
+            self.assertTrue(is_process_alive(grandchild_pid))
+
+            terminate_popen_tree(proc, timeout_sec=1.5)
+            reap_sandbox_processes(sb_dir, timeout_sec=1.0)
+            for _ in range(20):
+                if not is_process_alive(grandchild_pid):
+                    break
+                time.sleep(0.05)
+            self.assertFalse(
+                is_process_alive(grandchild_pid),
+                "Grandchild in new session must be reaped by terminate_popen_tree / reap_sandbox_processes",
+            )
+        finally:
+            if proc.poll() is None:
+                terminate_popen_tree(proc, timeout_sec=1.0)
+        self.mark_passed()

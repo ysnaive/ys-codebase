@@ -333,6 +333,8 @@ def is_watcher_active(
     watched_set = set(state.get("watched_spaces", []))
 
     def _space_covered(s: "SpaceConfig") -> bool:
+        if not s.entries and not s.compose:
+            return True
         if s.qualified_name in watched_set or s.short_name in watched_set:
             return True
         if s.owner == "" and not s.entries and s.compose:
@@ -340,9 +342,12 @@ def is_watcher_active(
                 pos_c, _neg_c = reg._split_compose_children(s, ())
                 if pos_c:
                     return all(
-                        c.qualified_name in watched_set or c.short_name in watched_set
+                        (not c.entries and not c.compose)
+                        or c.qualified_name in watched_set
+                        or c.short_name in watched_set
                         for c in pos_c
                     )
+                return True
             except Exception:
                 pass
         return False

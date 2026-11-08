@@ -12,12 +12,15 @@ from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple
 from core.context import get_env, get_virtual_cwd
 from core.log import log
+from core.platform.process import reap_sandbox_processes
 from dev.testing.runner import (
     TestDiscovery,
     TestRunner,
     ASCIIReportFormatter,
+    cleanup_active_test_subprocesses,
     get_test_category,
     run_subprocess_with_tree_timeout,
+    start_parent_death_watchdog,
 )
 from dev.testing.sandbox import SandboxProvisioner
 
@@ -280,6 +283,10 @@ class Tester:
             log("           Please use 'python yscb.py dev test <module>' to run tests inside an authenticated virtual sandbox.", stream="stderr")
             return 1
 
+        parent_pid_raw = os.environ.get("YSCB_TEST_PARENT_PID", "")
+        expected_ppid = int(parent_pid_raw) if parent_pid_raw.isdigit() else 0
+        watchdog_stop = start_parent_death_watchdog(expected_ppid)
+
         report_json_path = None
         quiet_report = False
         quiet_mode = False
@@ -512,6 +519,8 @@ class Tester:
                 safe_print(ASCIIReportFormatter.format_throttled(report_data))
             else:
                 safe_print(ASCIIReportFormatter.format_summary(report_data))
+        watchdog_stop.set()
+        cleanup_active_test_subprocesses()
         return 0 if all_passed else 1
 
     def _execute_single_module_in_sandbox(
@@ -548,6 +557,7 @@ class Tester:
         p_env["YSCB_SANDBOX_DIR"] = sandbox_dir
         p_env["YSCB_SANDBOX_ID"] = sandbox_display_id
         p_env["YSCB_SANDBOX_INDEX"] = str(sandbox_idx)
+        p_env["YSCB_TEST_PARENT_PID"] = str(os.getpid())
         if target_modules is not None:
             if "--all" in target_modules or "-a" in target_modules:
                 p_env.pop("YSCB_TEST_TARGET_MODULES", None)
@@ -685,6 +695,10 @@ class Tester:
                 SandboxProvisioner.cleanup_sandbox(sandbox_dir, force=True)
         else:
             SandboxProvisioner.prune_sandboxes(max_keep=3)
+            try:
+                reap_sandbox_processes(sandbox_dir, timeout_sec=1.5)
+            except Exception:
+                pass
             if not cfg.is_nested:
                 if ret_code != 0:
                     log(f"[dev:test] Test failed. Sandbox preserved at: {sandbox_dir}")
@@ -883,6 +897,10 @@ class Tester:
                 log(f"[dev:test] Cleaned up {sandbox_display_id}", flush=True)
             SandboxProvisioner.cleanup_sandbox(sandbox_dir, force=True)
         else:
+            try:
+                reap_sandbox_processes(sandbox_dir, timeout_sec=1.5)
+            except Exception:
+                pass
             if not is_nested:
                 if ret_code != 0:
                     log(f"[dev:test] Test failed. Sandbox preserved at: {sandbox_dir}", flush=True)

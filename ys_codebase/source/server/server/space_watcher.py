@@ -455,7 +455,8 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         full_rescan: bool,
         *,
         batch_qnames: Optional[Set[str]] = None,
-    ) -> ScanDiffResult:
+        sync_dependents: bool = True,
+    ) -> Tuple[ScanDiffResult, bool]:
         has_snap = self.scanner._has_existing_snapshot(q_name)
         use_patch = (
             not full_rescan
@@ -467,6 +468,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
             diff_res = state.last_diff
             if diff_res is None:
                 diff_res = self.scanner._scan_single_query(q_name)
+                use_patch = False
         else:
             diff_res = self.scanner._scan_single_query(q_name)
 
@@ -474,11 +476,12 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
             with self._lock:
                 self._refresh_count += 1
                 self._last_refresh_at = time.time()
-            self.scanner.sync_dependent_snapshots(
-                q_name,
-                dirty_paths if use_patch else None,
-                exclude_keys=batch_qnames,
-            )
+            if sync_dependents:
+                self.scanner.sync_dependent_snapshots(
+                    q_name,
+                    dirty_paths if use_patch else None,
+                    exclude_keys=batch_qnames,
+                )
             try:
                 self.touch_activity()
             except Exception:
@@ -486,7 +489,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
             notify_subscribers(q_name, diff_res)
             broadcast_file_space_changed(q_name, diff_res)
 
-        return diff_res
+        return diff_res, use_patch
 
     def _rollback_space_batch(
         self,
@@ -548,6 +551,9 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
 
         batch_set = set(target_qnames)
         last_dict: Optional[Dict[str, Any]] = None
+        changed_qnames: List[str] = []
+        combined_patch_paths: Set[Path] = set()
+        all_patchable = True
         self.set_state(self.STATE_UPDATING)
         try:
             for q_name in target_qnames:
@@ -562,13 +568,37 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                     continue
 
                 try:
-                    diff_res = self._refresh_or_patch_space(
-                        q_name, dirty_paths, full_rescan, batch_qnames=batch_set
+                    diff_res, used_patch = self._refresh_or_patch_space(
+                        q_name,
+                        dirty_paths,
+                        full_rescan,
+                        batch_qnames=batch_set,
+                        sync_dependents=False,
                     )
+                    if diff_res.has_changes:
+                        changed_qnames.append(q_name)
+                        if used_patch:
+                            combined_patch_paths.update(dirty_paths)
+                        else:
+                            all_patchable = False
                     last_dict = diff_res.to_dict()
                 except Exception as exc:
                     self._rollback_space_batch(q_name, dirty_paths, full_rescan)
                     log_error(f"Error flushing space '{q_name}' immediately: {exc}")
+            if changed_qnames:
+                dep_dirty = (
+                    combined_patch_paths
+                    if (
+                        all_patchable
+                        and 0 < len(combined_patch_paths) <= self.MAX_PATCH_PATHS_THRESHOLD
+                    )
+                    else None
+                )
+                self.scanner.sync_dependent_snapshots_batch(
+                    changed_qnames,
+                    dep_dirty,
+                    exclude_keys=batch_set,
+                )
         finally:
             if not self._stop_event.is_set():
                 self.set_state(self.STATE_READY)
@@ -607,19 +637,46 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
 
         batch_set = set(target_spaces)
         results: Dict[str, ScanDiffResult] = {}
+        changed_qnames: List[str] = []
+        combined_patch_paths: Set[Path] = set()
+        all_patchable = True
         self.set_state(self.STATE_UPDATING)
         try:
             for q_name in target_spaces:
                 s_dirty = dirty_batch.get(q_name, set())
                 s_full = q_name in full_rescan_batch
                 try:
-                    diff_res = self._refresh_or_patch_space(
-                        q_name, s_dirty, s_full, batch_qnames=batch_set
+                    diff_res, used_patch = self._refresh_or_patch_space(
+                        q_name,
+                        s_dirty,
+                        s_full,
+                        batch_qnames=batch_set,
+                        sync_dependents=False,
                     )
                     results[q_name] = diff_res
+                    if diff_res.has_changes:
+                        changed_qnames.append(q_name)
+                        if used_patch:
+                            combined_patch_paths.update(s_dirty)
+                        else:
+                            all_patchable = False
                 except Exception as exc:
                     self._rollback_space_batch(q_name, s_dirty, s_full)
                     log_error(f"Error refreshing dirty space '{q_name}': {exc}")
+            if changed_qnames:
+                dep_dirty = (
+                    combined_patch_paths
+                    if (
+                        all_patchable
+                        and 0 < len(combined_patch_paths) <= self.MAX_PATCH_PATHS_THRESHOLD
+                    )
+                    else None
+                )
+                self.scanner.sync_dependent_snapshots_batch(
+                    changed_qnames,
+                    dep_dirty,
+                    exclude_keys=batch_set,
+                )
         finally:
             if not self._stop_event.is_set():
                 self.set_state(self.STATE_READY)
@@ -728,12 +785,26 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
             self._write_watcher_state_file()
 
         try:
-            for s_cfg in self._watched_space_configs():
-                if self._stop_event.is_set():
-                    break
-                q_name = s_cfg.qualified_name
-                if not self.scanner._has_existing_snapshot(q_name):
-                    self.scanner.scan(q_name)
+            watched_cfgs = self._watched_space_configs()
+            missing_any = any(
+                not self.scanner._has_existing_snapshot(s_cfg.qualified_name)
+                for s_cfg in watched_cfgs
+            )
+            missing_unified = not self.scanner._has_existing_snapshot(
+                self.scanner.UNIFIED_KEY
+            )
+            if not self._stop_event.is_set():
+                if missing_any and missing_unified:
+                    self.scanner.scan(None)
+                else:
+                    for s_cfg in watched_cfgs:
+                        if self._stop_event.is_set():
+                            break
+                        q_name = s_cfg.qualified_name
+                        if not self.scanner._has_existing_snapshot(q_name):
+                            self.scanner.scan(q_name)
+                    if not self._stop_event.is_set() and missing_unified:
+                        self.scanner._scan_single_query(None)
         except Exception as exc:
             log_warn(f"Initial core.space snapshot warm-up failed: {exc}")
 

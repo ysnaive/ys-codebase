@@ -18,10 +18,10 @@ import threading
 from types import MappingProxyType
 from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Set, Tuple, Union
 
-from core.context import get_virtual_cwd
+from core.context import get_runtime_context, get_virtual_cwd
 
 from .graph import CallGraphIndex
-from .linker import expand_contract_symbol_ids
+from .linker import _compute_symbols_map_fingerprint, expand_contract_symbol_ids
 from .schema import SymbolKind, UnifiedSymbol
 
 KIND_PREFIX_MAP: Mapping[str, FrozenSet[str]] = MappingProxyType({
@@ -754,6 +754,39 @@ def _coerce_symbols_dict(symbols_input: Any) -> Dict[str, UnifiedSymbol]:
     return {s.id: s for s in symbols_input}
 
 
+_RESOLVER_CACHE_LOCK = threading.RLock()
+
+
+def _create_default_resolver_cache() -> Dict[str, Any]:
+    return {
+        "symbols_map_id": None,
+        "symbols_count": 0,
+        "symbols_fingerprint": 0,
+        "resolver": None,
+    }
+
+
+def _get_or_create_resolver(symbols_map: Dict[str, UnifiedSymbol]) -> DeterministicSymbolResolver:
+    state = get_runtime_context().get_module_state("ast.resolver.last_cache", _create_default_resolver_cache)
+    current_fp = _compute_symbols_map_fingerprint(symbols_map)
+    with _RESOLVER_CACHE_LOCK:
+        cached = state.get("resolver")
+        if (
+            cached is not None
+            and state.get("symbols_map_id") == id(symbols_map)
+            and state.get("symbols_count") == len(symbols_map)
+            and state.get("symbols_fingerprint") == current_fp
+            and cached.symbols_map is symbols_map
+        ):
+            return cached
+        resolver = DeterministicSymbolResolver(symbols_map)
+        state["symbols_map_id"] = id(symbols_map)
+        state["symbols_count"] = len(symbols_map)
+        state["symbols_fingerprint"] = current_fp
+        state["resolver"] = resolver
+        return resolver
+
+
 def _resolve_topology_query_context(
     target_query: str,
     symbols_input: Union[Dict[str, UnifiedSymbol], Any],
@@ -763,7 +796,7 @@ def _resolve_topology_query_context(
 ) -> Tuple[Dict[str, UnifiedSymbol], DeterministicSymbolResolver, Optional[List[str]], SymbolResolutionResult, Optional[Dict[str, Any]]]:
     """Resolve target query and build early-return payload if status is `not_found` or `ambiguous`."""
     symbols_map = _coerce_symbols_dict(symbols_input)
-    resolver = DeterministicSymbolResolver(symbols_map)
+    resolver = _get_or_create_resolver(symbols_map)
     norm_ftypes = resolver.normalize_ftypes(ftypes)
     res = _resolve_with_ftype_fallback(resolver, target_query, space, norm_ftypes)
 

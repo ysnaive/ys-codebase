@@ -267,9 +267,9 @@ def _load_space_include_roots(
             for k, v in explicit_include_roots.items()
         }
     try:
-        from core.space import SpaceRegistry, resolve_semantic_or_rel_path
+        from core.space import get_default_registry, resolve_semantic_or_rel_path
 
-        reg = SpaceRegistry(project_root=proj_root)
+        reg = get_default_registry(project_root=proj_root)
         result: Dict[str, List[Path]] = {}
         for s_cfg in reg.list_spaces():
             roots: List[Path] = []
@@ -304,9 +304,9 @@ def _load_space_include_roots(
 
 def _load_space_thresholds_mb(proj_root: Path) -> Dict[str, int]:
     try:
-        from core.space import SpaceRegistry
+        from core.space import get_default_registry
 
-        reg = SpaceRegistry(project_root=proj_root)
+        reg = get_default_registry(project_root=proj_root)
         thresholds: Dict[str, int] = {}
         for s_cfg in reg.list_spaces():
             val = getattr(s_cfg, "large_file_threshold_mb", 10)
@@ -584,9 +584,9 @@ def collect_space_local_files_with_stat(
     """
     proj_root = _resolve_project_root(project_root)
     if file_space_manager is None:
-        from core.space import SpaceRegistry
+        from core.space import get_default_registry
 
-        file_space_manager = SpaceRegistry(project_root=proj_root)
+        file_space_manager = get_default_registry(project_root=proj_root)
 
     mapped_files: Dict[str, Tuple[Path, Optional[int], Optional[int]]] = {}
     raw_items: List[Tuple[Path, Optional[int], Optional[int]]] = []

@@ -232,6 +232,16 @@ def _render_status_dashboard(info: Dict[str, Any], state: ServerDaemonState) -> 
     log(f"[*] State         : {state_label}")
     log(f"[*] Master PID    : {info.get('pid')}")
     log(f"[*] Worker PID    : {info.get('worker_pid')} ({'Alive' if is_process_alive(info.get('worker_pid', 0)) else 'Restarting'})")
+    mem_info = info.get("worker_memory")
+    if isinstance(mem_info, dict) and float(mem_info.get("current_rss_mb") or 0.0) > 0.0:
+        curr_rss = float(mem_info.get("current_rss_mb") or 0.0)
+        base_rss = float(mem_info.get("baseline_rss_mb") or 0.0)
+        peak_rss = float(mem_info.get("peak_rss_mb") or 0.0)
+        recycles = int(mem_info.get("recycle_count") or 0)
+        log(
+            f"[*] Worker Memory : {curr_rss:.1f} MB "
+            f"(Baseline: {base_rss:.1f} MB, Peak: {peak_rss:.1f} MB, Auto-Recycles: {recycles})"
+        )
     log(f"[*] Port          : {info.get('port')}")
     log(f"[*] Workspace Root: {info.get('root')}")
     log(f"[*] Uptime        : {uptime_str}")

@@ -34,6 +34,7 @@ last_updated: "2026-11-03"
 | **[DN-09]** | 未來擴充 `locales` 在地化字典時之 `core >= 1.2.0` 相依版本連動約束 | `manifest.json`, `contributes/core.json` | Medium |
 | **[DN-10]** | `daemon.lock` 永不刪除（僅刪 `daemon.json`） | `server/master.py`, `scripts/cli.py` | High |
 | **[DN-11]** | 嚴格熱派發於請求已送達後絕不重試 | `core/commands/dispatcher.py` | High |
+| **[DN-12]** | 常駐 Worker 禁用巢狀 `ProcessPoolExecutor(fork)`、雙平面完全閒置守門與演算法化記憶體回收 | `server/worker.py`, `server/master.py`, `ast_engine/bundler.py` | High |
 
 ---
 
@@ -165,3 +166,13 @@ last_updated: "2026-11-03"
 
 > [!CAUTION]
 > 修改 `_strict_hot_dispatch_or_block`、`_try_hot_dispatch` 或熱派發客戶端時，嚴禁把「已送達後失敗 (`accepted=True`)」併入重試或冷派發回退路徑，也嚴禁在送達後的錯誤處理中丟失 `accepted` 標記。
+
+---
+
+### [DN-12] 常駐 Worker 禁用巢狀 `ProcessPoolExecutor(fork)`、雙平面完全閒置守門與演算法化記憶體回收
+- **背景與陷阱**：
+  1. 在 Linux POSIX 環境下，`WarmWorker` 載入 ONNX Runtime / NumPy / AST 快取並啟動多條背景 `ServiceWorker` 執行緒後，若內部再次透過預設 `multiprocessing` (`fork`) 啟動 `ProcessPoolExecutor`（如 `SemanticBundler.bundle_union`），會觸發多執行緒 `fork` 鎖殘留與數百 MB Dirty Pages Copy-on-Write 滯留。
+  2. 若在背景 `ServiceWorker`（如 `knowledge-db-worker`）正執行 ONNX 向量推論或索引構建中途，前景任務結束即盲目呼叫 `malloc_trim(0)` 或由 Master 觸發記憶體回收重啟，將導致背景 C++ Arena 鎖競爭或索引寫入中斷。
+- **工程決策**：
+  1. `WarmWorker` 啟動時設置 `YSCB_IN_SERVER_WORKER=1`，在常駐 Worker 進程內禁止 `SemanticBundler` 啟動巢狀 `ProcessPoolExecutor` 子進程池，一律走單進程樹狀解析並於索引完成後立即清空暫態快取。
+  2. `trim_process_memory()` 與 `WorkerMemoryHealthMonitor` 自動重啟嚴格受雙平面完全閒置條件（`_current_task is None` 且 `not service_manager.is_any_busy()`）守門，並以相對工作集基準線 $B_{\text{base}}$、單調棘輪漂移與宿主 `MemAvailable` 水位綜合判定，杜絕靜態寫死 MB 閾值誤殺重型常駐模型。

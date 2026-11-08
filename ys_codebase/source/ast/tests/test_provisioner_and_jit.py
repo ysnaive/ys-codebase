@@ -176,14 +176,11 @@ class TestProvisionerAndJit(ASTTestCase):
 
     @require(Requirement.LOGIC)
     def test_file_space_hook_lifecycle_and_generation_fallback(self) -> None:
-        """Verify scripts/hook.core.py handles cloud ignore, persisted generation fallback, rebuilt/patched/noop paths, and broadcast."""
+        """Verify scripts/hook.core.py handles non-target space ignore, persisted generation fallback, rebuilt/patched/noop paths, and declarative space registration."""
         hook_mod = load_ast_script("scripts/hook.core.py", "ast_hook_core")
 
         res_empty = hook_mod.on_file_space_changed(diff_detail={})
         self.assertEqual(res_empty.get("status"), "skipped")
-
-        res_cloud = hook_mod.on_file_space_changed(space_name="cloud", diff_detail={"modified": ["a.py"]})
-        self.assertEqual(res_cloud.get("status"), "noop")
 
         proj_dir = self.temp_dir / "hook_proj"
         proj_dir.mkdir(parents=True, exist_ok=True)
@@ -191,6 +188,18 @@ class TestProvisionerAndJit(ASTTestCase):
         mod_file.write_text("def hello():\n    return 42\n", encoding="utf-8")
 
         engine = ASTEngine(project_root=proj_dir, storage_dir=self.storage_dir)
+        # Verify declarative register_spaces / get_target_spaces SDK
+        self.assertIn("project/default", engine.get_target_spaces())
+        engine.register_spaces(["default"])
+        self.assertIn("project/default", engine.get_target_spaces())
+
+        res_cloud = hook_mod.on_file_space_changed(
+            engine=engine,
+            space_name="cloud",
+            diff_detail={"modified": ["a.py"]},
+        )
+        self.assertEqual(res_cloud.get("status"), "noop")
+
         broadcast_events = []
 
         with patch("core.events.broadcast", side_effect=lambda ev, payload, **kw: broadcast_events.append((ev, payload))):
@@ -202,7 +211,7 @@ class TestProvisionerAndJit(ASTTestCase):
             self.assertEqual(res_rebuilt.get("ast_generation"), 1)
             self.assertEqual(len(broadcast_events), 1)
 
-            # 2. Fresh cold engine (engine._snapshot is None): cloud space should read persisted generation (1)
+            # 2. Fresh cold engine (engine._snapshot is None): non-target space ("cloud") should read persisted generation (1)
             cold_engine = ASTEngine(project_root=proj_dir, storage_dir=self.storage_dir)
             self.assertIsNone(cold_engine._snapshot)
             res_cold_noop = hook_mod.on_file_space_changed(context={"engine": cold_engine, "space_name": "cloud"})
@@ -404,4 +413,10 @@ class TestProvisionerAndJit(ASTTestCase):
         with hook_core._resolve_consume_diff(_FakeEng(), space_name="project/default", consumer_id="ast"):
             pass
         self.assertIn((None, {"consumer_id": "ast"}), ack_records)
+
+        # Verify SemanticBundler transient caches are cleared after build_index and hot_patch_index
+        self.assertEqual(len(engine.bundler._file_symbols_cache), 0)
+        self.assertEqual(len(engine.bundler._file_call_sites_cache), 0)
+        self.assertEqual(len(engine.bundler._file_imports_cache), 0)
+        self.assertEqual(len(engine.bundler._last_bundle_unique_files), 0)
         self.mark_passed()

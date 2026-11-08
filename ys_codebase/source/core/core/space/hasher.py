@@ -13,7 +13,7 @@ import struct
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 from .exceptions import SpaceError, SpaceNotFoundError
-from .registry import SpaceRegistry, compute_canonical_rel_path
+from .registry import SpaceRegistry, compute_canonical_rel_path, get_default_registry
 from .schema import HashPolicy, resolve_semantic_or_rel_path
 
 SPARSE_SAMPLE_CHUNK_BYTES = 64 * 1024
@@ -290,5 +290,5 @@ def hash_space_or_path(
     yscb_dir: Optional[Union[str, Path]] = None,
 ) -> SpaceHashResult:
     """Convenience atomic primitive for hashing a space or single file path."""
-    reg = registry or SpaceRegistry(project_root=project_root, yscb_dir=yscb_dir)
+    reg = registry or get_default_registry(project_root=project_root, yscb_dir=yscb_dir)
     return hash_target(reg, target=target, policy=policy)

@@ -175,7 +175,10 @@ class TestKnowledgeDBSelfHealing(YSCBTestCase):
 
         engine.build_unified_index(force=True)
         key_b = str(init_b.resolve()).replace("\\", "/")
-        orig_b_cached = engine.bundler._file_symbols_cache[key_b][0]
+        orig_b_sym = next(
+            s for s in engine.pipeline.ast_engine._snapshot.symbols.values()
+            if s.name == "ModBInitSymbol"
+        )
 
         # Modify only mod_a/__init__.py (which yields rel_path="mod_a/__init__.py" in space_a)
         write_text_and_advance_mtime(init_a, "class ModAInitUpdated:\n    pass\n")
@@ -186,8 +189,14 @@ class TestKnowledgeDBSelfHealing(YSCBTestCase):
             res = engine.pipeline.hot_patch_unified_index(diff_a.detail)
             self.assertTrue(res.success)
 
-        # ModBInitSymbol must remain untouched and its bundler cache must not be evicted!
-        self.assertIs(engine.bundler._file_symbols_cache[key_b][0], orig_b_cached)
+        # ModBInitSymbol must remain untouched (same object identity in ASTSnapshot & InvertedIndex)
+        # and SemanticBundler transient cache must be released after build/hot-patch (`[P00:DR-02]`)!
+        self.assertEqual(len(engine.bundler._file_symbols_cache), 0)
+        cur_b_sym = next(
+            s for s in engine.pipeline.unified_index.symbols.values()
+            if s.name == "ModBInitSymbol"
+        )
+        self.assertIs(cur_b_sym, orig_b_sym)
         sym_names = {s.name for s in engine.pipeline.unified_index.symbols.values()}
         self.assertIn("ModBInitSymbol", sym_names)
         self.assertIn("ModAInitUpdated", sym_names)

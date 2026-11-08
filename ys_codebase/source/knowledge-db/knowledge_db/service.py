@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import threading
 import time
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 from core.context import get_runtime_context
 from core.log import bind_log_context, log_debug, log_warn
@@ -371,6 +371,8 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
         self._space_diffs_processed: int = 0
         self._vector_batches_processed: int = 0
         self._last_sync_at: Optional[float] = None
+        self._space_dirty_flag: bool = True
+        self._idle_verified_state: Optional[Tuple[int, int, int, bool, bool]] = None
         self.set_state(self.STATE_STOPPED)
 
     @property
@@ -386,6 +388,8 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
 
     def notify_space_changed(self) -> None:
         """Non-blocking O(1) wakeup signal when `space-watcher` broadcasts `on_file_space_changed`."""
+        self._space_dirty_flag = True
+        self._idle_verified_state = None
         self._wake_event.set()
 
     def start(self, context: Optional[Dict[str, Any]] = None) -> None:
@@ -396,6 +400,8 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             if self._thread and self._thread.is_alive():
                 return
             self._stop_event.clear()
+            self._space_dirty_flag = True
+            self._idle_verified_state = None
             self._wake_event.set()
             self.set_state(self.STATE_STARTING)
             mem_st["active_worker"] = self
@@ -467,6 +473,28 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
         final_state: str = self.STATE_READY
         final_phase: str = "idle"
         final_progress: str = ""
+        did_sync_work: bool = False
+
+        def _current_index_signature() -> Optional[Tuple[int, int, int, bool, bool]]:
+            try:
+                bin_file = indices_dir / "unified.index.bin.gz"
+                vec_file = indices_dir / "unified.vectors.bin.gz"
+                if not bin_file.exists():
+                    return None
+                u_mtime = int(bin_file.stat().st_mtime_ns)
+                v_mtime = int(vec_file.stat().st_mtime_ns) if vec_file.exists() else 0
+                idx = getattr(engine.pipeline, "unified_index", None)
+                ast_gen = int(getattr(idx, "acked_ast_generation", 0) or 0) if idx is not None else 0
+                emb = getattr(engine, "embedding_service", None)
+                mock_flag = bool(getattr(emb, "mock_mode", False)) if emb is not None else False
+                has_local = (
+                    bool(emb.has_local_model() if hasattr(emb, "has_local_model") else emb.is_model_downloaded())
+                    if (emb is not None and not mock_flag)
+                    else True
+                )
+                return (ast_gen, u_mtime, v_mtime, mock_flag, has_local)
+            except OSError:
+                return None
 
         def _mark_busy(phase: str, progress: str = "") -> None:
             nonlocal busy_start_ts
@@ -487,12 +515,21 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             )
 
         try:
+            # Fast O(1) idle short-circuit when no space dirty notification arrived and index files are unchanged
+            if not self._space_dirty_flag and self._idle_verified_state is not None:
+                cur_sig = _current_index_signature()
+                if cur_sig is not None and cur_sig == self._idle_verified_state:
+                    return
+
             # Stage 1: Check and consume any pending space diffs (AST + BM25 + CallGraph only)
             if self._has_pending_space_work(engine, indices_dir):
                 _mark_busy("stage1_ast_bm25_graph", "同步 AST 符號、BM25 倒排與呼叫圖譜")
                 self._sync_stage1_lexical_and_graph(engine, indices_dir)
                 self._space_diffs_processed += 1
                 self._last_sync_at = time.time()
+                self._idle_verified_state = None
+                did_sync_work = True
+            self._space_dirty_flag = False
 
             if self._stop_event.is_set():
                 return
@@ -500,10 +537,12 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             # Stage 2: Vector model auto-download & micro-batched vector self-healing
             enable_vec = getattr(engine.config, "enable_vector_search", True)
             if not enable_vec:
+                self._idle_verified_state = _current_index_signature()
                 return
 
             emb_svc = getattr(engine, "embedding_service", None)
             if emb_svc is None:
+                self._idle_verified_state = _current_index_signature()
                 return
             emb_svc.suppress_guard_prompt = True
 
@@ -524,6 +563,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                     try:
                         emb_svc.download_model(force=False)
                         needs_vectors = True
+                        did_sync_work = True
                     except Exception as dl_err:
                         final_state = self.STATE_DEGRADED_OFFLINE
                         final_phase = "degraded_offline"
@@ -543,6 +583,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 return
 
             if not needs_vectors:
+                self._idle_verified_state = _current_index_signature()
                 return
 
             batch_size = max(1, int(getattr(engine.config, "vector_batch_size", 32) or 32))
@@ -550,9 +591,21 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             last_persist_ts = time.monotonic()
             step_info = deficit_info
             while not self._stop_event.is_set():
+                # Yield immediately to foreground CLI tasks in WarmWorker so GIL & CPU are 100% dedicated to CLI response
+                try:
+                    if bool(get_runtime_context().get_module_state("server.worker.foreground_active", lambda: False)):
+                        if busy_start_ts > 0.0:
+                            clear_worker_state(indices_dir, worker_running=True, phase="idle", progress="")
+                            busy_start_ts = 0.0
+                        self._wake_event.wait(timeout=0.05)
+                        continue
+                except Exception:
+                    pass
+
                 # If new code changes arrived during Stage 2, immediately prioritize Stage 1!
                 if self._wake_event.is_set() and self._has_pending_space_work(engine, indices_dir):
                     self._wake_event.clear()
+                    self._space_dirty_flag = False
                     if getattr(engine.pipeline, "_vector_index_dirty", False):
                         engine.pipeline.flush_vector_index()
                         batches_since_persist = 0
@@ -560,6 +613,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                     _mark_busy("stage1_ast_bm25_graph", "插隊同步最新變更之 AST / BM25 / 圖譜")
                     self._sync_stage1_lexical_and_graph(engine, indices_dir)
                     self._space_diffs_processed += 1
+                    did_sync_work = True
                     step_info = engine.pipeline.get_vector_deficit_info()
 
                 total_syms = int(step_info.get("total_symbols", 0))
@@ -567,6 +621,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 stale_cnt = int(step_info.get("stale_count", 0))
                 is_compat = bool(step_info.get("compatible", True))
                 if missing_cnt == 0 and stale_cnt == 0 and is_compat:
+                    self._idle_verified_state = _current_index_signature()
                     break
 
                 embedded_before = max(0, total_syms - missing_cnt)
@@ -590,10 +645,14 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                     self._vector_batches_processed += 1
                     self._last_sync_at = time.time()
                     batches_since_persist += 1
+                    did_sync_work = True
                 if should_persist or remaining_after <= 0:
                     batches_since_persist = 0
                     last_persist_ts = time.monotonic()
-                if remaining_after <= 0 or (embedded_step == 0 and removed_step == 0):
+                if remaining_after <= 0:
+                    self._idle_verified_state = _current_index_signature()
+                    break
+                if embedded_step == 0 and removed_step == 0:
                     break
                 step_info = {
                     "total_symbols": total_after,
@@ -609,8 +668,16 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             try:
                 if getattr(engine.pipeline, "_vector_index_dirty", False):
                     engine.pipeline.flush_vector_index()
+                    self._idle_verified_state = _current_index_signature()
             except Exception as flush_err:
                 log_warn(f"[knowledge-db-worker] Flush vector index on exit warning: {flush_err}", stream="stderr")
+            if did_sync_work and not self._stop_event.is_set():
+                try:
+                    from core.platform import trim_process_memory
+
+                    trim_process_memory()
+                except Exception:
+                    pass
             if not self._stop_event.is_set():
                 self.set_state(final_state)
             if busy_start_ts > 0.0 or final_phase != "idle":
@@ -628,8 +695,17 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
         try:
             scanner = getattr(engine, "scanner", None)
             if scanner is not None and hasattr(scanner, "diff"):
-                diff_res = scanner.diff(consumer_id="knowledge-db", auto_refresh=False)
-                if diff_res.has_changes:
+                indexed_spaces = (
+                    list(engine.get_indexed_spaces().values())
+                    if hasattr(engine, "get_indexed_spaces")
+                    else []
+                )
+                if indexed_spaces:
+                    for sp in indexed_spaces:
+                        q_name = getattr(sp, "qualified_name", None) or getattr(sp, "short_name", None)
+                        if q_name and scanner.diff(q_name, consumer_id="knowledge-db", auto_refresh=False).has_changes:
+                            return True
+                elif scanner.diff(consumer_id="knowledge-db", auto_refresh=False).has_changes:
                     return True
             if hasattr(engine.pipeline, "_ensure_indices_loaded"):
                 engine.pipeline._ensure_indices_loaded(load_vectors=False)
@@ -647,35 +723,97 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
         bin_file = indices_dir / "unified.index.bin.gz"
         if hasattr(engine.pipeline, "_ensure_indices_loaded"):
             engine.pipeline._ensure_indices_loaded(load_vectors=False)
-        with engine.pipeline._consume_space_diff(consumer_id="knowledge-db") as diff_res:
-            if not bin_file.exists() and engine.pipeline.unified_index is None:
-                engine.pipeline.build_unified_index(
-                    force=True,
-                    allow_parallel=False,
+
+        indexed_spaces = (
+            list(engine.get_indexed_spaces().values())
+            if hasattr(engine, "get_indexed_spaces")
+            else []
+        )
+        target_qnames = [
+            getattr(sp, "qualified_name", None) or getattr(sp, "short_name", None)
+            for sp in indexed_spaces
+            if (getattr(sp, "qualified_name", None) or getattr(sp, "short_name", None))
+        ]
+        if not target_qnames:
+            with engine.pipeline._consume_space_diff(
+                consumer_id="knowledge-db", auto_refresh=None
+            ) as diff_res:
+                if not bin_file.exists() and engine.pipeline.unified_index is None:
+                    engine.pipeline.build_unified_index(
+                        force=True,
+                        allow_parallel=False,
+                        skip_vectors=True,
+                    )
+                    return
+                if not diff_res.has_changes:
+                    idx = getattr(engine.pipeline, "unified_index", None)
+                    if idx is not None and hasattr(engine.pipeline, "get_current_ast_generation"):
+                        ast_gen = engine.pipeline.get_current_ast_generation()
+                        if ast_gen is not None and int(getattr(idx, "acked_ast_generation", 0) or 0) != ast_gen:
+                            engine.pipeline.build_unified_index(
+                                force=True,
+                                allow_parallel=False,
+                                skip_vectors=True,
+                            )
+                    return
+                patch_res = engine.pipeline.hot_patch_unified_index(
+                    diff_res.detail,
                     skip_vectors=True,
                 )
-                return
-            if not diff_res.has_changes:
-                idx = getattr(engine.pipeline, "unified_index", None)
-                if idx is not None and hasattr(engine.pipeline, "get_current_ast_generation"):
-                    ast_gen = engine.pipeline.get_current_ast_generation()
-                    if ast_gen is not None and int(getattr(idx, "acked_ast_generation", 0) or 0) != ast_gen:
-                        engine.pipeline.build_unified_index(
-                            force=True,
-                            allow_parallel=False,
-                            skip_vectors=True,
-                        )
-                return
-            patch_res = engine.pipeline.hot_patch_unified_index(
-                diff_res.detail,
+                if not patch_res.success:
+                    engine.pipeline.build_unified_index(
+                        force=True,
+                        allow_parallel=False,
+                        skip_vectors=True,
+                    )
+            return
+
+        from core.space.scanner import ScanDiffDetail
+
+        merged_added = set()
+        merged_modified = set()
+        merged_deleted = set()
+        for q_sp in target_qnames:
+            with engine.pipeline._consume_space_diff(
+                space_name=q_sp, consumer_id="knowledge-db", auto_refresh=None
+            ) as diff_res:
+                if diff_res and diff_res.has_changes:
+                    merged_added.update(diff_res.detail.added)
+                    merged_modified.update(diff_res.detail.modified)
+                    merged_deleted.update(diff_res.detail.deleted)
+        if not bin_file.exists() and engine.pipeline.unified_index is None:
+            engine.pipeline.build_unified_index(
+                force=True,
+                allow_parallel=False,
                 skip_vectors=True,
             )
-            if not patch_res.success:
-                engine.pipeline.build_unified_index(
-                    force=True,
-                    allow_parallel=False,
-                    skip_vectors=True,
-                )
+            return
+        if not (merged_added or merged_modified or merged_deleted):
+            idx = getattr(engine.pipeline, "unified_index", None)
+            if idx is not None and hasattr(engine.pipeline, "get_current_ast_generation"):
+                ast_gen = engine.pipeline.get_current_ast_generation()
+                if ast_gen is not None and int(getattr(idx, "acked_ast_generation", 0) or 0) != ast_gen:
+                    engine.pipeline.build_unified_index(
+                        force=True,
+                        allow_parallel=False,
+                        skip_vectors=True,
+                    )
+            return
+        combined_detail = ScanDiffDetail(
+            added=merged_added,
+            modified=merged_modified,
+            deleted=merged_deleted,
+        )
+        patch_res = engine.pipeline.hot_patch_unified_index(
+            combined_detail,
+            skip_vectors=True,
+        )
+        if not patch_res.success:
+            engine.pipeline.build_unified_index(
+                force=True,
+                allow_parallel=False,
+                skip_vectors=True,
+            )
 
     def get_custom_metrics(self) -> Dict[str, Any]:
         try:

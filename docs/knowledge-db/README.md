@@ -26,7 +26,7 @@ last_updated: "2026-11-08"
 ## 1. 模組定位與願景 (Vision & Goals)
 
 `knowledge-db` 模組與 `core.space`、`ast` 共同構成嚴格三階單向無環圖（`core.space -> ast -> knowledge-db`）：
-- **三階單向 DAG 與單次解析符號共享 (`module:ast` `ASTSnapshot`)**：語法樹解析、7 大官方方言隔離 (`dialects/<lang>`)、C# `partial class` 雙層分部聚合、單檔大綱 (`yscb ast outline`) 與呼叫拓撲 (`yscb ast callers/callees/impact`) 統一由 [`module:ast`](../ast/README.md) 負責；`knowledge-db` 直接讀取 `ASTEngine.ensure_jit_synced()` 產出之 `ASTSnapshot` 與 `CallGraphIndex`，**零重複 AST 解析**。
+- **三階單向 DAG 與單次解析符號共享 (`module:ast` `ASTSnapshot`)**：語法樹解析、7 大官方方言隔離 (`dialects/<lang>`)、C# `partial class` 雙層分部聚合、單檔大綱 (`yscb ast outline`) 與呼叫拓撲 (`yscb ast callers/callees/impact`) 統一由 [`module:ast`](../ast/README.md) 負責；`knowledge-db` 透過 `scripts/hook.ast.py` (`on_register_ast_spaces`) 與 `ASTEngine.register_spaces()` 將 `space_weights` 檢索空間動態注入 `ASTEngine`，直接共享同進程 `ASTSnapshot.symbols` 實例與 `CallGraphIndex`（搭配 `Posting` 四整數槽位去字典化與緊湊 6-tuple 序列化），**零重複 AST 解析與零百萬級字典記憶體膨脹**。
 - **跨模組空間協同與顯式 Opt-in 檢索加權 (`core.space` & `space_weights`)**：空間目錄幾何統一委由微內核 `core.space` (`contributes/core.json` 與 `config/core/contribute.json`) 雙軌聚合；`knowledge-db` 則採**顯式 Opt-in 權重制**，唯有於 `space_weights`（如 `source: 1.0`, `docs: 1.2`, `plans: 0.85`）明確宣告權重的空間才會納入資料庫索引與檢索（未宣告權重的空間，如純雲端同步空間，自動排除於資料庫索引之外）。
 - **全空間聯集處理 (Union Scope)**：無單一 `default_space` 強制約定，全系統以所有有效空間之聯集作為全域處理範圍，並對重疊實體檔案進行 100% 唯一解析去重。
 - **`YFP2` + `acked_ast_generation` 雙水位線與受管雙階段背景 Worker (`knowledge-db-worker`)**：透過 `core.space.consume_diff(consumer_id="knowledge-db")` 與 `InvertedIndex.acked_ast_generation` 雙重水位線感知變更；常駐背景服務 `KnowledgeDBServiceWorker` (`knowledge-db-worker`) 運行於 `BaseServiceWorker` 受管背景執行緒中，具備明確五態狀態機（`STARTING`, `UPDATING`, `READY`, `DEGRADED_OFFLINE`, `STOPPED`）與 `core.log` 背景日誌流隔離：

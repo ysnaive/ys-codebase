@@ -17,13 +17,15 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core import events, uri
-from core.context import bind_runtime_context, get_env, get_virtual_cwd
+from core.context import bind_runtime_context, get_env, get_runtime_context, get_virtual_cwd
 from core.guard import GUARD_ENV_HOST, GUARD_ENV_TOKEN
 from core.log import bind_log_context, clear_error_hint, get_last_error_hint
 from core.platform import (
     ensure_installed_modules_path,
     ensure_private_venv,
+    get_process_rss_mb,
     set_process_title,
+    trim_process_memory,
 )
 from server.service import ServiceManager
 from server.streamer import DebouncedIOStreamer
@@ -126,6 +128,7 @@ class WarmWorker:
             env={
                 "YSCB_ROOT_DIR": self.yscb_root,
                 GUARD_ENV_HOST: self.host_dir,
+                "YSCB_IN_SERVER_WORKER": "1",
             },
             host_dir=self.host_dir,
             yscb_dir=self.yscb_root,
@@ -167,6 +170,11 @@ class WarmWorker:
                 )
             except Exception:
                 pass
+            if not self.service_manager.is_any_busy():
+                try:
+                    trim_process_memory()
+                except Exception:
+                    pass
 
         self._emit_log("INFO", f"Warm worker pre_warm completed in {duration_ms:.1f}ms (PID: {pid})")
 
@@ -182,6 +190,7 @@ class WarmWorker:
             host_dir = self.host_dir
         merged_env["YSCB_ROOT_DIR"] = self.yscb_root
         merged_env[GUARD_ENV_HOST] = host_dir
+        merged_env["YSCB_IN_SERVER_WORKER"] = "1"
         merged_env[GUARD_ENV_TOKEN] = (
             merged_env.get(GUARD_ENV_TOKEN)
             or get_env(GUARD_ENV_TOKEN)
@@ -251,6 +260,7 @@ class WarmWorker:
             err_text: Optional[str] = None
 
             try:
+                get_runtime_context().set_module_state("server.worker.foreground_active", True)
                 with bind_runtime_context(
                     virtual_cwd=eff_cwd,
                     env=task_env,
@@ -262,11 +272,21 @@ class WarmWorker:
             except Exception as ex:
                 exit_code, err_text = self._record_task_exception(ex, module, args, streamer, stop_capture=True)
             finally:
+                try:
+                    get_runtime_context().set_module_state("server.worker.foreground_active", False)
+                except Exception:
+                    pass
                 duration_ms = (time.time() - start_time) * 1000.0
+                if not self.service_manager.is_any_busy():
+                    try:
+                        trim_process_memory()
+                    except Exception:
+                        pass
                 try:
                     self.emit_packet_fn({
                         "type": "service_status",
                         "services": self.service_manager.get_status(),
+                        "worker_rss_mb": get_process_rss_mb(),
                     })
                 except Exception:
                     pass
@@ -314,6 +334,7 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
             env={
                 "YSCB_ROOT_DIR": worker.yscb_root,
                 GUARD_ENV_HOST: worker.host_dir,
+                "YSCB_IN_SERVER_WORKER": "1",
             },
             host_dir=worker.host_dir,
             yscb_dir=worker.yscb_root,
@@ -329,6 +350,7 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
                 "type": "worker_ready",
                 "worker_pid": os.getpid(),
                 "services": worker.service_manager.get_status(),
+                "worker_rss_mb": get_process_rss_mb(),
             })
 
             while True:
