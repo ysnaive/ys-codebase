@@ -10,15 +10,15 @@ knowledge-db 索引生命週期與流水線引擎 (pipeline.py)
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
-import logging
 from pathlib import Path
 import re
-import sys
 import threading
 import time
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 from ast_engine import ASTEngine, SemanticBundler
+from core.context import get_runtime_context, get_virtual_cwd
+from core.log import log, log_debug, log_warn
 from core.space import (
     ScanDiffDetail,
     ScanDiffResult,
@@ -56,8 +56,6 @@ from .service import (
 )
 from .tokenizer import MultilingualTokenizer
 
-logger = logging.getLogger("knowledge-db.pipeline")
-
 
 def _resolve_default_knowledge_storage_dir(project_root: Optional[Path] = None) -> Path:
     """解析 knowledge-db 預設持久儲存目錄 (`knowledge.storage://` 或 `.storage.local/knowledge-db`)"""
@@ -76,7 +74,7 @@ def _resolve_default_knowledge_storage_dir(project_root: Optional[Path] = None) 
             return Path(yscb_root).resolve() / ".storage.local" / "knowledge-db"
     except Exception:
         pass
-    base = project_root.resolve() if project_root else Path.cwd().resolve()
+    base = project_root.resolve() if project_root else Path(get_virtual_cwd()).resolve()
     return base / ".storage.local" / "knowledge-db"
 
 
@@ -85,14 +83,32 @@ def _normalize_ftypes(ftypes: Optional[Union[str, List[str]]]) -> Optional[List[
     return norm or None
 
 
-_GLOBAL_INDEX_CACHE: Dict[str, Any] = {
-    "storage_dir": None,
-    "unified_index": None,
-    "unified_mtime": 0.0,
-    "vector_index": None,
-    "vector_mtime": 0.0,
-}
 _CACHE_LOCK = threading.RLock()
+
+
+def _get_index_cache() -> Dict[str, Any]:
+    ctx = get_runtime_context()
+    if "_GLOBAL_INDEX_CACHE" in globals():
+        ext_cache = globals().pop("_GLOBAL_INDEX_CACHE")
+        if isinstance(ext_cache, dict):
+            ctx.set_module_state("knowledge_db.pipeline.index_cache", ext_cache)
+    cache = ctx.get_module_state("knowledge_db.pipeline.index_cache")
+    if not isinstance(cache, dict):
+        cache = {
+            "storage_dir": None,
+            "unified_index": None,
+            "unified_mtime": 0.0,
+            "vector_index": None,
+            "vector_mtime": 0.0,
+        }
+        ctx.set_module_state("knowledge_db.pipeline.index_cache", cache)
+    return cache
+
+
+def __getattr__(name: str) -> Any:
+    if name == "_GLOBAL_INDEX_CACHE":
+        return _get_index_cache()
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
 @dataclass(frozen=True)
@@ -240,35 +256,35 @@ class IndexingPipeline:
         **kwargs: Any,
     ) -> None:
         """微秒級比對磁碟快照 mtime，自動熱更新記憶體快取或從磁碟載入。"""
-        global _GLOBAL_INDEX_CACHE
+        cache = _get_index_cache()
         indices_dir = self.get_indices_dir()
         bin_file = indices_dir / "unified.index.bin.gz"
         vector_file = indices_dir / "unified.vectors.bin.gz"
         storage_key = str(self.storage_dir)
 
         with _CACHE_LOCK:
-            if _GLOBAL_INDEX_CACHE.get("storage_dir") != storage_key:
-                _GLOBAL_INDEX_CACHE["storage_dir"] = storage_key
-                _GLOBAL_INDEX_CACHE["unified_index"] = None
-                _GLOBAL_INDEX_CACHE["unified_mtime"] = 0.0
-                _GLOBAL_INDEX_CACHE["vector_index"] = None
-                _GLOBAL_INDEX_CACHE["vector_mtime"] = 0.0
+            if cache.get("storage_dir") != storage_key:
+                cache["storage_dir"] = storage_key
+                cache["unified_index"] = None
+                cache["unified_mtime"] = 0.0
+                cache["vector_index"] = None
+                cache["vector_mtime"] = 0.0
 
         if bin_file.exists():
             try:
                 mtime = bin_file.stat().st_mtime
                 with _CACHE_LOCK:
-                    if force_reload or _GLOBAL_INDEX_CACHE["unified_index"] is None or mtime > _GLOBAL_INDEX_CACHE["unified_mtime"]:
-                        _GLOBAL_INDEX_CACHE["unified_index"] = InvertedIndex.load_binary(bin_file)
-                        _GLOBAL_INDEX_CACHE["unified_mtime"] = mtime
-                    self._unified_index = _GLOBAL_INDEX_CACHE["unified_index"]
+                    if force_reload or cache["unified_index"] is None or mtime > cache["unified_mtime"]:
+                        cache["unified_index"] = InvertedIndex.load_binary(bin_file)
+                        cache["unified_mtime"] = mtime
+                    self._unified_index = cache["unified_index"]
             except Exception as e:
-                logger.warning(f"Failed loading unified index cache: {e}")
+                log_warn(f"Failed loading unified index cache: {e}")
         else:
             with _CACHE_LOCK:
-                if _GLOBAL_INDEX_CACHE["unified_mtime"] > 0.0:
-                    _GLOBAL_INDEX_CACHE["unified_index"] = None
-                    _GLOBAL_INDEX_CACHE["unified_mtime"] = 0.0
+                if cache["unified_mtime"] > 0.0:
+                    cache["unified_index"] = None
+                    cache["unified_mtime"] = 0.0
                     self._unified_index = None
 
         if load_vectors:
@@ -276,18 +292,18 @@ class IndexingPipeline:
                 try:
                     mtime = vector_file.stat().st_mtime
                     with _CACHE_LOCK:
-                        if force_reload or _GLOBAL_INDEX_CACHE["vector_index"] is None or mtime > _GLOBAL_INDEX_CACHE["vector_mtime"]:
-                            _GLOBAL_INDEX_CACHE["vector_index"] = VectorIndex.load_binary(vector_file)
-                            _GLOBAL_INDEX_CACHE["vector_mtime"] = mtime
-                        if _GLOBAL_INDEX_CACHE["vector_index"] is not None:
-                            self.hybrid_engine.vector_index = _GLOBAL_INDEX_CACHE["vector_index"]
+                        if force_reload or cache["vector_index"] is None or mtime > cache["vector_mtime"]:
+                            cache["vector_index"] = VectorIndex.load_binary(vector_file)
+                            cache["vector_mtime"] = mtime
+                        if cache["vector_index"] is not None:
+                            self.hybrid_engine.vector_index = cache["vector_index"]
                 except Exception as e:
-                    logger.warning(f"Failed loading vector index cache: {e}")
+                    log_warn(f"Failed loading vector index cache: {e}")
             elif not getattr(self, "_vector_index_dirty", False):
                 with _CACHE_LOCK:
-                    if _GLOBAL_INDEX_CACHE["vector_mtime"] > 0.0 or _GLOBAL_INDEX_CACHE["vector_index"] is not None:
-                        _GLOBAL_INDEX_CACHE["vector_index"] = None
-                        _GLOBAL_INDEX_CACHE["vector_mtime"] = 0.0
+                    if cache["vector_mtime"] > 0.0 or cache["vector_index"] is not None:
+                        cache["vector_index"] = None
+                        cache["vector_mtime"] = 0.0
                         self.hybrid_engine.vector_index = VectorIndex()
 
     def _sync_ast_snapshot(self, force: bool = False) -> Any:
@@ -354,7 +370,7 @@ class IndexingPipeline:
                 except Exception:
                     pass
             if interactive:
-                print(f"[{stage}/4] {name} (耗時 {elapsed_ms:.1f}ms)", file=sys.stderr, flush=True)
+                log(f"[{stage}/4] {name} (耗時 {elapsed_ms:.1f}ms)", stream="stderr", flush=True)
 
         if not force and bin_file.exists():
             try:
@@ -365,10 +381,10 @@ class IndexingPipeline:
                     try:
                         self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
                     except Exception as ve:
-                        logger.warning(f"Failed loading unified vector index: {ve}")
+                        log_warn(f"Failed loading unified vector index: {ve}")
                 return idx
             except Exception as e:
-                logger.warning(f"Failed loading unified binary index, rebuilding: {e}")
+                log_warn(f"Failed loading unified binary index, rebuilding: {e}")
 
         t_all_start = time.time()
 
@@ -428,7 +444,7 @@ class IndexingPipeline:
                 self.hybrid_engine.vector_index = vec_idx
                 _report(3, f"向量特徵嵌入建置 ({len(doc_ids)} 符號向量)", (time.time() - t0) * 1000)
             except Exception as e:
-                logger.warning(f"Failed building/saving vector index: {e}")
+                log_warn(f"Failed building/saving vector index: {e}")
                 _report(3, f"向量特徵嵌入建置失敗: {e}", (time.time() - t0) * 1000)
         else:
             reason_str = ""
@@ -449,24 +465,25 @@ class IndexingPipeline:
             with self._consume_space_diff(consumer_id="knowledge-db"):
                 pass
         except Exception as e:
-            logger.debug(f"Cursor alignment after build_unified_index skipped: {e}")
+            log_debug(f"Cursor alignment after build_unified_index skipped: {e}")
 
         _report(4, "二進位索引原子持久化與游標同步", (time.time() - t0) * 1000)
 
         if interactive:
             total_elapsed = (time.time() - t_all_start) * 1000
-            print(f"[knowledge-db] 全域索引建置完成，總耗時 {total_elapsed:.1f}ms", file=sys.stderr, flush=True)
+            log(f"[knowledge-db] 全域索引建置完成，總耗時 {total_elapsed:.1f}ms", stream="stderr", flush=True)
 
         self._unified_index = idx
         self._vector_degraded = False
         self._last_degrade_notice = None
+        cache = _get_index_cache()
         with _CACHE_LOCK:
-            _GLOBAL_INDEX_CACHE["storage_dir"] = str(self.storage_dir)
-            _GLOBAL_INDEX_CACHE["unified_index"] = idx
-            _GLOBAL_INDEX_CACHE["unified_mtime"] = bin_file.stat().st_mtime if bin_file.exists() else time.time()
+            cache["storage_dir"] = str(self.storage_dir)
+            cache["unified_index"] = idx
+            cache["unified_mtime"] = bin_file.stat().st_mtime if bin_file.exists() else time.time()
             if hasattr(self.hybrid_engine, "vector_index") and self.hybrid_engine.vector_index:
-                _GLOBAL_INDEX_CACHE["vector_index"] = self.hybrid_engine.vector_index
-                _GLOBAL_INDEX_CACHE["vector_mtime"] = vector_file.stat().st_mtime if vector_file.exists() else time.time()
+                cache["vector_index"] = self.hybrid_engine.vector_index
+                cache["vector_mtime"] = vector_file.stat().st_mtime if vector_file.exists() else time.time()
         return idx
 
     # ----------------------------------------------------------------------
@@ -488,7 +505,7 @@ class IndexingPipeline:
             except Exception:
                 pass
         proj_root = getattr(self.space_manager, "project_root", None)
-        base = Path(proj_root).resolve() if proj_root else Path.cwd().resolve()
+        base = Path(proj_root).resolve() if proj_root else Path(get_virtual_cwd()).resolve()
         if (base / "ys_codebase").is_dir():
             fallback = base / "ys_codebase" / ".cache" / "knowledge-db" / ".kdb_index.lock"
         else:
@@ -631,7 +648,7 @@ class IndexingPipeline:
             try:
                 self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
             except Exception as ve:
-                logger.warning(f"Failed loading vector index for hot patch: {ve}")
+                log_warn(f"Failed loading vector index for hot patch: {ve}")
 
         vec_idx = self.hybrid_engine.vector_index
         expected_model = getattr(self.config, "embedding_model", "BAAI/bge-small-zh-v1.5")
@@ -660,7 +677,7 @@ class IndexingPipeline:
                 with self._kdb_index_file_lock():
                     vec_idx.save_binary(vector_file)
             except Exception as ve:
-                logger.warning(f"Failed saving patched vector index: {ve}")
+                log_warn(f"Failed saving patched vector index: {ve}")
             return False, None
 
         if num_symbols <= 10:
@@ -672,7 +689,7 @@ class IndexingPipeline:
                     vec_idx.save_binary(vector_file)
                 return False, None
             except Exception as ve:
-                logger.warning(f"Failed patching vector index for <=10 symbols: {ve}")
+                log_warn(f"Failed patching vector index for <=10 symbols: {ve}")
                 return True, f"[knowledge-db:notice] 向量更新失敗已降級為純 BM25 模式: {ve}"
 
         try:
@@ -701,7 +718,7 @@ class IndexingPipeline:
                 vec_idx.save_binary(vector_file)
             return False, None
         except Exception as ve:
-            logger.warning(f"Dynamic probe or inference failed: {ve}")
+            log_warn(f"Dynamic probe or inference failed: {ve}")
             return True, f"[knowledge-db:notice] 向量推論異常已降級為純 BM25 模式: {ve}"
 
     def _persist_patched_indices(
@@ -713,13 +730,14 @@ class IndexingPipeline:
         if self._unified_index is not None:
             with self._kdb_index_file_lock():
                 self._unified_index.save_binary(bin_file, compresslevel=1)
+        cache = _get_index_cache()
         with _CACHE_LOCK:
-            _GLOBAL_INDEX_CACHE["storage_dir"] = str(self.storage_dir)
-            _GLOBAL_INDEX_CACHE["unified_index"] = self._unified_index
-            _GLOBAL_INDEX_CACHE["unified_mtime"] = bin_file.stat().st_mtime if bin_file.exists() else time.time()
+            cache["storage_dir"] = str(self.storage_dir)
+            cache["unified_index"] = self._unified_index
+            cache["unified_mtime"] = bin_file.stat().st_mtime if bin_file.exists() else time.time()
             if hasattr(self.hybrid_engine, "vector_index") and self.hybrid_engine.vector_index:
-                _GLOBAL_INDEX_CACHE["vector_index"] = self.hybrid_engine.vector_index
-                _GLOBAL_INDEX_CACHE["vector_mtime"] = vector_file.stat().st_mtime if vector_file.exists() else time.time()
+                cache["vector_index"] = self.hybrid_engine.vector_index
+                cache["vector_mtime"] = vector_file.stat().st_mtime if vector_file.exists() else time.time()
 
     def _hot_patch_unified_index_locked(
         self,
@@ -735,7 +753,7 @@ class IndexingPipeline:
             try:
                 self._unified_index = InvertedIndex.load_binary(bin_file)
             except Exception as e:
-                logger.warning(f"Failed loading binary inverted index for hot patch: {e}")
+                log_warn(f"Failed loading binary inverted index for hot patch: {e}")
 
         if self._unified_index is None:
             return HotPatchResult(success=False, patched_count=0)
@@ -776,7 +794,7 @@ class IndexingPipeline:
                             with self._kdb_index_file_lock():
                                 vec_idx.save_binary(vector_file)
                     except Exception as ve:
-                        logger.warning(f"Failed evicting old vectors during skip_vectors hot patch: {ve}")
+                        log_warn(f"Failed evicting old vectors during skip_vectors hot patch: {ve}")
                 vector_degraded = False
                 degrade_notice = None
             else:
@@ -794,7 +812,7 @@ class IndexingPipeline:
                 degrade_notice=degrade_notice,
             )
         except Exception as e:
-            logger.warning(f"Incremental hot patch failed: {e}, falling back to full rebuild.")
+            log_warn(f"Incremental hot patch failed: {e}, falling back to full rebuild.")
             self._vector_degraded = False
             self._last_degrade_notice = None
             return HotPatchResult(success=False, patched_count=0)
@@ -873,9 +891,10 @@ class IndexingPipeline:
                 vec_idx.save_binary(vector_file)
             self._vector_index_dirty = False
             with _CACHE_LOCK:
-                _GLOBAL_INDEX_CACHE["storage_dir"] = str(self.storage_dir)
-                _GLOBAL_INDEX_CACHE["vector_index"] = vec_idx
-                _GLOBAL_INDEX_CACHE["vector_mtime"] = (
+                cache = _get_index_cache()
+                cache["storage_dir"] = str(self.storage_dir)
+                cache["vector_index"] = vec_idx
+                cache["vector_mtime"] = (
                     vector_file.stat().st_mtime if vector_file.exists() else time.time()
                 )
             return True
@@ -996,8 +1015,9 @@ class IndexingPipeline:
                 self.flush_vector_index()
             else:
                 with _CACHE_LOCK:
-                    _GLOBAL_INDEX_CACHE["storage_dir"] = str(self.storage_dir)
-                    _GLOBAL_INDEX_CACHE["vector_index"] = vec_idx
+                    cache = _get_index_cache()
+                    cache["storage_dir"] = str(self.storage_dir)
+                    cache["vector_index"] = vec_idx
 
             return {
                 "embedded_in_step": len(valid_batch_ids),
@@ -1038,7 +1058,7 @@ class IndexingPipeline:
                 self._index_cache[sp_name] = idx
                 return {sp_name: idx}
             except Exception as e:
-                logger.warning(f"Failed loading binary cached index for '{sp_name}', rebuilding: {e}")
+                log_warn(f"Failed loading binary cached index for '{sp_name}', rebuilding: {e}")
 
         snapshot = self._sync_ast_snapshot(force=force)
         match_keys = {space, sp_name, sp.short_name, sp.qualified_name}
@@ -1112,12 +1132,13 @@ class IndexingPipeline:
         self._unified_index = None
         self._vector_index_dirty = False
         self.hybrid_engine.vector_index = VectorIndex()
+        cache = _get_index_cache()
         with _CACHE_LOCK:
-            _GLOBAL_INDEX_CACHE["storage_dir"] = None
-            _GLOBAL_INDEX_CACHE["unified_index"] = None
-            _GLOBAL_INDEX_CACHE["unified_mtime"] = 0.0
-            _GLOBAL_INDEX_CACHE["vector_index"] = None
-            _GLOBAL_INDEX_CACHE["vector_mtime"] = 0.0
+            cache["storage_dir"] = None
+            cache["unified_index"] = None
+            cache["unified_mtime"] = 0.0
+            cache["vector_index"] = None
+            cache["vector_mtime"] = 0.0
         try:
             if space is not None:
                 self._reset_consumer_cursor(space_name=space, consumer_id="knowledge-db")
@@ -1206,9 +1227,9 @@ class IndexingPipeline:
         if not bin_file.exists():
             if auto_rebuild:
                 if verbose:
-                    print(
+                    log(
                         "[knowledge-db:auto-rebuild] Unified index missing, building index...",
-                        file=sys.stderr,
+                        stream="stderr",
                         flush=True,
                     )
                 self._reset_consumer_cursor(consumer_id="knowledge-db")
@@ -1229,9 +1250,9 @@ class IndexingPipeline:
                     return self._unified_index  # type: ignore[return-value]
 
                 if verbose:
-                    print(
+                    log(
                         f"[knowledge-db:auto-rebuild] Detected changes (+{diff_res.added_count} ~{diff_res.modified_count} -{diff_res.deleted_count}), hot-rebuilding index...",
-                        file=sys.stderr,
+                        stream="stderr",
                         flush=True,
                     )
                 t0 = time.time()
@@ -1253,13 +1274,13 @@ class IndexingPipeline:
                         + diff_res.deleted_count
                         + diff_res.unchanged_count
                     )
-                    print(
+                    log(
                         f"[knowledge-db:auto-rebuild] Index updated in {elapsed_ms}ms ({total_files} files).",
-                        file=sys.stderr,
+                        stream="stderr",
                         flush=True,
                     )
                 if degrade_notice:
-                    print(degrade_notice, file=sys.stderr, flush=True)
+                    log(degrade_notice, stream="stderr", flush=True)
 
         if self._unified_index is None:
             if bin_file.exists():
@@ -1269,9 +1290,9 @@ class IndexingPipeline:
                         try:
                             self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
                         except Exception as ve:
-                            logger.warning(f"Failed loading unified vector index: {ve}")
+                            log_warn(f"Failed loading unified vector index: {ve}")
                 except Exception as e:
-                    logger.warning(f"Failed loading unified binary index: {e}, rebuilding...")
+                    log_warn(f"Failed loading unified binary index: {e}, rebuilding...")
                     self.build_unified_index(force=True)
             else:
                 self.build_unified_index(force=True)
@@ -1351,15 +1372,13 @@ class IndexingPipeline:
 
         if elapsed_ms > 0:
             if elapsed_ms >= timeout_ms:
-                sys.stderr.write("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]\n")
-                sys.stderr.flush()
+                log("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", stream="stderr", flush=True)
                 return False
 
             remain_ms = max(0, timeout_ms - elapsed_ms)
             became_idle = wait_until_worker_idle(indices_dir, remain_ms)
             if not became_idle:
-                sys.stderr.write("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]\n")
-                sys.stderr.flush()
+                log("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", stream="stderr", flush=True)
                 return False
             self._ensure_indices_loaded(load_vectors=True, force_reload=True)
 
@@ -1370,8 +1389,7 @@ class IndexingPipeline:
                     active_w = get_active_worker()
                     if active_w is not None:
                         active_w.notify_space_changed()
-                    sys.stderr.write("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]\n")
-                    sys.stderr.flush()
+                    log("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", stream="stderr", flush=True)
                     return False
                 # Trigger standard offline/missing-model notice in _init_model without downloading
                 _ = emb_svc.is_available
@@ -1381,8 +1399,7 @@ class IndexingPipeline:
             active_w = get_active_worker()
             if active_w is not None:
                 active_w.notify_space_changed()
-            sys.stderr.write("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]\n")
-            sys.stderr.flush()
+            log("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", stream="stderr", flush=True)
             return False
 
         return bool(self.hybrid_engine.is_vector_available)

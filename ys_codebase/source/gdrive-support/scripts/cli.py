@@ -8,13 +8,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from core import uri
 from core.commands import CmdBags
 from core.guard import guard_dispatch
+from core.log import log
 
 
 def _emit(payload: Dict[str, Any], as_json: bool, summary: str) -> None:
     if as_json:
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        log(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
-        print(summary)
+        log(summary)
 
 
 def _emit_error(tag: str, exc: BaseException, as_json: bool) -> int:
@@ -307,7 +308,7 @@ def ls(cmd_bags: CmdBags) -> int:
         "entries": [e.to_dict() for e in entries],
     }
     if as_json:
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        log(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
 
     for e in entries:
@@ -315,7 +316,7 @@ def ls(cmd_bags: CmdBags) -> int:
         extra = f" -> {e.target_file_id}" if e.is_shortcut else ""
         if e.skipped_reason:
             extra += f" [{e.skipped_reason}]"
-        print(f"[{kind}] {e.rel_path} (id={e.file_id}, size={e.size}){extra}")
+        log(f"[{kind}] {e.rel_path} (id={e.file_id}, size={e.size}){extra}")
     return 0
 
 
@@ -547,13 +548,13 @@ def branch_list(cmd_bags: CmdBags) -> int:
         return _emit_error("branch list", exc, as_json)
 
     if as_json:
-        print(json.dumps(res, indent=2, ensure_ascii=False))
+        log(json.dumps(res, indent=2, ensure_ascii=False))
         return 0
 
     active = res.get("active_branch", "main")
     for b_name in sorted(res.get("branches", {}).keys()):
         marker = "*" if b_name == active else " "
-        print(f"{marker} {b_name}")
+        log(f"{marker} {b_name}")
     return 0
 
 

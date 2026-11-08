@@ -6,21 +6,22 @@ and dispatches `TreeSitterDriver` and custom domain parsers.
 
 import copy
 import importlib
-import importlib.util
 import json
-import logging
 import os
 from pathlib import Path
 import sys
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from types import MappingProxyType
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
+
+from core.context import get_virtual_cwd
+from core.loader import load_module_from_path
+from core.log import log_debug, log_warn
 
 from ..schema import LanguageConfig, SymbolCallSite, UnifiedSymbol
 from .base import BaseParser
 from .treesitter import TreeSitterDriver
 
-logger = logging.getLogger("ast.parsers.registry")
-
-DEFAULT_LANGUAGES: Dict[str, Dict[str, Any]] = {
+DEFAULT_LANGUAGES: Mapping[str, Dict[str, Any]] = MappingProxyType({
     "python": {
         "id": "python",
         "name": "Python",
@@ -98,7 +99,7 @@ DEFAULT_LANGUAGES: Dict[str, Dict[str, Any]] = {
         "mode": "custom",
         "parser_entry": "ast_engine.parsers.css_parser:CssParser",
     },
-}
+})
 
 
 class ParserRegistry:
@@ -139,7 +140,7 @@ class ParserRegistry:
         except Exception:
             pass
 
-        cwd = os.getcwd()
+        cwd = str(get_virtual_cwd())
         if cwd:
             candidates.append(cwd)
 
@@ -197,13 +198,8 @@ class ParserRegistry:
             resolved_target = uri.resolve(target_uri, interactive=False)
             target_path = Path(resolved_target)
             if target_path.is_file() or target_path.suffix == ".py":
-                mod_name = f"_yscb_custom_parser_{target_path.stem}_{abs(hash(str(target_path)))}"
-                spec = importlib.util.spec_from_file_location(mod_name, str(target_path))
-                if spec is None or spec.loader is None:
-                    raise ImportError(f"Cannot load spec from file '{target_path}'")
-                mod = importlib.util.module_from_spec(spec)
-                sys.modules[mod_name] = mod
-                spec.loader.exec_module(mod)
+                mod_name = f"_yscb_mod_custom_parser.{target_path.stem}_{abs(hash(str(target_path)))}"
+                mod = load_module_from_path(mod_name, target_path)
                 parser_cls = getattr(mod, cls_name)
                 return parser_cls()
             parent_dir = str(target_path.parent if target_path.suffix else target_path)
@@ -230,13 +226,8 @@ class ParserRegistry:
                         cand_file = probe
                         break
             if cand_file.is_file():
-                dyn_name = f"_yscb_custom_parser_{cand_file.stem}_{abs(hash(str(cand_file)))}"
-                spec = importlib.util.spec_from_file_location(dyn_name, str(cand_file))
-                if spec is None or spec.loader is None:
-                    raise ImportError(f"Cannot load spec from file '{cand_file}'")
-                mod = importlib.util.module_from_spec(spec)
-                sys.modules[dyn_name] = mod
-                spec.loader.exec_module(mod)
+                dyn_name = f"_yscb_mod_custom_parser.{cand_file.stem}_{abs(hash(str(cand_file)))}"
+                mod = load_module_from_path(dyn_name, cand_file)
                 parser_cls = getattr(mod, cls_name)
                 return parser_cls()
 
@@ -253,7 +244,7 @@ class ParserRegistry:
     def _load_from_contributes(self, contributes_data: Optional[Dict[str, Any]] = None) -> None:
         """Load `languages` from `contributes_data`, `contributes.get("ast")`, or built-in defaults."""
         self.load_errors.clear()
-        languages_dict: Dict[str, Any] = copy.deepcopy(DEFAULT_LANGUAGES)
+        languages_dict: Dict[str, Any] = copy.deepcopy(dict(DEFAULT_LANGUAGES))
 
         overlay_langs: Dict[str, Any] = {}
         if contributes_data and isinstance(contributes_data, dict):
@@ -279,7 +270,7 @@ class ParserRegistry:
                         if isinstance(m_data, dict) and isinstance(m_data.get("languages"), dict):
                             overlay_langs = m_data["languages"]
                 except Exception as exc:
-                    logger.warning(f"ParserRegistry: Failed to load contributes/ast.json: {exc}")
+                    log_warn(f"ParserRegistry: Failed to load contributes/ast.json: {exc}")
 
         for lang_id, lang_cfg in overlay_langs.items():
             if not isinstance(lang_cfg, dict):
@@ -317,11 +308,11 @@ class ParserRegistry:
                     except Exception as exc:
                         err_msg = f"Failed to instantiate custom parser '{cfg.parser_entry}': {exc}"
                         self.load_errors[cfg.id] = err_msg
-                        logger.warning(err_msg)
+                        log_warn(err_msg)
             except Exception as exc:
                 err_msg = f"Error loading language config '{lang_id}': {exc}"
                 self.load_errors[str(lang_id)] = err_msg
-                logger.warning(err_msg)
+                log_warn(err_msg)
 
     def register_parser(self, parser: BaseParser, priority: int = 100) -> None:
         """Register a parser instance with priority (higher value takes precedence)."""
@@ -357,7 +348,7 @@ class ParserRegistry:
                 if parser.can_parse(file_path):
                     return parser
             except Exception as exc:
-                logger.warning(f"Error checking can_parse for {parser}: {exc}")
+                log_warn(f"Error checking can_parse for {parser}: {exc}")
         return None
 
     def parse_file(self, file_path: str, content: str, space: str) -> List[UnifiedSymbol]:
@@ -368,7 +359,7 @@ class ParserRegistry:
         try:
             return parser.parse(file_path=file_path, content=content, space=space)
         except Exception as exc:
-            logger.warning(f"Unexpected error during parse_file '{file_path}' in space '{space}': {exc}")
+            log_warn(f"Unexpected error during parse_file '{file_path}' in space '{space}': {exc}")
             return []
 
     def extract_call_sites(
@@ -388,10 +379,10 @@ class ParserRegistry:
             try:
                 return parser.extract_call_sites(file_path=file_path, content=content, space=space)
             except Exception as exc:
-                logger.debug(f"Error extracting call sites from '{file_path}': {exc}")
+                log_debug(f"Error extracting call sites from '{file_path}': {exc}")
                 return []
         except Exception as exc:
-            logger.debug(f"Error extracting call sites from '{file_path}': {exc}")
+            log_debug(f"Error extracting call sites from '{file_path}': {exc}")
             return []
 
     def extract_imports(self, file_path: str, content: str) -> Dict[str, str]:
@@ -402,5 +393,5 @@ class ParserRegistry:
         try:
             return parser.extract_imports(file_path=file_path, content=content)
         except Exception as exc:
-            logger.debug(f"Error extracting imports from '{file_path}': {exc}")
+            log_debug(f"Error extracting imports from '{file_path}': {exc}")
             return {}

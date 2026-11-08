@@ -10,6 +10,8 @@ import subprocess
 import concurrent.futures
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple
+from core.context import get_virtual_cwd
+from core.log import log
 from dev.testing.runner import (
     TestDiscovery,
     TestRunner,
@@ -218,29 +220,29 @@ class Tester:
             return self._run_test(argv)
 
     def _print_usage(self) -> None:
-        print("[dev:test] Usage: python yscb.py dev test [module_name | --all] [options]")
-        print("Subcommands / Modes:")
-        print("  dev test [mod | --all]     High-level E2E: Auto build -> Provision sandbox -> Run tests -> Teardown")
-        print("  dev op-mksb [--dir=<path>] Atomic primitive: Provision isolated virtual sandbox")
-        print("  dev op-test [mod | --all]  Atomic primitive: Run in-place test execution without sandboxing")
-        print("Parallel & Concurrency Options:")
-        print("  -j <N>, --jobs=<N>         Set max parallel worker processes (default: min(cpu_count, num_modules))")
-        print("  --sequential, --no-parallel Disable parallel execution and run sequentially")
-        print("Classification & Targeting Options:")
-        print("  --logical        Run only unit / pure logical tests")
-        print("  --env            Run environment / inter-module / DI tests")
-        print("  --workflow       Run multi-step composite workflow / E2E tests (default excluded)")
-        print("  --perf, --stress Run performance / stress benchmark tests (default excluded)")
-        print("  --all-types      Run tests across all categories (logic + env + workflow + perf)")
-        print("  --type=<type>    Filter test type (logic | env | workflow | perf | all)")
-        print("  --target=<mod:[case][.method]>  Pinpoint specific module, test case or method")
-        print("General Options:")
-        print("  --all            Run tests across all modules in source/")
-        print("  --no-build       Skip automatic pre-test hermetic build")
-        print("  --keep-sandbox   Retain virtual sandbox directory upon test completion")
-        print("  --sync           After 100% test pass, auto-install local @build package to environment")
-        print("  -q, --quiet      Throttle output mode: compact Pass/Fail/Skip and failures only")
-        print("  -v, --verbose    Expand verbose test method execution details")
+        log("[dev:test] Usage: python yscb.py dev test [module_name | --all] [options]")
+        log("Subcommands / Modes:")
+        log("  dev test [mod | --all]     High-level E2E: Auto build -> Provision sandbox -> Run tests -> Teardown")
+        log("  dev op-mksb [--dir=<path>] Atomic primitive: Provision isolated virtual sandbox")
+        log("  dev op-test [mod | --all]  Atomic primitive: Run in-place test execution without sandboxing")
+        log("Parallel & Concurrency Options:")
+        log("  -j <N>, --jobs=<N>         Set max parallel worker processes (default: min(cpu_count, num_modules))")
+        log("  --sequential, --no-parallel Disable parallel execution and run sequentially")
+        log("Classification & Targeting Options:")
+        log("  --logical        Run only unit / pure logical tests")
+        log("  --env            Run environment / inter-module / DI tests")
+        log("  --workflow       Run multi-step composite workflow / E2E tests (default excluded)")
+        log("  --perf, --stress Run performance / stress benchmark tests (default excluded)")
+        log("  --all-types      Run tests across all categories (logic + env + workflow + perf)")
+        log("  --type=<type>    Filter test type (logic | env | workflow | perf | all)")
+        log("  --target=<mod:[case][.method]>  Pinpoint specific module, test case or method")
+        log("General Options:")
+        log("  --all            Run tests across all modules in source/")
+        log("  --no-build       Skip automatic pre-test hermetic build")
+        log("  --keep-sandbox   Retain virtual sandbox directory upon test completion")
+        log("  --sync           After 100% test pass, auto-install local @build package to environment")
+        log("  -q, --quiet      Throttle output mode: compact Pass/Fail/Skip and failures only")
+        log("  -v, --verbose    Expand verbose test method execution details")
 
     def _run_op_mksb(self, argv: List[str]) -> int:
         target_dir = None
@@ -256,25 +258,26 @@ class Tester:
                 if target_mods
                 else SandboxProvisioner.create_sandbox(target_dir)
             )
-            print(f"[dev:op-mksb] Provisioned virtual sandbox at: {ctx.sandbox_dir}")
+            log(f"[dev:op-mksb] Provisioned virtual sandbox at: {ctx.sandbox_dir}")
             return 0
         except Exception as e:
-            print(f"[dev:op-mksb] Error provisioning sandbox: {e}")
+            log(f"[dev:op-mksb] Error provisioning sandbox: {e}")
             return 1
 
     def _run_op_test(self, argv: List[str]) -> int:
         """In-place atomic test execution engine."""
+        vcwd_str = str(get_virtual_cwd())
         is_sandbox_env = (
             os.environ.get("YSCB_TEST_SANDBOX") == "1"
             and (
-                os.path.basename(os.getcwd()) == "host_env"
-                or os.path.isdir(os.path.join(os.getcwd(), "engine"))
+                os.path.basename(vcwd_str) == "host_env"
+                or os.path.isdir(os.path.join(vcwd_str, "engine"))
                 or bool(os.environ.get("YSCB_SANDBOX_DIR") and os.path.isdir(os.environ.get("YSCB_SANDBOX_DIR", "")))
             )
         )
         if not is_sandbox_env:
-            print("[dev:test] Security Guard Blocked: 'dev op-test' is an internal in-place runner and cannot be executed directly on the host workspace.", file=sys.stderr)
-            print("           Please use 'python yscb.py dev test <module>' to run tests inside an authenticated virtual sandbox.", file=sys.stderr)
+            log("[dev:test] Security Guard Blocked: 'dev op-test' is an internal in-place runner and cannot be executed directly on the host workspace.", stream="stderr")
+            log("           Please use 'python yscb.py dev test <module>' to run tests inside an authenticated virtual sandbox.", stream="stderr")
             return 1
 
         report_json_path = None
@@ -332,7 +335,7 @@ class Tester:
 
         valid_types = {"logic", "logical", "env", "network", "workflow", "perf", "all", "all_types"}
         if test_type and test_type.lower().replace("-", "_") not in valid_types:
-            print(f"[dev:test] Error: Invalid test type '{test_type}'. Valid types: logic, env, network, workflow, perf, all")
+            log(f"[dev:test] Error: Invalid test type '{test_type}'. Valid types: logic, env, network, workflow, perf, all")
             return 1
 
         if target and ":" in target:
@@ -346,9 +349,9 @@ class Tester:
         modules = TestDiscovery.discover_modules(target_mod)
         if not modules:
             if target_mod:
-                print(f"[dev:test] Error: Module '{target_mod}' not found in source/.")
+                log(f"[dev:test] Error: Module '{target_mod}' not found in source/.")
             else:
-                print("[dev:test] No modules found in source/.")
+                log("[dev:test] No modules found in source/.")
             return 1
 
         if test_type:
@@ -380,7 +383,7 @@ class Tester:
 
         for mod_name in modules:
             if not verbose and not quiet_report and not quiet_mode:
-                print(f"[dev:test] {mod_name} begin test in {sandbox_id}", flush=True)
+                log(f"[dev:test] {mod_name} begin test in {sandbox_id}", flush=True)
             mod_start = time.perf_counter()
             suite, contract_total, custom_total = TestDiscovery.build_suite_for_module(
                 mod_name,
@@ -394,7 +397,7 @@ class Tester:
             result, captured_output = runner.run_suite(suite)
             mod_duration = time.perf_counter() - mod_start
             if not verbose and not quiet_report and not quiet_mode:
-                print(f"[dev:test] {mod_name} test finish in ({mod_duration:.2f}s)", flush=True)
+                log(f"[dev:test] {mod_name} test finish in ({mod_duration:.2f}s)", flush=True)
             mod_total = result.testsRun
             mod_failed = len(result.failures) + len(result.errors)
             mod_skipped = len(result.skipped)
@@ -502,7 +505,7 @@ class Tester:
                 with open(report_json_path, "w", encoding="utf-8") as rf:
                     json.dump(report_data, rf, indent=2, ensure_ascii=False)
             except Exception as e:
-                print(f"[dev:test] Warning: Failed to export report JSON: {e}", file=sys.stderr)
+                log(f"[dev:test] Warning: Failed to export report JSON: {e}", stream="stderr")
 
         if not quiet_report:
             if quiet_mode:
@@ -578,6 +581,7 @@ class Tester:
                     text=True,
                     encoding="utf-8",
                     errors="replace",
+                    timeout=timeout_sec,
                 )
             ret_code = res.returncode
             mod_duration = time.perf_counter() - mod_start
@@ -617,19 +621,19 @@ class Tester:
 
         if not cfg.no_build:
             if not cfg.is_nested and not cfg.quiet_mode:
-                print("[dev:test] Pre-building modules for test execution...", flush=True)
+                log("[dev:test] Pre-building modules for test execution...", flush=True)
             from dev.builder import Builder
             builder = Builder()
             if cfg.target_mod and cfg.target_mod != "--all":
                 ok, msg = builder.build_module(cfg.target_mod)
                 if not ok:
-                    print(f"[dev:test] Pre-build failed for module '{cfg.target_mod}':\n  {msg}", file=sys.stderr)
+                    log(f"[dev:test] Pre-build failed for module '{cfg.target_mod}':\n  {msg}", stream="stderr")
                     return 1
             else:
                 results = builder.build_all()
                 for m_name, (ok, msg) in results.items():
                     if not ok:
-                        print(f"[dev:test] Pre-build failed for module '{m_name}':\n  {msg}", file=sys.stderr)
+                        log(f"[dev:test] Pre-build failed for module '{m_name}':\n  {msg}", stream="stderr")
                         return 1
 
         cand_targets = ["--all"] if cfg.is_all else ([cfg.target_mod] if cfg.target_mod else ["core"])
@@ -674,7 +678,7 @@ class Tester:
 
         if ret_code == 0 and not cfg.keep_sandbox:
             if not cfg.is_nested and not cfg.quiet_mode:
-                print(f"[dev:test] Cleaned up {sandbox_display_id}", flush=True)
+                log(f"[dev:test] Cleaned up {sandbox_display_id}", flush=True)
             if "--all" in cfg.clean_argv:
                 SandboxProvisioner.cleanup_all_sandboxes()
             else:
@@ -683,9 +687,9 @@ class Tester:
             SandboxProvisioner.prune_sandboxes(max_keep=3)
             if not cfg.is_nested:
                 if ret_code != 0:
-                    print(f"[dev:test] Test failed. Sandbox preserved at: {sandbox_dir}")
+                    log(f"[dev:test] Test failed. Sandbox preserved at: {sandbox_dir}")
                 elif not cfg.quiet_mode:
-                    print(f"[dev:test] Sandbox preserved at: {sandbox_dir}")
+                    log(f"[dev:test] Sandbox preserved at: {sandbox_dir}")
 
         if ret_code == 0 and not cfg.is_nested:
             rep_mods = (
@@ -719,13 +723,13 @@ class Tester:
         """Runs multiple modules concurrently across independent virtual sandboxes."""
         if not no_build:
             if not is_nested and not quiet_mode:
-                print("[dev:test] Pre-building modules for test execution...", flush=True)
+                log("[dev:test] Pre-building modules for test execution...", flush=True)
             from dev.builder import Builder
             builder = Builder()
             results = builder.build_all()
             for m_name, (ok, msg) in results.items():
                 if not ok:
-                    print(f"[dev:test] Pre-build failed for module '{m_name}':\n  {msg}", file=sys.stderr)
+                    log(f"[dev:test] Pre-build failed for module '{m_name}':\n  {msg}", stream="stderr")
                     return 1
 
         SandboxProvisioner.adapt_build_pip_dependencies(target_modules=modules)
@@ -755,7 +759,7 @@ class Tester:
                     worker_results[mod_name] = future.result()
                 except Exception as e:
                     if not is_nested:
-                        print(f"[dev:test] Worker error for '{mod_name}': {e}", file=sys.stderr)
+                        log(f"[dev:test] Worker error for '{mod_name}': {e}", stream="stderr")
                     worker_results[mod_name] = {
                         "module": mod_name,
                         "worker_idx": 0,
@@ -875,14 +879,14 @@ class Tester:
         sandbox_display_id = f"sandbox {worker_idx}"
         if ret_code == 0 and not keep_sandbox:
             if not is_nested and not quiet_mode:
-                print(f"[dev:test] Cleaned up {sandbox_display_id}", flush=True)
+                log(f"[dev:test] Cleaned up {sandbox_display_id}", flush=True)
             SandboxProvisioner.cleanup_sandbox(sandbox_dir, force=True)
         else:
             if not is_nested:
                 if ret_code != 0:
-                    print(f"[dev:test] Test failed. Sandbox preserved at: {sandbox_dir}", flush=True)
+                    log(f"[dev:test] Test failed. Sandbox preserved at: {sandbox_dir}", flush=True)
                 elif not quiet_mode:
-                    print(f"[dev:test] Sandbox preserved at: {sandbox_dir}", flush=True)
+                    log(f"[dev:test] Sandbox preserved at: {sandbox_dir}", flush=True)
 
         w_count = len([line for line in ((res.stderr if res else "") or "").splitlines() if line.strip()])
         return {
@@ -899,7 +903,7 @@ class Tester:
         if not modules:
             return
 
-        host_dir = os.environ.get("YSCB_HOST_DIR") or os.getcwd()
+        host_dir = os.environ.get("YSCB_HOST_DIR") or str(get_virtual_cwd())
         cfg_path = os.path.join(host_dir, "yscb.config.json")
         installed_mods = {}
         if os.path.isfile(cfg_path):
@@ -919,7 +923,7 @@ class Tester:
             for mod in valid_targets:
                 safe_print(f"\n[dev:test:sync] Auto-installing '{mod}@build' into local environment...")
                 cmd = [sys.executable, yscb_py, "install", f"{mod}@build", "--force"]
-                res = subprocess.run(cmd, cwd=host_dir)
+                res = subprocess.run(cmd, cwd=host_dir, timeout=300.0)
                 if res.returncode == 0:
                     safe_print(f"[dev:test:sync] Successfully synced '{mod}@build'.")
                 else:

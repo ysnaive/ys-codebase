@@ -10,7 +10,15 @@ from typing import Any, List, Dict
 
 from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
+from core.log import log
 from core import uri, vfs, semver
+
+
+def _log_cli(*args: Any, **kwargs: Any) -> None:
+    """Route CLI outputs to core.log.log."""
+    file_arg = kwargs.pop("file", None)
+    stream = "stderr" if file_arg is sys.stderr else "stdout"
+    log(*args, stream=stream, **kwargs)
 
 
 def _get_short_to_canonical_pairs() -> Dict[str, str]:
@@ -106,13 +114,13 @@ def _handle_bump(subcmd: str, cmd_bags: CmdBags) -> int:
     bump_type = subcmd.split("-", 1)[1].lower() if "-" in subcmd else subcmd.lower()
     targets = cmd_bags.args
     if not targets:
-        print(f"[dev:{subcmd}] Usage: python yscb.py dev {subcmd} <module_name>")
+        _log_cli(f"[dev:{subcmd}] Usage: python yscb.py dev {subcmd} <module_name>")
         return 1
 
     mod_name = targets[0]
     src_manifest_uri = f"module.source://{mod_name}/manifest.json"
     if not vfs.exists(src_manifest_uri):
-        print(f"[dev:{subcmd}] Error: Source module '{mod_name}' not found at {src_manifest_uri}.", file=sys.stderr)
+        _log_cli(f"[dev:{subcmd}] Error: Source module '{mod_name}' not found at {src_manifest_uri}.", file=sys.stderr)
         return 1
 
     try:
@@ -122,10 +130,10 @@ def _handle_bump(subcmd: str, cmd_bags: CmdBags) -> int:
         manifest_data["version"] = next_ver
         vfs.write_json(src_manifest_uri, manifest_data, indent=2)
         _sync_package_dunder_version(mod_name, curr_ver, next_ver)
-        print(f"[dev:{subcmd}] Successfully bumped '{mod_name}': {curr_ver} -> {next_ver} ({bump_type}).")
+        _log_cli(f"[dev:{subcmd}] Successfully bumped '{mod_name}': {curr_ver} -> {next_ver} ({bump_type}).")
         return 0
     except Exception as e:
-        print(f"[dev:{subcmd}] Error bumping version for '{mod_name}': {e}", file=sys.stderr)
+        _log_cli(f"[dev:{subcmd}] Error bumping version for '{mod_name}': {e}", file=sys.stderr)
         return 1
 
 
@@ -156,7 +164,7 @@ def create(cmd_bags: Any) -> int:
     guard_dispatch("dev")
     bags = _normalize_bags(cmd_bags, "create")
     if not bags.args:
-        print("[dev:create] Usage: python yscb.py dev create <name> [--desc=\"...\"]")
+        _log_cli("[dev:create] Usage: python yscb.py dev create <name> [--desc=\"...\"]")
         return 1
     name = bags.args[0]
     desc = "A YS-Codebase module"
@@ -166,7 +174,7 @@ def create(cmd_bags: Any) -> int:
     from dev.scaffold import Scaffolder
     scaffolder = Scaffolder()
     ok, msg = scaffolder.create_module(name, desc)
-    print(f"[dev:create] {msg}")
+    _log_cli(f"[dev:create] {msg}")
     return 0 if ok else 1
 
 
@@ -182,26 +190,26 @@ def check(cmd_bags: Any) -> int:
     if check_all:
         reports = checker.check_all()
         if json_output:
-            print(json.dumps({mod: rep.to_dict() for mod, rep in reports.items()}, indent=2))
+            _log_cli(json.dumps({mod: rep.to_dict() for mod, rep in reports.items()}, indent=2))
             return 0 if all(rep.passed for rep in reports.values()) else 1
         title = "YS-Codebase Module Compliance Diagnostic Report"
     else:
         name = bags.args[0]
         rep = checker.check_module(name)
         if json_output:
-            print(json.dumps(rep.to_dict(), indent=2))
+            _log_cli(json.dumps(rep.to_dict(), indent=2))
             return 0 if rep.passed else 1
         reports = {name: rep}
         title = f"YS-Codebase Module Compliance Report: {name}"
 
-    print("=" * 70)
-    print(title)
-    print("=" * 70)
+    _log_cli("=" * 70)
+    _log_cli(title)
+    _log_cli("=" * 70)
     all_passed = True
     pass_cnt, warn_cnt, fail_cnt = 0, 0, 0
 
     for mod, rep in reports.items():
-        print(f"[*] Module: {mod:<50} [{rep.status.value}]")
+        _log_cli(f"[*] Module: {mod:<50} [{rep.status.value}]")
         if rep.status == CheckSeverity.PASS:
             pass_cnt += 1
         elif rep.status == CheckSeverity.WARN:
@@ -214,14 +222,14 @@ def check(cmd_bags: Any) -> int:
             if check_all and rep.status == CheckSeverity.WARN and issue.severity != CheckSeverity.WARN:
                 continue
             loc = f" ({issue.file_path})" if issue.file_path else ""
-            print(f"    |-- [{issue.severity.value}] [{issue.category}]{loc} {issue.message}")
+            _log_cli(f"    |-- [{issue.severity.value}] [{issue.category}]{loc} {issue.message}")
 
-    print("-" * 70)
+    _log_cli("-" * 70)
     status_text = "PASSED" if all_passed and warn_cnt == 0 else ("WARNINGS FOUND" if all_passed else "FAILED (Release Blocked)")
     if check_all:
-        print(f"Summary : {len(reports)} Total, {pass_cnt} Passed, {warn_cnt} Warnings, {fail_cnt} Failed")
-    print(f"Status  : {status_text}")
-    print("=" * 70)
+        _log_cli(f"Summary : {len(reports)} Total, {pass_cnt} Passed, {warn_cnt} Warnings, {fail_cnt} Failed")
+    _log_cli(f"Status  : {status_text}")
+    _log_cli("=" * 70)
     return 0 if all_passed else 1
 
 
@@ -234,20 +242,20 @@ def build(cmd_bags: Any) -> int:
     build_all = bags.has_option("all") or bags.has_option("a") or not bags.args
 
     if build_all:
-        print("[dev:build] Building all modules in source/ (dev complete package)...")
+        _log_cli("[dev:build] Building all modules in source/ (dev complete package)...")
         results = builder.build_all()
         all_ok = True
         for mod, (passed, msg) in results.items():
             if passed:
-                print(f"  [*] {mod}: {msg}")
+                _log_cli(f"  [*] {mod}: {msg}")
             else:
                 all_ok = False
-                print(f"  [!] {mod}: {msg}")
+                _log_cli(f"  [!] {mod}: {msg}")
         return 0 if all_ok else 1
     else:
         name = bags.args[0]
         passed, msg = builder.build_module(name)
-        print(f"[dev:build] {msg}")
+        _log_cli(f"[dev:build] {msg}")
         return 0 if passed else 1
 
 
@@ -272,28 +280,28 @@ def release(cmd_bags: Any) -> int:
     release_meta = _extract_release_meta_from_bags(bags)
 
     if release_all:
-        print("[dev:release] Releasing all modules in source/ (topological pure release)...")
+        _log_cli("[dev:release] Releasing all modules in source/ (topological pure release)...")
         try:
             results = releaser.release_all(force=force)
             all_ok = True
             for mod, (passed, msg) in results.items():
                 if passed:
-                    print(f"  [*] {mod}: {msg}")
+                    _log_cli(f"  [*] {mod}: {msg}")
                 else:
                     all_ok = False
-                    print(f"  [!] {mod}: {msg}")
+                    _log_cli(f"  [!] {mod}: {msg}")
             return 0 if all_ok else 1
         except Exception as e:
-            print(f"[dev:release] Batch release error: {e}", file=sys.stderr)
+            _log_cli(f"[dev:release] Batch release error: {e}", file=sys.stderr)
             return 1
     else:
         name = bags.args[0]
         ok, msg = releaser.release_module(name, force=force, release_meta=release_meta or None)
         if ok:
-            print(f"[dev:release] {msg}")
+            _log_cli(f"[dev:release] {msg}")
             return 0
         else:
-            print(f"[dev:release] Error: {msg}", file=sys.stderr)
+            _log_cli(f"[dev:release] Error: {msg}", file=sys.stderr)
             return 1
 
 
@@ -309,33 +317,33 @@ def release_check(cmd_bags: Any) -> int:
         from dev.checker import discover_source_modules
         modules = discover_source_modules()
         all_passed = True
-        print(f"[dev:release-check] Checking release readiness for all {len(modules)} modules...")
+        _log_cli(f"[dev:release-check] Checking release readiness for all {len(modules)} modules...")
         for mod_name in modules:
             passed, errors = releaser.release_check(mod_name, force=force)
             if passed:
-                print(f"  [*] Module '{mod_name}': READY (All 3 Gates Passed)")
+                _log_cli(f"  [*] Module '{mod_name}': READY (All 3 Gates Passed)")
             else:
                 all_passed = False
-                print(f"  [!] Module '{mod_name}': FAILED")
+                _log_cli(f"  [!] Module '{mod_name}': FAILED")
                 for err in errors:
-                    print(f"      - {err}")
+                    _log_cli(f"      - {err}")
         if all_passed:
-            print("[dev:release-check] All modules are READY for release.")
+            _log_cli("[dev:release-check] All modules are READY for release.")
             return 0
         else:
-            print("[dev:release-check] One or more modules FAILED release check.", file=sys.stderr)
+            _log_cli("[dev:release-check] One or more modules FAILED release check.", file=sys.stderr)
             return 1
 
     mod_name = bags.args[0]
     passed, errors = releaser.release_check(mod_name, force=force)
     if passed:
         msg_suffix = " (Force Override mode)" if force else ""
-        print(f"[dev:release-check] Module '{mod_name}' is READY for release (All 3 Gates Passed){msg_suffix}.")
+        _log_cli(f"[dev:release-check] Module '{mod_name}' is READY for release (All 3 Gates Passed){msg_suffix}.")
         return 0
     else:
-        print(f"[dev:release-check] Module '{mod_name}' FAILED release check:")
+        _log_cli(f"[dev:release-check] Module '{mod_name}' FAILED release check:")
         for err in errors:
-            print(f"  - {err}")
+            _log_cli(f"  - {err}")
         return 1
 
 
@@ -346,7 +354,7 @@ def release_git(cmd_bags: Any) -> int:
     force = bags.has_option("force") or bags.has_option("f")
     commit_msg = bags.get_option_value("msg") or bags.get_option_value("m")
     if len(bags.args) < 1 or (not commit_msg and len(bags.args) < 2):
-        print("[dev:release-git] Usage: python yscb.py dev release-git <module_name> \"<commit message>\" [--force|-f] [--type=<type>] [--urgency=<urgency>] [--summary=\"<text>\"]")
+        _log_cli("[dev:release-git] Usage: python yscb.py dev release-git <module_name> \"<commit message>\" [--force|-f] [--type=<type>] [--urgency=<urgency>] [--summary=\"<text>\"]")
         return 1
     mod_name = bags.args[0]
     if not commit_msg:
@@ -356,10 +364,10 @@ def release_git(cmd_bags: Any) -> int:
     releaser = Releaser()
     ok, msg = releaser.release_git(mod_name, str(commit_msg), force=force, release_meta=release_meta or None)
     if ok:
-        print(f"[dev:release-git] {msg}")
+        _log_cli(f"[dev:release-git] {msg}")
         return 0
     else:
-        print(f"[dev:release-git] Error: {msg}", file=sys.stderr)
+        _log_cli(f"[dev:release-git] Error: {msg}", file=sys.stderr)
         return 1
 
 
@@ -368,7 +376,7 @@ def index_patch(cmd_bags: Any) -> int:
     guard_dispatch("dev")
     bags = _normalize_bags(cmd_bags, "index-patch")
     if len(bags.args) < 1:
-        print(
+        _log_cli(
             "[dev:index-patch] Usage: python yscb.py dev index-patch <module_name> "
             "--ver=<version> [--dep=\"<mod>:<constraint>[;<mod2>:<constraint2>]\"] "
             "[--status=active|pruned] [--type=<type>] [--urgency=<urgency>] [--summary=\"<text>\"]"
@@ -377,7 +385,7 @@ def index_patch(cmd_bags: Any) -> int:
     mod_name = bags.args[0]
     target_ver = bags.get_option_value("ver") or bags.get_option_value("version")
     if not isinstance(target_ver, str) or not target_ver.strip():
-        print("[dev:index-patch] Error: Target version (--ver=<version>) is required.", file=sys.stderr)
+        _log_cli("[dev:index-patch] Error: Target version (--ver=<version>) is required.", file=sys.stderr)
         return 1
 
     raw_dep = bags.get_option_value("dep")
@@ -388,14 +396,14 @@ def index_patch(cmd_bags: Any) -> int:
             if not item:
                 continue
             if ":" not in item:
-                print(
+                _log_cli(
                     f"[dev:index-patch] Error: Invalid --dep format '{item}'. Expected '<module>:<constraint>'.",
                     file=sys.stderr,
                 )
                 return 1
             d_mod, d_con = item.split(":", 1)
             if not d_mod.strip() or not d_con.strip():
-                print(
+                _log_cli(
                     f"[dev:index-patch] Error: Invalid --dep format '{item}'. Expected '<module>:<constraint>'.",
                     file=sys.stderr,
                 )
@@ -418,10 +426,10 @@ def index_patch(cmd_bags: Any) -> int:
         summary=rel_meta.get("summary"),
     )
     if ok:
-        print(f"[dev:index-patch] {msg}")
+        _log_cli(f"[dev:index-patch] {msg}")
         return 0
     else:
-        print(f"[dev:index-patch] Error: {msg}", file=sys.stderr)
+        _log_cli(f"[dev:index-patch] Error: {msg}", file=sys.stderr)
         return 1
 
 

@@ -3,13 +3,16 @@ agents_workflow.plans._common — Plans 工具鏈共用基礎設施（語意 URI
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from types import MappingProxyType
+from typing import Dict, List, Mapping, Optional, Union
 
-DEFAULT_URI_FALLBACKS: Dict[str, str] = {
+from core.context import get_virtual_cwd
+
+DEFAULT_URI_FALLBACKS: Mapping[str, str] = MappingProxyType({
     "workflow.plans://": "plans",
     "workflow.archived://": "plans/archived",
     "project://": ".",
-}
+})
 
 
 def resolve_plan_uri(
@@ -38,7 +41,7 @@ def resolve_plan_uri(
 
     fallback = default_fallback if default_fallback is not None else DEFAULT_URI_FALLBACKS.get(uri_str)
     if fallback is not None:
-        base = Path(host_dir).resolve() if host_dir is not None else Path.cwd().resolve()
+        base = Path(host_dir).resolve() if host_dir is not None else Path(get_virtual_cwd()).resolve()
         return (base / fallback).resolve() if fallback else base
     return None
 

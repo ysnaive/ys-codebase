@@ -99,23 +99,23 @@ class TestReleaseTargets(YSCBTestCase):
 
     def test_get_tier_targets_returns_shallow_copy_without_mutating_default(self):
         """驗證 get_tier_targets() 在正常、預設與異常情境下皆回傳獨立拷貝，絕不污染 DEFAULT_PROJECT_TARGETS。"""
-        self.assertEqual(ReleaseTargetManager.DEFAULT_PROJECT_TARGETS, ["antigravity"])
+        self.assertEqual(ReleaseTargetManager.DEFAULT_PROJECT_TARGETS, ("antigravity",))
 
         with patch("agents_workflow.targets.config", None):
             fallback_proj = ReleaseTargetManager.get_tier_targets(is_project=True)
             fallback_proj.append("mutated_when_config_none")
-            self.assertEqual(ReleaseTargetManager.DEFAULT_PROJECT_TARGETS, ["antigravity"])
+            self.assertEqual(ReleaseTargetManager.DEFAULT_PROJECT_TARGETS, ("antigravity",))
             self.assertEqual(ReleaseTargetManager.get_tier_targets(is_project=False), [])
 
         with patch("core.config.get_raw", side_effect=RuntimeError("config read error")):
             fallback_err = ReleaseTargetManager.get_tier_targets(is_project=True)
             fallback_err.append("mutated_on_exception")
-            self.assertEqual(ReleaseTargetManager.DEFAULT_PROJECT_TARGETS, ["antigravity"])
+            self.assertEqual(ReleaseTargetManager.DEFAULT_PROJECT_TARGETS, ("antigravity",))
 
         with patch("core.config.get_raw", return_value=None):
             fallback_none = ReleaseTargetManager.get_tier_targets(is_project=True)
             fallback_none.append("mutated_on_none")
-            self.assertEqual(ReleaseTargetManager.DEFAULT_PROJECT_TARGETS, ["antigravity"])
+            self.assertEqual(ReleaseTargetManager.DEFAULT_PROJECT_TARGETS, ("antigravity",))
         self.mark_passed()
 
     def test_claude_projections_and_materialization(self):

@@ -7,39 +7,37 @@ File system monitoring (`watchdog`) is delegated 100% to `core.space` (`space-wa
 """
 
 import json
-import logging
 import os
 from pathlib import Path
 import threading
 import time
 from typing import Any, Dict, Optional, Union
 
-logger = logging.getLogger("knowledge-db.service")
+from core.context import get_runtime_context
+from core.log import bind_log_context, log_debug, log_warn
 
 try:
     from server.service import BaseServiceWorker
 except ImportError:
 
     class BaseServiceWorker:  # type: ignore[no-redef]
-        """Fallback base worker when server module is not installed."""
-
-        STATE_STARTING = "STARTING"
-        STATE_UPDATING = "UPDATING"
-        STATE_READY = "READY"
-        STATE_DEGRADED_OFFLINE = "DEGRADED_OFFLINE"
-        STATE_STOPPED = "STOPPED"
-        _state = STATE_STOPPED
-
-        @property
-        def name(self) -> str:
-            return "knowledge-db-worker"
+        STATE_STARTING: str = "STARTING"
+        STATE_UPDATING: str = "UPDATING"
+        STATE_READY: str = "READY"
+        STATE_DEGRADED_OFFLINE: str = "DEGRADED_OFFLINE"
+        STATE_STOPPED: str = "STOPPED"
+        _state: str = STATE_STOPPED
+        _log_sink: Optional[Any] = None
 
         @property
         def state(self) -> str:
-            return self._state
+            return getattr(self, "_state", self.STATE_STOPPED)
 
         def set_state(self, new_state: str) -> None:
             self._state = str(new_state)
+
+        def touch_activity(self) -> bool:
+            return False
 
         def start_managed_thread(
             self,
@@ -47,18 +45,46 @@ except ImportError:
             *,
             context: Optional[Dict[str, Any]] = None,
             thread_name: Optional[str] = None,
-        ) -> threading.Thread:
-            t = threading.Thread(
-                target=target,
-                name=thread_name or f"Worker-{self.name}",
-                daemon=True,
+        ) -> Any:
+            from concurrent.futures import ThreadPoolExecutor
+
+            sink = context.get("log_sink") if isinstance(context, dict) else None
+            comp = getattr(self, "name", "worker")
+
+            def _wrapped() -> None:
+                with bind_log_context(
+                    background_sink=sink,
+                    component=comp,
+                    isolated_error_scope=True,
+                ):
+                    target()
+
+            pool = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix=thread_name or f"Worker-{comp}",
             )
-            t.start()
-            return t
+            fut = pool.submit(_wrapped)
+
+            class _ManagedHandle:
+                def __init__(self, f: Any, p: Any) -> None:
+                    self._f = f
+                    self._p = p
+
+                def is_alive(self) -> bool:
+                    return not self._f.done()
+
+                def join(self, timeout: Optional[float] = None) -> None:
+                    try:
+                        self._f.result(timeout=timeout)
+                    except Exception:
+                        pass
+                    self._p.shutdown(wait=False)
+
+            return _ManagedHandle(fut, pool)
 
         def stop_managed_thread(
             self,
-            thread: Optional[threading.Thread],
+            thread: Any,
             stop_event: Optional[threading.Event] = None,
             *,
             wake_event: Optional[threading.Event] = None,
@@ -68,32 +94,44 @@ except ImportError:
                 stop_event.set()
             if wake_event is not None:
                 wake_event.set()
-            if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            if thread is not None and hasattr(thread, "join"):
                 thread.join(timeout=timeout)
             self.set_state(self.STATE_STOPPED)
-
-        def start(self, context: Dict[str, Any]) -> None:
-            pass
-
-        def stop(self) -> None:
-            pass
-
-        def health_check(self) -> bool:
-            return False
-
-        def touch_activity(self) -> bool:
-            return False
 
 
 WORKER_STATE_FILENAME = ".kdb_worker_state.json"
 
 _WORKER_LOCK = threading.Lock()
-_ACTIVE_WORKER: Optional["KnowledgeDBServiceWorker"] = None
-_IN_PROCESS_BUSY_START_TS: float = 0.0
-_IN_PROCESS_PHASE: str = "idle"
-_IN_PROCESS_PROGRESS: str = ""
 _IDLE_EVENT = threading.Event()
 _IDLE_EVENT.set()
+
+
+def _get_worker_mem_state() -> Dict[str, Any]:
+    ctx = get_runtime_context()
+    st = ctx.get_module_state("knowledge_db.service.mem_state")
+    if not isinstance(st, dict):
+        st = {
+            "active_worker": None,
+            "busy_start_ts": 0.0,
+            "phase": "idle",
+            "progress": "",
+        }
+        ctx.set_module_state("knowledge_db.service.mem_state", st)
+    if "_ACTIVE_WORKER" in globals():
+        st["active_worker"] = globals().pop("_ACTIVE_WORKER")
+    return st
+
+
+def __getattr__(name: str) -> Any:
+    if name == "_ACTIVE_WORKER":
+        return _get_worker_mem_state().get("active_worker")
+    if name == "_IN_PROCESS_BUSY_START_TS":
+        return float(_get_worker_mem_state().get("busy_start_ts", 0.0) or 0.0)
+    if name == "_IN_PROCESS_PHASE":
+        return str(_get_worker_mem_state().get("phase") or "idle")
+    if name == "_IN_PROCESS_PROGRESS":
+        return str(_get_worker_mem_state().get("progress") or "")
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
 def _check_pid_alive(pid: int) -> bool:
@@ -115,8 +153,9 @@ def _check_pid_alive(pid: int) -> bool:
 def get_active_worker() -> Optional["KnowledgeDBServiceWorker"]:
     """Return the active in-process KnowledgeDBServiceWorker instance if running."""
     with _WORKER_LOCK:
-        if _ACTIVE_WORKER is not None and _ACTIVE_WORKER.is_alive():
-            return _ACTIVE_WORKER
+        w = _get_worker_mem_state().get("active_worker")
+        if w is not None and w.is_alive():
+            return w
         return None
 
 
@@ -146,22 +185,23 @@ def write_worker_state(
     worker_running: bool = True,
 ) -> None:
     """Atomically persist worker state to `indices/.kdb_worker_state.json` and update in-process state."""
-    global _IN_PROCESS_BUSY_START_TS, _IN_PROCESS_PHASE, _IN_PROCESS_PROGRESS
     now = time.time()
     eff_phase = phase if (busy or phase not in ("", "idle")) else "idle"
     eff_progress = progress if (busy or phase not in ("", "idle")) else ""
+    mem_st = _get_worker_mem_state()
     with _WORKER_LOCK:
         if busy:
+            prev_ts = float(mem_st.get("busy_start_ts", 0.0) or 0.0)
             if start_ts <= 0.0:
-                start_ts = _IN_PROCESS_BUSY_START_TS if _IN_PROCESS_BUSY_START_TS > 0.0 else now
-            _IN_PROCESS_BUSY_START_TS = start_ts
-            _IN_PROCESS_PHASE = eff_phase
-            _IN_PROCESS_PROGRESS = eff_progress
+                start_ts = prev_ts if prev_ts > 0.0 else now
+            mem_st["busy_start_ts"] = start_ts
+            mem_st["phase"] = eff_phase
+            mem_st["progress"] = eff_progress
             _IDLE_EVENT.clear()
         else:
-            _IN_PROCESS_BUSY_START_TS = 0.0
-            _IN_PROCESS_PHASE = eff_phase
-            _IN_PROCESS_PROGRESS = eff_progress
+            mem_st["busy_start_ts"] = 0.0
+            mem_st["phase"] = eff_phase
+            mem_st["progress"] = eff_progress
             _IDLE_EVENT.set()
 
     p = get_worker_state_path(indices_dir)
@@ -179,7 +219,7 @@ def write_worker_state(
         }
         vfs.write_json(str(p), payload, indent=None, atomic=True)
     except Exception as exc:
-        logger.debug("Failed writing worker state file %s: %s", p, exc)
+        log_debug(f"Failed writing worker state file {p}: {exc}")
 
 
 def clear_worker_state(
@@ -235,16 +275,21 @@ def read_worker_state(indices_dir: Union[str, Path]) -> Dict[str, Any]:
             pass
 
     with _WORKER_LOCK:
-        active = _ACTIVE_WORKER is not None and _ACTIVE_WORKER.is_alive()
-        if _IN_PROCESS_BUSY_START_TS > 0.0:
-            elapsed_ms = max(1, int((time.time() - _IN_PROCESS_BUSY_START_TS) * 1000))
+        mem_st = _get_worker_mem_state()
+        w = mem_st.get("active_worker")
+        active = w is not None and w.is_alive()
+        busy_ts = float(mem_st.get("busy_start_ts", 0.0) or 0.0)
+        phase_str = str(mem_st.get("phase") or "idle")
+        prog_str = str(mem_st.get("progress") or "")
+        if busy_ts > 0.0:
+            elapsed_ms = max(1, int((time.time() - busy_ts) * 1000))
             return {
                 "worker_running": active,
                 "busy": True,
-                "start_ts": _IN_PROCESS_BUSY_START_TS,
+                "start_ts": busy_ts,
                 "elapsed_ms": elapsed_ms,
-                "phase": _IN_PROCESS_PHASE,
-                "progress": _IN_PROCESS_PROGRESS,
+                "phase": phase_str,
+                "progress": prog_str,
                 "pid": os.getpid(),
             }
         return {
@@ -252,8 +297,8 @@ def read_worker_state(indices_dir: Union[str, Path]) -> Dict[str, Any]:
             "busy": False,
             "start_ts": 0.0,
             "elapsed_ms": 0,
-            "phase": _IN_PROCESS_PHASE or "idle",
-            "progress": _IN_PROCESS_PROGRESS or "",
+            "phase": phase_str,
+            "progress": prog_str,
             "pid": os.getpid() if active else 0,
         }
 
@@ -344,7 +389,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
         self._wake_event.set()
 
     def start(self, context: Optional[Dict[str, Any]] = None) -> None:
-        global _ACTIVE_WORKER
+        mem_st = _get_worker_mem_state()
         with _WORKER_LOCK:
             if isinstance(context, dict):
                 self.context.update(context)
@@ -353,7 +398,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             self._stop_event.clear()
             self._wake_event.set()
             self.set_state(self.STATE_STARTING)
-            _ACTIVE_WORKER = self
+            mem_st["active_worker"] = self
             self._thread = self.start_managed_thread(
                 self.run,
                 context=self.context,
@@ -361,7 +406,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             )
 
     def stop(self, timeout: float = 5.0) -> None:
-        global _ACTIVE_WORKER
+        mem_st = _get_worker_mem_state()
         self._stop_event.set()
         self._wake_event.set()
         self.stop_managed_thread(
@@ -370,9 +415,10 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             wake_event=self._wake_event,
             timeout=timeout,
         )
+        self._thread = None
         with _WORKER_LOCK:
-            if _ACTIVE_WORKER is self:
-                _ACTIVE_WORKER = None
+            if mem_st.get("active_worker") is self:
+                mem_st["active_worker"] = None
         try:
             engine = self._get_engine()
             clear_worker_state(engine.pipeline.get_indices_dir(), worker_running=False)
@@ -397,7 +443,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 engine.embedding_service.suppress_guard_prompt = True
         except Exception as exc:
             self.set_state(self.STATE_STOPPED)
-            logger.warning("[knowledge-db-worker] Failed to initialize engine in worker: %s", exc)
+            log_warn(f"[knowledge-db-worker] Failed to initialize engine in worker: {exc}")
             return
 
         try:
@@ -482,7 +528,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                         final_state = self.STATE_DEGRADED_OFFLINE
                         final_phase = "degraded_offline"
                         final_progress = f"向量模型下載失敗或離線降級: {dl_err}"
-                        logger.warning("[knowledge-db-worker] Background model download failed: %s", dl_err)
+                        log_warn(f"[knowledge-db-worker] Background model download failed: {dl_err}")
                         return
                 else:
                     final_state = self.STATE_DEGRADED_OFFLINE
@@ -558,13 +604,13 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 # Brief yield between micro-batches
                 time.sleep(0.005)
         except Exception as exc:
-            logger.warning("[knowledge-db-worker] Sync cycle warning: %s", exc)
+            log_warn(f"[knowledge-db-worker] Sync cycle warning: {exc}")
         finally:
             try:
                 if getattr(engine.pipeline, "_vector_index_dirty", False):
                     engine.pipeline.flush_vector_index()
             except Exception as flush_err:
-                logger.warning("[knowledge-db-worker] Flush vector index on exit warning: %s", flush_err)
+                log_warn(f"[knowledge-db-worker] Flush vector index on exit warning: {flush_err}")
             if not self._stop_event.is_set():
                 self.set_state(final_state)
             if busy_start_ts > 0.0 or final_phase != "idle":

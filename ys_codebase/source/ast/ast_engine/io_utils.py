@@ -8,6 +8,7 @@ from pathlib import Path
 import pickle
 from typing import Any, Iterable, Optional, Set, Union
 
+from core.context import get_virtual_cwd
 from core.vfs import write_bytes
 
 
@@ -23,7 +24,7 @@ def resolve_project_root(explicit_root: Optional[Union[str, Path]] = None) -> Pa
             return Path(str(res)).resolve()
     except Exception:
         pass
-    return Path.cwd().resolve()
+    return Path(get_virtual_cwd()).resolve()
 
 
 def compute_project_relpath(

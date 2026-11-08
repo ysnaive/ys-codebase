@@ -2,9 +2,10 @@
 Development and Sandbox Test Execution Hook for `module:ast` (`scripts/hook.dev.py`).
 """
 
-import logging
 from pathlib import Path
 from typing import Any
+
+from core.log import log_debug
 
 
 def on_test_setup(context: Any = None, **kwargs: Any) -> None:
@@ -23,9 +24,9 @@ def on_test_setup(context: Any = None, **kwargs: Any) -> None:
     (storage_dir / "bundles").mkdir(parents=True, exist_ok=True)
     cache_dir = sb_path / ".cache" / "ast"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    logging.getLogger("ast.hook.dev").debug("[hook.dev] Prepared ast storage at: %s", storage_dir)
+    log_debug(f"[hook.dev] Prepared ast storage at: {storage_dir}")
 
 
 def on_test_teardown(context: Any = None, **kwargs: Any) -> None:
     """Clean up temporary state after sandbox test execution."""
-    logging.getLogger("ast.hook.dev").debug("[hook.dev] Teardown ast sandbox for: %s", context)
+    log_debug(f"[hook.dev] Teardown ast sandbox for: {context}")

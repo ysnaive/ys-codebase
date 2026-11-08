@@ -5,7 +5,7 @@ Supports ATX/Setext headings, pipe tables, section docstrings, and markdown refe
 
 from pathlib import Path
 import re
-from typing import Dict, List, Optional, Set, Union
+from typing import Dict, FrozenSet, List, Optional, Union
 
 from ..dialects.markdown import MarkdownDialect
 from ..schema import LanguageType, SymbolCallSite, SymbolKind, UnifiedSymbol
@@ -18,7 +18,7 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
 class MarkdownParser(BaseParser):
     """Markdown heading, table, and reference parser."""
 
-    SUPPORTED_EXTENSIONS: Set[str] = {".md", ".markdown"}
+    SUPPORTED_EXTENSIONS: FrozenSet[str] = frozenset({".md", ".markdown"})
 
     def __init__(self) -> None:
         self._dialect = MarkdownDialect()

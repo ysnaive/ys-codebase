@@ -9,11 +9,18 @@ from typing import Any, Callable, Dict, List, Tuple, Union
 
 from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
+from core.log import log
 from core.space import SpaceNotFoundError
 import knowledge_db.config as kdb_config
 from knowledge_db.engine import KnowledgeEngine, get_engine
 from knowledge_db.exceptions import KnowledgeDBError
 from knowledge_db.formatter import TerminalStyler
+
+
+def _log_cli(*args: Any, **kwargs: Any) -> None:
+    file_arg = kwargs.pop("file", None)
+    stream = "stderr" if file_arg is sys.stderr else "stdout"
+    log(*args, stream=stream, **kwargs)
 
 
 def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
@@ -76,11 +83,11 @@ def _prepare_command(cmd_bags: Any, default_cmd: str) -> Tuple[CmdBags, Knowledg
 def _handle_cli_exception(exc: Exception, action_label: str = "操作失敗") -> int:
     """統一格式化 CLI 例外錯誤並輸出至 stderr。"""
     if isinstance(exc, SpaceNotFoundError):
-        print(f"[knowledge-db] 空間不存在: {exc}", file=sys.stderr)
+        _log_cli(f"[knowledge-db] 空間不存在: {exc}", file=sys.stderr)
     elif isinstance(exc, KnowledgeDBError):
-        print(f"[knowledge-db] {action_label}: {exc}", file=sys.stderr)
+        _log_cli(f"[knowledge-db] {action_label}: {exc}", file=sys.stderr)
     else:
-        print(f"[knowledge-db] 執行異常: {exc}", file=sys.stderr)
+        _log_cli(f"[knowledge-db] 執行異常: {exc}", file=sys.stderr)
     return 1
 
 
@@ -205,7 +212,7 @@ def status(cmd_bags: Any) -> int:
 
         st = engine.status(space=space_target)
         if bags.has_option("json"):
-            print(json.dumps(dict(st), indent=2, ensure_ascii=False))
+            _log_cli(json.dumps(dict(st), indent=2, ensure_ascii=False))
             return 0
         styler = TerminalStyler(sys.stdout)
         worker_info = st.get("worker") or {}
@@ -213,8 +220,8 @@ def status(cmd_bags: Any) -> int:
         bm25_info = indices_info.get("bm25") or {}
         vec_info = indices_info.get("vector") or {}
 
-        print(f"[knowledge-db] 系統狀態摘要 (共 {st['total_spaces']} 個空間):")
-        print(f"  - 存儲空間根目錄: {styler.path(st['storage_dir'])}")
+        _log_cli(f"[knowledge-db] 系統狀態摘要 (共 {st['total_spaces']} 個空間):")
+        _log_cli(f"  - 存儲空間根目錄: {styler.path(st['storage_dir'])}")
 
         # 1. 後台服務與忙碌探針
         w_running = bool(worker_info.get("running"))
@@ -230,7 +237,7 @@ def status(cmd_bags: Any) -> int:
             w_busy_str = styler.warn(f"忙碌中 (已運行 {w_busy_ms} ms | 階段: {w_phase}{prog_suffix})")
         else:
             w_busy_str = styler.symbol("空閒 (0 ms)")
-        print(f"  - 後台常駐服務  : {w_run_str} | 探針狀態: {w_busy_str}")
+        _log_cli(f"  - 後台常駐服務  : {w_run_str} | 探針狀態: {w_busy_str}")
 
         # 2. 生效檢索模式與原因
         ret_mode = st.get("retrieval_mode", "lexical_bm25")
@@ -239,7 +246,7 @@ def status(cmd_bags: Any) -> int:
             mode_str = styler.symbol(f"{ret_mode} — {ret_reason}")
         else:
             mode_str = styler.warn(f"{ret_mode} — {ret_reason}")
-        print(f"  - 當前檢索模式  : {mode_str}")
+        _log_cli(f"  - 當前檢索模式  : {mode_str}")
 
         # 3. 核心索引與 AST 水位指標
         ast_gen = st.get("ast_generation", 0)
@@ -253,7 +260,7 @@ def status(cmd_bags: Any) -> int:
             )
         else:
             unified_str = styler.warn("未建立")
-        print(f"  - 全域倒排索引  : {unified_str}")
+        _log_cli(f"  - 全域倒排索引  : {unified_str}")
 
         vec_status = vec_info.get("status", "missing")
         emb_cnt = vec_info.get("embedded_count", 0)
@@ -275,7 +282,7 @@ def status(cmd_bags: Any) -> int:
             )
         else:
             vec_str = styler.warn(f"未建立 (0/{tot_cnt} 向量, 待補 {miss_cnt} 個)")
-        print(f"  - 向量特徵索引  : {vec_str}")
+        _log_cli(f"  - 向量特徵索引  : {vec_str}")
 
         # 4. 向量模型與執行期組態
         if st.get("model_downloaded"):
@@ -284,14 +291,14 @@ def status(cmd_bags: Any) -> int:
             model_str = styler.warn(f"未下載 ({st.get('embedding_model')} — 後台 Worker 將自動下載)")
         else:
             model_str = styler.warn(f"未下載 ({st.get('embedding_model')} — 離線時自動降級 BM25)")
-        print(f"  - 向量模型權重  : {model_str}")
-        print(
+        _log_cli(f"  - 向量模型權重  : {model_str}")
+        _log_cli(
             f"  - 執行期組態參數: 容差等待/熔斷={st.get('jit_vector_timeout_ms', 3000)} ms, "
             f"微批次大小={st.get('vector_batch_size', 32)}, "
             f"執行緒預算={st.get('max_threads', 1)}"
         )
 
-        print("-" * 80)
+        _log_cli("-" * 80)
         for name, sp in st["spaces"].items():
             pat_str = f" [patterns: {', '.join(sp['file_patterns'])}]" if sp.get("file_patterns") else " [all files]"
             is_idx = sp.get("has_index") or st.get("has_unified_index")
@@ -303,16 +310,16 @@ def status(cmd_bags: Any) -> int:
                 if sp.get("in_sync")
                 else styler.warn(f"待同步 (acked {acked_gen} / head {head_gen})")
             )
-            print(f"  - 空間: {styler.path(name)} (來源: {sp.get('origin', 'unknown')}, 權重: {sp.get('weight', 1.0)}){pat_str}")
+            _log_cli(f"  - 空間: {styler.path(name)} (來源: {sp.get('origin', 'unknown')}, 權重: {sp.get('weight', 1.0)}){pat_str}")
             if sp.get("description"):
-                print(f"    說明: {sp['description']}")
-            print(
+                _log_cli(f"    說明: {sp['description']}")
+            _log_cli(
                 f"    來源目錄數: {sp.get('include_count', 0)}, "
                 f"納管檔案: {sp.get('cached_files', 0)} 檔, "
                 f"倒排索引: {idx_str}, "
                 f"游標水位: {sync_str}"
             )
-        print("-" * 80)
+        _log_cli("-" * 80)
         return 0
     except Exception as e:
         return _handle_cli_exception(e)
@@ -329,11 +336,11 @@ def index(cmd_bags: Any) -> int:
         export_arg = bags.get_option_value("export")
 
         indices = engine.build_index(space=space_target, force=force, interactive=True, export_path=export_arg)
-        print(f"[knowledge-db] 倒排索引建置完成 (共 {len(indices)} 個空間):")
+        _log_cli(f"[knowledge-db] 倒排索引建置完成 (共 {len(indices)} 個空間):")
         for sp_name, idx in indices.items():
-            print(f"  - 空間 '{sp_name}': {idx.doc_count} 篇文檔符號，{len(idx.index)} 個 Term 索引詞")
+            _log_cli(f"  - 空間 '{sp_name}': {idx.doc_count} 篇文檔符號，{len(idx.index)} 個 Term 索引詞")
         if export_arg:
-            print(f"  - 語意 Bundle 已導出至: {export_arg}")
+            _log_cli(f"  - 語意 Bundle 已導出至: {export_arg}")
         return 0
     except Exception as e:
         return _handle_cli_exception(e)
@@ -352,7 +359,7 @@ def model(cmd_bags: Any) -> int:
         sub_bags = CmdBags(raw_cmd=bags.raw_cmd, command="download", args=bags.args[1:], options=bags.options)
         return model_download(sub_bags)
     else:
-        print(f"[knowledge-db] 未知 model 子指令: '{sub_cmd}'。可用子指令: status, download", file=sys.stderr)
+        _log_cli(f"[knowledge-db] 未知 model 子指令: '{sub_cmd}'。可用子指令: status, download", file=sys.stderr)
         return 1
 
 
@@ -362,18 +369,18 @@ def model_status(cmd_bags: Any) -> int:
     try:
         st = engine.model_status()
         if bags.has_option("json"):
-            print(json.dumps(st, indent=2, ensure_ascii=False))
+            _log_cli(json.dumps(st, indent=2, ensure_ascii=False))
             return 0
 
         styler = TerminalStyler(sys.stdout)
-        print("[knowledge-db] 向量推論模型狀態:")
-        print(f"  - 模型名稱: {styler.bold(st['model_name'])}")
-        print(f"  - 快取目錄: {styler.path(st['cache_dir'])}")
+        _log_cli("[knowledge-db] 向量推論模型狀態:")
+        _log_cli(f"  - 模型名稱: {styler.bold(st['model_name'])}")
+        _log_cli(f"  - 快取目錄: {styler.path(st['cache_dir'])}")
         dl_str = styler.symbol("已就緒") if st.get("is_downloaded") else styler.warn("未下載")
-        print(f"  - 本地權重: {dl_str}")
+        _log_cli(f"  - 本地權重: {dl_str}")
         av_str = styler.symbol("可用") if st.get("is_available") else styler.warn("不可用 (將降級至 BM25)")
-        print(f"  - 服務狀態: {av_str}")
-        print(f"  - 向量維度: {st['dimension']}")
+        _log_cli(f"  - 服務狀態: {av_str}")
+        _log_cli(f"  - 向量維度: {st['dimension']}")
         return 0
     except Exception as e:
         return _handle_cli_exception(e)
@@ -384,14 +391,14 @@ def model_download(cmd_bags: Any) -> int:
     bags, engine = _prepare_command(cmd_bags, "model download")
     try:
         force = bags.has_option("force") or bags.has_option("f")
-        print(f"[knowledge-db] 開始準備下載/載入向量模型 '{engine.embedding_service.model_name}' (force={force})...")
+        _log_cli(f"[knowledge-db] 開始準備下載/載入向量模型 '{engine.embedding_service.model_name}' (force={force})...")
         success = engine.model_download(force=force)
         if success:
             st = engine.model_status()
-            print(f"[knowledge-db] 向量模型下載成功，已就緒可用 (維度: {st['dimension']})。")
+            _log_cli(f"[knowledge-db] 向量模型下載成功，已就緒可用 (維度: {st['dimension']})。")
             return 0
         else:
-            print("[knowledge-db] 向量模型下載未完成。", file=sys.stderr)
+            _log_cli("[knowledge-db] 向量模型下載未完成。", file=sys.stderr)
             return 1
     except Exception as e:
         return _handle_cli_exception(e, action_label="下載失敗")
@@ -404,7 +411,7 @@ def search(cmd_bags: Any) -> int:
     try:
         queries = bags.args
         if not queries:
-            print("[knowledge-db] 錯誤: 請輸入檢索查詢詞。例如: python yscb.py knowledge-db search 'InvertedIndex' -s", file=sys.stderr)
+            _log_cli("[knowledge-db] 錯誤: 請輸入檢索查詢詞。例如: python yscb.py knowledge-db search 'InvertedIndex' -s", file=sys.stderr)
             return 1
 
         query_str = " ".join(queries)
@@ -501,7 +508,7 @@ def search(cmd_bags: Any) -> int:
 
         if is_json:
             filtered_results = [res for res in results if res.items]
-            print(
+            _log_cli(
                 _serialize_search_json(
                     query_str=query_str,
                     tier=tier,
@@ -523,7 +530,7 @@ def search(cmd_bags: Any) -> int:
             limit_mode=limit_val,
             file_uri=file_uri,
         )
-        print(formatted_output)
+        _log_cli(formatted_output)
         return 0
     except Exception as e:
         return _handle_cli_exception(e)
@@ -577,7 +584,7 @@ def clean(cmd_bags: Any) -> int:
 
         engine.clean(space=space_target)
         target_str = f"空間 '{space_target}'" if space_target else "全空間"
-        print(f"[knowledge-db] 成功清理 {target_str} 之指紋、Bundle 與倒排索引快取。")
+        _log_cli(f"[knowledge-db] 成功清理 {target_str} 之指紋、Bundle 與倒排索引快取。")
         return 0
     except Exception as e:
         return _handle_cli_exception(e)

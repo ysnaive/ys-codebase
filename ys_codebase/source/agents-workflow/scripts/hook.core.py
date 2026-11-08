@@ -3,8 +3,19 @@ Microkernel Lifecycle Hook for agents-workflow.
 Listens to 'on_reload' event to autonomously execute release transaction for all active targets.
 """
 import sys
+from typing import Any
 
 from agents_workflow.publisher import ReleasePublisher
+from core.log import log
+
+
+def _log_hook(*args: Any, **kwargs: Any) -> None:
+    file_arg = kwargs.get("file")
+    stream = "stderr" if file_arg is sys.stderr else "stdout"
+    sep = kwargs.get("sep", " ")
+    end = kwargs.get("end", "\n")
+    text = sep.join(str(a) for a in args)
+    log(text, stream=stream, end=end)
 
 
 def on_reload(ctx=None) -> None:
@@ -17,13 +28,13 @@ def on_reload(ctx=None) -> None:
         res = publisher.release_all(force=False)
         if res.get("success", False):
             if res.get("short_circuited", False):
-                print(f"[agents-workflow:hook] Auto-release skipped on reload (no changes detected, {res.get('skipped_count', 0)} files up to date).")
+                _log_hook(f"[agents-workflow:hook] Auto-release skipped on reload (no changes detected, {res.get('skipped_count', 0)} files up to date).")
             else:
-                print(f"[agents-workflow:hook] Auto-released on reload ({res.get('written_count', 0)} written, {res.get('skipped_count', 0)} unchanged, {res.get('removed_count', 0)} removed, targets: {', '.join(res.get('active_targets', []))}).")
+                _log_hook(f"[agents-workflow:hook] Auto-released on reload ({res.get('written_count', 0)} written, {res.get('skipped_count', 0)} unchanged, {res.get('removed_count', 0)} removed, targets: {', '.join(res.get('active_targets', []))}).")
         else:
-            print(f"[agents-workflow:hook] Auto-release failed on reload: {res.get('error', 'Unknown')}")
+            _log_hook(f"[agents-workflow:hook] Auto-release failed on reload: {res.get('error', 'Unknown')}")
     except Exception as e:
-        print(f"[agents-workflow:hook] Auto-release on reload failed: {e}")
+        _log_hook(f"[agents-workflow:hook] Auto-release on reload failed: {e}")
 
 
 def on_pre_cli_dispatch(ctx=None) -> bool:
@@ -38,7 +49,7 @@ def on_pre_cli_dispatch(ctx=None) -> bool:
         from agents_workflow.publisher import ensure_jit_release
         return ensure_jit_release()
     except Exception as e:
-        print(f"[agents-workflow:hook] Warning: Failed during on_pre_cli_dispatch: {e}", file=sys.stderr)
+        _log_hook(f"[agents-workflow:hook] Warning: Failed during on_pre_cli_dispatch: {e}", file=sys.stderr)
         return False
 
 
@@ -69,7 +80,7 @@ def on_register_file_spaces(ctx=None) -> bool:
         )
         return True
     except Exception as e:
-        print(f"[agents-workflow:hook] Warning: Failed during on_register_file_spaces: {e}", file=sys.stderr)
+        _log_hook(f"[agents-workflow:hook] Warning: Failed during on_register_file_spaces: {e}", file=sys.stderr)
         return False
 
 

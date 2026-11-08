@@ -21,7 +21,7 @@ class CheckSeverity(Enum):
     FAIL = "FAIL"
 
 
-@dataclass
+@dataclass(frozen=True)
 class CheckIssue:
     severity: CheckSeverity
     category: str        # "MANIFEST", "CONTRIBUTES", "PROBING", "STRUCTURE", "ANTIPATTERN", "SYNTAX"
@@ -39,7 +39,7 @@ class CheckIssue:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class CheckReport:
     module: str
     issues: List[CheckIssue] = field(default_factory=list)

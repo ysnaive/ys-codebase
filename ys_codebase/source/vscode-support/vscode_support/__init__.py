@@ -3,6 +3,7 @@ VS Code Workspace Support Module (`module:vscode-support@1.0.0.0`).
 PEP 562 Lazy Loading Architecture. 100% Python Standard Library.
 """
 
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 import importlib
 
@@ -12,12 +13,12 @@ if TYPE_CHECKING:
     from vscode_support.projector import SettingsProjector
     from vscode_support.schema_compiler import SchemaCompiler
 
-_MODULE_MAP = {
+_MODULE_MAP = MappingProxyType({
     "SettingsProjector": ("vscode_support.projector", "SettingsProjector"),
     "SchemaCompiler": ("vscode_support.schema_compiler", "SchemaCompiler"),
     "projector": ("vscode_support.projector", None),
     "schema_compiler": ("vscode_support.schema_compiler", None),
-}
+})
 
 
 def __getattr__(name: str):

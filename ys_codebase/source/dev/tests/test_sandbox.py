@@ -377,18 +377,19 @@ class TestSandboxArchitecture(YSCBTestCase):
         with open(canary_file, "r", encoding="utf-8") as f:
             self.assertEqual(f.read(), "host_data_alive")
 
-        # Verify .pth fallback when os.symlink raises OSError
+        # Verify .pth fallback when os.symlink / CreateJunction raises OSError
         sb_dir_pth = self._mkdtemp()
         sb_engine_pth = os.path.join(sb_dir_pth, "host_env", "engine")
         os.makedirs(sb_engine_pth, exist_ok=True)
-        with patch("os.symlink", side_effect=OSError("symlink disabled")):
+        with patch("os.symlink", side_effect=OSError("symlink disabled")), \
+             patch("platform.system", return_value="Linux"):
             res_pth = SandboxProvisioner._project_venv(host_dir, sb_engine_pth)
-        self.assertTrue(res_pth)
-        sb_site_pkg = PipManager(sb_engine_pth).get_site_packages_dir()
-        pth_file = os.path.join(sb_site_pkg, "host_venv.pth")
-        self.assertTrue(os.path.isfile(pth_file))
-        with open(pth_file, "r", encoding="utf-8") as f:
-            self.assertEqual(f.read().strip(), PipManager(host_dir).get_site_packages_dir())
+            self.assertTrue(res_pth)
+            sb_site_pkg = PipManager(sb_engine_pth).get_site_packages_dir()
+            pth_file = os.path.join(sb_site_pkg, "host_venv.pth")
+            self.assertTrue(os.path.isfile(pth_file))
+            with open(pth_file, "r", encoding="utf-8") as f:
+                self.assertEqual(f.read().strip(), PipManager(host_dir).get_site_packages_dir())
         self.mark_passed()
 
     @require(Requirement.LOGIC)

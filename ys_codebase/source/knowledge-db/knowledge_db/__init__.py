@@ -5,11 +5,12 @@ Uses PEP 562 module-level `__getattr__` lazy loading so top-level package import
 """
 
 import importlib
+from types import MappingProxyType
 from typing import Any, Dict, List, Tuple
 
 __version__ = "1.2.1.5"
 
-_LAZY_EXPORTS: Dict[str, Tuple[str, str]] = {
+_LAZY_EXPORTS: Any = MappingProxyType({
     "ASTEngine": ("ast_engine", "ASTEngine"),
     "ASTSnapshot": ("ast_engine", "ASTSnapshot"),
     "SemanticBundle": ("ast_engine", "SemanticBundle"),
@@ -45,7 +46,7 @@ _LAZY_EXPORTS: Dict[str, Tuple[str, str]] = {
     "get_worker_busy_ms": (".service", "get_worker_busy_ms"),
     "is_worker_running": (".service", "is_worker_running"),
     "MultilingualTokenizer": (".tokenizer", "MultilingualTokenizer"),
-}
+})
 
 __all__ = [
     "KnowledgeEngine",

@@ -9,6 +9,16 @@ from typing import Any, Dict, List, Optional, Union
 
 from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
+from core.log import log
+
+
+def _log_cli(*args: Any, **kwargs: Any) -> None:
+    file_arg = kwargs.get("file")
+    stream = "stderr" if file_arg is sys.stderr else "stdout"
+    sep = kwargs.get("sep", " ")
+    end = kwargs.get("end", "\n")
+    text = sep.join(str(a) for a in args)
+    log(text, stream=stream, end=end)
 
 
 def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
@@ -61,16 +71,7 @@ def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
 
 
 def _setup_stream_encodings() -> None:
-    if hasattr(sys.stdout, "reconfigure"):
-        try:
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
-    if hasattr(sys.stderr, "reconfigure"):
-        try:
-            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
+    pass
 
 
 def _parse_common_display_options(bags: CmdBags) -> Dict[str, Any]:
@@ -188,9 +189,9 @@ def outline(cmd_bags: Any) -> int:
     try:
         if not bags.args:
             if bags.has_option("json"):
-                print(json.dumps({"status": "error", "error": "Missing target file path"}, ensure_ascii=False))
+                _log_cli(json.dumps({"status": "error", "error": "Missing target file path"}, ensure_ascii=False))
             else:
-                print("[ast] 錯誤: 請指定目標檔案路徑或語意 URI。例如: python yscb.py ast outline 'project://foo.py'", file=sys.stderr)
+                _log_cli("[ast] 錯誤: 請指定目標檔案路徑或語意 URI。例如: python yscb.py ast outline 'project://foo.py'", file=sys.stderr)
             return 1
         file_target = bags.args[0]
         merged = bags.has_option("merged") or bags.has_option("m")
@@ -223,21 +224,21 @@ def outline(cmd_bags: Any) -> int:
         )
         is_detail = bags.has_option("detail") or bags.has_option("d") or bags.has_option("verbose")
         file_uri = bags.has_option("file-uri") or bags.has_option("file_uri")
-        print(engine.formatter.format_outline_output(res, as_json=is_json, detail=is_detail, file_uri=file_uri))
+        _log_cli(engine.formatter.format_outline_output(res, as_json=is_json, detail=is_detail, file_uri=file_uri))
         if isinstance(res, dict) and res.get("error"):
             return 1
         return 0
     except FileNotFoundError as exc:
         if bags.has_option("json"):
-            print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
+            _log_cli(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
         else:
-            print(f"[ast] 檔案不存在: {exc}", file=sys.stderr)
+            _log_cli(f"[ast] 檔案不存在: {exc}", file=sys.stderr)
         return 1
     except Exception as exc:
         if bags.has_option("json"):
-            print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
+            _log_cli(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
         else:
-            print(f"[ast] 執行異常: {exc}", file=sys.stderr)
+            _log_cli(f"[ast] 執行異常: {exc}", file=sys.stderr)
         return 1
 
 
@@ -349,9 +350,9 @@ def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) 
         targets = bags.args
         if not targets:
             if bags.has_option("json"):
-                print(json.dumps({"status": "error", "error": "Missing target symbol query"}, ensure_ascii=False))
+                _log_cli(json.dumps({"status": "error", "error": "Missing target symbol query"}, ensure_ascii=False))
             else:
-                print(f"[ast] 錯誤: 請指定目標符號名稱。例如: {example_usage}", file=sys.stderr)
+                _log_cli(f"[ast] 錯誤: 請指定目標符號名稱。例如: {example_usage}", file=sys.stderr)
             return 1
         query_str = " ".join(targets) if len(targets) > 1 else targets[0]
         space_target = bags.get_option_value("space")
@@ -371,10 +372,10 @@ def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) 
                     depth = 2
             res = engine.impact(target_query=query_str, depth=depth, space=space_target, ftypes=ftype_filter)
             if opts["is_json"]:
-                print(_serialize_impact_json(engine, res, tier, depth, file_uri=opts["file_uri"]))
+                _log_cli(_serialize_impact_json(engine, res, tier, depth, file_uri=opts["file_uri"]))
                 return 0
 
-            print(
+            _log_cli(
                 engine.formatter.format_impact_output(
                     result=res,
                     detail_mode=opts["detail_mode"],
@@ -392,11 +393,11 @@ def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) 
             res = engine.callees(target_query=query_str, space=space_target, snippet=is_snippet, ftypes=ftype_filter)
 
         if opts["is_json"]:
-            print(_serialize_call_edges_json(engine, res, is_callers, tier, limit_val, is_snippet, file_uri=opts["file_uri"]))
+            _log_cli(_serialize_call_edges_json(engine, res, is_callers, tier, limit_val, is_snippet, file_uri=opts["file_uri"]))
             return 0
 
         formatter_fn = engine.formatter.format_callers_output if is_callers else engine.formatter.format_callees_output
-        print(
+        _log_cli(
             formatter_fn(
                 result=res,
                 detail_mode=opts["detail_mode"],
@@ -409,21 +410,21 @@ def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) 
         return 0
     except SpaceNotFoundError as exc:
         if bags.has_option("json"):
-            print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
+            _log_cli(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
         else:
-            print(f"[ast] 空間不存在: {exc}", file=sys.stderr)
+            _log_cli(f"[ast] 空間不存在: {exc}", file=sys.stderr)
         return 1
     except ASTError as exc:
         if bags.has_option("json"):
-            print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
+            _log_cli(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
         else:
-            print(f"[ast] 操作失敗: {exc}", file=sys.stderr)
+            _log_cli(f"[ast] 操作失敗: {exc}", file=sys.stderr)
         return 1
     except Exception as exc:
         if bags.has_option("json"):
-            print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
+            _log_cli(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
         else:
-            print(f"[ast] 執行異常: {exc}", file=sys.stderr)
+            _log_cli(f"[ast] 執行異常: {exc}", file=sys.stderr)
         return 1
 
 
@@ -465,13 +466,13 @@ def status(cmd_bags: Any) -> int:
         targets = bags.args
         space_target = bags.get_option_value("space") or (targets[0] if targets else None)
         st = engine.status(space=space_target)
-        print(engine.formatter.format_status_output(st, as_json=bags.has_option("json")))
+        _log_cli(engine.formatter.format_status_output(st, as_json=bags.has_option("json")))
         return 0
     except Exception as exc:
         if bags.has_option("json"):
-            print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
+            _log_cli(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
         else:
-            print(f"[ast] 執行異常: {exc}", file=sys.stderr)
+            _log_cli(f"[ast] 執行異常: {exc}", file=sys.stderr)
         return 1
 
 
@@ -487,16 +488,16 @@ def clean(cmd_bags: Any) -> int:
         space_target = bags.get_option_value("space") or (targets[0] if targets else None)
         res = engine.clean(space=space_target)
         if bags.has_option("json"):
-            print(json.dumps(res, indent=2, ensure_ascii=False))
+            _log_cli(json.dumps(res, indent=2, ensure_ascii=False))
         else:
             target_str = f"空間 '{space_target}'" if space_target else "全空間"
-            print(f"[ast] 成功清理 {target_str} 之 AST 符號快照與呼叫圖譜快取。")
+            _log_cli(f"[ast] 成功清理 {target_str} 之 AST 符號快照與呼叫圖譜快取。")
         return 0
     except Exception as exc:
         if bags.has_option("json"):
-            print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
+            _log_cli(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
         else:
-            print(f"[ast] 執行異常: {exc}", file=sys.stderr)
+            _log_cli(f"[ast] 執行異常: {exc}", file=sys.stderr)
         return 1
 
 

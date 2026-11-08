@@ -5,7 +5,7 @@ with Local as default and support for --proj flag.
 100% Python Standard Library, Zero Third-Party Dependency.
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 try:
     from core import config
@@ -18,7 +18,7 @@ from agents_workflow.compiler import ArtifactCompiler
 class ReleaseTargetManager:
     """釋出目標組態管理器：負責 Local (Tier 1) 與 Project (Tier 2) targets 讀寫。"""
 
-    DEFAULT_PROJECT_TARGETS = ["antigravity"]
+    DEFAULT_PROJECT_TARGETS: Tuple[str, ...] = ("antigravity",)
 
     @classmethod
     def get_tier_targets(cls, is_project: bool = False) -> List[str]:

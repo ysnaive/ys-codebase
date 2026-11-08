@@ -6,19 +6,18 @@ Two-stage architecture:
 - Stage 2: Hierarchical Subcircuit (`.subckt` ... `.ends`) & Directive State Machine.
 """
 
-from dataclasses import dataclass, field
-import logging
+from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import List, Optional, Tuple, Union
+from typing import FrozenSet, List, Optional, Tuple, Union
+
+from core.log import log_debug
 
 from ..schema import LanguageType, MemberInfo, SymbolCallSite, SymbolKind, UnifiedSymbol
 from .base import BaseParser
 
-logger = logging.getLogger(__name__)
 
-
-@dataclass
+@dataclass(frozen=True)
 class LogicalLine:
     """Represents a logical SPICE line after merging '+' continuations."""
 
@@ -29,15 +28,22 @@ class LogicalLine:
     docstring: str = ""
 
 
-@dataclass
 class _SubcircuitScope:
     """Active subcircuit scope accumulator during Stage 2 parsing."""
 
-    name: str
-    start_line: int
-    signature: str
-    docstring: str
-    members: List[MemberInfo] = field(default_factory=list)
+    def __init__(
+        self,
+        name: str,
+        start_line: int,
+        signature: str,
+        docstring: str,
+        members: Optional[List[MemberInfo]] = None,
+    ) -> None:
+        self.name = name
+        self.start_line = start_line
+        self.signature = signature
+        self.docstring = docstring
+        self.members: List[MemberInfo] = list(members) if members is not None else []
 
 
 def _split_tokens(text: str) -> List[str]:
@@ -108,12 +114,12 @@ class SpiceParser(BaseParser):
     SPICE Netlist Parser supporting HSPICE, ngspice, LTspice, Spectre/CDL dialects.
     """
 
-    SUPPORTED_EXTENSIONS = {".cir", ".sp", ".spice", ".net", ".cdl", ".netlist"}
+    SUPPORTED_EXTENSIONS: FrozenSet[str] = frozenset({".cir", ".sp", ".spice", ".net", ".cdl", ".netlist"})
 
-    ELEMENT_PREFIXES = {
+    ELEMENT_PREFIXES: FrozenSet[str] = frozenset({
         "M", "Q", "D", "J", "Z", "R", "C", "L", "K",
         "V", "I", "E", "F", "G", "H", "B", "X", "T", "U", "W", "S",
-    }
+    })
 
     def can_parse(self, file_path: Union[str, Path]) -> bool:
         if not file_path:
@@ -507,7 +513,7 @@ class SpiceParser(BaseParser):
                 and not first_tok.startswith(".")
                 and not any(first_tok_upper.startswith(p) for p in self.ELEMENT_PREFIXES)
             ):
-                logger.debug(f"Skipping probable SPICE title line: '{clean}'")
+                log_debug(f"Skipping probable SPICE title line: '{clean}'")
                 continue
 
             handled, current_subckt = self._handle_dot_directive(

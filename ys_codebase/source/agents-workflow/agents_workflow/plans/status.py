@@ -4,7 +4,8 @@ PlanStatusResolver — 開發計畫標頭狀態解析與完成度檢測服務 (S
 
 import re
 from pathlib import Path
-from typing import List, Dict, Optional, Union, Any
+from types import MappingProxyType
+from typing import List, Dict, FrozenSet, Mapping, Optional, Tuple, Union, Any
 
 from ._common import parse_markdown_blockquote_headers
 
@@ -12,7 +13,7 @@ from ._common import parse_markdown_blockquote_headers
 class PlanStatusResolver:
     """計畫文件標頭狀態提取與完成度解析服務 (SSOT)。"""
 
-    STATUS_KEYS = [
+    STATUS_KEYS: Tuple[str, ...] = (
         "狀態",
         "status",
         "計畫狀態",
@@ -21,20 +22,20 @@ class PlanStatusResolver:
         "research_status",
         "進度",
         "當前所在階段",
-    ]
+    )
 
-    MODEL_KEYS = [
+    MODEL_KEYS: Tuple[str, ...] = (
         "模型",
         "model",
         "ai_model",
         "ai-model",
         "模型名稱",
         "model_name",
-    ]
+    )
 
-    COMPLETED_STATUS_SET = {"completed", "concluded", "passed"}
-    ORIGIN_SEED_FILES = {"roadmap.md", "todo.md"}
-    PHASE_CANONICAL_STEMS = {
+    COMPLETED_STATUS_SET: FrozenSet[str] = frozenset({"completed", "concluded", "passed"})
+    ORIGIN_SEED_FILES: FrozenSet[str] = frozenset({"roadmap.md", "todo.md"})
+    PHASE_CANONICAL_STEMS: Mapping[str, str] = MappingProxyType({
         "P00": "P00_discuss",
         "P01": "P01_requirements_spec",
         "P02": "P02_architecture_plan",
@@ -43,7 +44,7 @@ class PlanStatusResolver:
         "P05": "P05_task",
         "P06": "P06_test_plan",
         "P07": "P07_walkthrough",
-    }
+    })
 
     @classmethod
     def resolve_phase_file(cls, plan_dir: Union[Path, str], phase_code: str) -> Path:

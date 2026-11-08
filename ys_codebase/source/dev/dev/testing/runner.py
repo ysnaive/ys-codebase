@@ -8,6 +8,7 @@ import unittest
 from io import StringIO
 from typing import List, Dict, Any, Optional, Tuple
 from core import uri, vfs
+from core.context import get_runtime_context
 from core.platform.process import terminate_popen_tree
 from dev.checker import discover_source_modules
 from dev.testing.contract import make_contract_suite
@@ -182,7 +183,8 @@ class TestDiscovery:
             tests_dir = os.path.join(src_real, "tests")
             if os.path.isdir(tests_dir):
                 pkg_name = "ast_engine" if module_name == "ast" else module_name.replace("-", "_")
-                for mod_k in list(sys.modules.keys()):
+                mods_map = getattr(sys, "modules")
+                for mod_k in list(mods_map.keys()):
                     if mod_k in ("core", "dev.testing") or mod_k.startswith(("core.", "dev.testing.")):
                         continue
                     if (
@@ -193,7 +195,7 @@ class TestDiscovery:
                         or mod_k == pkg_name
                         or mod_k.startswith(f"{pkg_name}.")
                     ):
-                        del sys.modules[mod_k]
+                        mods_map.pop(mod_k, None)
 
                 try:
                     src_root = uri.resolve("module.source://")
@@ -469,10 +471,7 @@ class TestRunner:
         self.keep_sandbox = keep_sandbox
 
     def run_suite(self, suite: unittest.TestSuite) -> Tuple[unittest.TestResult, str]:
-        if self.keep_sandbox:
-            os.environ["YSCB_TEST_KEEP_SANDBOX"] = "1"
-        else:
-            os.environ.pop("YSCB_TEST_KEEP_SANDBOX", None)
+        get_runtime_context().set_module_state("dev.testing.keep_sandbox", bool(self.keep_sandbox))
 
         stream = SafeStreamWriter(sys.stdout) if self.verbose else StringIO()
         runner = unittest.TextTestRunner(stream=stream, verbosity=2 if self.verbose else 0)

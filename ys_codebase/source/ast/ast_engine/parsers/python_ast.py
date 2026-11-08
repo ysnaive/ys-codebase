@@ -44,7 +44,7 @@ from .base import BaseParser
 class PythonASTParser(BaseParser):
     """Python AST parser powered by Python standard library `ast` module."""
 
-    SUPPORTED_EXTENSIONS: Set[str] = {".py", ".pyi"}
+    SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({".py", ".pyi"})
 
     def __init__(self) -> None:
         self._dialect = PythonDialect()

@@ -21,6 +21,7 @@ from core.platform.venv import (
     init_subprocess_sys_path,
     list_installed_module_roots,
     list_module_search_roots,
+    restore_process_env_and_cwd,
     restore_sys_path,
 )
 
@@ -42,5 +43,6 @@ __all__ = (
     "build_runtime_pythonpath",
     "init_subprocess_sys_path",
     "activate_test_module_source_path",
+    "restore_process_env_and_cwd",
     "restore_sys_path",
 )

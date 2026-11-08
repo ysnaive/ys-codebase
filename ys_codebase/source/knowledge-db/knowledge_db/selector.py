@@ -6,50 +6,51 @@ knowledge-db 全方位 AST 符號結構化選擇器 (SymbolSelector)
 
 from dataclasses import dataclass
 import re
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from types import MappingProxyType
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from .schema import SymbolKind, UnifiedSymbol
 
 
 # 類型前綴至 SymbolKind 集合之正規化映射表
-KIND_PREFIX_MAP: Dict[str, Set[str]] = {
-    "class": {SymbolKind.CLASS.value},
-    "struct": {SymbolKind.STRUCT.value},
-    "interface": {SymbolKind.INTERFACE.value},
-    "enum": {SymbolKind.ENUM.value},
-    "fn": {SymbolKind.FUNCTION.value, SymbolKind.METHOD.value},
-    "func": {SymbolKind.FUNCTION.value, SymbolKind.METHOD.value},
-    "def": {SymbolKind.FUNCTION.value, SymbolKind.METHOD.value},
-    "function": {SymbolKind.FUNCTION.value, SymbolKind.METHOD.value},
-    "method": {SymbolKind.METHOD.value},
-    "type": {SymbolKind.TYPE_ALIAS.value},
-    "typedef": {SymbolKind.TYPE_ALIAS.value},
-    "const": {SymbolKind.CONSTANT.value},
-    "constant": {SymbolKind.CONSTANT.value},
-    "var": {SymbolKind.VARIABLE.value},
-    "variable": {SymbolKind.VARIABLE.value},
-    "let": {SymbolKind.VARIABLE.value},
-    "macro": {SymbolKind.MACRO.value},
-    "doc": {
+KIND_PREFIX_MAP: Any = MappingProxyType({
+    "class": frozenset({SymbolKind.CLASS.value}),
+    "struct": frozenset({SymbolKind.STRUCT.value}),
+    "interface": frozenset({SymbolKind.INTERFACE.value}),
+    "enum": frozenset({SymbolKind.ENUM.value}),
+    "fn": frozenset({SymbolKind.FUNCTION.value, SymbolKind.METHOD.value}),
+    "func": frozenset({SymbolKind.FUNCTION.value, SymbolKind.METHOD.value}),
+    "def": frozenset({SymbolKind.FUNCTION.value, SymbolKind.METHOD.value}),
+    "function": frozenset({SymbolKind.FUNCTION.value, SymbolKind.METHOD.value}),
+    "method": frozenset({SymbolKind.METHOD.value}),
+    "type": frozenset({SymbolKind.TYPE_ALIAS.value}),
+    "typedef": frozenset({SymbolKind.TYPE_ALIAS.value}),
+    "const": frozenset({SymbolKind.CONSTANT.value}),
+    "constant": frozenset({SymbolKind.CONSTANT.value}),
+    "var": frozenset({SymbolKind.VARIABLE.value}),
+    "variable": frozenset({SymbolKind.VARIABLE.value}),
+    "let": frozenset({SymbolKind.VARIABLE.value}),
+    "macro": frozenset({SymbolKind.MACRO.value}),
+    "doc": frozenset({
         SymbolKind.DOC_HEADING_1.value,
         SymbolKind.DOC_HEADING_2.value,
         SymbolKind.DOC_HEADING_3.value,
         SymbolKind.DOC_HEADING_4.value,
         SymbolKind.DOC_SECTION.value,
-    },
-    "h1": {SymbolKind.DOC_HEADING_1.value},
-    "h2": {SymbolKind.DOC_HEADING_2.value},
-    "h3": {SymbolKind.DOC_HEADING_3.value},
-    "h4": {SymbolKind.DOC_HEADING_4.value},
-}
+    }),
+    "h1": frozenset({SymbolKind.DOC_HEADING_1.value}),
+    "h2": frozenset({SymbolKind.DOC_HEADING_2.value}),
+    "h3": frozenset({SymbolKind.DOC_HEADING_3.value}),
+    "h4": frozenset({SymbolKind.DOC_HEADING_4.value}),
+})
 
-CALLABLE_KINDS: Set[str] = {
+CALLABLE_KINDS: Any = frozenset({
     SymbolKind.FUNCTION.value,
     SymbolKind.METHOD.value,
     "function",
     "method",
     "constructor",
-}
+})
 
 
 @dataclass(frozen=True)

@@ -5,16 +5,17 @@ agents_workflow.plans._verifier_specs — PlanVerifier 模板佔位符規則、�
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from types import MappingProxyType
+from typing import Dict, FrozenSet, List, Mapping, Optional, Set, Tuple
 
-VALID_STATUSES: Set[str] = {
+VALID_STATUSES: FrozenSet[str] = frozenset({
     "draft", "confirmed", "in progress", "in_progress",
     "passed", "completed", "active", "archived", "pending", "review",
     "discussing", "planning", "executing", "concluded", "aborted", "cancelled",
     "backlog", "proposed", "ready", "deferred", "seeded",
-}
+})
 
-ORIGIN_SEED_FILES: Set[str] = {"roadmap.md", "todo.md"}
+ORIGIN_SEED_FILES: FrozenSet[str] = frozenset({"roadmap.md", "todo.md"})
 
 HEADER_NAME_KEYS: Tuple[str, ...] = (
     "功能名稱", "計畫名稱", "所屬計畫", "name", "title", "調研主題", "topic", "subject", "主題",
@@ -33,7 +34,7 @@ HEADER_MODEL_KEYS: Tuple[str, ...] = (
     "模型", "model", "ai_model", "ai-model", "模型名稱", "model_name",
 )
 
-PLACEHOLDER_PATTERNS: List[str] = [
+PLACEHOLDER_PATTERNS: Tuple[str, ...] = (
     r"\[YYYY-MM-DD(?:\s+HH:MM)?\]",
     r"\[功能名稱\]",
     r"\[計畫名稱\]",
@@ -49,9 +50,9 @@ PLACEHOLDER_PATTERNS: List[str] = [
     r"\[Draft \|(?:\s*Discussing \|)?\s*Confirmed \| In Progress \| Passed \| Completed\]",
     r"\[Feature \| Refactor \| Bug Fix \| Performance \| Docs(?: \| Revision \| Research)?\]",
     r"\{\{\s*\.\.\.\s*\}\}",
-]
+)
 
-PHASE_PREFIX_MAP: Dict[str, str] = {
+PHASE_PREFIX_MAP: Mapping[str, str] = MappingProxyType({
     "P00": "P00_",
     "P01": "P01_",
     "P02": "P02_",
@@ -60,9 +61,9 @@ PHASE_PREFIX_MAP: Dict[str, str] = {
     "P05": "P05_",
     "P06": "P06_",
     "P07": "P07_",
-}
+})
 
-PHASE_CANONICAL_FILES: Dict[str, str] = {
+PHASE_CANONICAL_FILES: Mapping[str, str] = MappingProxyType({
     "P00": "P00_discuss.md",
     "P01": "P01_requirements_spec.md",
     "P02": "P02_architecture_plan.md",
@@ -71,7 +72,7 @@ PHASE_CANONICAL_FILES: Dict[str, str] = {
     "P05": "P05_task.md",
     "P06": "P06_test_plan.md",
     "P07": "P07_walkthrough.md",
-}
+})
 
 _BRACKET_TOKEN_RE = re.compile(r"\[([^\]\r\n]+)\]")
 _CJK_CHAR_RE = re.compile(r"[\u4e00-\u9fa5]")

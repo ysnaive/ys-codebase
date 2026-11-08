@@ -4,12 +4,25 @@ Provides probe, confirmation, directory creation, and atomic configuration bindi
 """
 import os
 import sys
-from typing import Dict, List, Any, Optional, Tuple
+from types import MappingProxyType
+from typing import Dict, List, Any, Mapping, Optional, Tuple
 
 try:
     from core import uri
+    from core.log import log
 except ImportError:
     uri = None
+    log = None
+
+
+def _log_init(*args: Any, **kwargs: Any) -> None:
+    if log is not None:
+        file_arg = kwargs.get("file")
+        stream = "stderr" if file_arg is sys.stderr else "stdout"
+        sep = kwargs.get("sep", " ")
+        end = kwargs.get("end", "\n")
+        text = sep.join(str(a) for a in args)
+        log(text, stream=stream, end=end)
 
 
 class WorkflowInitializer:
@@ -17,12 +30,12 @@ class WorkflowInitializer:
     負責 agents-workflow 的一鍵初始化 (--init-default)、路徑探測、目錄建立與組態原子持久化。
     """
 
-    DEFAULT_RECOMMENDED_PATHS: Dict[str, str] = {
+    DEFAULT_RECOMMENDED_PATHS: Mapping[str, str] = MappingProxyType({
         "plans": "project://plans",
         "archived": "project://plans/archived",
         "docs": "project://docs",
         "roadmap": "workflow.plans://roadmap",
-    }
+    })
 
     def __init__(self, host_dir: Optional[str] = None):
         self.host_dir = host_dir
@@ -120,34 +133,28 @@ class WorkflowInitializer:
     @staticmethod
     def _print_undefined_project_error() -> None:
         """輸出 project:// 協議未定義之錯誤引導訊息。"""
-        print("\n" + "=" * 75, file=sys.stderr)
-        print("[agents-workflow:init] [!] 錯誤：依賴協議 'project://' 尚未定義！", file=sys.stderr)
-        print("=" * 75, file=sys.stderr)
-        print("agents-workflow 依賴專案根目錄協議 'project://' 來定位 plans 與 docs 目錄。", file=sys.stderr)
-        print("當前 core.project_root 未配置或為 !undefined。\n", file=sys.stderr)
-        print("[*] 建議解決步驟：", file=sys.stderr)
-        print("  1. 請先執行以下指令設定專案根目錄 (例如指定當前目錄或專案路徑)：", file=sys.stderr)
-        print("     python yscb.py config set core project_root .\n", file=sys.stderr)
-        print("  2. 或於終端執行協議解析以進行及時熱更新補齊：", file=sys.stderr)
-        print("     python yscb.py uri resolve project://\n", file=sys.stderr)
-        print("  3. 設定完成後，請重新執行 agents-workflow 一鍵初始化。", file=sys.stderr)
-        print("=" * 75 + "\n", file=sys.stderr)
+        _log_init("\n" + "=" * 75, file=sys.stderr)
+        _log_init("[agents-workflow:init] [!] 錯誤：依賴協議 'project://' 尚未定義！", file=sys.stderr)
+        _log_init("=" * 75, file=sys.stderr)
+        _log_init("agents-workflow 依賴專案根目錄協議 'project://' 來定位 plans 與 docs 目錄。", file=sys.stderr)
+        _log_init("當前 core.project_root 未配置或為 !undefined。\n", file=sys.stderr)
+        _log_init("[*] 建議解決步驟：", file=sys.stderr)
+        _log_init("  1. 請先執行以下指令設定專案根目錄 (例如指定當前目錄或專案路徑)：", file=sys.stderr)
+        _log_init("     python yscb.py config set core project_root .\n", file=sys.stderr)
+        _log_init("  2. 或於終端執行協議解析以進行及時熱更新補齊：", file=sys.stderr)
+        _log_init("     python yscb.py uri resolve project://\n", file=sys.stderr)
+        _log_init("  3. 設定完成後，請重新執行 agents-workflow 一鍵初始化。", file=sys.stderr)
+        _log_init("=" * 75 + "\n", file=sys.stderr)
 
     @staticmethod
     def _prompt_init_confirmation(auto_confirm: bool, interactive: bool) -> bool:
-        """處理初始化前之互動確認或非互動環境防呆攔截。"""
+        """處理初始化前之互動確認或非互動環境防呆攔截（非 auto_confirm 一律拒絕並提示使用 -y / --yes）。"""
         if auto_confirm:
             return True
         if interactive:
-            try:
-                choice = input("\n確認要建立上述資料夾並寫入設定檔嗎? [-y / -n]: ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                choice = "n"
-            if choice not in ("y", "yes", "-y"):
-                print("[agents-workflow] 操作已由使用者取消。")
-                return False
-            return True
-        print("[agents-workflow] 非互動模式需要 -y / --yes 參數確認，操作已取消。")
+            _log_init("[agents-workflow] 互動提示已停用（無阻塞模式），請附加 -y / --yes 參數確認，操作已取消。")
+            return False
+        _log_init("[agents-workflow] 非互動模式需要 -y / --yes 參數確認，操作已取消。")
         return False
 
     def run_init_default(
@@ -178,27 +185,27 @@ class WorkflowInitializer:
 
         probed = self.probe_paths(target_paths)
 
-        print("\n[agents-workflow] 將初始化以下 Workflow URI 協議與目錄結構:")
-        print("-" * 75)
-        print(f"{'KEY':<12} {'TARGET URI / PATH':<45} {'STATUS'}")
-        print("-" * 75)
+        _log_init("\n[agents-workflow] 將初始化以下 Workflow URI 協議與目錄結構:")
+        _log_init("-" * 75)
+        _log_init(f"{'KEY':<12} {'TARGET URI / PATH':<45} {'STATUS'}")
+        _log_init("-" * 75)
 
         existing_warnings = []
         to_create = []
 
         for item in probed:
             status_str = "[已存在] (自動綁定)" if item["exists"] else "[即將建立]"
-            print(f"{item['key']:<12} {item['uri_or_path']:<45} {status_str}")
+            _log_init(f"{item['key']:<12} {item['uri_or_path']:<45} {status_str}")
             if item["exists"]:
                 existing_warnings.append(item)
             else:
                 to_create.append(item)
-        print("-" * 75)
+        _log_init("-" * 75)
 
         if existing_warnings:
-            print("\n[提示] 以下目錄已存在於檔案系統中，將自動綁定在該路徑：")
+            _log_init("\n[提示] 以下目錄已存在於檔案系統中，將自動綁定在該路徑：")
             for w in existing_warnings:
-                print(f"  • {w['key']}: {w['real_path']}")
+                _log_init(f"  • {w['key']}: {w['real_path']}")
 
         if not self._prompt_init_confirmation(auto_confirm=auto_confirm, interactive=interactive):
             return {
@@ -216,19 +223,19 @@ class WorkflowInitializer:
                     os.makedirs(r_path, exist_ok=True)
                     created_dirs.append(r_path)
                 except Exception as e:
-                    print(f"[agents-workflow] Warning: Failed to create directory '{r_path}': {e}", file=sys.stderr)
+                    _log_init(f"[agents-workflow] Warning: Failed to create directory '{r_path}': {e}", file=sys.stderr)
 
         bound_paths = {item["key"]: item["uri_or_path"] for item in probed}
         write_ok = self._write_project_config(bound_paths)
 
         if write_ok:
-            print("\n[agents-workflow] 一鍵初始化成功！")
-            print(f"  • 建立目錄數量: {len(created_dirs)}")
-            print(f"  • 綁定協議數量: {len(bound_paths)}")
+            _log_init("\n[agents-workflow] 一鍵初始化成功！")
+            _log_init(f"  • 建立目錄數量: {len(created_dirs)}")
+            _log_init(f"  • 綁定協議數量: {len(bound_paths)}")
             for k, v in bound_paths.items():
-                print(f"    - workflow.{k}:// -> {v}")
+                _log_init(f"    - workflow.{k}:// -> {v}")
         else:
-            print("\n[agents-workflow] Warning: Directory created, but failed to update config.project.json.", file=sys.stderr)
+            _log_init("\n[agents-workflow] Warning: Directory created, but failed to update config.project.json.", file=sys.stderr)
 
         return {
             "success": write_ok,

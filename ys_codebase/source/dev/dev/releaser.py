@@ -371,7 +371,8 @@ class Releaser:
 
         # Step 2 & 3: Release Check and Packaging (Smart Skip or Force Overwrite)
         if is_already_released and not force:
-            print(f"[dev:release-git] Target version '{module_name}@{ver}' is already released ({exact_rel_zip}). Skipping packaging step.")
+            from core.log import log
+            log(f"[dev:release-git] Target version '{module_name}@{ver}' is already released ({exact_rel_zip}). Skipping packaging step.")
         else:
             passed, chk_errors = self.release_check(module_name, force=force)
             if not passed:

@@ -2,34 +2,32 @@
 HTML semantic parser (`HtmlParser`) for module:ast.
 """
 
-import logging
 from pathlib import Path
 import re
-from typing import List, Set, Union
+from types import MappingProxyType
+from typing import FrozenSet, List, Mapping, Union
 
 from ..schema import LanguageType, SymbolKind, UnifiedSymbol
 from .base import BaseParser
-
-logger = logging.getLogger("ast.parsers.html")
 
 TITLE_PATTERN = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 HEADING_PATTERN = re.compile(r"<h([1-6])[^>]*>(.*?)(?:</h\1>|$)", re.IGNORECASE | re.DOTALL)
 ID_ELEMENT_PATTERN = re.compile(r'<([a-zA-Z0-9-]+)[^>]*\bid=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
 SEMANTIC_TAG_PATTERN = re.compile(r"<([a-zA-Z0-9-]+)[^>]*>", re.IGNORECASE)
 
-SEMANTIC_TAGS = {
+SEMANTIC_TAGS: FrozenSet[str] = frozenset({
     "main", "header", "footer", "section", "article",
     "template", "dialog", "nav", "aside",
-}
+})
 
-HEADING_KIND_MAP = {
+HEADING_KIND_MAP: Mapping[str, str] = MappingProxyType({
     "1": SymbolKind.DOC_HEADING_1.value,
     "2": SymbolKind.DOC_HEADING_2.value,
     "3": SymbolKind.DOC_HEADING_3.value,
     "4": SymbolKind.DOC_HEADING_4.value,
     "5": SymbolKind.DOC_HEADING_4.value,
     "6": SymbolKind.DOC_HEADING_4.value,
-}
+})
 
 
 def _clean_html_text(raw_html: str) -> str:
@@ -74,7 +72,7 @@ def _make_symbol(
 class HtmlParser(BaseParser):
     """HTML title, h1-h6 headings, ID elements, and HTML5 semantic sections parser."""
 
-    SUPPORTED_EXTENSIONS: Set[str] = {".html", ".htm"}
+    SUPPORTED_EXTENSIONS: FrozenSet[str] = frozenset({".html", ".htm"})
 
     def can_parse(self, file_path: Union[str, Path]) -> bool:
         ext = Path(file_path).suffix.lower()

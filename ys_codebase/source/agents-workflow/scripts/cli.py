@@ -23,6 +23,16 @@ from agents_workflow.roadmap import RoadmapManager, TodoManager
 from agents_workflow.targets import ReleaseTargetManager
 from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
+from core.log import log
+
+
+def _log_cli(*args: Any, **kwargs: Any) -> None:
+    file_arg = kwargs.get("file")
+    stream = "stderr" if file_arg is sys.stderr else "stdout"
+    sep = kwargs.get("sep", " ")
+    end = kwargs.get("end", "\n")
+    text = sep.join(str(a) for a in args)
+    log(text, stream=stream, end=end)
 
 
 def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
@@ -97,16 +107,7 @@ def _get_str_option(bags: CmdBags, name: str, default: str = "") -> str:
 
 
 def _setup_stream_encodings():
-    if hasattr(sys.stdout, "reconfigure"):
-        try:
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
-    if hasattr(sys.stderr, "reconfigure"):
-        try:
-            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
+    pass
 
 
 def roadmap_list(cmd_bags: Any) -> int:
@@ -117,7 +118,7 @@ def roadmap_list(cmd_bags: Any) -> int:
     mgr = RoadmapManager()
     status_filter = _get_str_option(bags, "status") or None
     table_str = mgr.format_summary_table(status_filter=status_filter)
-    print(table_str)
+    _log_cli(table_str)
     return 0
 
 
@@ -127,7 +128,7 @@ def roadmap_promote(cmd_bags: Any) -> int:
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "roadmap_promote")
     if not bags.args:
-        print("[agents-workflow:roadmap] Error: Missing topic to promote. Usage: roadmap promote <topic> [--plan <dir>] [--model <ModelName>]")
+        _log_cli("[agents-workflow:roadmap] Error: Missing topic to promote. Usage: roadmap promote <topic> [--plan <dir>] [--model <ModelName>]")
         return 1
     topic = bags.args[0]
     plan_dir = _get_str_option(bags, "plan") or None
@@ -136,10 +137,10 @@ def roadmap_promote(cmd_bags: Any) -> int:
     mgr = RoadmapManager()
     res = mgr.promote_roadmap(topic_or_file=topic, model=model_str, target_plan=plan_dir)
     if not res.get("success", False):
-        print(f"[agents-workflow:roadmap] [ERROR] {res.get('error', 'Failed to promote roadmap')}")
+        _log_cli(f"[agents-workflow:roadmap] [ERROR] {res.get('error', 'Failed to promote roadmap')}")
         return 1
 
-    print(res.get("message", ""))
+    _log_cli(res.get("message", ""))
     return 0
 
 
@@ -174,15 +175,15 @@ def roadmap(cmd_bags: Any) -> int:
     if first_arg and not list_all:
         item = mgr.get_roadmap(first_arg)
         if not item:
-            print(f"[agents-workflow:roadmap] Roadmap topic '{first_arg}' not found in {mgr.roadmap_dir}.")
+            _log_cli(f"[agents-workflow:roadmap] Roadmap topic '{first_arg}' not found in {mgr.roadmap_dir}.")
             return 1
-        print(f"\n[agents-workflow:roadmap] Topic: {item.topic} ({item.status})")
-        print(f"  * Path:    {item.path}")
-        print(f"  * Date:    {item.date if item.date else 'N/A'}")
-        print(f"  * Scope:   {item.scope}")
-        print(f"  * Trigger: {item.trigger}")
-        print(f"  * Title:   {item.title}")
-        print(f"  * Summary: {item.problem_summary}")
+        _log_cli(f"\n[agents-workflow:roadmap] Topic: {item.topic} ({item.status})")
+        _log_cli(f"  * Path:    {item.path}")
+        _log_cli(f"  * Date:    {item.date if item.date else 'N/A'}")
+        _log_cli(f"  * Scope:   {item.scope}")
+        _log_cli(f"  * Trigger: {item.trigger}")
+        _log_cli(f"  * Title:   {item.title}")
+        _log_cli(f"  * Summary: {item.problem_summary}")
         return 0
     else:
         return roadmap_list(bags)
@@ -194,7 +195,7 @@ def todo_add(cmd_bags: Any) -> int:
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "todo_add")
     if not bags.args:
-        print("[agents-workflow:todo] Error: Missing title. Usage: todo add \"<標題>\" [--scope <模組>] [--note \"<備註>\"] [--model <ModelName>]")
+        _log_cli("[agents-workflow:todo] Error: Missing title. Usage: todo add \"<標題>\" [--scope <模組>] [--note \"<備註>\"] [--model <ModelName>]")
         return 1
     title = " ".join(bags.args).strip()
     scope = _get_str_option(bags, "scope", "general")
@@ -205,14 +206,14 @@ def todo_add(cmd_bags: Any) -> int:
     try:
         item = mgr.add_todo(title=title, scope=scope, note=note, model=model_str)
     except Exception as ex:
-        print(f"[agents-workflow:todo] [ERROR] {ex}")
+        _log_cli(f"[agents-workflow:todo] [ERROR] {ex}")
         return 1
-    print(f"[agents-workflow:todo] [SUCCESS] 已追加待辦條目 [{item.todo_id}]:")
-    print(f"  * ID:      {item.todo_id}")
-    print(f"  * Date:    {item.date}")
-    print(f"  * Scope:   {item.scope}")
-    print(f"  * Title:   {item.title}")
-    print(f"  * Note:    {item.note}")
+    _log_cli(f"[agents-workflow:todo] [SUCCESS] 已追加待辦條目 [{item.todo_id}]:")
+    _log_cli(f"  * ID:      {item.todo_id}")
+    _log_cli(f"  * Date:    {item.date}")
+    _log_cli(f"  * Scope:   {item.scope}")
+    _log_cli(f"  * Title:   {item.title}")
+    _log_cli(f"  * Note:    {item.note}")
     return 0
 
 
@@ -224,7 +225,7 @@ def todo_list(cmd_bags: Any) -> int:
     scope = _get_str_option(bags, "scope") or None
 
     mgr = TodoManager()
-    print(mgr.format_todo_table(scope_keyword=scope))
+    _log_cli(mgr.format_todo_table(scope_keyword=scope))
     return 0
 
 
@@ -234,7 +235,7 @@ def todo_promote(cmd_bags: Any) -> int:
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "todo_promote")
     if not bags.args:
-        print("[agents-workflow:todo] Error: Missing TODO ID(s) to promote. Usage: todo promote <TODO-ID> [TODO-ID...] --slug <plan_slug> [--plan <dir>] [--model <ModelName>]")
+        _log_cli("[agents-workflow:todo] Error: Missing TODO ID(s) to promote. Usage: todo promote <TODO-ID> [TODO-ID...] --slug <plan_slug> [--plan <dir>] [--model <ModelName>]")
         return 1
     slug = _get_str_option(bags, "slug") or None
     plan_dir = _get_str_option(bags, "plan") or None
@@ -243,10 +244,10 @@ def todo_promote(cmd_bags: Any) -> int:
     mgr = TodoManager()
     res = mgr.promote_todos(todo_ids=bags.args, slug=slug, model=model_str, target_plan=plan_dir)
     if not res.get("success", False):
-        print(f"[agents-workflow:todo] [ERROR] {res.get('error', 'Failed to promote todo(s)')}")
+        _log_cli(f"[agents-workflow:todo] [ERROR] {res.get('error', 'Failed to promote todo(s)')}")
         return 1
 
-    print(res.get("message", ""))
+    _log_cli(res.get("message", ""))
     return 0
 
 
@@ -270,7 +271,7 @@ def todo(cmd_bags: Any) -> int:
     elif action == "promote":
         return todo_promote(sub_bags)
     else:
-        print(f"[agents-workflow:todo] Unknown todo action '{action}'. Use add, list, or promote.")
+        _log_cli(f"[agents-workflow:todo] Unknown todo action '{action}'. Use add, list, or promote.")
         return 1
 
 
@@ -282,28 +283,28 @@ def release(cmd_bags: Any) -> int:
     force = bags.has_option("force") or bags.has_option("f")
 
     publisher = ReleasePublisher()
-    print("[agents-workflow] Starting release transaction...")
+    _log_cli("[agents-workflow] Starting release transaction...")
     res = publisher.release_all(force=force)
 
     if res.get("success", False):
         if res.get("short_circuited", False):
-            print(f"[agents-workflow] Release up to date (no changes detected, skipped {res.get('skipped_count', 0)} files).")
+            _log_cli(f"[agents-workflow] Release up to date (no changes detected, skipped {res.get('skipped_count', 0)} files).")
         else:
-            print("[agents-workflow] Release completed successfully!")
-            print(f"  * Written files:   {res.get('written_count', 0)}")
-            print(f"  * Unchanged files: {res.get('skipped_count', 0)}")
-            print(f"  * Total published: {res.get('published_count', 0)}")
-        print(f"  * Active targets:  {', '.join(res.get('active_targets', []))}")
+            _log_cli("[agents-workflow] Release completed successfully!")
+            _log_cli(f"  * Written files:   {res.get('written_count', 0)}")
+            _log_cli(f"  * Unchanged files: {res.get('skipped_count', 0)}")
+            _log_cli(f"  * Total published: {res.get('published_count', 0)}")
+        _log_cli(f"  * Active targets:  {', '.join(res.get('active_targets', []))}")
         if res.get("removed_count", 0) > 0:
-            print(f"  * Pruned files:    {res.get('removed_count', 0)}")
+            _log_cli(f"  * Pruned files:    {res.get('removed_count', 0)}")
         if res.get("orphan_targets"):
-            print(f"  * Warning orphans: {', '.join(res.get('orphan_targets', []))}")
+            _log_cli(f"  * Warning orphans: {', '.join(res.get('orphan_targets', []))}")
         return 0
     else:
-        print("[agents-workflow] Release failed:")
-        print(f"  - {res.get('error', 'Unknown error')}")
+        _log_cli("[agents-workflow] Release failed:")
+        _log_cli(f"  - {res.get('error', 'Unknown error')}")
         for d in res.get("details", []):
-            print(f"    * {d}")
+            _log_cli(f"    * {d}")
         return 1
 
 
@@ -327,15 +328,15 @@ def release_target(cmd_bags: Any) -> int:
             or (bags.args[0].strip() if bags.args and bags.args[0] not in add_tokens else "")
         )
         if not target_name:
-            print("[agents-workflow] Error: Missing target name for --add. Usage: release-target --add <target> [--proj]")
+            _log_cli("[agents-workflow] Error: Missing target name for --add. Usage: release-target --add <target> [--proj]")
             return 1
-        print(f"[agents-workflow] Adding release target '{target_name}' ({tier_label}) and triggering atomic release...")
+        _log_cli(f"[agents-workflow] Adding release target '{target_name}' ({tier_label}) and triggering atomic release...")
         ok = ReleaseTargetManager.add_target(target_name, is_project=is_proj)
         if ok:
-            print(f"[agents-workflow] Target '{target_name}' enabled ({tier_label}) and released successfully.")
+            _log_cli(f"[agents-workflow] Target '{target_name}' enabled ({tier_label}) and released successfully.")
             return 0
         else:
-            print(f"[agents-workflow] Failed enabling target '{target_name}' ({tier_label}).")
+            _log_cli(f"[agents-workflow] Failed enabling target '{target_name}' ({tier_label}).")
             return 1
 
     # 2. 優先判斷 Remove 語法（支援 --remove <t>、remove <t>、--rm <t> 或 rm <t>）
@@ -353,15 +354,15 @@ def release_target(cmd_bags: Any) -> int:
             or (bags.args[0].strip() if bags.args and bags.args[0] not in remove_tokens else "")
         )
         if not target_name:
-            print("[agents-workflow] Error: Missing target name for --remove. Usage: release-target --remove <target> [--proj]")
+            _log_cli("[agents-workflow] Error: Missing target name for --remove. Usage: release-target --remove <target> [--proj]")
             return 1
-        print(f"[agents-workflow] Removing release target '{target_name}' ({tier_label}) and triggering atomic release...")
+        _log_cli(f"[agents-workflow] Removing release target '{target_name}' ({tier_label}) and triggering atomic release...")
         ok = ReleaseTargetManager.remove_target(target_name, is_project=is_proj)
         if ok:
-            print(f"[agents-workflow] Target '{target_name}' removed ({tier_label}) and cleaned successfully.")
+            _log_cli(f"[agents-workflow] Target '{target_name}' removed ({tier_label}) and cleaned successfully.")
             return 0
         else:
-            print(f"[agents-workflow] Failed removing target '{target_name}' ({tier_label}).")
+            _log_cli(f"[agents-workflow] Failed removing target '{target_name}' ({tier_label}).")
             return 1
 
     # 3. 預設行為：若指定 list 旗標或無其他動作，執行目標清冊輸出
@@ -369,19 +370,19 @@ def release_target(cmd_bags: Any) -> int:
     if not action or action in ("--list", "list", "-l") or bags.has_option("list") or bags.has_option("l"):
         targets = ReleaseTargetManager.list_targets()
         if not targets:
-            print("[agents-workflow] No release targets found.")
+            _log_cli("[agents-workflow] No release targets found.")
             return 0
-        print(f"\n[agents-workflow] Available Release Targets ({len(targets)}):")
-        print("-" * 88)
-        print(f"{'TARGET NAME':<20} {'STATUS':<26} {'DESCRIPTION'}")
-        print("-" * 88)
+        _log_cli(f"\n[agents-workflow] Available Release Targets ({len(targets)}):")
+        _log_cli("-" * 88)
+        _log_cli(f"{'TARGET NAME':<20} {'STATUS':<26} {'DESCRIPTION'}")
+        _log_cli("-" * 88)
         for t in targets:
             status_str = t["status"]
-            print(f"{t['name']:<20} {status_str:<26} {t['description']}")
-        print("-" * 88)
+            _log_cli(f"{t['name']:<20} {status_str:<26} {t['description']}")
+        _log_cli("-" * 88)
         return 0
 
-    print(f"[agents-workflow] Unknown release-target option '{action}'. Use list, add <t> [--proj], or remove <t> [--proj].")
+    _log_cli(f"[agents-workflow] Unknown release-target option '{action}'. Use list, add <t> [--proj], or remove <t> [--proj].")
     return 1
 
 
@@ -391,19 +392,19 @@ def compile(cmd_bags: Any) -> int:
     _setup_stream_encodings()
     _normalize_bags(cmd_bags, "compile")
     compiler = ArtifactCompiler()
-    print("[agents-workflow] Starting Stage 1 artifact compilation pipeline...")
+    _log_cli("[agents-workflow] Starting Stage 1 artifact compilation pipeline...")
     result = compiler.compile_stage1()
 
     if result["success"]:
-        print("[agents-workflow] Stage 1 compilation completed successfully!")
-        print(f"  * Cached files:    {len(result.get('resolved_items', []))}")
-        print(f"  * Active inserts:  {result.get('inserted_count', 0)}")
-        print(f"  * Known tokens:    {result.get('tokens_count', 0)}")
+        _log_cli("[agents-workflow] Stage 1 compilation completed successfully!")
+        _log_cli(f"  * Cached files:    {len(result.get('resolved_items', []))}")
+        _log_cli(f"  * Active inserts:  {result.get('inserted_count', 0)}")
+        _log_cli(f"  * Known tokens:    {result.get('tokens_count', 0)}")
         return 0
     else:
-        print("[agents-workflow] Stage 1 compilation failed with errors:")
+        _log_cli("[agents-workflow] Stage 1 compilation failed with errors:")
         for err in result.get("errors", []):
-            print(f"  - {err}")
+            _log_cli(f"  - {err}")
         return 1
 
 
@@ -416,18 +417,18 @@ def tokens(cmd_bags: Any) -> int:
     tokens_list = compiler.get_registered_tokens()
 
     if not tokens_list:
-        print("[agents-workflow] No registered tokens found.")
+        _log_cli("[agents-workflow] No registered tokens found.")
         return 0
 
-    print(f"\n[agents-workflow] Registered Token Anchors ({len(tokens_list)}):")
-    print("-" * 75)
-    print(f"{'TOKEN NAME':<32} {'DESCRIPTION'}")
-    print("-" * 75)
+    _log_cli(f"\n[agents-workflow] Registered Token Anchors ({len(tokens_list)}):")
+    _log_cli("-" * 75)
+    _log_cli(f"{'TOKEN NAME':<32} {'DESCRIPTION'}")
+    _log_cli("-" * 75)
     for tok in tokens_list:
         val = tok.get("value") or tok.get("name") or ""
         desc = tok.get("description", "")
-        print(f"{val:<32} {desc}")
-    print("-" * 75)
+        _log_cli(f"{val:<32} {desc}")
+    _log_cli("-" * 75)
     return 0
 
 
@@ -440,21 +441,21 @@ def list(cmd_bags: Any) -> int:
     exports = compiler.get_exported_artifacts()
 
     if not exports:
-        print("[agents-workflow] No exported artifacts found.")
+        _log_cli("[agents-workflow] No exported artifacts found.")
         return 0
 
-    print(f"\n[agents-workflow] Exported Artifacts Catalog ({len(exports)}):")
-    print("-" * 80)
-    print(f"{'TYPE':<12} {'SOURCE URI / PATH':<45} {'DESCRIPTION'}")
-    print("-" * 80)
+    _log_cli(f"\n[agents-workflow] Exported Artifacts Catalog ({len(exports)}):")
+    _log_cli("-" * 80)
+    _log_cli(f"{'TYPE':<12} {'SOURCE URI / PATH':<45} {'DESCRIPTION'}")
+    _log_cli("-" * 80)
     for exp in exports:
         t = exp.get("type", "template")
         src = exp.get("source", "")
         desc = compiler.resolve_export_description(exp)
         if "__${" in desc or "__#{" in desc:
             desc = compiler.resolve_stage2_uri(desc, "list", {})
-        print(f"{t:<12} {src:<45} {desc}")
-    print("-" * 80)
+        _log_cli(f"{t:<12} {src:<45} {desc}")
+    _log_cli("-" * 80)
     return 0
 
 
@@ -477,11 +478,10 @@ def init(cmd_bags: Any) -> int:
             paths_override[cfg_key] = opt_val
 
     initializer = WorkflowInitializer()
-    is_interactive = hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
     res = initializer.run_init_default(
         paths_override=paths_override,
         auto_confirm=auto_confirm,
-        interactive=is_interactive,
+        interactive=False,
     )
     return 0 if res.get("success", False) else 1
 
@@ -492,7 +492,7 @@ def plan_archive(cmd_bags: Any) -> int:
     _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "plan_archive")
     if not bags.args:
-        print("[agents-workflow:plan] Error: Missing plan name to archive. Usage: plan archive <plan_name> [--force]")
+        _log_cli("[agents-workflow:plan] Error: Missing plan name to archive. Usage: plan archive <plan_name> [--force]")
         return 1
     plan_name = bags.args[0]
     force = bags.has_option("force") or bags.has_option("f")
@@ -501,16 +501,16 @@ def plan_archive(cmd_bags: Any) -> int:
     try:
         res = archiver.archive_plan(plan_name, force=force)
         if res.get("cleaned_handoff"):
-            print("  * [CLEANUP] 已清理暫時性交接快照：handoff.md")
+            _log_cli("  * [CLEANUP] 已清理暫時性交接快照：handoff.md")
         for w in res.get("warnings", []):
-            print(f"  [WARNING] {w}")
-        print(f"[agents-workflow:plan] [SUCCESS] 已成功將計畫歸檔至：{res.get('dest_path')}")
+            _log_cli(f"  [WARNING] {w}")
+        _log_cli(f"[agents-workflow:plan] [SUCCESS] 已成功將計畫歸檔至：{res.get('dest_path')}")
         return 0
     except PlansToolchainError as pe:
-        print(f"[agents-workflow:plan] [ERROR] {pe}")
+        _log_cli(f"[agents-workflow:plan] [ERROR] {pe}")
         return 1
     except Exception as ex:
-        print(f"[agents-workflow:plan] [ERROR] 歸檔過程發生非預期錯誤：{ex}")
+        _log_cli(f"[agents-workflow:plan] [ERROR] 歸檔過程發生非預期錯誤：{ex}")
         return 1
 
 
@@ -526,20 +526,20 @@ def plan_status(cmd_bags: Any) -> int:
 
     if is_resume or target_plan:
         if not is_resume:
-            print(scanner.render_matrix_ascii())
+            _log_cli(scanner.render_matrix_ascii())
         res = scanner.execute_resume(
             plan_name_or_subpath=target_plan,
             consume_handoff=is_resume,
         )
         if not res.get("success", False):
-            print(scanner.render_matrix_ascii())
-            print(res.get("formatted_output", ""))
+            _log_cli(scanner.render_matrix_ascii())
+            _log_cli(res.get("formatted_output", ""))
             return 1
-        print(res.get("formatted_output", ""))
+        _log_cli(res.get("formatted_output", ""))
         return 0
 
     matrix_str = scanner.render_matrix_ascii()
-    print(matrix_str)
+    _log_cli(matrix_str)
     return 0
 
 
@@ -568,24 +568,24 @@ def plan_search(cmd_bags: Any) -> int:
     if is_dr or not query:
         drs = searcher.search_drs(query=query, year=year, month=month, limit=limit)
         if is_json:
-            print(json.dumps(drs, indent=2, ensure_ascii=False))
+            _log_cli(json.dumps(drs, indent=2, ensure_ascii=False))
             return 0
-        print("=" * 90)
-        print(f"{'Plan 名稱 / 來源檔案':<40} | {'DR ID / 標題':<22} | {'結論 / 摘要'}")
-        print("=" * 90)
+        _log_cli("=" * 90)
+        _log_cli(f"{'Plan 名稱 / 來源檔案':<40} | {'DR ID / 標題':<22} | {'結論 / 摘要'}")
+        _log_cli("=" * 90)
         for d in drs:
             raw_src = d["source_file"]
             raw_did = d["dr_id"]
             raw_sum = d["summary"]
             if is_full:
-                print(f"{raw_src} | {raw_did} | {raw_sum}")
+                _log_cli(f"{raw_src} | {raw_did} | {raw_sum}")
             else:
                 src = raw_src if len(raw_src) <= 38 else "..." + raw_src[-35:]
                 did = raw_did if len(raw_did) <= 20 else raw_did[:17] + "..."
                 summ = raw_sum if len(raw_sum) <= 40 else raw_sum[:37] + "..."
-                print(f"{src:<40} | {did:<22} | {summ}")
-        print("=" * 90)
-        print(f"共找到 {len(drs)} 筆 Decision Records。")
+                _log_cli(f"{src:<40} | {did:<22} | {summ}")
+        _log_cli("=" * 90)
+        _log_cli(f"共找到 {len(drs)} 筆 Decision Records。")
         return 0
     else:
         matches = searcher.search_full_text(query=query, year=year, month=month, limit=limit)
@@ -601,17 +601,17 @@ def plan_search(cmd_bags: Any) -> int:
                 }
                 for m in matches
             ]
-            print(json.dumps(serializable, indent=2, ensure_ascii=False))
+            _log_cli(json.dumps(serializable, indent=2, ensure_ascii=False))
             return 0
-        print(f"搜尋關鍵字: \"{query}\" ...")
-        print("=" * 90)
+        _log_cli(f"搜尋關鍵字: \"{query}\" ...")
+        _log_cli("=" * 90)
         for m in matches:
-            print(f"[{m['plan_name']}/{m['rel_path']}:L{m['line_no']}]")
+            _log_cli(f"[{m['plan_name']}/{m['rel_path']}:L{m['line_no']}]")
             for l_no, l_text in m.get("context", []):
                 prefix = " > " if l_no == m["line_no"] else "   "
-                print(f"{prefix}{l_no:4d}: {l_text}")
-            print("-" * 90)
-        print(f"共找到 {len(matches)} 筆符合結果。")
+                _log_cli(f"{prefix}{l_no:4d}: {l_text}")
+            _log_cli("-" * 90)
+        _log_cli(f"共找到 {len(matches)} 筆符合結果。")
         return 0
 
 
@@ -634,7 +634,7 @@ def plan_verify(cmd_bags: Any) -> int:
         scanner = PlanScanner()
         t_dir, err_msg = scanner.resolve_target_plan_dir(None)
         if err_msg or t_dir is None:
-            print(f"[agents-workflow:plan] [ERROR] {err_msg or '無法自動定位單一目標計畫，請明確傳入 <plan_name>。'}")
+            _log_cli(f"[agents-workflow:plan] [ERROR] {err_msg or '無法自動定位單一目標計畫，請明確傳入 <plan_name>。'}")
             return 1
         from agents_workflow.plans.status import PlanStatusResolver
 
@@ -655,12 +655,12 @@ def plan_verify(cmd_bags: Any) -> int:
 
     if is_json:
         json_dict = {k: v.to_dict() for k, v in reports.items()}
-        print(json.dumps(json_dict, indent=2, ensure_ascii=False))
+        _log_cli(json.dumps(json_dict, indent=2, ensure_ascii=False))
         return 0 if all(r.passed for r in reports.values()) else 1
 
-    print("=" * 70)
-    print("YS-Codebase Dev Plan Compliance Diagnostic Report")
-    print("=" * 70)
+    _log_cli("=" * 70)
+    _log_cli("YS-Codebase Dev Plan Compliance Diagnostic Report")
+    _log_cli("=" * 70)
 
     total_plans = len(reports)
     passed_plans = sum(1 for r in reports.values() if r.status == PlanSeverity.PASS)
@@ -669,30 +669,30 @@ def plan_verify(cmd_bags: Any) -> int:
 
     for p_name, r in reports.items():
         status_tag = f"[{r.status.value}]"
-        print(f"[*] Plan: {p_name:<50} {status_tag}")
+        _log_cli(f"[*] Plan: {p_name:<50} {status_tag}")
         if r.companion_created:
-            print(f"    |-- [SELF-HEAL] 已自動初始化伴隨檔: {', '.join(r.companion_created)}")
+            _log_cli(f"    |-- [SELF-HEAL] 已自動初始化伴隨檔: {', '.join(r.companion_created)}")
         if r.header_healed:
-            print(f"    |-- [SELF-HEAL] 已自動補齊確定性標頭: {', '.join(r.header_healed)}")
+            _log_cli(f"    |-- [SELF-HEAL] 已自動補齊確定性標頭: {', '.join(r.header_healed)}")
         if r.log_status == "appended":
-            print(f"    |-- [CHANGELOG] 已免讀自動追加變更日誌列 (Type: {log_type.upper()})")
+            _log_cli(f"    |-- [CHANGELOG] 已免讀自動追加變更日誌列 (Type: {log_type.upper()})")
         elif r.log_status == "idempotent_skipped":
-            print("    |-- [IDEMPOTENT] 變更日誌首列已存在相同 (類型, 摘要)，略過重複寫入")
+            _log_cli("    |-- [IDEMPOTENT] 變更日誌首列已存在相同 (類型, 摘要)，略過重複寫入")
         elif r.log_status == "skipped_on_fail":
-            print("    |-- [BLOCKED] 因檢核存在 FAIL，已阻斷寫入 changelog.md")
+            _log_cli("    |-- [BLOCKED] 因檢核存在 FAIL，已阻斷寫入 changelog.md")
         if r.status != PlanSeverity.PASS:
             for iss in r.issues:
                 loc = f"{iss.file_name}:{iss.line_number}" if iss.line_number else iss.file_name
-                print(f"    |-- [{iss.severity.value}] ({loc}) [{iss.category}] {iss.message}")
+                _log_cli(f"    |-- [{iss.severity.value}] ({loc}) [{iss.category}] {iss.message}")
         if target_name and r.passed and r.next_phase_hint:
-            print(f"    |-- [NEXT PHASE GATE] {r.next_phase_hint}")
+            _log_cli(f"    |-- [NEXT PHASE GATE] {r.next_phase_hint}")
 
-    print("-" * 70)
+    _log_cli("-" * 70)
     summary_str = f"Summary : {total_plans} Total, {passed_plans} Passed, {warn_plans} Warnings, {fail_plans} Failed"
-    print(summary_str)
+    _log_cli(summary_str)
     overall_status = "PASSED" if fail_plans == 0 else "FAILED"
-    print(f"Status  : {overall_status}")
-    print("=" * 70)
+    _log_cli(f"Status  : {overall_status}")
+    _log_cli("=" * 70)
 
     return 0 if fail_plans == 0 else 1
 
@@ -719,7 +719,7 @@ def plan(cmd_bags: Any) -> int:
     elif action == "verify":
         return plan_verify(sub_bags)
     else:
-        print(f"[agents-workflow:plan] Unknown plan action '{action}'. Use archive, status, search, or verify.")
+        _log_cli(f"[agents-workflow:plan] Unknown plan action '{action}'. Use archive, status, search, or verify.")
         return 1
 
 
@@ -740,7 +740,7 @@ def session_trace(cmd_bags: Any) -> int:
         try:
             since_min = float(str(opt_since).strip())
         except ValueError:
-            print(f"[agents-workflow:session-trace] Error: Invalid --since value '{opt_since}' (expected minutes).")
+            _log_cli(f"[agents-workflow:session-trace] Error: Invalid --since value '{opt_since}' (expected minutes).")
             return 1
 
     opt_limit = bags.get_option_value("limit")
@@ -749,7 +749,7 @@ def session_trace(cmd_bags: Any) -> int:
         try:
             limit_val = max(1, int(str(opt_limit).strip()))
         except ValueError:
-            print(f"[agents-workflow:session-trace] Error: Invalid --limit value '{opt_limit}' (expected integer).")
+            _log_cli(f"[agents-workflow:session-trace] Error: Invalid --limit value '{opt_limit}' (expected integer).")
             return 1
 
     is_json = bags.has_option("json")
@@ -766,9 +766,9 @@ def session_trace(cmd_bags: Any) -> int:
             limit=limit_val if opt_limit is not None else 20,
         )
         if is_json:
-            print(json.dumps(sessions, indent=2, ensure_ascii=False))
+            _log_cli(json.dumps(sessions, indent=2, ensure_ascii=False))
         else:
-            print(render_session_list_text(sessions))
+            _log_cli(render_session_list_text(sessions))
         return 0
 
     report = engine.analyze(
@@ -780,13 +780,13 @@ def session_trace(cmd_bags: Any) -> int:
 
     if plan_arg and report.target_plan is None and "找不到指定的計畫目錄" in report.plan_resolution_note:
         if is_json:
-            print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+            _log_cli(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
         else:
-            print(f"[agents-workflow:session-trace] Error: {report.plan_resolution_note}")
+            _log_cli(f"[agents-workflow:session-trace] Error: {report.plan_resolution_note}")
         return 1
 
     if is_json:
-        print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+        _log_cli(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
     else:
-        print(report.render_text())
+        _log_cli(report.render_text())
     return 0

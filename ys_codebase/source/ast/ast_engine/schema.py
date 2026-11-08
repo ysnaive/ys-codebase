@@ -438,16 +438,27 @@ class SemanticBundle:
         )
 
 
-@dataclass
 class ASTSnapshot:
     """Single-Parse Symbol Sharing snapshot persisted at `ast.storage://indices/unified.symbols.bin.gz`."""
 
-    ast_generation: int = 0
-    space_generations: Dict[str, int] = field(default_factory=dict)
-    symbols: Any = field(default_factory=dict)
-    file_to_symbol_ids: Dict[str, List[str]] = field(default_factory=dict)
-    files_map: Dict[str, List[str]] = field(default_factory=dict)
-    created_at: float = 0.0
+    def __init__(
+        self,
+        ast_generation: int = 0,
+        space_generations: Optional[Dict[str, int]] = None,
+        symbols: Any = None,
+        file_to_symbol_ids: Optional[Dict[str, List[str]]] = None,
+        files_map: Optional[Dict[str, List[str]]] = None,
+        created_at: float = 0.0,
+    ) -> None:
+        self.ast_generation: int = ast_generation
+        self.space_generations: Dict[str, int] = dict(space_generations) if space_generations is not None else {}
+        self.symbols: Any = symbols if symbols is not None else {}
+        self.file_to_symbol_ids: Dict[str, List[str]] = (
+            dict(file_to_symbol_ids) if file_to_symbol_ids is not None else {}
+        )
+        self.files_map: Dict[str, List[str]] = dict(files_map) if files_map is not None else {}
+        self.created_at: float = created_at
+        self.__post_init__()
 
     def __post_init__(self) -> None:
         if isinstance(self.symbols, (list, tuple, set)):
@@ -528,7 +539,7 @@ class ASTSnapshot:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class OutlineNode:
     """Hierarchical symbol outline node for a single file."""
 
@@ -592,7 +603,7 @@ class OutlineNode:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class OutlineResult:
     """Structured result for `yscb ast outline <file>`."""
 

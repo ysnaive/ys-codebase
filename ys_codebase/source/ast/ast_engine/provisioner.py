@@ -5,22 +5,23 @@ Ensures `--json` output on stdout remains 100% pure even when dynamic grammar in
 
 from contextlib import contextmanager
 import importlib
-import logging
 import os
 import subprocess
 import sys
 import tempfile
 import threading
-from typing import Any, ClassVar, Dict, Iterator, List, Optional, Set
+from types import MappingProxyType
+from typing import Any, ClassVar, Dict, Iterator, List, Mapping, Optional, Set
+
+from core.context import get_runtime_context
+from core.log import log_debug, log_stream, log_warn
 
 try:
     import tree_sitter
 except ImportError:
     tree_sitter = None
 
-logger = logging.getLogger("ast.provisioner")
-
-DEFAULT_GRAMMAR_PACKAGES: Dict[str, str] = {
+DEFAULT_GRAMMAR_PACKAGES: Mapping[str, str] = MappingProxyType({
     "tree_sitter_python": "tree-sitter-python",
     "tree_sitter_c_sharp": "tree-sitter-c-sharp",
     "tree_sitter_cpp": "tree-sitter-cpp",
@@ -28,10 +29,35 @@ DEFAULT_GRAMMAR_PACKAGES: Dict[str, str] = {
     "tree_sitter_javascript": "tree-sitter-javascript",
     "tree_sitter_typescript": "tree-sitter-typescript",
     "tree_sitter_markdown": "tree-sitter-markdown",
-}
+})
 
 
-class GrammarProvisioner:
+def _get_provisioner_state() -> Dict[str, Any]:
+    return get_runtime_context().get_module_state(
+        "ast.provisioner.state",
+        lambda: {
+            "failed_packages": set(),
+            "loaded_languages": {},
+            "warnings": [],
+        },
+    )
+
+
+class _ProvisionerMeta(type):
+    @property
+    def _FAILED_PACKAGES(cls) -> Set[str]:
+        return _get_provisioner_state()["failed_packages"]
+
+    @property
+    def _LOADED_LANGUAGES(cls) -> Dict[str, Any]:
+        return _get_provisioner_state()["loaded_languages"]
+
+    @property
+    def warnings(cls) -> List[str]:
+        return _get_provisioner_state()["warnings"]
+
+
+class GrammarProvisioner(metaclass=_ProvisionerMeta):
     """
     On-demand Tree-sitter grammar loader and pip provisioner.
     Enforces 100% stderr redirection for any installation subprocess and maintains
@@ -40,9 +66,6 @@ class GrammarProvisioner:
 
     _LOCK: ClassVar[threading.RLock] = threading.RLock()
     _lock: ClassVar[threading.RLock] = _LOCK
-    _FAILED_PACKAGES: ClassVar[Set[str]] = set()
-    _LOADED_LANGUAGES: ClassVar[Dict[str, Any]] = {}
-    warnings: ClassVar[List[str]] = []
     auto_install_enabled: ClassVar[bool] = False
     _instance: ClassVar[Optional["GrammarProvisioner"]] = None
 
@@ -75,8 +98,7 @@ class GrammarProvisioner:
         with cls._LOCK:
             if msg not in cls.warnings:
                 cls.warnings.append(msg)
-                print(msg, file=sys.stderr, flush=True)
-                logger.warning(msg)
+                log_stream(msg + "\n", stream="stderr")
         return msg
 
     @classmethod
@@ -160,7 +182,7 @@ class GrammarProvisioner:
                         importlib.invalidate_caches()
                         return True
                 except Exception as exc:
-                    logger.debug(f"GrammarProvisioner pip install failed for '{pkg_name}': {exc}")
+                    log_debug(f"GrammarProvisioner pip install failed for '{pkg_name}': {exc}")
 
                 cls._FAILED_PACKAGES.add(pkg_name)
                 return False
@@ -232,7 +254,7 @@ class GrammarProvisioner:
                 cls._LOADED_LANGUAGES[cache_key] = ts_lang
                 return ts_lang
             except Exception as exc:
-                logger.debug(f"GrammarProvisioner failed initializing '{module_name}:{func_name}': {exc}")
+                log_debug(f"GrammarProvisioner failed initializing '{module_name}:{func_name}': {exc}")
                 cls._FAILED_PACKAGES.add(pkg_name)
                 cls._FAILED_PACKAGES.add(module_name)
                 cls._emit_warning(pkg_name)

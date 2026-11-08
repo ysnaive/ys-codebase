@@ -5,28 +5,28 @@ Provides multi-layer config merging (`local` > `project` > defaults),
 thread budget resolution, and embedding model name normalization.
 """
 
-from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Dict, Optional, Union
 
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 
-MODEL_SPECS: Dict[str, Dict[str, Any]] = {
-    "BAAI/bge-small-zh-v1.5": {"dim": 512, "max_length": 512},
-    "bge-small-zh-v1.5": {"dim": 512, "max_length": 512},
-    "BAAI/bge-small-en-v1.5": {"dim": 384, "max_length": 512},
-    "bge-small-en-v1.5": {"dim": 384, "max_length": 512},
-    "sentence-transformers/all-MiniLM-L6-v2": {"dim": 384, "max_length": 256},
-    "all-MiniLM-L6-v2": {"dim": 384, "max_length": 256},
-}
+MODEL_SPECS: Any = MappingProxyType({
+    "BAAI/bge-small-zh-v1.5": MappingProxyType({"dim": 512, "max_length": 512}),
+    "bge-small-zh-v1.5": MappingProxyType({"dim": 512, "max_length": 512}),
+    "BAAI/bge-small-en-v1.5": MappingProxyType({"dim": 384, "max_length": 512}),
+    "bge-small-en-v1.5": MappingProxyType({"dim": 384, "max_length": 512}),
+    "sentence-transformers/all-MiniLM-L6-v2": MappingProxyType({"dim": 384, "max_length": 256}),
+    "all-MiniLM-L6-v2": MappingProxyType({"dim": 384, "max_length": 256}),
+})
 
-MODEL_SHORT_NAME_ALIASES: Dict[str, str] = {
+MODEL_SHORT_NAME_ALIASES: Any = MappingProxyType({
     "bge-small-zh-v1.5": "BAAI/bge-small-zh-v1.5",
     "bge-small-en-v1.5": "BAAI/bge-small-en-v1.5",
     "all-MiniLM-L6-v2": "sentence-transformers/all-MiniLM-L6-v2",
-}
+})
 
 
 def is_agents_workflow_installed() -> bool:
@@ -85,7 +85,6 @@ def resolve_threads(explicit_threads: Optional[Union[int, str]] = None) -> int:
     return max(1, min(val, cpu_cnt)) if val > 0 else auto_threads
 
 
-@dataclass
 class KnowledgeDBConfig:
     """
     Knowledge-DB runtime configuration.

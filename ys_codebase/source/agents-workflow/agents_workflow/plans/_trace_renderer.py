@@ -20,7 +20,7 @@ def _format_duration(seconds: float) -> str:
     return f"{s}s"
 
 
-@dataclass
+@dataclass(frozen=True)
 class FrictionSignal:
     """單筆硬性摩擦訊號結構。"""
     signal_type: str          # MULTI_EDIT_CHURN | TOOL_MISS_AND_RETRY | SILENT_BACKPATCH | GATE_BOUNCE | CONTEXT_WASTE | VALIDATED_BACKPROP
@@ -41,7 +41,7 @@ class FrictionSignal:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class SessionTraceReport:
     """三級軌跡提取與摩擦訊號分析完整報告。"""
     active_tier: str

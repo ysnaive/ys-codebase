@@ -8,7 +8,7 @@ Provides:
 """
 
 import re
-from typing import List, Set
+from typing import Any, List, Set
 
 _CAMEL_BOUNDARY_1 = re.compile(r"([A-Z]+)([A-Z][a-z])")
 _CAMEL_BOUNDARY_2 = re.compile(r"([a-z0-9])([A-Z])")
@@ -27,13 +27,13 @@ class MultilingualTokenizer:
     and CJK technical documentation.
     """
 
-    DEFAULT_STOPWORDS: Set[str] = {
+    DEFAULT_STOPWORDS: Any = frozenset({
         "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
         "in", "on", "at", "to", "for", "of", "with", "by", "from", "as",
         "and", "or", "not", "this", "that", "it", "self", "cls", "def", "class",
         "return", "import", "true", "false", "none", "null", "void",
         "的", "了", "在", "是", "與", "及", "或", "將", "對", "於", "中", "為", "以",
-    }
+    })
 
     def __init__(self, stopwords: Set[str] = None, keep_original_identifier: bool = True):
         self.stopwords = stopwords if stopwords is not None else self.DEFAULT_STOPWORDS

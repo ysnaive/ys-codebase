@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import urllib.error
 import urllib.parse
 import urllib.request
+from core.log import log
 import uuid
 import webbrowser
 
@@ -2044,10 +2045,10 @@ def run_oauth_loopback_flow(
     redirect_uri = f"http://127.0.0.1:{actual_port}"
     auth_url = build_oauth_authorize_url(client_id, redirect_uri)
 
-    print(
+    log(
         f"\n[gdrive-support:auth] Open the following URL in your browser to authorize:\n\n  {auth_url}\n"
     )
-    print(
+    log(
         f"[gdrive-support:auth] Listening on {redirect_uri} (timeout={int(timeout_sec)}s)...\n"
         f"  (Tip: In a headless container, if your browser redirects to {redirect_uri}/?code=... and cannot connect,\n"
         f"   copy that full URL or the 'code' parameter and run:\n"

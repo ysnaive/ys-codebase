@@ -6,8 +6,9 @@ when `repo_sync.enable` is True without instantiating `SpaceRegistry` recursivel
 
 from __future__ import annotations
 
-import sys
 from typing import Any, Dict, List, Optional
+
+from core.log import log
 
 
 def _load_lightweight_repo_sync_settings(registry: Any = None) -> tuple[bool, bool, List[str]]:
@@ -113,8 +114,8 @@ def on_register_file_spaces(ctx: Optional[Any] = None) -> bool:
         )
         return True
     except Exception as exc:
-        print(
+        log(
             f"[gdrive-support:hook] Warning: Failed during on_register_file_spaces: {exc}",
-            file=sys.stderr,
+            stream="stderr",
         )
         return False

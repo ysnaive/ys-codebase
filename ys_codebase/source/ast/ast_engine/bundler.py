@@ -9,12 +9,13 @@ from concurrent.futures import ProcessPoolExecutor
 import dataclasses
 from datetime import datetime, timezone
 import json
-import logging
 import os
 from pathlib import Path
 import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
+from core.context import get_runtime_context, get_virtual_cwd
+from core.log import log_debug, log_warn
 from core.space import (
     ScanDiffDetail,
     SpaceConfig,
@@ -29,11 +30,25 @@ from .io_utils import compute_project_relpath, is_dirty_file_match, normalize_di
 from .parsers.registry import ParserRegistry
 from .schema import MemberInfo, SemanticBundle, SymbolCallSite, SymbolKind, UnifiedSymbol
 
-logger = logging.getLogger("ast.bundler")
-
 PARALLEL_BUNDLE_THRESHOLD = 10
 
-_worker_registry: Optional[ParserRegistry] = None
+
+def _get_worker_registry_state() -> Optional[ParserRegistry]:
+    ctx = get_runtime_context()
+    if "_worker_registry" in globals():
+        ctx.set_module_state("ast.bundler.worker_registry", globals().pop("_worker_registry"))
+    return ctx.get_module_state("ast.bundler.worker_registry", lambda: None)
+
+
+def _set_worker_registry_state(val: Optional[ParserRegistry]) -> None:
+    globals().pop("_worker_registry", None)
+    get_runtime_context().set_module_state("ast.bundler.worker_registry", val)
+
+
+def __getattr__(name: str) -> Any:
+    if name == "_worker_registry":
+        return _get_worker_registry_state()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _safe_resolve_path(p: Union[str, Path]) -> Path:
@@ -394,10 +409,11 @@ def _init_bundle_worker(parent_sys_path: List[str]) -> None:
 
 def _get_worker_registry() -> ParserRegistry:
     """Get or initialize worker-process singleton `ParserRegistry`."""
-    global _worker_registry
-    if _worker_registry is None:
-        _worker_registry = ParserRegistry(register_defaults=True)
-    return _worker_registry
+    reg = _get_worker_registry_state()
+    if reg is None:
+        reg = ParserRegistry(register_defaults=True)
+        _set_worker_registry_state(reg)
+    return reg
 
 
 def _parse_file_task_worker(
@@ -447,7 +463,7 @@ def _resolve_default_ast_storage_dir(project_root: Optional[Path] = None) -> Pat
             return _safe_resolve_path(yscb_root) / ".storage.local" / "ast"
     except Exception:
         pass
-    base = _safe_resolve_path(project_root) if project_root else _safe_resolve_path(Path.cwd())
+    base = _safe_resolve_path(project_root) if project_root else _safe_resolve_path(get_virtual_cwd())
     return base / ".storage.local" / "ast"
 
 
@@ -943,7 +959,7 @@ class SemanticBundler:
                             rel = unique_files[c_key][1]
                             progress_callback(rel, idx, total_files)
                         if err:
-                            logger.warning(f"Failed parsing file '{c_key}' during parallel bundle: {err}")
+                            log_warn(f"Failed parsing file '{c_key}' during parallel bundle: {err}")
                             self._file_symbols_cache[c_key] = []
                             self._file_call_sites_cache[c_key] = []
                             self._file_imports_cache[c_key] = {}
@@ -956,7 +972,7 @@ class SemanticBundler:
                         if imps is not None:
                             self._file_imports_cache[c_key] = dict(imps)
             except Exception as pool_err:
-                logger.warning(f"ProcessPoolExecutor error, falling back to serial parsing: {pool_err}")
+                log_warn(f"ProcessPoolExecutor error, falling back to serial parsing: {pool_err}")
                 use_parallel = False
 
         if not use_parallel:
@@ -970,7 +986,7 @@ class SemanticBundler:
                     self._file_call_sites_cache[c_key] = call_sites
                     self._file_imports_cache[c_key] = imps
                 except Exception as err:
-                    logger.warning(f"Failed parsing file '{c_key}' during serial bundle: {err}")
+                    log_warn(f"Failed parsing file '{c_key}' during serial bundle: {err}")
                     self._file_symbols_cache[c_key] = []
                     self._file_call_sites_cache[c_key] = []
                     self._file_imports_cache[c_key] = {}
@@ -1079,7 +1095,7 @@ class SemanticBundler:
                     self._file_imports_cache[c_key] = imps
                     new_symbols_by_file[c_key] = file_symbols
                 except Exception as err:
-                    logger.warning(f"Failed parsing dirty file '{c_key}': {err}")
+                    log_warn(f"Failed parsing dirty file '{c_key}': {err}")
                     self._file_symbols_cache[c_key] = []
                     self._file_call_sites_cache[c_key] = []
                     self._file_imports_cache[c_key] = {}
@@ -1156,7 +1172,7 @@ class SemanticBundler:
                 if imps:
                     imports_map[relpath] = imps
             except Exception as exc:
-                logger.debug(f"Error extracting call sites/imports from '{f_path}': {exc}")
+                log_debug(f"Error extracting call sites/imports from '{f_path}': {exc}")
 
         return call_sites, imports_map
 

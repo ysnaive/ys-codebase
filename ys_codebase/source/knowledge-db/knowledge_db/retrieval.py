@@ -5,12 +5,14 @@ knowledge-db 倒排索引、多欄位加權 BM25 語意評分與二進位 Gzip �
 
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
-import logging
 import math
 from pathlib import Path
 import re
 import threading
+from types import MappingProxyType
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+
+from core.context import get_virtual_cwd
 
 from .exceptions import SchemaValidationError
 from .io_utils import (
@@ -21,8 +23,6 @@ from .io_utils import (
 )
 from .schema import AggregatedFileResult, AggregatedItem, UnifiedSymbol
 from .tokenizer import MultilingualTokenizer
-
-logger = logging.getLogger("knowledge-db.retrieval")
 
 
 def normalize_ftypes(ftypes: Optional[Union[str, Iterable[str]]]) -> Set[str]:
@@ -213,7 +213,7 @@ class QueryFilter:
     space_weights: Optional[Dict[str, float]] = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class CodeSnippet:
     """提取之結構化程式碼片段與 Docstring 摘要"""
 
@@ -359,7 +359,7 @@ class SnippetExtractor:
                                 return cand_parent
             except Exception:
                 pass
-        cand_cwd = Path.cwd() / p
+        cand_cwd = Path(get_virtual_cwd()) / p
         if cand_cwd.exists():
             return cand_cwd
         return p
@@ -487,7 +487,7 @@ class SearchResult:
 class InvertedIndex:
     """多欄位倒排索引與符號池中心 (管理頂層 doc_lengths 共享池)"""
 
-    INDEXED_FIELDS = ["name", "signature", "members", "docstring"]
+    INDEXED_FIELDS = ("name", "signature", "members", "docstring")
 
     def __init__(self, space_name: str = ""):
         self.space_name = space_name
@@ -844,12 +844,12 @@ class InvertedIndex:
 class BM25Engine:
     """多欄位加權 BM25 檢索引擎 (支援單一打分核心 _score_candidate_documents)"""
 
-    DEFAULT_WEIGHTS = {
+    DEFAULT_WEIGHTS: Any = MappingProxyType({
         "name": 3.5,
         "signature": 2.0,
         "members": 2.0,
         "docstring": 1.5,
-    }
+    })
 
     def __init__(
         self,

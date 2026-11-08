@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from core.context import get_virtual_cwd
 from .plans._common import parse_markdown_blockquote_headers, resolve_plan_uri
 
 _STDLIB_WRITE_TEXT = Path.write_text
@@ -34,7 +35,7 @@ def _resolve_workflow_dir(uri_scheme: str, fallback_rel: str, host_dir: Optional
     resolved = resolve_plan_uri(uri_scheme, default_fallback=fallback_rel, host_dir=host_dir)
     if resolved is not None:
         return resolved
-    base = Path(host_dir).resolve() if host_dir else Path.cwd().resolve()
+    base = Path(host_dir).resolve() if host_dir else Path(get_virtual_cwd()).resolve()
     return (base / fallback_rel).resolve()
 
 
@@ -49,7 +50,7 @@ def _resolve_roadmap_and_plans_dirs(
     else:
         resolved = resolve_plan_uri("workflow.roadmap://", default_fallback=None, host_dir=host_dir)
         if resolved is None:
-            base = Path(host_dir).resolve() if host_dir else Path.cwd().resolve()
+            base = Path(host_dir).resolve() if host_dir else Path(get_virtual_cwd()).resolve()
             if (base / "plans" / "roadmap").exists():
                 resolved_roadmap = (base / "plans" / "roadmap").resolve()
             elif (base / "roadmap").exists():
@@ -133,7 +134,7 @@ def _append_promoted_changelog(
     )
 
 
-@dataclass
+@dataclass(frozen=True)
 class RoadmapItem:
     """Roadmap 條目結構化模型 (Tier 2)"""
     topic: str                     # 主題名稱
@@ -148,7 +149,7 @@ class RoadmapItem:
     trigger: str = ""              # 前置解鎖條件 (> 前置解鎖條件：)
 
 
-@dataclass
+@dataclass(frozen=True)
 class TodoItem:
     """TODO.md 單筆輕量待辦結構化模型 (Tier 1)"""
     todo_id: str                   # 標準化編號 (如 'TODO-01')

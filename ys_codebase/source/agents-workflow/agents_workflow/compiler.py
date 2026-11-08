@@ -15,11 +15,19 @@ from typing import Dict, List, Any, Optional, Tuple, Union
 try:
     from core import uri
     from core import vfs
-    from core.context import ExecutionContext
+    from core.context import ExecutionContext, get_virtual_cwd
+    from core.log import log_stream
 except ImportError:
     uri = None
     vfs = None
     ExecutionContext = None
+    get_virtual_cwd = None
+    log_stream = None
+
+
+def _warn_stderr(msg: str) -> None:
+    if log_stream is not None:
+        log_stream(msg + "\n", stream="stderr")
 
 FENCED_CODE_BLOCK_REGEX = re.compile(r"```[\s\S]*?```")
 LITERAL_BEGIN_LINE_REGEX = re.compile(r"^[ \t]*<!--\s*yscb:literal:begin\s*-->[ \t]*$")
@@ -100,10 +108,7 @@ def _preprocess_directives(
             ignore_depth = 1
         elif IGNORE_END_LINE_REGEX.match(stripped):
             if emit_warnings:
-                print(
-                    f"[compiler:warning] Unmatched '<!-- yscb:ignore:end -->' detected{target_str}",
-                    file=sys.stderr,
-                )
+                _warn_stderr(f"[compiler:warning] Unmatched '<!-- yscb:ignore:end -->' detected{target_str}")
         elif LITERAL_BEGIN_LINE_REGEX.match(stripped):
             literal_depth = 1
             cur_literal_lines = []
@@ -111,24 +116,15 @@ def _preprocess_directives(
                 cur_literal_lines.append(line)
         elif LITERAL_END_LINE_REGEX.match(stripped):
             if emit_warnings:
-                print(
-                    f"[compiler:warning] Unmatched '<!-- yscb:literal:end -->' detected{target_str}",
-                    file=sys.stderr,
-                )
+                _warn_stderr(f"[compiler:warning] Unmatched '<!-- yscb:literal:end -->' detected{target_str}")
         else:
             out_chunks.append(line)
 
     if ignore_depth > 0 and emit_warnings:
-        print(
-            f"[compiler:warning] Unclosed '<!-- yscb:ignore:begin -->' detected{target_str}",
-            file=sys.stderr,
-        )
+        _warn_stderr(f"[compiler:warning] Unclosed '<!-- yscb:ignore:begin -->' detected{target_str}")
     if literal_depth > 0:
         if emit_warnings:
-            print(
-                f"[compiler:warning] Unclosed '<!-- yscb:literal:begin -->' detected{target_str}",
-                file=sys.stderr,
-            )
+            _warn_stderr(f"[compiler:warning] Unclosed '<!-- yscb:literal:begin -->' detected{target_str}")
         idx = len(literal_blocks)
         literal_blocks.append("".join(cur_literal_lines))
         out_chunks.append(f"\x00YSCB_LITERAL_BLOCK_{idx}\x00")
@@ -149,7 +145,7 @@ def check_unenclosed_tags(content: str, doc_name: str = "") -> None:
     if matches:
         for m in dict.fromkeys(matches):
             target_str = f" in '{doc_name}'" if doc_name else ""
-            print(f"[compiler:warning] Unenclosed placeholder tag '{m}' detected{target_str} (must be enclosed in backticks '`...`')", file=sys.stderr)
+            _warn_stderr(f"[compiler:warning] Unenclosed placeholder tag '{m}' detected{target_str} (must be enclosed in backticks '`...`')")
 
 
 @functools.lru_cache(maxsize=128)
@@ -246,7 +242,7 @@ def _resolve_local_uri_tag(
             pass
 
     # Tier 3: 未知協議安全降級
-    print(f"[compiler:warning] Unresolved semantic URI tag: '{tag_uri}' in '{doc_basename}'", file=sys.stderr)
+    _warn_stderr(f"[compiler:warning] Unresolved semantic URI tag: '{tag_uri}' in '{doc_basename}'")
     return tag_uri
 
 
@@ -299,7 +295,7 @@ def _resolve_project_uri_tag(
             elif tag_uri.startswith("workflow.archived://"):
                 t_abs = os.path.join(project_root, "plans", "archived", tag_uri[len("workflow.archived://"):])
             else:
-                print(f"[compiler:warning] Failed to resolve project URI '{tag_uri}' in '{doc_basename}': {e}", file=sys.stderr)
+                _warn_stderr(f"[compiler:warning] Failed to resolve project URI '{tag_uri}' in '{doc_basename}': {e}")
 
     if t_abs:
         try:
@@ -357,7 +353,7 @@ def _resolve_locale_noun_tag(
                 return " / ".join(rendered_values)
     except Exception:
         pass
-    print(f"[compiler:warning] Unresolved locale noun tag: '{noun_key}' in '{doc_basename}'", file=sys.stderr)
+    _warn_stderr(f"[compiler:warning] Unresolved locale noun tag: '{noun_key}' in '{doc_basename}'")
     return f"__%{{{noun_key}}}__"
 
 
@@ -574,10 +570,7 @@ class ArtifactCompiler:
                 if active_cache is not None:
                     active_cache[cache_key] = val_content
             except Exception as e:
-                print(
-                    f"[compiler:warning] Failed to resolve computed token '{token_name}' ({raw_val}): {e}",
-                    file=sys.stderr,
-                )
+                _warn_stderr(f"[compiler:warning] Failed to resolve computed token '{token_name}' ({raw_val}): {e}")
                 val_content = ""
         else:
             val_content = str(raw_val)
@@ -894,7 +887,8 @@ class ArtifactCompiler:
                 return os.path.normpath(os.path.abspath(uri.resolve("project://", interactive=False)))
             except Exception:
                 pass
-        return os.path.normpath(os.path.abspath(os.getcwd()))
+        cwd_p = str(get_virtual_cwd()) if get_virtual_cwd is not None else "."
+        return os.path.normpath(os.path.abspath(cwd_p))
 
     def resolve_stage2_uri(
         self,

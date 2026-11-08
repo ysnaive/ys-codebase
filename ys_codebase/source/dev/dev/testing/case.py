@@ -10,8 +10,17 @@ import unittest
 from contextlib import contextmanager
 from typing import List, Optional, Dict, Any, Tuple, Iterator
 from core import uri, vfs
+from core.context import get_env, get_runtime_context, get_virtual_cwd
+from core.log import log
 from dev.testing.requirement import Requirement
 from dev.testing.sandbox import SandboxContext, SandboxProvisioner
+
+
+def _is_keep_sandbox_enabled() -> bool:
+    return bool(
+        get_runtime_context().get_module_state("dev.testing.keep_sandbox")
+        or get_env("YSCB_TEST_KEEP_SANDBOX", "0") == "1"
+    )
 
 
 class SecurityError(RuntimeError):
@@ -52,7 +61,7 @@ class YSCBTestCase(unittest.TestCase):
         if ctx is not None:
             YSCBTestCase._shared_sandbox_ctx = None
             is_harness_managed = os.environ.get("YSCB_TEST_SANDBOX") == "1"
-            keep_all = os.environ.get("YSCB_TEST_KEEP_SANDBOX", "0") == "1"
+            keep_all = _is_keep_sandbox_enabled()
             if not keep_all and not is_harness_managed:
                 SandboxProvisioner.cleanup_sandbox(ctx.sandbox_dir, force=True)
 
@@ -73,23 +82,13 @@ class YSCBTestCase(unittest.TestCase):
                 self._yscb_captured_output = active_cap.get_slice(start_offsets)
 
     def _restore_saved_env(self) -> None:
-        from core.platform import restore_sys_path
+        from core.platform import restore_process_env_and_cwd, restore_sys_path
 
         restore_sys_path(self._orig_sys_path)
-        for env_key in list(os.environ.keys()):
-            if env_key not in self._orig_env:
-                os.environ.pop(env_key, None)
-        for env_key, env_val in self._orig_env.items():
-            if os.environ.get(env_key) != env_val:
-                os.environ[env_key] = env_val
+        restore_process_env_and_cwd(self._orig_env, getattr(self, "_orig_cwd", None))
         uri.set_host_dir(getattr(self, "_orig_uri_host", None))
         uri.set_yscb_root(getattr(self, "_orig_uri_yscb", None))
         uri.set_module_context(getattr(self, "_orig_uri_mod", None))
-        if hasattr(self, "_orig_cwd") and self._orig_cwd:
-            try:
-                os.chdir(self._orig_cwd)
-            except OSError:
-                pass
 
     def setUp(self) -> None:
         """Test setup: create or reuse virtual environment and backup environment."""
@@ -104,7 +103,7 @@ class YSCBTestCase(unittest.TestCase):
         self._execution_status = "UNKNOWN"
         self._orig_sys_path = list(sys.path)
         self._orig_env = dict(os.environ)
-        self._orig_cwd = os.getcwd()
+        self._orig_cwd = str(get_virtual_cwd())
         self._orig_uri_host = uri.get_host_dir()
         self._orig_uri_yscb = uri.get_yscb_root()
         self._orig_uri_mod = uri.get_module_context()
@@ -146,7 +145,7 @@ class YSCBTestCase(unittest.TestCase):
                     if env_sb_valid and env_sb:
                         sb_dir = os.path.abspath(env_sb)
                     else:
-                        curr = os.path.abspath(os.getcwd())
+                        curr = os.path.abspath(str(get_virtual_cwd()))
                         while curr and curr != os.path.dirname(curr):
                             if (
                                 (os.path.basename(curr).startswith("sandbox_") and os.path.isdir(os.path.join(curr, "host_env")))
@@ -157,7 +156,7 @@ class YSCBTestCase(unittest.TestCase):
                             curr = os.path.dirname(curr)
                     if not sb_dir or not os.path.isdir(os.path.join(sb_dir, "host_env")):
                         raise SecurityError(
-                            f"[dev:test] Security Guard Blocked: Unable to resolve an authentic virtual sandbox directory from '{os.getcwd()}'. "
+                            f"[dev:test] Security Guard Blocked: Unable to resolve an authentic virtual sandbox directory from '{get_virtual_cwd()}'. "
                             "Running tests directly on the host workspace is strictly forbidden to prevent environment contamination."
                         )
                     YSCBTestCase._shared_sandbox_ctx = SandboxContext(sb_dir)
@@ -186,19 +185,19 @@ class YSCBTestCase(unittest.TestCase):
         else:
             self._execution_status = "UNKNOWN"
 
-        keep_all = os.environ.get("YSCB_TEST_KEEP_SANDBOX", "0") == "1"
+        keep_all = _is_keep_sandbox_enabled()
         if self._is_isolated_sandbox:
             if self._execution_status in ("PASSED", "UNKNOWN") and not keep_all:
                 SandboxProvisioner.cleanup_sandbox(self.sandbox_dir, force=True)
             elif self._execution_status == "FAILED":
-                print(f"\n[Test Failed] Dedicated virtual sandbox preserved at: {self.sandbox_dir}")
+                log(f"\n[Test Failed] Dedicated virtual sandbox preserved at: {self.sandbox_dir}")
             elif keep_all:
-                print(f"\n[Sandbox Kept] Dedicated virtual sandbox preserved at: {self.sandbox_dir}")
+                log(f"\n[Sandbox Kept] Dedicated virtual sandbox preserved at: {self.sandbox_dir}")
         else:
             if self._execution_status == "FAILED":
-                print(f"\n[Test Failed] Shared virtual sandbox preserved at: {self.sandbox_dir}")
+                log(f"\n[Test Failed] Shared virtual sandbox preserved at: {self.sandbox_dir}")
             elif keep_all and self._execution_status != "UNKNOWN":
-                print(f"\n[Sandbox Kept] Shared virtual sandbox preserved at: {self.sandbox_dir}")
+                log(f"\n[Sandbox Kept] Shared virtual sandbox preserved at: {self.sandbox_dir}")
 
     def mark_passed(self) -> None:
         """Mark that current test method executed to completion successfully."""

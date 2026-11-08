@@ -2,6 +2,7 @@
 Dev Developer Tools Module for YS-Codebase (PEP 562 Lazy Loading Architecture).
 100% Python Standard Library.
 """
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 import importlib
 
@@ -13,14 +14,14 @@ if TYPE_CHECKING:
     from dev.releaser import Releaser
     from dev import testing
 
-_MODULE_MAP = {
+_MODULE_MAP = MappingProxyType({
     "Scaffolder": ("dev.scaffold", "Scaffolder"),
     "Checker": ("dev.checker", "Checker"),
     "Builder": ("dev.builder", "Builder"),
     "Tester": ("dev.tester", "Tester"),
     "Releaser": ("dev.releaser", "Releaser"),
     "testing": ("dev.testing", None),
-}
+})
 
 
 def __getattr__(name: str) -> Any:

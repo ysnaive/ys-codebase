@@ -22,6 +22,7 @@ import uuid
 from core import config as core_config
 from core import uri
 from core import vfs
+from core.log import log_file_jsonl
 from core.platform.lock import InterProcessLock
 from core.platform.process import is_process_alive
 
@@ -64,17 +65,17 @@ REPO_README_FILENAME = "README.md"
 ROOT_README_BEGIN_MARKER = "<!-- === YSCB GDRIVE REPO_SYNC BEGIN === -->"
 ROOT_README_END_MARKER = "<!-- === YSCB GDRIVE REPO_SYNC END === -->"
 
-SYSTEM_NAMES = {
+SYSTEM_NAMES = frozenset({
     REPO_CONFIG_FILENAME,
     REPO_README_FILENAME,
     ".history",
     ".trash",
-}
-BRANCH_INTERNAL_SYSTEM_NAMES = {
+})
+BRANCH_INTERNAL_SYSTEM_NAMES = frozenset({
     REPO_CONFIG_FILENAME,
     ".history",
     ".trash",
-}
+})
 STABILIZATION_WINDOW_NS = 2_000_000_000  # 2.0 seconds
 MAX_LOG_BYTES = 2 * 1024 * 1024  # 2 MB
 PARALLEL_TRANSFER_WORKERS = 8
@@ -292,26 +293,55 @@ def reconcile_root_readme_state(
     return {"changed": True, "action": action_taken, "enabled": curr_enabled}
 
 
-@dataclass
 class SyncReport:
     """Structured summary of a pull / push / sync execution."""
 
-    branch: str
-    mode: str
-    pushed: List[str] = field(default_factory=list)
-    pulled: List[str] = field(default_factory=list)
-    deleted_local: List[str] = field(default_factory=list)
-    deleted_remote: List[str] = field(default_factory=list)
-    conflicts: List[str] = field(default_factory=list)
-    moved_to_history: List[str] = field(default_factory=list)
-    gc_history_to_trash: List[str] = field(default_factory=list)
-    skipped_stabilizing: List[str] = field(default_factory=list)
-    exit_code: int = 0
-    yielded: bool = False
-    cache_hit_level: Optional[int] = None
+    def __init__(
+        self,
+        branch: str,
+        mode: str,
+        pushed: Optional[List[str]] = None,
+        pulled: Optional[List[str]] = None,
+        deleted_local: Optional[List[str]] = None,
+        deleted_remote: Optional[List[str]] = None,
+        conflicts: Optional[List[str]] = None,
+        moved_to_history: Optional[List[str]] = None,
+        gc_history_to_trash: Optional[List[str]] = None,
+        skipped_stabilizing: Optional[List[str]] = None,
+        exit_code: int = 0,
+        yielded: bool = False,
+        cache_hit_level: Optional[int] = None,
+    ) -> None:
+        self.branch = branch
+        self.mode = mode
+        self.pushed: List[str] = list(pushed) if pushed is not None else []
+        self.pulled: List[str] = list(pulled) if pulled is not None else []
+        self.deleted_local: List[str] = list(deleted_local) if deleted_local is not None else []
+        self.deleted_remote: List[str] = list(deleted_remote) if deleted_remote is not None else []
+        self.conflicts: List[str] = list(conflicts) if conflicts is not None else []
+        self.moved_to_history: List[str] = list(moved_to_history) if moved_to_history is not None else []
+        self.gc_history_to_trash: List[str] = list(gc_history_to_trash) if gc_history_to_trash is not None else []
+        self.skipped_stabilizing: List[str] = list(skipped_stabilizing) if skipped_stabilizing is not None else []
+        self.exit_code = exit_code
+        self.yielded = yielded
+        self.cache_hit_level = cache_hit_level
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        return {
+            "branch": self.branch,
+            "mode": self.mode,
+            "pushed": self.pushed,
+            "pulled": self.pulled,
+            "deleted_local": self.deleted_local,
+            "deleted_remote": self.deleted_remote,
+            "conflicts": self.conflicts,
+            "moved_to_history": self.moved_to_history,
+            "gc_history_to_trash": self.gc_history_to_trash,
+            "skipped_stabilizing": self.skipped_stabilizing,
+            "exit_code": self.exit_code,
+            "yielded": self.yielded,
+            "cache_hit_level": self.cache_hit_level,
+        }
 
 
 @dataclass(frozen=True)
@@ -338,7 +368,7 @@ class _PullTask:
     remote_entry: FileEntry
 
 
-@dataclass
+@dataclass(frozen=True)
 class _RemoteStageSnapshot:
     """Stage 1 remote snapshot and cache state before Stage 3 reconciliation."""
 
@@ -351,25 +381,42 @@ class _RemoteStageSnapshot:
     pending_page_token: str
 
 
-@dataclass
 class _IncrementalPatchContext:
     """Working state for isolated Level 1 incremental change patching."""
 
-    repo_meta: Dict[str, Any]
-    cache_branches: Dict[str, Any]
-    known_folder_ids: Set[str]
-    folder_meta: Dict[str, Dict[str, str]]
-    all_branch_dir_ids: Set[str]
-    file_id_to_branch_paths: Dict[str, List[Tuple[str, str]]]
-    target_id_to_shortcuts: Dict[str, List[Tuple[str, str]]]
-    history_file_ids: Set[str]
-    meta_file_id: str
-    meta_md5: str
-    repo_folder_id: str
-    history_folder_id: str
-    trash_folder_id: str
-    folder_patched: bool = False
-    new_folder_registered: bool = False
+    def __init__(
+        self,
+        repo_meta: Dict[str, Any],
+        cache_branches: Dict[str, Any],
+        known_folder_ids: Set[str],
+        folder_meta: Dict[str, Dict[str, str]],
+        all_branch_dir_ids: Set[str],
+        file_id_to_branch_paths: Dict[str, List[Tuple[str, str]]],
+        target_id_to_shortcuts: Dict[str, List[Tuple[str, str]]],
+        history_file_ids: Set[str],
+        meta_file_id: str,
+        meta_md5: str,
+        repo_folder_id: str,
+        history_folder_id: str,
+        trash_folder_id: str,
+        folder_patched: bool = False,
+        new_folder_registered: bool = False,
+    ) -> None:
+        self.repo_meta = repo_meta
+        self.cache_branches = cache_branches
+        self.known_folder_ids = known_folder_ids
+        self.folder_meta = folder_meta
+        self.all_branch_dir_ids = all_branch_dir_ids
+        self.file_id_to_branch_paths = file_id_to_branch_paths
+        self.target_id_to_shortcuts = target_id_to_shortcuts
+        self.history_file_ids = history_file_ids
+        self.meta_file_id = meta_file_id
+        self.meta_md5 = meta_md5
+        self.repo_folder_id = repo_folder_id
+        self.history_folder_id = history_folder_id
+        self.trash_folder_id = trash_folder_id
+        self.folder_patched = folder_patched
+        self.new_folder_registered = new_folder_registered
 
 
 class _BackgroundYieldRequested(Exception):
@@ -590,8 +637,7 @@ class SyncCoordinator:
                 "event": event,
                 **details,
             }
-            with open(self.log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            log_file_jsonl(self.log_path, record)
         except OSError:
             pass
 

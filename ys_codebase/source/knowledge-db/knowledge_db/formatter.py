@@ -57,13 +57,13 @@ class UniversalRedundancyFilter:
     徹底過濾切片中任何與已呈現元資料重複之內容，最大化 8,000 字元內的真實邏輯密度。
     """
 
-    LICENSE_PATTERNS = [
+    LICENSE_PATTERNS = (
         re.compile(r"spdx-license-identifier", re.IGNORECASE),
         re.compile(r"copyright\s+(\(c\)|©|\d{4})", re.IGNORECASE),
         re.compile(r"all\s+rights\s+reserved", re.IGNORECASE),
         re.compile(r"licensed\s+under\s+the\s+(apache|mit|bsd|gpl)", re.IGNORECASE),
         re.compile(r"^/\*+\s*=+\s*\*+/$"),
-    ]
+    )
 
     def purify_lines(
         self,
@@ -232,7 +232,8 @@ class ResultFormatter:
                 return Path(host_dir).resolve()
         except Exception:
             pass
-        return Path.cwd().resolve()
+        from core.context import get_virtual_cwd
+        return Path(get_virtual_cwd()).resolve()
 
     def normalize_workspace_path(self, file_path: Union[str, Path]) -> str:
         """將路徑正規化為相對於 Workspace/Project 根目錄之標準相對路徑 (forward slash)"""

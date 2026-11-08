@@ -4,29 +4,28 @@ agents_workflow.plans._trace_parser — 多宿主 .jsonl 對話紀錄串流解�
 
 import json
 import re
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, FrozenSet, Iterator, List, Optional, Set, Tuple, Union
 
 from ._trace_renderer import FrictionSignal
 
 MAX_JSONL_LINE_BYTES: int = 2 * 1024 * 1024
 
-EDIT_TOOL_NAMES: Set[str] = {
+EDIT_TOOL_NAMES: FrozenSet[str] = frozenset({
     "edit_file", "write_file", "edit", "write", "multiedit", "replace",
     "replace_file_content", "multi_replace_file_content",
-}
-READ_TOOL_NAMES: Set[str] = {
+})
+READ_TOOL_NAMES: FrozenSet[str] = frozenset({
     "read_file", "view_file", "read", "view", "view_file_outline",
-}
-GATE_COMMANDS: Set[Tuple[str, str]] = {
+})
+GATE_COMMANDS: FrozenSet[Tuple[str, str]] = frozenset({
     ("agents-workflow", "plan verify"),
     ("agents-workflow", "compile"),
     ("dev", "check"),
     ("dev", "test"),
     ("core", "contributes check"),
-}
+})
 SOURCE_EXTENSIONS = (
     ".py", ".ts", ".tsx", ".js", ".jsx", ".cs", ".java", ".kt", ".c", ".cpp", ".h", ".hpp", ".rs", ".go"
 )
@@ -68,84 +67,107 @@ def _estimate_tokens(text: str) -> int:
     return max(1, int(round(ascii_cnt / 4.0 + non_ascii_cnt * 0.65)))
 
 
-@dataclass
 class _TranscriptParseState:
     """串流解析 .jsonl 過程之累積狀態容器。"""
-    first_ts: Optional[str] = None
-    last_ts: Optional[str] = None
-    topic: str = ""
-    signals: List[FrictionSignal] = field(default_factory=list)
-    thinking_excerpts: List[Dict[str, Any]] = field(default_factory=list)
 
-    edit_history: Dict[str, List[int]] = field(default_factory=dict)
-    read_counts: Dict[str, int] = field(default_factory=dict)
-    unique_read_files: Set[str] = field(default_factory=set)
-    consecutive_source_reads: int = 0
-    max_consecutive_reads: int = 0
-    consecutive_read_files: List[str] = field(default_factory=list)
-    last_thinking: str = ""
+    def __init__(self) -> None:
+        self.first_ts: Optional[str] = None
+        self.last_ts: Optional[str] = None
+        self.topic: str = ""
+        self.signals: List[FrictionSignal] = []
+        self.thinking_excerpts: List[Dict[str, Any]] = []
 
-    total_steps: int = 0
-    user_turns: int = 0
-    model_turns: int = 0
-    thinking_steps: int = 0
-    truncated_steps: int = 0
-    error_steps: int = 0
-    total_tool_calls: int = 0
-    total_read_ops: int = 0
-    total_edit_ops: int = 0
-    subagent_calls: int = 0
-    tool_dist: Dict[str, int] = field(default_factory=dict)
+        self.edit_history: Dict[str, List[int]] = {}
+        self.read_counts: Dict[str, int] = {}
+        self.unique_read_files: Set[str] = set()
+        self.consecutive_source_reads: int = 0
+        self.max_consecutive_reads: int = 0
+        self.consecutive_read_files: List[str] = []
+        self.last_thinking: str = ""
 
-    tok_user: int = 0
-    tok_model: int = 0
-    tok_thinking: int = 0
-    tok_tool_args: int = 0
-    tok_tool_out: int = 0
-    api_in_tokens: int = 0
-    api_out_tokens: int = 0
-    api_cache_read: int = 0
-    api_cache_create: int = 0
+        self.total_steps: int = 0
+        self.user_turns: int = 0
+        self.model_turns: int = 0
+        self.thinking_steps: int = 0
+        self.truncated_steps: int = 0
+        self.error_steps: int = 0
+        self.total_tool_calls: int = 0
+        self.total_read_ops: int = 0
+        self.total_edit_ops: int = 0
+        self.subagent_calls: int = 0
+        self.tool_dist: Dict[str, int] = {}
 
-    last_step_read_keys: List[str] = field(default_factory=list)
-    last_step_gate_cmds: List[str] = field(default_factory=list)
-    transcript_cli_calls: int = 0
-    transcript_cli_failed: int = 0
-    transcript_cli_by_module: Dict[str, int] = field(default_factory=dict)
-    transcript_gate_bounces: List[FrictionSignal] = field(default_factory=list)
+        self.tok_user: int = 0
+        self.tok_model: int = 0
+        self.tok_thinking: int = 0
+        self.tok_tool_args: int = 0
+        self.tok_tool_out: int = 0
+        self.api_in_tokens: int = 0
+        self.api_out_tokens: int = 0
+        self.api_cache_read: int = 0
+        self.api_cache_create: int = 0
 
-    wasted_dup_reads: int = 0
-    wasted_failed_ops: int = 0
-    wasted_edit_churn: int = 0
-    wasted_blind_reads: int = 0
-    has_recent_kdb_query: bool = False
-    file_edit_step_tokens: Dict[str, List[Tuple[int, int]]] = field(default_factory=dict)
-    tool_token_stats: Dict[str, Dict[str, int]] = field(default_factory=dict)
-    heavy_steps_raw: List[Dict[str, Any]] = field(default_factory=list)
-    heavy_cli_raw: List[Dict[str, Any]] = field(default_factory=list)
-    pending_tool_context: Optional[Dict[str, Any]] = None
-    last_planner_thinking_tok: int = 0
-    last_planner_args_tok: int = 0
+        self.last_step_read_keys: List[str] = []
+        self.last_step_gate_cmds: List[str] = []
+        self.transcript_cli_calls: int = 0
+        self.transcript_cli_failed: int = 0
+        self.transcript_cli_by_module: Dict[str, int] = {}
+        self.transcript_gate_bounces: List[FrictionSignal] = []
+
+        self.wasted_dup_reads: int = 0
+        self.wasted_failed_ops: int = 0
+        self.wasted_edit_churn: int = 0
+        self.wasted_blind_reads: int = 0
+        self.has_recent_kdb_query: bool = False
+        self.file_edit_step_tokens: Dict[str, List[Tuple[int, int]]] = {}
+        self.tool_token_stats: Dict[str, Dict[str, int]] = {}
+        self.heavy_steps_raw: List[Dict[str, Any]] = []
+        self.heavy_cli_raw: List[Dict[str, Any]] = []
+        self.pending_tool_context: Optional[Dict[str, Any]] = None
+        self.last_planner_thinking_tok: int = 0
+        self.last_planner_args_tok: int = 0
 
 
-@dataclass
 class _StepParseContext:
     """單步 JSONL 紀錄解析上下文容器。"""
-    step_no: int
-    obj: Dict[str, Any]
-    payload_obj: Dict[str, Any]
-    payload_type: str
-    was_truncated: bool
-    is_step_error: bool = False
-    content_str: str = ""
-    content_tok: int = 0
-    is_tool_output_step: bool = False
-    tool_result_errors: List[str] = field(default_factory=list)
-    step_thinking_tok: int = 0
-    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
-    current_step_read_keys: List[str] = field(default_factory=list)
-    current_step_gate_cmds: List[str] = field(default_factory=list)
-    step_total_args_tok: int = 0
+
+    def __init__(
+        self,
+        step_no: int,
+        obj: Dict[str, Any],
+        payload_obj: Dict[str, Any],
+        payload_type: str,
+        was_truncated: bool,
+        is_step_error: bool = False,
+        content_str: str = "",
+        content_tok: int = 0,
+        is_tool_output_step: bool = False,
+        tool_result_errors: Optional[List[str]] = None,
+        step_thinking_tok: int = 0,
+        tool_calls: Optional[List[Dict[str, Any]]] = None,
+        current_step_read_keys: Optional[List[str]] = None,
+        current_step_gate_cmds: Optional[List[str]] = None,
+        step_total_args_tok: int = 0,
+    ) -> None:
+        self.step_no = step_no
+        self.obj = obj
+        self.payload_obj = payload_obj
+        self.payload_type = payload_type
+        self.was_truncated = was_truncated
+        self.is_step_error = is_step_error
+        self.content_str = content_str
+        self.content_tok = content_tok
+        self.is_tool_output_step = is_tool_output_step
+        self.tool_result_errors: List[str] = list(tool_result_errors) if tool_result_errors is not None else []
+        self.step_thinking_tok = step_thinking_tok
+        self.tool_calls: List[Dict[str, Any]] = list(tool_calls) if tool_calls is not None else []
+        self.current_step_read_keys: List[str] = (
+            list(current_step_read_keys) if current_step_read_keys is not None else []
+        )
+        self.current_step_gate_cmds: List[str] = (
+            list(current_step_gate_cmds) if current_step_gate_cmds is not None else []
+        )
+        self.step_total_args_tok = step_total_args_tok
 
 
 def _append_thinking_excerpt_once(

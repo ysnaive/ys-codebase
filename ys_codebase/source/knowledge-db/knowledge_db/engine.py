@@ -5,13 +5,14 @@ knowledge-db 統一門面 SDK (engine.py)
 """
 
 import json
-import logging
 import os
 from pathlib import Path
 import threading
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ast_engine import ASTEngine, SemanticBundle, SemanticBundler
+from core.context import get_runtime_context, get_virtual_cwd
+from core.log import log_info, log_warn
 from core.space import (
     ScanDiffDetail,
     ScanDiffResult,
@@ -41,8 +42,6 @@ from .service import (
     wait_until_worker_idle,
 )
 from .tokenizer import MultilingualTokenizer
-
-logger = logging.getLogger("knowledge-db.engine")
 
 
 def _normalize_raw_space_def(
@@ -254,8 +253,9 @@ class KnowledgeEngine:
         if embedding_mock_mode is not None:
             mock_mode = embedding_mock_mode
         else:
-            mock_mode = (
-                os.environ.get("KNOWLEDGE_DB_MOCK_EMBEDDING") == "1"
+            mock_mode = bool(
+                get_runtime_context().get_module_state("knowledge_db.mock_embedding")
+                or os.environ.get("KNOWLEDGE_DB_MOCK_EMBEDDING") == "1"
                 or os.environ.get("YSCB_MOCK_EMBEDDING") == "1"
                 or os.environ.get("YSCB_TEST_SANDBOX") == "1"
             )
@@ -272,7 +272,7 @@ class KnowledgeEngine:
             bm25_engine=self.bm25_engine,
             space_weights=self.space_weights,
         )
-        workspace_root = proj_root_path or getattr(self.space_manager, "project_root", None) or Path.cwd().resolve()
+        workspace_root = proj_root_path or getattr(self.space_manager, "project_root", None) or Path(get_virtual_cwd()).resolve()
         self.formatter = ResultFormatter(
             workspace_root=workspace_root,
         )
@@ -870,36 +870,46 @@ class KnowledgeEngine:
     def pre_warm(cls, workspace_root: Optional[Union[str, Path]] = None) -> None:
         """響應 server_worker_warming 事件，預熱 FastEmbed 模型與索引快取。"""
         try:
-            logger.info("Pre-warming knowledge-db engine...")
+            log_info("Pre-warming knowledge-db engine...")
             engine = get_engine()
             enable_vec = bool(getattr(engine.config, "enable_vector_search", True))
             engine.pipeline._ensure_indices_loaded(load_vectors=enable_vec)
+            try:
+                from ast_engine import get_engine as get_ast_engine
+
+                ast_eng = get_ast_engine()
+                ast_eng._ensure_loaded_from_disk()
+            except Exception as ast_exc:
+                log_warn(f"AST engine pre-warm skipped: {ast_exc}")
             if enable_vec and hasattr(engine, "embedding_service") and engine.embedding_service:
                 engine.embedding_service.suppress_guard_prompt = True
                 if not getattr(engine.embedding_service, "mock_mode", False) and engine.embedding_service.is_model_downloaded():
                     engine.embedding_service._ensure_model()
-            logger.info("Knowledge-db engine pre-warmed successfully.")
+            log_info("Knowledge-db engine pre-warmed successfully.")
         except Exception as e:
-            logger.warning(f"Knowledge-db engine pre-warm warning: {e}")
+            log_warn(f"Knowledge-db engine pre-warm warning: {e}")
 
 
-_GLOBAL_ENGINE_INSTANCE: Optional[KnowledgeEngine] = None
 _ENGINE_LOCK = threading.Lock()
 
 
 def get_engine() -> KnowledgeEngine:
     """取得進程級唯一 KnowledgeEngine 單例，惰性初始化並全域複用。"""
-    global _GLOBAL_ENGINE_INSTANCE
     with _ENGINE_LOCK:
-        if _GLOBAL_ENGINE_INSTANCE is None:
-            _GLOBAL_ENGINE_INSTANCE = KnowledgeEngine()
+        ctx = get_runtime_context()
+        if "_GLOBAL_ENGINE_INSTANCE" in globals():
+            ctx.set_module_state("knowledge_db.engine.instance", globals().pop("_GLOBAL_ENGINE_INSTANCE"))
+        inst = ctx.get_module_state("knowledge_db.engine.instance")
+        if inst is None:
+            inst = KnowledgeEngine()
+            ctx.set_module_state("knowledge_db.engine.instance", inst)
         else:
             try:
                 from .config import KnowledgeDBConfig
                 new_cfg = KnowledgeDBConfig.load()
-                _GLOBAL_ENGINE_INSTANCE.config = new_cfg
-                _GLOBAL_ENGINE_INSTANCE.pipeline.config = new_cfg
-                emb_svc = getattr(_GLOBAL_ENGINE_INSTANCE, "embedding_service", None)
+                inst.config = new_cfg
+                inst.pipeline.config = new_cfg
+                emb_svc = getattr(inst, "embedding_service", None)
                 if emb_svc is not None:
                     emb_svc.enable_vector_search = bool(getattr(new_cfg, "enable_vector_search", True))
                     emb_svc.max_threads = new_cfg.resolve_threads()
@@ -913,7 +923,13 @@ def get_engine() -> KnowledgeEngine:
                             emb_svc._init_attempted = False
             except Exception:
                 pass
-        return _GLOBAL_ENGINE_INSTANCE
+        return inst
+
+
+def __getattr__(name: str) -> Any:
+    if name == "_GLOBAL_ENGINE_INSTANCE":
+        return get_runtime_context().get_module_state("knowledge_db.engine.instance")
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
 __all__ = [

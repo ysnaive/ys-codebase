@@ -29,7 +29,7 @@ class FileSpaceOrigin(str, Enum):
     EPHEMERAL = "ephemeral"
 
 
-@dataclass
+@dataclass(frozen=True)
 class FileSpaceConfig:
     """
     Compatibility wrapper representing a workspace configuration backed by core.space.SpaceConfig.
@@ -52,21 +52,21 @@ class FileSpaceConfig:
     def __post_init__(self) -> None:
         if isinstance(self.hash_policy, str):
             try:
-                self.hash_policy = HashPolicy(self.hash_policy)
+                object.__setattr__(self, "hash_policy", HashPolicy(self.hash_policy))
             except ValueError as exc:
                 raise InvalidFileSpaceConfigError(
                     f"Invalid hash_policy '{self.hash_policy}' for space '{self.name}'"
                 ) from exc
         if isinstance(self.origin, str) and not isinstance(self.origin, FileSpaceOrigin):
             try:
-                self.origin = FileSpaceOrigin(self.origin)
+                object.__setattr__(self, "origin", FileSpaceOrigin(self.origin))
             except ValueError:
-                self.origin = FileSpaceOrigin.PROJECT
+                object.__setattr__(self, "origin", FileSpaceOrigin.PROJECT)
 
         try:
             if isinstance(self.large_file_threshold_mb, bool):
                 raise TypeError("boolean is not a valid threshold")
-            self.large_file_threshold_mb = int(self.large_file_threshold_mb)
+            object.__setattr__(self, "large_file_threshold_mb", int(self.large_file_threshold_mb))
         except (TypeError, ValueError) as exc:
             raise InvalidFileSpaceConfigError(
                 f"Invalid large_file_threshold_mb '{self.large_file_threshold_mb}' for space '{self.name}'"
@@ -79,14 +79,14 @@ class FileSpaceConfig:
         try:
             if isinstance(self.weight, bool):
                 raise TypeError("boolean is not a valid weight")
-            self.weight = float(self.weight)
+            object.__setattr__(self, "weight", float(self.weight))
         except (TypeError, ValueError) as exc:
             raise InvalidFileSpaceConfigError(
                 f"Invalid weight '{self.weight}' for space '{self.name}'"
             ) from exc
 
         if not self.raw_include_uris and self.include:
-            self.raw_include_uris = [str(p) for p in self.include]
+            object.__setattr__(self, "raw_include_uris", [str(p) for p in self.include])
 
     @property
     def origin_display(self) -> str:

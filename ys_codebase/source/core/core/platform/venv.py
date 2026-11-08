@@ -463,6 +463,27 @@ def restore_sys_path(snapshot: Sequence[str]) -> None:
     ]
 
 
+def restore_process_env_and_cwd(
+    env_snapshot: dict[str, str],
+    cwd_snapshot: Optional[str] = None,
+) -> None:
+    """
+    Restore process-level `os.environ` and working directory (`os.chdir`) from
+    captured snapshots during test teardown (`YSCBTestCase._restore_saved_env`).
+    """
+    for env_key in list(os.environ.keys()):
+        if env_key not in env_snapshot:
+            os.environ.pop(env_key, None)
+    for env_key, env_val in env_snapshot.items():
+        if os.environ.get(env_key) != env_val:
+            os.environ[env_key] = env_val
+    if cwd_snapshot:
+        try:
+            os.chdir(cwd_snapshot)
+        except OSError:
+            pass
+
+
 def __getattr__(name: str) -> Any:
     """PEP 562 backward-compatible attribute delegation to active `RuntimeContext`."""
     if name == "_ACTIVE_TEST_SOURCE_PATHS":

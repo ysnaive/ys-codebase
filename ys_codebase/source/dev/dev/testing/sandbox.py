@@ -234,7 +234,8 @@ class SandboxProvisioner:
                 is_harness_cleanup=False,
             )
         except Exception as e:
-            print(f"[dev:sandbox] Warning: Failed during prune_sandboxes: {e}", file=sys.stderr)
+            from core.log import log
+            log(f"[dev:sandbox] Warning: Failed during prune_sandboxes: {e}", stream="stderr")
             return 0
 
     @staticmethod
@@ -252,7 +253,8 @@ class SandboxProvisioner:
                 is_harness_cleanup=is_harness_cleanup,
             )
         except Exception as e:
-            print(f"[dev:sandbox] Warning: Failed during cleanup_all_sandboxes: {e}", file=sys.stderr)
+            from core.log import log
+            log(f"[dev:sandbox] Warning: Failed during cleanup_all_sandboxes: {e}", stream="stderr")
             return 0
 
     @staticmethod
@@ -413,9 +415,11 @@ class SandboxProvisioner:
         except (FileNotFoundError, OSError) as e:
             if getattr(e, "errno", None) == 2:
                 return
-            print(f"[dev:sandbox] Warning: Failed to unlink projected venv: {e}", file=sys.stderr)
+            from core.log import log
+            log(f"[dev:sandbox] Warning: Failed to unlink projected venv: {e}", stream="stderr")
         except Exception as e:
-            print(f"[dev:sandbox] Warning: Failed to unlink projected venv: {e}", file=sys.stderr)
+            from core.log import log
+            log(f"[dev:sandbox] Warning: Failed to unlink projected venv: {e}", stream="stderr")
 
     @staticmethod
     def _project_venv(host_yscb_dir: str, sandbox_engine_dir: str) -> bool:
@@ -471,7 +475,8 @@ class SandboxProvisioner:
                 f.write(host_site_pkg + "\n")
             return True
         except Exception as e:
-            print(f"[dev:sandbox] Warning: Failed to project venv with .pth fallback: {e}", file=sys.stderr)
+            from core.log import log
+            log(f"[dev:sandbox] Warning: Failed to project venv with .pth fallback: {e}", stream="stderr")
             return False
 
     @staticmethod
@@ -671,11 +676,12 @@ class SandboxProvisioner:
                 return True
 
             if not is_harness_cleanup and os.environ.get("YSCB_TEST_SANDBOX") == "1":
+                from core.context import get_virtual_cwd
                 real_target = os.path.normcase(os.path.normpath(os.path.realpath(target_abs)))
                 active_sb = os.environ.get("YSCB_SANDBOX_DIR")
                 if active_sb and os.path.normcase(os.path.normpath(os.path.realpath(active_sb))) == real_target:
                     return True
-                curr_cwd = os.path.normcase(os.path.normpath(os.path.realpath(os.getcwd())))
+                curr_cwd = os.path.normcase(os.path.normpath(os.path.realpath(str(get_virtual_cwd()))))
                 if curr_cwd == real_target or curr_cwd.startswith(real_target + os.sep):
                     return True
 
@@ -695,5 +701,6 @@ class SandboxProvisioner:
             return True
         except Exception as e:
             if not force:
-                print(f"[dev:sandbox] Warning: Failed to clean sandbox '{sandbox_dir}': {e}", file=sys.stderr)
+                from core.log import log
+                log(f"[dev:sandbox] Warning: Failed to clean sandbox '{sandbox_dir}': {e}", stream="stderr")
             return False

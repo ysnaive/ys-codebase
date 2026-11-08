@@ -4,11 +4,12 @@ Uses PEP 562 module-level `__getattr__` lazy loading so top-level package import
 """
 
 import importlib
-from typing import Any, Dict, List, Tuple
+from types import MappingProxyType
+from typing import Any, Dict, List, Mapping, Tuple
 
 __version__ = "1.0.1.6"
 
-_LAZY_EXPORTS: Dict[str, Tuple[str, str]] = {
+_LAZY_EXPORTS: Mapping[str, Tuple[str, str]] = MappingProxyType({
     "SemanticBundler": (".bundler", "SemanticBundler"),
     "aggregate_partial_symbols": (".bundler", "aggregate_partial_symbols"),
     "ensure_unique_overload_ids": (".bundler", "ensure_unique_overload_ids"),
@@ -65,7 +66,7 @@ _LAZY_EXPORTS: Dict[str, Tuple[str, str]] = {
     "SymbolCallSite": (".schema", "SymbolCallSite"),
     "SymbolKind": (".schema", "SymbolKind"),
     "UnifiedSymbol": (".schema", "UnifiedSymbol"),
-}
+})
 
 __all__ = [
     "ASTCorruptedError",

@@ -936,10 +936,10 @@ class TestVSCodeSupport(YSCBTestCase):
     def test_dev_hook_sandbox_setup_and_teardown_logging(self) -> None:
         """驗證 `scripts/hook.dev.py` 之 `on_test_setup` 與 `on_test_teardown` 除錯日誌記錄。"""
         dev_hook = self._load_script_module("hook.dev.py", "_test_vsc_hook_dev")
-        with self.assertLogs("vscode-support.hook.dev", level="DEBUG") as cm:
+        with patch.object(dev_hook, "log_debug") as mock_log_debug:
             dev_hook.on_test_setup(context={"suite": "unit"})
             dev_hook.on_test_teardown(context={"suite": "unit"})
-        joined_logs = "\n".join(cm.output)
+        joined_logs = "\n".join(str(c.args[0]) for c in mock_log_debug.call_args_list)
         self.assertIn("[hook.dev] Setup vscode-support sandbox:", joined_logs)
         self.assertIn("[hook.dev] Teardown vscode-support sandbox:", joined_logs)
         self.mark_passed()

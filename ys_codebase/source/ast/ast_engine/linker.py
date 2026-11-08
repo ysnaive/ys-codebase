@@ -6,25 +6,42 @@ Cross-File Call Topology Linker (`TopologyLinker`) and Polymorphic Contract Expa
 """
 
 from collections import defaultdict, deque
-import logging
 import re
 import threading
 from typing import Any, Deque, Dict, Iterable, List, Optional, Set, Tuple, Union
 
+from core.context import get_runtime_context
+
 from .graph import CallGraphIndex
 from .schema import SymbolCallSite, SymbolKind, UnifiedSymbol
 
-logger = logging.getLogger("ast.linker")
-
 _LINKER_CACHE_LOCK = threading.RLock()
-_LAST_LINKER_CACHE: Dict[str, Any] = {
-    "symbols_map_id": None,
-    "symbols_count": 0,
-    "symbols_fingerprint": 0,
-    "class_bases": None,
-    "base_derived": None,
-    "methods_by_class_and_short": None,
-}
+
+
+def _create_default_linker_cache() -> Dict[str, Any]:
+    return {
+        "symbols_map_id": None,
+        "symbols_count": 0,
+        "symbols_fingerprint": 0,
+        "class_bases": None,
+        "base_derived": None,
+        "methods_by_class_and_short": None,
+    }
+
+
+def _get_last_linker_cache() -> Dict[str, Any]:
+    ctx = get_runtime_context()
+    if "_LAST_LINKER_CACHE" in globals():
+        ext_cache = globals().pop("_LAST_LINKER_CACHE")
+        if isinstance(ext_cache, dict):
+            ctx.set_module_state("ast.linker.last_cache", ext_cache)
+    return ctx.get_module_state("ast.linker.last_cache", _create_default_linker_cache)
+
+
+def __getattr__(name: str) -> Any:
+    if name == "_LAST_LINKER_CACHE":
+        return _get_last_linker_cache()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _compute_symbols_map_fingerprint(symbols_map: Dict[str, UnifiedSymbol]) -> int:
@@ -175,13 +192,14 @@ class TopologyLinker:
                     self._by_space_name[sp][key].append(sym)
 
         fp = _compute_symbols_map_fingerprint(self.symbols_map)
+        last_cache = _get_last_linker_cache()
         with _LINKER_CACHE_LOCK:
-            _LAST_LINKER_CACHE["symbols_map_id"] = id(self.symbols_map)
-            _LAST_LINKER_CACHE["symbols_count"] = len(self.symbols_map)
-            _LAST_LINKER_CACHE["symbols_fingerprint"] = fp
-            _LAST_LINKER_CACHE["class_bases"] = self._class_bases
-            _LAST_LINKER_CACHE["base_derived"] = self._base_derived
-            _LAST_LINKER_CACHE["methods_by_class_and_short"] = self._methods_by_class_and_short
+            last_cache["symbols_map_id"] = id(self.symbols_map)
+            last_cache["symbols_count"] = len(self.symbols_map)
+            last_cache["symbols_fingerprint"] = fp
+            last_cache["class_bases"] = self._class_bases
+            last_cache["base_derived"] = self._base_derived
+            last_cache["methods_by_class_and_short"] = self._methods_by_class_and_short
 
     @staticmethod
     def _select_best_overload(
@@ -743,17 +761,18 @@ def expand_contract_symbol_ids(
         _add(t.id)
 
     current_fp: Optional[int] = None
+    last_cache = _get_last_linker_cache()
     if cached_bases is None:
         current_fp = _compute_symbols_map_fingerprint(sym_dict)
         with _LINKER_CACHE_LOCK:
             if (
-                _LAST_LINKER_CACHE["symbols_map_id"] == id(sym_dict)
-                and _LAST_LINKER_CACHE["symbols_count"] == len(sym_dict)
-                and _LAST_LINKER_CACHE.get("symbols_fingerprint") == current_fp
+                last_cache["symbols_map_id"] == id(sym_dict)
+                and last_cache["symbols_count"] == len(sym_dict)
+                and last_cache.get("symbols_fingerprint") == current_fp
             ):
-                cached_bases = _LAST_LINKER_CACHE["class_bases"]
-                cached_derived = _LAST_LINKER_CACHE["base_derived"]
-                cached_methods = _LAST_LINKER_CACHE["methods_by_class_and_short"]
+                cached_bases = last_cache["class_bases"]
+                cached_derived = last_cache["base_derived"]
+                cached_methods = last_cache["methods_by_class_and_short"]
 
     if cached_bases is not None and cached_derived is not None and cached_methods is not None:
         class_bases = cached_bases
@@ -782,12 +801,12 @@ def expand_contract_symbol_ids(
                         class_bases[s_short].add(bt_str)
                         base_derived[bt_str].add(s_short)
         with _LINKER_CACHE_LOCK:
-            _LAST_LINKER_CACHE["symbols_map_id"] = id(sym_dict)
-            _LAST_LINKER_CACHE["symbols_count"] = len(sym_dict)
-            _LAST_LINKER_CACHE["symbols_fingerprint"] = current_fp
-            _LAST_LINKER_CACHE["class_bases"] = class_bases
-            _LAST_LINKER_CACHE["base_derived"] = base_derived
-            _LAST_LINKER_CACHE["methods_by_class_and_short"] = methods_by_class_and_short
+            last_cache["symbols_map_id"] = id(sym_dict)
+            last_cache["symbols_count"] = len(sym_dict)
+            last_cache["symbols_fingerprint"] = current_fp
+            last_cache["class_bases"] = class_bases
+            last_cache["base_derived"] = base_derived
+            last_cache["methods_by_class_and_short"] = methods_by_class_and_short
 
     for t in targets:
         kind_str = t.kind.value if hasattr(t.kind, "value") else str(t.kind)

@@ -3,14 +3,13 @@ knowledge-db 複合檢索與 RRF 倒數排名融合引擎 (HybridSearchEngine)
 結合 BM25 關鍵字檢索與語意向量檢索，具備 100% 雙軌剛性降級保證。
 """
 
-import logging
 from typing import Any, Dict, List, Optional, Set, Union
+
+from core.log import log_warn
 
 from .embedding import EmbeddingService, VectorIndex
 from .retrieval import QueryFilter, _extract_file_ext, normalize_ftypes, resolve_space_weight
 from .schema import UnifiedSymbol
-
-logger = logging.getLogger("knowledge-db.hybrid")
 
 DEFAULT_RRF_K = 60
 DEFAULT_WEIGHT_LEXICAL = 0.5
@@ -159,7 +158,7 @@ class HybridSearchEngine:
             query_vec = self.embedding_service.embed_query(query)
             raw_vector_hits = self.vector_index.search(query_vec, top_k=fetch_limit)
         except Exception as e:
-            logger.warning(f"Vector search failed ({e}), falling back to pure BM25.")
+            log_warn(f"Vector search failed ({e}), falling back to pure BM25.")
             return self._build_bm25_results(bm25_hits, symbols_map, limit, mode="fallback_bm25")
 
         # 依 file_types、spaces、kinds、languages 與純語意相似度門檻過濾向量候選集

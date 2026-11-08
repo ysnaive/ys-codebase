@@ -21,11 +21,20 @@ from typing import Dict, List, Any, Optional, Set, Tuple, Union
 try:
     from core import uri
     from core import vfs
+    from core.context import get_virtual_cwd
+    from core.log import log_stream
 except ImportError:
     uri = None
     vfs = None
+    get_virtual_cwd = None
+    log_stream = None
 
 from agents_workflow.compiler import ArtifactCompiler
+
+
+def _warn_pub(msg: str) -> None:
+    if log_stream is not None:
+        log_stream(msg + "\n", stream="stderr")
 
 
 PROJECT_MANIFEST_CACHE_URI = "storage.local://agents-workflow/project_release_manifest.json"
@@ -46,7 +55,7 @@ _EMPTY_AGENTS_BOILERPLATE_RE = re.compile(
 _HEADER_UNRESOLVED_MACRO_RE = re.compile(r"\{(?:export|target)\.[A-Za-z0-9_]+\}")
 
 
-@dataclass
+@dataclass(frozen=True)
 class _ReleaseTransactionContext:
     """封裝單次發布交易流水線之跨階段上下文狀態。"""
     force: bool
@@ -67,7 +76,8 @@ class ReleasePublisher:
     """發布引擎：負責 Target 拓撲映射、Header 巨集插值、雙軌 Diff 檢測與 4 步原子交易。"""
 
     def __init__(self, compiler: Optional[ArtifactCompiler] = None, host_dir: Optional[str] = None):
-        self.host_dir = host_dir or os.getcwd()
+        default_host = str(get_virtual_cwd()) if get_virtual_cwd is not None else "."
+        self.host_dir = host_dir or default_host
         self.compiler = compiler or ArtifactCompiler(host_dir=self.host_dir)
         self._sha1_cache_dirty = False
         self._sha1_cache: Dict[str, List[Any]] = self._load_sha1_cache()
@@ -650,7 +660,7 @@ class ReleasePublisher:
         for t_name in active_target_names:
             if t_name not in all_registered_targets:
                 orphan_targets.append(t_name)
-                print(f"[publisher:warning] Release target '{t_name}' not found in registered contributes.", file=sys.stderr)
+                _warn_pub(f"[publisher:warning] Release target '{t_name}' not found in registered contributes.")
                 continue
 
             target_cfg = all_registered_targets[t_name]
@@ -707,7 +717,7 @@ class ReleasePublisher:
                 f"in config.local://agents-workflow/config.local.json if you want a single-target workspace."
             )
             shared_path_warnings.append(warn_msg)
-            print(warn_msg, file=sys.stderr)
+            _warn_pub(warn_msg)
 
         # Step 3: 渲染各投影項目（單一或多重 Target 共用時傳入完整 target_names 與 extra_deployment_maps）
         for dst_abs, entries in item_groups.items():
@@ -812,7 +822,7 @@ class ReleasePublisher:
                         os.rmdir(parent_d)
                         parent_d = os.path.dirname(parent_d)
                 except Exception as e:
-                    print(f"[publisher:warning] Failed removing stale file {f_rem}: {e}", file=sys.stderr)
+                    _warn_pub(f"[publisher:warning] Failed removing stale file {f_rem}: {e}")
 
         if proj_root:
             for legacy_rel in ((".agents", "workflows"), (".claude", "commands")):
@@ -837,7 +847,7 @@ class ReleasePublisher:
                                 os.rmdir(parent_d)
                                 parent_d = os.path.dirname(parent_d)
                         except Exception as e:
-                            print(f"[publisher:warning] Failed removing legacy workflow directory {legacy_dir}: {e}", file=sys.stderr)
+                            _warn_pub(f"[publisher:warning] Failed removing legacy workflow directory {legacy_dir}: {e}")
 
         return files_to_remove
 
@@ -1209,7 +1219,7 @@ class ReleasePublisher:
             res["patterns"] = sorted_patterns
             return res
         except Exception as e:
-            print(f"[publisher:warning] Failed to sync .gitignore: {e}", file=sys.stderr)
+            _warn_pub(f"[publisher:warning] Failed to sync .gitignore: {e}")
             return {"updated": False, "created": False, "error": str(e), "patterns": sorted_patterns}
 
 

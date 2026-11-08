@@ -15,7 +15,7 @@ related_docs:
   - "docs/knowledge-db/README.md"
   - "docs/agents-workflow/README.md"
   - "docs/dev/README.md"
-last_updated: "2026-11-07"
+last_updated: "2026-11-08"
 ---
 
 # YS-Codebase 系統架構與全域知識地圖 (System Overview & Architecture Map)

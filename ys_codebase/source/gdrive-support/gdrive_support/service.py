@@ -8,41 +8,34 @@ Invariants:
 - When config.auto_sync is True, subscribes to core.space.subscribe and deterministically
   invokes _unsubscribe() upon stop().
 """
-import logging
 import threading
 import time
 from typing import Any, Callable, Dict, Optional
 
-from .config import GDriveConfig, load_gdrive_config
-from .coordinator import SyncCoordinator
-from .transport import create_transport
-
-logger = logging.getLogger("gdrive_support.service")
+from core.log import bind_log_context, log_debug
 
 try:
     from server.service import BaseServiceWorker
 except ImportError:
 
     class BaseServiceWorker:  # type: ignore[no-redef]
-        """Fallback base worker when server module is not installed."""
-
-        STATE_STARTING = "STARTING"
-        STATE_UPDATING = "UPDATING"
-        STATE_READY = "READY"
-        STATE_DEGRADED_OFFLINE = "DEGRADED_OFFLINE"
-        STATE_STOPPED = "STOPPED"
-        _state = STATE_STOPPED
-
-        @property
-        def name(self) -> str:
-            return "gdrive-sync"
+        STATE_STARTING: str = "STARTING"
+        STATE_UPDATING: str = "UPDATING"
+        STATE_READY: str = "READY"
+        STATE_DEGRADED_OFFLINE: str = "DEGRADED_OFFLINE"
+        STATE_STOPPED: str = "STOPPED"
+        _state: str = STATE_STOPPED
+        _log_sink: Optional[Any] = None
 
         @property
         def state(self) -> str:
-            return self._state
+            return getattr(self, "_state", self.STATE_STOPPED)
 
         def set_state(self, new_state: str) -> None:
             self._state = str(new_state)
+
+        def touch_activity(self) -> bool:
+            return False
 
         def start_managed_thread(
             self,
@@ -50,18 +43,46 @@ except ImportError:
             *,
             context: Optional[Dict[str, Any]] = None,
             thread_name: Optional[str] = None,
-        ) -> threading.Thread:
-            t = threading.Thread(
-                target=target,
-                name=thread_name or f"Worker-{self.name}",
-                daemon=True,
+        ) -> Any:
+            from concurrent.futures import ThreadPoolExecutor
+
+            sink = context.get("log_sink") if isinstance(context, dict) else None
+            comp = getattr(self, "name", "worker")
+
+            def _wrapped() -> None:
+                with bind_log_context(
+                    background_sink=sink,
+                    component=comp,
+                    isolated_error_scope=True,
+                ):
+                    target()
+
+            pool = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix=thread_name or f"Worker-{comp}",
             )
-            t.start()
-            return t
+            fut = pool.submit(_wrapped)
+
+            class _ManagedHandle:
+                def __init__(self, f: Any, p: Any) -> None:
+                    self._f = f
+                    self._p = p
+
+                def is_alive(self) -> bool:
+                    return not self._f.done()
+
+                def join(self, timeout: Optional[float] = None) -> None:
+                    try:
+                        self._f.result(timeout=timeout)
+                    except Exception:
+                        pass
+                    self._p.shutdown(wait=False)
+
+            return _ManagedHandle(fut, pool)
 
         def stop_managed_thread(
             self,
-            thread: Optional[threading.Thread],
+            thread: Any,
             stop_event: Optional[threading.Event] = None,
             *,
             wake_event: Optional[threading.Event] = None,
@@ -71,21 +92,13 @@ except ImportError:
                 stop_event.set()
             if wake_event is not None:
                 wake_event.set()
-            if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            if thread is not None and hasattr(thread, "join"):
                 thread.join(timeout=timeout)
             self.set_state(self.STATE_STOPPED)
 
-        def start(self, context: Dict[str, Any]) -> None:
-            pass
-
-        def stop(self) -> None:
-            pass
-
-        def health_check(self) -> bool:
-            return True
-
-        def touch_activity(self) -> bool:
-            return False
+from .config import GDriveConfig, load_gdrive_config
+from .coordinator import SyncCoordinator
+from .transport import create_transport
 
 
 class GDriveSyncServiceWorker(BaseServiceWorker):
@@ -206,7 +219,7 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
             self._last_error = str(exc)
             if not self._stop_event.is_set():
                 self.set_state(self.STATE_DEGRADED_OFFLINE)
-            logger.debug("Background gdrive sync deferred/failed: %s", exc)
+            log_debug(f"Background gdrive sync deferred/failed: {exc}")
             return None
 
     def stop(self) -> None:

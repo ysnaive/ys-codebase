@@ -36,6 +36,7 @@ from core.space import (
     reset_default_instances,
     unregister_space,
 )
+from core.context import get_runtime_context
 from .exceptions import (
     FileSpaceError,
     FileSpaceNotFoundError,
@@ -50,17 +51,25 @@ from .service import FileSpaceWatcherServiceWorker, clear_subscribers, subscribe
 __version__ = "1.0.1.5"
 
 _SINGLETON_LOCK = threading.RLock()
-_DEFAULT_MANAGER: Optional[FileSpaceManager] = None
-_DEFAULT_SCANNER: Optional[FingerprintScanner] = None
+
+
+def _get_default_state() -> Dict[str, Any]:
+    ctx = get_runtime_context()
+    state = getattr(ctx, "module_states", None)
+    if state is None:
+        state = {}
+        setattr(ctx, "module_states", state)
+    return state.setdefault("file_space.defaults", {"manager": None, "scanner": None})
 
 
 def _get_default_scanner() -> FingerprintScanner:
-    global _DEFAULT_MANAGER, _DEFAULT_SCANNER
     with _SINGLETON_LOCK:
-        if _DEFAULT_SCANNER is None:
-            _DEFAULT_MANAGER = FileSpaceManager()
-            _DEFAULT_SCANNER = FingerprintScanner(space_manager=_DEFAULT_MANAGER)
-        return _DEFAULT_SCANNER
+        st = _get_default_state()
+        if st["scanner"] is None:
+            mgr = FileSpaceManager()
+            st["manager"] = mgr
+            st["scanner"] = FingerprintScanner(space_manager=mgr)
+        return st["scanner"]
 
 
 def configure_default_file_space(
@@ -70,19 +79,29 @@ def configure_default_file_space(
     contributed_spaces: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Tuple[FileSpaceManager, FingerprintScanner]:
     """Configure or reset the default FileSpaceManager and FingerprintScanner forwarding instances."""
-    global _DEFAULT_MANAGER, _DEFAULT_SCANNER
     with _SINGLETON_LOCK:
-        _DEFAULT_MANAGER = FileSpaceManager(
+        st = _get_default_state()
+        mgr = FileSpaceManager(
             project_root=project_root,
             storage_root=storage_root,
             spaces_config=spaces_config,
             contributed_spaces=contributed_spaces,
         )
-        _DEFAULT_SCANNER = FingerprintScanner(
-            space_manager=_DEFAULT_MANAGER,
-            storage_root=_DEFAULT_MANAGER.storage_root,
+        scn = FingerprintScanner(
+            space_manager=mgr,
+            storage_root=mgr.storage_root,
         )
-        return _DEFAULT_MANAGER, _DEFAULT_SCANNER
+        st["manager"] = mgr
+        st["scanner"] = scn
+        return mgr, scn
+
+
+def __getattr__(name: str) -> Any:
+    if name == "_DEFAULT_MANAGER":
+        return _get_default_state().get("manager")
+    if name == "_DEFAULT_SCANNER":
+        return _get_default_state().get("scanner")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def list_spaces() -> List[str]:

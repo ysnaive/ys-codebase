@@ -4,11 +4,13 @@ Delegates all language-specific rules to `get_dialect(self.language_name)` and u
 `GrammarProvisioner` for stderr-isolated grammar loading.
 """
 
-import logging
 from pathlib import Path
 import re
 import threading
-from typing import Any, Dict, List, Optional, Tuple, Union
+from types import MappingProxyType
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
+
+from core.log import log_warn
 
 try:
     import tree_sitter
@@ -25,11 +27,9 @@ from ..schema import (
 )
 from .base import BaseParser
 
-logger = logging.getLogger("ast.parsers.treesitter")
-
 _DEFAULT_SCM_DIR = Path(__file__).resolve().parents[2] / "assets" / "queries"
 
-BUILTIN_QUERIES: Dict[str, str] = {
+BUILTIN_QUERIES: Mapping[str, str] = MappingProxyType({
     "python.scm": """
 ;; Python S-Expression Query for Universal AST
 (class_definition
@@ -381,7 +381,7 @@ BUILTIN_QUERIES: Dict[str, str] = {
 
 (pipe_table) @definition.table
 """,
-}
+})
 
 
 class TreeSitterDriver(BaseParser):
@@ -426,7 +426,7 @@ class TreeSitterDriver(BaseParser):
                     self._language = ts_lang
                     self._parser = tree_sitter.Parser(self._language)
                 except Exception as exc:
-                    logger.warning(f"TreeSitterDriver: Failed initializing parser for '{self.language_name}': {exc}")
+                    log_warn(f"TreeSitterDriver: Failed initializing parser for '{self.language_name}': {exc}")
                     self._language = None
                     self._parser = None
 
@@ -455,10 +455,10 @@ class TreeSitterDriver(BaseParser):
                 try:
                     self._query = tree_sitter.Query(self._language, q_str)
                 except Exception as exc:
-                    logger.warning(f"TreeSitterDriver: Failed compiling query for '{self.language_name}': {exc}")
+                    log_warn(f"TreeSitterDriver: Failed compiling query for '{self.language_name}': {exc}")
                     self._query = None
             else:
-                logger.warning(f"TreeSitterDriver: Query file '{self.config.query_file}' not found for '{self.language_name}'")
+                log_warn(f"TreeSitterDriver: Query file '{self.config.query_file}' not found for '{self.language_name}'")
                 self._query = None
 
     def can_parse(self, file_path: Union[str, Path]) -> bool:
@@ -814,7 +814,7 @@ class TreeSitterDriver(BaseParser):
                 cursor = tree_sitter.QueryCursor(self._query)
                 matches = cursor.matches(tree.root_node)
             except Exception as exc:
-                logger.warning(f"TreeSitterDriver: parse error on '{normalized_path}': {exc}")
+                log_warn(f"TreeSitterDriver: parse error on '{normalized_path}': {exc}")
                 return None
             self._last_parse_cache = (normalized_path, len(content), content, content_bytes, matches)
             return content_bytes, matches

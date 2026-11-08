@@ -6,25 +6,22 @@ knowledge-db 輕量 ONNX 向量嵌入推論服務 (EmbeddingService)
 from __future__ import annotations
 
 import hashlib
-import logging
 import os
 from pathlib import Path
 import re
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple, Union
+import warnings
 
 if TYPE_CHECKING:
     import numpy as np
 
+from core.log import log, log_debug, log_info, log_warn
+
 from .config import DEFAULT_EMBEDDING_MODEL, MODEL_SPECS, KnowledgeDBConfig, is_agents_workflow_installed, resolve_threads
 from .exceptions import KnowledgeDBError
 from .io_utils import atomic_save_gzip_pickle, load_gzip_pickle
-
-# 預設抑制 Windows 上 Hugging Face Hub 的符號連結權限警告 (WinError 1314)
-os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
-
-logger = logging.getLogger("knowledge-db.embedding")
 
 MAX_SYMBOL_DOCSTRING_EMBED_CHARS = 1000
 
@@ -88,13 +85,8 @@ class EmbeddingService:
     @staticmethod
     def _suppress_hf_warnings() -> None:
         """屏蔽 Hugging Face Hub 與 Transformers 未認證警告與非必要日誌"""
-        os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
-        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
-        for lib in ("huggingface_hub", "transformers", "fastembed"):
-            try:
-                logging.getLogger(lib).setLevel(logging.ERROR)
-            except Exception:
-                pass
+        warnings.filterwarnings("ignore", category=UserWarning, module=r"huggingface_hub.*")
+        warnings.filterwarnings("ignore", category=FutureWarning, module=r"huggingface_hub.*")
 
     def _resolve_dimension_mock(self) -> int:
         """Mock 模式下優先從 config.MODEL_SPECS 查表，再以模型規格或名稱解析維度"""
@@ -152,7 +144,7 @@ class EmbeddingService:
                     self._verified_onnx_path = f
                     return True
         except Exception as e:
-            logger.debug(f"Error while probing local model weights: {e}")
+            log_debug(f"Error while probing local model weights: {e}")
 
         return False
 
@@ -176,17 +168,15 @@ class EmbeddingService:
                     if matched:
                         self.model_name = matched
                     else:
-                        logger.warning(
+                        log_warn(
                             f"Requested model '{self.model_name}' is not in FastEmbed supported list. "
                             f"Falling back to default '{DEFAULT_EMBEDDING_MODEL}'."
                         )
                         self.model_name = DEFAULT_EMBEDDING_MODEL
             except Exception as e:
-                logger.debug(f"Failed to check supported models list: {e}")
+                log_debug(f"Failed to check supported models list: {e}")
 
         threads_count = resolve_threads(self.max_threads)
-        os.environ.setdefault("OMP_NUM_THREADS", str(threads_count))
-        os.environ.setdefault("ONNXRUNTIME_INTRA_OP_NUM_THREADS", str(threads_count))
         os.makedirs(self.cache_dir, exist_ok=True)
 
         try:
@@ -226,7 +216,7 @@ class EmbeddingService:
 
             try:
                 self._load_fastembed_instance(validate_supported=False)
-                logger.info(f"Successfully downloaded/loaded FastEmbed model '{self.model_name}' (dim={self._dimension})")
+                log_info(f"Successfully downloaded/loaded FastEmbed model '{self.model_name}' (dim={self._dimension})")
                 return True
             except Exception as e:
                 self._is_available = False
@@ -250,16 +240,14 @@ class EmbeddingService:
                 "message": f"Vector model '{self.model_name}' not found locally in '{self.cache_dir}'",
                 "timestamp": time.time(),
             }
-            logger.info("[knowledge-db:embedding] Vector model not found locally. Gracefully fallback to BM25.")
+            log_info("[knowledge-db:embedding] Vector model not found locally. Gracefully fallback to BM25.")
             if self.enable_vector_search and not self.suppress_guard_prompt and is_agents_workflow_installed():
-                import sys
-                sys.stderr.write("[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？\n")
-                sys.stderr.flush()
+                log("[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？", stream="stderr", flush=True)
             return
 
         try:
             threads_count = self._load_fastembed_instance(validate_supported=True)
-            logger.debug(f"EmbeddingService initialized with model '{self.model_name}' (dim={self._dimension}, threads={threads_count})")
+            log_debug(f"EmbeddingService initialized with model '{self.model_name}' (dim={self._dimension}, threads={threads_count})")
         except Exception as e:
             self._is_available = False
             self._model = None
@@ -268,11 +256,9 @@ class EmbeddingService:
                 "message": str(e),
                 "timestamp": time.time(),
             }
-            logger.info(f"[knowledge-db:embedding] Vector model unavailable ({type(e).__name__}: {e}). Gracefully fallback to BM25.")
+            log_info(f"[knowledge-db:embedding] Vector model unavailable ({type(e).__name__}: {e}). Gracefully fallback to BM25.")
             if self.enable_vector_search and not self.suppress_guard_prompt and is_agents_workflow_installed():
-                import sys
-                sys.stderr.write("[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？\n")
-                sys.stderr.flush()
+                log("[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？", stream="stderr", flush=True)
 
     @property
     def dimension(self) -> int:
@@ -386,7 +372,7 @@ class EmbeddingService:
             norms[norms == 0] = 1.0
             return mat / norms
         except Exception as e:
-            logger.warning(f"Error during embed_texts: {e}.")
+            log_warn(f"Error during embed_texts: {e}.")
             return np.empty((0, self.dimension), dtype=np.float32)
 
     def embed_texts_probe(

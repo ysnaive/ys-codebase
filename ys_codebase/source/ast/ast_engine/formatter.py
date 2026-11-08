@@ -12,6 +12,7 @@ from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
+from core.context import get_virtual_cwd
 from .schema import OutlineResult
 
 
@@ -81,7 +82,7 @@ class ASTResultFormatter:
                 return Path(p_res).resolve()
         except Exception:
             pass
-        return Path.cwd().resolve()
+        return Path(get_virtual_cwd()).resolve()
 
     def normalize_workspace_path(self, file_path: Union[str, Path]) -> str:
         raw = str(file_path).replace("\\", "/")

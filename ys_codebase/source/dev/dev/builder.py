@@ -38,7 +38,7 @@ def compare_semver_safe(a: str, b: str) -> int:
         return 1 if a > b else (-1 if a < b else 0)
 
 
-DEV_BUILD_IGNORES = [
+DEV_BUILD_IGNORES = (
     "__pycache__",
     "*.pyc",
     "*.pyo",
@@ -47,12 +47,12 @@ DEV_BUILD_IGNORES = [
     ".git*",
     ".pytest_cache",
     ".DS_Store",
-]
+)
 
-RELEASE_IGNORES = [*DEV_BUILD_IGNORES, ".yscbignore", "tests", "tests/*"]
+RELEASE_IGNORES = (*DEV_BUILD_IGNORES, ".yscbignore", "tests", "tests/*")
 
 
-def _should_ignore(rel_path: str, ignores: List[str]) -> bool:
+def _should_ignore(rel_path: str, ignores: Any) -> bool:
     norm_rel = rel_path.replace("\\", "/").strip("/")
     if not norm_rel:
         return False

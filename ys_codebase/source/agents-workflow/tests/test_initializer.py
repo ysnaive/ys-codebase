@@ -150,7 +150,7 @@ class TestWorkflowInitializer(YSCBTestCase):
         self.mark_passed()
 
     def test_non_interactive_cancellation_and_interactive_prompts(self):
-        """驗證非自動確認無 TTY 退出，以及 interactive=True 下 y / n / EOFError / KeyboardInterrupt 分支。"""
+        """驗證非自動確認無 TTY 退出，以及 interactive=True 下 A2 無阻塞攔截取消分支。"""
         cancel_dir = os.path.join(self.temp_dir, "cancelled_plans")
         res_no_tty = self.initializer.run_init_default(
             paths_override={"plans": cancel_dir},
@@ -161,23 +161,21 @@ class TestWorkflowInitializer(YSCBTestCase):
         self.assertTrue(res_no_tty["cancelled"])
         self.assertFalse(os.path.exists(cancel_dir))
 
-        for side_eff in ("n", EOFError(), KeyboardInterrupt()):
-            p_cand = os.path.join(self.temp_dir, f"cancel_{type(side_eff).__name__}")
-            overrides = {
-                "plans": p_cand,
-                "archived": os.path.join(p_cand, "archived"),
-                "docs": os.path.join(p_cand, "docs"),
-                "roadmap": os.path.join(p_cand, "roadmap"),
-            }
-            with patch("builtins.input", side_effect=[side_eff]):
-                res_c = self.initializer.run_init_default(
-                    paths_override=overrides,
-                    auto_confirm=False,
-                    interactive=True,
-                )
-            self.assertTrue(res_c["success"])
-            self.assertTrue(res_c["cancelled"])
-            self.assertFalse(os.path.exists(p_cand))
+        p_cand = os.path.join(self.temp_dir, "cancel_interactive_a2")
+        overrides = {
+            "plans": p_cand,
+            "archived": os.path.join(p_cand, "archived"),
+            "docs": os.path.join(p_cand, "docs"),
+            "roadmap": os.path.join(p_cand, "roadmap"),
+        }
+        res_c = self.initializer.run_init_default(
+            paths_override=overrides,
+            auto_confirm=False,
+            interactive=True,
+        )
+        self.assertTrue(res_c["success"])
+        self.assertTrue(res_c["cancelled"])
+        self.assertFalse(os.path.exists(p_cand))
 
         ok_base = os.path.join(self.temp_dir, "interactive_yes")
         yes_overrides = {
@@ -186,12 +184,11 @@ class TestWorkflowInitializer(YSCBTestCase):
             "docs": os.path.join(ok_base, "docs"),
             "roadmap": os.path.join(ok_base, "roadmap"),
         }
-        with patch("builtins.input", return_value="y"):
-            res_yes = self.initializer.run_init_default(
-                paths_override=yes_overrides,
-                auto_confirm=False,
-                interactive=True,
-            )
+        res_yes = self.initializer.run_init_default(
+            paths_override=yes_overrides,
+            auto_confirm=True,
+            interactive=True,
+        )
         self.assertTrue(res_yes["success"])
         self.assertFalse(res_yes["cancelled"])
         for d in yes_overrides.values():

@@ -11,7 +11,6 @@ Coordinates:
 
 from contextlib import contextmanager
 import json
-import logging
 import os
 from pathlib import Path
 import re
@@ -20,6 +19,8 @@ import threading
 import time
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
+from core.context import get_runtime_context, get_virtual_cwd
+from core.log import log_debug, log_warn
 from core.space import (
     ScanDiffDetail,
     ScanDiffResult,
@@ -27,6 +28,9 @@ from core.space import (
     SpaceRegistry,
     SpaceScanner,
     consume_diff,
+    get_default_registry,
+    get_default_scanner,
+    is_watcher_active,
     reset_cursor,
 )
 
@@ -61,10 +65,25 @@ from .resolver import (
 )
 from .schema import ASTSnapshot, MemberInfo, OutlineNode, OutlineResult, SymbolCallSite, UnifiedSymbol
 
-logger = logging.getLogger("ast.engine")
-
-_DEFAULT_ENGINE_INSTANCE: Optional["ASTEngine"] = None
 _ENGINE_LOCK = threading.RLock()
+
+
+def _get_default_engine_instance() -> Optional["ASTEngine"]:
+    ctx = get_runtime_context()
+    if "_DEFAULT_ENGINE_INSTANCE" in globals():
+        ctx.set_module_state("ast.engine.default_instance", globals().pop("_DEFAULT_ENGINE_INSTANCE"))
+    return ctx.get_module_state("ast.engine.default_instance", lambda: None)
+
+
+def _set_default_engine_instance(val: Optional["ASTEngine"]) -> None:
+    globals().pop("_DEFAULT_ENGINE_INSTANCE", None)
+    get_runtime_context().set_module_state("ast.engine.default_instance", val)
+
+
+def __getattr__(name: str) -> Any:
+    if name == "_DEFAULT_ENGINE_INSTANCE":
+        return _get_default_engine_instance()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _cs_partial_type_key(sym: UnifiedSymbol) -> Optional[Tuple[str, str, str]]:
@@ -432,6 +451,7 @@ class ASTEngine:
                         norm_spaces[k] = {"entries": [str(v)]}
                 sm_kwargs["raw_spaces"] = norm_spaces
                 use_isolated_scanner = True
+                self.space_manager = SpaceRegistry(**sm_kwargs)
             elif project_root is not None:
                 default_sp_cfg: Dict[str, Any] = {
                     "entries": [str(self.project_root)],
@@ -445,7 +465,9 @@ class ASTEngine:
                     pass
                 sm_kwargs["raw_spaces"] = {"default": default_sp_cfg}
                 use_isolated_scanner = True
-            self.space_manager = SpaceRegistry(**sm_kwargs)
+                self.space_manager = SpaceRegistry(**sm_kwargs)
+            else:
+                self.space_manager = get_default_registry(project_root=self.project_root)
 
         if scanner is not None:
             self.scanner = scanner
@@ -454,6 +476,8 @@ class ASTEngine:
                 registry=self.space_manager,
                 storage_root=self.storage_dir / "space",
             )
+        elif space_manager is None and not custom_spaces and project_root is None:
+            self.scanner = get_default_scanner(project_root=self.project_root)
         else:
             self.scanner = SpaceScanner(registry=self.space_manager)
 
@@ -514,7 +538,7 @@ class ASTEngine:
             else:
                 reset_cursor(space_name, consumer_id=self.CONSUMER_ID)
         except Exception as exc:
-            logger.debug(f"Reset cursor for consumer='{self.CONSUMER_ID}' skipped: {exc}")
+            log_debug(f"Reset cursor for consumer='{self.CONSUMER_ID}' skipped: {exc}")
 
     @staticmethod
     def _build_file_to_symbol_ids(symbols: Dict[str, UnifiedSymbol]) -> Dict[str, List[str]]:
@@ -612,7 +636,7 @@ class ASTEngine:
                         pass
                 space_gens[sp_name] = int(snap_gen or 1)
         except Exception as exc:
-            logger.debug(f"Collecting space generations fallback: {exc}")
+            log_debug(f"Collecting space generations fallback: {exc}")
         return space_gens, files_map
 
     def _resolve_index_lock_path(self) -> Path:
@@ -674,7 +698,7 @@ class ASTEngine:
                 meta_payload = self._build_meta_payload(snapshot)
                 self._atomic_write_meta(meta_payload)
             except Exception as exc:
-                logger.debug(f"Failed writing AST meta index: {exc}")
+                log_debug(f"Failed writing AST meta index: {exc}")
         self._snapshot = snapshot
         self._graph = graph
         if self.symbols_index_path.exists():
@@ -695,7 +719,7 @@ class ASTEngine:
                 self._symbols_mtime = s_mtime
             return self._snapshot is not None
         except Exception as exc:
-            logger.warning(f"Failed loading AST snapshot from disk: {exc}")
+            log_warn(f"Failed loading AST snapshot from disk: {exc}")
             return False
 
     def _ensure_graph_loaded(self, force_reload: bool = False) -> bool:
@@ -708,7 +732,7 @@ class ASTEngine:
                 self._graph_mtime = g_mtime
             return self._graph is not None
         except Exception as exc:
-            logger.warning(f"Failed loading AST call graph from disk: {exc}")
+            log_warn(f"Failed loading AST call graph from disk: {exc}")
             return False
 
     def _ensure_loaded_from_disk(self, force_reload: bool = False) -> bool:
@@ -743,7 +767,7 @@ class ASTEngine:
                         pass
                     return meta_payload
             except Exception as exc:
-                logger.debug(f"get_persisted_meta fallback skipped: {exc}")
+                log_debug(f"get_persisted_meta fallback skipped: {exc}")
             return None
 
     def build_index(
@@ -791,7 +815,7 @@ class ASTEngine:
                 with self._consume_space_diff(space_name=target_sp):
                     pass
             except Exception as exc:
-                logger.debug(f"Cursor alignment after build_index skipped: {exc}")
+                log_debug(f"Cursor alignment after build_index skipped: {exc}")
             return snapshot
 
     @staticmethod
@@ -1035,10 +1059,10 @@ class ASTEngine:
                         with self._consume_space_diff(space_name=target_sp):
                             pass
                     except Exception as exc:
-                        logger.debug(f"Cursor alignment after hot_patch_index skipped: {exc}")
+                        log_debug(f"Cursor alignment after hot_patch_index skipped: {exc}")
                 return self._snapshot
             except Exception as exc:
-                logger.warning(f"Hot-patch failed ({exc}), falling back to full build_index.")
+                log_warn(f"Hot-patch failed ({exc}), falling back to full build_index.")
                 return self.build_index(spaces=spaces, allow_parallel=False)
 
     def ensure_jit_synced(
@@ -1063,8 +1087,14 @@ class ASTEngine:
                 return self.build_index(spaces=norm_spaces)
 
             target_sp = norm_spaces[0] if (norm_spaces and len(norm_spaces) == 1) else None
+            use_non_blocking_diff = bool(
+                not self._custom_storage_dir and is_watcher_active(project_root=self.project_root)
+            )
             try:
-                with self._consume_space_diff(space_name=target_sp) as diff_res:
+                with self._consume_space_diff(
+                    space_name=target_sp,
+                    auto_refresh=False if use_non_blocking_diff else None,
+                ) as diff_res:
                     if diff_res and getattr(diff_res, "has_changes", False):
                         return self.hot_patch_index(
                             diff_res.detail,
@@ -1072,7 +1102,7 @@ class ASTEngine:
                             _cursor_already_consumed=True,
                         )
             except Exception as exc:
-                logger.debug(f"JIT diff check skipped: {exc}")
+                log_debug(f"JIT diff check skipped: {exc}")
 
             assert self._snapshot is not None
             return self._snapshot
@@ -1135,7 +1165,7 @@ class ASTEngine:
         if not p.is_absolute():
             cand = (self.project_root / p).resolve()
             if not cand.is_file():
-                cand_cwd = (Path.cwd() / p).resolve()
+                cand_cwd = (Path(get_virtual_cwd()) / p).resolve()
                 if cand_cwd.is_file():
                     cand = cand_cwd
             p = cand
@@ -1207,7 +1237,7 @@ class ASTEngine:
                 try:
                     snapshot = self.ensure_jit_synced()
                 except Exception as exc:
-                    logger.debug(f"Outline JIT sync skipped: {exc}")
+                    log_debug(f"Outline JIT sync skipped: {exc}")
 
             outline_nodes, partial_siblings_map = _build_outline_tree(
                 file_symbols=file_symbols, snapshot=snapshot, rel_path=rel_path, merged=merged
@@ -1381,7 +1411,6 @@ def get_engine(
     force_new: bool = False,
 ) -> ASTEngine:
     """Return process-level singleton `ASTEngine` (or create a new instance when custom paths are passed)."""
-    global _DEFAULT_ENGINE_INSTANCE
     if not isinstance(ASTEngine, type):
         if project_root is not None or storage_dir is not None:
             return ASTEngine(project_root=project_root, storage_dir=storage_dir)
@@ -1389,16 +1418,17 @@ def get_engine(
     if project_root is not None or storage_dir is not None or force_new:
         return ASTEngine(project_root=project_root, storage_dir=storage_dir)
     with _ENGINE_LOCK:
-        if _DEFAULT_ENGINE_INSTANCE is None:
-            _DEFAULT_ENGINE_INSTANCE = ASTEngine()
-        return _DEFAULT_ENGINE_INSTANCE
+        inst = _get_default_engine_instance()
+        if inst is None:
+            inst = ASTEngine()
+            _set_default_engine_instance(inst)
+        return inst
 
 
 def reset_default_engine() -> None:
     """Clear the process-level singleton `ASTEngine` instance."""
-    global _DEFAULT_ENGINE_INSTANCE
     with _ENGINE_LOCK:
-        _DEFAULT_ENGINE_INSTANCE = None
+        _set_default_engine_instance(None)
 
 
 __all__ = [

@@ -2,15 +2,12 @@
 CSS / SCSS / LESS semantic parser (`CssParser`) for module:ast.
 """
 
-import logging
 from pathlib import Path
 import re
-from typing import List, Set, Union
+from typing import FrozenSet, List, Union
 
 from ..schema import LanguageType, SymbolKind, UnifiedSymbol
 from .base import BaseParser
-
-logger = logging.getLogger("ast.parsers.css")
 
 CLASS_SELECTOR_PATTERN = re.compile(r"^\s*\.([a-zA-Z0-9_-]+)(?:\s*,\s*\.[a-zA-Z0-9_-]+)*\s*\{")
 ID_SELECTOR_PATTERN = re.compile(r"^\s*#([a-zA-Z0-9_-]+)(?:\s*,\s*#[a-zA-Z0-9_-]+)*\s*\{")
@@ -56,7 +53,7 @@ def _make_symbol(
 class CssParser(BaseParser):
     """CSS / SCSS / LESS class/ID selectors, CSS/SASS/LESS variables, and @keyframes parser."""
 
-    SUPPORTED_EXTENSIONS: Set[str] = {".css", ".scss", ".sass", ".less"}
+    SUPPORTED_EXTENSIONS: FrozenSet[str] = frozenset({".css", ".scss", ".sass", ".less"})
 
     def can_parse(self, file_path: Union[str, Path]) -> bool:
         ext = Path(file_path).suffix.lower()

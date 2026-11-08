@@ -14,6 +14,7 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 from core import uri, vfs
+from core.log import log
 from core.pip_manager import PipManager
 from core.platform import list_module_search_roots
 from vscode_support.schema_compiler import SchemaCompiler
@@ -106,7 +107,7 @@ class SettingsProjector:
 
     YSCB_MANAGED_KEY = "_yscb_managed"
     STABLE_LINK_NAME = "current-site-packages"
-    ANALYSIS_EXCLUDE_PATTERNS = [
+    ANALYSIS_EXCLUDE_PATTERNS = (
         "**/.cache/**",
         "**/.config.local/**",
         "**/.storage.local/**",
@@ -115,12 +116,12 @@ class SettingsProjector:
         "**/.mirror/**",
         "**/.modules/**",
         "**/.venv/**",
-    ]
-    EXCLUDE_KEYS = {
-        "files.watcherExclude": "**/.venv/**",
-        "search.exclude": "**/.venv/**",
-        "files.exclude": "**/.venv",
-    }
+    )
+    EXCLUDE_KEYS = (
+        ("files.watcherExclude", "**/.venv/**"),
+        ("search.exclude", "**/.venv/**"),
+        ("files.exclude", "**/.venv"),
+    )
 
     def __init__(self, yscb_dir: Optional[str] = None) -> None:
         self.yscb_dir = os.path.abspath(yscb_dir or uri.resolve_yscb_root())
@@ -419,11 +420,12 @@ class SettingsProjector:
             settings.pop("python.defaultInterpreterPath", None)
 
         old_managed_excludes = self._safe_dict(old_managed_record, "excludes")
+        excl_map = dict(self.EXCLUDE_KEYS)
         managed_excludes: Dict[str, str] = {}
         for old_sec, old_pat in old_managed_excludes.items():
             if not isinstance(old_sec, str) or not isinstance(old_pat, str):
                 continue
-            if self.EXCLUDE_KEYS.get(old_sec) != old_pat:
+            if excl_map.get(old_sec) != old_pat:
                 if old_sec in settings and isinstance(settings[old_sec], dict):
                     settings[old_sec].pop(old_pat, None)
                     if not settings[old_sec]:
@@ -431,7 +433,7 @@ class SettingsProjector:
             else:
                 managed_excludes[old_sec] = old_pat
 
-        for sec, pattern in self.EXCLUDE_KEYS.items():
+        for sec, pattern in excl_map.items():
             if sec not in settings or not isinstance(settings[sec], dict):
                 settings[sec] = {}
             if pattern not in settings[sec] or sec in old_managed_excludes:
@@ -534,10 +536,10 @@ class SettingsProjector:
                         vfs.write_text(bak_path, raw_original, encoding="utf-8", atomic=True)
                     except Exception:
                         pass
-                    print(
+                    log(
                         f"[vscode-support] Warning: '{settings_path}' contains unrecoverable JSON syntax errors "
                         f"(backed up to '{os.path.basename(bak_path)}'); skipped VS Code settings sync to preserve user file.",
-                        file=sys.stderr,
+                        stream="stderr",
                     )
                 return False
             settings = loaded_data

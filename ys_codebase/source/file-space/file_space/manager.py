@@ -15,7 +15,7 @@ from core.space import (
 from .exceptions import FileSpaceNotFoundError, InvalidFileSpaceConfigError
 from .schema import FileSpaceConfig, FileSpaceOrigin
 
-DEFAULT_EXCLUDES: List[str] = [
+DEFAULT_EXCLUDES: Tuple[str, ...] = (
     ".git",
     "__pycache__",
     "node_modules",
@@ -34,9 +34,9 @@ DEFAULT_EXCLUDES: List[str] = [
     "*.dylib",
     "*.class",
     ".DS_Store",
-]
+)
 
-DEFAULT_FILE_PATTERNS: List[str] = [
+DEFAULT_FILE_PATTERNS: Tuple[str, ...] = (
     "*.py",
     "*.md",
     "*.js",
@@ -64,7 +64,7 @@ DEFAULT_FILE_PATTERNS: List[str] = [
     "*.sh",
     "*.bat",
     "*.ps1",
-]
+)
 
 
 def _convert_legacy_space_dict(raw_cfg: Dict[str, Any], default_owner: str = "project") -> Dict[str, Any]:

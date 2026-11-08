@@ -4,12 +4,12 @@ Aligned with `core.commands.CmdBags` contract and `contributes/core.json`.
 """
 
 import json
-import sys
 from typing import Any, Dict, List, Tuple
 
 from core import uri
 from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
+from core.log import log
 
 
 def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
@@ -59,23 +59,23 @@ def status(cmd_bags: Any) -> int:
     info = projector.get_status(proj_root)
 
     if _is_json_mode(bags):
-        print(json.dumps(info, indent=2, ensure_ascii=False))
+        log(json.dumps(info, indent=2, ensure_ascii=False))
         return 0
 
-    print("======================================================================")
-    print("YS-Codebase VS Code Workspace Support Status")
-    print("======================================================================")
-    print(f"Project Root        : {info['project_root']}")
-    print(f".vscode/ Exists     : {info['vscode_dir_exists']}")
-    print(f"Settings Managed    : {info['settings_managed']}")
-    print(f"Stable Venv Link    : {info['stable_link_path']} (active={info['stable_link_active']})")
+    log("======================================================================")
+    log("YS-Codebase VS Code Workspace Support Status")
+    log("======================================================================")
+    log(f"Project Root        : {info['project_root']}")
+    log(f".vscode/ Exists     : {info['vscode_dir_exists']}")
+    log(f"Settings Managed    : {info['settings_managed']}")
+    log(f"Stable Venv Link    : {info['stable_link_path']} (active={info['stable_link_active']})")
     if info.get("stable_link_target"):
-        print(f"Link Target         : {info['stable_link_target']}")
-    print(f"Extra Paths         : {', '.join(info['managed_extra_paths']) if info['managed_extra_paths'] else '(none)'}")
-    print(f"Managed Schemas     : {info['managed_schema_count']} schema(s)")
+        log(f"Link Target         : {info['stable_link_target']}")
+    log(f"Extra Paths         : {', '.join(info['managed_extra_paths']) if info['managed_extra_paths'] else '(none)'}")
+    log(f"Managed Schemas     : {info['managed_schema_count']} schema(s)")
     for s_url in info["managed_schemas"]:
-        print(f"  - {s_url}")
-    print("======================================================================")
+        log(f"  - {s_url}")
+    log("======================================================================")
     return 0
 
 
@@ -87,15 +87,15 @@ def sync(cmd_bags: Any) -> int:
     info["synced"] = ok
 
     if _is_json_mode(bags):
-        print(json.dumps(info, indent=2, ensure_ascii=False))
+        log(json.dumps(info, indent=2, ensure_ascii=False))
         return 0 if ok else 1
 
     if ok:
-        print(
+        log(
             f"[vscode-support] Synced .vscode/settings.json and {info['managed_schema_count']} JSON schema(s) at '{proj_root}'."
         )
         return 0
-    print(f"[vscode-support] Failed or skipped syncing VS Code settings at '{proj_root}'.", file=sys.stderr)
+    log(f"[vscode-support] Failed or skipped syncing VS Code settings at '{proj_root}'.", stream="stderr")
     return 1
 
 
@@ -109,14 +109,14 @@ def revert(cmd_bags: Any) -> int:
         payload: Dict[str, Any] = {"project_root": proj_root, "reverted": ok}
         if err_msg:
             payload["error"] = err_msg
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        log(json.dumps(payload, indent=2, ensure_ascii=False))
         return 1 if err_msg else 0
 
     if ok:
-        print(f"[vscode-support] Reverted YSCB managed VS Code settings and removed schemas at '{proj_root}'.")
+        log(f"[vscode-support] Reverted YSCB managed VS Code settings and removed schemas at '{proj_root}'.")
         return 0
     if err_msg:
-        print(f"[vscode-support] {err_msg}", file=sys.stderr)
+        log(f"[vscode-support] {err_msg}", stream="stderr")
         return 1
-    print(f"[vscode-support] No active _yscb_managed settings found to revert at '{proj_root}'.")
+    log(f"[vscode-support] No active _yscb_managed settings found to revert at '{proj_root}'.")
     return 0

@@ -172,6 +172,22 @@ class RuntimeContext:
         self.server_touch_lock = threading.Lock()
         self.server_last_touch_by_root: Dict[str, float] = {}
 
+        # 13. Upper-layer domain module states (`get_module_state` / `set_module_state`)
+        self.module_states_lock = threading.RLock()
+        self.module_states: Dict[str, Any] = {}
+
+    def get_module_state(self, key: str, default_factory: Optional[Callable[[], Any]] = None) -> Any:
+        """Thread-safely retrieves or initializes a domain module state entry by `key`."""
+        with self.module_states_lock:
+            if key not in self.module_states and default_factory is not None:
+                self.module_states[key] = default_factory()
+            return self.module_states.get(key)
+
+    def set_module_state(self, key: str, value: Any) -> None:
+        """Thread-safely sets a domain module state entry by `key`."""
+        with self.module_states_lock:
+            self.module_states[key] = value
+
     def reset_all_caches(self) -> None:
         """
         Clears all mutable caches in-place so existing dictionary/list references held
@@ -212,6 +228,8 @@ class RuntimeContext:
                 self.log_error_chunks.clear()
             with self.server_touch_lock:
                 self.server_last_touch_by_root.clear()
+            with self.module_states_lock:
+                self.module_states.clear()
 
 
 @lru_cache(maxsize=1)

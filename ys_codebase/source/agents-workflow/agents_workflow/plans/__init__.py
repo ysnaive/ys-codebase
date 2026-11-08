@@ -4,7 +4,8 @@ agents_workflow.plans — 開發計畫 (Dev Plans) 工具鏈子套件。
 採用 PEP 562 模組級 __getattr__ 延遲載入，避免無關命令啟動時全量載入所有子模組。
 """
 
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping, Tuple
 from ._common import resolve_plan_uri, parse_markdown_blockquote_headers
 
 
@@ -33,7 +34,7 @@ class PlanDestinationExistsError(PlansToolchainError):
     pass
 
 
-_LAZY_EXPORTS = {
+_LAZY_EXPORTS: Mapping[str, Tuple[str, str]] = MappingProxyType({
     "PlanArchiver": (".archiver", "PlanArchiver"),
     "PlanScanner": (".scanner", "PlanScanner"),
     "PlanSearcher": (".searcher", "PlanSearcher"),
@@ -45,7 +46,7 @@ _LAZY_EXPORTS = {
     "FrictionSignal": (".session_trace", "FrictionSignal"),
     "SessionTraceReport": (".session_trace", "SessionTraceReport"),
     "SessionTraceEngine": (".session_trace", "SessionTraceEngine"),
-}
+})
 
 __all__ = [
     "resolve_plan_uri",

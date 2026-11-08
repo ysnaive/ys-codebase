@@ -371,15 +371,17 @@ class TestCLI(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_hook_lifecycle(self):
-        """驗證 hook.dev.py 測試前置與後置鉤子建立 4 個目錄、支援物件型態 context 並還原環境變數"""
+        """驗證 hook.dev.py 測試前置與後置鉤子建立 4 個目錄、支援物件型態 context 並還原 RuntimeContext 狀態"""
+        from core.context import get_runtime_context
+
         hook_dev = load_script_module("hook.dev.py")
-        prev_mock = os.environ.get("KNOWLEDGE_DB_MOCK_EMBEDDING")
+        prev_mock_state = get_runtime_context().get_module_state("knowledge_db.mock_embedding")
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 sb_path = Path(temp_dir)
                 # 1. 字串路徑 context
                 hook_dev.on_test_setup(temp_dir)
-                self.assertEqual(os.environ.get("KNOWLEDGE_DB_MOCK_EMBEDDING"), "1")
+                self.assertTrue(get_runtime_context().get_module_state("knowledge_db.mock_embedding"))
                 storage_dir = sb_path / ".storage.local" / "knowledge-db"
                 self.assertTrue((storage_dir / "indices").is_dir())
                 self.assertTrue((storage_dir / "bundles").is_dir())
@@ -387,13 +389,13 @@ class TestCLI(YSCBTestCase):
                 self.assertTrue((sb_path / ".cache" / "knowledge-db").is_dir())
 
                 hook_dev.on_test_teardown(temp_dir)
-                self.assertNotIn("KNOWLEDGE_DB_MOCK_EMBEDDING", os.environ)
+                self.assertFalse(get_runtime_context().get_module_state("knowledge_db.mock_embedding"))
 
                 # 2. SimpleNamespace(sandbox_dir=...) 物件型態 context
                 sb_obj_dir = sb_path / "obj_sandbox"
                 ctx_obj = SimpleNamespace(sandbox_dir=str(sb_obj_dir))
                 hook_dev.on_test_setup(ctx_obj)
-                self.assertEqual(os.environ.get("KNOWLEDGE_DB_MOCK_EMBEDDING"), "1")
+                self.assertTrue(get_runtime_context().get_module_state("knowledge_db.mock_embedding"))
                 obj_storage = sb_obj_dir / ".storage.local" / "knowledge-db"
                 self.assertTrue((obj_storage / "indices").is_dir())
                 self.assertTrue((obj_storage / "bundles").is_dir())
@@ -401,12 +403,9 @@ class TestCLI(YSCBTestCase):
                 self.assertTrue((sb_obj_dir / ".cache" / "knowledge-db").is_dir())
 
                 hook_dev.on_test_teardown(ctx_obj)
-                self.assertNotIn("KNOWLEDGE_DB_MOCK_EMBEDDING", os.environ)
+                self.assertFalse(get_runtime_context().get_module_state("knowledge_db.mock_embedding"))
         finally:
-            if prev_mock is None:
-                os.environ.pop("KNOWLEDGE_DB_MOCK_EMBEDDING", None)
-            else:
-                os.environ["KNOWLEDGE_DB_MOCK_EMBEDDING"] = prev_mock
+            get_runtime_context().set_module_state("knowledge_db.mock_embedding", prev_mock_state)
 
         self.mark_passed()
 

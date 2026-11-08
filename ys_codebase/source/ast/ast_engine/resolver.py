@@ -15,53 +15,56 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import re
 import threading
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+from types import MappingProxyType
+from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Set, Tuple, Union
+
+from core.context import get_virtual_cwd
 
 from .graph import CallGraphIndex
 from .linker import expand_contract_symbol_ids
 from .schema import SymbolKind, UnifiedSymbol
 
-KIND_PREFIX_MAP: Dict[str, Set[str]] = {
-    "class": {SymbolKind.CLASS.value},
-    "cls": {SymbolKind.CLASS.value},
-    "struct": {SymbolKind.STRUCT.value},
-    "interface": {SymbolKind.INTERFACE.value},
-    "iface": {SymbolKind.INTERFACE.value},
-    "enum": {SymbolKind.ENUM.value},
-    "fn": {SymbolKind.FUNCTION.value, SymbolKind.METHOD.value},
-    "func": {SymbolKind.FUNCTION.value, SymbolKind.METHOD.value},
-    "def": {SymbolKind.FUNCTION.value, SymbolKind.METHOD.value},
-    "function": {SymbolKind.FUNCTION.value, SymbolKind.METHOD.value},
-    "method": {SymbolKind.METHOD.value},
-    "meth": {SymbolKind.METHOD.value},
-    "type": {SymbolKind.TYPE_ALIAS.value},
-    "typedef": {SymbolKind.TYPE_ALIAS.value},
-    "const": {SymbolKind.CONSTANT.value},
-    "constant": {SymbolKind.CONSTANT.value},
-    "var": {SymbolKind.VARIABLE.value},
-    "variable": {SymbolKind.VARIABLE.value},
-    "let": {SymbolKind.VARIABLE.value},
-    "macro": {SymbolKind.MACRO.value},
-    "doc": {
+KIND_PREFIX_MAP: Mapping[str, FrozenSet[str]] = MappingProxyType({
+    "class": frozenset({SymbolKind.CLASS.value}),
+    "cls": frozenset({SymbolKind.CLASS.value}),
+    "struct": frozenset({SymbolKind.STRUCT.value}),
+    "interface": frozenset({SymbolKind.INTERFACE.value}),
+    "iface": frozenset({SymbolKind.INTERFACE.value}),
+    "enum": frozenset({SymbolKind.ENUM.value}),
+    "fn": frozenset({SymbolKind.FUNCTION.value, SymbolKind.METHOD.value}),
+    "func": frozenset({SymbolKind.FUNCTION.value, SymbolKind.METHOD.value}),
+    "def": frozenset({SymbolKind.FUNCTION.value, SymbolKind.METHOD.value}),
+    "function": frozenset({SymbolKind.FUNCTION.value, SymbolKind.METHOD.value}),
+    "method": frozenset({SymbolKind.METHOD.value}),
+    "meth": frozenset({SymbolKind.METHOD.value}),
+    "type": frozenset({SymbolKind.TYPE_ALIAS.value}),
+    "typedef": frozenset({SymbolKind.TYPE_ALIAS.value}),
+    "const": frozenset({SymbolKind.CONSTANT.value}),
+    "constant": frozenset({SymbolKind.CONSTANT.value}),
+    "var": frozenset({SymbolKind.VARIABLE.value}),
+    "variable": frozenset({SymbolKind.VARIABLE.value}),
+    "let": frozenset({SymbolKind.VARIABLE.value}),
+    "macro": frozenset({SymbolKind.MACRO.value}),
+    "doc": frozenset({
         SymbolKind.DOC_HEADING_1.value,
         SymbolKind.DOC_HEADING_2.value,
         SymbolKind.DOC_HEADING_3.value,
         SymbolKind.DOC_HEADING_4.value,
         SymbolKind.DOC_SECTION.value,
-    },
-    "h1": {SymbolKind.DOC_HEADING_1.value},
-    "h2": {SymbolKind.DOC_HEADING_2.value},
-    "h3": {SymbolKind.DOC_HEADING_3.value},
-    "h4": {SymbolKind.DOC_HEADING_4.value},
-}
+    }),
+    "h1": frozenset({SymbolKind.DOC_HEADING_1.value}),
+    "h2": frozenset({SymbolKind.DOC_HEADING_2.value}),
+    "h3": frozenset({SymbolKind.DOC_HEADING_3.value}),
+    "h4": frozenset({SymbolKind.DOC_HEADING_4.value}),
+})
 
-CALLABLE_KINDS: Set[str] = {
+CALLABLE_KINDS: FrozenSet[str] = frozenset({
     SymbolKind.FUNCTION.value,
     SymbolKind.METHOD.value,
     "function",
     "method",
     "constructor",
-}
+})
 
 
 def _split_top_level_comma(text: str) -> List[str]:
@@ -325,7 +328,7 @@ def get_symbol_parent_fqn(sym: UnifiedSymbol) -> str:
     return ""
 
 
-@dataclass
+@dataclass(frozen=True)
 class SymbolResolutionResult:
     """
     Deterministic resolution result:
@@ -567,7 +570,7 @@ class DeterministicSymbolResolver:
         return SymbolResolutionResult(status="not_found", query=query_clean)
 
 
-@dataclass
+@dataclass(frozen=True)
 class CodeSnippet:
     """Extracted source code slice with line numbers and docstring summary."""
 
@@ -668,7 +671,7 @@ class SnippetExtractor:
                 roots.append(Path(str(p_res)).resolve())
         except Exception:
             pass
-        roots.append(Path.cwd().resolve())
+        roots.append(Path(get_virtual_cwd()).resolve())
 
         for r in roots:
             cand = r / raw

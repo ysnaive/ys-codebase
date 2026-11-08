@@ -69,15 +69,14 @@ def on_file_space_changed(
     使用 `consume_diff(consumer_id="knowledge-db")` 拉取自上次游標水位以來的增量變更，
     並對全域統一索引執行 4 階段熱修補（若基礎索引尚未建置則觸發全量建置）。
     """
-    global get_engine, get_active_worker
-    if get_engine is None:
+    if globals().get("get_engine") is None:
         from knowledge_db.engine import get_engine as _get_engine
 
-        get_engine = _get_engine
-    if get_active_worker is None:
+        globals()["get_engine"] = _get_engine
+    if globals().get("get_active_worker") is None:
         from knowledge_db.service import get_active_worker as _get_active_worker
 
-        get_active_worker = _get_active_worker
+        globals()["get_active_worker"] = _get_active_worker
 
     explicit_engine_obj: Optional[Any] = None
     target_space: Optional[str] = None

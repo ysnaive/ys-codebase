@@ -5,6 +5,7 @@ Delegates all subcommands (`status`, `scan`, `files`, `diff`, `clean`) to `core.
 import json
 from typing import Any, Dict, Optional
 
+from core.log import log
 from core.space import SpaceError
 from file_space.exceptions import FileSpaceError
 from file_space.manager import FileSpaceManager
@@ -56,19 +57,19 @@ def _create_scanner(bags: Any = None) -> FingerprintScanner:
 
 
 def _print_json(payload: Dict[str, Any]) -> None:
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    log(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def _handle_cli_error(exc: Exception, as_json: bool) -> int:
     if as_json:
-        print(
+        log(
             json.dumps(
                 {"status": "error", "error": str(exc)},
                 ensure_ascii=False,
             )
         )
     else:
-        print(f"[Error] {exc}")
+        log(f"[Error] {exc}")
     return 1
 
 
@@ -83,7 +84,7 @@ def status(bags: Any = None) -> int:
         if as_json:
             _print_json(payload)
         else:
-            print(
+            log(
                 f"=== File-Space Status [Deprecated -> core.space] ({payload.get('space_count', 0)} spaces) ==="
             )
             for s_info in payload.get("spaces", []):
@@ -91,7 +92,7 @@ def status(bags: Any = None) -> int:
                 gen = s_info.get("head_generation", 0)
                 files_cnt = s_info.get("active_file_count", 0)
                 merkle = str(s_info.get("merkle_root", ""))[:12] or "-"
-                print(f"  [{q_name}] gen={gen} files={files_cnt} merkle={merkle}")
+                log(f"  [{q_name}] gen={gen} files={files_cnt} merkle={merkle}")
         return 0
     except (FileSpaceError, SpaceError) as exc:
         return _handle_cli_error(exc, as_json)
@@ -116,7 +117,7 @@ def scan(bags: Any = None) -> int:
             _print_json(payload)
         else:
             target_label = space_name or "all spaces"
-            print(
+            log(
                 f"[File-Space Scan] {target_label}: gen {diff_res.from_generation} -> {diff_res.to_generation} "
                 f"(+{diff_res.added_count} ~{diff_res.modified_count} -{diff_res.deleted_count} "
                 f"={diff_res.unchanged_count}) merkle={diff_res.merkle_root[:12]}"
@@ -160,11 +161,11 @@ def files(bags: Any = None) -> int:
         if as_json:
             _print_json(payload)
         else:
-            print(
+            log(
                 f"=== Managed Files ({len(records)} files in {space_name or 'all'}) ==="
             )
             for rec in records:
-                print(f"  {rec['path']} ({rec['size']}B)")
+                log(f"  {rec['path']} ({rec['size']}B)")
         return 0
     except (FileSpaceError, SpaceError) as exc:
         return _handle_cli_error(exc, as_json)
@@ -198,7 +199,7 @@ def diff(bags: Any = None) -> int:
         if as_json:
             _print_json(payload)
         else:
-            print(
+            log(
                 f"[File-Space Diff] space={space_name or 'all'} consumer={consumer_id} "
                 f"gen={diff_res.from_generation}->{diff_res.to_generation} "
                 f"(+{diff_res.added_count} ~{diff_res.modified_count} -{diff_res.deleted_count}) "
@@ -221,7 +222,7 @@ def clean(bags: Any = None) -> int:
         if as_json:
             _print_json(payload)
         else:
-            print(
+            log(
                 f"[File-Space Clean] removed_snapshots={len(payload.get('removed_snapshots', []))}, "
                 f"reset_consumers={len(payload.get('reset_consumers', []))}"
             )

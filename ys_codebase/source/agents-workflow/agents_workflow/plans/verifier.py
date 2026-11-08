@@ -45,7 +45,7 @@ class PlanSeverity(str, Enum):
     FAIL = "FAIL"
 
 
-@dataclass
+@dataclass(frozen=True)
 class PlanIssue:
     """單一診斷問題項目。"""
     severity: PlanSeverity
@@ -64,17 +64,28 @@ class PlanIssue:
         }
 
 
-@dataclass
 class PlanReport:
     """計畫檢核報告實體。"""
-    plan_name: str
-    plan_path: str
-    status: PlanSeverity = PlanSeverity.PASS
-    issues: List[PlanIssue] = field(default_factory=list)
-    companion_created: List[str] = field(default_factory=list)
-    header_healed: List[str] = field(default_factory=list)
-    log_status: Optional[str] = None
-    next_phase_hint: Optional[str] = None
+
+    def __init__(
+        self,
+        plan_name: str,
+        plan_path: str,
+        status: PlanSeverity = PlanSeverity.PASS,
+        issues: Optional[List[PlanIssue]] = None,
+        companion_created: Optional[List[str]] = None,
+        header_healed: Optional[List[str]] = None,
+        log_status: Optional[str] = None,
+        next_phase_hint: Optional[str] = None,
+    ) -> None:
+        self.plan_name = plan_name
+        self.plan_path = plan_path
+        self.status = status
+        self.issues: List[PlanIssue] = list(issues) if issues is not None else []
+        self.companion_created: List[str] = list(companion_created) if companion_created is not None else []
+        self.header_healed: List[str] = list(header_healed) if header_healed is not None else []
+        self.log_status = log_status
+        self.next_phase_hint = next_phase_hint
 
     @property
     def passed(self) -> bool:

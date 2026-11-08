@@ -182,11 +182,12 @@ class BaseServiceWorker(ABC):
         """Returns the current worker lifecycle state."""
         raw_st = getattr(self, "_state", None)
         if raw_st and raw_st != self.STATE_STOPPED:
-            try:
-                if not self.health_check():
+            if getattr(self, "_thread", None) is not None:
+                try:
+                    if not self.health_check():
+                        return self.STATE_STOPPED
+                except Exception:
                     return self.STATE_STOPPED
-            except Exception:
-                return self.STATE_STOPPED
             return str(raw_st)
         try:
             if self.health_check():

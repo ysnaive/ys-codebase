@@ -6,8 +6,9 @@ and broadcasts `on_ast_index_updated` to downstream subscribers.
 """
 
 from contextlib import contextmanager
-import logging
 from typing import Any, Dict, Iterator, List, Optional
+
+from core.log import log_debug
 
 
 @contextmanager
@@ -57,9 +58,7 @@ def _broadcast_ast_updated(payload: Dict[str, Any]) -> None:
 
         events.broadcast("on_ast_index_updated", payload, emit_module="ast")
     except Exception as exc:
-        logging.getLogger("ast.hook.core").debug(
-            "Event broadcast 'on_ast_index_updated' skipped: %s", exc
-        )
+        log_debug(f"Event broadcast 'on_ast_index_updated' skipped: {exc}")
 
 
 def _get_current_ast_generation(engine: Any) -> int:

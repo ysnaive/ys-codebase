@@ -6,7 +6,6 @@ Uses `networkx.DiGraph` and Gzip Pickle Protocol 5 persistence (`unified.graph.b
 from __future__ import annotations
 
 from collections import defaultdict, deque
-import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple, Union
 
@@ -16,8 +15,6 @@ if TYPE_CHECKING:
 from .exceptions import ASTIndexNotFoundError, SchemaValidationError
 from .io_utils import atomic_save_gzip_pickle, load_gzip_pickle
 from .schema import SymbolCallSite
-
-logger = logging.getLogger("ast.graph")
 
 
 class CallGraphIndex:

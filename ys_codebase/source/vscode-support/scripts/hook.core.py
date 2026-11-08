@@ -4,10 +4,10 @@ Subscribes to `on_env_synced`, `on_reload`, and `on_remove` emitted by `core`.
 """
 
 import os
-import sys
 from typing import Any, Optional, Tuple
 
 from core import uri
+from core.log import log
 
 
 def _get_workspace_projector() -> Tuple[Optional[str], Any]:
@@ -26,7 +26,7 @@ def _sync_workspace() -> bool:
             return False
         return projector.sync_vscode_settings(proj_root)
     except Exception as e:
-        print(f"[vscode-support:hook] Warning: Failed to sync VS Code workspace: {e}", file=sys.stderr)
+        log(f"[vscode-support:hook] Warning: Failed to sync VS Code workspace: {e}", stream="stderr")
         return False
 
 
@@ -62,7 +62,7 @@ def on_register_file_spaces(ctx: Any = None) -> bool:
         )
         return True
     except Exception as e:
-        print(f"[vscode-support:hook] Warning: Failed during on_register_file_spaces: {e}", file=sys.stderr)
+        log(f"[vscode-support:hook] Warning: Failed during on_register_file_spaces: {e}", stream="stderr")
         return False
 
 
@@ -77,5 +77,5 @@ def on_remove(ctx: Any = None) -> bool:
             return False
         return projector.revert_vscode_settings(proj_root)
     except Exception as e:
-        print(f"[vscode-support:hook] Warning: Failed during on_remove revert: {e}", file=sys.stderr)
+        log(f"[vscode-support:hook] Warning: Failed during on_remove revert: {e}", stream="stderr")
         return False
