@@ -552,4 +552,5 @@ class UpdateChecker:
         """非阻塞輸出更新提示至 stderr/stdout。"""
         tips = self.get_tips()
         if tips:
-            print("\n" + "\n".join(tips))
+            from core.log import log
+            log("\n" + "\n".join(tips))

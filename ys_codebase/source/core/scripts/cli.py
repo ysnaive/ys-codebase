@@ -12,6 +12,7 @@ from typing import Any, List
 from core.commands.bags import CmdBags, CmdOption
 from core.guard import guard_dispatch
 from core.installer import Installer
+from core.log import log, log_error, log_info
 from core import config as core_config
 from core import uri as core_uri
 
@@ -24,9 +25,9 @@ def _render_subcommand_group_help(cmd_name: str) -> int:
     reg = _load_registry(yscb_abs)
     spec = reg.get_command("core", cmd_name)
     if spec is None:
-        print(f"YS-Codebase Core Command Group: {cmd_name}\n(Run 'python yscb.py {cmd_name} --help' for details)")
+        log(f"YS-Codebase Core Command Group: {cmd_name}\n(Run 'python yscb.py {cmd_name} --help' for details)")
         return 0
-    print(HelpRenderer.render_cmd_help("core", cmd_name, spec))
+    log(HelpRenderer.render_cmd_help("core", cmd_name, spec))
     return 0
 
 
@@ -86,7 +87,7 @@ def config_list(cmd_bags: CmdBags) -> int:
 
     mods = [mod_filter] if mod_filter else core_config.list_modules()
     if not mods:
-        print("[core:config] No configuration found for any module.")
+        log_info("[core:config] No configuration found for any module.")
         return 0
 
     summary = {}
@@ -102,24 +103,24 @@ def config_list(cmd_bags: CmdBags) -> int:
         }
 
     if json_output:
-        print(json.dumps(summary, indent=2, ensure_ascii=False))
+        log(json.dumps(summary, indent=2, ensure_ascii=False))
         return 0
 
-    print("\nYS-Codebase Module Configurations:")
-    print("=" * 80)
+    log("\nYS-Codebase Module Configurations:")
+    log("=" * 80)
     for m, info in summary.items():
         local_flag_txt = "[LOCAL OVERLAY]" if info["has_local_config"] else "[PROJECT]"
-        print(f"[*] Module: {m} {local_flag_txt}")
-        print(f"    |-- Project: {core_config.get_config_path(m, local=False)}")
+        log(f"[*] Module: {m} {local_flag_txt}")
+        log(f"    |-- Project: {core_config.get_config_path(m, local=False)}")
         if info["has_local_config"]:
-            print(f"    |-- Local  : {core_config.get_config_path(m, local=True)}")
+            log(f"    |-- Local  : {core_config.get_config_path(m, local=True)}")
         cfg_items = info["config"]
         if isinstance(cfg_items, dict) and cfg_items:
             for k, v in cfg_items.items():
-                print(f"    • {k}: {v}")
+                log(f"    • {k}: {v}")
         else:
-            print("    • (empty)")
-    print("=" * 80)
+            log("    • (empty)")
+    log("=" * 80)
     return 0
 
 
@@ -128,7 +129,7 @@ def config_inspect(cmd_bags: CmdBags) -> int:
     guard_dispatch("core")
     cmd_bags = _normalize_bags(cmd_bags)
     if len(cmd_bags.args) < 2:
-        print("[core:config] Error: Module name and key required. (e.g. 'config inspect core project_root [--json]')")
+        log_error("[core:config] Error: Module name and key required. (e.g. 'config inspect core project_root [--json]')")
         return 1
 
     mod_name, key = cmd_bags.args[0], cmd_bags.args[1]
@@ -136,17 +137,17 @@ def config_inspect(cmd_bags: CmdBags) -> int:
 
     res = core_config.inspect(mod_name, key)
     if json_output:
-        print(json.dumps(res, indent=2, ensure_ascii=False))
+        log(json.dumps(res, indent=2, ensure_ascii=False))
         return 0
 
-    print(f"\nConfiguration Inspection: '{mod_name}' -> '{key}'")
-    print("-" * 60)
-    print(f"  Effective Value : {res.get('effective')}")
-    print(f"  Source Hierarchy: {res.get('source')}")
-    print(f"  Project Value   : {res.get('project_value')}")
-    print(f"  Local Value     : {res.get('local_value')}")
-    print(f"  Is Overridden   : {res.get('is_overridden')}")
-    print("-" * 60)
+    log(f"\nConfiguration Inspection: '{mod_name}' -> '{key}'")
+    log("-" * 60)
+    log(f"  Effective Value : {res.get('effective')}")
+    log(f"  Source Hierarchy: {res.get('source')}")
+    log(f"  Project Value   : {res.get('project_value')}")
+    log(f"  Local Value     : {res.get('local_value')}")
+    log(f"  Is Overridden   : {res.get('is_overridden')}")
+    log("-" * 60)
     return 0
 
 
@@ -155,7 +156,7 @@ def config_unset(cmd_bags: CmdBags) -> int:
     guard_dispatch("core")
     cmd_bags = _normalize_bags(cmd_bags)
     if len(cmd_bags.args) < 2:
-        print("[core:config] Error: Module name and key required. (e.g. 'config unset core project_root [--local]')")
+        log_error("[core:config] Error: Module name and key required. (e.g. 'config unset core project_root [--local]')")
         return 1
 
     mod_name, key = cmd_bags.args[0], cmd_bags.args[1]
@@ -165,13 +166,13 @@ def config_unset(cmd_bags: CmdBags) -> int:
         deleted = core_config.delete(mod_name, key, local=local_flag)
         tier_name = "config.local.json" if local_flag else "config.project.json"
         if deleted:
-            print(f"[core:config] Successfully unset '{key}' from '{tier_name}' for module '{mod_name}'.")
+            log_info(f"[core:config] Successfully unset '{key}' from '{tier_name}' for module '{mod_name}'.")
             return 0
         else:
-            print(f"[core:config] Key '{key}' not found in '{tier_name}' for module '{mod_name}'.")
+            log_error(f"[core:config] Key '{key}' not found in '{tier_name}' for module '{mod_name}'.")
             return 1
     except Exception as e:
-        print(f"[core:config] Error unsetting config: {e}")
+        log_error(f"[core:config] Error unsetting config: {e}")
         return 1
 
 
@@ -180,7 +181,7 @@ def config_get(cmd_bags: CmdBags) -> int:
     guard_dispatch("core")
     cmd_bags = _normalize_bags(cmd_bags)
     if not cmd_bags.args:
-        print("[core:config] Error: Module name required. (e.g. 'config get agents-workflow paths.plans')")
+        log_error("[core:config] Error: Module name required. (e.g. 'config get agents-workflow paths.plans')")
         return 1
     mod_name = cmd_bags.args[0]
     key = cmd_bags.args[1] if len(cmd_bags.args) > 1 else None
@@ -188,9 +189,9 @@ def config_get(cmd_bags: CmdBags) -> int:
 
     val = core_config.get(mod_name, key)
     if json_output or isinstance(val, (dict, builtins.list)):
-        print(json.dumps(val, indent=2, ensure_ascii=False))
+        log(json.dumps(val, indent=2, ensure_ascii=False))
     else:
-        print(val)
+        log(val)
     return 0
 
 
@@ -199,7 +200,7 @@ def config_set(cmd_bags: CmdBags) -> int:
     guard_dispatch("core")
     cmd_bags = _normalize_bags(cmd_bags)
     if len(cmd_bags.args) < 3:
-        print("[core:config] Error: Module name, key, and value required. (e.g. 'config set core project_root ./ [--local]')")
+        log_error("[core:config] Error: Module name, key, and value required. (e.g. 'config set core project_root ./ [--local]')")
         return 1
 
     mod_name, key, raw_val = cmd_bags.args[0], cmd_bags.args[1], cmd_bags.args[2]
@@ -209,10 +210,10 @@ def config_set(cmd_bags: CmdBags) -> int:
     try:
         core_config.set(mod_name, key, val, local=local_flag)
         tier_name = "config.local.json" if local_flag else "config.project.json"
-        print(f"[core:config] Successfully set '{key}' = {val} in '{tier_name}' for module '{mod_name}'.")
+        log_info(f"[core:config] Successfully set '{key}' = {val} in '{tier_name}' for module '{mod_name}'.")
         return 0
     except Exception as e:
-        print(f"[core:config] Error setting config: {e}")
+        log_error(f"[core:config] Error setting config: {e}")
         return 1
 
 
@@ -222,7 +223,7 @@ def config_reload(cmd_bags: CmdBags) -> int:
     cmd_bags = _normalize_bags(cmd_bags)
     mod_name = cmd_bags.args[0] if cmd_bags.args else None
     core_config.reload(mod_name)
-    print(f"[core:config] Reloaded configuration cache for {'all modules' if not mod_name else mod_name}.")
+    log_info(f"[core:config] Reloaded configuration cache for {'all modules' if not mod_name else mod_name}.")
     return 0
 
 
@@ -249,7 +250,7 @@ def config(cmd_bags: CmdBags) -> int:
     elif sub_cmd == "reload":
         return config_reload(sub_bags)
     else:
-        print(f"[core:config] Unknown sub-command '{sub_cmd}'. Run 'python yscb.py config --help' for help.")
+        log_error(f"[core:config] Unknown sub-command '{sub_cmd}'. Run 'python yscb.py config --help' for help.")
         return 1
 
 
@@ -257,18 +258,18 @@ def uri_list(cmd_bags: CmdBags) -> int:
     """List all registered semantic URI schemes."""
     guard_dispatch("core")
     schemes = core_uri.list_registered_schemes_summary()
-    print("\nYS-Codebase Registered URI Schemes Catalog:")
-    print("=" * 110)
-    print(f"{'SCHEME':<23} {'TYPE':<8} {'PROVIDER':<12} {'RAW TARGET / VALUE':<28} {'RESOLVED PATH'}")
-    print("-" * 110)
+    log("\nYS-Codebase Registered URI Schemes Catalog:")
+    log("=" * 110)
+    log(f"{'SCHEME':<23} {'TYPE':<8} {'PROVIDER':<12} {'RAW TARGET / VALUE':<28} {'RESOLVED PATH'}")
+    log("-" * 110)
     for s in schemes:
         token_str = f"{s['token']}://"
         stype = s.get("type", "const")
         provider = s.get("provider", "core")
         raw_val = s.get("value", "")
         res_path = s.get("resolved_path", "")
-        print(f"{token_str:<23} {stype:<8} {provider:<12} {raw_val:<28} {res_path}")
-    print("=" * 110)
+        log(f"{token_str:<23} {stype:<8} {provider:<12} {raw_val:<28} {res_path}")
+    log("=" * 110)
     return 0
 
 
@@ -277,14 +278,14 @@ def uri_resolve(cmd_bags: CmdBags) -> int:
     guard_dispatch("core")
     cmd_bags = _normalize_bags(cmd_bags)
     if not cmd_bags.args:
-        print("[core:uri] Error: URI string required.")
+        log_error("[core:uri] Error: URI string required.")
         return 1
     try:
         res = core_uri.resolve(cmd_bags.args[0], interactive=True)
-        print(res)
+        log(res)
         return 0
     except Exception as e:
-        print(f"[core:uri] Error: {e}")
+        log_error(f"[core:uri] Error: {e}")
         return 1
 
 
@@ -293,14 +294,14 @@ def uri_to_uri(cmd_bags: CmdBags) -> int:
     guard_dispatch("core")
     cmd_bags = _normalize_bags(cmd_bags)
     if not cmd_bags.args:
-        print("[core:uri] Error: Absolute path required.")
+        log_error("[core:uri] Error: Absolute path required.")
         return 1
     try:
         res = core_uri.to_uri(cmd_bags.args[0])
-        print(res)
+        log(res)
         return 0
     except Exception as e:
-        print(f"[core:uri] Error: {e}")
+        log_error(f"[core:uri] Error: {e}")
         return 1
 
 
@@ -308,8 +309,8 @@ def uri_check(cmd_bags: CmdBags) -> int:
     """Health check all registered URI schemes."""
     guard_dispatch("core")
     schemes = core_uri.list_registered_schemes_summary()
-    print("\nYS-Codebase URI Health Check:")
-    print("-" * 80)
+    log("\nYS-Codebase URI Health Check:")
+    log("-" * 80)
     healthy = True
     quick_fixes: List[str] = []
     for s in schemes:
@@ -325,13 +326,13 @@ def uri_check(cmd_bags: CmdBags) -> int:
                 )
                 if hint_cmd not in quick_fixes:
                     quick_fixes.append(hint_cmd)
-        print(f"[*] {s['token'] + '://':<18} -> {s['resolved_path']} [{status}]")
-    print("-" * 80)
-    print(f"Overall URI Status: {'HEALTHY' if healthy else 'WARNING (!undefined schemes present)'}")
+        log(f"[*] {s['token'] + '://':<18} -> {s['resolved_path']} [{status}]")
+    log("-" * 80)
+    log(f"Overall URI Status: {'HEALTHY' if healthy else 'WARNING (!undefined schemes present)'}")
     if quick_fixes:
-        print("\n[Quick Fix] Run the following command(s) to initialize undefined schemes:")
+        log("\n[Quick Fix] Run the following command(s) to initialize undefined schemes:")
         for qf in quick_fixes:
-            print(f"  + {qf}")
+            log(f"  + {qf}")
     return 0
 
 
@@ -354,7 +355,7 @@ def uri(cmd_bags: CmdBags) -> int:
     elif sub_cmd == "check":
         return uri_check(sub_bags)
     else:
-        print(f"[core:uri] Unknown sub-command '{sub_cmd}'. Run 'python yscb.py uri --help' for help.")
+        log_error(f"[core:uri] Unknown sub-command '{sub_cmd}'. Run 'python yscb.py uri --help' for help.")
         return 1
 
 
@@ -363,7 +364,7 @@ def install(cmd_bags: CmdBags) -> int:
     guard_dispatch("core")
     cmd_bags = _normalize_bags(cmd_bags, "install")
     if not cmd_bags.args:
-        print("[core:install] Error: Module name is required.")
+        log_error("[core:install] Error: Module name is required.")
         return 1
 
     version = cmd_bags.get_option_value("version")
@@ -473,19 +474,19 @@ def event_list(cmd_bags: CmdBags) -> int:
     guard_dispatch("core")
     from core import events
     contributed = events.get_contributed_events()
-    print("=" * 70)
-    print("  YS-Codebase - Ecosystem Event Registry")
-    print("=" * 70)
+    log("=" * 70)
+    log("  YS-Codebase - Ecosystem Event Registry")
+    log("=" * 70)
     if not contributed:
-        print("  (No contributed events found)")
+        log("  (No contributed events found)")
     else:
         for mod_name, ev_list in sorted(contributed.items()):
-            print(f"\n[{mod_name}]")
+            log(f"\n[{mod_name}]")
             for ev in ev_list:
                 ename = ev.get("name", "")
                 edesc = ev.get("description", "")
-                print(f"  {ename:<25} {edesc}")
-    print("\n" + "=" * 70)
+                log(f"  {ename:<25} {edesc}")
+    log("\n" + "=" * 70)
     return 0
 
 
@@ -505,7 +506,7 @@ def event(cmd_bags: CmdBags) -> int:
     if sub_cmd == "list":
         return event_list(sub_bags)
     else:
-        print(f"[core:event] Unknown subcommand '{sub_cmd}'. Available: list")
+        log_error(f"[core:event] Unknown subcommand '{sub_cmd}'. Available: list")
         return 1
 
 
@@ -550,7 +551,7 @@ def contributes(cmd_bags: CmdBags) -> int:
     elif sub_cmd == "check":
         return contributes_check(sub_bags)
     else:
-        print(f"[core:contributes] Unknown subcommand '{sub_cmd}'. Available: list, check", file=sys.stderr)
+        log_error(f"[core:contributes] Unknown subcommand '{sub_cmd}'. Available: list, check", stream="stderr")
         return 1
 
 
@@ -561,22 +562,22 @@ def gitignore_status(cmd_bags: CmdBags) -> int:
     from core import gitignore as gi_mod
     info = gi_mod.status()
     if cmd_bags.has_option("json"):
-        print(json.dumps(info, indent=2, ensure_ascii=False))
+        log(json.dumps(info, indent=2, ensure_ascii=False))
         return 0
-    print("=" * 70)
-    print("  YS-Codebase - Unified Gitignore Status")
-    print("=" * 70)
-    print(f"  Target File    : {info.get('target_path')}")
-    print(f"  Exists         : {info.get('exists')}")
-    print(f"  Managed Block  : {info.get('has_managed_block')}")
-    print(f"  In Sync        : {info.get('in_sync')}")
-    print(f"  Total Rules    : {info.get('total_patterns')}")
+    log("=" * 70)
+    log("  YS-Codebase - Unified Gitignore Status")
+    log("=" * 70)
+    log(f"  Target File    : {info.get('target_path')}")
+    log(f"  Exists         : {info.get('exists')}")
+    log(f"  Managed Block  : {info.get('has_managed_block')}")
+    log(f"  In Sync        : {info.get('in_sync')}")
+    log(f"  Total Rules    : {info.get('total_patterns')}")
     groups = info.get("groups", {})
     if groups:
-        print("\n  Module Groups:")
+        log("\n  Module Groups:")
         for mod, pats in groups.items():
-            print(f"    # [{mod}] ({len(pats)} rule(s))")
-    print("=" * 70)
+            log(f"    # [{mod}] ({len(pats)} rule(s))")
+    log("=" * 70)
     return 0
 
 
@@ -587,13 +588,13 @@ def gitignore_sync(cmd_bags: CmdBags) -> int:
     from core import gitignore as gi_mod
     res = gi_mod.sync()
     if cmd_bags.has_option("json"):
-        print(json.dumps(res, indent=2, ensure_ascii=False))
+        log(json.dumps(res, indent=2, ensure_ascii=False))
         return 0 if not res.get("error") else 1
     if res.get("error"):
-        print(f"[core:gitignore] Error: {res['error']}", file=sys.stderr)
+        log_error(f"[core:gitignore] Error: {res['error']}", stream="stderr")
         return 1
     state_label = "created" if res.get("created") else ("updated" if res.get("updated") else "already up-to-date")
-    print(
+    log_info(
         f"[core:gitignore] '{res.get('target_path')}' is {state_label} "
         f"({len(res.get('patterns', []))} rule(s) across {len(res.get('groups', {}))} module group(s))."
     )
@@ -620,14 +621,14 @@ def gitignore(cmd_bags: CmdBags) -> int:
     elif sub_cmd == "sync":
         return gitignore_sync(sub_bags)
     else:
-        print(f"[core:gitignore] Unknown subcommand '{sub_cmd}'. Available: status, sync", file=sys.stderr)
+        log_error(f"[core:gitignore] Unknown subcommand '{sub_cmd}'. Available: status, sync", stream="stderr")
         return 1
 
 
 def _emit_space_error(exc: Exception, json_output: bool) -> int:
     """Emit structured or human-readable error message for core.space CLI commands and return exit code 1."""
     if json_output:
-        print(
+        log(
             json.dumps(
                 {
                     "status": "error",
@@ -639,7 +640,7 @@ def _emit_space_error(exc: Exception, json_output: bool) -> int:
             )
         )
     else:
-        print(f"[core:file-space] Error: {exc}", file=sys.stderr)
+        log_error(f"[core:file-space] Error: {exc}", stream="stderr")
     return 1
 
 
@@ -670,34 +671,34 @@ def _handle_space_spaces(cmd_bags: CmdBags) -> int:
         "spaces": [s.to_dict(reg.project_root) for s in spaces],
     }
     if json_output:
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        log(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
 
-    print("=" * 80)
-    print(f"  YS-Codebase Core File-Space Registry ({len(spaces)} space(s))")
-    print("=" * 80)
+    log("=" * 80)
+    log(f"  YS-Codebase Core File-Space Registry ({len(spaces)} space(s))")
+    log("=" * 80)
     if not spaces:
-        print("  (No spaces registered)")
+        log("  (No spaces registered)")
     for s_dict in payload["spaces"]:
-        print(f"\n[*] {s_dict['qualified_name']} (short: {s_dict['short_name']}, owner: {s_dict['owner']})")
+        log(f"\n[*] {s_dict['qualified_name']} (short: {s_dict['short_name']}, owner: {s_dict['owner']})")
         if s_dict["description"]:
-            print(f"    Description : {s_dict['description']}")
-        print(f"    Hash Policy : {s_dict['hash_policy']} (threshold: {s_dict['large_file_threshold_mb']} MB)")
+            log(f"    Description : {s_dict['description']}")
+        log(f"    Hash Policy : {s_dict['hash_policy']} (threshold: {s_dict['large_file_threshold_mb']} MB)")
         for ent in s_dict["resolved_entries"]:
             state_lbl = "OK" if ent["exists"] else "MISSING (exists: false)"
-            print(f"    Entry       : {ent['entry']} -> {ent['resolved_path']} [{state_lbl}]")
+            log(f"    Entry       : {ent['entry']} -> {ent['resolved_path']} [{state_lbl}]")
         if s_dict.get("compose"):
-            print(f"    Compose     : {', '.join(s_dict['compose'])}")
+            log(f"    Compose     : {', '.join(s_dict['compose'])}")
         if s_dict.get("unresolved_compose"):
-            print(f"    UnresolvedC : {', '.join(s_dict['unresolved_compose'])}")
+            log(f"    UnresolvedC : {', '.join(s_dict['unresolved_compose'])}")
         if s_dict["presets"]:
-            print(f"    Presets     : {', '.join(s_dict['presets'])}")
+            log(f"    Presets     : {', '.join(s_dict['presets'])}")
         if s_dict["unresolved_presets"]:
-            print(f"    Unresolved  : {', '.join(s_dict['unresolved_presets'])}")
-        print(f"    Include     : {', '.join(s_dict['include'])}")
+            log(f"    Unresolved  : {', '.join(s_dict['unresolved_presets'])}")
+        log(f"    Include     : {', '.join(s_dict['include'])}")
         if s_dict["exclude"]:
-            print(f"    Exclude     : {', '.join(s_dict['exclude'])}")
-    print("\n" + "=" * 80)
+            log(f"    Exclude     : {', '.join(s_dict['exclude'])}")
+    log("\n" + "=" * 80)
     return 0
 
 
@@ -725,21 +726,21 @@ def _handle_space_match(cmd_bags: CmdBags) -> int:
 
     payload = {"status": "ok", **res.to_dict()}
     if json_output:
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        log(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
 
     state_str = "MATCHED" if res.matched else "NOT MATCHED"
-    print(f"[core:file-space] Match Path: {res.target_path} -> [{state_str}]")
-    print(f"  Absolute Path  : {res.abs_path}")
-    print(f"  Matched Spaces : {', '.join(res.matched_spaces) if res.matched_spaces else '(none)'}")
+    log(f"[core:file-space] Match Path: {res.target_path} -> [{state_str}]")
+    log(f"  Absolute Path  : {res.abs_path}")
+    log(f"  Matched Spaces : {', '.join(res.matched_spaces) if res.matched_spaces else '(none)'}")
     for d in res.details:
-        print(f"  - [{d.qualified_space}] matched={d.matched} reason={d.reason}")
+        log(f"  - [{d.qualified_space}] matched={d.matched} reason={d.reason}")
         if d.matched_entry:
-            print(f"      entry   : {d.matched_entry}")
+            log(f"      entry   : {d.matched_entry}")
         if d.include_rule:
-            print(f"      include : {d.include_rule} ({d.include_source})")
+            log(f"      include : {d.include_rule} ({d.include_source})")
         if d.exclude_rule:
-            print(f"      exclude : {d.exclude_rule} ({d.exclude_source})")
+            log(f"      exclude : {d.exclude_rule} ({d.exclude_source})")
     return 0
 
 
@@ -767,13 +768,13 @@ def _handle_space_ls(cmd_bags: CmdBags) -> int:
         "files": [f.to_dict() for f in files],
     }
     if json_output:
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        log(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
 
     for f in files:
         spaces_tag = ",".join(f.matched_spaces)
-        print(f"{f.rel_path}\t({f.size} B)\t[{spaces_tag}]")
-    print(f"Total files: {len(files)}")
+        log(f"{f.rel_path}\t({f.size} B)\t[{spaces_tag}]")
+    log(f"Total files: {len(files)}")
     return 0
 
 
@@ -794,13 +795,13 @@ def _handle_space_hash(cmd_bags: CmdBags) -> int:
 
     payload = {"status": "ok", **res.to_dict()}
     if json_output:
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        log(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
 
-    print(f"[core:file-space] Hash Target: {res.target} ({res.target_type})")
-    print(f"  Policy      : {res.policy}")
-    print(f"  File Count  : {res.file_count}")
-    print(f"  Merkle Root : {res.merkle_root}")
+    log(f"[core:file-space] Hash Target: {res.target} ({res.target_type})")
+    log(f"  Policy      : {res.policy}")
+    log(f"  File Count  : {res.file_count}")
+    log(f"  Merkle Root : {res.merkle_root}")
     return 0
 
 
@@ -820,27 +821,27 @@ def _handle_space_status(cmd_bags: CmdBags) -> int:
         return _emit_space_error(exc, json_output)
 
     if json_output:
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        log(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
 
-    print("=" * 80)
-    print(f"  YS-Codebase Core File-Space Status ({payload['space_count']} space(s))")
-    print("=" * 80)
-    print(f"  Project Root       : {payload['project_root']}")
-    print(f"  Storage Root       : {payload['storage_root']}")
-    print(f"  Unified Generation : {payload['unified_generation']}")
+    log("=" * 80)
+    log(f"  YS-Codebase Core File-Space Status ({payload['space_count']} space(s))")
+    log("=" * 80)
+    log(f"  Project Root       : {payload['project_root']}")
+    log(f"  Storage Root       : {payload['storage_root']}")
+    log(f"  Unified Generation : {payload['unified_generation']}")
     if payload["unified_merkle_root"]:
-        print(f"  Unified MerkleRoot : {payload['unified_merkle_root']}")
+        log(f"  Unified MerkleRoot : {payload['unified_merkle_root']}")
     for s_info in payload["spaces"]:
-        print(f"\n[*] {s_info['qualified_name']} (gen={s_info['head_generation']}, files={s_info['active_file_count']})")
+        log(f"\n[*] {s_info['qualified_name']} (gen={s_info['head_generation']}, files={s_info['active_file_count']})")
         if s_info["merkle_root"]:
-            print(f"    Merkle Root : {s_info['merkle_root']}")
+            log(f"    Merkle Root : {s_info['merkle_root']}")
         if s_info.get("compose"):
-            print(f"    Compose     : {', '.join(s_info['compose'])}")
+            log(f"    Compose     : {', '.join(s_info['compose'])}")
         if s_info.get("cursors"):
             for cid, c_rec in s_info["cursors"].items():
-                print(f"    Cursor[{cid}] : acked_gen={c_rec['acked_generation']}")
-    print("\n" + "=" * 80)
+                log(f"    Cursor[{cid}] : acked_gen={c_rec['acked_generation']}")
+    log("\n" + "=" * 80)
     return 0
 
 
@@ -862,15 +863,15 @@ def _handle_space_scan(cmd_bags: CmdBags) -> int:
 
     payload = {"status": "ok", **res.to_dict()}
     if json_output:
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        log(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
 
-    print(f"[core:file-space] Scan Target: {res.space_name} (gen {res.from_generation} -> {res.to_generation})")
-    print(
+    log(f"[core:file-space] Scan Target: {res.space_name} (gen {res.from_generation} -> {res.to_generation})")
+    log(
         f"  Added: {res.added_count}, Modified: {res.modified_count}, "
         f"Deleted: {res.deleted_count}, Unchanged: {res.unchanged_count}"
     )
-    print(f"  Merkle Root : {res.merkle_root}")
+    log(f"  Merkle Root : {res.merkle_root}")
     return 0
 
 
@@ -911,25 +912,25 @@ def _handle_space_diff(cmd_bags: CmdBags) -> int:
         **res.to_dict(),
     }
     if json_output:
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        log(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
 
-    print(
+    log(
         f"[core:file-space] Diff Target: {res.space_name} [consumer={consumer_id}] "
         f"(gen {res.from_generation} -> {res.to_generation})"
     )
-    print(
+    log(
         f"  Added: {res.added_count}, Modified: {res.modified_count}, "
         f"Deleted: {res.deleted_count}, Unchanged: {res.unchanged_count}"
     )
     for rel_p in sorted(res.detail.added):
-        print(f"  + {rel_p}")
+        log(f"  + {rel_p}")
     for rel_p in sorted(res.detail.modified):
-        print(f"  M {rel_p}")
+        log(f"  M {rel_p}")
     for rel_p in sorted(res.detail.deleted):
-        print(f"  - {rel_p}")
+        log(f"  - {rel_p}")
     if do_ack:
-        print(f"  [ACK] Consumer '{consumer_id}' advanced to generation {acked_gen}")
+        log(f"  [ACK] Consumer '{consumer_id}' advanced to generation {acked_gen}")
     return 0
 
 
@@ -950,10 +951,10 @@ def _handle_space_clean(cmd_bags: CmdBags) -> int:
         return _emit_space_error(exc, json_output)
 
     if json_output:
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        log(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
 
-    print(
+    log_info(
         f"[core:file-space] Clean Target: {payload['space']} "
         f"(removed_snapshots={len(payload['removed_snapshots'])}, "
         f"reset_consumers={len(payload['reset_consumers'])})"
@@ -986,10 +987,10 @@ def _dispatch_space_group(cmd_bags: CmdBags, group_cmd_name: str) -> int:
     handler = handlers.get(sub_cmd)
     if handler is not None:
         return handler(sub_bags)
-    print(
+    log_error(
         f"[core:{group_cmd_name}] Unknown subcommand '{sub_cmd}'. "
         "Available: spaces, match, ls, hash, status, scan, diff, clean",
-        file=sys.stderr,
+        stream="stderr",
     )
     return 1
 

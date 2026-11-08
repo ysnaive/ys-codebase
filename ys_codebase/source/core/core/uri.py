@@ -407,33 +407,36 @@ def list_registered_schemes_summary() -> List[Dict[str, Any]]:
 
 def _print_reconcile_prompt(provider_name: str, scheme_token: str, desc: str, binding_key: str) -> None:
     """Renders JIT prompt text for an undefined semantic URI protocol."""
-    print(f"\n[{provider_name}] 語意協議 '{scheme_token}://' 尚未設定 (當前為 !undefined)。")
+    from core.log import log
+    log(f"\n[{provider_name}] 語意協議 '{scheme_token}://' 尚未設定 (當前為 !undefined)。")
     if desc:
-        print(f"  • 說明: {desc}")
-    print(f"  • 目標設定檔: config://{provider_name}/config.project.json ({binding_key})")
-    print("  • 路徑基準: 相對路徑一律以 'yscb://' (工具庫根目錄) 為起始，支援 '../' 穿透或直接輸入語意協議格式 (例: project://plans)")
-    print("\n是否進行及時熱更新補齊?")
-    print("  -y <path> : 設定路徑、自動更新設定檔並繼續運行")
-    print("  -n        : 終止當前操作")
-    print("  --help    : 展開詳細協議資訊與全系統可用協議清單")
+        log(f"  • 說明: {desc}")
+    log(f"  • 目標設定檔: config://{provider_name}/config.project.json ({binding_key})")
+    log("  • 路徑基準: 相對路徑一律以 'yscb://' (工具庫根目錄) 為起始，支援 '../' 穿透或直接輸入語意協議格式 (例: project://plans)")
+    log("\n是否進行及時熱更新補齊?")
+    log("  -y <path> : 設定路徑、自動更新設定檔並繼續運行")
+    log("  -n        : 終止當前操作")
+    log("  --help    : 展開詳細協議資訊與全系統可用協議清單")
 
 
 def _print_schemes_summary_table() -> None:
     """Renders the registered URI protocols summary table to stdout."""
-    print("\n==============================================================================================================")
-    print("YS-Codebase 語意協議註冊清冊 (Registered URI Protocols Summary)")
-    print("==============================================================================================================")
-    print(f"{'TOKEN':<23} {'PROVIDER':<12} {'RAW TARGET / VALUE':<28} {'RESOLVED PATH / STATUS'}")
-    print("--------------------------------------------------------------------------------------------------------------")
+    from core.log import log
+    log("\n==============================================================================================================")
+    log("YS-Codebase 語意協議註冊清冊 (Registered URI Protocols Summary)")
+    log("==============================================================================================================")
+    log(f"{'TOKEN':<23} {'PROVIDER':<12} {'RAW TARGET / VALUE':<28} {'RESOLVED PATH / STATUS'}")
+    log("--------------------------------------------------------------------------------------------------------------")
     for s in list_registered_schemes_summary():
         raw_v = s.get("value", "")
-        print(f"{s['token'] + '://':<23} {s['provider']:<12} {raw_v:<28} {s['resolved_path']}")
-    print("==============================================================================================================\n")
+        log(f"{s['token'] + '://':<23} {s['provider']:<12} {raw_v:<28} {s['resolved_path']}")
+    log("==============================================================================================================\n")
 
 
 def _persist_reconciled_uri_config(yscb_dir: str, provider_name: str, binding_key: str, input_val: str, resolved_target: str) -> None:
     """Writes reconciled URI configuration back to config.project.json and ensures target directory exists."""
     from core import vfs
+    from core.log import log_info
     mod_proj_cfg = os.path.join(yscb_dir, "config", provider_name, "config.project.json")
     cfg_data: Dict[str, Any] = {}
     if vfs.is_file(mod_proj_cfg):
@@ -459,11 +462,11 @@ def _persist_reconciled_uri_config(yscb_dir: str, provider_name: str, binding_ke
     except Exception:
         pass
 
-    print(f"[{provider_name}] 已成功寫入設定檔: '{binding_key}' = '{input_val}'")
+    log_info(f"[{provider_name}] 已成功寫入設定檔: '{binding_key}' = '{input_val}'")
     if not vfs.exists(resolved_target):
         try:
             vfs.makedirs(resolved_target, exist_ok=True)
-            print(f"[{provider_name}] 目錄不存在，已自動建立: {resolved_target}")
+            log_info(f"[{provider_name}] 目錄不存在，已自動建立: {resolved_target}")
         except Exception:
             pass
 
@@ -479,6 +482,7 @@ def reconcile_undefined_uri(
     """
     執行 !undefined 協議之 JIT 終端互動、輸入解析、寫回設定檔與熱重載。
     """
+    from core.log import log, log_error
     global _reconciling_tokens
     if scheme_token in _reconciling_tokens:
         raise CyclicURIDependencyError(f"Cyclic or self-referencing URI dependency detected for '{scheme_token}://'")
@@ -499,11 +503,11 @@ def reconcile_undefined_uri(
         try:
             ans = input("請輸入 [-y <path> / -n / --help]: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print(f"\n[{provider_name}] 操作已取消。")
+            log(f"\n[{provider_name}] 操作已取消。")
             sys.exit(1)
 
         if ans == "-n":
-            print(f"[{provider_name}] 協議 '{scheme_token}://' 未配置，已由使用者終止運行。")
+            log(f"[{provider_name}] 協議 '{scheme_token}://' 未配置，已由使用者終止運行。")
             sys.exit(1)
         elif ans == "--help":
             _print_schemes_summary_table()
@@ -511,7 +515,7 @@ def reconcile_undefined_uri(
         elif ans.startswith("-y "):
             input_val = ans[3:].strip()
             if not input_val:
-                print("錯誤: 請在 -y 後指定路徑 (例如: -y ./plans 或 -y project://plans)")
+                log_error("錯誤: 請在 -y 後指定路徑 (例如: -y ./plans 或 -y project://plans)")
                 continue
 
             _reconciling_tokens.add(scheme_token)
@@ -528,7 +532,7 @@ def reconcile_undefined_uri(
             _persist_reconciled_uri_config(yscb_dir, provider_name, binding_key, input_val, resolved_target)
             return resolved_target
         else:
-            print("無效的輸入選項，請輸入 -y <path>、-n 或 --help。")
+            log_error("無效的輸入選項，請輸入 -y <path>、-n 或 --help。")
 
 
 def _expand_module_placeholder_in_rel(rel: str, active_mod: Optional[str], raw_uri: str) -> str:

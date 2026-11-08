@@ -935,7 +935,8 @@ class AtomicEngine:
         if _is_build_version_request(version):
             return
         if ignore_sha256:
-            print(f"[core:security] [WARN] Skipping SHA-256 verification for '{module_name}@{version}' (--ignore-sha256).")
+            from core.log import log_warn
+            log_warn(f"[core:security] [WARN] Skipping SHA-256 verification for '{module_name}@{version}' (--ignore-sha256).")
             return
 
         expected_sha256 = self._lookup_expected_sha256(module_name, version, provider_url)
@@ -2062,7 +2063,8 @@ class AtomicEngine:
                     fallback_ver = self._resolve_same_triplet_fallback_version(mod, ver, prov, base_dir=host_dir)
                     if fallback_ver and fallback_ver != ver:
                         try:
-                            print(
+                            from core.log import log_info
+                            log_info(
                                 f"[core:reload] Exact revision '{mod}@{ver}' has been pruned upstream; "
                                 f"seamlessly restoring compatible same-triplet revision '{fallback_ver}'."
                             )
@@ -2082,13 +2084,14 @@ class AtomicEngine:
                     provider_url=default_prov, strict=False, ignore_sha256=ignore_sha256
                 )
                 if healed:
+                    from core.log import log_info
                     _, cfg = self._get_config()
                     installed = cfg.get("installed_modules", {})
                     for h_mod, h_old, h_new in healed:
                         if h_old is None:
-                            print(f"[core:reload] Auto-healed missing dependency '{h_mod}@{h_new}'.")
+                            log_info(f"[core:reload] Auto-healed missing dependency '{h_mod}@{h_new}'.")
                         else:
-                            print(f"[core:reload] Auto-healed dependency '{h_mod}' ({h_old} -> {h_new}).")
+                            log_info(f"[core:reload] Auto-healed dependency '{h_mod}' ({h_old} -> {h_new}).")
             except RuntimeError:
                 raise
             except Exception:

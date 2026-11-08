@@ -10,6 +10,8 @@ source_paths:
   - "yscb://source/core/core/contributes.py"
   - "yscb://source/core/core/locale.py"
   - "yscb://source/core/core/gitignore.py"
+  - "yscb://source/core/core/log.py"
+  - "yscb://source/core/core/telemetry.py"
   - "yscb://source/core/core/space/"
   - "yscb://source/core/core/commands/"
 related_docs:
@@ -27,7 +29,7 @@ related_docs:
   - "./API_REFERENCE.md"
   - "./DESIGN_NOTES.md"
   - "../_project/STANDARDS.md"
-last_updated: "2026-11-07"
+last_updated: "2026-11-08"
 ---
 
 # Core 微內核架構手冊 (Core Microkernel Overview)
@@ -140,8 +142,11 @@ with uri.module_scope("core"):
 ### 3.4 安裝來源 12 小時節流版本探測與同版本內容漂移偵測 (`core.update_checker`)
 微內核提供 `UpdateChecker` 服務，維護 `cache://core/update_check.json`。每隔 12 小時以 2 秒短超時輕量檢查一次 Provider 端之版本資訊；當有新版本可用，或宿主 `yscb.py` 與遠端版本號相同但正規化 LF 後之 SHA-256 內容發生漂移（`is_drift=True`）時，在 CLI 執行完畢時輸出非阻塞友善提示，支援 `YSCB_NO_UPDATE_CHECK=1` 停用。
 
-### 3.5 CLI 派發飛行紀錄器 (`core.telemetry`)
-微內核於 [`core/commands/dispatcher.py:dispatch`](../../ys_codebase/source/core/core/commands/dispatcher.py) 外層內建零耦合飛行紀錄器（[`core/telemetry.py`](../../ys_codebase/source/core/core/telemetry.py)），將每次 CLI 調用的執行結果（`ts`、`epoch`、`module`、`cmd`、`args`、`exit_code`、`duration_ms`、`mode`、`cwd`、`error_hint`）追加記錄於 **`cache://core/telemetry.jsonl`**（單檔超過 `512 KB` 自動滾動保留最新 `1,500` 筆紀錄；沙盒測試、`--help` 查詢與 `session-trace` 自身呼叫預設略過），供上層工作流或診斷工具進行時序與錯誤溯源。
+### 3.5 CLI 派發飛行紀錄器 (`core.telemetry`) 與統一雙族系日誌管線 (`core.log`)
+- **統一雙族系日誌與串流基礎設施 ([`core/log.py`](../../ys_codebase/source/core/core/log.py))**：微內核提供 100% 純標準庫、零上層耦合的兩大日誌與串流族系：
+  1. **調用者終端串流族系 (`log*`)**：提供 `log()`、`log_stream()`、`log_info()`、`log_warn()`、`log_error()`、`log_debug()`、基於 `ContextVar` 的 `LogExecutionScope` / `bind_log_context()`，以及 500ms 防抖 / 4KB 自動打包之 `DebouncedIOStreamer`。於前景 CLI 與沙盒測試自動寫入當前 `sys.stdout` / `sys.stderr`（並尊重內層單元測試之 `redirect_stdout` / `patch` 攔截），於 `WarmWorker` 熱派發自動導入 `DebouncedIOStreamer`，於背景 `ServiceWorker` 自動轉寫至結構化 `RollingFileLogger`。
+  2. **增量滾動檔案紀錄族系 (`log_file*`)**：提供崩潰自癒與保留最新 5 份歷史紀錄之 `RollingFileLogger`、跨平台原子替換 `_safe_replace_file`（基於 `os.replace` 並具 `shutil.copy2` 跨磁碟退避），以及支援 `max_bytes` + `keep_lines` 原子滾動截斷與語意 URI 自動解析（`interactive=False`）的 `log_file()`、`log_file_jsonl()`、`read_log_file_jsonl()` 與 `read_log_file_tail()`。
+- **CLI 派發飛行紀錄器 ([`core/telemetry.py`](../../ys_codebase/source/core/core/telemetry.py))**：於 [`core/commands/dispatcher.py:dispatch`](../../ys_codebase/source/core/core/commands/dispatcher.py) 外層透過 `core.log.log_file_jsonl` 將每次 CLI 調用的執行結果（`ts`、`epoch`、`module`、`cmd`、`args`、`exit_code`、`duration_ms`、`mode`、`cwd`、以及由 `core.log` 派發級緩衝自動累積萃取的 `error_hint`）追加記錄於 **`cache://core/telemetry.jsonl`**（單檔超過 `512 KB` 自動滾動保留最新 `1,500` 筆紀錄；沙盒測試、`--help` 查詢與 `session-trace` 自身呼叫預設略過）。
 
 ### 3.6 多層次語系與宿主專有名詞引擎 (`core.locale`)
 微內核於 [`core/locale.py`](../../ys_codebase/source/core/core/locale.py) 提供零第三方依賴的多語系與宿主專有名詞（Proper Nouns）解析引擎：

@@ -1,13 +1,23 @@
 """
 Core Telemetry - Lightweight CLI Execution Flight Recorder.
 100% Python Standard Library. Zero Upper-Layer Coupling.
+
+Delegates JSONL append, rolling line-retention truncation, and error hint extraction
+to `core.log`.
 """
-import json
 import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+
+from core.log import (
+    _parse_jsonl_dict_line,
+    _rotate_lines_file,
+    extract_error_hint,
+    log_file_jsonl,
+    read_log_file_jsonl,
+)
 
 MAX_TELEMETRY_BYTES: int = 512 * 1024
 KEEP_TELEMETRY_LINES: int = 1500
@@ -19,18 +29,6 @@ def _safe_getcwd() -> str:
         return os.getcwd()
     except OSError:
         return ""
-
-
-def _parse_jsonl_dict_line(line: str) -> Optional[Dict[str, Any]]:
-    """解析單行 JSONL 字串，若為合法 JSON 物件 (dict) 則回傳，否則回傳 None。"""
-    s = line.strip()
-    if not s:
-        return None
-    try:
-        item = json.loads(s)
-        return item if isinstance(item, dict) else None
-    except Exception:
-        return None
 
 
 def _discover_yscb_root(yscb_abs: Optional[str] = None) -> Path:
@@ -89,21 +87,6 @@ def should_record_telemetry(
     return True
 
 
-def extract_error_hint(text: str, max_len: int = 200) -> str:
-    """自終端輸出或錯誤訊息中擷取最具代表性之單行報錯摘要。"""
-    if not text:
-        return ""
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    if not lines:
-        return ""
-    priority_keywords = ("[error]", "error:", "[fail]", "[blocker]", "exception", "traceback")
-    for ln in lines:
-        low = ln.lower()
-        if any(k in low for k in priority_keywords):
-            return ln[:max_len]
-    return lines[0][:max_len]
-
-
 def _parse_iso_to_epoch(iso_str: str) -> Optional[float]:
     """將 ISO-8601 時間字串解析為 UTC epoch 秒數。"""
     if not iso_str:
@@ -143,7 +126,6 @@ def record_cli_event(
             return False
 
         target_path = resolve_telemetry_path(yscb_abs)
-        target_path.parent.mkdir(parents=True, exist_ok=True)
 
         now_epoch = time.time()
         now_iso = datetime.fromtimestamp(now_epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -160,44 +142,19 @@ def record_cli_event(
             "error_hint": extract_error_hint(error_hint, max_len=200),
         }
 
-        line_str = json.dumps(record, ensure_ascii=False) + "\n"
-        with open(target_path, "a", encoding="utf-8") as f:
-            f.write(line_str)
-
-        if max_bytes > 0 and target_path.exists() and target_path.stat().st_size > max_bytes:
-            _rotate_telemetry_file(target_path, keep_lines=keep_lines)
-
-        return True
+        return log_file_jsonl(
+            target_path,
+            record,
+            max_bytes=max_bytes,
+            keep_lines=keep_lines,
+        )
     except Exception:
         return False
 
 
 def _rotate_telemetry_file(target_path: Path, keep_lines: int = KEEP_TELEMETRY_LINES) -> None:
     """滾動截斷 telemetry.jsonl，僅保留最後 keep_lines 筆有效 JSONL。"""
-    try:
-        raw_lines = target_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        target_keep = max(1, keep_lines)
-        kept_reversed: List[str] = []
-        for ln in reversed(raw_lines):
-            if _parse_jsonl_dict_line(ln) is not None:
-                kept_reversed.append(ln.strip())
-                if len(kept_reversed) >= target_keep:
-                    break
-
-        kept_reversed.reverse()
-        kept = kept_reversed
-        tmp_path = target_path.with_suffix(f".tmp.{os.getpid()}")
-        try:
-            tmp_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
-            os.replace(str(tmp_path), str(target_path))
-        finally:
-            if tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
-    except Exception:
-        pass
+    _rotate_lines_file(target_path, keep_lines=keep_lines, jsonl_only=True)
 
 
 def read_telemetry_records(
@@ -223,37 +180,17 @@ def read_telemetry_records(
             min_cutoff = time.time() - (float(since_minutes) * 60.0)
             cutoff_epoch = max(cutoff_epoch, min_cutoff) if cutoff_epoch is not None else min_cutoff
 
-        records: List[Dict[str, Any]] = []
-        if cutoff_epoch is None and limit is not None and limit > 0:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                raw_lines = f.readlines()
-            for line in reversed(raw_lines):
-                item = _parse_jsonl_dict_line(line)
-                if item is None:
-                    continue
-                records.append(item)
-                if len(records) >= limit:
-                    break
-            records.reverse()
-            return records
+        if cutoff_epoch is None:
+            return read_log_file_jsonl(path, limit=limit)
 
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                item = _parse_jsonl_dict_line(line)
-                if item is None:
-                    continue
+        def _time_filter(item: Dict[str, Any]) -> bool:
+            rec_epoch = item.get("epoch")
+            if not isinstance(rec_epoch, (int, float)):
+                rec_epoch = _parse_iso_to_epoch(str(item.get("ts", "")))
+            if rec_epoch is not None and float(rec_epoch) < cutoff_epoch:  # type: ignore[operator]
+                return False
+            return True
 
-                if cutoff_epoch is not None:
-                    rec_epoch = item.get("epoch")
-                    if not isinstance(rec_epoch, (int, float)):
-                        rec_epoch = _parse_iso_to_epoch(str(item.get("ts", "")))
-                    if rec_epoch is not None and float(rec_epoch) < cutoff_epoch:
-                        continue
-
-                records.append(item)
-
-        if limit is not None and limit > 0 and len(records) > limit:
-            records = records[-limit:]
-        return records
+        return read_log_file_jsonl(path, limit=limit, filter_fn=_time_filter)
     except Exception:
         return []

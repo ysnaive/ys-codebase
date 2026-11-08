@@ -8,11 +8,9 @@ from typing import Dict, Any, List, Optional, Tuple
 import os
 import copy
 import time
-import logging
 from core import uri
 from core import vfs
-
-logger = logging.getLogger("core.contributes")
+from core.log import log_warn
 
 
 def _tag_provider(data: Any, donor_name: str) -> Any:
@@ -179,8 +177,9 @@ def _deep_merge(
                     if isinstance(v, dict)
                     else "overlay"
                 )
-                logger.warning(
-                    f"Contributes unique key collision on '{k}': keeping '{existing_donor}', ignoring '{new_donor}'."
+                log_warn(
+                    f"Contributes unique key collision on '{k}': keeping '{existing_donor}', ignoring '{new_donor}'.",
+                    stream="stderr",
                 )
                 continue
 
@@ -526,7 +525,7 @@ def get_format(module: str) -> Optional[Dict[str, Any]]:
             if isinstance(data, dict):
                 return data
         except Exception as e:
-            logger.warning(f"Failed to read format schema for '{module}' at '{fmt_uri}': {e}")
+            log_warn(f"Failed to read format schema for '{module}' at '{fmt_uri}': {e}", stream="stderr")
     return None
 
 
@@ -606,9 +605,9 @@ class ContributesAggregator:
         aggregated.setdefault(target, {})
         val_res = validate(target, c_data, donor_module=donor)
         if not val_res.is_valid:
-            logger.warning(f"Contributes validation failed for donor '{donor}' -> target '{target}':")
+            log_warn(f"Contributes validation failed for donor '{donor}' -> target '{target}':", stream="stderr")
             for err in val_res.errors:
-                logger.warning(f"  [{err.path}] {err.message} ({err.suggestion or ''})")
+                log_warn(f"  [{err.path}] {err.message} ({err.suggestion or ''})", stream="stderr")
         valid_body = val_res.payload if val_res.payload is not None else c_data
         tagged_body = _tag_payload_body(valid_body, donor)
 
@@ -654,9 +653,9 @@ class ContributesAggregator:
                                 donor, target, c_data, aggregated, core_modules_commands, core_modules_locales
                             )
                     except Exception as e:
-                        logger.warning(f"Failed to read contributes file '{target_file_uri}': {e}")
+                        log_warn(f"Failed to read contributes file '{target_file_uri}': {e}", stream="stderr")
             except Exception as e:
-                logger.warning(f"Failed to scan donor contributes dir '{donor_contrib_dir}': {e}")
+                log_warn(f"Failed to scan donor contributes dir '{donor_contrib_dir}': {e}", stream="stderr")
 
         donor_unified_file = f"module://{donor}/contributes.json"
         if vfs.exists(donor_unified_file):
@@ -688,8 +687,9 @@ class ContributesAggregator:
         for target in list(aggregated.keys()):
             local_contrib_uri = f"config://{target}/contribute.local.json"
             if vfs.exists(local_contrib_uri):
-                logger.warning(
-                    f"Ignoring '{local_contrib_uri}': project contribute overrides must be tracked by Git (no local overrides allowed)."
+                log_warn(
+                    f"Ignoring '{local_contrib_uri}': project contribute overrides must be tracked by Git (no local overrides allowed).",
+                    stream="stderr",
                 )
 
             proj_contrib_uri = f"config://{target}/contribute.json"
@@ -701,9 +701,12 @@ class ContributesAggregator:
                         if isinstance(target_overlay, dict):
                             val_res = validate(target, target_overlay, donor_module="project_override")
                             if not val_res.is_valid:
-                                logger.warning(f"Contributes validation failed for project override 'config://{target}/contribute.json':")
+                                log_warn(
+                                    f"Contributes validation failed for project override 'config://{target}/contribute.json':",
+                                    stream="stderr",
+                                )
                                 for err in val_res.errors:
-                                    logger.warning(f"  [{err.path}] {err.message} ({err.suggestion or ''})")
+                                    log_warn(f"  [{err.path}] {err.message} ({err.suggestion or ''})", stream="stderr")
                             valid_overlay = val_res.payload if val_res.payload is not None else target_overlay
                             tagged_overlay = _tag_payload_body(valid_overlay, "project")
                             if target == "core" and "locales" in tagged_overlay and isinstance(tagged_overlay["locales"], dict):
@@ -719,7 +722,7 @@ class ContributesAggregator:
                             if target == "core" and core_modules_locales:
                                 aggregated[target].setdefault("locales", {})["__modules__"] = core_modules_locales
                 except Exception as e:
-                    logger.warning(f"Failed to read project contribute override '{proj_contrib_uri}': {e}")
+                    log_warn(f"Failed to read project contribute override '{proj_contrib_uri}': {e}", stream="stderr")
 
             target_cache_uri = f"cache://{target}/contributes.merged.json"
             if aggregated[target]:
@@ -741,7 +744,7 @@ class ContributesAggregator:
             vfs.makedirs("cache://core", exist_ok=True)
             vfs.write_json(meta_uri, meta_payload)
         except Exception as e:
-            logger.warning(f"Failed to update contributes.meta.json: {e}")
+            log_warn(f"Failed to update contributes.meta.json: {e}", stream="stderr")
 
     def scan_and_inject(self, topological_order: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
         """

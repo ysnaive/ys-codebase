@@ -7,7 +7,6 @@ Pure-standard-library watcher coordination, in-process subscription registry,
 from __future__ import annotations
 
 import json
-import logging
 import os
 from pathlib import Path
 import threading
@@ -15,14 +14,13 @@ import time
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from core import vfs
+from core.log import log_debug, log_warn
 
 from .schema import resolve_semantic_or_rel_path
 
 if TYPE_CHECKING:
     from .registry import SpaceRegistry
     from .scanner import ScanDiffResult
-
-logger = logging.getLogger(__name__)
 
 _SUBSCRIBER_LOCK = threading.RLock()
 _SUBSCRIBERS: List[Tuple[Callable[[str, Any], Any], Optional[Set[str]]]] = []
@@ -91,8 +89,9 @@ def notify_subscribers(space_name: str, diff_result: "ScanDiffResult") -> None:
         try:
             callback(space_name, diff_result)
         except Exception as exc:
-            logger.warning(
-                "Space subscriber callback failed for '%s': %s", space_name, exc
+            log_warn(
+                f"Space subscriber callback failed for '{space_name}': {exc}",
+                stream="stderr",
             )
 
 
@@ -130,7 +129,7 @@ def broadcast_file_space_changed(
             "on_file_space_changed", payload, emit_module="core"
         )
     except Exception as exc:
-        logger.debug("Event broadcast 'on_file_space_changed' skipped or failed: %s", exc)
+        log_debug(f"Event broadcast 'on_file_space_changed' skipped or failed: {exc}")
     return payload
 
 
@@ -154,10 +153,8 @@ def notify_space_registered(space_name: str) -> None:
         try:
             worker.sync_watched_directories()
         except Exception as exc:
-            logger.debug(
-                "Failed to sync watched directories for space '%s': %s",
-                space_name,
-                exc,
+            log_debug(
+                f"Failed to sync watched directories for space '{space_name}': {exc}"
             )
 
 
@@ -224,7 +221,7 @@ def write_watcher_state(
         vfs.makedirs(str(target.parent), exist_ok=True)
         vfs.write_json(str(target), payload, indent=2, atomic=True)
     except Exception as exc:
-        logger.debug("Failed to write watcher_state.json: %s", exc)
+        log_debug(f"Failed to write watcher_state.json: {exc}")
     return target
 
 

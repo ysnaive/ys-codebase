@@ -202,13 +202,13 @@ class TestServerLogging(YSCBTestCase):
 
         logger.archive_and_close()
 
-        # Verify _safe_replace_file fallback to copy2 + remove when os.rename raises OSError
+        # Verify _safe_replace_file fallback to copy2 + remove when os.replace raises OSError
         src_file = os.path.join(self.cache_dir, "fallback_src.log")
         dst_file = os.path.join(self.cache_dir, "fallback_dst.log")
         with open(src_file, "w", encoding="utf-8") as f:
             f.write("cross-device fallback payload\n")
 
-        with patch("server.logger.os.rename", side_effect=OSError("EXDEV cross-device link")):
+        with patch("core.log.os.replace", side_effect=OSError("EXDEV cross-device link")):
             _safe_replace_file(src_file, dst_file)
 
         self.assertFalse(os.path.exists(src_file))
@@ -222,8 +222,8 @@ class TestServerLogging(YSCBTestCase):
         with open(src_locked, "w", encoding="utf-8") as f:
             f.write("locked remove payload\n")
 
-        with patch("server.logger.os.rename", side_effect=OSError("rename locked")), \
-             patch("server.logger.os.remove", side_effect=OSError("remove locked")):
+        with patch("core.log.os.replace", side_effect=OSError("replace locked")), \
+             patch("core.log.os.remove", side_effect=OSError("remove locked")):
             _safe_replace_file(src_locked, dst_locked)
 
         self.assertTrue(os.path.exists(dst_locked))

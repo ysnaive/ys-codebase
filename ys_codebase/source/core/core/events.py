@@ -10,6 +10,7 @@ import importlib.util
 from core import uri
 from core import vfs
 from core.context import ExecutionContext
+from core.log import log_error, log_info, log_stream, log_warn
 
 
 def _is_meta_key(k: Any) -> bool:
@@ -130,13 +131,19 @@ def broadcast(
                         h_res = hook_func(ctx)
                         results[mod_name] = h_res if h_res is not None else "success"
                         if is_verbose:
-                            print(f"[{emit_module}:events] Hook '{mod_name}:hook.{emit_module}.py' executed '{event_name}' -> {results[mod_name]}", file=sys.stderr)
+                            log_info(
+                                f"[{emit_module}:events] Hook '{mod_name}:hook.{emit_module}.py' executed '{event_name}' -> {results[mod_name]}",
+                                stream="stderr",
+                            )
             except Exception as e:
                 results[mod_name] = f"warning: {e}"
-                print(f"[{emit_module}:events] Warning: Hook '{mod_name}:hook.{emit_module}.py' failed on '{event_name}': {e}", file=sys.stderr)
+                log_warn(
+                    f"[{emit_module}:events] Warning: Hook '{mod_name}:hook.{emit_module}.py' failed on '{event_name}': {e}",
+                    stream="stderr",
+                )
                 if is_verbose:
                     import traceback
-                    traceback.print_exc(file=sys.stderr)
+                    log_stream(traceback.format_exc(), stream="stderr", record_hint=False)
     finally:
         if orig_sys_path is not None:
             restore_sys_path(orig_sys_path)

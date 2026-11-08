@@ -35,6 +35,7 @@ from core.commands.resolver import (
     OptionResolver,
 )
 from core.platform import daemon_probe
+from core.log import clear_error_hint, get_last_error_hint
 from tests import load_core_cli_module
 import yscb
 
@@ -46,11 +47,11 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
     def setUp(self):
         super().setUp()
         self._orig_auto_spawn_warned = dispatcher._AUTO_SPAWN_WARNED
-        self._orig_last_error_hint = dispatcher._LAST_DISPATCH_ERROR_HINT
+        clear_error_hint()
 
     def tearDown(self):
         dispatcher._AUTO_SPAWN_WARNED = False
-        dispatcher._LAST_DISPATCH_ERROR_HINT = ""
+        clear_error_hint()
         dispatcher.clear_cache()
         super().tearDown()
 
@@ -1047,7 +1048,7 @@ class TestCoreCommandsSubsystem(YSCBTestCase):
                 res = dispatcher._hot_dispatch_attempt("m", ["c"], [], tmp_dir)
             self.assertEqual(res, dispatcher._HotDispatchResult(1, True))
             self.assertIn("[yscb] Error: Worker terminated by restart/stop", err_buf.getvalue())
-            self.assertIn("Worker terminated by restart/stop", dispatcher._LAST_DISPATCH_ERROR_HINT)
+            self.assertIn("Worker terminated by restart/stop", get_last_error_hint())
 
             ok = io.BytesIO(b'{"type": "task_finish", "exit_code": 0, "error": "ignored"}\n')
             ok_buf = io.StringIO()

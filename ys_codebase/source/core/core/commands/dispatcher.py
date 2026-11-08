@@ -21,15 +21,25 @@ from core.commands.resolver import (
     OptionResolutionError,
     OptionResolver,
 )
+from core.log import (
+    clear_error_hint,
+    extract_error_hint,
+    get_last_error_hint,
+    log,
+    log_error,
+    log_info,
+    log_stream,
+    log_warn,
+    record_error_hint,
+)
 from core.platform import InterProcessLock, can_spawn_background_daemon, daemon_probe, is_process_alive, spawn_detached
-from core.telemetry import extract_error_hint, record_cli_event
+from core.telemetry import record_cli_event
 
 # 快取已載入之 Contributes Registry
 _GLOBAL_REGISTRY: Optional[CommandsRegistry] = None
 _GLOBAL_REGISTRY_ROOT: Optional[str] = None
 _MODULE_CACHE: Dict[str, Any] = {}
 _AUTO_SPAWN_WARNED: bool = False
-_LAST_DISPATCH_ERROR_HINT: str = ""
 # strict 模式 auto-spawn 後等待 daemon 活躍之上限秒數
 _STRICT_SPAWN_WAIT_SEC: float = 10.0
 
@@ -112,7 +122,7 @@ def _load_registry(yscb_abs: str) -> CommandsRegistry:
                                 registry.register_module(mod_name, data["commands"])
                                 break
                     except ValueError as err:
-                        print(f"[yscb:registry] Warning: {err}", file=sys.stderr)
+                        log_warn(f"[yscb:registry] Warning: {err}", stream="stderr")
                     except Exception:
                         pass
 
@@ -239,9 +249,8 @@ def _hot_dispatch_attempt(module_name: str, cmd_path_or_name: Any, args: List[st
                     pkt = json.loads(line)
                     if pkt.get("type") == "terminal_stream":
                         text_chunk = pkt.get("text", "")
-                        out = sys.stderr if pkt.get("stream") == "stderr" else sys.stdout
-                        out.write(text_chunk)
-                        out.flush()
+                        stream_target = "stderr" if pkt.get("stream") == "stderr" else "stdout"
+                        log_stream(text_chunk, stream=stream_target, flush=True, record_hint=False)
                         if len(captured_err) < 8 and (
                             pkt.get("stream") == "stderr"
                             or any(k in text_chunk for k in ("Error", "[FAIL]", "[BLOCKER]"))
@@ -253,11 +262,11 @@ def _hot_dispatch_attempt(module_name: str, cmd_path_or_name: Any, args: List[st
                         if rc != 0 and err_field:
                             # Surface server-side failures (e.g. worker preempted) instead of failing silently
                             err_line = f"[yscb] Error: {err_field}\n"
-                            sys.stderr.write(err_line)
-                            sys.stderr.flush()
+                            log_stream(err_line, stream="stderr", flush=True, record_hint=False)
                             captured_err.append(err_line)
-                        global _LAST_DISPATCH_ERROR_HINT
-                        _LAST_DISPATCH_ERROR_HINT = extract_error_hint("".join(captured_err)) if rc != 0 else ""
+                        clear_error_hint()
+                        if rc != 0 and captured_err:
+                            record_error_hint(extract_error_hint("".join(captured_err)))
                         return _HotDispatchResult(rc, True)
     except Exception:
         # 串流中途失敗：任務已送達，結果不明
@@ -281,8 +290,8 @@ def _try_hot_dispatch(module_name: str, cmd_path_or_name: Any, args: List[str], 
         "[yscb] Error: hot_dispatch: request was delivered to the server but failed before completion "
         "(timeout / connection reset / worker restarted). Not falling back to cold dispatch to avoid double execution."
     )
-    global _LAST_DISPATCH_ERROR_HINT
-    _LAST_DISPATCH_ERROR_HINT = err_msg
+    clear_error_hint()
+    record_error_hint(err_msg)
     return 1
 
 
@@ -387,8 +396,7 @@ def _print_agent_daemon_blocker(strict: bool = False) -> None:
         + "================================================================================\n\n"
     )
     try:
-        sys.stderr.write(msg)
-        sys.stderr.flush()
+        log_stream(msg, stream="stderr", flush=True, record_hint=False)
     except Exception:
         pass
 
@@ -405,7 +413,7 @@ def _spawn_server_daemon(host_dir: str, yscb_abs: str) -> Optional[int]:
         )
     except OSError as err:
         if os.environ.get("YSCB_VERBOSE") == "1" or os.environ.get("YSCB_DEBUG") == "1":
-            print(f"[core:dispatcher] Warning: Failed to auto-spawn server daemon: {err}", file=sys.stderr)
+            log_warn(f"[core:dispatcher] Warning: Failed to auto-spawn server daemon: {err}", stream="stderr")
         return None
     daemon_probe.record_spawn(yscb_abs, pid)
     return pid
@@ -466,7 +474,7 @@ def _strict_hot_dispatch_or_block(
        後重試一次；重試結果同上規則判定。
     4. 仍不可達 → 輸出 strict [BLOCKER] 並回傳 1。
     """
-    global _LAST_DISPATCH_ERROR_HINT
+    clear_error_hint()
     result = _hot_dispatch_attempt(module_name, cmd_path, sub_args, yscb_abs)
     if result.exit_code is None and not result.accepted:
         cfg = _read_server_spawn_config(yscb_abs)
@@ -496,11 +504,12 @@ def _strict_hot_dispatch_or_block(
             "(timeout / connection reset / worker restarted). Not retried to avoid double execution; "
             "check 'server status' and the server log, then re-run if appropriate."
         )
-        _LAST_DISPATCH_ERROR_HINT = err_msg
-        print(err_msg, file=sys.stderr)
+        clear_error_hint()
+        log_error(err_msg, stream="stderr")
         return 1
 
-    _LAST_DISPATCH_ERROR_HINT = "[BLOCKER] strict_hot_dispatch: server daemon unavailable, cold dispatch blocked"
+    clear_error_hint()
+    record_error_hint("[BLOCKER] strict_hot_dispatch: server daemon unavailable, cold dispatch blocked")
     _warn_daemon_unavailable_once(strict=True)
     return 1
 
@@ -532,13 +541,13 @@ def _ensure_hooks(hook_name: str, verbose: Optional[bool] = None) -> Dict[str, A
         from core import events
         res = events.broadcast(hook_name, emit_module="core", verbose=is_verbose)
         if is_verbose and res:
-            print(f"[core:dispatcher] Hooks for '{hook_name}' completed: {res}", file=sys.stderr)
+            log_info(f"[core:dispatcher] Hooks for '{hook_name}' completed: {res}", stream="stderr")
         return res
     except Exception as e:
         if is_verbose:
             import traceback
-            print(f"[core:dispatcher] Warning: Failed to trigger hook '{hook_name}': {e}", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
+            log_warn(f"[core:dispatcher] Warning: Failed to trigger hook '{hook_name}': {e}", stream="stderr")
+            log_stream(traceback.format_exc(), stream="stderr", record_hint=False)
         return {}
 
 
@@ -564,6 +573,7 @@ def dispatch_local(
         or any(arg in ("--verbose", "--debug") for arg in raw_args)
     )
     _ensure_hooks("pre_cli_dispatch", verbose=is_verbose)
+    primary_error_hint: str = ""
     try:
         if isinstance(cmd_name, list):
             cmd_path = [str(c) for c in cmd_name]
@@ -576,14 +586,13 @@ def dispatch_local(
         primary_cmd = cmd_path[0] if cmd_path else ""
 
         # 參數解析
-        global _LAST_DISPATCH_ERROR_HINT
-        _LAST_DISPATCH_ERROR_HINT = ""
+        clear_error_hint()
         try:
             positional_args, resolved_options = OptionResolver.resolve(cmd_spec, raw_args)
         except OptionResolutionError as err:
             err_msg = f"[yscb] Error: {err}"
-            _LAST_DISPATCH_ERROR_HINT = err_msg
-            print(err_msg)
+            log_error(err_msg)
+            primary_error_hint = get_last_error_hint()
             return 1
 
         raw_cmd_str = " ".join(cmd_path + raw_args) if (cmd_path or raw_args) else ""
@@ -597,8 +606,8 @@ def dispatch_local(
         target_cli = _find_module_cli(module_name, yscb_abs)
         if not target_cli:
             err_msg = f"[yscb] Error: Cannot find CLI entrypoint for module '{module_name}'."
-            _LAST_DISPATCH_ERROR_HINT = err_msg
-            print(err_msg)
+            log_error(err_msg)
+            primary_error_hint = get_last_error_hint()
             return 1
 
         # =========================================================================
@@ -628,7 +637,8 @@ def dispatch_local(
                 target_cli,
             )
             if spec is None or spec.loader is None:
-                print(f"[yscb] Error: Cannot load spec for '{target_cli}'.")
+                log_error(f"[yscb] Error: Cannot load spec for '{target_cli}'.")
+                primary_error_hint = get_last_error_hint()
                 return 1
             mod = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = mod
@@ -638,8 +648,8 @@ def dispatch_local(
                 # 載入期例外（含 SyntaxError）移除半初始化模組並回傳 1
                 sys.modules.pop(spec.name, None)
                 err_msg = f"[yscb] Error loading CLI for '{module_name}': {type(load_err).__name__}: {load_err}"
-                _LAST_DISPATCH_ERROR_HINT = err_msg
-                print(err_msg)
+                log_error(err_msg)
+                primary_error_hint = get_last_error_hint()
                 return 1
             _MODULE_CACHE[target_cli] = mod
 
@@ -664,7 +674,7 @@ def dispatch_local(
             elif cmd_spec and cmd_spec.cmd:
                 # 純分支且無自身函式，自動降級渲染子指令 Help
                 disp_cmd = " ".join(cmd_path)
-                print(HelpRenderer.render_cmd_help(module_name, disp_cmd, cmd_spec))
+                log(HelpRenderer.render_cmd_help(module_name, disp_cmd, cmd_spec))
                 exit_code = 0
             else:
                 # 既無精確函式亦非純分支 (Hard Sunset: 徹底移除 process fallback)
@@ -673,24 +683,28 @@ def dispatch_local(
                     f"[yscb] Error (EC-05): Module '{module_name}' CLI script does not define "
                     f"command function '{func_name}(cmd_bags)'."
                 )
-                _LAST_DISPATCH_ERROR_HINT = err_msg
-                print(err_msg)
+                log_error(err_msg)
+                primary_error_hint = get_last_error_hint()
                 return 127
         except SystemExit as se:
             exit_code = se.code if isinstance(se.code, int) else (0 if se.code is None else 1)
         except Exception as e:
             disp_cmd = " ".join(cmd_path)
             err_msg = f"[yscb] Error executing '{module_name} {disp_cmd}': {e}"
-            _LAST_DISPATCH_ERROR_HINT = err_msg
-            print(err_msg)
+            log_error(err_msg)
             exit_code = 1
         finally:
             sys.argv = orig_argv
+            if not primary_error_hint:
+                primary_error_hint = get_last_error_hint()
 
         return exit_code
     finally:
-        # 對稱觸發 post_cli_dispatch Hook
+        # 對稱觸發 post_cli_dispatch Hook，並在結束後恢復主命令鎖定之錯誤摘要
         _ensure_hooks("post_cli_dispatch", verbose=is_verbose)
+        if primary_error_hint:
+            clear_error_hint()
+            record_error_hint(primary_error_hint)
 
 
 def _maybe_check_and_print_updates() -> None:
@@ -737,7 +751,7 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
 
     # 1. 空參數或全域 --help
     if not argv or argv[0] in ("-h", "--help", "help"):
-        print(HelpRenderer.render_global_help(registry))
+        log(HelpRenderer.render_global_help(registry))
         return 0
 
     first_token = argv[0]
@@ -774,10 +788,10 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
                 all_candidates = list(core_commands) + registry.list_modules()
                 sugg = _suggest_command(first_token, all_candidates)
                 err_msg = f"[yscb] Error: Unknown command or module '{first_token}'."
-                print(err_msg)
+                log_error(err_msg)
                 if sugg:
-                    print(f"       Did you mean '{sugg}'?")
-                print("       Run 'python yscb.py --help' for available commands.")
+                    log_info(f"       Did you mean '{sugg}'?")
+                log_info("       Run 'python yscb.py --help' for available commands.")
                 record_cli_event(
                     module_name=first_token,
                     cmd_path=[],
@@ -794,9 +808,9 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
     mod_spec = registry.get_module(module_name)
     if not target_tokens or target_tokens[0] in ("-h", "--help", "help"):
         if mod_spec:
-            print(HelpRenderer.render_module_help(module_name, mod_spec))
+            log(HelpRenderer.render_module_help(module_name, mod_spec))
         else:
-            print(f"YS-Codebase Module: {module_name}\n(Run 'python yscb.py {module_name} --help' for options)")
+            log(f"YS-Codebase Module: {module_name}\n(Run 'python yscb.py {module_name} --help' for options)")
         return 0
 
     # 5. 沿 target_tokens 走訪指令樹
@@ -807,10 +821,10 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
         cand_list = list(mod_spec.commands.keys()) if (mod_spec and mod_spec.commands) else []
         sugg = _suggest_command(unknown_token, cand_list)
         err_msg = f"[yscb] Error: Unknown command '{unknown_token}' for module '{module_name}'."
-        print(err_msg)
+        log_error(err_msg)
         if sugg:
-            print(f"       Did you mean '{sugg}'?")
-        print(f"       Run 'python yscb.py {module_name} --help' for available commands.")
+            log_info(f"       Did you mean '{sugg}'?")
+        log_info(f"       Run 'python yscb.py {module_name} --help' for available commands.")
         record_cli_event(
             module_name=module_name,
             cmd_path=[unknown_token],
@@ -828,10 +842,10 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
     # 6. 指令級 --help 攔截
     if any(a in ("-h", "--help", "help") for a in sub_args):
         if cmd_spec:
-            print(HelpRenderer.render_cmd_help(module_name, cmd_disp_name, cmd_spec))
+            log(HelpRenderer.render_cmd_help(module_name, cmd_disp_name, cmd_spec))
             return 0
         elif mod_spec:
-            print(HelpRenderer.render_module_help(module_name, mod_spec))
+            log(HelpRenderer.render_module_help(module_name, mod_spec))
             return 0
 
     # 7. 純分支未接子指令檢查
@@ -848,7 +862,7 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
             except Exception:
                 pass
         if not has_fn:
-            print(HelpRenderer.render_cmd_help(module_name, cmd_disp_name, cmd_spec))
+            log(HelpRenderer.render_cmd_help(module_name, cmd_disp_name, cmd_spec))
             return 0
 
     # 8. 檢查未知子指令
@@ -856,10 +870,10 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
         bad_sub = sub_args[0]
         sugg = _suggest_command(bad_sub, list(cmd_spec.cmd.keys()))
         err_msg = f"[yscb] Error: Unknown subcommand '{bad_sub}' for command '{cmd_disp_name}'."
-        print(err_msg)
+        log_error(err_msg)
         if sugg:
-            print(f"       Did you mean '{sugg}'?")
-        print(f"       Run 'python yscb.py {module_name} {cmd_disp_name} --help' for available subcommands.")
+            log_info(f"       Did you mean '{sugg}'?")
+        log_info(f"       Run 'python yscb.py {module_name} {cmd_disp_name} --help' for available subcommands.")
         record_cli_event(
             module_name=module_name,
             cmd_path=cmd_path + [bad_sub],
@@ -888,7 +902,7 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
                 exit_code=hot_res,
                 duration_ms=(time.perf_counter() - t_start) * 1000.0,
                 mode="hot",
-                error_hint=_LAST_DISPATCH_ERROR_HINT if hot_res != 0 else "",
+                error_hint=get_last_error_hint() if hot_res != 0 else "",
                 yscb_abs=yscb_abs,
             )
             _maybe_check_and_print_updates()
@@ -917,7 +931,7 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
         exit_code=ret,
         duration_ms=(time.perf_counter() - t_start) * 1000.0,
         mode="local",
-        error_hint=_LAST_DISPATCH_ERROR_HINT if ret != 0 else "",
+        error_hint=get_last_error_hint() if ret != 0 else "",
         yscb_abs=yscb_abs,
     )
     _maybe_check_and_print_updates()

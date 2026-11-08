@@ -1,5 +1,13 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_07_2052_jupyter_style_runtime_isolation_and_static_guardrails (In Progress)
+
+### sub_01_core_log_pipeline_and_streamer_unification (Completed)
+- **於 `module:core` 建立統一 `core.log` 雙族系管線（`log*` 調用者終端串流與 `log_file*` 增量滾動檔案紀錄）、收編 `DebouncedIOStreamer` / `ServerLogger` (`RollingFileLogger`) / `telemetry.py` 輪替邏輯，並完成 `core` 內部 13 個生產檔案輸出全量遷移 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-03`)**：
+  - **`core.log` 調用者終端串流族系 (`log*`) 與 `ContextVar` 執行平面路由 (`FR-01`, `EC-01`, `EC-02`)**：新建 100% 純標準庫之 `ys_codebase/source/core/core/log.py`（頂層 0 `core.*` 匯入，語意 URI 於 `_resolve_log_target` 延遲呼叫 `uri.resolve(..., interactive=False)` 阻斷循環匯入與互動重入），實作 `log`、`log_stream`、`log_info`、`log_warn`、`log_error`、`log_debug` 及 `LogExecutionScope` / `bind_log_context`，於前景冷/熱派發與測試沙盒保持原樣輸出，於 P4 背景 `ServiceWorker` 自動轉寫結構化日誌檔且不污染前景終端。
+  - **`DebouncedIOStreamer` 與 `RollingFileLogger` 下沉收編及 `server` 相容門面 (`FR-02`, `FR-03`, `EC-03`, `EC-04`)**：將 `DebouncedIOStreamer`（500ms 防抖、4KB 累積刷新、同串流合併、重入 `flush()` 安全清空與內層 `redirect_stdout`/`redirect_stderr` 優先序）與 `RollingFileLogger`（Crash 殘留恢復、啟動 Banner、停機歸檔、`MAX_HIST_FILES=5`、`os.set_inheritable(fd, False)`、`_safe_replace_file` 升級 `os.replace` 並具 `shutil.copy2` 跨磁碟退避）收編至 `core.log`；將 `server/logger.py` (`class ServerLogger(RollingFileLogger)`) 與 `server/streamer.py` 重構為相容匯出門面。
+  - **`telemetry.py` 滾動截斷委派、派發級 `error_hint` 累積與 `core` 全量遷移 (`FR-04`, `FR-05`, `EC-05`, `NFR-02`)**：重構 `core/telemetry.py` 委派 `log_file_jsonl` / `read_log_file_jsonl`；於 `core.log` 實作 `record_error_hint` / `get_last_error_hint` / `clear_error_hint`（保留前 16 筆並按關鍵字優先序萃取），消除 `dispatcher.py` 之 `global _LAST_DISPATCH_ERROR_HINT` 並在 `post_cli_dispatch` 前鎖定主命令錯誤摘要；完成 `core` 13 個含原生輸出或 `logging` 之生產檔案 100% 遷移，通過 `core` (277/277) 與 `server` (62/62) 全量測試、盲眼靜態審查 (`PASSED`) 與本機 `@build` 自部署實機驗收。
+
 ## 2026_11_06_1212_sandbox_dependency_pruning (Completed)
 
 - **`dev` 測試沙盒 (`SandboxProvisioner`) 遞迴相依閉包剪枝與跨子行程環境繼承 (`TASK-01`, `TASK-02`, `FT-01`, `RT-01`)**：

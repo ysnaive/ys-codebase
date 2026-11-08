@@ -10,14 +10,12 @@ import copy
 import difflib
 import json
 import locale as _py_locale
-import logging
 import os
 import re
 import sys
 
+from core.log import log_warn
 from core.validator import ValidationIssue, ValidationResult
-
-logger = logging.getLogger("core.locale")
 
 DEFAULT_LOCALE_CHAIN: List[str] = ["zh"]
 MAX_INTERPOLATION_DEPTH: int = 5
@@ -354,7 +352,7 @@ def _load_json_cached(abs_path: str) -> Optional[Dict[str, Any]]:
     except FileNotFoundError:
         return None
     except Exception as e:
-        logger.warning(f"Failed to load locale JSON '{abs_path}': {e}")
+        log_warn(f"Failed to load locale JSON '{abs_path}': {e}", stream="stderr")
     return None
 
 
@@ -420,7 +418,7 @@ def get_definition(module: str, base_dir: Optional[str] = None) -> Dict[str, Dic
         return {}
     is_safe, abs_p = _is_safe_subpath(resolved_base, def_rel)
     if not is_safe:
-        logger.warning(f"Unsafe locale definition path '{def_rel}' in module '{module}'.")
+        log_warn(f"Unsafe locale definition path '{def_rel}' in module '{module}'.", stream="stderr")
         return {}
     data = _load_json_cached(abs_p)
     return copy.deepcopy(data) if isinstance(data, dict) else {}

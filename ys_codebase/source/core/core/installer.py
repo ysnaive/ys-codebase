@@ -23,6 +23,7 @@ from core.engine import (
 )
 from core import semver
 from core import events
+from core.log import log, log_error, log_info, log_warn
 
 INTERNAL_IGNORE_BEGIN = "# === YSCB INTERNAL IGNORE BEGIN ==="
 INTERNAL_IGNORE_END = "# === YSCB INTERNAL IGNORE END ==="
@@ -314,14 +315,14 @@ def _cleanup_stale_old_dirs(parent_dir: str) -> None:
 
 def _print_restore_failure_guidance(mod_name: str, ver: str, prov: str) -> None:
     """Prints diagnostic recovery steps when restoring a module fails."""
-    print(f"[core:restore] 錯誤: '{mod_name}' 模組 (v{ver}) 來源 '{prov}' 已遺失或無法存取，需手動修復。")
-    print("               建議措施為:")
+    log_error(f"[core:restore] 錯誤: '{mod_name}' 模組 (v{ver}) 來源 '{prov}' 已遺失或無法存取，需手動修復。")
+    log_info("               建議措施為:")
     if mod_name == "core":
-        print("                 1. 修復核心模組並切換來源 : python yscb.py init --fix [--provider <valid_url_or_path>]")
+        log_info("                 1. 修復核心模組並切換來源 : python yscb.py init --fix [--provider <valid_url_or_path>]")
     else:
-        print(f"                 1. 重新指定來源安裝該模組 : python yscb.py install {mod_name} --force [--provider <valid_url_or_path>]")
-    print("                 2. 以指定來源全量還原環境 : python yscb.py restore --force --provider <valid_url_or_path>")
-    print(f"                 3. 檢查並修正 'yscb.config.json' 中 '{mod_name}' 的 version / provider 設定")
+        log_info(f"                 1. 重新指定來源安裝該模組 : python yscb.py install {mod_name} --force [--provider <valid_url_or_path>]")
+    log_info("                 2. 以指定來源全量還原環境 : python yscb.py restore --force --provider <valid_url_or_path>")
+    log_info(f"                 3. 檢查並修正 'yscb.config.json' 中 '{mod_name}' 的 version / provider 設定")
 
 
 class Installer:
@@ -361,13 +362,13 @@ class Installer:
                 missing_optionals.append((opt_mod, ver_range, hint))
 
             if missing_optionals:
-                print("\n[*] 偵測到可用的擴充模組 (Optional Modules):")
+                log("\n[*] 偵測到可用的擴充模組 (Optional Modules):")
                 for opt_mod, ver_range, hint in missing_optionals:
                     ver_str = f" ({ver_range})" if ver_range else ""
                     hint_str = f": {hint}" if hint else ""
-                    print(f"    - {opt_mod}{ver_str}{hint_str}")
-                    print(f"      (可執行: python yscb.py install {opt_mod} 啟用完整能力)")
-                print()
+                    log(f"    - {opt_mod}{ver_str}{hint_str}")
+                    log(f"      (可執行: python yscb.py install {opt_mod} 啟用完整能力)")
+                log()
         except Exception:
             pass
 
@@ -390,12 +391,12 @@ class Installer:
             if not steps:
                 return
 
-            print(f"\n[*] Next Steps for '{module_name}':")
+            log(f"\n[*] Next Steps for '{module_name}':")
             for idx, step in enumerate(steps, 1):
-                print(f"    {idx}. {step}")
+                log(f"    {idx}. {step}")
             readme_uri = f"module://{module_name}/README.md"
             if vfs.exists(readme_uri):
-                print(f"    * Quickstart & Manual: .modules/{module_name}/README.md")
+                log(f"    * Quickstart & Manual: .modules/{module_name}/README.md")
         except Exception:
             pass
 
@@ -467,18 +468,18 @@ class Installer:
         try:
             requests = self._parse_install_requests(module_name, version)
         except Exception as e:
-            print(f"[core:install] Error parsing module version specification: {e}")
+            log_error(f"[core:install] Error parsing module version specification: {e}")
             return 1
 
         if not requests:
-            print("[core:install] Error: Module name is required.")
+            log_error("[core:install] Error: Module name is required.")
             return 1
 
         _, cfg = self.engine._get_config()
         default_provider = cfg.get("default_provider") or cfg.get("installed_modules", {}).get("core", {}).get("provider")
         provider_url = provider or default_provider
         if not provider_url:
-            print("[core:install] Error: No default_provider configured in yscb.config.json and no --provider specified.")
+            log_error("[core:install] Error: No default_provider configured in yscb.config.json and no --provider specified.")
             return 1
 
         req_names_ordered: List[str] = []
@@ -488,7 +489,7 @@ class Installer:
 
         label_str = ", ".join(req_names_ordered)
         snap_suffix = req_names_ordered[0] if len(req_names_ordered) == 1 else f"batch_{len(req_names_ordered)}"
-        print(f"[core:install] Resolving dependencies for '{label_str}'...")
+        log_info(f"[core:install] Resolving dependencies for '{label_str}'...")
 
         try:
             with self.engine.transaction_lock("install"):
@@ -515,7 +516,7 @@ class Installer:
                     for mod, installed_ver in targets:
                         old_ver = old_versions.get(mod, "0.0.0.0")
                         if old_ver != "0.0.0.0" and semver.compare_semver(installed_ver, old_ver) > 0:
-                            print(f"[core:install] Running migration ladder for '{mod}' ({old_ver} -> {installed_ver})...")
+                            log_info(f"[core:install] Running migration ladder for '{mod}' ({old_ver} -> {installed_ver})...")
                             self.engine.act_migrate(mod, old_ver, installed_ver)
 
                     for req_mod in req_names_ordered:
@@ -531,19 +532,19 @@ class Installer:
                     except Exception:
                         pass
                 except Exception as e:
-                    print(f"[core:install] Error during install: {e}")
+                    log_error(f"[core:install] Error during install: {e}")
                     self.engine.act_restore_snapshot(snap_id)
                     return 1
 
             for req_mod in req_names_ordered:
                 inst_v = resolved_map.get(req_mod, "1.0.0.0")
-                print(f"[core:install] Successfully installed '{req_mod}@{inst_v}'.")
+                log_info(f"[core:install] Successfully installed '{req_mod}@{inst_v}'.")
                 if old_versions.get(req_mod, "0.0.0.0") == "0.0.0.0":
                     self._print_onboarding_guide(req_mod)
                     self._check_optional_dependencies(req_mod)
             return 0
         except Exception as e:
-            print(f"[core:install] Error acquiring install lock: {e}")
+            log_error(f"[core:install] Error acquiring install lock: {e}")
             return 1
 
     def cmd_update(
@@ -556,7 +557,7 @@ class Installer:
         default_provider = cfg.get("default_provider") or cfg.get("installed_modules", {}).get("core", {}).get("provider")
         provider_url = provider or default_provider
         if not provider_url:
-            print("[core:update] Error: No default_provider configured in yscb.config.json and no --provider specified.")
+            log_error("[core:update] Error: No default_provider configured in yscb.config.json and no --provider specified.")
             return 1
 
         installed = cfg.get("installed_modules", {})
@@ -565,17 +566,17 @@ class Installer:
             missing_mods = [m for m in explicit_targets if m not in installed]
             if missing_mods:
                 for m in missing_mods:
-                    print(f"[core:update] Error: Module '{m}' is not currently installed.")
+                    log_error(f"[core:update] Error: Module '{m}' is not currently installed.")
                 return 1
             targets = explicit_targets
         else:
             targets = list(installed.keys())
 
         if not targets:
-            print("[core:update] No modules installed to update.")
+            log_info("[core:update] No modules installed to update.")
             return 0
 
-        print(f"[core:update] Checking updates for modules: {', '.join(targets)} (Major Lock active)...")
+        log_info(f"[core:update] Checking updates for modules: {', '.join(targets)} (Major Lock active)...")
 
         updated_any = False
         migrations_to_run: List[Tuple[str, str, str]] = []
@@ -592,7 +593,7 @@ class Installer:
                         cur_t = semver.parse_semver(cur_ver)
 
                         if cur_t.is_build or cur_ver == "build" or str(cur_ver).endswith(".build"):
-                            print(f"[core:update] Module '{mod}' is a development build (v{cur_ver}), skipping update.")
+                            log_info(f"[core:update] Module '{mod}' is a development build (v{cur_ver}), skipping update.")
                             continue
 
                         major_constraint = f"^{cur_t.major}.{cur_t.minor}.{cur_t.patch}"
@@ -606,7 +607,7 @@ class Installer:
                         latest_ver = best_v if best_v else cur_ver
 
                         if semver.compare_semver(latest_ver, cur_ver) > 0:
-                            print(f"[core:update] Updating '{mod}' from {cur_ver} -> {latest_ver}...")
+                            log_info(f"[core:update] Updating '{mod}' from {cur_ver} -> {latest_ver}...")
                             self.engine.act_prepare([(mod, latest_ver)], provider_url, force=True, ignore_sha256=ignore_sha256)
                             self.engine.act_register(mod, latest_ver, provider_url)
                             migrations_to_run.append((mod, cur_ver, latest_ver))
@@ -614,7 +615,7 @@ class Installer:
                             if mod == "core":
                                 candidate_core_ver = latest_ver
                         else:
-                            print(f"[core:update] Module '{mod}' is already up-to-date (v{cur_ver}).")
+                            log_info(f"[core:update] Module '{mod}' is already up-to-date (v{cur_ver}).")
 
                     # Reconcile dependencies across all installed & newly updated modules (auto-installs missing deps,
                     # auto-upgrades compatible intersection deps, or raises RuntimeError on disjoint conflict)
@@ -624,10 +625,10 @@ class Installer:
                     for h_mod, h_old, h_new in healed_deps:
                         updated_any = True
                         if h_old is None:
-                            print(f"[core:update] Installing required dependency '{h_mod}@{h_new}'...")
+                            log_info(f"[core:update] Installing required dependency '{h_mod}@{h_new}'...")
                             newly_installed_deps.append(h_mod)
                         elif semver.compare_semver(h_new, h_old) > 0:
-                            print(f"[core:update] Auto-upgrading dependency '{h_mod}' from {h_old} -> {h_new}...")
+                            log_info(f"[core:update] Auto-upgrading dependency '{h_mod}' from {h_old} -> {h_new}...")
                             migrations_to_run.append((h_mod, h_old, h_new))
 
                     if updated_any:
@@ -639,7 +640,7 @@ class Installer:
                         for dep_mod in newly_installed_deps:
                             self._print_onboarding_guide(dep_mod)
                             self._check_optional_dependencies(dep_mod)
-                        print("[core:update] Update completed successfully.")
+                        log_info("[core:update] Update completed successfully.")
                     try:
                         from core.update_checker import UpdateChecker
                         checker = UpdateChecker()
@@ -648,12 +649,12 @@ class Installer:
                     except Exception:
                         pass
                 except Exception as e:
-                    print(f"[core:update] Error during update: {e}")
+                    log_error(f"[core:update] Error during update: {e}")
                     self.engine.act_restore_snapshot(snap_id)
                     return 1
             return 0
         except Exception as e:
-            print(f"[core:update] Error acquiring update lock: {e}")
+            log_error(f"[core:update] Error acquiring update lock: {e}")
             return 1
 
     def cmd_remove(
@@ -665,11 +666,11 @@ class Installer:
     ) -> int:
         targets = self._normalize_target_names(module_name)
         if not targets:
-            print("[core:remove] Error: Module name is required.")
+            log_error("[core:remove] Error: Module name is required.")
             return 1
 
         if "core" in targets:
-            print("[core:remove] Error: Cannot remove 'core' infrastructure module.")
+            log_error("[core:remove] Error: Cannot remove 'core' infrastructure module.")
             return 1
 
         _, cfg = self.engine._get_config()
@@ -677,7 +678,7 @@ class Installer:
 
         for mod in targets:
             if mod not in installed:
-                print(f"[core:remove] Module '{mod}' is not currently installed.")
+                log_error(f"[core:remove] Module '{mod}' is not currently installed.")
                 return 1
 
         target_set = set(targets)
@@ -698,12 +699,12 @@ class Installer:
 
             if dependents:
                 if not force:
-                    print(
+                    log_error(
                         f"[core:remove] Error: Cannot remove '{mod}' because it is required by: "
                         f"{', '.join(dependents)}. Use --force to override."
                     )
                     return 1
-                print(f"[core:remove] Warning: Force removing '{mod}' required by: {', '.join(dependents)}.")
+                log_warn(f"[core:remove] Warning: Force removing '{mod}' required by: {', '.join(dependents)}.")
 
         snap_suffix = targets[0] if len(targets) == 1 else f"batch_{len(targets)}"
         try:
@@ -713,23 +714,23 @@ class Installer:
                     _notify_server_release_handles()
                     events.broadcast("on_remove", ExecutionContext("core", "remove", list(targets)), emit_module="core")
                     for mod in targets:
-                        print(f"[core:remove] Removing module '{mod}'...")
+                        log_info(f"[core:remove] Removing module '{mod}'...")
                         self.engine.act_unregister(mod)
                         self.engine.act_delete(mod, clean_mirror=clean, purge=purge)
                     self.engine.act_reload(clean_stage=True, inject_stage=True, reconcile_deps=False)
                     self.sync_pip_dependencies()
                 except Exception as e:
-                    print(f"[core:remove] Error during remove: {e}")
+                    log_error(f"[core:remove] Error during remove: {e}")
                     self.engine.act_restore_snapshot(snap_id)
                     return 1
             for mod in targets:
                 if purge:
-                    print(f"[core:remove] Module '{mod}' and all its persistent data/config purged successfully.")
+                    log_info(f"[core:remove] Module '{mod}' and all its persistent data/config purged successfully.")
                 else:
-                    print(f"[core:remove] Module '{mod}' removed successfully (cache cleared, storage/config preserved).")
+                    log_info(f"[core:remove] Module '{mod}' removed successfully (cache cleared, storage/config preserved).")
             return 0
         except Exception as e:
-            print(f"[core:remove] Error acquiring remove lock: {e}")
+            log_error(f"[core:remove] Error acquiring remove lock: {e}")
             return 1
 
     def cmd_list(self, remote: bool = False, provider: Optional[str] = None) -> int:
@@ -737,34 +738,34 @@ class Installer:
         installed = cfg.get("installed_modules", {})
 
         if not remote:
-            print("-" * 65)
-            print(f"{'Module Name':<20} {'Version':<10} {'Provider':<15} {'Status':<15}")
-            print("-" * 65)
+            log("-" * 65)
+            log(f"{'Module Name':<20} {'Version':<10} {'Provider':<15} {'Status':<15}")
+            log("-" * 65)
             if not installed:
-                print("  (No modules installed)")
+                log("  (No modules installed)")
             else:
                 for mod, meta in installed.items():
                     ver = meta.get("version", "unknown") if isinstance(meta, dict) else str(meta)
                     prov = meta.get("provider", "local") if isinstance(meta, dict) else "local"
                     status = "Installed" if vfs.exists(f"module://{mod}") else "Missing files"
-                    print(f"{mod:<20} {ver:<10} {prov:<15} {status:<15}")
-            print("-" * 65)
+                    log(f"{mod:<20} {ver:<10} {prov:<15} {status:<15}")
+            log("-" * 65)
             return 0
 
         default_provider = cfg.get("default_provider") or cfg.get("installed_modules", {}).get("core", {}).get("provider")
         provider_url = provider or default_provider
         if not provider_url:
-            print("[core:list] Error: No default_provider configured and no --provider specified.")
+            log_error("[core:list] Error: No default_provider configured and no --provider specified.")
             return 1
 
-        print("-" * 75)
-        print(f"{'Module Name':<20} {'Latest Ver':<12} {'Provider':<25} {'Local Status':<15}")
-        print("-" * 75)
+        log("-" * 75)
+        log(f"{'Module Name':<20} {'Latest Ver':<12} {'Provider':<25} {'Local Status':<15}")
+        log("-" * 75)
 
         available_modules = _discover_remote_modules(self.engine, provider_url, installed)
         if not available_modules:
-            print(f"  (No remote modules found at provider: {provider_url})")
-            print("-" * 75)
+            log(f"  (No remote modules found at provider: {provider_url})")
+            log("-" * 75)
             return 1
 
         for mod in sorted(available_modules.keys()):
@@ -774,20 +775,20 @@ class Installer:
                 loc_status = f"Installed (v{loc_ver})"
             else:
                 loc_status = "Available"
-            print(f"{mod:<20} {latest_ver:<12} {provider_url:<25} {loc_status:<15}")
+            log(f"{mod:<20} {latest_ver:<12} {provider_url:<25} {loc_status:<15}")
 
-        print("-" * 75)
+        log("-" * 75)
         return 0
 
     def cmd_status(self) -> int:
         _, cfg = self.engine._get_config()
         installed = cfg.get("installed_modules", {})
 
-        print("=" * 60)
-        print("YS-Codebase Core Health Diagnostic Report")
-        print("=" * 60)
-        print(f"YS-Codebase Root : {cfg.get('yscb_root', 'unknown')}")
-        print(f"Total Modules    : {len(installed)}")
+        log("=" * 60)
+        log("YS-Codebase Core Health Diagnostic Report")
+        log("=" * 60)
+        log(f"YS-Codebase Root : {cfg.get('yscb_root', 'unknown')}")
+        log(f"Total Modules    : {len(installed)}")
 
         healthy = True
         for mod, meta in installed.items():
@@ -795,18 +796,18 @@ class Installer:
             cli_exists = vfs.exists(f"module://{mod}/scripts/cli.py")
             if not mod_exists or not cli_exists:
                 healthy = False
-                print(f"  [!] {mod}: Incomplete (manifest={mod_exists}, cli={cli_exists})")
+                log_warn(f"  [!] {mod}: Incomplete (manifest={mod_exists}, cli={cli_exists})")
             else:
-                print(f"  [*] {mod}@{meta.get('version') if isinstance(meta, dict) else meta}: Healthy")
+                log(f"  [*] {mod}@{meta.get('version') if isinstance(meta, dict) else meta}: Healthy")
 
-        print("-" * 60)
-        print(f"Overall Status   : {'HEALTHY (100% Ready)' if healthy else 'DEGRADED (Run reload)'}")
-        print("=" * 60)
+        log("-" * 60)
+        log(f"Overall Status   : {'HEALTHY (100% Ready)' if healthy else 'DEGRADED (Run reload)'}")
+        log("=" * 60)
         return 0 if healthy else 1
 
     def cmd_rollback(self, target: Optional[str] = None) -> int:
         if not vfs.exists("snapshot://"):
-            print("[core:rollback] No snapshots found.")
+            log_error("[core:rollback] No snapshots found.")
             return 1
 
         snap_root = uri.resolve("snapshot://")
@@ -819,24 +820,24 @@ class Installer:
 
         snaps = sorted(vfs.listdir("snapshot://"), key=_snap_sort_key)
         if not snaps:
-            print("[core:rollback] No snapshots available.")
+            log_error("[core:rollback] No snapshots available.")
             return 1
 
         target_snap = target or snaps[-1]
-        print(f"[core:rollback] Rolling back to snapshot '{target_snap}'...")
+        log_info(f"[core:rollback] Rolling back to snapshot '{target_snap}'...")
         try:
             with self.engine.transaction_lock("rollback"):
                 _notify_server_release_handles()
                 self.engine.act_restore_snapshot(target_snap)
                 self.sync_pip_dependencies()
-            print(f"[core:rollback] Successfully restored to '{target_snap}'.")
+            log_info(f"[core:rollback] Successfully restored to '{target_snap}'.")
             return 0
         except Exception as e:
-            print(f"[core:rollback] Rollback failed: {e}")
+            log_error(f"[core:rollback] Rollback failed: {e}")
             return 1
 
     def cmd_reload(self) -> int:
-        print("[core:reload] Reconciling runtime modules from mirror...")
+        log_info("[core:reload] Reconciling runtime modules from mirror...")
         with self.engine.transaction_lock("reload"):
             self.engine.act_reload(clean_stage=True, inject_stage=True)
             self.sync_pip_dependencies()
@@ -847,7 +848,7 @@ class Installer:
                 generate_internal_gitignore(yscb_abs)
             except Exception:
                 pass
-            print("[core:reload] Runtime environment reconciled and refreshed successfully.")
+            log_info("[core:reload] Runtime environment reconciled and refreshed successfully.")
             return 0
 
     def cmd_restore(self, force: bool = False, provider: Optional[str] = None, ignore_sha256: bool = False) -> int:
@@ -858,7 +859,7 @@ class Installer:
         """
         cfg_path, cfg = self.engine._get_config()
         if not cfg_path or not cfg:
-            print("[core:restore] Error: Configuration not found.")
+            log_error("[core:restore] Error: Configuration not found.")
             return 1
 
         host_dir, _ = uri._get_host_config()
@@ -867,7 +868,7 @@ class Installer:
 
         installed = cfg.get("installed_modules", {})
         if not installed:
-            print("[core:restore] No installed_modules declared in configuration. Nothing to restore.")
+            log_info("[core:restore] No installed_modules declared in configuration. Nothing to restore.")
             return 0
 
         default_provider = normalize_legacy_provider_url(
@@ -879,7 +880,7 @@ class Installer:
         modules_dir = os.path.join(yscb_abs, ".modules")
         os.makedirs(modules_dir, exist_ok=True)
 
-        print(f"[core:restore] Restoring {len(installed)} module(s) to '{modules_dir}'...")
+        log_info(f"[core:restore] Restoring {len(installed)} module(s) to '{modules_dir}'...")
         success_count = 0
         failed_mods: List[str] = []
         migrations_to_run: List[Tuple[str, str, str]] = []
@@ -906,11 +907,11 @@ class Installer:
 
                 if not force and os.path.isdir(dest) and os.path.isfile(mf_path):
                     if ver == "build" or installed_ver == ver:
-                        print(f"  -> Skipping '{mod_name}@{ver}' (already installed, use --force to overwrite)")
+                        log_info(f"  -> Skipping '{mod_name}@{ver}' (already installed, use --force to overwrite)")
                         success_count += 1
                         continue
 
-                print(f"  -> Restoring '{mod_name}@{ver}'...")
+                log_info(f"  -> Restoring '{mod_name}@{ver}'...")
                 ok = self._restore_module_package(
                     host_dir, cfg.get("yscb_root", "."), mod_name, ver, prov, dest, mirror, ignore_sha256=ignore_sha256
                 )
@@ -927,11 +928,11 @@ class Installer:
                     failed_mods.append(mod_name)
 
             if failed_mods:
-                print(f"[core:restore] Warning: Completed with {len(failed_mods)} failure(s): {', '.join(failed_mods)}")
+                log_warn(f"[core:restore] Warning: Completed with {len(failed_mods)} failure(s): {', '.join(failed_mods)}")
             else:
-                print(f"[core:restore] Successfully restored all {success_count} module(s).")
+                log_info(f"[core:restore] Successfully restored all {success_count} module(s).")
 
-            print("[core:restore] Triggering reload...")
+            log_info("[core:restore] Triggering reload...")
             self.engine.act_reload(clean_stage=True, inject_stage=True, ignore_sha256=ignore_sha256)
             for m_mod, m_old, m_new in migrations_to_run:
                 self.engine.act_migrate(m_mod, m_old, m_new)
@@ -940,7 +941,7 @@ class Installer:
                 generate_internal_gitignore(yscb_abs)
             except Exception:
                 pass
-            print("[core:reload] Runtime environment reconciled and refreshed successfully.")
+            log_info("[core:reload] Runtime environment reconciled and refreshed successfully.")
             return 0 if not failed_mods else 1
 
     def _resolve_same_triplet_fallback_version(
@@ -1106,7 +1107,7 @@ class Installer:
         if _allow_fallback:
             fallback_ver = self._resolve_same_triplet_fallback_version(base_dir, provider_arg, module_name, version)
             if fallback_ver and fallback_ver != version:
-                print(
+                log_info(
                     f"[core:restore] Exact revision '{module_name}@{version}' has been pruned upstream; "
                     f"seamlessly restoring compatible same-triplet revision '{fallback_ver}'."
                 )
@@ -1182,7 +1183,7 @@ class Installer:
             try:
                 pip_mgr.install_packages(specs)
             except PipInstallError as e:
-                print(f"[core:pip] Warning: {e}")
+                log_warn(f"[core:pip] Warning: {e}")
 
         try:
             events.broadcast("on_env_synced", ExecutionContext("core", "env_sync", []), emit_module="core")

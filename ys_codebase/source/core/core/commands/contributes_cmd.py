@@ -6,6 +6,7 @@ from typing import Optional, Dict, Any
 import os
 
 from core import uri, vfs
+from core.log import log, log_error, log_info, log_warn
 from core.validator import ContributesValidator, ValidationResult
 from core import contributes
 from core import locale as core_locale
@@ -28,13 +29,13 @@ def list_contributes(module_filter: Optional[str] = None) -> int:
     """List all registered contribute points across ecosystem."""
     points = contributes.list_points(module_filter)
     if not points:
-        print("[core:contributes] No contribution points found.")
+        log_info("[core:contributes] No contribution points found.")
         return 0
 
-    print("\nYS-Codebase Registered Contribution Points:")
-    print("=" * 85)
-    print(f"{'Target Module':<18} | {'Point Key':<20} | {'Type':<12} | {'Description'}")
-    print("-" * 85)
+    log("\nYS-Codebase Registered Contribution Points:")
+    log("=" * 85)
+    log(f"{'Target Module':<18} | {'Point Key':<20} | {'Type':<12} | {'Description'}")
+    log("-" * 85)
     for p in points:
         mod = p.get("module", "")
         pt = p.get("point", "")
@@ -43,9 +44,9 @@ def list_contributes(module_filter: Optional[str] = None) -> int:
         # Shorten description if too long
         if len(desc) > 35:
             desc = desc[:32] + "..."
-        print(f"{mod:<18} | {pt:<20} | {ft:<12} | {desc}")
-    print("=" * 85)
-    print(f"Total points registered: {len(points)}\n")
+        log(f"{mod:<18} | {pt:<20} | {ft:<12} | {desc}")
+    log("=" * 85)
+    log(f"Total points registered: {len(points)}\n")
     return 0
 
 
@@ -56,15 +57,15 @@ def _check_format_schema_mode(target_or_uri: Optional[str]) -> int:
     if not vfs.exists(fmt_uri):
         fmt_uri = f"module://{mod_name}/contributes/_format.json"
     if not vfs.exists(fmt_uri):
-        print(f"[core:contributes] [FAIL] Error: Format schema not found for module '{mod_name}' at '{fmt_uri}'.")
+        log_error(f"[core:contributes] [FAIL] Error: Format schema not found for module '{mod_name}' at '{fmt_uri}'.")
         return 1
     try:
         data = vfs.read_json(fmt_uri)
     except Exception as e:
-        print(f"[core:contributes] [FAIL] Error reading '{fmt_uri}': {e}")
+        log_error(f"[core:contributes] [FAIL] Error reading '{fmt_uri}': {e}")
         return 1
     res = ContributesValidator.validate_format_schema(data)
-    print(res.format_report(file_label=fmt_uri))
+    log(res.format_report(file_label=fmt_uri))
     return 0 if res.is_valid else 1
 
 
@@ -73,22 +74,22 @@ def _check_single_file_mode(file_uri: str) -> int:
     try:
         p = uri.resolve(file_uri, interactive=False) if "://" in file_uri else os.path.abspath(file_uri)
         if not os.path.isfile(p):
-            print(f"[core:contributes] [FAIL] File not found: {file_uri}")
+            log_error(f"[core:contributes] [FAIL] File not found: {file_uri}")
             return 1
     except Exception as e:
-        print(f"[core:contributes] [FAIL] Invalid path/URI '{file_uri}': {e}")
+        log_error(f"[core:contributes] [FAIL] Invalid path/URI '{file_uri}': {e}")
         return 1
 
     fname = os.path.basename(p)
     if fname.startswith("_"):
-        print(f"[core:contributes] Checking special metadata file '{fname}' as format schema...")
+        log_info(f"[core:contributes] Checking special metadata file '{fname}' as format schema...")
         try:
             data = vfs.read_json(p) if "://" not in file_uri else vfs.read_json(file_uri)
         except Exception as e:
-            print(f"[core:contributes] [FAIL] Error reading '{file_uri}': {e}")
+            log_error(f"[core:contributes] [FAIL] Error reading '{file_uri}': {e}")
             return 1
         res = ContributesValidator.validate_format_schema(data)
-        print(res.format_report(file_label=file_uri))
+        log(res.format_report(file_label=file_uri))
         return 0 if res.is_valid else 1
 
     parent_dir = os.path.dirname(p.rstrip("/\\"))
@@ -104,13 +105,13 @@ def _check_single_file_mode(file_uri: str) -> int:
 
     target_format = contributes.get_format(target_mod)
     if target_format is None:
-        print(f"[core:contributes] [WARN] Target module '{target_mod}' does not define a _format.json schema. Skipping validation.")
+        log_warn(f"[core:contributes] [WARN] Target module '{target_mod}' does not define a _format.json schema. Skipping validation.")
         return 0
 
     try:
         data = vfs.read_json(file_uri) if "://" in file_uri else vfs.read_json(p)
     except Exception as e:
-        print(f"[core:contributes] [FAIL] Error reading '{file_uri}': {e}")
+        log_error(f"[core:contributes] [FAIL] Error reading '{file_uri}': {e}")
         return 1
     if isinstance(data, dict) and target_mod in data and isinstance(data[target_mod], dict):
         data = data[target_mod]
@@ -119,7 +120,7 @@ def _check_single_file_mode(file_uri: str) -> int:
     if target_mod == "core":
         inferred_base = parent_dir if fname == "contribute.json" else os.path.dirname(os.path.dirname(p))
         _append_locale_validation_errors(res, donor_mod or target_mod, data, inferred_base)
-    print(res.format_report(file_label=file_uri))
+    log(res.format_report(file_label=file_uri))
     return 0 if res.is_valid else 1
 
 
@@ -129,13 +130,13 @@ def _check_modules_mode(target_or_uri: Optional[str]) -> int:
         mod_uri = f"module://{target_or_uri}"
         cfg_uri = f"config://{target_or_uri}/contribute.json"
         if not vfs.exists(mod_uri) and not vfs.exists(cfg_uri):
-            print(f"[core:contributes] [FAIL] Module or target not found: {target_or_uri}")
+            log_error(f"[core:contributes] [FAIL] Module or target not found: {target_or_uri}")
             return 1
         modules_to_check = [target_or_uri]
     else:
         modules_to_check = vfs.listdir("module://") if vfs.exists("module://") else []
     if not modules_to_check:
-        print("[core:contributes] No installed modules found to check.")
+        log_info("[core:contributes] No installed modules found to check.")
         return 0
 
     all_passed = True
@@ -161,7 +162,7 @@ def _check_modules_mode(target_or_uri: Optional[str]) -> int:
                 try:
                     data = vfs.read_json(f_uri)
                 except Exception as e:
-                    print(f"[FAIL] [{f_uri}] JSON syntax error: {e}")
+                    log_error(f"[FAIL] [{f_uri}] JSON syntax error: {e}")
                     all_passed = False
                     continue
 
@@ -174,7 +175,7 @@ def _check_modules_mode(target_or_uri: Optional[str]) -> int:
                     _append_locale_validation_errors(res, donor, data, donor_base)
                 checked_files_count += 1
                 if not res.is_valid:
-                    print(res.format_report(file_label=f_uri))
+                    log(res.format_report(file_label=f_uri))
                     all_passed = False
 
         # Also check project-level config://<target>/contribute.json
@@ -195,16 +196,16 @@ def _check_modules_mode(target_or_uri: Optional[str]) -> int:
                         _append_locale_validation_errors(res, "project", cfg_data, cfg_base)
                     checked_files_count += 1
                     if not res.is_valid:
-                        print(res.format_report(file_label=cfg_uri))
+                        log(res.format_report(file_label=cfg_uri))
                         all_passed = False
                 except Exception as e:
-                    print(f"[FAIL] [{cfg_uri}] JSON syntax error: {e}")
+                    log_error(f"[FAIL] [{cfg_uri}] JSON syntax error: {e}")
                     all_passed = False
 
     if all_passed:
-        print(f"\n[PASS] All contributes definitions are valid! (Checked {checked_files_count} file(s))\n")
+        log(f"\n[PASS] All contributes definitions are valid! (Checked {checked_files_count} file(s))\n")
         return 0
-    print("\n[FAIL] Contributes validation failed. Please address the errors above.\n")
+    log_error("\n[FAIL] Contributes validation failed. Please address the errors above.\n")
     return 1
 
 

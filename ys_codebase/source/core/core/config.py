@@ -8,11 +8,9 @@ memory caching with mtime auto-healing, and atomic writes.
 
 import os
 import copy
-import logging
 from typing import Any, Dict, List, Optional, Set, Tuple
 from core import uri, vfs
-
-logger = logging.getLogger("core.config")
+from core.log import log_warn
 
 
 class ConfigManager:
@@ -108,7 +106,7 @@ class ConfigManager:
             data = vfs.read_json(filepath)
             return data if isinstance(data, dict) else {}
         except Exception as e:
-            logger.warning(f"Failed to read or parse config file '{filepath}': {e}")
+            log_warn(f"Failed to read or parse config file '{filepath}': {e}", stream="stderr")
             return {}
 
     @classmethod
