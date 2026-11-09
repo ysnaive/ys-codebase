@@ -8,11 +8,10 @@ source_paths:
   - "yscb://source/knowledge-db/knowledge_db/embedding.py"
   - "yscb://source/knowledge-db/knowledge_db/bundler.py"
   - "yscb://source/knowledge-db/knowledge_db/retrieval.py"
-  - "yscb://source/knowledge-db/scripts/hook.file-space.py"
   - "yscb://source/knowledge-db/scripts/cli.py"
 related_docs:
   - "./README.md"
-  - "../file-space/DESIGN_NOTES.md"
+  - "../core/DESIGN_NOTES.md"
   - "./architecture.md"
   - "./retrieval.md"
   - "./incremental_hot_reload.md"

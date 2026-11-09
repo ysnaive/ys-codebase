@@ -8,10 +8,9 @@ source_paths:
   - "yscb://source/knowledge-db/knowledge_db/topology_query.py"
   - "yscb://source/knowledge-db/knowledge_db/formatter.py"
   - "yscb://source/knowledge-db/knowledge_db/schema.py"
-  - "yscb://source/knowledge-db/scripts/hook.file-space.py"
 related_docs:
   - "./README.md"
-  - "../file-space/README.md"
+  - "../core/README.md"
   - "./parsers.md"
   - "./retrieval.md"
   - "./incremental_hot_reload.md"
@@ -97,7 +96,7 @@ flowchart TD
 ## 3. 空間管理與 `module:file-space` 二進位快照游標協同 (`FileSpaceManager` & `YFP2`)
 
 ### 3.1 跨模組空間聚合與檢索權重分離 (Space & Weight Separation)
-1. **空間幾何定義 (`module:file-space`)**：由 `file_space.FileSpaceManager` 自動搜集所有安裝模組之 `contributes/file-space.json` 與宿主專案 `config://file-space/contribute.json`，提供空間路徑與排除規則之記憶化解析（詳見 [`docs/file-space/README.md`](../file-space/README.md)）。
+1. **空間幾何定義 (`core.space`)**：由 `core.space.SpaceRegistry` 自動搜集所有安裝模組之 `contributes/core.json` 與宿主專案 `config://core/contribute.json`，提供空間路徑與排除規則之記憶化解析（詳見 [`docs/core/README.md`](../core/README.md)）。
 2. **空間檢索加權 (`contributes.knowledge-db.space_weights`)**：`knowledge-db` 專注於語意權重配置，由 `contributes/knowledge-db.json` 與 `config://knowledge-db/contribute.json` 宣告各邏輯空間之檢索加權係數（如 `docs: 1.2`, `plans: 0.85`）。
 
 ### 3.2 全空間聯集處理模型 (Union Scope Model)

@@ -3,12 +3,12 @@ target: "Knowledge-DB/Contributes"
 doc_type: "topic"
 status: "active"
 source_paths:
-  - "yscb://source/file-space/file_space/manager.py"
+  - "yscb://source/core/core/space/registry.py"
   - "yscb://source/knowledge-db/knowledge_db/parsers/registry.py"
   - "yscb://source/knowledge-db/contributes/knowledge-db.json"
 related_docs:
   - "./README.md"
-  - "../file-space/README.md"
+  - "../core/README.md"
   - "./parsers.md"
   - "./tokenizer.md"
   - "./DESIGN_NOTES.md"
@@ -17,7 +17,7 @@ last_updated: "2026-11-02"
 
 # `contributes.knowledge-db` 擴充點注入指南 (Contributes Guide)
 
-> 本文件指導 YS-Codebase 生態中的 Donor 模組與專案如何透過 `contributes.knowledge-db` 宣告並注入空間檢索加權 (`space_weights`) 與三階同義詞庫 (`thesaurus` / `aliases` / `related`)；多語言 AST 解析器 (`languages`) 統一向 [`module:ast`](../ast/README.md) (`contributes/ast.json` 或 `config/ast/contribute.json`) 註冊，且 `ParserRegistry` 仍向下相容讀取舊版 `contributes.knowledge-db.languages`；工作空間目錄幾何定義 (`spaces`) 則統一向 [`file-space` 模組](../file-space/README.md) 註冊。
+> 本文件指導 YS-Codebase 生態中的 Donor 模組與專案如何透過 `contributes.knowledge-db` 宣告並注入空間檢索加權 (`space_weights`) 與三階同義詞庫 (`thesaurus` / `aliases` / `related`)；多語言 AST 解析器 (`languages`) 統一向 [`module:ast`](../ast/README.md) (`contributes/ast.json` 或 `config/ast/contribute.json`) 註冊，且 `ParserRegistry` 仍向下相容讀取舊版 `contributes.knowledge-db.languages`；工作空間目錄幾何定義 (`spaces`) 則統一向 [`core` 模組 (`core.space`)](../core/README.md) 註冊。
 
 ---
 
@@ -107,9 +107,9 @@ last_updated: "2026-11-02"
 | 歸屬模組 | 欄位 | 型別 | 必填 | 說明 |
 | :--- | :--- | :---: | :---: | :--- |
 | **`knowledge-db`** | **`space_weights`** | `Dict[str, float]` | 否 | 映射邏輯空間名稱至檢索得分乘數（必須 `> 0`，未指定時回退至 `FileSpaceConfig.weight` 或 `1.0`） |
-| **`file-space`** | **`spaces.<name>.include`** | `List[string]` | **是** | 包含來源目錄/檔案之語意 URI 清單（詳見 [`docs/file-space/README.md`](../file-space/README.md)） |
-| **`file-space`** | **`spaces.<name>.exclude`** | `List[string]` | 否 | 排除 Glob 模式清單 (如 `**/__pycache__/**`) |
-| **`file-space`** | **`spaces.<name>.file_patterns`** | `List[string]` | 否 | 檔名/副檔名 Glob 模式。未宣告或為空時預設全包含 |
+| **`core`** | **`spaces.<name>.entries`** | `List[string]` | **是** | 包含來源目錄/檔案之語意 URI 清單（詳見 [`docs/core/README.md`](../core/README.md)） |
+| **`core`** | **`spaces.<name>.exclude`** | `List[string]` | 否 | 排除規則清單 (如 `__pycache__`) |
+| **`core`** | **`spaces.<name>.include`** | `List[string]` | 否 | 檔名/副檔名包含規則。未宣告或為空時預設全包含 |
 
 ---
 

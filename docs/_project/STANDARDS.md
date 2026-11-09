@@ -88,7 +88,7 @@ graph LR
 1. **源碼空間 (`source/`) 為唯一 SSOT**：所有功能修改 100% 必須在 `source/` 進行。
 2. **禁止直接修改運行端 (`.modules/`)**：`.modules/` 視為編譯與部署產物，嚴禁手動直接修改。
 3. **測試未通過嚴禁發布**：實機測試未 100% 通過前，嚴禁將 `.build/` 產物同步至 `.modules/`。
-4. **全生態系執行期隔離與不可變契約 (`A1`~`F13`)**：全倉 9 大模組（`core`、`server`、`dev`、`file-space`、`ast`、`knowledge-db`、`agents-workflow`、`vscode-support`、`gdrive-support`）生產代碼統一透過 `core.log` 輸出、透過 `core.context.get_virtual_cwd()` / `get_env()` 讀寫執行期環境、將模組級可變快取收斂至 `RuntimeContext.module_states`、並為純資料傳輸類別強制標註 `@dataclass(frozen=True)`。
+4. **全生態系執行期隔離與不可變契約 (`A1`~`F13`)**：全倉 8 大模組（`core`、`server`、`dev`、`ast`、`knowledge-db`、`agents-workflow`、`vscode-support`、`gdrive-support`）生產代碼統一透過 `core.log` 輸出、透過 `core.context.get_virtual_cwd()` / `get_env()` 讀寫執行期環境、將模組級可變快取收斂至 `RuntimeContext.module_states`、並為純資料傳輸類別強制標註 `@dataclass(frozen=True)`。
 
 ---
 

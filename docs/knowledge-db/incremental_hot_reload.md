@@ -3,14 +3,12 @@ target: "Knowledge-DB/HotReload"
 doc_type: "topic"
 status: "active"
 source_paths:
-  - "yscb://source/file-space/file_space/scanner.py"
-  - "yscb://source/file-space/file_space/service.py"
+  - "yscb://source/core/core/space/scanner.py"
   - "yscb://source/knowledge-db/knowledge_db/service.py"
   - "yscb://source/knowledge-db/knowledge_db/pipeline.py"
-  - "yscb://source/knowledge-db/scripts/hook.file-space.py"
 related_docs:
   - "./README.md"
-  - "../file-space/README.md"
+  - "../core/README.md"
   - "./architecture.md"
   - "./DESIGN_NOTES.md"
   - "../server/hot_reload_and_services.md"
@@ -47,10 +45,10 @@ graph TD
 
 ## 2. `YFP2` 快照游標消費與增量修補核心機制 (Core Snapshot & Patch Features)
 
-### 2.1 `module:file-space` `YFP2` 二進位快照與獨立消費者游標
-`knowledge-db` 將底層檔案指紋掃描與快照管理 100% 委由 `module:file-space` 負責：
-- **二進位快照 (`file-space.storage://snapshots/unified.yfp2.bin`)**：採用 Magic `b"YFP2"` 二進位結構，記錄單調遞增世代 `head_generation`、`merkle_root` 與每檔 `(created_gen, updated_gen, is_deleted)` 軟刪除墓碑（詳見 [`docs/file-space/README.md`](../file-space/README.md)）。
-- **獨立消費者游標 (`file-space.storage://cursors/knowledge-db.json`)**：`knowledge-db` 以固定 `consumer_id="knowledge-db"` 維護自身已處理完成的快照世代 `acked_gen`，與其他下游工具的游標完全隔離。
+### 2.1 `core.space` `YFP2` 二進位快照與獨立消費者游標
+`knowledge-db` 將底層檔案指紋掃描與快照管理 100% 委由 `core.space` 負責：
+- **二進位快照 (`storage.local://core/space/snapshots/unified.yfp2.bin`)**：採用 Magic `b"YFP2"` 二進位結構，記錄單調遞增世代 `head_generation`、`merkle_root` 與每檔 `(created_gen, updated_gen, is_deleted)` 軟刪除墓碑（詳見 [`docs/core/README.md`](../core/README.md)）。
+- **獨立消費者游標 (`storage.local://core/space/cursors/knowledge-db.json`)**：`knowledge-db` 以固定 `consumer_id="knowledge-db"` 維護自身已處理完成的快照世代 `acked_gen`，與其他下游工具的游標完全隔離。
 - **索引與游標一致性守門**：當 `storage.local://knowledge-db/indices/` 下之基底索引被清除（如執行 `knowledge-db clean`）時，系統同步呼叫 `file_space.reset_cursor(consumer_id="knowledge-db")`，確保下次建立或查詢時必定觸發全量重建並對齊最新世代。
 
 ### 2.2 單檔符號快取池与全棧差量打補丁 (`hot_patch_unified_index`)

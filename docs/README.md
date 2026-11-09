@@ -10,12 +10,11 @@ related_docs:
   - "docs/_project/STANDARDS.md"
   - "docs/core/README.md"
   - "docs/server/README.md"
-  - "docs/file-space/README.md"
   - "docs/ast/README.md"
   - "docs/knowledge-db/README.md"
   - "docs/agents-workflow/README.md"
   - "docs/dev/README.md"
-last_updated: "2026-11-08"
+last_updated: "2026-11-09"
 ---
 
 # YS-Codebase 系統架構與全域知識地圖 (System Overview & Architecture Map)
@@ -96,9 +95,7 @@ graph TD
 | **維度 3：專題手冊** | [server/hot_reload_and_services.md](./server/hot_reload_and_services.md) | 雙軌模組熱重載、WarmWorker `ServiceManager` 背景服務託管與 IPC 協調機制 |
 | **維度 3：專題手冊** | [server/realtime_logging.md](./server/realtime_logging.md) | `ServerLogger` 即時 Flush 日誌、異常中斷自癒與 5 代歷史滾動規格 |
 | **維度 5：工程妥協** | [server/DESIGN_NOTES.md](./server/DESIGN_NOTES.md) | Server 常駐模組關鍵工程妥協與防坑守則 (`DN-01` ~ `DN-04`) |
-| **維度 2：檔案空間** | [file-space/README.md](./file-space/README.md) | File-Space 向下相容轉發殼層與遷移指引（核心能力已內聚至 `core.space`） |
-| **維度 5：工程妥協** | [file-space/DESIGN_NOTES.md](./file-space/DESIGN_NOTES.md) | File-Space 關鍵工程妥協與防坑守則 (`DN-SP-01` ~ `DN-SP-03`) |
-| **維度 2：語法拓撲** | [ast/README.md](./ast/README.md) | AST (Layer 2) 靜態語法樹、10 語言方言隔離、雙層分部符號、`outline` 大綱與呼叫圖譜 |
+| **維度 2：語法拓撲** | [ast/README.md](./ast/README.md) | AST (Layer 2) 靜態語法樹、10 語言方言隔離、跨檔案確定性符號連結、`outline`/`slice`/`traverse` 與呼叫圖譜 |
 | **維度 5：工程妥協** | [ast/DESIGN_NOTES.md](./ast/DESIGN_NOTES.md) | AST 引擎關鍵工程妥協與防坑守則 (`DN-AST-01` ~ `DN-AST-04`) |
 | **維度 2：知識檢索** | [knowledge-db/README.md](./knowledge-db/README.md) | Knowledge-DB (Layer 3) 單次解析符號共享、BM25 + ONNX 向量混合檢索與兩階段背景補齊 |
 | **維度 3：專題手冊** | [knowledge-db/architecture.md](./knowledge-db/architecture.md) | 全系統三階 DAG 分層、`UnifiedSymbol` 模型與 `acked_ast_generation` 雙水位線自癒 |
@@ -122,7 +119,6 @@ graph TD
 | :--- | :--- | :--- | :--- |
 | **`core`** | 系統微內核、語意 VFS、Layer 1 邏輯檔案空間與指紋底座 (`core.space`)、套件生命週期、依賴注入與 Hook 派發 | [source/core/README.md](../ys_codebase/source/core/README.md) | `.modules/core/scripts/cli.py` |
 | **`agents-workflow`** | 通用 Agent 技能與工作流框架、SOP 0~7 規範治理、Plans 工具鏈與 8 大平台投影 | [source/agents-workflow/README.md](../ys_codebase/source/agents-workflow/README.md) | `.modules/agents-workflow/scripts/cli.py` |
-| **`file-space`** | `[Deprecated]` 向下相容 `core.space` 轉發殼層（升級 `core >= 1.2.8.0` 後建議執行 `python yscb.py remove file-space`） | [source/file-space/README.md](../ys_codebase/source/file-space/README.md) | `.modules/file-space/scripts/cli.py` |
 | **`ast`** | Layer 2 靜態語法樹、10 語言方言隔離、跨檔案確定性符號連結、`outline`/`slice`/`traverse` 與呼叫拓撲 | [source/ast/README.md](../ys_codebase/source/ast/README.md) | `.modules/ast/scripts/cli.py` |
 | **`knowledge-db`** | Layer 3 單次解析符號共享、BM25 + ONNX 向量混合檢索與兩階段背景向量補齊 | [source/knowledge-db/README.md](../ys_codebase/source/knowledge-db/README.md) | `.modules/knowledge-db/scripts/cli.py` |
 | **`server`** | 常駐預熱守護中樞、`<10ms` Hot-IPC、雙軌模組熱重載與背景服務託管 (`core-space-watcher`) | [source/server/README.md](../ys_codebase/source/server/README.md) | `.modules/server/scripts/cli.py` |

@@ -15,7 +15,7 @@ source_paths:
   - "yscb://source/ast/ast_engine/parsers/registry.py"
 related_docs:
   - "./README.md"
-  - "../file-space/DESIGN_NOTES.md"
+  - "../core/DESIGN_NOTES.md"
   - "../knowledge-db/DESIGN_NOTES.md"
 last_updated: "2026-11-09"
 ---

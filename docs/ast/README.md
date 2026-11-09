@@ -148,6 +148,6 @@ impact_data = engine.impact("ContributesValidator", depth=2)
 ## 4. 相關技術文件指針
 
 - 🛡️ **設計決策與工程妥協手冊**：[DESIGN_NOTES.md](./DESIGN_NOTES.md)
-- 📂 **File-Space 模組手冊**：[../file-space/README.md](../file-space/README.md)
+- 📂 **Core 微內核與空間引擎手冊**：[../core/README.md](../core/README.md)
 - 🔍 **Knowledge-DB 模組手冊**：[../knowledge-db/README.md](../knowledge-db/README.md)
 
