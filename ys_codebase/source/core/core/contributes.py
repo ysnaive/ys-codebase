@@ -10,7 +10,7 @@ import copy
 import time
 from core import uri
 from core import vfs
-from core.context import get_runtime_context
+from core.context import cell_span, get_runtime_context
 from core.log import log_warn
 
 
@@ -764,23 +764,24 @@ class ContributesAggregator:
         依拓撲排序 (topological_order) 依序合併，自動注入 __provider__，
         最後疊加 config:// 專案特化宣告並寫入快取。
         """
-        aggregated: Dict[str, Dict[str, Any]] = {}
-        installed_modules = vfs.listdir("module://") if vfs.exists("module://") else []
-        if not installed_modules:
+        with cell_span("contributes.rebuild"):
+            aggregated: Dict[str, Dict[str, Any]] = {}
+            installed_modules = vfs.listdir("module://") if vfs.exists("module://") else []
+            if not installed_modules:
+                return aggregated
+
+            ordered_donors = self._resolve_donor_order(installed_modules, topological_order)
+            for mod in installed_modules:
+                aggregated[mod] = {}
+            core_modules_commands: Dict[str, Any] = {}
+            core_modules_locales: Dict[str, Any] = {}
+
+            for donor in ordered_donors:
+                self._collect_donor_contributes(donor, aggregated, core_modules_commands, core_modules_locales)
+
+            self._apply_project_overrides_and_persist(aggregated, core_modules_locales)
+            invalidate_cache()
             return aggregated
-
-        ordered_donors = self._resolve_donor_order(installed_modules, topological_order)
-        for mod in installed_modules:
-            aggregated[mod] = {}
-        core_modules_commands: Dict[str, Any] = {}
-        core_modules_locales: Dict[str, Any] = {}
-
-        for donor in ordered_donors:
-            self._collect_donor_contributes(donor, aggregated, core_modules_commands, core_modules_locales)
-
-        self._apply_project_overrides_and_persist(aggregated, core_modules_locales)
-        invalidate_cache()
-        return aggregated
 
 
 def __getattr__(name: str) -> Any:

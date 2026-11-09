@@ -119,11 +119,25 @@ class EmbeddingService:
         < 1ms 純本地檔案系統探針：檢查 `self.cache_dir` 中目標模型 (`self.model_name`)
         之 ONNX 權重目錄與 `.onnx` 檔案是否已完整存在，零網路 I/O、零 `fastembed` 初始化。
         """
-        if not self.cache_dir.exists():
-            return False
-
         model_short = self.model_name.split("/")[-1].lower()
         model_clean = self.model_name.replace("/", "--").lower()
+
+        verified = getattr(self, "_verified_onnx_path", None)
+        if verified is not None:
+            try:
+                v_str = str(verified).lower()
+                if (
+                    verified.is_file()
+                    and verified.stat().st_size > 0
+                    and (model_short in v_str or model_clean in v_str)
+                ):
+                    return True
+            except OSError:
+                pass
+            self._verified_onnx_path = None
+
+        if not self.cache_dir.exists():
+            return False
 
         try:
             matching_dirs = [

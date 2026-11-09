@@ -20,14 +20,22 @@ from core import config, contributes, gitignore, guard, loader, locale, symbols,
 from core.commands import bags, dispatcher
 from core.commands.registry import ArgSpec, CommandSpec, ModuleSpec, OptionSpec
 from core.context import (
+    CellScope,
     ExecutionContext,
     RuntimeContext,
     RuntimeScope,
+    bind_cell_context,
     bind_runtime_context,
+    cell_span,
+    get_current_cell,
     get_env,
     get_env_snapshot,
+    get_or_compute_cell_state,
+    get_or_compute_epoch_state,
     get_runtime_context,
     get_virtual_cwd,
+    invalidate_cell_state,
+    invalidate_epoch_state,
     reset_runtime_context,
 )
 from core.log import LogExecutionScope
@@ -451,6 +459,83 @@ class TestCoreRuntimeContextAndLoader(YSCBTestCase):
             with self.assertRaises(SystemExit) as cm:
                 guard.guard_dispatch("core")
             self.assertEqual(cm.exception.code, 126)
+        self.mark_passed()
+
+    def test_ft05_cell_scope_epoch_symmetry_and_stage_profiler(self) -> None:
+        """
+        FT-05:
+        1. `CellScope` is `@dataclass(frozen=True)`, memoizes `get_or_compute_cell_state` within a single Cell,
+           supports nested `bind_cell_context(reuse_existing=True)` sharing, and marks `closed=True` + clears
+           cache on outermost exit so `contextvars.copy_context()` background threads never leak or reuse stale cells.
+        2. `get_or_compute_epoch_state` evaluates `epoch_fn` at most once per Cell (`cell_skip_check=True`) or on
+           every call (`cell_skip_check=False`) and rebuilds only when epoch changes.
+        3. `cell_span` accumulates durations even when exceptions are raised inside the span.
+        """
+        import contextvars
+
+        calls = {"cell": 0, "epoch": 0, "build": 0}
+        cur_epoch = [1]
+
+        with bind_cell_context(module_name="core", command="status", reuse_existing=False) as outer_cell:
+            self.assertIsInstance(outer_cell, CellScope)
+            with self.assertRaises(FrozenInstanceError):
+                outer_cell.cell_id = 999  # type: ignore[misc]
+
+            v1 = get_or_compute_cell_state(
+                ("ns", "item"),
+                lambda: (calls.__setitem__("cell", calls["cell"] + 1) or f"val-{calls['cell']}"),
+            )
+            with bind_cell_context(module_name="core", command="inner", reuse_existing=True) as inner_cell:
+                self.assertIs(inner_cell, outer_cell)
+                v2 = get_or_compute_cell_state(
+                    ("ns", "item"),
+                    lambda: (calls.__setitem__("cell", calls["cell"] + 1) or f"val-{calls['cell']}"),
+                )
+                self.assertEqual(v1, v2)
+                self.assertEqual(calls["cell"], 1)
+
+            invalidate_cell_state("ns")
+            v3 = get_or_compute_cell_state(
+                ("ns", "item"),
+                lambda: (calls.__setitem__("cell", calls["cell"] + 1) or f"val-{calls['cell']}"),
+            )
+            self.assertEqual(v3, "val-2")
+
+            def _ep() -> int:
+                calls["epoch"] += 1
+                return cur_epoch[0]
+
+            def _bld() -> str:
+                calls["build"] += 1
+                return f"ep-{cur_epoch[0]}-b{calls['build']}"
+
+            self.assertEqual(get_or_compute_epoch_state("test.ep", _ep, _bld), "ep-1-b1")
+            self.assertEqual(get_or_compute_epoch_state("test.ep", _ep, _bld), "ep-1-b1")
+            self.assertEqual((calls["epoch"], calls["build"]), (2, 1))
+
+            with cell_span("pre_hooks"):
+                outer_cell.record_stage_ms("aw.jit_release", 2.4)
+            with self.assertRaises(RuntimeError):
+                with cell_span("cmd_exec"):
+                    outer_cell.record_stage_ms("cmd_exec", 5.0)
+                    raise RuntimeError("boom")
+
+            summary = outer_cell.format_stages_summary(min_ms=0.1)
+            self.assertIn("aw.jit_release=2.4ms", summary)
+            self.assertIn("cmd_exec=", summary)
+            copied_ctx = contextvars.copy_context()
+
+        # Outermost exit closes cell and clears cache; copied context sees None
+        self.assertTrue(outer_cell.is_closed)
+        assert copied_ctx is not None
+        self.assertIsNone(copied_ctx.run(get_current_cell))
+
+        # Bump epoch -> next call rebuilds
+        cur_epoch[0] = 2
+        self.assertEqual(get_or_compute_epoch_state("test.ep", _ep, _bld), "ep-2-b2")
+        self.assertEqual((calls["epoch"], calls["build"]), (3, 2))
+
+        invalidate_epoch_state("test.ep")
         self.mark_passed()
 
 

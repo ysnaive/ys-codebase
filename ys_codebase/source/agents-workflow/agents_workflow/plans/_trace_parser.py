@@ -203,26 +203,13 @@ def _accumulate_api_usage(obj: Dict[str, Any], state: _TranscriptParseState) -> 
 
 
 def _extract_step_content_and_role(
-    ctx_or_obj: Union[_StepParseContext, Dict[str, Any]],
-    state_or_payload_obj: Union[_TranscriptParseState, Dict[str, Any]],
-    payload_type: str = "",
-    state: Optional[_TranscriptParseState] = None,
+    ctx: _StepParseContext,
+    eff_state: _TranscriptParseState,
 ) -> Tuple[str, int, bool, List[str]]:
     """提取單步文本內容、估算 Token、歸類角色並提取行內 tool_result 錯誤。"""
-    if isinstance(ctx_or_obj, _StepParseContext):
-        ctx: Optional[_StepParseContext] = ctx_or_obj
-        eff_state = state_or_payload_obj if isinstance(state_or_payload_obj, _TranscriptParseState) else state
-        assert eff_state is not None
-        obj = ctx.obj
-        payload_obj = ctx.payload_obj
-        eff_payload_type = ctx.payload_type
-    else:
-        ctx = None
-        obj = ctx_or_obj
-        payload_obj = state_or_payload_obj if isinstance(state_or_payload_obj, dict) else {}
-        eff_payload_type = payload_type
-        assert state is not None
-        eff_state = state
+    obj = ctx.obj
+    payload_obj = ctx.payload_obj
+    eff_payload_type = ctx.payload_type
 
     step_type = str(obj.get("type") or "").upper()
     step_source = str(obj.get("source") or "").upper()
@@ -302,37 +289,17 @@ def _extract_step_content_and_role(
 
 
 def _attribute_tool_output_tokens(
-    ctx_or_step_no: Union[_StepParseContext, int],
-    state_or_content_str: Union[_TranscriptParseState, str] = "",
-    content_tok: int = 0,
-    is_tool_output_step: bool = False,
-    is_step_error: bool = False,
-    was_truncated: bool = False,
-    tool_result_errors: Optional[List[str]] = None,
-    state: Optional[_TranscriptParseState] = None,
+    ctx: _StepParseContext,
+    eff_state: _TranscriptParseState,
 ) -> None:
     """檢查上一步驗證關卡退件，並將工具輸出 Token 歸戶至前一步發起之工具與重度排行。"""
-    if isinstance(ctx_or_step_no, _StepParseContext):
-        ctx = ctx_or_step_no
-        eff_state = state_or_content_str if isinstance(state_or_content_str, _TranscriptParseState) else state
-        assert eff_state is not None
-        step_no = ctx.step_no
-        content_str = ctx.content_str
-        eff_content_tok = ctx.content_tok
-        eff_is_tool_output = ctx.is_tool_output_step
-        eff_is_step_error = ctx.is_step_error
-        eff_was_truncated = ctx.was_truncated
-        eff_tool_errors = ctx.tool_result_errors
-    else:
-        step_no = int(ctx_or_step_no)
-        content_str = str(state_or_content_str or "")
-        eff_content_tok = content_tok
-        eff_is_tool_output = is_tool_output_step
-        eff_is_step_error = is_step_error
-        eff_was_truncated = was_truncated
-        eff_tool_errors = tool_result_errors or []
-        assert state is not None
-        eff_state = state
+    step_no = ctx.step_no
+    content_str = ctx.content_str
+    eff_content_tok = ctx.content_tok
+    eff_is_tool_output = ctx.is_tool_output_step
+    eff_is_step_error = ctx.is_step_error
+    eff_was_truncated = ctx.was_truncated
+    eff_tool_errors = ctx.tool_result_errors
 
     has_gate_fail = False
     if eff_state.last_step_gate_cmds and content_str:
@@ -397,26 +364,13 @@ def _attribute_tool_output_tokens(
 
 
 def _extract_step_thinking(
-    ctx_or_obj: Union[_StepParseContext, Dict[str, Any]],
-    state_or_payload_obj: Union[_TranscriptParseState, Dict[str, Any]],
-    payload_type: str = "",
-    state: Optional[_TranscriptParseState] = None,
+    ctx: _StepParseContext,
+    eff_state: _TranscriptParseState,
 ) -> int:
     """提取單步 thinking 文本（相容 Antigravity, Claude Code thinking block 與 Codex reasoning summary）。"""
-    if isinstance(ctx_or_obj, _StepParseContext):
-        ctx: Optional[_StepParseContext] = ctx_or_obj
-        eff_state = state_or_payload_obj if isinstance(state_or_payload_obj, _TranscriptParseState) else state
-        assert eff_state is not None
-        obj = ctx.obj
-        payload_obj = ctx.payload_obj
-        eff_payload_type = ctx.payload_type
-    else:
-        ctx = None
-        obj = ctx_or_obj
-        payload_obj = state_or_payload_obj if isinstance(state_or_payload_obj, dict) else {}
-        eff_payload_type = payload_type
-        assert state is not None
-        eff_state = state
+    obj = ctx.obj
+    payload_obj = ctx.payload_obj
+    eff_payload_type = ctx.payload_type
 
     step_type = str(obj.get("type") or "").upper()
     thinking_str = obj.get("thinking")
@@ -447,21 +401,12 @@ def _extract_step_thinking(
 
 
 def _extract_step_tool_calls(
-    ctx_or_obj: Union[_StepParseContext, Dict[str, Any]],
-    payload_obj: Optional[Dict[str, Any]] = None,
-    payload_type: str = "",
+    ctx: _StepParseContext,
 ) -> List[Dict[str, Any]]:
     """提取單步 tool_calls 清單（相容 Antigravity, Claude tool_use 與 Codex function_call）。"""
-    if isinstance(ctx_or_obj, _StepParseContext):
-        ctx: Optional[_StepParseContext] = ctx_or_obj
-        obj = ctx.obj
-        eff_payload_obj = ctx.payload_obj
-        eff_payload_type = ctx.payload_type
-    else:
-        ctx = None
-        obj = ctx_or_obj
-        eff_payload_obj = payload_obj or {}
-        eff_payload_type = payload_type
+    obj = ctx.obj
+    eff_payload_obj = ctx.payload_obj
+    eff_payload_type = ctx.payload_type
 
     step_type = str(obj.get("type") or "").upper()
     tool_calls: List[Dict[str, Any]] = []
@@ -575,39 +520,15 @@ def _handle_read_tool_call(
 
 
 def _process_tool_calls_in_step(
-    ctx_or_step_no: Union[_StepParseContext, int, None] = None,
-    state_or_tool_calls: Union[_TranscriptParseState, List[Dict[str, Any]], None] = None,
-    step_thinking_tok: int = 0,
-    content_tok: int = 0,
-    was_truncated: bool = False,
-    state: Optional[_TranscriptParseState] = None,
-    *,
-    step_no: Optional[int] = None,
-    tool_calls: Optional[List[Dict[str, Any]]] = None,
+    ctx: _StepParseContext,
+    eff_state: _TranscriptParseState,
 ) -> Tuple[List[str], List[str], int]:
     """處理單步內所有 tool_calls，更新讀寫與 CLI 統計。"""
-    if isinstance(ctx_or_step_no, _StepParseContext):
-        ctx: Optional[_StepParseContext] = ctx_or_step_no
-        eff_state = state_or_tool_calls if isinstance(state_or_tool_calls, _TranscriptParseState) else state
-        assert eff_state is not None
-        eff_step_no = ctx.step_no
-        eff_tool_calls = ctx.tool_calls
-        eff_thinking_tok = ctx.step_thinking_tok
-        eff_content_tok = ctx.content_tok
-        eff_was_truncated = ctx.was_truncated
-    else:
-        ctx = None
-        eff_step_no = int(step_no if step_no is not None else (ctx_or_step_no or 0))
-        eff_tool_calls = (
-            tool_calls
-            if tool_calls is not None
-            else (state_or_tool_calls if isinstance(state_or_tool_calls, list) else [])
-        )
-        eff_thinking_tok = step_thinking_tok
-        eff_content_tok = content_tok
-        eff_was_truncated = was_truncated
-        assert state is not None
-        eff_state = state
+    eff_step_no = ctx.step_no
+    eff_tool_calls = ctx.tool_calls
+    eff_thinking_tok = ctx.step_thinking_tok
+    eff_content_tok = ctx.content_tok
+    eff_was_truncated = ctx.was_truncated
 
     current_step_read_keys: List[str] = []
     current_step_gate_cmds: List[str] = []
@@ -719,55 +640,23 @@ def _process_tool_calls_in_step(
 
 
 def _record_step_error_signals(
-    ctx_or_step_no: Union[_StepParseContext, int],
-    state_or_obj: Union[_TranscriptParseState, Dict[str, Any], None] = None,
-    payload_obj: Optional[Dict[str, Any]] = None,
-    content_str: str = "",
-    content_tok: int = 0,
-    step_thinking_tok: int = 0,
-    step_total_args_tok: int = 0,
-    is_step_error: bool = False,
-    is_tool_output_step: bool = False,
-    tool_result_errors: Optional[List[str]] = None,
-    tool_calls: Optional[List[Dict[str, Any]]] = None,
-    current_step_read_keys: Optional[List[str]] = None,
-    current_step_gate_cmds: Optional[List[str]] = None,
-    state: Optional[_TranscriptParseState] = None,
+    ctx: _StepParseContext,
+    eff_state: _TranscriptParseState,
 ) -> None:
     """處理單步錯誤狀態、讀檔失敗計數回滾與 TOOL_MISS_AND_RETRY 訊號記錄。"""
-    if isinstance(ctx_or_step_no, _StepParseContext):
-        ctx = ctx_or_step_no
-        eff_state = state_or_obj if isinstance(state_or_obj, _TranscriptParseState) else state
-        assert eff_state is not None
-        step_no = ctx.step_no
-        obj = ctx.obj
-        eff_payload_obj = ctx.payload_obj
-        eff_content_str = ctx.content_str
-        eff_content_tok = ctx.content_tok
-        eff_thinking_tok = ctx.step_thinking_tok
-        eff_args_tok = ctx.step_total_args_tok
-        eff_is_step_error = ctx.is_step_error
-        eff_is_tool_output = ctx.is_tool_output_step
-        eff_tool_errors = ctx.tool_result_errors
-        eff_tool_calls = ctx.tool_calls
-        eff_read_keys = ctx.current_step_read_keys
-        eff_gate_cmds = ctx.current_step_gate_cmds
-    else:
-        step_no = int(ctx_or_step_no)
-        obj = state_or_obj if isinstance(state_or_obj, dict) else {}
-        eff_payload_obj = payload_obj or {}
-        eff_content_str = content_str
-        eff_content_tok = content_tok
-        eff_thinking_tok = step_thinking_tok
-        eff_args_tok = step_total_args_tok
-        eff_is_step_error = is_step_error
-        eff_is_tool_output = is_tool_output_step
-        eff_tool_errors = tool_result_errors or []
-        eff_tool_calls = tool_calls or []
-        eff_read_keys = current_step_read_keys or []
-        eff_gate_cmds = current_step_gate_cmds or []
-        assert state is not None
-        eff_state = state
+    step_no = ctx.step_no
+    obj = ctx.obj
+    eff_payload_obj = ctx.payload_obj
+    eff_content_str = ctx.content_str
+    eff_content_tok = ctx.content_tok
+    eff_thinking_tok = ctx.step_thinking_tok
+    eff_args_tok = ctx.step_total_args_tok
+    eff_is_step_error = ctx.is_step_error
+    eff_is_tool_output = ctx.is_tool_output_step
+    eff_tool_errors = ctx.tool_result_errors
+    eff_tool_calls = ctx.tool_calls
+    eff_read_keys = ctx.current_step_read_keys
+    eff_gate_cmds = ctx.current_step_gate_cmds
 
     step_type = str(obj.get("type") or "").upper()
     if eff_is_step_error or eff_tool_errors:

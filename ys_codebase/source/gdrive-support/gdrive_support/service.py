@@ -8,106 +8,99 @@ Invariants:
 - When config.auto_sync is True, subscribes to core.space.subscribe and deterministically
   invokes _unsubscribe() upon stop().
 """
-import contextvars
 import os
 import threading
 import time
 from typing import Any, Callable, Dict, Optional
 
-from core.context import bind_runtime_context
 from core.log import bind_log_context, log_debug
+from core.platform import ensure_installed_modules_path
 
 try:
     from server.service import BaseServiceWorker
 except ImportError:
+    ensure_installed_modules_path()
+    try:
+        from server.service import BaseServiceWorker
+    except ImportError:
 
-    class BaseServiceWorker:  # type: ignore[no-redef]
-        STATE_STARTING: str = "STARTING"
-        STATE_UPDATING: str = "UPDATING"
-        STATE_READY: str = "READY"
-        STATE_DEGRADED_OFFLINE: str = "DEGRADED_OFFLINE"
-        STATE_STOPPED: str = "STOPPED"
-        _state: str = STATE_STOPPED
-        _log_sink: Optional[Any] = None
+        class BaseServiceWorker:  # type: ignore[no-redef]
+            STATE_STARTING: str = "STARTING"
+            STATE_UPDATING: str = "UPDATING"
+            STATE_READY: str = "READY"
+            STATE_DEGRADED_OFFLINE: str = "DEGRADED_OFFLINE"
+            STATE_STOPPED: str = "STOPPED"
+            _state: str = STATE_STOPPED
+            _log_sink: Optional[Any] = None
 
-        @property
-        def state(self) -> str:
-            return getattr(self, "_state", self.STATE_STOPPED)
+            @property
+            def state(self) -> str:
+                return getattr(self, "_state", self.STATE_STOPPED)
 
-        def set_state(self, new_state: str) -> None:
-            self._state = str(new_state)
+            def set_state(self, new_state: str) -> None:
+                self._state = str(new_state)
 
-        def touch_activity(self) -> bool:
-            return False
+            def touch_activity(self) -> bool:
+                return False
 
-        def start_managed_thread(
-            self,
-            target: Callable[[], None],
-            *,
-            context: Optional[Dict[str, Any]] = None,
-            thread_name: Optional[str] = None,
-        ) -> Any:
-            from concurrent.futures import ThreadPoolExecutor
+            def start_managed_thread(
+                self,
+                target: Any,
+                *,
+                context: Optional[Dict[str, Any]] = None,
+                thread_name: Optional[str] = None,
+            ) -> Any:
+                from concurrent.futures import ThreadPoolExecutor
 
-            sink = context.get("log_sink") if isinstance(context, dict) else None
-            comp = getattr(self, "name", "worker")
-            raw_yscb = context.get("yscb_root") or context.get("yscb_dir") if isinstance(context, dict) else None
-            raw_host = context.get("workspace_root") or context.get("project_root") if isinstance(context, dict) else None
-            yscb_dir = os.path.abspath(str(raw_yscb)) if raw_yscb else None
-            host_dir = os.path.abspath(str(raw_host)) if raw_host else None
-            vcwd = yscb_dir or host_dir
-            ctx = contextvars.copy_context()
+                sink = context.get("log_sink") if isinstance(context, dict) else None
+                comp = getattr(self, "name", "gdrive-sync")
 
-            def _wrapped() -> None:
-                with bind_runtime_context(
-                    virtual_cwd=vcwd,
-                    host_dir=host_dir,
-                    yscb_dir=yscb_dir,
-                ), bind_log_context(
-                    background_sink=sink,
-                    component=comp,
-                    isolated_error_scope=True,
-                ):
-                    target()
+                def _wrapped() -> None:
+                    with bind_log_context(
+                        background_sink=sink,
+                        component=comp,
+                        isolated_error_scope=True,
+                    ):
+                        target()
 
-            pool = ThreadPoolExecutor(
-                max_workers=1,
-                thread_name_prefix=thread_name or f"Worker-{comp}",
-            )
-            fut = pool.submit(ctx.run, _wrapped)
+                pool = ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix=thread_name or f"Worker-{comp}",
+                )
+                fut = pool.submit(_wrapped)
 
-            class _ManagedHandle:
-                def __init__(self, f: Any, p: Any) -> None:
-                    self._f = f
-                    self._p = p
+                class _ManagedHandle:
+                    def __init__(self, f: Any, p: Any) -> None:
+                        self._f = f
+                        self._p = p
 
-                def is_alive(self) -> bool:
-                    return not self._f.done()
+                    def is_alive(self) -> bool:
+                        return not self._f.done()
 
-                def join(self, timeout: Optional[float] = None) -> None:
-                    try:
-                        self._f.result(timeout=timeout)
-                    except Exception:
-                        pass
-                    self._p.shutdown(wait=False)
+                    def join(self, timeout: Optional[float] = None) -> None:
+                        try:
+                            self._f.result(timeout=timeout)
+                        except Exception:
+                            pass
+                        self._p.shutdown(wait=False)
 
-            return _ManagedHandle(fut, pool)
+                return _ManagedHandle(fut, pool)
 
-        def stop_managed_thread(
-            self,
-            thread: Any,
-            stop_event: Optional[threading.Event] = None,
-            *,
-            wake_event: Optional[threading.Event] = None,
-            timeout: float = 2.0,
-        ) -> None:
-            if stop_event is not None:
-                stop_event.set()
-            if wake_event is not None:
-                wake_event.set()
-            if thread is not None and hasattr(thread, "join"):
-                thread.join(timeout=timeout)
-            self.set_state(self.STATE_STOPPED)
+            def stop_managed_thread(
+                self,
+                thread: Any,
+                stop_event: Optional[threading.Event] = None,
+                *,
+                wake_event: Optional[threading.Event] = None,
+                timeout: float = 2.0,
+            ) -> None:
+                if stop_event is not None:
+                    stop_event.set()
+                if wake_event is not None:
+                    wake_event.set()
+                if thread is not None and hasattr(thread, "join"):
+                    thread.join(timeout=timeout)
+                self.set_state(self.STATE_STOPPED)
 
 from .config import GDriveConfig, load_gdrive_config
 from .coordinator import SyncCoordinator

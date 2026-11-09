@@ -39,7 +39,6 @@ __all__ = [
     "compute_orphan_history_file_ids",
     "is_file_id_referenced_by_other_branches",
     "DEFAULT_REPO_SYNC_ROOT",
-    "REPO_SYNC_ROOT_PREFIX",
     "ROOT_README_BEGIN_MARKER",
     "ROOT_README_END_MARKER",
     "SyncReport",
@@ -105,7 +104,6 @@ def __getattr__(name: str) -> Any:
 
     if name in (
         "DEFAULT_REPO_SYNC_ROOT",
-        "REPO_SYNC_ROOT_PREFIX",
         "ROOT_README_BEGIN_MARKER",
         "ROOT_README_END_MARKER",
         "SyncReport",

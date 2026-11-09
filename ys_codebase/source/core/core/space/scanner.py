@@ -16,7 +16,12 @@ import time
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple, Union
 
 from core import vfs
-from core.context import get_runtime_context
+from core.context import (
+    cell_span,
+    get_or_compute_cell_state,
+    get_runtime_context,
+    invalidate_cell_state,
+)
 from core.platform.lock import InterProcessLock
 
 from .exceptions import SpaceError
@@ -368,6 +373,7 @@ class CursorStore:
             else (self._storage_root / "locks")
         )
         self._rlock = threading.RLock()
+        self._mem_cache: Dict[str, Tuple[int, int, Dict[str, Dict[str, Any]]]] = {}
 
     @property
     def cursors_dir(self) -> Path:
@@ -388,12 +394,36 @@ class CursorStore:
     def load_consumer(self, consumer_id: str = "default") -> Dict[str, Dict[str, Any]]:
         """Load all space cursor records for `consumer_id`."""
         c_path = self._consumer_path(consumer_id)
-        if not c_path.is_file():
+        cache_key = c_path.as_posix()
+        try:
+            st = c_path.stat()
+            mtime_ns = int(st.st_mtime_ns)
+            size = int(st.st_size)
+        except OSError:
+            with self._rlock:
+                self._mem_cache.pop(cache_key, None)
             return {}
+
+        with self._rlock:
+            cached = self._mem_cache.get(cache_key)
+            if cached is not None and cached[0] == mtime_ns and cached[1] == size:
+                return {k: dict(v) for k, v in cached[2].items() if isinstance(v, dict)}
+
         try:
             data = vfs.read_json(str(c_path))
             if isinstance(data, dict) and isinstance(data.get("spaces"), dict):
-                return dict(data["spaces"])
+                spaces = {
+                    k: dict(v)
+                    for k, v in data["spaces"].items()
+                    if isinstance(v, dict)
+                }
+                with self._rlock:
+                    self._mem_cache[cache_key] = (
+                        mtime_ns,
+                        size,
+                        {k: dict(v) for k, v in spaces.items()},
+                    )
+                return spaces
         except Exception:
             pass
         return {}
@@ -428,14 +458,34 @@ class CursorStore:
         config_hash: str = "",
     ) -> None:
         """Atomically persist the watermark cursor for `(space_key, consumer_id)`."""
+        norm_gen = max(0, int(acked_gen))
+        norm_merkle = str(merkle_root or "")
+        norm_cfg = str(config_hash or "")
+        existing = self.load_consumer(consumer_id).get(space_key)
+        if (
+            isinstance(existing, dict)
+            and int(existing.get("acked_generation", existing.get("acked_gen", -1))) == norm_gen
+            and str(existing.get("merkle_root", "")) == norm_merkle
+            and str(existing.get("config_hash", "")) == norm_cfg
+        ):
+            return
+
         with self._locked(consumer_id):
             c_path = self._consumer_path(consumer_id)
             c_path.parent.mkdir(parents=True, exist_ok=True)
             spaces = self.load_consumer(consumer_id)
+            rec = spaces.get(space_key)
+            if (
+                isinstance(rec, dict)
+                and int(rec.get("acked_generation", rec.get("acked_gen", -1))) == norm_gen
+                and str(rec.get("merkle_root", "")) == norm_merkle
+                and str(rec.get("config_hash", "")) == norm_cfg
+            ):
+                return
             spaces[space_key] = {
-                "acked_generation": max(0, int(acked_gen)),
-                "merkle_root": str(merkle_root or ""),
-                "config_hash": str(config_hash or ""),
+                "acked_generation": norm_gen,
+                "merkle_root": norm_merkle,
+                "config_hash": norm_cfg,
                 "updated_at": time.time(),
             }
             payload = {
@@ -443,6 +493,15 @@ class CursorStore:
                 "spaces": spaces,
             }
             vfs.write_json(str(c_path), payload, atomic=True)
+            try:
+                st = c_path.stat()
+                self._mem_cache[c_path.as_posix()] = (
+                    int(st.st_mtime_ns),
+                    int(st.st_size),
+                    {k: dict(v) for k, v in spaces.items() if isinstance(v, dict)},
+                )
+            except OSError:
+                self._mem_cache.pop(c_path.as_posix(), None)
 
     def reset_cursor(
         self,
@@ -452,13 +511,16 @@ class CursorStore:
         """Reset cursor for a specific `space_key` or remove the entire consumer cursor file when `space_key` is None."""
         with self._locked(consumer_id):
             c_path = self._consumer_path(consumer_id)
+            cache_key = c_path.as_posix()
             if not c_path.is_file():
+                self._mem_cache.pop(cache_key, None)
                 return
             if space_key is None:
                 try:
                     vfs.remove(str(c_path))
                 except Exception:
                     pass
+                self._mem_cache.pop(cache_key, None)
                 return
             spaces = self.load_consumer(consumer_id)
             if space_key in spaces:
@@ -469,11 +531,21 @@ class CursorStore:
                         {"consumer_id": consumer_id or "default", "spaces": spaces},
                         atomic=True,
                     )
+                    try:
+                        st = c_path.stat()
+                        self._mem_cache[cache_key] = (
+                            int(st.st_mtime_ns),
+                            int(st.st_size),
+                            {k: dict(v) for k, v in spaces.items() if isinstance(v, dict)},
+                        )
+                    except OSError:
+                        self._mem_cache.pop(cache_key, None)
                 else:
                     try:
                         vfs.remove(str(c_path))
                     except Exception:
                         pass
+                    self._mem_cache.pop(cache_key, None)
 
     def list_consumers(self) -> List[str]:
         """List all persisted consumer IDs on disk."""
@@ -692,31 +764,32 @@ class SpaceScanner:
         Execute a two-stage incremental scan for `space_query` (or all watched spaces if `None`/`*`),
         updating the `YFP2` snapshot only when changes occur or on initial generation 0.
         """
-        if space_query is None or str(space_query).strip() in ("", "*"):
-            # Scan each non-synthetic watched space with entries/compose + synthetic union spaces + unified "__all__" snapshot
-            space_gens: Dict[str, int] = {}
-            self._hash_memo = {}
-            try:
-                for s_cfg in self._registry.list_spaces(include_synthetic=True):
-                    if (
-                        not s_cfg.watch
-                        or s_cfg.short_name == "gitignore"
-                        or (not s_cfg.entries and not s_cfg.compose)
-                    ):
-                        continue
-                    sub_res = self._scan_single_query(s_cfg.qualified_name, force=force)
-                    space_gens[s_cfg.qualified_name] = sub_res.to_generation
-                unified_res = self._scan_single_query(None, force=force)
-            finally:
-                self._hash_memo = None
-            object.__setattr__(unified_res, "space_generations", space_gens)
-            if self.has_watcher_dirty_marker():
-                self.mark_watcher_dirty(False)
-            return unified_res
+        with cell_span("space.scan"):
+            if space_query is None or str(space_query).strip() in ("", "*"):
+                # Scan each non-synthetic watched space with entries/compose + synthetic union spaces + unified "__all__" snapshot
+                space_gens: Dict[str, int] = {}
+                self._hash_memo = {}
+                try:
+                    for s_cfg in self._registry.list_spaces(include_synthetic=True):
+                        if (
+                            not s_cfg.watch
+                            or s_cfg.short_name == "gitignore"
+                            or (not s_cfg.entries and not s_cfg.compose)
+                        ):
+                            continue
+                        sub_res = self._scan_single_query(s_cfg.qualified_name, force=force)
+                        space_gens[s_cfg.qualified_name] = sub_res.to_generation
+                    unified_res = self._scan_single_query(None, force=force)
+                finally:
+                    self._hash_memo = None
+                object.__setattr__(unified_res, "space_generations", space_gens)
+                if self.has_watcher_dirty_marker():
+                    self.mark_watcher_dirty(False)
+                return unified_res
 
-        res = self._scan_single_query(space_query, force=force)
-        object.__setattr__(res, "space_generations", {res.space_name or str(space_query): res.to_generation})
-        return res
+            res = self._scan_single_query(space_query, force=force)
+            object.__setattr__(res, "space_generations", {res.space_name or str(space_query): res.to_generation})
+            return res
 
     def refresh(
         self,
@@ -1191,10 +1264,17 @@ class SpaceScanner:
                     marker.unlink()
                 except OSError:
                     pass
+        invalidate_cell_state("core.space.watcher_dirty")
 
     def has_watcher_dirty_marker(self) -> bool:
         """Return True if `.watcher_dirty` exists on disk."""
-        return self._dirty_marker_path().is_file()
+        marker = self._dirty_marker_path()
+        return bool(
+            get_or_compute_cell_state(
+                ("core.space.watcher_dirty", os.path.normcase(str(marker))),
+                marker.is_file,
+            )
+        )
 
     def _flush_in_process_watcher(self, space_query: Optional[str] = None) -> None:
         """If an active in-process watcher is running, synchronously flush any pending debounce events."""

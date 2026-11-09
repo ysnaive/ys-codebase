@@ -14,6 +14,7 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 from core import uri, vfs
+from core.context import cell_span
 from core.log import log
 from core.pip_manager import PipManager
 from core.platform import list_module_search_roots
@@ -521,6 +522,21 @@ class SettingsProjector:
         if not proj_root or not os.path.isdir(proj_root):
             return False
 
+        with cell_span("vsc.sync_settings"):
+            return self._sync_vscode_settings_impl(
+                proj_root=proj_root,
+                extra_paths=extra_paths,
+                py_tag=py_tag,
+                compile_schemas=compile_schemas,
+            )
+
+    def _sync_vscode_settings_impl(
+        self,
+        proj_root: str,
+        extra_paths: Optional[List[str]] = None,
+        py_tag: Optional[str] = None,
+        compile_schemas: bool = True,
+    ) -> bool:
         vscode_dir = os.path.join(proj_root, ".vscode")
         settings_path = os.path.join(vscode_dir, "settings.json")
         settings: Dict[str, Any] = {}

@@ -23,6 +23,7 @@ import uuid
 from core import config as core_config
 from core import uri
 from core import vfs
+from core.context import cell_span
 from core.log import log_file_jsonl
 from core.platform.lock import InterProcessLock
 from core.platform.process import is_process_alive
@@ -59,8 +60,6 @@ from .transport import (
 )
 
 DEFAULT_REPO_SYNC_ROOT = "repo"
-# Public backward-compatible alias exported in gdrive_support.__all__
-REPO_SYNC_ROOT_PREFIX = DEFAULT_REPO_SYNC_ROOT
 REPO_CONFIG_FILENAME = ".yscb_gdrive.json"
 REPO_README_FILENAME = "README.md"
 ROOT_README_BEGIN_MARKER = "<!-- === YSCB GDRIVE REPO_SYNC BEGIN === -->"
@@ -1245,6 +1244,31 @@ class SyncCoordinator:
                  and reference-counted repo_sync/.history/ -> Trash garbage collection.
         Stage 4: Write structured sync.log entry and return SyncReport.
         """
+        with cell_span("gdrive.sync"):
+            return self._run_sync_impl(
+                mode=mode,
+                delete=delete,
+                force=force,
+                backup=backup,
+                now_ns=now_ns,
+                non_blocking_lock=non_blocking_lock,
+                background_worker=background_worker,
+                abort_check=abort_check,
+                allow_delete=allow_delete,
+            )
+
+    def _run_sync_impl(
+        self,
+        mode: str = "sync",
+        delete: bool = False,
+        force: bool = False,
+        backup: bool = False,
+        now_ns: Optional[int] = None,
+        non_blocking_lock: bool = False,
+        background_worker: bool = False,
+        abort_check: Optional[Callable[[], bool]] = None,
+        allow_delete: Optional[bool] = None,
+    ) -> SyncReport:
         self.ensure_repo_sync_enabled()
         if not self.config.sync_spaces:
             raise GDriveConfigError(

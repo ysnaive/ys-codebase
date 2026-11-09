@@ -19,6 +19,7 @@ from core.space.registry import SpaceConfig, SpaceRegistry, get_default_registry
 from core.space.scanner import ScanDiffResult, SpaceScanner, get_default_scanner
 from core.space.watcher import (
     broadcast_file_space_changed,
+    get_active_watcher,
     is_watcher_active,
     notify_subscribers,
     register_active_watcher,
@@ -69,18 +70,22 @@ class _CoreSpaceWatchdogHandler(FileSystemEventHandler):
         self.worker = worker
 
     def on_any_event(self, event: FileSystemEvent) -> None:
-        with self.worker.bind_worker_context():
-            is_dir = bool(getattr(event, "is_directory", False))
-            ev_type = str(getattr(event, "event_type", "modified"))
-            if is_dir:
-                if ev_type in ("created", "moved", "deleted"):
+        is_dir = bool(getattr(event, "is_directory", False))
+        ev_type = str(getattr(event, "event_type", "modified"))
+        if is_dir:
+            if ev_type in ("created", "moved", "deleted"):
+                with self.worker.bind_worker_context():
                     try:
                         setattr(event, "_yscb_handled", True)
                     except Exception:
                         pass
                     self._forward_dir_event(event, ev_type)
-                return
+            return
 
+        if ev_type not in ("created", "modified", "moved", "deleted"):
+            return
+
+        with self.worker.bind_worker_context():
             src_path = getattr(event, "src_path", None)
             if src_path:
                 self.worker.notify_file_event(
@@ -203,6 +208,11 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         """Unique service worker identifier."""
         return self._name
 
+    @property
+    def project_root(self) -> Path:
+        """Workspace project root managed by this watcher."""
+        return self.registry.project_root
+
     def _rebind_context_if_needed(self, context: Dict[str, Any]) -> None:
         self.context.update(context)
         if "debounce_seconds" in context:
@@ -228,7 +238,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
             self._rebind_context_if_needed(context)
         if self._thread and self._thread.is_alive():
             return
-        prev_watcher = get_active_watcher_safe()
+        prev_watcher = get_active_watcher()
         if prev_watcher is not None and prev_watcher is not self:
             try:
                 stop_fn = getattr(prev_watcher, "stop", None)
@@ -248,7 +258,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
     def stop(self, timeout: float = 1.0) -> None:
         """Stop background watcher thread and release watchdog observer."""
         self._stop_event.set()
-        if get_active_watcher_safe() is self:
+        if get_active_watcher() is self:
             register_active_watcher(None)
         self._stop_watchdog_observer()
         self._remove_watcher_state_file()
@@ -818,7 +828,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                 self._stop_event.wait(timeout=poll_interval)
         finally:
             self.set_state(self.STATE_STOPPED)
-            if get_active_watcher_safe() is self:
+            if get_active_watcher() is self:
                 register_active_watcher(None)
             self._stop_watchdog_observer()
             self._remove_watcher_state_file()
@@ -842,12 +852,6 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
             "last_refresh_at": last_refresh_at,
             "watchdog_active": self._observer is not None,
         }
-
-
-def get_active_watcher_safe() -> Optional[Any]:
-    from core.space.watcher import get_active_watcher
-
-    return get_active_watcher()
 
 
 __all__ = [

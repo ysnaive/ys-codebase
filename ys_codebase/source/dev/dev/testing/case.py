@@ -10,7 +10,7 @@ import unittest
 from contextlib import contextmanager
 from typing import List, Optional, Dict, Any, Tuple, Iterator
 from core import uri, vfs
-from core.context import get_env, get_runtime_context, get_virtual_cwd
+from core.context import get_env, get_runtime_context, get_virtual_cwd, invalidate_cell_state
 from core.log import log
 from dev.testing.requirement import Requirement
 from dev.testing.sandbox import SandboxContext, SandboxProvisioner
@@ -89,6 +89,7 @@ class YSCBTestCase(unittest.TestCase):
         uri.set_host_dir(getattr(self, "_orig_uri_host", None))
         uri.set_yscb_root(getattr(self, "_orig_uri_yscb", None))
         uri.set_module_context(getattr(self, "_orig_uri_mod", None))
+        invalidate_cell_state()
 
     def setUp(self) -> None:
         """Test setup: create or reuse virtual environment and backup environment."""

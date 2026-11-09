@@ -796,12 +796,6 @@ class SpaceConfig:
                     return True
         return False
 
-    def is_dir_excluded(
-        self, dir_abs: Path, entry_abs: Path, project_root: Path
-    ) -> bool:
-        """Alias for `is_dir_excluded_fast`."""
-        return self.is_dir_excluded_fast(dir_abs, entry_abs, project_root)
-
     def check_dir_excluded(
         self, dir_abs: Path, entry_abs: Path, project_root: Path
     ) -> Optional[RuleItem]:

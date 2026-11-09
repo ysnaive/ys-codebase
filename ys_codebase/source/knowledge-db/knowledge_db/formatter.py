@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 from typing import Any, List, Optional, Tuple, Union
 
+from core.context import get_env
 from .schema import AggregatedFileResult
 
 AUTO_BUDGET_CHARS: int = 8000
@@ -172,7 +173,7 @@ class TerminalStyler:
             stream = sys.stdout
         self.stream = stream
         is_atty = getattr(stream, "isatty", lambda: False)()
-        no_color = bool(os.getenv("NO_COLOR", ""))
+        no_color = bool(get_env("NO_COLOR", ""))
         self.enabled = is_atty and not no_color
 
     def path(self, text: str) -> str:

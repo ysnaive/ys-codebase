@@ -19,7 +19,7 @@ import threading
 import time
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
-from core.context import get_runtime_context, get_virtual_cwd
+from core.context import cell_span, get_runtime_context, get_virtual_cwd
 from core.log import log_debug, log_warn
 from core.space import (
     ScanDiffDetail,
@@ -1131,7 +1131,7 @@ class ASTEngine:
         - Otherwise consumes incremental diff via `scanner.consume_diff(consumer_id="ast")`
           strictly across target spaces and applies `hot_patch_index()` if any files changed.
         """
-        with self._lock:
+        with cell_span("ast.jit_sync"), self._lock:
             norm_spaces: Optional[List[str]] = None
             if isinstance(spaces, str) and spaces.strip():
                 norm_spaces = [s.strip() for s in spaces.split(",") if s.strip()]
@@ -1318,7 +1318,7 @@ class ASTEngine:
         member_kind: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Extract hierarchical AST symbol outline for `file_or_uri` with optional orthogonal filters."""
-        with self._lock:
+        with cell_span("ast.outline"), self._lock:
             GrammarProvisioner.get_warnings(clear=True)
             active_filters = {
                 k: str(v).strip().lower()

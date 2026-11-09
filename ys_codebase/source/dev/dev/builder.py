@@ -15,6 +15,7 @@ import functools
 import zipfile
 from typing import Tuple, Dict, List, Optional, Any, Set
 from core import uri, vfs, semver
+from core.context import cell_span
 from dev.checker import Checker, discover_source_modules
 
 
@@ -346,6 +347,10 @@ class Builder:
         - 產物版本號強制標記為 X.Y.Z.build。
         - 自動更新 build/{name}/index.json。
         """
+        with cell_span("dev.build"):
+            return self._build_module_impl(name=name, clean=clean)
+
+    def _build_module_impl(self, name: str, clean: bool = True) -> Tuple[bool, str]:
         src_uri = f"module.source://{name}"
         if not vfs.exists(src_uri):
             return False, f"Source module not found at {src_uri}."

@@ -486,15 +486,18 @@ class DebouncedIOStreamer:
         exit_code: int,
         duration_ms: float,
         error: Optional[str] = None,
+        stages: Optional[str] = None,
     ) -> None:
         """Flushes remaining terminal stream and sends `task_finish` packet."""
         self.flush()
-        packet = {
+        packet: Dict[str, Any] = {
             "type": "task_finish",
             "exit_code": exit_code,
             "duration_ms": duration_ms,
             "error": error,
         }
+        if stages:
+            packet["stages"] = stages
         try:
             self.emit_chunk(packet)
         except Exception:

@@ -909,14 +909,6 @@ class SpaceRegistry:
                     target_bucket.append(child_cfg)
         return pos_children, neg_children
 
-    def _expand_compose_children(
-        self, space_cfg: SpaceConfig, visiting: Tuple[str, ...]
-    ) -> List[SpaceConfig]:
-        pos_children, _neg_children = self._split_compose_children(
-            space_cfg, visiting
-        )
-        return pos_children
-
     def list_spaces(
         self,
         owner: Optional[str] = None,

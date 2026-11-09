@@ -162,7 +162,6 @@ class ConfigManager(metaclass=_ConfigManagerMeta):
         if cache_key in cache and cached_mtimes == (p_mtime, l_mtime):
             return cache[cache_key]
 
-        # 重新載入並深層合併
         proj_data = cls._read_json_file(proj_path)
         local_data = cls._read_json_file(local_path)
         merged = cls._deep_merge(proj_data, local_data)

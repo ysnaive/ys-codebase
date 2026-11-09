@@ -160,12 +160,6 @@ def make_standalone_tag_regex(token_name: str) -> re.Pattern:
     return re.compile(r"[ \t]*`__@\{\s*" + re.escape(token_name) + r"\s*\}__`[ \t]*\r?\n?")
 
 
-@functools.lru_cache(maxsize=128)
-def make_purge_regex(token_name: str) -> re.Pattern:
-    """構造用於抹除殘留 Token 錨點行之正則表達式，自動吞噬行首縮排與行尾換行。"""
-    return make_standalone_tag_regex(token_name)
-
-
 def _is_uri_suffix_match(longer: str, shorter: str) -> bool:
     """檢查 shorter 是否在路徑分隔邊界上後綴匹配 longer。"""
     if not longer or not shorter:
@@ -423,16 +417,9 @@ class ArtifactCompiler:
         if not path_or_uri:
             return ""
 
-        if uri and "://" in path_or_uri:
-            try:
-                real_p = uri.resolve(path_or_uri, interactive=False)
-                if os.path.exists(real_p):
-                    return real_p
-            except Exception:
-                pass
-
         sub_path = path_or_uri
         target_root = self.module_root
+        scheme = ""
         if "://" in path_or_uri:
             scheme, parts = path_or_uri.split("://", 1)
             if "/" in parts:
@@ -443,9 +430,23 @@ class ArtifactCompiler:
                     if os.path.isdir(sibling_root):
                         target_root = sibling_root
 
-        local_cand = os.path.join(target_root, sub_path.replace("/", os.sep))
-        if os.path.exists(local_cand):
-            return local_cand
+        if scheme in ("", "module"):
+            local_cand = os.path.join(target_root, sub_path.replace("/", os.sep))
+            if os.path.exists(local_cand):
+                return local_cand
+
+        if uri and "://" in path_or_uri:
+            try:
+                real_p = uri.resolve(path_or_uri, interactive=False)
+                if os.path.exists(real_p):
+                    return real_p
+            except Exception:
+                pass
+
+        if scheme not in ("", "module"):
+            local_cand = os.path.join(target_root, sub_path.replace("/", os.sep))
+            if os.path.exists(local_cand):
+                return local_cand
 
         if os.path.exists(path_or_uri):
             return path_or_uri
@@ -698,7 +699,7 @@ class ArtifactCompiler:
 
             # Step 3: 清除本輪已解算或無匹配的 Token 錨點標籤行/殘留
             for token_name in matched_tokens_this_pass:
-                purge_regex = make_purge_regex(token_name)
+                purge_regex = make_standalone_tag_regex(token_name)
                 resolved_text = purge_regex.sub("", resolved_text)
                 token_tag_regex = make_token_tag_regex(token_name)
 

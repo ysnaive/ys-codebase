@@ -106,14 +106,9 @@ def _get_str_option(bags: CmdBags, name: str, default: str = "") -> str:
     return default
 
 
-def _setup_stream_encodings():
-    pass
-
-
 def roadmap_list(cmd_bags: Any) -> int:
     """列出路線圖摘要表格（支援 --status 過濾，自動排除 TODO.md）。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "roadmap_list")
     mgr = RoadmapManager()
     status_filter = _get_str_option(bags, "status") or None
@@ -125,7 +120,6 @@ def roadmap_list(cmd_bags: Any) -> int:
 def roadmap_promote(cmd_bags: Any) -> int:
     """將儲備路線圖物理移轉至計畫目錄並重命名為 roadmap.md (Consume-on-Promote)。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "roadmap_promote")
     if not bags.args:
         _log_cli("[agents-workflow:roadmap] Error: Missing topic to promote. Usage: roadmap promote <topic> [--plan <dir>] [--model <ModelName>]")
@@ -147,7 +141,6 @@ def roadmap_promote(cmd_bags: Any) -> int:
 def roadmap(cmd_bags: Any) -> int:
     """處理 `agents-workflow roadmap` CLI 指令（支援 list、promote 與單一主題查詢）。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "roadmap")
     mgr = RoadmapManager()
 
@@ -192,7 +185,6 @@ def roadmap(cmd_bags: Any) -> int:
 def todo_add(cmd_bags: Any) -> int:
     """免讀盲寫追加單筆 TODO 條目至 workflow.roadmap://TODO.md。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "todo_add")
     if not bags.args:
         _log_cli("[agents-workflow:todo] Error: Missing title. Usage: todo add \"<標題>\" [--scope <模組>] [--note \"<備註>\"] [--model <ModelName>]")
@@ -220,7 +212,6 @@ def todo_add(cmd_bags: Any) -> int:
 def todo_list(cmd_bags: Any) -> int:
     """列出 workflow.roadmap://TODO.md 中之待辦條目（支援 --scope 過濾）。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "todo_list")
     scope = _get_str_option(bags, "scope") or None
 
@@ -232,7 +223,6 @@ def todo_list(cmd_bags: Any) -> int:
 def todo_promote(cmd_bags: Any) -> int:
     """支援單筆或多筆打包提取 TODO 條目 (Pop) 並生成 todo.md 與 changelog.md。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "todo_promote")
     if not bags.args:
         _log_cli("[agents-workflow:todo] Error: Missing TODO ID(s) to promote. Usage: todo promote <TODO-ID> [TODO-ID...] --slug <plan_slug> [--plan <dir>] [--model <ModelName>]")
@@ -278,7 +268,6 @@ def todo(cmd_bags: Any) -> int:
 def release(cmd_bags: Any) -> int:
     """執行原子 4 步發布交易（支援 --force 與雙階 Diff 檢測）。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "release")
     force = bags.has_option("force") or bags.has_option("f")
 
@@ -311,7 +300,6 @@ def release(cmd_bags: Any) -> int:
 def release_target(cmd_bags: Any) -> int:
     """管理 release-target 清單與狀態（相容 --add/add 與 --remove/remove/--rm/rm，支援 --proj 旗標）。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "release-target")
 
     is_proj = bags.has_option("proj") or bags.has_option("project")
@@ -389,7 +377,6 @@ def release_target(cmd_bags: Any) -> int:
 def compile(cmd_bags: Any) -> int:
     """執行 Stage 1 中繼工廠編譯管線。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     _normalize_bags(cmd_bags, "compile")
     compiler = ArtifactCompiler()
     _log_cli("[agents-workflow] Starting Stage 1 artifact compilation pipeline...")
@@ -411,7 +398,6 @@ def compile(cmd_bags: Any) -> int:
 def tokens(cmd_bags: Any) -> int:
     """檢視全系統已註冊之 Token 錨點清單與語意 URI 說明。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     _normalize_bags(cmd_bags, "tokens")
     compiler = ArtifactCompiler()
     tokens_list = compiler.get_registered_tokens()
@@ -435,7 +421,6 @@ def tokens(cmd_bags: Any) -> int:
 def list(cmd_bags: Any) -> int:
     """檢視當前已安裝模組清冊與 agents-workflow 導出規範清單。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     _normalize_bags(cmd_bags, "list")
     compiler = ArtifactCompiler()
     exports = compiler.get_exported_artifacts()
@@ -462,7 +447,6 @@ def list(cmd_bags: Any) -> int:
 def init(cmd_bags: Any) -> int:
     """一鍵初始化工作流目錄結構與 URI 協議。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "init")
     auto_confirm = bags.has_option("yes") or bags.has_option("y")
     paths_override: Dict[str, str] = {}
@@ -489,7 +473,6 @@ def init(cmd_bags: Any) -> int:
 def plan_archive(cmd_bags: Any) -> int:
     """將已完成之 Dev Plan 安全歸檔至 workflow.archived://。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "plan_archive")
     if not bags.args:
         _log_cli("[agents-workflow:plan] Error: Missing plan name to archive. Usage: plan archive <plan_name> [--force]")
@@ -517,7 +500,6 @@ def plan_archive(cmd_bags: Any) -> int:
 def plan_status(cmd_bags: Any) -> int:
     """掃描並輸出進行中之 Dev Plans 狀態矩陣，或執行斷點領航與 handoff.md 原子閱後即焚 (--resume)。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "plan_status")
     scanner = PlanScanner()
 
@@ -546,7 +528,6 @@ def plan_status(cmd_bags: Any) -> int:
 def plan_search(cmd_bags: Any) -> int:
     """搜尋 Dev Plans 內部之決策紀錄 (DR) 或全文關鍵字。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "plan_search")
     is_dr = bags.has_option("dr")
     is_full = bags.has_option("full")
@@ -618,7 +599,6 @@ def plan_search(cmd_bags: Any) -> int:
 def plan_verify(cmd_bags: Any) -> int:
     """合規性診斷 Dev Plans 文件結構、雙檔協同、追溯差集與免讀盲寫追加 changelog.md。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "plan_verify")
     is_json = bags.has_option("json")
     target_name = bags.args[0] if bags.args else None
@@ -726,7 +706,6 @@ def plan(cmd_bags: Any) -> int:
 def session_trace(cmd_bags: Any) -> int:
     """執行三級漸進式對話軌跡與五大硬性摩擦訊號提取 (供 /session-audit 調用)。"""
     guard_dispatch("agents-workflow")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "session_trace")
 
     plan_arg = _get_str_option(bags, "plan") or (

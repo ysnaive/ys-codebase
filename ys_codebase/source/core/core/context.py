@@ -14,6 +14,7 @@ from functools import lru_cache
 import os
 from pathlib import Path
 import threading
+import time
 import types
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Set, Tuple, Union
 
@@ -100,6 +101,63 @@ _ACTIVE_RUNTIME_SCOPE: ContextVar[Optional[RuntimeScope]] = ContextVar(
 )
 
 
+@dataclass(frozen=True)
+class CellScope:
+    """
+    Request-scoped (Cell-scoped) execution unit bound during a single CLI/task invocation.
+    Provides single-evaluation memoization (`get_or_compute_cell_state`) and stage timing
+    profiling (`cell_span`) while guarding against background thread `copy_context()` leaks
+    via its `is_closed` lifecycle state.
+    """
+
+    cell_id: int
+    module_name: Optional[str] = None
+    command: Optional[str] = None
+    _state: Dict[str, Any] = field(
+        default_factory=lambda: {"closed": False, "cache": {}, "stages_ms": {}},
+        compare=False,
+        repr=False,
+    )
+
+    @property
+    def is_closed(self) -> bool:
+        return bool(self._state.get("closed", False))
+
+    @property
+    def cache(self) -> Dict[Any, Any]:
+        return self._state["cache"]
+
+    @property
+    def stages_ms(self) -> Dict[str, float]:
+        return self._state["stages_ms"]
+
+    def record_stage_ms(self, stage_name: str, elapsed_ms: float) -> None:
+        if self.is_closed or not stage_name:
+            return
+        stages = self._state["stages_ms"]
+        stages[stage_name] = float(stages.get(stage_name, 0.0)) + max(0.0, float(elapsed_ms))
+
+    def format_stages_summary(self, min_ms: float = 0.5) -> str:
+        stages = self._state.get("stages_ms") or {}
+        if not stages:
+            return ""
+        parts = [
+            f"{name}={ms:.1f}ms"
+            for name, ms in stages.items()
+            if ms >= min_ms
+        ]
+        return ", ".join(parts)
+
+    def close_and_clear_cache(self) -> None:
+        self._state["closed"] = True
+        self._state["cache"].clear()
+
+
+_ACTIVE_CELL_SCOPE: ContextVar[Optional[CellScope]] = ContextVar(
+    "_ACTIVE_CELL_SCOPE", default=None
+)
+
+
 class RuntimeContext:
     """
     Centralized runtime state and cache container for `module:core`.
@@ -178,6 +236,17 @@ class RuntimeContext:
         self.module_states_lock = threading.RLock()
         self.module_states: Dict[str, Any] = {}
 
+        # 14. Epoch-bound kernel cache & monotonic Cell counter
+        self.epoch_states_lock = threading.RLock()
+        self.epoch_states: Dict[str, Tuple[Any, Any]] = {}
+        self.cell_seq_lock = threading.Lock()
+        self.cell_seq: int = 0
+
+    def next_cell_id(self) -> int:
+        with self.cell_seq_lock:
+            self.cell_seq += 1
+            return self.cell_seq
+
     def get_module_state(self, key: str, default_factory: Optional[Callable[[], Any]] = None) -> Any:
         """Thread-safely retrieves or initializes a domain module state entry by `key`."""
         with self.module_states_lock:
@@ -235,6 +304,11 @@ class RuntimeContext:
                 self.server_last_touch_by_root.clear()
             with self.module_states_lock:
                 self.module_states.clear()
+            with self.epoch_states_lock:
+                self.epoch_states.clear()
+            curr_cell = _ACTIVE_CELL_SCOPE.get()
+            if curr_cell is not None and not curr_cell.is_closed:
+                curr_cell.cache.clear()
 
 
 @lru_cache(maxsize=1)
@@ -362,14 +436,154 @@ def get_env_snapshot() -> Mapping[str, str]:
     return types.MappingProxyType(merged)
 
 
+def get_current_cell() -> Optional[CellScope]:
+    """
+    Returns the currently active, non-closed `CellScope`, or `None`.
+    If a background thread inherited a `CellScope` via `contextvars.copy_context()` that has
+    since closed, this function safely returns `None` to prevent leaks.
+    """
+    cell = _ACTIVE_CELL_SCOPE.get()
+    if cell is None or cell.is_closed:
+        return None
+    return cell
+
+
+@contextmanager
+def bind_cell_context(
+    *,
+    module_name: Optional[str] = None,
+    command: Optional[str] = None,
+    reuse_existing: bool = True,
+) -> Iterator[CellScope]:
+    """
+    Binds a request-scoped `CellScope` for the duration of a CLI/task invocation.
+    When `reuse_existing=True` and an active (non-closed) `CellScope` already exists,
+    reuses the outer cell and only closes/clears the cache when the outermost scope exits.
+    """
+    existing = get_current_cell()
+    if reuse_existing and existing is not None:
+        yield existing
+        return
+
+    ctx = get_runtime_context()
+    new_cell = CellScope(
+        cell_id=ctx.next_cell_id(),
+        module_name=module_name,
+        command=command,
+    )
+    token: Token = _ACTIVE_CELL_SCOPE.set(new_cell)
+    try:
+        yield new_cell
+    finally:
+        new_cell.close_and_clear_cache()
+        _ACTIVE_CELL_SCOPE.reset(token)
+
+
+def get_or_compute_cell_state(key: Any, builder_fn: Callable[[], Any]) -> Any:
+    """
+    Memoizes `builder_fn()` within the currently active `CellScope` under `key`.
+    If no `CellScope` is active (e.g., direct Python SDK call in unit tests), executes
+    `builder_fn()` directly without caching to prevent cross-test state pollution.
+    """
+    cell = get_current_cell()
+    if cell is None:
+        return builder_fn()
+    cache = cell.cache
+    if key in cache:
+        return cache[key]
+    val = builder_fn()
+    if not cell.is_closed:
+        cache[key] = val
+    return val
+
+
+def invalidate_cell_state(key_or_prefix: Optional[Any] = None) -> None:
+    """Invalidates matching keys (or all keys if `None`) in the active `CellScope.cache`."""
+    cell = get_current_cell()
+    if cell is None:
+        return
+    cache = cell.cache
+    if key_or_prefix is None:
+        cache.clear()
+        return
+    keys_to_remove = [
+        k
+        for k in list(cache.keys())
+        if k == key_or_prefix
+        or (isinstance(k, tuple) and len(k) > 0 and k[0] == key_or_prefix)
+        or (isinstance(k, str) and isinstance(key_or_prefix, str) and k.startswith(key_or_prefix))
+    ]
+    for k in keys_to_remove:
+        cache.pop(k, None)
+
+
+def get_or_compute_epoch_state(
+    key: str,
+    epoch_fn: Callable[[], Any],
+    builder_fn: Callable[[], Any],
+) -> Any:
+    """
+    Cross-Cell epoch-bound cache stored in `RuntimeContext.epoch_states`.
+    Evaluates `epoch_fn()` and `builder_fn()` outside the lock so background service
+    threads are never blocked by expensive builds.
+    """
+    current_epoch = epoch_fn()
+    ctx = get_runtime_context()
+    with ctx.epoch_states_lock:
+        entry = ctx.epoch_states.get(key)
+        if entry is not None and entry[0] == current_epoch:
+            return entry[1]
+
+    new_val = builder_fn()
+    with ctx.epoch_states_lock:
+        ctx.epoch_states[key] = (current_epoch, new_val)
+    return new_val
+
+
+def invalidate_epoch_state(key: Optional[str] = None) -> None:
+    """Invalidates a specific key (or all keys if `None`) in `RuntimeContext.epoch_states`."""
+    ctx = get_runtime_context()
+    with ctx.epoch_states_lock:
+        if key is None:
+            ctx.epoch_states.clear()
+        else:
+            ctx.epoch_states.pop(key, None)
+
+
+@contextmanager
+def cell_span(stage_name: str) -> Iterator[None]:
+    """
+    Records elapsed wall-clock milliseconds for `stage_name` into the active `CellScope`.
+    Zero-overhead no-op when no `CellScope` is active.
+    """
+    cell = get_current_cell()
+    if cell is None or not stage_name:
+        yield
+        return
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        cell.record_stage_ms(stage_name, elapsed_ms)
+
+
 __all__ = (
     "ExecutionContext",
     "RuntimeScope",
+    "CellScope",
     "RuntimeContext",
     "get_runtime_context",
     "reset_runtime_context",
     "get_current_scope",
     "bind_runtime_context",
+    "get_current_cell",
+    "bind_cell_context",
+    "get_or_compute_cell_state",
+    "invalidate_cell_state",
+    "get_or_compute_epoch_state",
+    "invalidate_epoch_state",
+    "cell_span",
     "get_virtual_cwd",
     "get_env",
     "get_env_snapshot",

@@ -10,6 +10,7 @@ from enum import Enum
 from dataclasses import dataclass, field
 from typing import Tuple, List, Dict, Optional, Any, Set, FrozenSet
 from core import uri, vfs, semver, contributes
+from core.context import cell_span
 
 
 class CheckSeverity(Enum):
@@ -1165,37 +1166,38 @@ class Checker:
         )
 
     def check_module(self, name: str) -> CheckReport:
-        self._parsed_py_cache = {}
-        self._syntax_reported_files = set()
-        report = CheckReport(module=name)
-        src_uri = f"module.source://{name}"
-        if not vfs.exists(src_uri):
-            report.issues.append(
-                CheckIssue(
-                    severity=CheckSeverity.FAIL,
-                    category="MANIFEST",
-                    message=f"Module source not found at {src_uri}.",
+        with cell_span("dev.check"):
+            self._parsed_py_cache = {}
+            self._syntax_reported_files = set()
+            report = CheckReport(module=name)
+            src_uri = f"module.source://{name}"
+            if not vfs.exists(src_uri):
+                report.issues.append(
+                    CheckIssue(
+                        severity=CheckSeverity.FAIL,
+                        category="MANIFEST",
+                        message=f"Module source not found at {src_uri}.",
+                    )
                 )
-            )
-        else:
-            real_dir = uri.resolve(src_uri)
-            m_data = self._check_manifest(name, real_dir, report)
-            self._check_core_injection(name, real_dir, report, m_data=m_data)
-            self._check_file_structure(name, real_dir, report)
-            self._check_source_files(name, real_dir, report)
-            self._check_test_classes(name, real_dir, report)
-            self._check_sandbox_hooks(name, real_dir, report)
-            self._check_docs_pollution(name, real_dir, report)
+            else:
+                real_dir = uri.resolve(src_uri)
+                m_data = self._check_manifest(name, real_dir, report)
+                self._check_core_injection(name, real_dir, report, m_data=m_data)
+                self._check_file_structure(name, real_dir, report)
+                self._check_source_files(name, real_dir, report)
+                self._check_test_classes(name, real_dir, report)
+                self._check_sandbox_hooks(name, real_dir, report)
+                self._check_docs_pollution(name, real_dir, report)
 
-        if report.has_fails and report.agent_directive:
-            report.issues.append(
-                CheckIssue(
-                    severity=CheckSeverity.FAIL,
-                    category="DIRECTIVE",
-                    message=report.agent_directive,
+            if report.has_fails and report.agent_directive:
+                report.issues.append(
+                    CheckIssue(
+                        severity=CheckSeverity.FAIL,
+                        category="DIRECTIVE",
+                        message=report.agent_directive,
+                    )
                 )
-            )
-        return report
+            return report
 
     def _check_manifest(self, name: str, real_dir: str, report: CheckReport) -> Optional[Dict[str, Any]]:
         manifest_path = os.path.join(real_dir, "manifest.json")

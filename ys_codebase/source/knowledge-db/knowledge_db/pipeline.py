@@ -17,7 +17,7 @@ import time
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 from ast_engine import ASTEngine, SemanticBundler, get_engine as get_ast_engine
-from core.context import get_runtime_context, get_virtual_cwd
+from core.context import cell_span, get_runtime_context, get_virtual_cwd
 from core.log import log, log_debug, log_warn
 from core.space import (
     ScanDiffDetail,
@@ -31,6 +31,7 @@ from core.space import (
     consume_diff,
     get_default_registry,
     get_default_scanner,
+    is_watcher_active,
     reset_cursor,
     resolve_semantic_or_rel_path,
 )
@@ -1249,55 +1250,56 @@ class IndexingPipeline:
         auto_rebuild: bool = True,
         verbose: bool = False,
     ) -> InvertedIndex:
-        indices_dir = self.get_indices_dir()
-        bin_file = indices_dir / "unified.index.bin.gz"
-        worker_active = is_worker_running(indices_dir)
-        worker_busy = get_worker_busy_ms(indices_dir) > 0
-        emb_svc = getattr(self, "embedding_service", None)
-        has_local_model = True
-        if emb_svc is not None and not getattr(emb_svc, "mock_mode", False):
-            has_local_model = (
-                emb_svc.has_local_model()
-                if hasattr(emb_svc, "has_local_model")
-                else emb_svc.is_model_downloaded()
-            )
-        eff_require_vectors = bool(require_vectors and has_local_model)
+        with cell_span("kdb.jit_sync"):
+            indices_dir = self.get_indices_dir()
+            bin_file = indices_dir / "unified.index.bin.gz"
+            worker_active = is_worker_running(indices_dir)
+            worker_busy = get_worker_busy_ms(indices_dir) > 0
+            emb_svc = getattr(self, "embedding_service", None)
+            has_local_model = True
+            if emb_svc is not None and not getattr(emb_svc, "mock_mode", False):
+                has_local_model = (
+                    emb_svc.has_local_model()
+                    if hasattr(emb_svc, "has_local_model")
+                    else emb_svc.is_model_downloaded()
+                )
+            eff_require_vectors = bool(require_vectors and has_local_model)
 
-        if bin_file.exists() or self._unified_index is not None:
-            if worker_active or worker_busy:
-                if worker_active:
-                    active_w = get_active_worker()
-                    if active_w is not None:
-                        active_w.notify_space_changed()
-                self._ensure_indices_loaded(load_vectors=eff_require_vectors)
-                if self._unified_index is not None:
-                    return self._unified_index
-            acquired = self._index_lock.acquire(blocking=False)
-            if not acquired:
-                self._ensure_indices_loaded(load_vectors=eff_require_vectors)
-                if self._unified_index is not None:
-                    return self._unified_index
-                with self._index_lock:
+            if bin_file.exists() or self._unified_index is not None:
+                if worker_active or worker_busy:
+                    if worker_active:
+                        active_w = get_active_worker()
+                        if active_w is not None:
+                            active_w.notify_space_changed()
+                    self._ensure_indices_loaded(load_vectors=eff_require_vectors)
+                    if self._unified_index is not None:
+                        return self._unified_index
+                acquired = self._index_lock.acquire(blocking=False)
+                if not acquired:
+                    self._ensure_indices_loaded(load_vectors=eff_require_vectors)
+                    if self._unified_index is not None:
+                        return self._unified_index
+                    with self._index_lock:
+                        return self._ensure_jit_index_ready_locked(
+                            require_vectors=eff_require_vectors,
+                            auto_rebuild=auto_rebuild,
+                            verbose=verbose,
+                        )
+                try:
                     return self._ensure_jit_index_ready_locked(
                         require_vectors=eff_require_vectors,
                         auto_rebuild=auto_rebuild,
                         verbose=verbose,
                     )
-            try:
+                finally:
+                    self._index_lock.release()
+
+            with self._index_lock:
                 return self._ensure_jit_index_ready_locked(
                     require_vectors=eff_require_vectors,
                     auto_rebuild=auto_rebuild,
                     verbose=verbose,
                 )
-            finally:
-                self._index_lock.release()
-
-        with self._index_lock:
-            return self._ensure_jit_index_ready_locked(
-                require_vectors=eff_require_vectors,
-                auto_rebuild=auto_rebuild,
-                verbose=verbose,
-            )
 
     def _ensure_jit_index_ready_locked(
         self,
@@ -1832,35 +1834,36 @@ class IndexingPipeline:
         if not unified_index or unified_index.doc_count == 0:
             return []
 
-        raw_results = self._execute_lexical_and_vector_retrieval(
-            query=query,
-            unified_index=unified_index,
-            flt=flt,
-            target_spaces=target_spaces,
-            target_ftypes=target_ftypes,
-            kinds=kinds,
-            languages=languages,
-            limit=limit,
-            aggregate=aggregate,
-            can_use_vector=can_use_vector,
-        )
-        if adaptive_limit and aggregate and len(raw_results) > 3:
-            top_score = raw_results[0].total_score  # type: ignore[union-attr]
-            if top_score > 0:
-                cutoff_results = list(raw_results[:3])
-                for idx_r in range(3, len(raw_results)):
-                    curr_r = raw_results[idx_r]
-                    prev_r = raw_results[idx_r - 1]
-                    if (
-                        curr_r.total_score < top_score * 0.38  # type: ignore[union-attr]
-                        or curr_r.total_score < prev_r.total_score * 0.55  # type: ignore[union-attr]
-                    ):
-                        break
-                    cutoff_results.append(curr_r)
-                raw_results = cutoff_results
-        return self._enrich_snippets_and_expand_ast(
-            raw_results,
-            aggregate=aggregate,
-            snippet=snippet,
-            context_lines=context_lines,
-        )
+        with cell_span("kdb.search"):
+            raw_results = self._execute_lexical_and_vector_retrieval(
+                query=query,
+                unified_index=unified_index,
+                flt=flt,
+                target_spaces=target_spaces,
+                target_ftypes=target_ftypes,
+                kinds=kinds,
+                languages=languages,
+                limit=limit,
+                aggregate=aggregate,
+                can_use_vector=can_use_vector,
+            )
+            if adaptive_limit and aggregate and len(raw_results) > 3:
+                top_score = raw_results[0].total_score  # type: ignore[union-attr]
+                if top_score > 0:
+                    cutoff_results = list(raw_results[:3])
+                    for idx_r in range(3, len(raw_results)):
+                        curr_r = raw_results[idx_r]
+                        prev_r = raw_results[idx_r - 1]
+                        if (
+                            curr_r.total_score < top_score * 0.38  # type: ignore[union-attr]
+                            or curr_r.total_score < prev_r.total_score * 0.55  # type: ignore[union-attr]
+                        ):
+                            break
+                        cutoff_results.append(curr_r)
+                    raw_results = cutoff_results
+            return self._enrich_snippets_and_expand_ast(
+                raw_results,
+                aggregate=aggregate,
+                snippet=snippet,
+                context_lines=context_lines,
+            )

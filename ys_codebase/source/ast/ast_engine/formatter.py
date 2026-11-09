@@ -12,7 +12,7 @@ from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-from core.context import get_virtual_cwd
+from core.context import get_env, get_virtual_cwd
 from .schema import OutlineResult
 
 
@@ -24,7 +24,7 @@ class TerminalStyler:
             stream = sys.stdout
         self.stream = stream
         is_atty = getattr(stream, "isatty", lambda: False)()
-        no_color = bool(os.getenv("NO_COLOR", ""))
+        no_color = bool(get_env("NO_COLOR", ""))
         self.enabled = is_atty and not no_color
 
     def path(self, text: str) -> str:

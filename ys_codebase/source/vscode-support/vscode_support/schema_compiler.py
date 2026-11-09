@@ -13,6 +13,7 @@ import zipfile
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from core import contributes, uri, vfs
+from core.context import cell_span
 from core.semver import compare_semver, parse_semver
 from core.validator import ContributesValidator
 
@@ -697,12 +698,13 @@ class SchemaCompiler:
         清理已移除模組之孤兒 Schema 與舊版子目錄 `.gitignore`，
         並回傳應寫入 `.vscode/settings.json` `"json.schemas"` 之綁定條目清單。
         """
-        self._cached_uri_snippets = None
-        self._cached_uri_snippets = self._collect_uri_scheme_snippets()
-        try:
-            return self._sync_all_schemas_impl(proj_root)
-        finally:
+        with cell_span("vsc.compile_schemas"):
             self._cached_uri_snippets = None
+            self._cached_uri_snippets = self._collect_uri_scheme_snippets()
+            try:
+                return self._sync_all_schemas_impl(proj_root)
+            finally:
+                self._cached_uri_snippets = None
 
     def _sync_all_schemas_impl(self, proj_root: str) -> List[Dict[str, Any]]:
         schemas_root = os.path.join(proj_root, ".vscode", "schemas")

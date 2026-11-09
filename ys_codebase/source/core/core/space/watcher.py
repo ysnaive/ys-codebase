@@ -11,10 +11,15 @@ import os
 from pathlib import Path
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple, Union
 
 from core import vfs
-from core.context import get_runtime_context, get_virtual_cwd
+from core.context import (
+    get_or_compute_cell_state,
+    get_runtime_context,
+    get_virtual_cwd,
+    invalidate_cell_state,
+)
 from core.log import log_debug, log_warn
 
 from .schema import resolve_semantic_or_rel_path
@@ -220,6 +225,7 @@ def write_watcher_state(
     try:
         vfs.makedirs(str(target.parent), exist_ok=True)
         vfs.write_json(str(target), payload, indent=2, atomic=True)
+        invalidate_cell_state("core.space.watcher_daemon_alive")
     except Exception as exc:
         log_debug(f"Failed to write watcher_state.json: {exc}")
     return target
@@ -244,6 +250,7 @@ def remove_watcher_state(
                 target.unlink()
             except OSError:
                 pass
+    invalidate_cell_state("core.space.watcher_daemon_alive")
 
 
 def read_watcher_state(
@@ -309,7 +316,9 @@ def is_watcher_active(
     worker = get_active_watcher()
     if worker is not None:
         is_alive_fn = getattr(worker, "is_alive", None)
-        worker_proj = getattr(worker, "project_root", None)
+        worker_proj = getattr(worker, "project_root", None) or getattr(
+            getattr(worker, "registry", None), "project_root", None
+        )
         worker_obs = getattr(worker, "_observer", None)
         proj_matches = (
             worker_proj is not None
@@ -319,18 +328,39 @@ def is_watcher_active(
         if callable(is_alive_fn) and is_alive_fn() and proj_matches and worker_obs is not None:
             return True
 
-    state = read_watcher_state(
-        project_root=reg.project_root,
-        yscb_dir=reg.yscb_dir,
-        state_file=state_file,
+    sf_path = (
+        Path(os.path.abspath(str(state_file)))
+        if state_file is not None
+        else resolve_watcher_state_path(reg.project_root, reg.yscb_dir)
     )
-    if not state or not state.get("watchdog_running"):
-        return False
-    pid = int(state.get("pid", 0) or 0)
-    if not _is_pid_alive(pid):
-        return False
+    norm_state_key = os.path.normcase(str(sf_path))
+    try:
+        st = sf_path.stat()
+        sf_fp = (int(st.st_mtime_ns), int(st.st_size))
+    except OSError:
+        sf_fp = (0, 0)
 
-    watched_set = set(state.get("watched_spaces", []))
+    def _probe_daemon_watched_spaces() -> Optional[FrozenSet[str]]:
+        if sf_fp == (0, 0):
+            return None
+        state = read_watcher_state(
+            project_root=reg.project_root,
+            yscb_dir=reg.yscb_dir,
+            state_file=sf_path,
+        )
+        if not state or not state.get("watchdog_running"):
+            return None
+        pid = int(state.get("pid", 0) or 0)
+        if not _is_pid_alive(pid):
+            return None
+        return frozenset(str(x) for x in state.get("watched_spaces", []))
+
+    watched_set = get_or_compute_cell_state(
+        ("core.space.watcher_daemon_alive", norm_state_key, sf_fp),
+        _probe_daemon_watched_spaces,
+    )
+    if watched_set is None:
+        return False
 
     def _space_covered(s: "SpaceConfig") -> bool:
         if not s.entries and not s.compose:

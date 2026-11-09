@@ -13,7 +13,11 @@ import threading
 import time
 from typing import Any, Dict, Optional, Tuple, Union
 
-from core.context import get_runtime_context
+from core.context import (
+    get_or_compute_cell_state,
+    get_runtime_context,
+    invalidate_cell_state,
+)
 from core.log import bind_log_context, log_debug, log_warn
 
 try:
@@ -205,6 +209,7 @@ def write_worker_state(
             _IDLE_EVENT.set()
 
     p = get_worker_state_path(indices_dir)
+    invalidate_cell_state("kdb.worker_state")
     try:
         from core import vfs
 
@@ -248,13 +253,25 @@ def read_worker_state(indices_dir: Union[str, Path]) -> Dict[str, Any]:
     p = get_worker_state_path(indices_dir)
     if p.exists():
         try:
-            from core import vfs
+            st = p.stat()
+            file_fp = (int(st.st_mtime_ns), int(st.st_size))
 
-            raw = vfs.read_json(str(p))
+            def _read_disk_raw() -> Optional[Dict[str, Any]]:
+                from core import vfs
+
+                raw_obj = vfs.read_json(str(p))
+                return raw_obj if isinstance(raw_obj, dict) else None
+
+            raw = get_or_compute_cell_state(
+                ("kdb.worker_state_raw", os.path.normcase(str(p)), file_fp),
+                _read_disk_raw,
+            )
             if isinstance(raw, dict):
                 pid = int(raw.get("pid", 0) or 0)
                 if pid > 0 and not _check_pid_alive(pid):
                     try:
+                        from core import vfs
+
                         vfs.remove(str(p), missing_ok=True)
                     except OSError:
                         pass
@@ -326,6 +343,7 @@ def wait_until_worker_idle(indices_dir: Union[str, Path], timeout_ms: int) -> bo
 
     deadline = time.perf_counter() + (timeout_ms / 1000.0)
     while time.perf_counter() < deadline:
+        invalidate_cell_state("kdb.worker_state")
         if get_worker_busy_ms(indices_dir) == 0:
             return True
         remain = deadline - time.perf_counter()
@@ -334,10 +352,12 @@ def wait_until_worker_idle(indices_dir: Union[str, Path], timeout_ms: int) -> bo
         wait_slice = min(0.025, remain)
         if not _IDLE_EVENT.is_set():
             if _IDLE_EVENT.wait(timeout=wait_slice):
+                invalidate_cell_state("kdb.worker_state")
                 if get_worker_busy_ms(indices_dir) == 0:
                     return True
         else:
             time.sleep(wait_slice)
+    invalidate_cell_state("kdb.worker_state")
     return get_worker_busy_ms(indices_dir) == 0
 
 

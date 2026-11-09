@@ -22,7 +22,7 @@ related_docs:
   - "./cli_commands_architecture.md"
   - "./ZIP_PACKAGE_SPEC.md"
   - "../_project/STANDARDS.md"
-last_updated: "2026-11-07"
+last_updated: "2026-11-09"
 ---
 
 # Core 微內核設計決策與工程註記 (Core Design Notes)
@@ -56,6 +56,7 @@ last_updated: "2026-11-07"
 | **[DN-18](#dn-18-coreplatform-統一全模組-syspath-注入與非-core-模組零豁免靜態守門)** | `DN-PATH-01` | `core.platform` 統一全模組 `sys.path` 注入與非 `core` 模組零豁免靜態守門 | `source/core/core/platform/venv.py`<br/>`source/core/core/commands/dispatcher.py`<br/>`source/core/core/events.py`<br/>`source/core/core/symbols.py` | 🚨 CAUTION |
 | **[DN-19](#dn-19-五大語意資料空間正交分離與零執行期版本債之多維度-act_migrate-遷移階梯)** | `DN-SPACE-01` | 五大語意資料空間正交分離與零執行期版本債之多維度 `act_migrate` 遷移階梯 | `source/core/core/uri.py`<br/>`source/core/core/config.py`<br/>`source/core/core/engine.py`<br/>`source/core/scripts/migrations/1.2.7.x.py` | 🚨 CAUTION |
 | **[DN-20](#dn-20-compiledruleset-正反向對稱化-preset-局部子樹剪枝不變量與-compose-純檔案集代數)** | `DN-SPACE-02` | `CompiledRuleSet` 正反向對稱化、`!<preset>` 局部子樹剪枝不變量與 `compose` 純檔案集代數 | `source/core/core/space/schema.py`<br/>`source/core/core/space/registry.py` | 🚨 CAUTION |
+| **[DN-21](#dn-21-cellscope-退場關閉防-copy_context-背景洩漏epochstate-鎖外求值與-cursorstore-無變動寫入短路)** | `DN-CELL-01` | `CellScope` 退場關閉防 `copy_context()` 背景洩漏、`EpochState` 鎖外求值與 `CursorStore` 無變動寫入短路 | `source/core/core/context.py`<br/>`source/core/core/space/scanner.py` | 🚨 CAUTION |
 
 ---
 
@@ -306,10 +307,16 @@ last_updated: "2026-11-07"
   > [!CAUTION]
   > **嚴禁在 `CompiledRuleSet` 中為 `is_exclude=True/False` 引入不對稱的目錄前綴或路徑段匹配分支！嚴禁在評估 `negated_presets` 目錄剪枝時略過 `has_potential_descendant_match` 檢查！嚴禁在 `_walk_single_space` 中將母空間之 `include`/`exclude` 套用至 `compose` 子空間結果！**
 
+---
 
+### [DN-21] `CellScope` 退場關閉防 `copy_context()` 背景洩漏、`EpochState` 鎖外求值與 `CursorStore` 無變動寫入短路
 
-
-
-
-
+- **核心決策**：
+  1. **`CellScope` 退場強制關閉 (`is_closed`) 與清空快取**：`CellScope` 宣告為 `@dataclass(frozen=True)`，當最外層 `bind_cell_context` 退出時，強制將內部 `_state["closed"]` 設為 `True` 並清空 `_state["cache"]`；`get_current_cell()` 若偵測到 `cell.is_closed` 為 `True`，一律回傳 `None`。
+  2. **`get_or_compute_epoch_state` 鎖外求值 (`epoch_fn` / `builder_fn`)**：`epoch_states_lock` 僅於短暫讀取與寫入 `RuntimeContext.epoch_states` 字典時持有，`epoch_fn()` 與 `builder_fn()` 100% 於鎖外執行；且若 `builder_fn()` 拋出例外，絕不寫入髒快取。
+  3. **`CursorStore` `(mtime_ns, size)` 快取與 `set_cursor` 無變動短路**：`CursorStore.load_consumer` 內建 `(st_mtime_ns, st_size)` 記憶體快取；`set_cursor` 在加鎖前後皆比對既有 `(acked_generation, merkle_root, config_hash)`，若與目標值完全一致則直接 `return`，略過磁碟原子寫入與 `fsync`。
+- **背後考量**：在 `WarmWorker` 任務期間透過 `contextvars.copy_context()` 啟動的背景執行緒，在前景任務結束後仍會持有該 `CellScope` 引用；若不標記 `closed = True`，背景執行緒將永久讀到已結束任務之凍結 `CellState`。同理，若 `get_or_compute_epoch_state` 持鎖執行重型 `builder_fn()`，會直接卡死背景 `ServiceWorker`；而 `consume_diff` 在 0 檔案變更時若每次仍無條件對 4 個目標空間觸發 8 次 `cursors/ast.json` 原子寫入 (`fsync`)，將憑空造成 `~350ms` 的唯讀查詢延遲。
+- **防禦宣告**：
+  > [!CAUTION]
+  > **嚴禁在 `get_current_cell()` 中省略 `cell.is_closed` 檢查，或於 `bind_cell_context` 最外層退出時省略 `close_and_clear_cache()`！嚴禁在持有 `epoch_states_lock` 期間呼叫 `epoch_fn()` 或 `builder_fn()`！嚴禁移除 `CursorStore.set_cursor` 的無變動短路檢查！**
 

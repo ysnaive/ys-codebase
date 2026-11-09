@@ -70,10 +70,6 @@ def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
     return CmdBags(raw_cmd="", command=default_cmd, args=[], options={})
 
 
-def _setup_stream_encodings() -> None:
-    pass
-
-
 def _parse_common_display_options(bags: CmdBags) -> Dict[str, Any]:
     tier = "simple"
     if bags.has_option("detail") or bags.has_option("d") or bags.has_option("verbose"):
@@ -182,7 +178,6 @@ def _serialize_target_symbol(
 def outline(cmd_bags: Any) -> int:
     """Extract hierarchical AST outline for a single file (`yscb.py ast outline <file> [--merged] [--public|--private|...] [--static|--non-static] [--methods|--fields|--types] [--json]`)."""
     guard_dispatch("ast")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "outline")
     engine = _get_engine()
 
@@ -342,7 +337,6 @@ def _run_topology_cli_command(cmd_name: str, cmd_bags: Any, example_usage: str) 
     from core.space import SpaceNotFoundError
 
     guard_dispatch("ast")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, cmd_name)
     engine = _get_engine()
 
@@ -458,7 +452,6 @@ def impact(cmd_bags: Any) -> int:
 def status(cmd_bags: Any) -> int:
     """Show AST snapshot generation, symbol/edge counts, and registered parsers."""
     guard_dispatch("ast")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "status")
     engine = _get_engine()
 
@@ -479,7 +472,6 @@ def status(cmd_bags: Any) -> int:
 def clean(cmd_bags: Any) -> int:
     """Clean AST snapshot and call graph caches and reset `core.space` cursor (`consumer='ast'`)."""
     guard_dispatch("ast")
-    _setup_stream_encodings()
     bags = _normalize_bags(cmd_bags, "clean")
     engine = _get_engine()
 

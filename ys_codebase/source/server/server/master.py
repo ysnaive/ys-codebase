@@ -916,7 +916,11 @@ class MasterSupervisor:
                         self._worker_services = packet["services"]
                     exit_code = packet.get("exit_code", 0)
                     dur_ms = packet.get("duration_ms", 0.0)
-                    self.logger.info(f"Task dispatch finished: module='{target_mod}', exit_code={exit_code}, duration={dur_ms:.1f}ms")
+                    stages_str = packet.get("stages")
+                    stages_suffix = f" [{stages_str}]" if isinstance(stages_str, str) and stages_str else ""
+                    self.logger.info(
+                        f"Task dispatch finished: module='{target_mod}', exit_code={exit_code}, duration={dur_ms:.1f}ms{stages_suffix}"
+                    )
                     break
             except Exception as ex:
                 with self._worker_lock:

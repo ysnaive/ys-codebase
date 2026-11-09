@@ -14,7 +14,7 @@ import functools
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Set
 from core import uri, vfs, semver, events, PipManager
-from core.context import get_runtime_context
+from core.context import get_or_compute_cell_state, get_runtime_context
 from core.platform.process import reap_sandbox_processes
 from dev.checker import discover_source_modules
 
@@ -282,41 +282,46 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
         cand_host_modules: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Reads manifest.json for a module from module.build://, module.source://, or host module directories."""
-        latest_zip = SandboxProvisioner._find_latest_build_zip(mod_name)
-        if latest_zip:
-            try:
-                with zipfile.ZipFile(latest_zip, "r") as zf:
-                    if "manifest.json" in zf.namelist():
-                        with zf.open("manifest.json") as mf:
-                            data = json.load(mf)
+        cand_key = tuple(cand_host_modules or ())
+
+        def _read() -> Optional[Dict[str, Any]]:
+            latest_zip = SandboxProvisioner._find_latest_build_zip(mod_name)
+            if latest_zip:
+                try:
+                    with zipfile.ZipFile(latest_zip, "r") as zf:
+                        if "manifest.json" in zf.namelist():
+                            with zf.open("manifest.json") as mf:
+                                data = json.load(mf)
+                                if isinstance(data, dict):
+                                    return data
+                except (zipfile.BadZipFile, OSError, json.JSONDecodeError):
+                    pass
+
+            src_uri = f"module.source://{mod_name}"
+            if vfs.exists(src_uri):
+                src_manifest = os.path.join(uri.resolve(src_uri), "manifest.json")
+                if os.path.isfile(src_manifest):
+                    try:
+                        with open(src_manifest, "r", encoding="utf-8") as f:
+                            data = json.load(f)
                             if isinstance(data, dict):
                                 return data
-            except (zipfile.BadZipFile, OSError, json.JSONDecodeError):
-                pass
+                    except (OSError, json.JSONDecodeError):
+                        pass
 
-        src_uri = f"module.source://{mod_name}"
-        if vfs.exists(src_uri):
-            src_manifest = os.path.join(uri.resolve(src_uri), "manifest.json")
-            if os.path.isfile(src_manifest):
-                try:
-                    with open(src_manifest, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        if isinstance(data, dict):
-                            return data
-                except (OSError, json.JSONDecodeError):
-                    pass
+            for host_dir in (cand_host_modules or []):
+                mf_path = os.path.join(host_dir, mod_name, "manifest.json")
+                if os.path.isfile(mf_path):
+                    try:
+                        with open(mf_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                            if isinstance(data, dict):
+                                return data
+                    except (OSError, json.JSONDecodeError):
+                        pass
+            return None
 
-        for host_dir in (cand_host_modules or []):
-            mf_path = os.path.join(host_dir, mod_name, "manifest.json")
-            if os.path.isfile(mf_path):
-                try:
-                    with open(mf_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        if isinstance(data, dict):
-                            return data
-                except (OSError, json.JSONDecodeError):
-                    pass
-        return None
+        return get_or_compute_cell_state(("dev.manifest", mod_name, cand_key), _read)
 
     @staticmethod
     def _resolve_dependency_closure(

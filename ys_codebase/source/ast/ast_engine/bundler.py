@@ -1099,10 +1099,7 @@ class SemanticBundler:
             for lang_id, cfg in lang_cfgs.items()
         )
         cpu_cnt = os.cpu_count() or 1
-        in_server_worker = (
-            get_env("YSCB_IN_SERVER_WORKER") == "1"
-            or os.environ.get("YSCB_IN_SERVER_WORKER") == "1"
-        )
+        in_server_worker = get_env("YSCB_IN_SERVER_WORKER") == "1"
         use_parallel = (
             allow_parallel
             and not in_server_worker

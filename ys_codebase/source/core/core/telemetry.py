@@ -13,8 +13,6 @@ from typing import Any, Dict, List, Optional, Union
 
 from core.context import get_env
 from core.log import (
-    _parse_jsonl_dict_line,
-    _rotate_lines_file,
     extract_error_hint,
     log_file_jsonl,
     read_log_file_jsonl,
@@ -153,11 +151,6 @@ def record_cli_event(
         )
     except Exception:
         return False
-
-
-def _rotate_telemetry_file(target_path: Path, keep_lines: int = KEEP_TELEMETRY_LINES) -> None:
-    """滾動截斷 telemetry.jsonl，僅保留最後 keep_lines 筆有效 JSONL。"""
-    _rotate_lines_file(target_path, keep_lines=keep_lines, jsonl_only=True)
 
 
 def read_telemetry_records(

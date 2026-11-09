@@ -31,7 +31,7 @@ related_docs:
   - "./API_REFERENCE.md"
   - "./DESIGN_NOTES.md"
   - "../_project/STANDARDS.md"
-last_updated: "2026-11-08"
+last_updated: "2026-11-09"
 ---
 
 # Core 微內核架構手冊 (Core Microkernel Overview)
@@ -54,7 +54,7 @@ graph TD
         VFS["First-Class VFS & URI<br/><code>core.uri</code> / <code>core.vfs</code><br/><i>語意路徑解算、JIT 熱補齊、Quick Fix 提示、自省清冊與原子 I/O</i>"]:::sub
         Space["邏輯檔案空間與指紋底座<br/><code>core.space</code><br/><i>命名空間隔離、compose 代數、YFP2 快照與多消費者游標</i>"]:::sub
         SemVer["SemVer 2.0.0 運算器<br/><code>core.semver</code><br/><i>數值排序、約束匹配與依賴求解</i>"]:::sub
-        Context["執行期隔離與模組載入器<br/><code>core.context</code> / <code>core.loader</code><br/><i>RuntimeContext、ContextVar 隔離與受保護命名空間載入</i>"]:::sub
+        Context["執行期隔離、Cell/Epoch 快取與模組載入器<br/><code>core.context</code> / <code>core.loader</code><br/><i>RuntimeContext、CellScope、EpochState、cell_span 與受保護命名空間載入</i>"]:::sub
         Engine["AtomicEngine 引擎<br/><code>core.engine</code><br/><i>12 大原子操作、OS 原子鎖與雙層快照</i>"]:::sub
         Installer["套件生命週期調度器<br/><code>core.installer</code><br/><i>安裝、更新、移除、快照回滾與 Onboarding Next Steps 引導</i>"]:::sub
         Contributes["Contribute 依賴注入器<br/><code>core.contributes</code> / <code>core.validator</code><br/><i>__provider__ 標記、__modules__ 分桶、拓撲聚合與 Schema 驗證</i>"]:::sub
@@ -78,7 +78,7 @@ graph TD
 | [符號解析與動態模組載入機制](./symbol_resolution.md) | 維度 ③ | `code.func://` 協議語法與雙軌動態載入器 (`core.symbols`) |
 | [Core Platform 跨平台底層原語手冊](./platform.md) | 維度 ③ | 背景脫鉤進程管理 (`spawn_detached`、`kill_process_tree`) 與跨平台進程鎖 (`InterProcessLock`) |
 | [Core 模組 API 規格手冊](./API_REFERENCE.md) | 維度 ④ | `core` 公開子模組 API 簽名與回傳契約速查 |
-| [Core 微內核設計決策與工程註記](./DESIGN_NOTES.md) | 維度 ⑤ | 13 項關鍵反直覺工程妥協、防坑不變量與 `[!CAUTION]` 紅線 (`DN-01 ~ DN-13`) |
+| [Core 微內核設計決策與工程註記](./DESIGN_NOTES.md) | 維度 ⑤ | 21 項關鍵反直覺工程妥協、防坑不變量與 `[!CAUTION]` 紅線 (`DN-01 ~ DN-21`) |
 
 ---
 
@@ -182,10 +182,13 @@ with uri.module_scope("core"):
   2. **無感背景加速與純標準庫退化**：`core` 本體維持 100% 純標準庫零外部依賴；當常駐 `server` 啟動 [`CoreSpaceWatcherServiceWorker`](../server/hot_reload_and_services.md) 時，透過 `cache://core/space/watcher_state.json` 與 `.watcher_dirty` 跨進程信標無感加速快照更新；當 `server` 未啟動時，100% 本地獨立執行 Pull-based 掃描。
   3. **進程內訂閱與跨模組事件廣播**：提供 `subscribe(callback, *, spaces=None)`（同時支援 `<owner>/<space>`、`/short` 與 `<space>` 短名過濾）與 `broadcast_file_space_changed`，透過 `core.events.broadcast("on_file_space_changed", payload, emit_module="core")` 觸發各模組之 `scripts/hook.core.py`。
 
-### 3.9 執行期狀態隔離容器 (`core.context`) 與受保護命名空間模組載入器 (`core.loader`)
-- **執行期狀態隔離與 `ContextVar` 範疇綁定 ([`core/context.py`](../../ys_codebase/source/core/core/context.py))**：
-  1. **`RuntimeContext` 統一快取與狀態收斂**：將 `core` 內部所有跨模組動態快取（`uri`、`config`、`contributes`、`locale`、`symbols`、`loader`、`gitignore`、`validator`、`dispatcher`、`platform`、`space`、`log`）集中納管於 `RuntimeContext`，徹底消除模組頂層可變全域變數與 `global` 賦值，並透過 `reset_all_caches()` 提供保物件參考（In-Place）之一鍵清空能力，以及 PEP 562 模組級 `__getattr__` 向後相容代理。
-  2. **`RuntimeScope` 與 `bind_runtime_context` 請求級隔離**：基於 `ContextVar` 提供執行緒與協程安全的 `virtual_cwd`（統一由 `get_virtual_cwd()` 讀取，為全系統唯一合法呼叫 `os.getcwd()` 之邊界）、`env` 覆寫快照（由 `get_env()` / `get_env_snapshot()` 讀取，避免執行期直接突變 `os.environ`）與活躍 URI 根路徑（`host_dir`、`yscb_dir`、`module_name`），並強制 `ExecutionContext` 與全模組 12 個 `@dataclass(frozen=True)` 實例不可變。
+### 3.9 執行期狀態隔離容器、Cell/Epoch 快取原語 (`core.context`) 與受保護命名空間模組載入器 (`core.loader`)
+- **執行期狀態隔離、`CellScope` / `EpochState` 快取原語與 `cell_span` 階段剖析 ([`core/context.py`](../../ys_codebase/source/core/core/context.py))**：
+  1. **`RuntimeContext` 統一快取與狀態收斂**：將 `core` 內部所有跨模組動態快取（`uri`、`config`、`contributes`、`locale`、`symbols`、`loader`、`gitignore`、`validator`、`dispatcher`、`platform`、`space`、`log`、`epoch_states`）集中納管於 `RuntimeContext`，徹底消除模組頂層可變全域變數與 `global` 賦值，並透過 `reset_all_caches()` 提供保物件參考（In-Place）之一鍵清空能力，以及 PEP 562 模組級 `__getattr__` 向後相容代理。
+  2. **`RuntimeScope` 與 `bind_runtime_context` 請求級隔離**：基於 `ContextVar` 提供執行緒與協程安全的 `virtual_cwd`（統一由 `get_virtual_cwd()` 讀取，為全系統唯一合法呼叫 `os.getcwd()` 之邊界）、`env` 覆寫快照（由 `get_env()` / `get_env_snapshot()` 讀取，避免執行期直接突變 `os.environ`）與活躍 URI 根路徑（`host_dir`、`yscb_dir`、`module_name`），並強制 `ExecutionContext` 與全模組 `@dataclass(frozen=True)` 實例不可變。
+  3. **`CellScope` 單次派發生命週期快取 (`bind_cell_context` / `get_or_compute_cell_state`)**：在單次 CLI 任務（無論冷啟動 `dispatch_local` 或常駐熱派發 `WarmWorker.execute_task`）期間綁定 `@dataclass(frozen=True)` 之 `CellScope`；下游模組透過 `get_or_compute_cell_state(key, builder_fn)` 與 `invalidate_cell_state(key_or_prefix)` 快取單次 Cell 內重複之磁碟 `stat`/`isfile` 探針或設定解析。最外層 `bind_cell_context` 退出時強制執行 `close_and_clear_cache()`（標記 `is_closed = True` 並清空字典），使透過 `contextvars.copy_context()` 繼承上下文之背景執行緒呼叫 `get_current_cell()` 時安全回傳 `None`，杜絕陳舊 Cell 快取跨執行緒洩漏。
+  4. **`EpochState` 跨 Cell 世代感知常駐快取 (`get_or_compute_epoch_state` / `invalidate_epoch_state`)**：針對常駐 Worker 跨任務復用之重型或中繼狀態（如 `CrossFileResolver`、`agents-workflow` 來源 SHA-1 快取與 JIT 乾淨時間桶），提供以 `epoch_fn()` 世代特徵為驗證依據之 `get_or_compute_epoch_state(key, epoch_fn, builder_fn)`；`epoch_fn()` 與 `builder_fn()` 嚴格於鎖外執行以避免阻塞背景 `ServiceWorker`。
+  5. **`cell_span` 零配置階層式階段耗時剖析**：`dispatch_local` 內建 `pre_hooks`、`option_resolve`、`mod_load`、`cmd_exec`、`post_hooks` 五大主幹階段，各模組可透過 `with cell_span("<mod>.<stage>"):` 埋設子階段。於熱派發時自動隨 `DebouncedIOStreamer.send_task_finish(..., stages=...)` 回傳至 `MasterSupervisor` 顯影於 `.cache/server/log`；於冷派發設定 `YSCB_PROFILE_CELL=1` 時輸出至 `stderr`。
 - **單點受保護命名空間模組載入器 ([`core/loader.py`](../../ys_codebase/source/core/core/loader.py))**：
   1. 統一收斂 `dispatcher.py`（CLI 腳本）、`events.py`（Hook 腳本）、`engine.py`（Migration 腳本）與 `symbols.py`（`code.func://` 動態符號）之檔案級動態載入至 `load_module_from_path(module_key, file_path, *, reload_if_changed=True)`。
   2. 強制校驗受保護命名空間前綴 `_yscb_mod_*`，內建 `(st_mtime_ns, st_size)` 指紋比對快取與熱重載，並於 `exec_module` 拋出例外時自動原子回滾 `sys.modules` 快照，杜絕半初始化之殭屍模組殘留。

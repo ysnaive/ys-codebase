@@ -13,6 +13,7 @@ import os
 import sys
 import re
 import json
+import time
 import hashlib
 import datetime
 from dataclasses import dataclass
@@ -101,24 +102,19 @@ class ReleasePublisher:
             try:
                 real_p = uri.resolve(SHA1_CACHE_URI, interactive=False) if uri else ""
                 st_ns = os.stat(real_p).st_mtime_ns if (real_p and os.path.isfile(real_p)) else 0
-                from core.context import get_runtime_context
+                from core.context import get_or_compute_epoch_state
 
-                ctx = get_runtime_context()
-                mem_cache = ctx.get_module_state("agents_workflow.publisher.sha1_mem_cache")
-                if (
-                    isinstance(mem_cache, dict)
-                    and mem_cache.get("path") == real_p
-                    and mem_cache.get("mtime_ns") == st_ns
-                    and isinstance(mem_cache.get("data"), dict)
-                ):
-                    return dict(mem_cache["data"])
-                data = vfs.read_json(SHA1_CACHE_URI)
-                if isinstance(data, dict):
-                    ctx.set_module_state(
-                        "agents_workflow.publisher.sha1_mem_cache",
-                        {"path": real_p, "mtime_ns": st_ns, "data": dict(data)},
-                    )
-                    return data
+                def _read_sha1_dict() -> Dict[str, Any]:
+                    raw = vfs.read_json(SHA1_CACHE_URI) if vfs else {}
+                    return dict(raw) if isinstance(raw, dict) else {}
+
+                cached_data = get_or_compute_epoch_state(
+                    "agents_workflow.publisher.sha1_mem_cache",
+                    epoch_fn=lambda: (real_p, st_ns),
+                    builder_fn=_read_sha1_dict,
+                )
+                if isinstance(cached_data, dict):
+                    return dict(cached_data)
             except Exception:
                 pass
         return {}
@@ -131,11 +127,13 @@ class ReleasePublisher:
                 self._sha1_cache_dirty = False
                 real_p = uri.resolve(SHA1_CACHE_URI, interactive=False) if uri else ""
                 st_ns = os.stat(real_p).st_mtime_ns if (real_p and os.path.isfile(real_p)) else 0
-                from core.context import get_runtime_context
+                from core.context import get_or_compute_epoch_state, invalidate_epoch_state
 
-                get_runtime_context().set_module_state(
+                invalidate_epoch_state("agents_workflow.publisher.sha1_mem_cache")
+                get_or_compute_epoch_state(
                     "agents_workflow.publisher.sha1_mem_cache",
-                    {"path": real_p, "mtime_ns": st_ns, "data": dict(self._sha1_cache)},
+                    epoch_fn=lambda: (real_p, st_ns),
+                    builder_fn=lambda: dict(self._sha1_cache),
                 )
             except Exception:
                 pass
@@ -878,44 +876,19 @@ class ReleasePublisher:
 
     def _save_deployment_manifests(
         self,
-        proj_targets: Union[List[str], _ReleaseTransactionContext, None] = None,
-        local_targets: Union[List[str], Dict[str, str], None] = None,
+        tx_ctx: _ReleaseTransactionContext,
         precomputed_project_files: Optional[Dict[str, str]] = None,
         precomputed_local_files: Optional[Dict[str, str]] = None,
-        old_proj_manifest: Optional[Dict[str, Any]] = None,
-        old_local_manifest: Optional[Dict[str, Any]] = None,
-        proj_fingerprint: str = "",
-        local_fingerprint: str = "",
-        combined_fingerprint: str = "",
-        proj_root: str = "",
-        *,
-        tx_ctx: Optional[_ReleaseTransactionContext] = None,
     ) -> None:
-        """Stage 3: 原子寫入 storage.local:// 之 Project 軌與 Local 軌持久化發布清單（相容 _ReleaseTransactionContext 與舊版參數）。"""
-        if isinstance(proj_targets, _ReleaseTransactionContext):
-            tx_ctx = proj_targets
-            if isinstance(local_targets, dict):
-                precomputed_local_files = precomputed_project_files if isinstance(precomputed_project_files, dict) else precomputed_local_files
-                precomputed_project_files = local_targets
-
-        if tx_ctx is not None:
-            eff_proj_targets = tx_ctx.proj_targets
-            eff_local_targets = tx_ctx.local_targets
-            eff_old_proj = tx_ctx.old_proj_manifest
-            eff_old_local = tx_ctx.old_local_manifest
-            eff_proj_fp = tx_ctx.proj_fingerprint
-            eff_local_fp = tx_ctx.local_fingerprint
-            eff_combined_fp = tx_ctx.combined_fingerprint
-            eff_proj_root = tx_ctx.proj_root
-        else:
-            eff_proj_targets = proj_targets if isinstance(proj_targets, list) else []
-            eff_local_targets = local_targets if isinstance(local_targets, list) else []
-            eff_old_proj = old_proj_manifest or {}
-            eff_old_local = old_local_manifest or {}
-            eff_proj_fp = proj_fingerprint
-            eff_local_fp = local_fingerprint
-            eff_combined_fp = combined_fingerprint
-            eff_proj_root = proj_root
+        """Stage 3: 原子寫入 storage.local:// 之 Project 軌與 Local 軌持久化發布清單。"""
+        eff_proj_targets = tx_ctx.proj_targets
+        eff_local_targets = tx_ctx.local_targets
+        eff_old_proj = tx_ctx.old_proj_manifest
+        eff_old_local = tx_ctx.old_local_manifest
+        eff_proj_fp = tx_ctx.proj_fingerprint
+        eff_local_fp = tx_ctx.local_fingerprint
+        eff_combined_fp = tx_ctx.combined_fingerprint
+        eff_proj_root = tx_ctx.proj_root
 
         eff_pre_proj = precomputed_project_files or {}
         eff_pre_local = precomputed_local_files or {}
@@ -1001,6 +974,12 @@ class ReleasePublisher:
         Stage 3: 清理過期檔案 (_prune_orphaned_managed_files) 並原子寫入 storage.local:// 清單 (_save_deployment_manifests)
         Stage 4: 落地端檔案內容比對與增量輸出 (_materialize_target_files) 與 .gitignore 軟合併
         """
+        from core.context import cell_span
+
+        with cell_span("aw.release"):
+            return self._release_all_impl(force=force)
+
+    def _release_all_impl(self, force: bool = False) -> Dict[str, Any]:
         cfg = self._get_project_config()
         active_target_names: List[str] = cfg.get("release_targets", ["antigravity"])
 
@@ -1057,17 +1036,21 @@ class ReleasePublisher:
 
         can_short_circuit, short_circuited_files = self._check_short_circuit(tx_ctx)
         if can_short_circuit:
-            from core.context import get_runtime_context
+            from core.context import get_or_compute_epoch_state
 
-            ctx = get_runtime_context()
-            last_gi_fp = ctx.get_module_state("agents_workflow.publisher.last_gitignore_fp")
-            if last_gi_fp != combined_fingerprint:
+            def _sync_gi_on_epoch_change() -> str:
                 self.sync_gitignore(
                     active_targets=active_target_names,
                     published_files=short_circuited_files,
                     proj_root=proj_root,
                 )
-                ctx.set_module_state("agents_workflow.publisher.last_gitignore_fp", combined_fingerprint)
+                return combined_fingerprint
+
+            get_or_compute_epoch_state(
+                "agents_workflow.publisher.last_gitignore_fp",
+                epoch_fn=lambda: (proj_root, combined_fingerprint),
+                builder_fn=_sync_gi_on_epoch_change,
+            )
             self._save_sha1_cache()
             return {
                 "success": True,
@@ -1136,9 +1119,14 @@ class ReleasePublisher:
             proj_root=proj_root,
         )
         try:
-            from core.context import get_runtime_context
+            from core.context import get_or_compute_epoch_state, invalidate_epoch_state
 
-            get_runtime_context().set_module_state("agents_workflow.publisher.last_gitignore_fp", combined_fingerprint)
+            invalidate_epoch_state("agents_workflow.publisher.last_gitignore_fp")
+            get_or_compute_epoch_state(
+                "agents_workflow.publisher.last_gitignore_fp",
+                epoch_fn=lambda: (proj_root, combined_fingerprint),
+                builder_fn=lambda: combined_fingerprint,
+            )
         except Exception:
             pass
 
@@ -1267,8 +1255,50 @@ def ensure_jit_release(force: bool = False) -> bool:
     返回 True 表示有實質物化寫入，False 表示 Clean 或短路跳過。
     """
     try:
-        pub = ReleasePublisher()
-        res = pub.release_all(force=force)
-        return bool(res.get("success", False) and not res.get("short_circuited", False))
+        from core.context import cell_span, get_or_compute_epoch_state, invalidate_epoch_state
+
+        with cell_span("aw.jit_release"):
+            orig_method = getattr(ReleasePublisher.release_all, "__name__", "") == "release_all" and not hasattr(
+                ReleasePublisher.release_all, "assert_called"
+            )
+            if not force and orig_method:
+                now_bucket = int(time.monotonic() / 5.0)
+                manifest_mtimes = []
+                if uri:
+                    for m_uri in (
+                        PROJECT_MANIFEST_CACHE_URI,
+                        LOCAL_MANIFEST_CACHE_URI,
+                        "config://agents-workflow/config.project.json",
+                        "config://agents-workflow/config.local.json",
+                        "config://agents-workflow/contribute.json",
+                        "cache://agents-workflow/contributes.merged.json",
+                    ):
+                        try:
+                            p = uri.resolve(m_uri, interactive=False)
+                            manifest_mtimes.append(os.stat(p).st_mtime_ns if os.path.isfile(p) else 0)
+                        except Exception:
+                            manifest_mtimes.append(0)
+                epoch_token = (now_bucket, tuple(manifest_mtimes))
+
+                def _run_jit() -> bool:
+                    pub = ReleasePublisher()
+                    res = pub.release_all(force=False)
+                    return bool(res.get("success", False) and not res.get("short_circuited", False))
+
+                res_val = bool(
+                    get_or_compute_epoch_state(
+                        "agents_workflow.publisher.jit_clean_bucket",
+                        epoch_fn=lambda: epoch_token,
+                        builder_fn=_run_jit,
+                    )
+                )
+                if res_val:
+                    invalidate_epoch_state("agents_workflow.publisher.jit_clean_bucket")
+                return res_val
+
+            pub = ReleasePublisher()
+            res = pub.release_all(force=force)
+            invalidate_epoch_state("agents_workflow.publisher.jit_clean_bucket")
+            return bool(res.get("success", False) and not res.get("short_circuited", False))
     except Exception:
         return False

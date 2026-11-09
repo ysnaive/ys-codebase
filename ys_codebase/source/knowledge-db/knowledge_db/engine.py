@@ -528,11 +528,6 @@ class KnowledgeEngine:
         """
         return get_worker_busy_ms(self.pipeline.get_indices_dir())
 
-    def wait_for_worker_idle(self, timeout_ms: Optional[int] = None) -> bool:
-        """等待後台 Worker 轉為空閒，最多等待 `timeout_ms` 毫秒（預設取 `config.jit_vector_timeout_ms`）。"""
-        budget = int(timeout_ms if timeout_ms is not None else getattr(self.config, "jit_vector_timeout_ms", 3000))
-        return wait_until_worker_idle(self.pipeline.get_indices_dir(), budget)
-
     def sync_vector_deficit_step(
         self, batch_size: Optional[int] = None, persist: bool = True
     ) -> Dict[str, int]:

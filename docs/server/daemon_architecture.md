@@ -15,7 +15,7 @@ related_docs:
   - "./hot_reload_and_services.md"
   - "./realtime_logging.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-03"
+last_updated: "2026-11-09"
 ---
 
 # Server 常駐架構與通訊協定專題 (Daemon Architecture & IPC Protocol)
@@ -84,7 +84,7 @@ stateDiagram-v2
    - **任務結束立即 Flush**：當當前派發任務執行結束時，無須等待 500ms 計時器，**立即觸發 `flush()`**，確保最終結果零遺漏送達終端。
 2. **NDJSON 分流封包規格**：
    - **`terminal_stream`**：`{"type": "terminal_stream", "stream": "stdout"|"stderr", "text": "..."}`（即時轉發至客戶端對應之標準輸出/錯誤流）。
-   - **`task_finish`**：`{"type": "task_finish", "exit_code": 0, "duration_ms": 24.5, "error": null}`（標記單次任務閉環並回傳退出碼與耗時）。
+   - **`task_finish`**：`{"type": "task_finish", "exit_code": 0, "duration_ms": 24.5, "error": null, "stages": "pre_hooks=7.4ms, cmd_exec=7.5ms, post_hooks=6.8ms"}`（標記單次任務閉環並回傳退出碼、總耗時與 `CellScope` 階段耗時明細，由 `MasterSupervisor` 寫入 `.cache/server/log`）。
 
 ---
 

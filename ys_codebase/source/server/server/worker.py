@@ -17,7 +17,13 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core import events, uri
-from core.context import bind_runtime_context, get_env, get_runtime_context, get_virtual_cwd
+from core.context import (
+    bind_cell_context,
+    bind_runtime_context,
+    get_env,
+    get_runtime_context,
+    get_virtual_cwd,
+)
 from core.guard import GUARD_ENV_HOST, GUARD_ENV_TOKEN
 from core.log import bind_log_context, clear_error_hint, get_last_error_hint
 from core.platform import (
@@ -258,6 +264,7 @@ class WarmWorker:
             streamer = DebouncedIOStreamer(emit_chunk=self.emit_packet_fn, debounce_ms=500)
             exit_code = 1
             err_text: Optional[str] = None
+            stages_summary: Optional[str] = None
 
             try:
                 get_runtime_context().set_module_state("server.worker.foreground_active", True)
@@ -267,8 +274,15 @@ class WarmWorker:
                     host_dir=host_dir,
                     yscb_dir=self.yscb_root,
                     module_name=module,
-                ):
-                    exit_code, err_text = self._dispatch_command_with_captured_streams(module, args, streamer)
+                ), bind_cell_context(
+                    module_name=module,
+                    command=str(args[0]) if args else "default",
+                    reuse_existing=False,
+                ) as cell:
+                    try:
+                        exit_code, err_text = self._dispatch_command_with_captured_streams(module, args, streamer)
+                    finally:
+                        stages_summary = cell.format_stages_summary() or None
             except Exception as ex:
                 exit_code, err_text = self._record_task_exception(ex, module, args, streamer, stop_capture=True)
             finally:
@@ -290,7 +304,12 @@ class WarmWorker:
                     })
                 except Exception:
                     pass
-                streamer.send_task_finish(exit_code=exit_code, duration_ms=duration_ms, error=err_text)
+                streamer.send_task_finish(
+                    exit_code=exit_code,
+                    duration_ms=duration_ms,
+                    error=err_text,
+                    stages=stages_summary,
+                )
 
             return exit_code
 

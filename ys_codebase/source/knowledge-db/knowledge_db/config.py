@@ -29,21 +29,28 @@ MODEL_SHORT_NAME_ALIASES: Any = MappingProxyType({
 })
 
 
+from core.context import get_or_compute_cell_state
+
+
 def is_agents_workflow_installed() -> bool:
     """檢查當前環境是否已安裝 agents-workflow 模組 (用於判定是否注入 AI Agent 專屬導引提示)。"""
-    try:
-        from core import uri, vfs
 
-        if vfs.is_dir("module://agents-workflow"):
-            return True
-        yscb_root = uri.resolve_yscb_root()
-        if yscb_root:
-            cand = Path(yscb_root).resolve() / ".modules" / "agents-workflow"
-            if cand.exists():
+    def _probe() -> bool:
+        try:
+            from core import uri, vfs
+
+            if vfs.is_dir("module://agents-workflow"):
                 return True
-    except Exception:
-        pass
-    return False
+            yscb_root = uri.resolve_yscb_root()
+            if yscb_root:
+                cand = Path(yscb_root).resolve() / ".modules" / "agents-workflow"
+                if cand.exists():
+                    return True
+        except Exception:
+            pass
+        return False
+
+    return bool(get_or_compute_cell_state("kdb.aw_installed", _probe))
 
 
 def normalize_model_name(name: str) -> str:
