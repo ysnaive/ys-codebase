@@ -74,7 +74,7 @@ class CppDialect(DialectAdapter):
             cleaned_name = self._strip_template_args(name)
             cpp_parts = [p.strip() for p in cleaned_name.split("::") if p.strip()]
             if len(cpp_parts) >= 2:
-                return cpp_parts[-1], cpp_parts[-2], "method"
+                return cpp_parts[-1], "::".join(cpp_parts[:-1]), "method"
         return name, parent_scope, kind
 
     def extract_imports(self, source_text: str, file_path: str = "") -> Dict[str, str]:

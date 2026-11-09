@@ -644,3 +644,82 @@ class TestCoreInstaller(YSCBTestCase):
                     shutil.rmtree(p, ignore_errors=True)
 
         self.mark_passed()
+
+    def test_remediated_lock_reentrancy_zip_slip_pip_fallback_and_log_rotation(self):
+        """
+        驗證:
+        1. `AtomicEngine.transaction_lock` 跨操作同進程可重入 (`restore` 內嵌 `reload`) 與 `is_transaction_locked`。
+        2. `_extract_zip_safely` 阻斷 Zip Slip 路徑穿越 (`../evil.py`)。
+        3. `vfs.atomic_swap_directory` 於交換失敗時自動從 `.old` 回滾原目錄。
+        4. `core.log._rotate_lines_file` 保留完整檔名後綴 (`.log` vs `.jsonl`) 不發生覆寫衝突。
+        5. `PipManager._try_copy_host_pip_to_site_packages` 離線複製宿主 `pip` 套件。
+        """
+        from pathlib import Path
+        from core.platform.lock import is_transaction_locked
+        from core.engine import _extract_zip_safely
+        from core.log import _rotate_lines_file
+        from core.pip_manager import PipManager
+
+        # 1. Cross-operation transaction_lock reentrancy + is_transaction_locked
+        host_dir, yscb_dir = uri._get_host_config()
+        with self.installer.engine.transaction_lock("restore"):
+            self.assertTrue(is_transaction_locked(host_dir, yscb_dir))
+            with self.installer.engine.transaction_lock("reload"):
+                self.assertTrue(is_transaction_locked(host_dir, yscb_dir))
+            self.assertTrue(is_transaction_locked(host_dir, yscb_dir))
+        self.assertFalse(is_transaction_locked(host_dir, yscb_dir))
+
+        with tempfile.TemporaryDirectory() as tmp_root:
+            # 2. Zip Slip path traversal guard
+            bad_zip = os.path.join(tmp_root, "slip.zip")
+            extract_dst = os.path.join(tmp_root, "extracted")
+            os.makedirs(extract_dst, exist_ok=True)
+            with zipfile.ZipFile(bad_zip, "w") as zf:
+                zf.writestr("../escaped.txt", "malicious")
+            with self.assertRaises(RuntimeError):
+                _extract_zip_safely(bad_zip, extract_dst, source_label="slip.zip")
+            self.assertFalse(os.path.exists(os.path.join(tmp_root, "escaped.txt")))
+
+            # 3. vfs.atomic_swap_directory rollback on failure
+            target_dir = os.path.join(tmp_root, "swap_target")
+            staging_dir = os.path.join(tmp_root, "swap_staging")
+            os.makedirs(target_dir, exist_ok=True)
+            os.makedirs(staging_dir, exist_ok=True)
+            with open(os.path.join(target_dir, "keep.txt"), "w", encoding="utf-8") as f:
+                f.write("original_data")
+            with open(os.path.join(staging_dir, "new.txt"), "w", encoding="utf-8") as f:
+                f.write("new_data")
+
+            orig_replace = os.replace
+            call_idx = {"n": 0}
+            def _fail_second_replace(src, dst):
+                call_idx["n"] += 1
+                if call_idx["n"] == 2:
+                    raise OSError("Simulated swap failure")
+                return orig_replace(src, dst)
+
+            with patch("os.replace", side_effect=_fail_second_replace):
+                with self.assertRaises(OSError):
+                    vfs.atomic_swap_directory(staging_dir, target_dir)
+            self.assertTrue(os.path.isfile(os.path.join(target_dir, "keep.txt")))
+
+            # 4. _rotate_lines_file preserves extensions
+            log_file = Path(tmp_root) / "core.log"
+            jsonl_file = Path(tmp_root) / "core.jsonl"
+            log_file.write_text("\n".join(f"line {i}" for i in range(20)) + "\n", encoding="utf-8")
+            jsonl_file.write_text("\n".join(f'{{"i": {i}}}' for i in range(20)) + "\n", encoding="utf-8")
+            _rotate_lines_file(log_file, 5)
+            _rotate_lines_file(jsonl_file, 5, jsonl_only=True)
+            self.assertEqual(len(log_file.read_text(encoding="utf-8").splitlines()), 5)
+            self.assertEqual(len(jsonl_file.read_text(encoding="utf-8").splitlines()), 5)
+
+            # 5. PipManager._try_copy_host_pip_to_site_packages
+            pm = PipManager(yscb_dir=tmp_root)
+            fake_site = os.path.join(tmp_root, "fake_site_packages")
+            os.makedirs(fake_site, exist_ok=True)
+            copied = pm._try_copy_host_pip_to_site_packages(fake_site)
+            if copied:
+                self.assertTrue(os.path.isfile(os.path.join(fake_site, "pip", "__init__.py")))
+
+        self.mark_passed()
+

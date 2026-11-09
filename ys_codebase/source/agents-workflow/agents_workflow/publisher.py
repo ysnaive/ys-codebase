@@ -9,15 +9,15 @@ Executes the 4-Step Atomic Release Transaction:
 100% Python Standard Library, Zero Third-Party Dependency.
 """
 
-import os
-import sys
-import re
-import json
-import time
-import hashlib
 import datetime
+import hashlib
+import json
+import os
+import re
+import sys
+import time
 from dataclasses import dataclass
-from typing import Dict, List, Any, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 try:
     from core import uri
@@ -54,6 +54,13 @@ _EMPTY_AGENTS_BOILERPLATE_RE = re.compile(
     re.DOTALL,
 )
 _HEADER_UNRESOLVED_MACRO_RE = re.compile(r"\{(?:export|target)\.[A-Za-z0-9_]+\}")
+
+
+def _resolve_marker_pair(custom_marker: Optional[str] = None) -> Tuple[str, str]:
+    marker = str(custom_marker or "").strip()
+    if marker:
+        return f"<!-- {marker}_BEGIN -->", f"<!-- {marker}_END -->"
+    return AGENTS_MD_BEGIN, AGENTS_MD_END
 
 
 @dataclass(frozen=True)
@@ -228,6 +235,7 @@ class ReleasePublisher:
     def _get_source_file_sha1(self, path_or_uri: str) -> str:
         """計算來源檔案或目錄 SHA-1，支援 (mtime_ns, size) Stat-First 快取加速、目錄遞迴雜湊與文字 CRLF->LF 正規化。"""
         real_p = self.compiler._resolve_source_path(path_or_uri)
+        compiler_cache = getattr(self.compiler, "_source_file_cache", {})
         if real_p and os.path.isdir(real_p):
             hasher = hashlib.sha1()
             for root, _, files in sorted(os.walk(real_p)):
@@ -241,14 +249,20 @@ class ReleasePublisher:
                         if cached and len(cached) >= 3 and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
                             file_sha1 = str(cached[2])
                         else:
-                            with open(fp, "rb") as rf:
-                                raw = rf.read()
-                            try:
-                                text = raw.decode("utf-8")
-                                norm_bytes = text.replace("\r\n", "\n").encode("utf-8")
-                                file_sha1 = hashlib.sha1(norm_bytes).hexdigest()
-                            except UnicodeDecodeError:
-                                file_sha1 = hashlib.sha1(raw).hexdigest()
+                            comp_hit = compiler_cache.get(fp)
+                            if comp_hit and comp_hit[0] == st.st_mtime_ns and comp_hit[1] == st.st_size:
+                                file_sha1 = comp_hit[3]
+                            else:
+                                with open(fp, "rb") as rf:
+                                    raw = rf.read()
+                                try:
+                                    text = raw.decode("utf-8")
+                                    norm_bytes = text.replace("\r\n", "\n").encode("utf-8")
+                                    file_sha1 = hashlib.sha1(norm_bytes).hexdigest()
+                                    sha256_hex = hashlib.sha256(norm_bytes).hexdigest()
+                                    compiler_cache[fp] = (st.st_mtime_ns, st.st_size, text, file_sha1, sha256_hex)
+                                except UnicodeDecodeError:
+                                    file_sha1 = hashlib.sha1(raw).hexdigest()
                             self._sha1_cache[fp] = [st.st_mtime_ns, st.st_size, file_sha1]
                             self._sha1_cache_dirty = True
                         hasher.update(file_sha1.encode("utf-8"))
@@ -262,9 +276,11 @@ class ReleasePublisher:
                 cached = self._sha1_cache.get(real_p)
                 if cached and len(cached) >= 3 and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
                     return str(cached[2])
-                content = self.compiler._read_file_content(path_or_uri)
-                norm_content = content.replace("\r\n", "\n")
-                sha1_val = hashlib.sha1(norm_content.encode("utf-8")).hexdigest()
+                comp_hit = compiler_cache.get(real_p)
+                if comp_hit and comp_hit[0] == st.st_mtime_ns and comp_hit[1] == st.st_size:
+                    sha1_val = comp_hit[3]
+                else:
+                    _, sha1_val, _ = self.compiler._read_and_cache_physical_file(real_p)
                 self._sha1_cache[real_p] = [st.st_mtime_ns, st.st_size, sha1_val]
                 self._sha1_cache_dirty = True
                 return sha1_val
@@ -473,7 +489,7 @@ class ReleasePublisher:
                 "header_tpl": header_tpl if (not is_skill or rel_path in ("SKILL.md", base_name)) else None,
                 "content": it.get("content", ""),
                 "export": exp,
-                "is_skill": is_skill
+                "is_skill": is_skill,
             })
 
         return deployment_map, target_items
@@ -501,7 +517,7 @@ class ReleasePublisher:
             "export.source": source_p,
             "export.filename": base_name,
             "export.basename": main_name,
-            "target.name": target_name
+            "target.name": target_name,
         }
 
         res = raw_template
@@ -511,12 +527,18 @@ class ReleasePublisher:
         res = _HEADER_UNRESOLVED_MACRO_RE.sub("", res)
         return res.strip() + "\n\n" if res.strip() else ""
 
-    def _soft_merge_agents_text(self, existing_text: str, dev_standards_content: str) -> str:
+    def _soft_merge_agents_text(
+        self,
+        existing_text: str,
+        dev_standards_content: str,
+        custom_marker: Optional[str] = None,
+    ) -> str:
         """
         純文字軟合併演算法 (Pure String Soft-Merge).
-        將新標準內容單向注入至 YSCB 標記區塊，保留外部自定義章節。
+        將新標準內容單向注入至 YSCB 或自訂標記區塊，保留外部自定義章節。
         """
-        injected_section = f"{AGENTS_MD_BEGIN}\n{dev_standards_content.strip()}\n{AGENTS_MD_END}"
+        b_mark, e_mark = _resolve_marker_pair(custom_marker)
+        injected_section = f"{b_mark}\n{dev_standards_content.strip()}\n{e_mark}"
         if not existing_text:
             return (
                 f"{injected_section}\n\n"
@@ -524,19 +546,34 @@ class ReleasePublisher:
                 f"*(專案特化工程規範填寫於此，不受中央標準庫覆蓋)*\n"
             )
 
-        if _AGENTS_MANAGED_BLOCK_RE.search(existing_text):
-            return _AGENTS_MANAGED_BLOCK_RE.sub(lambda _: injected_section, existing_text)
+        block_re = (
+            _AGENTS_MANAGED_BLOCK_RE
+            if b_mark == AGENTS_MD_BEGIN
+            else re.compile(re.escape(b_mark) + r".*?" + re.escape(e_mark), re.DOTALL)
+        )
+        if block_re.search(existing_text):
+            return block_re.sub(lambda _: injected_section, existing_text)
         return injected_section + "\n\n" + existing_text
 
-    def _soft_unmerge_agents_text(self, existing_text: str) -> str:
+    def _soft_unmerge_agents_text(
+        self,
+        existing_text: str,
+        custom_marker: Optional[str] = None,
+    ) -> str:
         """
         純文字軟剝離演算法 (Pure String Soft-Unmerge).
-        精準移除 YSCB 託管區塊與空自訂樣板，保留使用者自定義內容。
+        精準移除 YSCB 或自訂託管區塊與空自訂樣板，保留使用者自定義內容。
         """
         if not existing_text:
             return ""
 
-        cleaned = _AGENTS_MANAGED_BLOCK_RE.sub("", existing_text).strip()
+        b_mark, e_mark = _resolve_marker_pair(custom_marker)
+        block_re = (
+            _AGENTS_MANAGED_BLOCK_RE
+            if b_mark == AGENTS_MD_BEGIN
+            else re.compile(re.escape(b_mark) + r".*?" + re.escape(e_mark), re.DOTALL)
+        )
+        cleaned = block_re.sub("", existing_text).strip()
         without_boilerplate = _EMPTY_AGENTS_BOILERPLATE_RE.sub("", cleaned).strip()
         if not without_boilerplate:
             return ""
@@ -578,9 +615,7 @@ class ReleasePublisher:
                         return False
                     r_mode = str(rule_item.get("mode") or "inject").strip().lower()
                     if r_mode == "inject":
-                        r_marker = str(rule_item.get("marker") or "").strip()
-                        b_mark = f"<!-- {r_marker}_BEGIN -->" if r_marker else AGENTS_MD_BEGIN
-                        e_mark = f"<!-- {r_marker}_END -->" if r_marker else AGENTS_MD_END
+                        b_mark, e_mark = _resolve_marker_pair(rule_item.get("marker"))
                         try:
                             with open(r_abs, "r", encoding="utf-8") as f:
                                 r_text = f.read()
@@ -710,7 +745,28 @@ class ReleasePublisher:
                     "target_name": t_name,
                     "is_proj_target": is_proj_target,
                     "dep_map": dep_map,
+                    "mode": "inject",
+                    "marker": None,
+                    "source": None,
                 })
+
+            agent_rules = target_cfg.get("agent_rules")
+            if isinstance(agent_rules, list):
+                for rule_item in agent_rules:
+                    if not isinstance(rule_item, dict):
+                        continue
+                    r_target = str(rule_item.get("target") or "").strip()
+                    if not r_target:
+                        continue
+                    r_abs = self._resolve_project_uri(r_target, proj_root)
+                    agents_md_groups.setdefault(r_abs, []).append({
+                        "target_name": t_name,
+                        "is_proj_target": is_proj_target,
+                        "dep_map": dep_map,
+                        "mode": str(rule_item.get("mode") or "inject").strip().lower(),
+                        "marker": rule_item.get("marker"),
+                        "source": rule_item.get("source"),
+                    })
 
         if not agents_standards_content:
             for r_item in resolved_items:
@@ -767,20 +823,41 @@ class ReleasePublisher:
             if any(not e["is_proj_target"] for e in entries):
                 precomputed_local_files[dst_abs] = final_text
 
-        # Step 4: 渲染各 agents_md 入口檔（支援多重 Target 路徑並聯與軟合併）
-        if agents_standards_content:
-            for target_agents_abs, entries in agents_md_groups.items():
-                primary = entries[0]
-                sharing_targets = list(dict.fromkeys(e["target_name"] for e in entries))
-                extra_maps = [(e["target_name"], e["dep_map"]) for e in entries[1:]]
-
-                rendered_agents_content = self.compiler.resolve_stage2_uri(
-                    agents_standards_content,
-                    target_agents_abs,
-                    primary["dep_map"],
-                    target_name=sharing_targets if len(sharing_targets) > 1 else sharing_targets[0],
-                    extra_deployment_maps=extra_maps if extra_maps else None,
+        # Step 4: 渲染各 agents_md 與 agent_rules 入口檔（支援多重 Target 路徑並聯與軟合併/複製）
+        for target_agents_abs, entries in agents_md_groups.items():
+            primary = entries[0]
+            rule_source = str(primary.get("source") or "").strip()
+            raw_rule_content = agents_standards_content
+            if rule_source:
+                matched_stage1 = next(
+                    (
+                        r_item.get("content", "")
+                        for r_item in resolved_items
+                        if r_item.get("export", {}).get("source") == rule_source
+                        or r_item.get("base_name") == os.path.basename(rule_source)
+                    ),
+                    "",
                 )
+                raw_rule_content = matched_stage1 or self.compiler._read_file_content(rule_source) or agents_standards_content
+
+            if not raw_rule_content:
+                continue
+
+            sharing_targets = list(dict.fromkeys(e["target_name"] for e in entries))
+            extra_maps = [(e["target_name"], e["dep_map"]) for e in entries[1:]]
+
+            rendered_agents_content = self.compiler.resolve_stage2_uri(
+                raw_rule_content,
+                target_agents_abs,
+                primary["dep_map"],
+                target_name=sharing_targets if len(sharing_targets) > 1 else sharing_targets[0],
+                extra_deployment_maps=extra_maps if extra_maps else None,
+            )
+
+            rule_mode = str(primary.get("mode") or "inject").strip().lower()
+            if rule_mode == "copy":
+                final_agents_text = rendered_agents_content
+            else:
                 existing_agents_text = ""
                 if os.path.isfile(target_agents_abs):
                     try:
@@ -789,12 +866,17 @@ class ReleasePublisher:
                     except Exception:
                         existing_agents_text = ""
 
-                final_agents_text = self._soft_merge_agents_text(existing_agents_text, rendered_agents_content)
-                precomputed_all_files[target_agents_abs] = final_agents_text
-                if any(e["is_proj_target"] for e in entries):
-                    precomputed_project_files[target_agents_abs] = final_agents_text
-                if any(not e["is_proj_target"] for e in entries):
-                    precomputed_local_files[target_agents_abs] = final_agents_text
+                final_agents_text = self._soft_merge_agents_text(
+                    existing_agents_text,
+                    rendered_agents_content,
+                    custom_marker=primary.get("marker"),
+                )
+
+            precomputed_all_files[target_agents_abs] = final_agents_text
+            if any(e["is_proj_target"] for e in entries):
+                precomputed_project_files[target_agents_abs] = final_agents_text
+            if any(not e["is_proj_target"] for e in entries):
+                precomputed_local_files[target_agents_abs] = final_agents_text
 
         return (
             precomputed_project_files,
@@ -812,7 +894,7 @@ class ReleasePublisher:
         all_registered_targets: Dict[str, Dict[str, Any]],
         proj_root: str,
     ) -> Set[str]:
-        """Stage 1: 比對雙軌舊清單並安全清理不再受管之過期檔案（含 AGENTS.md 軟剝離保護）。"""
+        """Stage 1: 比對雙軌舊清單並安全清理不再受管之過期檔案（含 AGENTS.md 與 agent_rules 軟剝離保護）。"""
         old_proj_files: Set[str] = {
             self._resolve_project_uri(f, proj_root) for f in old_proj_manifest.get("published_files", [])
         }
@@ -822,20 +904,45 @@ class ReleasePublisher:
 
         files_to_remove = (old_proj_files | old_local_files) - current_published_set
 
+        inject_marker_by_path: Dict[str, Optional[str]] = {}
+        for t_cfg in all_registered_targets.values():
+            a_md = t_cfg.get("agents_md")
+            if a_md and str(a_md).strip():
+                a_abs = os.path.normpath(self._resolve_project_uri(str(a_md).strip(), proj_root))
+                inject_marker_by_path[a_abs] = None
+            agent_rules = t_cfg.get("agent_rules")
+            if isinstance(agent_rules, list):
+                for rule_item in agent_rules:
+                    if not isinstance(rule_item, dict):
+                        continue
+                    r_target = str(rule_item.get("target") or "").strip()
+                    r_mode = str(rule_item.get("mode") or "inject").strip().lower()
+                    if r_target and r_mode == "inject":
+                        r_abs = os.path.normpath(self._resolve_project_uri(r_target, proj_root))
+                        inject_marker_by_path[r_abs] = rule_item.get("marker")
+
         for f_rem in files_to_remove:
             if os.path.isfile(f_rem):
                 try:
-                    base_name = os.path.basename(f_rem)
-                    is_agents_md = base_name in ("AGENTS.md", "CLAUDE.md") or any(
-                        t_cfg.get("agents_md") and f_rem.endswith(
-                            os.path.normpath(str(t_cfg.get("agents_md")).replace("project://", "").replace("/", os.sep))
+                    norm_rem = os.path.normpath(f_rem)
+                    base_name = os.path.basename(norm_rem)
+                    is_agents_md = (
+                        base_name in ("AGENTS.md", "CLAUDE.md")
+                        or norm_rem in inject_marker_by_path
+                        or any(
+                            t_cfg.get("agents_md") and norm_rem.endswith(
+                                os.path.normpath(str(t_cfg.get("agents_md")).replace("project://", "").replace("/", os.sep))
+                            )
+                            for t_cfg in all_registered_targets.values()
                         )
-                        for t_cfg in all_registered_targets.values()
                     )
                     if is_agents_md:
                         with open(f_rem, "r", encoding="utf-8") as f:
                             curr_text = f.read()
-                        remaining = self._soft_unmerge_agents_text(curr_text)
+                        remaining = self._soft_unmerge_agents_text(
+                            curr_text,
+                            custom_marker=inject_marker_by_path.get(norm_rem),
+                        )
                         if remaining:
                             self._write_text_atomic(f_rem, remaining + "\n")
                             continue
@@ -1184,6 +1291,14 @@ class ReleasePublisher:
             a_uri = t_cfg.get("agents_md")
             if a_uri and str(a_uri).strip():
                 agents_md_abs_set.add(os.path.normpath(self._resolve_project_uri(str(a_uri).strip(), proj_root)))
+            agent_rules = t_cfg.get("agent_rules")
+            if isinstance(agent_rules, list):
+                for rule_item in agent_rules:
+                    if isinstance(rule_item, dict):
+                        r_target = str(rule_item.get("target") or "").strip()
+                        r_mode = str(rule_item.get("mode") or "inject").strip().lower()
+                        if r_target and r_mode == "inject":
+                            agents_md_abs_set.add(os.path.normpath(self._resolve_project_uri(r_target, proj_root)))
 
         for f_abs in file_list:
             if isinstance(f_abs, str) and f_abs.startswith("project://"):

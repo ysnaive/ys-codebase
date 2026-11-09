@@ -79,6 +79,64 @@ def format_symbol_summary(sym: UnifiedSymbol, max_chars: int = 120) -> str:
     return (raw[:max_chars] + "...") if len(raw) > max_chars else raw
 
 
+def aggregate_ranked_symbol_hits(
+    ranked_hits: Iterable[Tuple[UnifiedSymbol, float, List[str], Iterable[str]]],
+    limit: int = 10,
+    alpha: float = 0.2,
+    top_k_items_per_file: int = 3,
+) -> List[AggregatedFileResult]:
+    """
+    Shared file-level score aggregation for pre-sorted symbol hits:
+    Score(File) = max(S_i) + alpha * sum(S_j for j != i), then sorted and truncated to `limit`.
+    """
+    file_items: Dict[str, List[AggregatedItem]] = defaultdict(list)
+    file_max_score: Dict[str, float] = {}
+    file_rest_sum: Dict[str, float] = defaultdict(float)
+    file_spaces: Dict[str, Set[str]] = defaultdict(set)
+    file_lang: Dict[str, str] = {}
+
+    for sym, score, matched_terms, spaces in ranked_hits:
+        fp = sym.file_path
+        if fp not in file_max_score:
+            file_max_score[fp] = score
+        elif score > file_max_score[fp]:
+            file_rest_sum[fp] += file_max_score[fp]
+            file_max_score[fp] = score
+        else:
+            file_rest_sum[fp] += score
+
+        if len(file_items[fp]) < top_k_items_per_file:
+            file_items[fp].append(
+                AggregatedItem(
+                    symbol=sym,
+                    score=score,
+                    matched_terms=matched_terms,
+                    snippet=format_symbol_summary(sym),
+                )
+            )
+        for sp in spaces:
+            file_spaces[fp].add(sp)
+        if not file_lang.get(fp):
+            file_lang[fp] = sym.language
+
+    aggregated_results: List[AggregatedFileResult] = []
+    for fp, max_s in file_max_score.items():
+        total_score = max_s + alpha * file_rest_sum[fp]
+        aggregated_results.append(
+            AggregatedFileResult(
+                file_path=fp,
+                total_score=total_score,
+                items=file_items[fp],
+                spaces=sorted(list(file_spaces[fp])),
+                language=file_lang.get(fp, ""),
+            )
+        )
+
+    aggregated_results.sort(key=lambda x: x.total_score, reverse=True)
+    target_limit = max(1, int(limit))
+    return aggregated_results[:target_limit]
+
+
 class SparseFieldFreqs(dict):
     """稀疏欄位詞頻映射表：僅儲存 > 0 之欄位，讀取未命中欄位時自動回傳 0。"""
 
@@ -1005,6 +1063,24 @@ class BM25Engine:
         doc_postings: Dict[str, Posting] = {}
         eligible_cache: Dict[str, bool] = {}
         N = index.doc_count
+        filter_spaces_set = set(flt.spaces) if flt.spaces else None
+        filter_shorts = {f.split("/")[-1] for f in flt.spaces} if flt.spaces else None
+        filter_langs_set = set(flt.languages) if flt.languages else None
+        filter_kinds_set = set(flt.kinds) if flt.kinds else None
+        k1 = self.k1
+        k1_plus_1 = k1 + 1.0
+        b = self.b
+        k1_one_minus_b = k1 * (1.0 - b) + 1e-9
+        field_params = [
+            (
+                f_name,
+                float(weight),
+                (k1 * b) / max(1.0, float(index.field_avgdl.get(f_name, 1.0))),
+            )
+            for f_name, weight in self.field_weights.items()
+        ]
+        doc_lengths_map = index.doc_lengths
+        symbols_map = index.symbols
 
         for term in base_tokens:
             postings = index.index.get(term, [])
@@ -1016,21 +1092,19 @@ class BM25Engine:
                 doc_id = posting.doc_id
                 is_eligible = eligible_cache.get(doc_id)
                 if is_eligible is None:
-                    sym = index.get_symbol(doc_id)
+                    sym = symbols_map.get(doc_id)
                     if not sym:
                         is_eligible = False
                     else:
-                        posting_spaces = getattr(posting, "spaces", None) or (
-                            [posting.space] if posting.space else []
-                        )
-                        if flt.spaces and not any(
-                            s in flt.spaces or s.split("/")[-1] in {f.split("/")[-1] for f in flt.spaces}
+                        posting_spaces = posting.spaces
+                        if filter_spaces_set and not any(
+                            s in filter_spaces_set or s.split("/")[-1] in filter_shorts  # type: ignore[operator]
                             for s in posting_spaces
                         ):
                             is_eligible = False
-                        elif flt.languages and sym.language not in flt.languages:
+                        elif filter_langs_set and sym.language not in filter_langs_set:
                             is_eligible = False
-                        elif flt.kinds and sym.kind not in flt.kinds:
+                        elif filter_kinds_set and sym.kind not in filter_kinds_set:
                             is_eligible = False
                         elif allowed_ftypes and _extract_file_ext(sym.file_path) not in allowed_ftypes:
                             is_eligible = False
@@ -1044,16 +1118,13 @@ class BM25Engine:
                 doc_matches[doc_id].add(term)
 
                 field_scores_sum = 0.0
-                doc_fl = index.doc_lengths.get(doc_id, {})
-                for f_name, weight in self.field_weights.items():
-                    tf = posting.get_field_freq(f_name) if hasattr(posting, "get_field_freq") else posting.field_freqs.get(f_name, 0)
+                doc_fl = doc_lengths_map.get(doc_id, {})
+                for f_name, weight, kb_over_avgdl in field_params:
+                    tf = posting.get_field_freq(f_name)
                     if tf <= 0:
                         continue
                     dl = doc_fl.get(f_name, 1)
-                    avgdl = max(1.0, index.field_avgdl.get(f_name, 1.0))
-                    norm_tf = (tf * (self.k1 + 1.0)) / (
-                        tf + self.k1 * (1.0 - self.b + self.b * (dl / avgdl)) + 1e-9
-                    )
+                    norm_tf = (tf * k1_plus_1) / (tf + k1_one_minus_b + kb_over_avgdl * dl)
                     field_scores_sum += weight * norm_tf
 
                 doc_scores[doc_id] += idf * field_scores_sum
@@ -1128,7 +1199,7 @@ class BM25Engine:
         top_k_items_per_file: int = 3,
     ) -> List[AggregatedFileResult]:
         """
-        執行多欄位加權 BM25 檢索並透過 Top-N 動態回填管線聚合為檔案節點清單。
+        執行多欄位加權 BM25 檢索並完整計算各檔案節點分數後排序截斷。
         評分公式：Score(File) = max(S_i) + alpha * sum(S_j for j != i)
         """
         flt = filter_cfg or QueryFilter()
@@ -1136,53 +1207,9 @@ class BM25Engine:
         if not candidates:
             return []
 
-        file_nodes: Dict[str, Dict[str, Any]] = {}
-        unique_files: List[str] = []
-        target_limit = max(1, flt.limit)
-
-        for sym, score, matched_terms, spaces, _ in candidates:
-            file_path = sym.file_path
-            agg_item = AggregatedItem(
-                symbol=sym,
-                score=score,
-                matched_terms=matched_terms,
-                snippet=format_symbol_summary(sym),
-            )
-
-            if file_path in file_nodes:
-                node = file_nodes[file_path]
-                node["items"].append(agg_item)
-                node["scores"].append(score)
-                node["spaces"].update(spaces)
-            elif len(unique_files) < target_limit:
-                unique_files.append(file_path)
-                file_nodes[file_path] = {
-                    "items": [agg_item],
-                    "scores": [score],
-                    "spaces": set(spaces),
-                    "language": sym.language,
-                }
-
-        aggregated_results: List[AggregatedFileResult] = []
-        for file_path in unique_files:
-            node = file_nodes[file_path]
-            scores = node["scores"]
-            items_sorted = sorted(node["items"], key=lambda x: x.score, reverse=True)
-            capped_items = items_sorted[:top_k_items_per_file]
-
-            max_s = max(scores) if scores else 0.0
-            rest_sum = sum(scores) - max_s
-            total_score = max_s + alpha * rest_sum
-
-            aggregated_results.append(
-                AggregatedFileResult(
-                    file_path=file_path,
-                    total_score=total_score,
-                    items=capped_items,
-                    spaces=sorted(list(node["spaces"])),
-                    language=node["language"],
-                )
-            )
-
-        aggregated_results.sort(key=lambda x: x.total_score, reverse=True)
-        return aggregated_results
+        return aggregate_ranked_symbol_hits(
+            ((sym, score, matched_terms, spaces) for sym, score, matched_terms, spaces, _ in candidates),
+            limit=flt.limit,
+            alpha=alpha,
+            top_k_items_per_file=top_k_items_per_file,
+        )

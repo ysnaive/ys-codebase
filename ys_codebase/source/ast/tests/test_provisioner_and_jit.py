@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from unittest.mock import patch
 
 _AST_ROOT = str(Path(__file__).resolve().parents[1])
@@ -22,8 +23,12 @@ if "tests" in sys.modules and getattr(sys.modules["tests"], "__file__", None) !=
     del sys.modules["tests"]
 
 from core.commands import CmdBags
+from core.space import SpaceConfig
+from ast_engine.bundler import _normalize_space_dirty_paths, restore_unaggregated_partial_symbol
 from ast_engine.engine import ASTEngine
+from ast_engine.io_utils import atomic_save_gzip_pickle
 from ast_engine.provisioner import GrammarProvisioner
+from ast_engine.schema import MemberInfo, UnifiedSymbol
 from tests import ASTTestCase, Requirement, load_ast_script, require
 
 
@@ -419,4 +424,137 @@ class TestProvisionerAndJit(ASTTestCase):
         self.assertEqual(len(engine.bundler._file_call_sites_cache), 0)
         self.assertEqual(len(engine.bundler._file_imports_cache), 0)
         self.assertEqual(len(engine.bundler._last_bundle_unique_files), 0)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_transactional_cursor_rollback_partial_immutability_and_multi_root_disambiguation(self) -> None:
+        """Verify cursor rollback on hot_patch failure, partial symbol restoration immutability, multi-root dirty path disambiguation, and tmp cleanup."""
+        # 1. Partial symbol restoration returns deep-copied structures without mutating original
+        orig_member = MemberInfo(name="Save", kind="method", signature="public void Save()", line_number=10)
+        partial_sym = UnifiedSymbol(
+            id="p1",
+            name="User",
+            kind="class",
+            file_path="src/User.Part1.cs",
+            line_number=1,
+            language="c_sharp",
+            fqn="App.User",
+            members=(orig_member,),
+            metadata={
+                "is_partial": True,
+                "base_types": ["IEntity"],
+                "field_types": {"_id": "string"},
+                "_own_members": [orig_member],
+                "_own_base_types": ["IEntity"],
+                "_own_field_types": {"_id": "string"},
+                "partial_files": ["src/User.Part1.cs", "src/User.Part2.cs"],
+            },
+        )
+        restored = restore_unaggregated_partial_symbol(partial_sym)
+        restored.metadata["base_types"].append("MutatedBase")
+        restored.metadata["field_types"]["_extra"] = "int"
+        self.assertEqual(partial_sym.metadata["base_types"], ["IEntity"])
+        self.assertEqual(partial_sym.metadata["field_types"], {"_id": "string"})
+        self.assertIn("partial_files", partial_sym.metadata)
+        self.assertNotIn("partial_files", restored.metadata)
+
+        # 2. Multi-root subdirectory path disambiguation by mtime and known_indexed_files for deleted paths
+        root_a = self.temp_dir / "multi_a"
+        root_b = self.temp_dir / "multi_b"
+        (root_a / "sub").mkdir(parents=True, exist_ok=True)
+        (root_b / "sub").mkdir(parents=True, exist_ok=True)
+        file_a = root_a / "sub" / "mod.py"
+        file_b = root_b / "sub" / "mod.py"
+        file_a.write_text("x = 1\n", encoding="utf-8")
+        file_b.write_text("x = 2\n", encoding="utf-8")
+        import os
+
+        os.utime(file_a, ns=(1_000_000_000, 1_000_000_000))
+        os.utime(file_b, ns=(2_000_000_000, 2_000_000_000))
+
+        sp_cfg = SpaceConfig(
+            qualified_name="project/multi",
+            short_name="multi",
+            owner="project",
+            entries=(str(root_a), str(root_b)),
+        )
+        expanded_mod = _normalize_space_dirty_paths(
+            ["sub/mod.py"],
+            [sp_cfg],
+            prefer_missing=False,
+        )
+        self.assertIn(str(file_b.resolve()).replace("\\", "/"), expanded_mod)
+        self.assertNotIn(str(file_a.resolve()).replace("\\", "/"), expanded_mod)
+
+        file_a.unlink()
+        file_b.unlink()
+        expanded_del = _normalize_space_dirty_paths(
+            ["sub/mod.py"],
+            [sp_cfg],
+            prefer_missing=True,
+            known_indexed_files={str(file_a.resolve()).replace("\\", "/")},
+        )
+        self.assertIn(str(file_a.resolve()).replace("\\", "/"), expanded_del)
+        self.assertNotIn(str(file_b.resolve()).replace("\\", "/"), expanded_del)
+
+        # 3. Transactional cursor rollback in ensure_jit_synced when hot_patch_index fails
+        proj_dir = self.temp_dir / "tx_proj"
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        mod_f = proj_dir / "svc.py"
+        mod_f.write_text("def step_one() -> int:\n    return 1\n", encoding="utf-8")
+        engine = ASTEngine(project_root=proj_dir, storage_dir=self.storage_dir / "tx_store")
+        engine.ensure_jit_synced(force=True)
+
+        mod_f.write_text("def step_one() -> int:\n    return 2\n\ndef step_two() -> int:\n    return step_one()\n", encoding="utf-8")
+        with patch.object(engine, "hot_patch_index", side_effect=RuntimeError("Simulated hot_patch crash")):
+            engine.ensure_jit_synced()
+
+        # Because hot_patch_index raised inside the ExitStack, the cursor was NOT committed,
+        # so the next ensure_jit_synced() still sees the pending diff and hot-patches `step_two`!
+        snap_recovered = engine.ensure_jit_synced()
+        self.assertIn("step_two", {s.name for s in snap_recovered.symbols.values()})
+
+        # 4. atomic_save_gzip_pickle cleans up temporary .tmp files on write failure
+        bad_target = self.temp_dir / "clean_tmp_dir" / "test.bin.gz"
+        bad_target.parent.mkdir(parents=True, exist_ok=True)
+        (bad_target.parent / f".{bad_target.name}.tmp.99999").write_bytes(b"stale")
+        with patch("ast_engine.io_utils.write_bytes", side_effect=RuntimeError("Simulated write error")):
+            with self.assertRaises(RuntimeError):
+                atomic_save_gzip_pickle(bad_target, {"k": "v"})
+        leftover_tmps = list(bad_target.parent.glob("*.tmp"))
+        self.assertEqual(leftover_tmps, [])
+
+        # 5. GrammarProvisioner single-flight _INFLIGHT_EVENTS deduplication across concurrent threads
+        install_calls = []
+        bar = threading.Barrier(2)
+
+        def slow_install(pkg_name: str, **kwargs) -> bool:
+            install_calls.append(pkg_name)
+            bar.wait(timeout=2.0)
+            return False
+
+        GrammarProvisioner._FAILED_PACKAGES.clear()
+        with patch.object(GrammarProvisioner, "_try_pip_install", side_effect=slow_install):
+            results = [None, None]
+
+            def worker(idx: int) -> None:
+                try:
+                    bar.wait(timeout=0.05)
+                except Exception:
+                    pass
+                results[idx] = GrammarProvisioner.load_language(
+                    lang_key="concurrent_lang",
+                    module_name="tree_sitter_concurrent_nonexistent",
+                    auto_install_pkg="tree-sitter-concurrent-nonexistent",
+                    attempt_auto_install=True,
+                )
+
+            t1 = threading.Thread(target=worker, args=(0,))
+            t2 = threading.Thread(target=worker, args=(1,))
+            t1.start()
+            t2.start()
+            t1.join(timeout=5.0)
+            t2.join(timeout=5.0)
+
+        self.assertEqual(len(install_calls), 1)
         self.mark_passed()

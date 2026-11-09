@@ -2,16 +2,19 @@
 Core Platform - Cross-Platform Inter-Process Lock.
 
 Provides a robust, reentrant-safe, non-blocking file-based mutex across
-Linux/POSIX (fcntl.flock) and Windows (msvcrt.locking).
+Linux/POSIX (fcntl.flock) and Windows (msvcrt.locking), plus centralized
+transaction lock probing (`is_transaction_locked`).
 """
 
 import errno
 import os
+from pathlib import Path
 import sys
 import time
-from typing import Optional
+from typing import List, Optional, Union
 
 _EEXIST_RETRIES: int = 3
+_STALE_PLAIN_LOCK_TTL_SEC: float = 30.0
 
 
 class LockAcquisitionError(Exception):
@@ -56,6 +59,7 @@ class InterProcessLock:
             os.makedirs(parent_dir, exist_ok=True)
 
         fd = self._open_lock_fd()
+        acquired = False
         try:
             start_time = time.time()
             while True:
@@ -76,23 +80,22 @@ class InterProcessLock:
                             continue
                     self._fd = fd
                     self._is_locked = True
+                    acquired = True
                     return True
 
                 if not blocking:
-                    os.close(fd)
                     return False
 
                 if timeout_sec > 0 and (time.time() - start_time) >= timeout_sec:
-                    os.close(fd)
                     return False
 
                 time.sleep(0.05)
-        except BaseException:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            raise
+        finally:
+            if not acquired:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
     def _open_lock_fd(self) -> int:
         """
@@ -124,11 +127,12 @@ class InterProcessLock:
         if not self._is_locked or self._fd is None:
             return
 
+        fd_to_close = self._fd
         try:
-            self._unlock_fd(self._fd)
+            self._unlock_fd(fd_to_close)
         finally:
             try:
-                os.close(self._fd)
+                os.close(fd_to_close)
             except OSError:
                 pass
             self._fd = None
@@ -202,3 +206,74 @@ class InterProcessLock:
             self.release()
         except Exception:
             pass
+
+
+def _probe_single_lock_file(lock_cand: Path, allow_plain_recent_file: bool = False) -> bool:
+    """
+    Probes whether `lock_cand` is actively held via `InterProcessLock` or (when
+    `allow_plain_recent_file=True` for legacy test touch markers at `project_root/.yscb.lock`)
+    was recently touched within `_STALE_PLAIN_LOCK_TTL_SEC`.
+    """
+    if not lock_cand.exists():
+        return False
+    probe = InterProcessLock(str(lock_cand))
+    try:
+        if not probe.acquire(blocking=False):
+            return True
+    except Exception:
+        return True
+    finally:
+        probe.release()
+
+    if allow_plain_recent_file:
+        try:
+            mtime = lock_cand.stat().st_mtime
+            if (time.time() - mtime) < _STALE_PLAIN_LOCK_TTL_SEC:
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def is_transaction_locked(
+    project_root: Optional[Union[str, Path]] = None,
+    yscb_dir: Optional[Union[str, Path]] = None,
+    explicit_lock: Optional[Union[str, Path]] = None,
+) -> bool:
+    """
+    Centralized check for whether a global `.yscb.lock` transaction lock is currently active
+    across `explicit_lock`, `project_root/.yscb.lock`, `yscb_dir/.yscb.lock`, or `cache://.yscb.lock`.
+    Deterministically releases all probe file descriptors in `finally` blocks.
+    """
+    if explicit_lock:
+        exp_p = Path(str(explicit_lock))
+        if _probe_single_lock_file(exp_p, allow_plain_recent_file=False):
+            return True
+
+    if project_root:
+        p_root = Path(str(project_root))
+        if _probe_single_lock_file(p_root / ".yscb.lock", allow_plain_recent_file=True):
+            return True
+
+    lock_candidates: List[Path] = []
+    if yscb_dir:
+        y_dir = Path(str(yscb_dir))
+        lock_candidates.append(y_dir / ".yscb.lock")
+        lock_candidates.append(y_dir / ".cache" / ".yscb.lock")
+
+    try:
+        from core import uri
+
+        resolved_lock = uri.resolve("cache://.yscb.lock", interactive=False)
+        if resolved_lock and not str(resolved_lock).startswith("!undefined"):
+            cand_p = Path(str(resolved_lock))
+            if cand_p not in lock_candidates:
+                lock_candidates.append(cand_p)
+    except Exception:
+        pass
+
+    for lock_cand in lock_candidates:
+        if _probe_single_lock_file(lock_cand, allow_plain_recent_file=False):
+            return True
+
+    return False

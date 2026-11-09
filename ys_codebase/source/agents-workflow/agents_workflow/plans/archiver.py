@@ -5,7 +5,7 @@ PlanArchiver — 開發計畫安全歸檔服務。
 import re
 import shutil
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from . import (
     PlanDestinationExistsError,
@@ -13,7 +13,7 @@ from . import (
     PlanIncompleteError,
     PlanNotFoundError,
 )
-from ._common import resolve_plan_uri
+from ._common import evaluate_plan_completion, resolve_plan_uri
 
 
 class PlanArchiver:
@@ -82,7 +82,6 @@ class PlanArchiver:
         ):
             raise PlanNotFoundError(f"找不到指定的計畫目錄：{src_dir}")
 
-        # 解析時間戳前綴 YYYY_MM_
         match = re.match(r"^(\d{4})_(\d{2})_", plan_name)
         if not match:
             raise PlanFormatError(f"計畫名稱格式不符合規範（需以 YYYY_MM 開頭）：{plan_name}")
@@ -103,48 +102,15 @@ class PlanArchiver:
                 f"計畫 '{plan_name}' 存在未通過之檢核項目 ({len(report.errors)} 個重大錯誤 FAIL)，無法歸檔：\n  - {fail_msgs}\n若確定要強制歸檔，請使用 --force 參數。"
             )
 
-        # 2. 檢查完成狀態
-        from .status import PlanStatusResolver
-
-        ft_plan = src_dir / "fast_track_plan.md"
-        p07_walkthrough = PlanStatusResolver.resolve_phase_file(src_dir, "P07")
-        umbrella_overview = src_dir / "umbrella_overview.md"
-        rev_log = src_dir / "revision_log.md"
-
-        is_completed = False
-        for target_file in [ft_plan, p07_walkthrough, umbrella_overview, rev_log]:
-            if target_file.exists() and PlanStatusResolver.is_doc_completed(target_file):
-                is_completed = True
-                break
-
-        # 檢查是否為 Research Track 且完成
-        if not is_completed:
-            if PlanStatusResolver.is_research_completed(src_dir):
-                is_completed = True
-
-        warnings = []
-        if not is_completed and not force:
-            raise PlanIncompleteError(
-                f"計畫 '{plan_name}' 尚未完成（未找到標頭 Completed/Concluded 標記）。若確定要強制歸檔，請使用 --force 參數。"
-            )
-
-        # 2.1 檢查所有存在之 revision_log.md（主目錄與 sub_* 子計畫）是否皆已標記 Completed
-        all_rev_logs = []
-        if rev_log.exists():
-            all_rev_logs.append(rev_log)
-        for sub_dir in sorted(src_dir.iterdir(), key=lambda x: x.name):
-            if sub_dir.is_dir() and sub_dir.name.startswith("sub_"):
-                sub_rev = sub_dir / "revision_log.md"
-                if sub_rev.exists():
-                    all_rev_logs.append(sub_rev)
-
+        # 2. 統一檢查主計畫、所有 sub_XX 子計畫及附掛之 revision_log.md 是否全數完成
+        warnings: List[str] = []
         if not force:
-            for r_file in all_rev_logs:
-                if not PlanStatusResolver.is_doc_completed(r_file):
-                    rel_r = r_file.relative_to(src_dir)
-                    raise PlanIncompleteError(
-                        f"計畫 '{plan_name}' 內存在尚未完成之修訂紀錄 '{rel_r}'（標頭未標記 Completed），為確保結案無遺漏，無法歸檔。若確定要強制歸檔，請使用 --force 參數。"
-                    )
+            is_completed, block_reason = evaluate_plan_completion(src_dir)
+            if not is_completed:
+                raise PlanIncompleteError(
+                    block_reason
+                    or f"計畫 '{plan_name}' 尚未完成（未找到標頭 Completed/Concluded 標記）。若確定要強制歸檔，請使用 --force 參數。"
+                )
 
         # 3. 檢查全域 CHANGELOG.md 是否記載
         changelog_file = self.project_root / "CHANGELOG.md"
@@ -159,15 +125,20 @@ class PlanArchiver:
         if dest_dir.exists():
             raise PlanDestinationExistsError(f"目標歷史歸檔目錄已存在相同名稱的計畫：{dest_dir}")
 
-        # 5. 清理暫時性交接快照 (handoff.md)
+        # 5. 清理暫時性交接快照 (主目錄與所有 sub_* 子目錄之 handoff.md)
         cleaned_handoff = False
-        temp_handoff = src_dir / "handoff.md"
-        if temp_handoff.exists():
-            try:
-                temp_handoff.unlink()
-                cleaned_handoff = True
-            except Exception as e:
-                warnings.append(f"清理暫時交接快照失敗：{e}")
+        handoff_targets: List[Path] = [src_dir / "handoff.md"]
+        for sub_dir in sorted(src_dir.iterdir(), key=lambda x: x.name):
+            if sub_dir.is_dir() and sub_dir.name.startswith("sub_"):
+                handoff_targets.append(sub_dir / "handoff.md")
+
+        for h_target in handoff_targets:
+            if h_target.exists():
+                try:
+                    h_target.unlink()
+                    cleaned_handoff = True
+                except Exception as e:
+                    warnings.append(f"清理暫時交接快照失敗 ({h_target.name})：{e}")
 
         # 6. 執行安全搬移
         dest_dir.parent.mkdir(parents=True, exist_ok=True)

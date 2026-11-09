@@ -379,6 +379,7 @@ class _RemoteStageSnapshot:
     branch_dir_ids_current: Dict[str, str]
     flushed_external_trash: List[str]
     pending_page_token: str
+    stage1_meta_dirty: bool = False
 
 
 class _IncrementalPatchContext:
@@ -691,6 +692,7 @@ class SyncCoordinator:
             return False
 
         branches_dict = state.setdefault("branches", {})
+        fp_cache = state.setdefault("fingerprint_cache", {})
         for raw_line in raw_text.splitlines():
             line = raw_line.strip()
             if not line:
@@ -720,6 +722,10 @@ class SyncCoordinator:
                         )
                     except Exception:
                         pass
+                fp_key = str(rec.get("fp_key") or "")
+                fp_entry = rec.get("fp_entry")
+                if fp_key and isinstance(fp_entry, dict):
+                    fp_cache[fp_key] = fp_entry
             elif op == "delete_file":
                 b_files.pop(rel_path, None)
                 if rec.get("remove_from_cache"):
@@ -734,12 +740,16 @@ class SyncCoordinator:
         rel_path: str,
         base_entry_dict: Dict[str, Any],
         cache_entry: Optional[RemoteEntry] = None,
+        fp_key: Optional[str] = None,
+        fp_entry: Optional[Dict[str, Any]] = None,
     ) -> None:
         state.setdefault("branches", {}).setdefault(branch, {}).setdefault("files", {})[
             rel_path
         ] = base_entry_dict
         if cache_entry is not None:
             self._update_cache_branch_entry(state, branch, rel_path, cache_entry)
+        if fp_key and isinstance(fp_entry, dict):
+            state.setdefault("fingerprint_cache", {})[fp_key] = fp_entry
         self._append_state_journal(
             {
                 "op": "upsert_file",
@@ -747,6 +757,8 @@ class SyncCoordinator:
                 "rel_path": rel_path,
                 "base_entry": base_entry_dict,
                 "cache_entry": cache_entry.to_dict() if cache_entry is not None else None,
+                "fp_key": fp_key,
+                "fp_entry": fp_entry,
             }
         )
 
@@ -1140,12 +1152,15 @@ class SyncCoordinator:
                         "Sync or commit changes first, or pass --force."
                     )
 
-            target_remote_snap, _, _, _ = self._scan_remote_branch_with_dirs(norm_target)
+            target_remote_snap, target_raw_entries, _, _ = (
+                self._scan_remote_branch_with_dirs(norm_target)
+            )
             target_branch_state = (
                 state.setdefault("branches", {})
                 .setdefault(norm_target, {})
                 .setdefault("files", {})
             )
+            fp_cache = state.setdefault("fingerprint_cache", {})
 
             removed_orphans: List[str] = []
             pulled_files: List[str] = []
@@ -1176,24 +1191,34 @@ class SyncCoordinator:
                         if should_backup:
                             _create_conflict_backup(abs_local)
                         self.transport.download_file(
-                            self._repo_rel(f"{norm_target}/{rel_p}"), abs_local
+                            self._repo_rel(f"{norm_target}/{rel_p}"),
+                            abs_local,
+                            entry_hint=target_raw_entries.get(rel_p),
                         )
                         pulled_files.append(rel_p)
 
                     md5_hex, sha_hex, sz = compute_local_hashes(abs_local)
                     st = abs_local.stat()
+                    mtime_ns = int(st.st_mtime_ns)
+                    fp_cache[abs_local.as_posix()] = {
+                        "mtime_ns": mtime_ns,
+                        "size": sz,
+                        "md5": md5_hex,
+                        "sha256": sha_hex,
+                    }
                     new_base = FileEntry(
                         rel_path=rel_p,
                         md5=md5_hex,
                         sha256=sha_hex,
                         size=sz,
-                        mtime_ns=int(st.st_mtime_ns),
+                        mtime_ns=mtime_ns,
                         file_id=rem_entry.effective_file_id(),
                         is_shortcut=rem_entry.is_shortcut,
                         target_file_id=rem_entry.target_file_id,
                     )
                     target_branch_state[rel_p] = new_base.to_dict()
             finally:
+                state["active_branch"] = norm_target
                 state.pop("remote_repo_cache", None)
                 self._save_local_state(state)
 
@@ -1290,6 +1315,7 @@ class SyncCoordinator:
 
             self.transport.reset_scan_state()
             state = self._load_local_state()
+            state["active_branch"] = branch
             branch_state_dict = (
                 state.setdefault("branches", {})
                 .setdefault(branch, {})
@@ -1389,11 +1415,15 @@ class SyncCoordinator:
         background_worker: bool,
     ) -> Optional[_RemoteStageSnapshot]:
         """Stage 1 remote snapshot resolution via Level 0/1 incremental cache or Level 2 full scan."""
+        prev_cached_bf = copy.deepcopy(
+            ((state.get("remote_repo_cache") or {}).get("repo_meta") or {}).get("branch_files") or {}
+        )
         inc_res = self._try_incremental_remote_cache(state, branch)
         if inc_res is not None:
             cache_hit_level, meta, remote_snap, raw_remote_entries, pending_token = (
                 inc_res
             )
+            inc_meta_dirty = bool((meta.get("branch_files") or {}) != prev_cached_bf)
             self._warm_transport_folder_cache(state, branch)
             branch_dir_ids_current = dict(
                 (
@@ -1413,6 +1443,7 @@ class SyncCoordinator:
                 branch_dir_ids_current=branch_dir_ids_current,
                 flushed_external_trash=[],
                 pending_page_token=pending_token,
+                stage1_meta_dirty=inc_meta_dirty,
             )
 
         start_token = ""
@@ -1429,6 +1460,7 @@ class SyncCoordinator:
         if background_worker and self.should_yield_background():
             return None
 
+        prev_meta_bf = copy.deepcopy(meta.get("branch_files") or {})
         flushed_ext_stage1 = self._flush_external_repo_trash()
         remote_snap, raw_remote_entries, branch_dir_ids, branch_dir_meta = (
             self._scan_remote_branch_with_dirs(branch)
@@ -1468,6 +1500,7 @@ class SyncCoordinator:
                 rel_p: r_ent.effective_file_id() for rel_p, r_ent in o_snap.items()
             }
 
+        stage1_meta_dirty = bool(branch_files_map_init != prev_meta_bf)
         self._populate_remote_repo_cache(
             state=state,
             page_token=start_token,
@@ -1483,6 +1516,7 @@ class SyncCoordinator:
             branch_dir_ids_current=branch_dir_ids_current,
             flushed_external_trash=flushed_ext_stage1,
             pending_page_token=start_token,
+            stage1_meta_dirty=stage1_meta_dirty,
         )
 
     def _execute_stage3_reconciliation(
@@ -1510,7 +1544,9 @@ class SyncCoordinator:
         }
         branch_files_map[branch] = curr_branch_files
         history_files: Dict[str, str] = meta.setdefault("history_files", {})
-        meta_dirty = bool(curr_branch_files != prev_branch_files)
+        meta_dirty = bool(
+            rem_stage.stage1_meta_dirty or (curr_branch_files != prev_branch_files)
+        )
         first_push_err: Optional[BaseException] = None
         first_pull_err: Optional[BaseException] = None
 
@@ -1918,12 +1954,20 @@ class SyncCoordinator:
                     is_shortcut=False,
                     target_file_id="",
                 )
+                fp_entry = {
+                    "mtime_ns": task.local_entry.mtime_ns,
+                    "size": task.local_entry.size,
+                    "md5": task.local_entry.md5,
+                    "sha256": task.local_entry.sha256,
+                }
                 self._record_branch_file_upsert(
                     state,
                     branch,
                     task.rel_path,
                     new_base.to_dict(),
                     cache_entry=uploaded,
+                    fp_key=task.abs_local.as_posix(),
+                    fp_entry=fp_entry,
                 )
                 report.pushed.append(task.rel_path)
                 if background_worker and self.should_yield_background():
@@ -1941,18 +1985,18 @@ class SyncCoordinator:
         task: _PullTask,
         raw_remote_entries: Dict[str, RemoteEntry],
         background_worker: bool,
-    ) -> Tuple[str, str, int, int]:
-        """Download a single remote file and compute its local hashes and mtime_ns."""
+    ) -> Tuple[str, str, int, int, RemoteEntry]:
+        """Download a single remote file and compute its local hashes, mtime_ns, and RemoteEntry."""
         if background_worker and self.should_yield_background():
             raise _BackgroundYieldRequested()
-        self.transport.download_file(
+        dl_entry = self.transport.download_file(
             task.remote_branch_rel,
             task.abs_local,
             entry_hint=raw_remote_entries.get(task.rel_path),
         )
         md5_hex, sha_hex, sz = compute_local_hashes(task.abs_local)
         st = task.abs_local.stat()
-        return md5_hex, sha_hex, sz, int(st.st_mtime_ns)
+        return md5_hex, sha_hex, sz, int(st.st_mtime_ns), dl_entry
 
     def _execute_pull_batch(
         self,
@@ -1983,7 +2027,7 @@ class SyncCoordinator:
                 if fut.cancelled():
                     continue
                 try:
-                    md5_hex, sha_hex, sz, mtime_ns = fut.result()
+                    md5_hex, sha_hex, sz, mtime_ns, dl_entry = fut.result()
                 except _BackgroundYieldRequested:
                     report.yielded = True
                     continue
@@ -2005,12 +2049,27 @@ class SyncCoordinator:
                     is_shortcut=task.remote_entry.is_shortcut,
                     target_file_id=task.remote_entry.target_file_id,
                 )
+                cached_rem = raw_remote_entries.get(task.rel_path) or dl_entry
+                pulled_raw_entry = replace(
+                    cached_rem,
+                    rel_path=task.remote_branch_rel,
+                    md5=md5_hex,
+                    size=sz,
+                )
+                fp_entry = {
+                    "mtime_ns": mtime_ns,
+                    "size": sz,
+                    "md5": md5_hex,
+                    "sha256": sha_hex,
+                }
                 self._record_branch_file_upsert(
                     state,
                     branch,
                     task.rel_path,
                     new_base.to_dict(),
-                    cache_entry=None,
+                    cache_entry=pulled_raw_entry,
+                    fp_key=task.abs_local.as_posix(),
+                    fp_entry=fp_entry,
                 )
                 report.pulled.append(task.rel_path)
                 if background_worker and self.should_yield_background():
@@ -2197,99 +2256,98 @@ class SyncCoordinator:
         self, meta: Dict[str, Any], scan_physical: bool = True
     ) -> List[str]:
         """
-        Inspect all files tracked in meta['history_files'] (and any physical entries under <repo_sync_root>/.history/
-        when scan_physical is True). If a file_id is no longer referenced by any active branch in meta['branch_files'],
-        move it from <repo_sync_root>/.history/ to Google Drive's native 30-day Trash.
+        Garbage-collect any file in repo_sync/.history/ that is no longer referenced by any branch
+        in meta['branch_files'], moving it to Google Drive's native 30-day Trash (or sandbox .trash/).
+        Also reconciles any physical files found inside repo_sync/.history/ that are unreferenced.
         """
+        branch_files_map: Dict[str, Dict[str, str]] = meta.setdefault("branch_files", {})
+        branches_meta: Dict[str, Any] = meta.get("branches", {})
+        if isinstance(branches_meta, dict):
+            for b_name, b_info in branches_meta.items():
+                is_auto = isinstance(b_info, dict) and bool(b_info.get("auto_discovered"))
+                if is_auto or b_name not in branch_files_map:
+                    b_snap, _, _, _ = self._scan_remote_branch_with_dirs(b_name)
+                    branch_files_map[b_name] = {
+                        rel_p: r_ent.effective_file_id() for rel_p, r_ent in b_snap.items()
+                    }
         history_files: Dict[str, str] = meta.setdefault("history_files", {})
+        hist_dir_rel = self._repo_rel(".history")
+
         if scan_physical:
-            hist_dir_rel = self._repo_rel(".history")
             for entry in self.transport.list_files(hist_dir_rel, recursive=False):
-                if not entry.is_dir and entry.file_id not in history_files:
+                if entry.is_dir or entry.skipped_reason:
+                    continue
+                if entry.file_id not in history_files:
                     history_files[entry.file_id] = entry.rel_path
 
-        if not history_files:
-            return []
-
-        branches_meta: Dict[str, Any] = meta.get("branches", {})
-        branch_files_map: Dict[str, Dict[str, str]] = meta.setdefault("branch_files", {})
-        for other_b, b_info in list(branches_meta.items()):
-            has_cached_refs = (
-                isinstance(b_info, dict)
-                and not b_info.get("auto_discovered")
-                and bool(branch_files_map.get(other_b))
-            )
-            if not has_cached_refs:
-                o_snap, _, _, _ = self._scan_remote_branch_with_dirs(other_b)
-                branch_files_map[other_b] = {
-                    rel_p: r_ent.effective_file_id()
-                    for rel_p, r_ent in o_snap.items()
-                }
-
-        orphan_ids = compute_orphan_history_file_ids(
-            set(history_files.keys()), branch_files_map
-        )
+        orphan_ids = compute_orphan_history_file_ids(history_files, branch_files_map)
         trashed_ids: List[str] = []
         for fid in orphan_ids:
-            hist_rel = history_files.get(fid, "")
-            if hist_rel and self.transport.get_entry(hist_rel) is not None:
-                self.transport.trash_file(hist_rel, file_id=fid)
+            rel_p = history_files.get(fid)
+            if rel_p and self.transport.trash_file(rel_p, file_id=fid):
+                trashed_ids.append(fid)
             history_files.pop(fid, None)
-            trashed_ids.append(fid)
         return trashed_ids
 
     def _collect_local_snapshot(
-        self,
-        state: Dict[str, Any],
-        now_ns: Optional[int] = None,
+        self, state: Dict[str, Any], now_ns: Optional[int] = None
     ) -> Tuple[Dict[str, FileEntry], Dict[str, Path], List[str]]:
-        effective_now_ns = now_ns if now_ns is not None else time.time_ns()
-        fp_cache: Dict[str, Dict[str, Any]] = state.setdefault(
-            "fingerprint_cache", {}
-        )
+        """
+        Collect local file snapshot across all configured sync_spaces.
+        Applies the 2-second write-stabilization guard and mtime+size FingerprintCache.
+        """
+        current_ns = now_ns if now_ns is not None else time.time_ns()
+        fp_cache: Dict[str, Dict[str, Any]] = state.setdefault("fingerprint_cache", {})
         local_snap: Dict[str, FileEntry] = {}
         local_path_map: Dict[str, Path] = {}
         stabilizing: List[str] = []
 
         for spec in self.config.sync_spaces:
-            threshold_bytes = int(max(1, spec.large_file_threshold_mb)) * 1024 * 1024
             files_map = collect_space_local_files_with_stat(
                 spec,
                 project_root=self.project_root,
                 file_space_manager=self._file_space_manager,
             )
+            threshold_bytes = spec.large_file_threshold_mb * 1024 * 1024
+
             for remote_rel, (abs_path, pre_mtime_ns, pre_size) in files_map.items():
+                if is_sensitive_credential_path(abs_path, self.project_root):
+                    continue
                 if pre_mtime_ns is not None and pre_size is not None:
-                    mtime_ns = int(pre_mtime_ns)
-                    sz = int(pre_size)
+                    mtime_ns = pre_mtime_ns
+                    sz = pre_size
                 else:
                     try:
                         st = abs_path.stat()
                     except OSError:
                         continue
-                    if not stat.S_ISREG(st.st_mode):
-                        continue
                     mtime_ns = int(st.st_mtime_ns)
                     sz = int(st.st_size)
 
-                if (
-                    sz >= threshold_bytes
-                    and (effective_now_ns - mtime_ns) < STABILIZATION_WINDOW_NS
-                ):
-                    stabilizing.append(remote_rel)
-                    continue
+                if threshold_bytes > 0 and sz >= threshold_bytes:
+                    if (current_ns - mtime_ns) < STABILIZATION_WINDOW_NS:
+                        stabilizing.append(remote_rel)
+                        continue
+                    self._append_log(
+                        "large_file_warning",
+                        {
+                            "space": spec.space,
+                            "rel_path": remote_rel,
+                            "size_bytes": sz,
+                            "threshold_bytes": threshold_bytes,
+                        },
+                    )
 
                 cache_key = abs_path.as_posix()
-                cached = fp_cache.get(cache_key)
+                cached_fp = fp_cache.get(cache_key)
                 if (
-                    isinstance(cached, dict)
-                    and cached.get("mtime_ns") == mtime_ns
-                    and cached.get("size") == sz
-                    and cached.get("md5")
-                    and cached.get("sha256")
+                    cached_fp
+                    and cached_fp.get("mtime_ns") == mtime_ns
+                    and cached_fp.get("size") == sz
+                    and cached_fp.get("md5")
                 ):
-                    md5_hex = str(cached["md5"])
-                    sha_hex = str(cached["sha256"])
+                    md5_hex = str(cached_fp["md5"])
+                    sha_hex = str(cached_fp.get("sha256") or "")
                 else:
                     try:
                         md5_hex, sha_hex, sz = compute_local_hashes(abs_path)
@@ -3098,15 +3156,15 @@ class SyncCoordinator:
     def _resolve_remote_rel_to_local_abs(self, remote_rel_path: str) -> Optional[Path]:
         """
         Resolve a branch-relative remote path to an absolute local path inside a registered sync_space,
-        strictly enforcing that the resolved path stays within project_root and the space's include_roots,
-        and never targets sensitive credential/token files.
+        verifying that the resolved target resides within project_root AND the space's include_roots.
         """
         for spec in self.config.sync_spaces:
-            proj_rel = spec.remote_to_local_rel(remote_rel_path)
-            if proj_rel is not None and proj_rel:
-                candidate = (self.project_root / proj_rel).resolve()
-                if spec.is_local_abs_allowed(
-                    candidate, self.project_root
-                ) and not is_sensitive_credential_path(candidate, self.project_root):
-                    return candidate
+            local_rel = spec.remote_to_local_rel(remote_rel_path)
+            if local_rel is not None:
+                cand = (self.project_root / local_rel).resolve()
+                if not spec.is_local_abs_allowed(cand, self.project_root):
+                    continue
+                if is_sensitive_credential_path(cand, self.project_root):
+                    continue
+                return cand
         return None

@@ -5,7 +5,7 @@ PlanStatusResolver — 開發計畫標頭狀態解析與完成度檢測服務 (S
 import re
 from pathlib import Path
 from types import MappingProxyType
-from typing import List, Dict, FrozenSet, Mapping, Optional, Tuple, Union, Any
+from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Tuple, Union
 
 from ._common import parse_markdown_blockquote_headers
 
@@ -102,10 +102,10 @@ class PlanStatusResolver:
     def get_doc_header_status(cls, doc_target: Union[Path, str]) -> str:
         """
         讀取單一 Markdown 文件標頭狀態。
-        
+
         Args:
             doc_target: 文件檔案路徑 (Path/str) 或 Markdown 文字內容 (str)
-            
+
         Returns:
             str: 正規化後之小寫狀態字串 (如 'in progress', 'completed', 'concluded' 等)，若無法解析則回傳 'unknown'。
         """
@@ -116,10 +116,10 @@ class PlanStatusResolver:
         for key in cls.STATUS_KEYS:
             if key in headers:
                 val = headers[key].strip()
-                # 排除未替換之模板佔位符如 [Draft | Confirmed ...]
+                if not val:
+                    continue
                 if val.startswith("[") and val.endswith("]") and "|" in val:
                     return "unknown"
-                # 正規化常見同義詞
                 norm_val = val.lower()
                 if norm_val in ("in_progress", "implementing", "executing", "active"):
                     return "in progress"
@@ -131,10 +131,10 @@ class PlanStatusResolver:
     def is_doc_completed(cls, doc_target: Union[Path, str]) -> bool:
         """
         檢驗單一文件是否已完成結案 (依據標頭狀態)。
-        
+
         Args:
             doc_target: 文件檔案路徑或文字內容
-            
+
         Returns:
             bool: 若標頭狀態為 completed, concluded 或 passed 則為 True
         """
@@ -145,14 +145,16 @@ class PlanStatusResolver:
     def is_research_completed(cls, plan_dir_or_target: Union[Path, str]) -> bool:
         """
         檢驗 Research 計畫是否完成結案 (所有 R{NN}_*.md 檔案標頭皆為 concluded 或 completed)。
-        
+
         Args:
             plan_dir_or_target: 計畫目錄路徑、單一檔案路徑或 Markdown 內容
-            
+
         Returns:
             bool: 若為目錄且所有 R 檔完成，或為單一調研文件且已完成則為 True
         """
-        if isinstance(plan_dir_or_target, Path) or (isinstance(plan_dir_or_target, str) and "\n" not in plan_dir_or_target and Path(plan_dir_or_target).exists()):
+        if isinstance(plan_dir_or_target, Path) or (
+            isinstance(plan_dir_or_target, str) and "\n" not in plan_dir_or_target and Path(plan_dir_or_target).exists()
+        ):
             p = Path(plan_dir_or_target)
             if p.is_dir():
                 r_files = [
@@ -194,6 +196,15 @@ class PlanStatusResolver:
         return "Unknown"
 
     @classmethod
+    def _has_active_attached_revision(cls, p: Path) -> bool:
+        """檢查目錄是否附掛尚未 Completed 之進行中 revision_log.md。"""
+        rev_log = p / "revision_log.md"
+        if not rev_log.is_file():
+            return False
+        rev_st = cls.get_doc_header_status(rev_log)
+        return rev_st not in ("completed", "concluded")
+
+    @classmethod
     def _resolve_umbrella_next_action(cls, p: Path, ref_base: str) -> Optional[Dict[str, Any]]:
         umbrella_file = p / "umbrella_overview.md"
         if not umbrella_file.exists():
@@ -205,11 +216,14 @@ class PlanStatusResolver:
         )
         for sd in sub_dirs:
             sub_nav = cls.resolve_next_action(sd)
-            if sub_nav["current_status"] not in ("completed", "concluded"):
+            if sub_nav["current_status"] not in ("completed", "concluded") or sub_nav["next_phase"] != "Completed":
                 sub_nav["target_plan_name"] = f"{p.name}/{sd.name}"
                 sub_nav["parent_umbrella_dir"] = p
                 sub_nav["has_handoff"] = (sd / "handoff.md").exists() or (p / "handoff.md").exists()
                 return sub_nav
+
+        if cls._has_active_attached_revision(p):
+            return cls._resolve_revision_next_action(p, ref_base, (p / "handoff.md").exists())
 
         u_status = cls.get_doc_header_status(umbrella_file)
         is_done = u_status in ("completed", "concluded")
@@ -239,6 +253,8 @@ class PlanStatusResolver:
 
         ft_status = cls.get_doc_header_status(ft_plan)
         if ft_status in ("completed", "concluded"):
+            if cls._has_active_attached_revision(p):
+                return cls._resolve_revision_next_action(p, ref_base, has_handoff)
             cur_phase, nxt_phase = "FP-03", "Completed"
             hint = "Fast Track 計畫已結案 (Completed)，可依指示歸檔或建立 revision_log.md 修訂。"
         elif ft_status == "passed":
@@ -280,6 +296,8 @@ class PlanStatusResolver:
         if p07_f.exists():
             st = cls.get_doc_header_status(p07_f)
             is_done = st in ("completed", "concluded")
+            if is_done and cls._has_active_attached_revision(p):
+                return cls._resolve_revision_next_action(p, ref_base, has_handoff)
             return {
                 "target_plan_name": p.name,
                 "target_plan_dir": p,
@@ -494,14 +512,7 @@ class PlanStatusResolver:
     def resolve_next_action(cls, plan_dir: Union[Path, str]) -> Dict[str, Any]:
         """
         根據目標計畫目錄現有產物與標頭狀態，確定性推導當前階段、下一步行動與應讀 SOP 參考檔路徑。
-        支援自動深入 Umbrella 活躍之 `sub_{編號}_{名稱}` 子目錄。
-
-        Args:
-            plan_dir: 目標計畫或子計畫目錄路徑
-
-        Returns:
-            Dict[str, Any]: 包含 target_plan_name, target_plan_dir, mode, current_phase,
-                            current_status, next_phase, required_reference_path, next_action_hint, has_handoff
+        支援自動深入 Umbrella 活躍之 `sub_{編號}_{名稱}` 子目錄，並識別附掛於已結案計畫之活躍 `revision_log.md`。
         """
         from ._common import resolve_active_target_projected_path
 
@@ -551,5 +562,3 @@ class PlanStatusResolver:
             "next_action_hint": "目錄尚未建立標準階段檔案，請讀取 phase_00_discuss.md 初始化 P00_discuss.md。",
             "has_handoff": has_handoff,
         }
-
-

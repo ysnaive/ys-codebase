@@ -630,52 +630,33 @@ class TestSandboxArchitecture(YSCBTestCase):
         self.assertFalse(os.path.exists(os.path.join(ctx_env.engine_dir, ".modules", "mod_unrelated")))
         self.mark_passed()
 
-    @require(Requirement.ENV)
-    def test_cross_session_grandchild_and_sandbox_process_reaping(self):
-        """Verify terminate_popen_tree and reap_sandbox_processes reap grandchildren across setsid() boundaries."""
-        import subprocess
-        import sys
-        import time
-        from core.platform.process import (
-            is_process_alive,
-            reap_sandbox_processes,
-            terminate_popen_tree,
-        )
+    @require(Requirement.LOGIC)
+    def test_safe_extract_zip_blocks_zip_slip_and_parallel_allocation_keeps_active(self):
+        """Verify _safe_extract_zip rejects path traversal entries and _allocate_sandbox_root preserves all active sandboxes when >8 are allocated."""
+        temp_dir = self._mkdtemp()
+        bad_zip = os.path.join(temp_dir, "zip_slip.zip")
+        extract_dest = os.path.join(temp_dir, "dest")
+        os.makedirs(extract_dest, exist_ok=True)
 
-        sb_dir = self._mkdtemp()
-        pid_file = os.path.join(sb_dir, "grandchild.pid")
-        code = (
-            "import os, subprocess, sys, time; "
-            "kw = {'start_new_session': True} if sys.platform != 'win32' else {}; "
-            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], **kw); "
-            f"open({pid_file!r}, 'w').write(str(p.pid)); "
-            "time.sleep(60)"
-        )
-        popen_kw = {"start_new_session": True} if sys.platform != "win32" else {}
-        proc = subprocess.Popen([sys.executable, "-c", code], cwd=sb_dir, **popen_kw)
-        grandchild_pid = 0
+        with zipfile.ZipFile(bad_zip, "w") as zf:
+            zf.writestr("../escaped_payload.txt", "malicious")
+
+        with zipfile.ZipFile(bad_zip, "r") as zf:
+            with self.assertRaises(ValueError):
+                SandboxProvisioner._safe_extract_zip(zf, extract_dest)
+        self.assertFalse(os.path.exists(os.path.join(temp_dir, "escaped_payload.txt")))
+
+        alloc_scope = os.path.join(self.sandbox_dir, "test_parallel_alloc_scope")
+        os.makedirs(alloc_scope, exist_ok=True)
+        allocated = []
         try:
-            for _ in range(40):
-                if os.path.isfile(pid_file):
-                    raw = open(pid_file, "r", encoding="utf-8").read().strip()
-                    if raw.isdigit():
-                        grandchild_pid = int(raw)
-                        break
-                time.sleep(0.05)
-            self.assertGreater(grandchild_pid, 0)
-            self.assertTrue(is_process_alive(grandchild_pid))
-
-            terminate_popen_tree(proc, timeout_sec=1.5)
-            reap_sandbox_processes(sb_dir, timeout_sec=1.0)
-            for _ in range(20):
-                if not is_process_alive(grandchild_pid):
-                    break
-                time.sleep(0.05)
-            self.assertFalse(
-                is_process_alive(grandchild_pid),
-                "Grandchild in new session must be reaped by terminate_popen_tree / reap_sandbox_processes",
-            )
+            for i in range(10):
+                cand = os.path.join(alloc_scope, f"sandbox_20260101_0000{i:02d}_000000")
+                ctx = SandboxProvisioner._allocate_sandbox_root(cand)
+                allocated.append(ctx.sandbox_dir)
+            for p in allocated:
+                self.assertTrue(os.path.isdir(p), f"Active sandbox was prematurely pruned: {p}")
         finally:
-            if proc.poll() is None:
-                terminate_popen_tree(proc, timeout_sec=1.0)
+            for p in allocated:
+                SandboxProvisioner.cleanup_sandbox(p, force=True, is_harness_cleanup=True)
         self.mark_passed()

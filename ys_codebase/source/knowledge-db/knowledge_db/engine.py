@@ -594,8 +594,8 @@ class KnowledgeEngine:
         model_downloaded = bool(self.embedding_service.is_model_downloaded())
         if getattr(vec_idx, "dim", None):
             vec_dim = int(vec_idx.dim)
-        elif model_downloaded or getattr(self.embedding_service, "mock_mode", False):
-            vec_dim = int(self.embedding_service.dimension)
+        elif getattr(self.embedding_service, "_dimension", None) is not None:
+            vec_dim = int(self.embedding_service._dimension)  # type: ignore[arg-type]
         else:
             vec_dim = int(self.embedding_service._resolve_dimension_mock())
         enable_vec = bool(getattr(self.config, "enable_vector_search", True))
@@ -749,27 +749,29 @@ class KnowledgeEngine:
         }
 
     def model_status(self) -> Dict[str, Any]:
-        """獲取當前向量推論模型狀態清冊。"""
+        """獲取當前向量推論模型狀態清冊（零模型實例載入開銷）。"""
         is_downloaded = bool(
             self.embedding_service.has_local_model()
             if hasattr(self.embedding_service, "has_local_model")
             else self.embedding_service.is_model_downloaded()
         )
-        if not getattr(self.embedding_service, "mock_mode", False) and not is_downloaded:
-            return {
-                "model_name": self.embedding_service.model_name,
-                "cache_dir": str(self.embedding_service.cache_dir),
-                "is_downloaded": False,
-                "is_available": False,
-                "dimension": self.embedding_service._resolve_dimension_mock(),
-                "enable_vector_search": getattr(self.config, "enable_vector_search", True),
-            }
+        dim = int(
+            self.embedding_service._dimension
+            if getattr(self.embedding_service, "_dimension", None) is not None
+            else self.embedding_service._resolve_dimension_mock()
+        )
+        if getattr(self.embedding_service, "mock_mode", False):
+            is_avail = bool(self.embedding_service._is_available)
+        elif getattr(self.embedding_service, "_model", None) is not None:
+            is_avail = bool(self.embedding_service._is_available and is_downloaded)
+        else:
+            is_avail = is_downloaded
         return {
             "model_name": self.embedding_service.model_name,
             "cache_dir": str(self.embedding_service.cache_dir),
             "is_downloaded": is_downloaded,
-            "is_available": self.embedding_service.is_available,
-            "dimension": self.embedding_service.dimension,
+            "is_available": is_avail,
+            "dimension": dim,
             "enable_vector_search": getattr(self.config, "enable_vector_search", True),
         }
 

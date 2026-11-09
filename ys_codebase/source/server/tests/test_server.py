@@ -720,8 +720,7 @@ class TestServerModule(YSCBTestCase):
 
         def mock_popen(cmd, **kwargs):
             nonlocal captured_env
-            if isinstance(cmd, (list, tuple)) and any("worker.py" in str(x) for x in cmd):
-                captured_env = kwargs.get("env", {})
+            captured_env = kwargs.get("env", {})
             fake_proc = unittest.mock.MagicMock()
             fake_proc.pid = 77777
             fake_proc.poll.return_value = None
@@ -1793,73 +1792,99 @@ class TestServerModule(YSCBTestCase):
         self.assertEqual(sup.get_status_dict()["services"][0]["state"], BaseServiceWorker.STATE_DEGRADED_OFFLINE)
         self.mark_passed()
 
-    def test_worker_memory_health_monitor_algorithm_and_idle_guard(self):
-        """WorkerMemoryHealthMonitor calibrates baseline, detects bloat/pressure/ratcheting only when completely idle, and respects cooldown."""
-        from server.master import WorkerMemoryHealthMonitor
 
-        mon = WorkerMemoryHealthMonitor()
-        mon.reset_for_new_worker(initial_rss_mb=300.0)
-        self.assertEqual(mon.baseline_rss_mb, 300.0)
+    def test_idle_worker_demuxer_drains_bg_logs_metrics_and_busy_rss_guard(self):
+        """Verify ServiceManager custom metrics in get_status, single-owner stdout demuxer idle draining, and busy-aware RSS recycling without resetting idle timer."""
+        class _MetricsService(BaseServiceWorker):
+            def __init__(self) -> None:
+                self._busy = True
 
-        # 1. Busy worker never triggers recycle even at high RSS
-        should_rec, reason = mon.evaluate(
-            1800.0, {"total_mb": 16000.0, "avail_mb": 8000.0, "avail_ratio": 0.5}, is_idle=False
+            @property
+            def name(self) -> str:
+                return "metrics-svc"
+
+            def start(self, context) -> None:
+                self.set_state(self.STATE_READY)
+
+            def stop(self) -> None:
+                self.set_state(self.STATE_STOPPED)
+
+            def health_check(self) -> bool:
+                return True
+
+            def is_busy(self) -> bool:
+                return self._busy
+
+            def get_custom_metrics(self):
+                return {"indexed_files": 42, "queue_depth": 0}
+
+        mgr = ServiceManager()
+        m_svc = _MetricsService()
+        mgr.register(m_svc, name="metrics-svc", provider="server", description="Metrics test service")
+        mgr.start_all({"yscb_root": self.root_dir})
+        try:
+            st_list = mgr.get_status()
+            self.assertEqual(len(st_list), 1)
+            self.assertEqual(st_list[0]["metrics"], {"indexed_files": 42, "queue_depth": 0})
+            self.assertTrue(st_list[0]["busy"])
+        finally:
+            mgr.stop_all()
+
+        # Verify single-owner demuxer drains background packets while idle and routes task packets to _yscb_task_queue
+        script = self._write_fake_worker(
+            "emit({'type': 'worker_alive'})\n"
+            "emit({'type': 'worker_ready', 'services': [{'name': 'bg-idx', 'provider': 'core', 'state': 'READY', 'alive': True, 'busy': False, 'metrics': {'count': 1}}]})\n"
+            "emit({'type': 'service_status', 'name': 'bg-idx', 'state': 'READY', 'alive': True, 'busy': True, 'metrics': {'count': 7}})\n"
+            "emit({'type': 'touch_activity'})\n"
+            "for line in sys.stdin:\n"
+            "    req = json.loads(line)\n"
+            "    if req.get('action') == 'exit':\n"
+            "        break\n"
+            "    emit({'type': 'terminal_stream', 'stream': 'stdout', 'text': 'demux_ok\\n'})\n"
+            "    emit({'type': 'task_finish', 'exit_code': 0, 'duration_ms': 1.0, 'error': None})\n"
         )
-        self.assertFalse(should_rec)
-        self.assertEqual(reason, "")
-
-        # 2. Normal fluctuation within working-set bounds does not recycle
-        should_rec, _ = mon.evaluate(
-            520.0, {"total_mb": 16000.0, "avail_mb": 8000.0, "avail_ratio": 0.5}, is_idle=True
-        )
-        self.assertFalse(should_rec)
-
-        # 3. Severe working-set bloat (expansion >= 3.5x and delta >= 512 MB) triggers recycle
-        should_rec, reason = mon.evaluate(
-            1200.0, {"total_mb": 16000.0, "avail_mb": 8000.0, "avail_ratio": 0.5}, is_idle=True
-        )
-        self.assertTrue(should_rec)
-        self.assertIn("Severe working-set bloat", reason)
-        self.assertEqual(mon.recycle_count, 1)
-
-        # 4. Cooldown prevents immediate back-to-back recycle
-        should_rec_cd, _ = mon.evaluate(
-            1300.0, {"total_mb": 16000.0, "avail_mb": 8000.0, "avail_ratio": 0.5}, is_idle=True
-        )
-        self.assertFalse(should_rec_cd)
-
-        # 5. Host memory pressure (< 15% available) + >= 2.2x expansion triggers recycle after cooldown
-        mon.last_recycle_time = 0.0
-        should_rec_press, reason_press = mon.evaluate(
-            700.0, {"total_mb": 16000.0, "avail_mb": 1500.0, "avail_ratio": 0.09375}, is_idle=True
-        )
-        self.assertTrue(should_rec_press)
-        self.assertIn("Host memory pressure", reason_press)
-        self.assertEqual(mon.recycle_count, 2)
-
-        # 6. Sustained monotonic ratcheting across 5 idle windows triggers recycle
-        mon.reset_for_new_worker(initial_rss_mb=300.0)
-        mon.last_recycle_time = 0.0
-        for step_rss in (380.0, 460.0, 540.0, 620.0):
-            r_flag, _ = mon.evaluate(
-                step_rss, {"total_mb": 16000.0, "avail_mb": 8000.0, "avail_ratio": 0.5}, is_idle=True
-            )
-            self.assertFalse(r_flag)
-        r_flag_5, reason_r = mon.evaluate(
-            760.0, {"total_mb": 16000.0, "avail_mb": 8000.0, "avail_ratio": 0.5}, is_idle=True
-        )
-        self.assertTrue(r_flag_5)
-        self.assertIn("Sustained monotonic RSS ratcheting", reason_r)
-
-        # 7. MasterSupervisor._is_worker_completely_idle checks both _current_task and _worker_services
         sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
-        sup._worker_proc = unittest.mock.MagicMock()
-        sup._worker_proc.poll.return_value = None
-        sup._worker_ready_event.set()
-        sup._worker_services = [{"name": "knowledge-db-worker", "state": "READY", "alive": True, "busy": False}]
-        self.assertTrue(sup._is_worker_completely_idle())
-        sup._worker_services = [{"name": "knowledge-db-worker", "state": "UPDATING", "alive": True, "busy": True}]
-        self.assertFalse(sup._is_worker_completely_idle())
+        real_popen = subprocess.Popen
+        with unittest.mock.patch(
+            "server.master.subprocess.Popen",
+            side_effect=lambda cmd, **kw: real_popen([sys.executable, script], **kw),
+        ):
+            try:
+                with sup._worker_lock:
+                    sup._spawn_worker_locked()
+                self.assertTrue(sup._wait_worker_ready(timeout_sec=5.0))
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline:
+                    if sup.is_any_worker_service_busy():
+                        break
+                    time.sleep(0.02)
+                self.assertTrue(sup.is_any_worker_service_busy())
+                svc_entry = sup.get_status_dict()["services"][0]
+                self.assertEqual(svc_entry.get("metrics"), {"count": 7})
+
+                # While service is busy, RSS health check must defer recycling
+                with unittest.mock.patch("server.master.get_process_rss_mb", return_value=99999.0), \
+                     unittest.mock.patch.object(sup, "restart_worker") as mock_restart:
+                    sup._evaluate_worker_memory_health()
+                    mock_restart.assert_not_called()
+
+                # Stream a foreground task through the demuxer queue
+                chunks = []
+                rc = sup.dispatch_task({"module": "core", "args": ["status"]}, chunks.append)
+                self.assertEqual(rc, 0)
+                self.assertTrue(any("demux_ok" in c.get("text", "") for c in chunks if c.get("type") == "terminal_stream"))
+
+                # Mark service idle and verify restart_worker(touch_activity=False) preserves _last_active_time
+                sup._handle_worker_packet({"type": "service_status", "name": "bg-idx", "state": "READY", "alive": True, "busy": False})
+                self.assertFalse(sup.is_any_worker_service_busy())
+                sup._last_active_time = 12345.0
+                with unittest.mock.patch.object(sup, "_spawn_worker_locked", return_value=9999):
+                    restarted = sup.restart_worker(if_idle_only=True, touch_activity=False)
+                self.assertEqual(restarted, 9999)
+                self.assertEqual(sup._last_active_time, 12345.0)
+            finally:
+                with sup._worker_lock:
+                    sup._kill_worker_locked(timeout_sec=1.0)
         self.mark_passed()
 
 

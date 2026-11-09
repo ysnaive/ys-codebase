@@ -14,6 +14,26 @@ from core.log import log_warn
 from core.platform import InterProcessLock
 
 
+def _is_lock_file_active(lock_file: str) -> bool:
+    """Probes whether a `.yscb.lock` file is actively held via `InterProcessLock` or contains a `locked` sentinel."""
+    if not os.path.isfile(lock_file):
+        return False
+    try:
+        probe = InterProcessLock(lock_file)
+        if not probe.acquire(blocking=False):
+            return True
+        probe.release()
+    except Exception:
+        return True
+    try:
+        with open(lock_file, "r", encoding="utf-8", errors="ignore") as f:
+            if f.read(64).strip().lower() == "locked":
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def _scan_modules_dir(modules_dir: str) -> Dict[str, float]:
     """Scans .modules directory and returns a mapping of watched file paths to their modification timestamps."""
     snapshot: Dict[str, float] = {}
@@ -81,16 +101,16 @@ class ModulesWatcher:
     def _is_core_transaction_locked(self) -> bool:
         """
         Checks whether core is currently executing an install/update/reload transaction
-        by probing <yscb_root>/.cache/.yscb.lock non-blockingly, or if .modules/core
-        is mid-transition without manifest.json.
+        by probing `<yscb_root>/.cache/.yscb.lock` and `<yscb_root>/.yscb.lock` non-blockingly,
+        or if `.modules/core` is mid-transition without `manifest.json`.
         """
         yscb_root = os.path.dirname(self.modules_dir)
-        lock_file = os.path.join(yscb_root, ".cache", ".yscb.lock")
-        if os.path.isfile(lock_file):
-            probe = InterProcessLock(lock_file)
-            if not probe.acquire(blocking=False):
+        for lock_file in (
+            os.path.join(yscb_root, ".cache", ".yscb.lock"),
+            os.path.join(yscb_root, ".yscb.lock"),
+        ):
+            if _is_lock_file_active(lock_file):
                 return True
-            probe.release()
 
         core_mod_dir = os.path.join(self.modules_dir, "core")
         if os.path.isdir(core_mod_dir) and not os.path.isfile(os.path.join(core_mod_dir, "manifest.json")):

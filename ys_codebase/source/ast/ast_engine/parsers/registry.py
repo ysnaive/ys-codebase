@@ -5,6 +5,7 @@ and dispatches `TreeSitterDriver` and custom domain parsers.
 """
 
 import copy
+import dataclasses
 import importlib
 import json
 import os
@@ -387,6 +388,22 @@ class ParserRegistry:
                     if driver._language is None or driver._parser is None:
                         err_msg = f"Failed to load tree-sitter grammar '{cfg.grammar}' or query '{cfg.query_file}'"
                         self.load_errors[cfg.id] = err_msg
+                        fallback_parser: Optional[BaseParser] = None
+                        if cfg.id == "python":
+                            from .python_ast import PythonASTParser
+
+                            fallback_parser = PythonASTParser()
+                        elif cfg.id == "markdown":
+                            from .markdown import MarkdownParser
+
+                            fallback_parser = MarkdownParser()
+                        if fallback_parser is not None:
+                            self._bind_configured_extensions(fallback_parser, cfg.extensions)
+                            fallback_parser.SPACES = cfg.spaces
+                            if proc_instances:
+                                fallback_parser._processors = tuple(proc_instances)  # type: ignore[attr-defined]
+                            self.register_parser(fallback_parser, priority=100)
+                            continue
                     self.register_parser(driver, priority=100)
                 elif cfg.mode == "custom" and cfg.parser_entry:
                     try:
@@ -480,11 +497,34 @@ class ParserRegistry:
                 log_warn(f"Error checking can_parse for {parser}: {exc}", stream="stderr")
         return matched
 
+    @staticmethod
+    def _match_base_extract_cache(
+        parser: BaseParser,
+        file_path: str,
+        content: str,
+        space: Optional[str] = None,
+    ) -> Optional[Tuple[Any, ...]]:
+        cached = getattr(parser, "_last_base_extract_cache", None)
+        if cached is None:
+            return None
+        norm_p = str(file_path).replace("\\", "/")
+        if (
+            cached[0] == norm_p
+            and cached[1] == len(content)
+            and (cached[2] == id(content) or cached[3] == content)
+            and (space is None or cached[4] == space)
+        ):
+            return cached
+        return None
+
     def parse_file(self, file_path: str, content: str, space: str) -> List[UnifiedSymbol]:
         """Parse `file_path` content and return extracted UnifiedSymbol list."""
         parser = self.get_parser(file_path)
         if parser is None:
             return []
+        hit = self._match_base_extract_cache(parser, file_path, content, space=space)
+        if hit is not None:
+            return [dataclasses.replace(s, metadata=dict(s.metadata)) for s in hit[5]]
         try:
             return parser.parse(file_path=file_path, content=content, space=space)
         except Exception as exc:
@@ -502,6 +542,10 @@ class ParserRegistry:
         parser = self.get_parser(file_path)
         if parser is None:
             return []
+        if symbols is None:
+            hit = self._match_base_extract_cache(parser, file_path, content, space=space)
+            if hit is not None:
+                return list(hit[6])
         try:
             return parser.extract_call_sites(file_path=file_path, content=content, space=space, symbols=symbols)
         except TypeError:
@@ -519,6 +563,9 @@ class ParserRegistry:
         parser = self.get_parser(file_path)
         if parser is None:
             return {}
+        hit = self._match_base_extract_cache(parser, file_path, content, space=None)
+        if hit is not None:
+            return dict(hit[7])
         try:
             return parser.extract_imports(file_path=file_path, content=content)
         except Exception as exc:
@@ -542,6 +589,12 @@ class ParserRegistry:
         for fk, fv in node_b.facets.items():
             if fk not in merged_facets or not merged_facets[fk]:
                 merged_facets[fk] = fv
+            elif isinstance(merged_facets[fk], Mapping) and isinstance(fv, Mapping):
+                combined_map = dict(merged_facets[fk])
+                for mk, mv in fv.items():
+                    if mk not in combined_map or str(mv) > str(combined_map[mk]):
+                        combined_map[mk] = mv
+                merged_facets[fk] = combined_map
             elif isinstance(merged_facets[fk], (set, frozenset, list, tuple)) and isinstance(fv, (set, frozenset, list, tuple)):
                 merged_facets[fk] = tuple(sorted({str(x) for x in (*merged_facets[fk], *fv)}))
             elif str(fv) > str(merged_facets[fk]):
@@ -563,7 +616,6 @@ class ParserRegistry:
             sorted(child_by_key.values(), key=lambda c: (c.span.start_byte, -c.span.end_byte, c.name))
         )
         merged_prov = tuple(sorted(set(node_a.provenance) | set(node_b.provenance), key=lambda p: p.sort_key()))
-        # Prefer the richer (overload-disambiguated or deeper-scoped) ID deterministically
         chosen_id = max((node_a.id, node_b.id), key=lambda s: (len(s), s))
         if id_remap is not None:
             if node_a.id != chosen_id:
@@ -571,12 +623,17 @@ class ParserRegistry:
             if node_b.id != chosen_id:
                 id_remap[node_b.id] = chosen_id
         chosen_scope = max((node_a.scope_path, node_b.scope_path), key=lambda sp: (len(sp), sp))
+        chosen_name = max((node_a.name, node_b.name), key=lambda s: (len(s), s))
+        chosen_lang = max(
+            (node_a.language, node_b.language),
+            key=lambda s: (0 if s in ("", "unknown") else 1, len(s), s),
+        )
         return SymbolNode(
             id=chosen_id,
-            name=node_a.name,
+            name=chosen_name,
             scope_path=chosen_scope,
             kinds=merged_kinds,
-            language=node_a.language,
+            language=chosen_lang,
             span=merged_span,
             parts=merged_parts,
             facets=merged_facets,
@@ -649,46 +706,59 @@ class ParserRegistry:
                 curr = id_remap[curr]
             return curr
 
+        merged_roots = tuple(
+            sorted(root_by_key.values(), key=lambda r: (r.span.start_byte, -r.span.end_byte, r.name))
+        )
+
         edge_by_key: Dict[Tuple[str, str, str, int, int], RelationEdge] = {}
         for g in graphs:
             for ed in g.outgoing_edges:
-                eff_src_id = _resolve_remapped_id(ed.source_id)
-                ekey = (eff_src_id, ed.target_expr, ed.edge_kind, ed.span.start_byte, ed.span.end_byte)
+                remapped_src = _resolve_remapped_id(ed.source_id)
+                remapped_targets = tuple(_resolve_remapped_id(tid) for tid in ed.resolved_target_ids)
+                ekey = (
+                    remapped_src,
+                    ed.target_expr,
+                    ed.edge_kind,
+                    ed.span.start_byte,
+                    ed.span.end_byte,
+                )
                 if ekey in edge_by_key:
                     prev_ed = edge_by_key[ekey]
-                    u_prov = tuple(sorted(set(prev_ed.provenance) | set(ed.provenance), key=lambda p: p.sort_key()))
-                    edge_by_key[ekey] = RelationEdge(
-                        source_id=eff_src_id,
-                        target_expr=prev_ed.target_expr,
-                        edge_kind=prev_ed.edge_kind,
-                        span=prev_ed.span.union(ed.span),
-                        resolution_status=prev_ed.resolution_status,
-                        resolved_target_ids=prev_ed.resolved_target_ids,
-                        provenance=u_prov,
+                    comb_prov = tuple(
+                        sorted(set(prev_ed.provenance) | set(ed.provenance), key=lambda p: p.sort_key())
                     )
-                elif eff_src_id != ed.source_id:
+                    comb_targets = tuple(sorted(set(prev_ed.resolved_target_ids) | set(remapped_targets)))
                     edge_by_key[ekey] = RelationEdge(
-                        source_id=eff_src_id,
+                        source_id=remapped_src,
+                        target_expr=ed.target_expr,
+                        edge_kind=ed.edge_kind,
+                        span=prev_ed.span.union(ed.span),
+                        resolution_status=prev_ed.resolution_status if prev_ed.resolution_status != "unresolved" else ed.resolution_status,
+                        resolved_target_ids=comb_targets,
+                        provenance=comb_prov,
+                    )
+                else:
+                    edge_by_key[ekey] = RelationEdge(
+                        source_id=remapped_src,
                         target_expr=ed.target_expr,
                         edge_kind=ed.edge_kind,
                         span=ed.span,
                         resolution_status=ed.resolution_status,
-                        resolved_target_ids=ed.resolved_target_ids,
+                        resolved_target_ids=remapped_targets,
                         provenance=ed.provenance,
                     )
-                else:
-                    edge_by_key[ekey] = ed
 
-        merged_roots = tuple(
-            sorted(root_by_key.values(), key=lambda n: (n.span.start_byte, -n.span.end_byte, n.name))
-        )
         merged_edges = tuple(
-            sorted(edge_by_key.values(), key=lambda e: (e.span.start_byte, e.edge_kind, e.target_expr))
+            sorted(
+                edge_by_key.values(),
+                key=lambda e: (e.span.start_byte, e.edge_kind, e.source_id, e.target_expr),
+            )
         )
+        primary_lang = next((g.language for g in graphs if g.language and g.language != "unknown"), graphs[0].language)
         return FileSymbolGraph(
             file_path=norm_path,
             content_hash=c_hash,
-            language=graphs[0].language,
+            language=primary_lang,
             root_nodes=merged_roots,
             outgoing_edges=merged_edges,
         )

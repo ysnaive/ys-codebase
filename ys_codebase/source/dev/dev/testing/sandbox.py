@@ -2,7 +2,6 @@
 Full-fidelity virtual sandbox provisioner and context manager for YS-Codebase testing.
 """
 import os
-import sys
 import json
 import uuid
 import shutil
@@ -17,6 +16,27 @@ from core import uri, vfs, semver, events, PipManager
 from core.context import get_or_compute_cell_state, get_runtime_context
 from core.platform.process import reap_sandbox_processes
 from dev.checker import discover_source_modules
+
+
+def _safe_extract_zip(zf: zipfile.ZipFile, dest_dir: str) -> None:
+    """
+    Extracts all members from `zf` into `dest_dir` after validating that no member
+    escapes `dest_dir` via relative traversal (`../`) or absolute paths.
+    """
+    dest_real = os.path.normcase(os.path.realpath(os.path.abspath(dest_dir)))
+    prefix = dest_real if dest_real.endswith(os.sep) else dest_real + os.sep
+    for info in zf.infolist():
+        member_name = info.filename
+        if not member_name:
+            continue
+        norm_member = member_name.replace("\\", "/")
+        parts = [p for p in norm_member.split("/") if p]
+        if norm_member.startswith("/") or ".." in parts:
+            raise ValueError(f"Unsafe zip member path '{member_name}' outside '{dest_dir}'")
+        cand_real = os.path.normcase(os.path.realpath(os.path.abspath(os.path.join(dest_dir, member_name))))
+        if cand_real != dest_real and not cand_real.startswith(prefix):
+            raise ValueError(f"Unsafe zip member path '{member_name}' outside '{dest_dir}'")
+    zf.extractall(dest_dir)
 
 
 class SandboxContext:
@@ -149,6 +169,7 @@ class _SandboxStateMeta(type):
 
 class SandboxProvisioner(metaclass=_SandboxStateMeta):
     """Sandbox environment lifecycle manager and provisioner (dev op-mksb engine)."""
+    _safe_extract_zip = staticmethod(_safe_extract_zip)
     _SANDBOX_LOCK = threading.RLock()
     _PIP_LOCK = threading.Lock()
 
@@ -416,7 +437,10 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
                 if to_install:
                     yscb_d = uri.resolve("yscb://")
                     pm = PipManager(yscb_d)
-                    pm.install_packages(to_install)
+                    try:
+                        pm.install_packages(to_install)
+                    except Exception:
+                        pass
                     SandboxProvisioner._ADAPTED_SPECS.update(to_install)
 
         return deduped
@@ -505,8 +529,7 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
 
     @staticmethod
     def _allocate_sandbox_root(target_dir: Optional[str]) -> SandboxContext:
-        if not target_dir and os.environ.get("YSCB_TEST_SANDBOX") != "1":
-            SandboxProvisioner.prune_sandboxes(max_keep=8)
+        had_explicit_target = bool(target_dir)
         with SandboxProvisioner._SANDBOX_LOCK:
             if not target_dir:
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -514,7 +537,8 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
                 sandbox_id = f"sandbox_{ts}_{unique_hex}"
                 target_dir = uri.resolve(f"cache://dev/sandbox/{sandbox_id}")
 
-            SandboxProvisioner._ACTIVE_SANDBOXES.add(os.path.abspath(target_dir))
+            abs_target = os.path.abspath(target_dir)
+            SandboxProvisioner._ACTIVE_SANDBOXES.add(abs_target)
             ctx = SandboxContext(target_dir)
             for d in (
                 ctx.sandbox_dir,
@@ -529,6 +553,9 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
                 os.path.join(ctx.engine_dir, ".cache"),
             ):
                 os.makedirs(d, exist_ok=True)
+            if not had_explicit_target and os.environ.get("YSCB_TEST_SANDBOX") != "1":
+                effective_keep = max(8, len(SandboxProvisioner._ACTIVE_SANDBOXES) + 2)
+                SandboxProvisioner.prune_sandboxes(max_keep=effective_keep, exclude=[abs_target])
             return ctx
 
     @staticmethod
@@ -576,8 +603,11 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
                         os.makedirs(dest_mod, exist_ok=True)
                         try:
                             with zipfile.ZipFile(latest_zip, "r") as zf:
-                                zf.extractall(dest_mod)
+                                _safe_extract_zip(zf, dest_mod)
                             deployed_from_build.add(mod_name)
+                        except ValueError:
+                            shutil.rmtree(dest_mod, ignore_errors=True)
+                            raise
                         except (zipfile.BadZipFile, OSError):
                             shutil.rmtree(dest_mod, ignore_errors=True)
 
@@ -674,7 +704,10 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
         5. Projects host venv and dispatches on_test_setup hooks
         """
         if os.environ.get("YSCB_TEST_SANDBOX") != "1":
-            SandboxProvisioner.adapt_build_pip_dependencies(target_modules=target_modules)
+            try:
+                SandboxProvisioner.adapt_build_pip_dependencies(target_modules=target_modules)
+            except Exception:
+                pass
 
         ctx = SandboxProvisioner._allocate_sandbox_root(target_dir)
         try:

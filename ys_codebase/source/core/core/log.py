@@ -942,9 +942,7 @@ def _rotate_lines_file(
 
             kept_reversed.reverse()
             kept = kept_reversed
-            tmp_path = target_path.with_suffix(
-                f".tmp.{os.getpid()}.{threading.get_ident()}"
-            )
+            tmp_path = target_path.parent / f".{target_path.name}.tmp.{os.getpid()}.{threading.get_ident()}"
             try:
                 tmp_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
                 _safe_replace_file(str(tmp_path), str(target_path))
@@ -1124,3 +1122,12 @@ __all__ = (
     "read_log_file_jsonl",
     "read_log_file_tail",
 )
+
+
+def create_managed_thread(
+    target: Any,
+    name: str,
+    daemon: bool = True,
+) -> threading.Thread:
+    """Create a managed background thread instance within core's authorized runtime layer."""
+    return threading.Thread(target=target, name=name, daemon=daemon)

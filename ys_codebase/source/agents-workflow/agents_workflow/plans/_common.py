@@ -1,18 +1,25 @@
 """
-agents_workflow.plans._common — Plans 工具鏈共用基礎設施（語意 URI 解析與 Markdown 標頭提取 SSOT）。
+agents_workflow.plans._common — Plans 工具鏈共用基礎設施（語意 URI 解析、Markdown 標頭提取、生命周期完成度判定與變更日誌表格解析 SSOT）。
 """
 
+import re
 from pathlib import Path
 from types import MappingProxyType
-from typing import Dict, List, Mapping, Optional, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 from core.context import get_virtual_cwd
 
 DEFAULT_URI_FALLBACKS: Mapping[str, str] = MappingProxyType({
     "workflow.plans://": "plans",
     "workflow.archived://": "plans/archived",
+    "workflow.roadmap://": "plans/roadmap",
+    "workflow.docs://": "docs",
     "project://": ".",
 })
+
+_CHANGELOG_UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
+_CHANGELOG_SEP_LINE_RE = re.compile(r"^\|?\s*[-:]+\s*\|")
+_CHANGELOG_HEADER_FIRST_CELLS = frozenset({"日期時間", "日期", "timestamp", "date", "time"})
 
 
 def resolve_plan_uri(
@@ -79,6 +86,181 @@ def parse_markdown_blockquote_headers(
     return headers
 
 
+def parse_changelog_table(
+    lines_or_content: Union[str, List[str]],
+) -> Tuple[int, int, List[Dict[str, Any]]]:
+    """
+    統一解析 changelog.md 中之 Markdown 表格結構（支援 `\\|` 跳脫直線字元與 3/4 欄相容）。
+
+    Returns:
+        Tuple[int, int, List[Dict[str, Any]]]:
+            - table_line_count: 非 HTML 註解之表格行總數
+            - sep_idx: 表格分隔線 (`| :--- |`) 在原行清單中之索引（若無則為 -1）
+            - rows: 資料列字典清單，每筆包含 line_idx, timestamp, type, model, summary, raw_summary, cells
+    """
+    if isinstance(lines_or_content, str):
+        lines = lines_or_content.splitlines()
+    else:
+        lines = list(lines_or_content)
+
+    table_line_count = 0
+    sep_idx = -1
+    rows: List[Dict[str, Any]] = []
+
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if "|" not in stripped or stripped.startswith("<!--"):
+            continue
+        table_line_count += 1
+        if _CHANGELOG_SEP_LINE_RE.match(stripped):
+            if sep_idx == -1:
+                sep_idx = idx
+            continue
+
+        cells = [
+            c.strip()
+            for c in _CHANGELOG_UNESCAPED_PIPE_RE.split(stripped.strip("|"))
+        ]
+        if not cells or not any(cells):
+            continue
+        first_cell_norm = cells[0].strip().lower()
+        if first_cell_norm in _CHANGELOG_HEADER_FIRST_CELLS:
+            continue
+        if sep_idx != -1 and idx < sep_idx:
+            continue
+
+        ts_str = cells[0].strip()
+        type_str = cells[1].strip().strip("`").upper() if len(cells) >= 2 else ""
+        if len(cells) >= 4:
+            model_str = cells[2].strip().replace(r"\|", "|")
+            raw_summary = cells[3].strip()
+        elif len(cells) == 3:
+            model_str = "Unknown"
+            raw_summary = cells[2].strip()
+        else:
+            model_str = "Unknown"
+            raw_summary = cells[-1].strip()
+        summary_str = raw_summary.replace(r"\|", "|").strip()
+
+        rows.append({
+            "line_idx": idx,
+            "timestamp": ts_str,
+            "type": type_str,
+            "model": model_str,
+            "summary": summary_str,
+            "raw_summary": raw_summary,
+            "cells": cells,
+        })
+
+    return table_line_count, sep_idx, rows
+
+
+def is_revision_root_dir(plan_dir: Union[str, Path]) -> bool:
+    """
+    判定目錄是否為純獨立修訂根目錄（含 revision_log.md，且不含 umbrella_overview.md、fast_track_plan.md、P01 或 P07）。
+    """
+    from .status import PlanStatusResolver
+
+    p = Path(plan_dir)
+    if not (p / "revision_log.md").is_file():
+        return False
+    if (p / "umbrella_overview.md").is_file() or (p / "fast_track_plan.md").is_file():
+        return False
+    if PlanStatusResolver.resolve_phase_file(p, "P01").is_file():
+        return False
+    if PlanStatusResolver.resolve_phase_file(p, "P07").is_file():
+        return False
+    return True
+
+
+def evaluate_plan_completion(plan_dir: Union[str, Path]) -> Tuple[bool, Optional[str]]:
+    """
+    統一評估計畫（含主計畫、所有 sub_XX 子計畫及附掛之 revision_log.md）是否已完整結案 (SSOT)。
+
+    Returns:
+        Tuple[bool, Optional[str]]: (is_completed, blocking_reason)
+    """
+    from .status import PlanStatusResolver
+
+    p = Path(plan_dir)
+    plan_name = p.name
+
+    all_rev_logs: List[Path] = []
+    root_rev = p / "revision_log.md"
+    if root_rev.is_file():
+        all_rev_logs.append(root_rev)
+
+    sub_dirs = sorted(
+        [d for d in p.iterdir() if d.is_dir() and d.name.startswith("sub_")],
+        key=lambda x: x.name,
+    ) if p.is_dir() else []
+
+    for sub_dir in sub_dirs:
+        sub_rev = sub_dir / "revision_log.md"
+        if sub_rev.is_file():
+            all_rev_logs.append(sub_rev)
+
+    for r_file in all_rev_logs:
+        if not PlanStatusResolver.is_doc_completed(r_file):
+            rel_r = r_file.relative_to(p)
+            return (
+                False,
+                f"計畫 '{plan_name}' 內存在尚未完成之修訂紀錄 '{rel_r}'（標頭未標記 Completed），為確保結案無遺漏，無法歸檔。若確定要強制歸檔，請使用 --force 參數。",
+            )
+
+    umbrella_overview = p / "umbrella_overview.md"
+    ft_plan = p / "fast_track_plan.md"
+    p01_file = PlanStatusResolver.resolve_phase_file(p, "P01")
+    p07_walkthrough = PlanStatusResolver.resolve_phase_file(p, "P07")
+
+    if umbrella_overview.is_file():
+        if not PlanStatusResolver.is_doc_completed(umbrella_overview):
+            return (
+                False,
+                f"計畫 '{plan_name}' 之 'umbrella_overview.md' 尚未完成（未找到標頭 Completed/Concluded 標記）。若確定要強制歸檔，請使用 --force 參數。",
+            )
+        for sub_dir in sub_dirs:
+            sub_ok, sub_reason = evaluate_plan_completion(sub_dir)
+            if not sub_ok:
+                return (
+                    False,
+                    f"計畫 '{plan_name}' 之子計畫 '{sub_dir.name}' 尚未完成（{sub_reason or '未標記 Completed'}），無法歸檔。若確定要強制歸檔，請使用 --force 參數。",
+                )
+        return True, None
+
+    if ft_plan.is_file():
+        if PlanStatusResolver.is_doc_completed(ft_plan):
+            return True, None
+        return (
+            False,
+            f"計畫 '{plan_name}' 之 'fast_track_plan.md' 尚未完成（未找到標頭 Completed/Concluded 標記）。若確定要強制歸檔，請使用 --force 參數。",
+        )
+
+    if p01_file.is_file() or p07_walkthrough.is_file():
+        if p07_walkthrough.is_file() and PlanStatusResolver.is_doc_completed(p07_walkthrough):
+            return True, None
+        return (
+            False,
+            f"計畫 '{plan_name}' 尚未完成（'P07_walkthrough.md' 未找到標頭 Completed/Concluded 標記）。若確定要強制歸檔，請使用 --force 參數。",
+        )
+
+    if root_rev.is_file():
+        if PlanStatusResolver.is_doc_completed(root_rev):
+            return True, None
+        return (
+            False,
+            f"計畫 '{plan_name}' 之 'revision_log.md' 尚未完成（未找到標頭 Completed/Concluded 標記）。若確定要強制歸檔，請使用 --force 參數。",
+        )
+
+    if PlanStatusResolver.is_research_completed(p):
+        return True, None
+
+    return (
+        False,
+        f"計畫 '{plan_name}' 尚未完成（未找到標頭 Completed/Concluded 標記）。若確定要強制歸檔，請使用 --force 參數。",
+    )
+
+
 def resolve_active_target_projected_path(
     artifact_type: str,
     artifact_name: str = "",
@@ -98,8 +280,8 @@ def resolve_active_target_projected_path(
     fallback = f"{default_base}/{subpath}".strip("/") if subpath else default_base
 
     try:
-        from agents_workflow.targets import ReleaseTargetManager
         from agents_workflow.compiler import ArtifactCompiler
+        from agents_workflow.targets import ReleaseTargetManager
 
         classified = ReleaseTargetManager.get_classified_targets()
         active_targets = classified.get("union", [])

@@ -5,7 +5,7 @@ Supports ATX/Setext headings, pipe tables, section docstrings, and markdown refe
 
 from pathlib import Path
 import re
-from typing import Dict, FrozenSet, List, Optional, Tuple, Union
+from typing import Dict, FrozenSet, List, Optional, Union
 
 from ..dialects.markdown import MarkdownDialect
 from ..schema import (
@@ -13,16 +13,15 @@ from ..schema import (
     LanguageType,
     ProvenanceStep,
     RelationEdge,
-    Span,
     SymbolCallSite,
     SymbolKind,
-    SymbolNode,
     UnifiedSymbol,
 )
 from .base import BaseParser, build_line_byte_offsets, compute_content_hash, span_from_lines
 
 _FENCE_RE = re.compile(r"^(`{3,}|~{3,})")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
+_SETEXT_UNDERLINE_RE = re.compile(r"^(=+|-+)\s*$")
 _MD_LINK_DOC_RE = re.compile(r"\[([^\]]+)\]\((?:file:///)?([^)\s]+)\)")
 _MD_BACKTICK_DOC_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_.]*)(?:\([^`]*\))?`")
 
@@ -49,10 +48,14 @@ class MarkdownParser(BaseParser):
         raw_headings: List[Dict[str, Union[int, str]]] = []
 
         active_fence: Optional[str] = None
+        prev_plain_line: Optional[str] = None
+        prev_plain_idx: int = 0
+
         for idx, line in enumerate(lines, start=1):
             stripped = line.strip()
             fm = _FENCE_RE.match(stripped)
             if fm:
+                prev_plain_line = None
                 fence_marker = fm.group(1)
                 if active_fence is None:
                     active_fence = fence_marker
@@ -64,6 +67,7 @@ class MarkdownParser(BaseParser):
 
             hm = _HEADING_RE.match(stripped)
             if hm:
+                prev_plain_line = None
                 level = len(hm.group(1))
                 title = hm.group(2).strip()
                 kind_map = {
@@ -77,13 +81,36 @@ class MarkdownParser(BaseParser):
                     "kind": kind_map.get(level, SymbolKind.DOC_HEADING_4.value),
                     "signature": f"{'#' * level} {title}",
                     "line_number": idx,
+                    "doc_start_line": idx,
                 })
+                continue
+
+            sm = _SETEXT_UNDERLINE_RE.match(stripped)
+            if sm and len(sm.group(1)) >= 3 and prev_plain_line:
+                level = 1 if sm.group(1)[0] == "=" else 2
+                kind_val = SymbolKind.DOC_HEADING_1.value if level == 1 else SymbolKind.DOC_HEADING_2.value
+                raw_headings.append({
+                    "name": prev_plain_line,
+                    "kind": kind_val,
+                    "signature": f"{'#' * level} {prev_plain_line}",
+                    "line_number": prev_plain_idx,
+                    "doc_start_line": idx,
+                })
+                prev_plain_line = None
+                continue
+
+            if stripped and not stripped.startswith(("|", ">", "-", "*", "+")):
+                prev_plain_line = stripped
+                prev_plain_idx = idx
+            else:
+                prev_plain_line = None
 
         for i, h in enumerate(raw_headings):
             start_ln = int(h["line_number"])
+            doc_start_ln = int(h.get("doc_start_line", start_ln))
             end_ln = int(raw_headings[i + 1]["line_number"]) - 1 if i + 1 < len(raw_headings) else len(lines)
             end_ln = max(start_ln, end_ln)
-            doc = "\n".join(lines[start_ln:end_ln]).strip()
+            doc = "\n".join(lines[doc_start_ln:end_ln]).strip()
             name_str = str(h["name"])
             kind_str = str(h["kind"])
             sig_str = str(h["signature"])
@@ -216,7 +243,6 @@ class MarkdownParser(BaseParser):
         file_root_id = f"{normalized_path}::<module>"
         doc_prov = (ProvenanceStep(provider_id="ast:MarkdownParser", action="extract", rule_or_hook="@edge.documents"),)
 
-        # Map line ranges to heading SymbolNode IDs
         heading_nodes = sorted(
             base_graph.all_nodes_by_id.values(),
             key=lambda n: (n.span.end_line - n.span.start_line, n.span.start_line),
@@ -249,7 +275,7 @@ class MarkdownParser(BaseParser):
                 continue
 
             src_id = _enclosing_doc_node_id(idx)
-            ln_span = span_from_lines(idx, idx, line_offsets, total_bytes)
+            ln_span = span_from_lines(idx, idx, line_offsets, total_bytes, content_bytes=content_bytes)
 
             for m_link in _MD_LINK_DOC_RE.finditer(line):
                 link_label = m_link.group(1).strip().strip("`")

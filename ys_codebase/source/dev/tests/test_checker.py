@@ -865,3 +865,20 @@ class TestDevChecker(YSCBTestCase):
         self.assertEqual(rc4, 1)
         self.assertIn("FAILED (Release Blocked)", buf_fail.getvalue())
         self.mark_passed()
+
+    def test_checker_defaultdict_classvar_and_context_cache(self):
+        """Verify DefaultDict in _MUTABLE_TYPE_NAMES and Checker AST/JSON cache reuse across repeated check_module runs."""
+        from dev.checker import _MUTABLE_TYPE_NAMES
+
+        self.assertIn("DefaultDict", _MUTABLE_TYPE_NAMES)
+        self.assertNotIn(" DefaultDict", _MUTABLE_TYPE_NAMES)
+
+        rep1 = self.checker.check_module("dev")
+        self.assertTrue(rep1.passed)
+        self.assertGreater(len(self.checker._parsed_py_cache), 0)
+        self.assertGreater(len(self.checker._json_cache), 0)
+
+        rep2 = self.checker.check_module("dev")
+        self.assertTrue(rep2.passed)
+        self.assertEqual(len(rep1.issues), len(rep2.issues))
+        self.mark_passed()

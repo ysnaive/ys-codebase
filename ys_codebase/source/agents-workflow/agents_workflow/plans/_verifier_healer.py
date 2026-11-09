@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ._common import parse_markdown_blockquote_headers
+from ._common import parse_changelog_table, parse_markdown_blockquote_headers
 from ._verifier_specs import (
     HEADER_DATE_KEYS,
     HEADER_NAME_KEYS,
@@ -17,7 +17,6 @@ from ._verifier_specs import (
 )
 
 _UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
-_TABLE_SEP_LINE_RE = re.compile(r"^\|?\s*[-:]+\s*\|")
 _DIR_DATE_PREFIX_RE = re.compile(r"^(\d{4})_(\d{2})_(\d{2})")
 _SLUG_STRIP_PREFIX_RE = re.compile(r"^(?:\d{4}_\d{2}_\d{2}_(?:\d{4}_)?|sub_\d+_)")
 
@@ -95,28 +94,51 @@ def infer_deterministic_header_values(file_path: Path, is_sub_plan: bool) -> Dic
     }
 
 
+def _replace_or_insert_header_line(
+    new_lines: List[str],
+    insert_idx: int,
+    key: str,
+    val: str,
+    candidate_keys: Tuple[str, ...],
+) -> None:
+    """若前 35 行已存在空白值的對應標頭鍵則原地填補，否則於 insert_idx 插入新標頭行。"""
+    cand_lower = {k.lower() for k in candidate_keys}
+    for idx in range(min(35, len(new_lines))):
+        line_clean = new_lines[idx].strip().replace("\u3000", " ")
+        if line_clean.startswith(">"):
+            inner = line_clean.lstrip(">").strip()
+            sep = "：" if "：" in inner else (":" if ":" in inner else "")
+            if sep:
+                k_part, v_part = inner.split(sep, 1)
+                if k_part.strip().lower() in cand_lower and not v_part.strip():
+                    new_lines[idx] = f"> {k_part.strip()}：{val}  "
+                    return
+    new_lines.insert(insert_idx, f"> {key}：{val}  ")
+
+
 def auto_heal_deterministic_headers(
     md_file: Path,
     lines: List[str],
     headers: Dict[str, str],
     is_sub_plan: bool,
+    pending_writes: Optional[Dict[Path, str]] = None,
 ) -> Tuple[List[str], Dict[str, str], List[str]]:
     """
-    若缺少 [功能名稱]、[建立日期] 或二級子計畫之 [所屬主計畫]，自動推導確定性值並寫回檔案。
+    若缺少 [功能名稱]、[建立日期] 或二級子計畫之 [所屬主計畫]，自動推導確定性值並暫存或寫回檔案。
     後置契約：絕不新增或修改 [狀態] 與 [模型]；回傳更新後之 (lines, headers, healed_keys)。
     """
     inferred = infer_deterministic_header_values(md_file, is_sub_plan)
-    has_name = any(k in headers for k in HEADER_NAME_KEYS)
-    has_date = any(k in headers for k in HEADER_DATE_KEYS)
-    has_parent = any(k in headers for k in HEADER_PARENT_KEYS)
+    has_name = any(bool(headers.get(k, "").strip()) for k in HEADER_NAME_KEYS)
+    has_date = any(bool(headers.get(k, "").strip()) for k in HEADER_DATE_KEYS)
+    has_parent = any(bool(headers.get(k, "").strip()) for k in HEADER_PARENT_KEYS)
 
-    missing_pairs: List[Tuple[str, str]] = []
+    missing_pairs: List[Tuple[str, str, Tuple[str, ...]]] = []
     if not has_name:
-        missing_pairs.append(("功能名稱", inferred["功能名稱"]))
+        missing_pairs.append(("功能名稱", inferred["功能名稱"], HEADER_NAME_KEYS))
     if not has_date:
-        missing_pairs.append(("建立日期", inferred["建立日期"]))
+        missing_pairs.append(("建立日期", inferred["建立日期"], HEADER_DATE_KEYS))
     if is_sub_plan and not has_parent:
-        missing_pairs.append(("所屬主計畫", inferred["所屬主計畫"]))
+        missing_pairs.append(("所屬主計畫", inferred["所屬主計畫"], HEADER_PARENT_KEYS))
 
     if not missing_pairs:
         return lines, headers, []
@@ -141,16 +163,20 @@ def auto_heal_deterministic_headers(
         if insert_idx == -1:
             insert_idx = 0
 
-    for key, val in reversed(missing_pairs):
-        new_lines.insert(insert_idx, f"> {key}：{val}  ")
+    for key, val, cand_keys in reversed(missing_pairs):
+        _replace_or_insert_header_line(new_lines, insert_idx, key, val, cand_keys)
 
-    try:
-        _atomic_write_text(md_file, "\n".join(new_lines) + "\n")
-    except Exception:
-        return lines, headers, []
+    rendered_content = "\n".join(new_lines) + "\n"
+    if pending_writes is not None:
+        pending_writes[md_file] = rendered_content
+    else:
+        try:
+            _atomic_write_text(md_file, rendered_content)
+        except Exception:
+            return lines, headers, []
 
     updated_headers = parse_markdown_blockquote_headers(new_lines)
-    healed_keys = [k for k, _ in missing_pairs]
+    healed_keys = [k for k, _, _ in missing_pairs]
     return new_lines, updated_headers, healed_keys
 
 
@@ -202,10 +228,11 @@ def auto_heal_companions(
     phase_norm: str,
     explicit_model: Optional[str],
     report: Any,
+    pending_writes: Optional[Dict[Path, str]] = None,
 ) -> None:
     """
     Step 2: 自動初始化缺失之伴隨檔 (changelog.md 與 P02 階段伴隨之 P06_test_plan.md Draft)。
-    僅於 Step 1 目標階段主體檔合規 (0 FAIL) 且啟用自癒時呼叫。
+    支援交易暫存區 (pending_writes)，確保檢核全數無誤後方才落盤。
     """
     today_str = datetime.now().strftime("%Y-%m-%d")
     is_sub = target_dir.name.startswith("sub_")
@@ -214,7 +241,7 @@ def auto_heal_companions(
     rel_prefix = f"{target_dir.name}/" if is_sub and target_dir.resolve() != Path(report.plan_path).resolve() else ""
 
     changelog_path = target_dir / "changelog.md"
-    if not changelog_path.exists():
+    if not changelog_path.exists() and (pending_writes is None or changelog_path not in pending_writes):
         cl_content = _render_initial_changelog(
             target_dir,
             model=model_val,
@@ -222,7 +249,10 @@ def auto_heal_companions(
             log_type="PHASE",
             today_str=today_str,
         )
-        _atomic_write_text(changelog_path, cl_content)
+        if pending_writes is not None:
+            pending_writes[changelog_path] = cl_content
+        else:
+            _atomic_write_text(changelog_path, cl_content)
         created_rel = f"{rel_prefix}changelog.md"
         if created_rel not in report.companion_created:
             report.companion_created.append(created_rel)
@@ -231,7 +261,8 @@ def auto_heal_companions(
 
     p02_path = PlanStatusResolver.resolve_phase_file(target_dir, "P02")
     p06_path = PlanStatusResolver.resolve_phase_file(target_dir, "P06")
-    if phase_norm.upper() in ("P02", "ALL", "CURRENT") and p02_path.is_file() and not p06_path.exists():
+    p06_missing = not p06_path.exists() and (pending_writes is None or p06_path not in pending_writes)
+    if phase_norm.upper() in ("P02", "ALL", "CURRENT") and p02_path.is_file() and p06_missing:
         p02_model = resolve_companion_model(target_dir, "P02", explicit_model)
         p01_path = PlanStatusResolver.resolve_phase_file(target_dir, "P01")
         req_ids = (
@@ -277,7 +308,10 @@ def auto_heal_companions(
             f"| :--- | :--- | :---: | :--- |\n"
             f"| **UX-01** | 待於 Phase 4 定稿確認 | `Pending` | 待驗收 |\n"
         )
-        _atomic_write_text(p06_path, p06_content)
+        if pending_writes is not None:
+            pending_writes[p06_path] = p06_content
+        else:
+            _atomic_write_text(p06_path, p06_content)
         created_rel = f"{rel_prefix}P06_test_plan.md"
         if created_rel not in report.companion_created:
             report.companion_created.append(created_rel)
@@ -313,12 +347,7 @@ def append_changelog_entry(
 
     content = changelog_path.read_text(encoding="utf-8", errors="ignore")
     lines = content.splitlines()
-
-    sep_idx = -1
-    for idx, line in enumerate(lines):
-        if "|" in line and _TABLE_SEP_LINE_RE.match(line.strip()):
-            sep_idx = idx
-            break
+    _, sep_idx, rows = parse_changelog_table(lines)
 
     new_row = f"| {now_str} | `{clean_type}` | {clean_model} | {clean_summary} |"
     if sep_idx == -1:
@@ -333,20 +362,13 @@ def append_changelog_entry(
         _atomic_write_text(changelog_path, "\n".join(lines) + "\n")
         return True, "appended"
 
-    first_data_idx = sep_idx + 1
-    while first_data_idx < len(lines) and not lines[first_data_idx].strip():
-        first_data_idx += 1
-
-    if first_data_idx < len(lines) and "|" in lines[first_data_idx]:
-        cells = [
-            c.strip()
-            for c in _UNESCAPED_PIPE_RE.split(lines[first_data_idx].strip().strip("|"))
-        ]
-        if len(cells) >= 3:
-            existing_type = cells[1].strip().strip("`").upper()
-            existing_summary = cells[3].strip() if len(cells) >= 4 else cells[2].strip()
-            if existing_type == clean_type and existing_summary in (clean_summary, raw_summary):
-                return False, "idempotent_skipped"
+    if rows:
+        first_row = rows[0]
+        if first_row["type"] == clean_type and (
+            first_row["raw_summary"] in (clean_summary, raw_summary)
+            or first_row["summary"] in (clean_summary, raw_summary)
+        ):
+            return False, "idempotent_skipped"
 
     lines.insert(sep_idx + 1, new_row)
     _atomic_write_text(changelog_path, "\n".join(lines) + "\n")

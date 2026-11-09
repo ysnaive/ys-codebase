@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 import os
 from pathlib import Path
@@ -167,6 +167,7 @@ class RuntimeContext:
 
     def __init__(self) -> None:
         self.lock = threading.RLock()
+        self.sys_path_lock = threading.RLock()
 
         # 1. core.uri state & caches
         self.uri_tls = threading.local()
@@ -259,6 +260,55 @@ class RuntimeContext:
         with self.module_states_lock:
             self.module_states[key] = value
 
+    def invalidate_host_caches(self, scope: str = "all") -> None:
+        """
+        Atomically clears runtime caches for the specified `scope`:
+        - `"all"`: clears contributes, loader, dispatcher, symbols, uri, config, locale, validator, and space caches.
+        - `"contributes"`: clears contributes, uri, and dispatcher registry caches.
+        - `"modules"` or `"loader"`: clears loader, symbols, and dispatcher module caches.
+        - `"uri"`: clears uri schemes and token map caches.
+        - `"space"`: clears default space registries and scanners.
+        """
+        norm_scope = str(scope or "all").strip().lower()
+        with self.lock:
+            if norm_scope in ("all", "uri", "contributes"):
+                self.uri_schemes_cache.clear()
+                self.uri_token_map_cache.clear()
+            if norm_scope in ("all", "contributes"):
+                self.contributes_merged_cache.clear()
+                self.contributes_json_file_cache.clear()
+                self.contributes_last_clean_scan_ts.clear()
+                self.dispatcher_global_registry = None
+                self.dispatcher_global_registry_root = None
+            if norm_scope in ("all", "modules", "loader", "symbols", "dispatcher"):
+                self.symbols_callable_cache.clear()
+                self.dispatcher_module_cache.clear()
+                from core.loader import clear_loaded_modules
+
+                clear_loaded_modules()
+                if norm_scope in ("all", "dispatcher"):
+                    self.dispatcher_global_registry = None
+                    self.dispatcher_global_registry_root = None
+            if norm_scope in ("all", "config"):
+                self.config_cache.clear()
+                self.config_mtimes.clear()
+            if norm_scope in ("all", "locale"):
+                self.locale_file_cache.clear()
+                self.locale_module_base_dir_cache.clear()
+                self.locale_safe_subpath_cache.clear()
+            if norm_scope in ("all", "validator"):
+                self.validator_signature_cache.clear()
+            if norm_scope in ("all", "space"):
+                with self.space_registries_lock:
+                    self.space_default_registries.clear()
+                with self.space_scanners_lock:
+                    self.space_default_scanners.clear()
+            with self.epoch_states_lock:
+                self.epoch_states.clear()
+            curr_cell = _ACTIVE_CELL_SCOPE.get()
+            if curr_cell is not None and not curr_cell.is_closed:
+                curr_cell.cache.clear()
+
     def reset_all_caches(self) -> None:
         """
         Clears all mutable caches in-place so existing dictionary/list references held
@@ -268,32 +318,11 @@ class RuntimeContext:
             self.uri_tls.__dict__.clear()
             self.uri_reentrancy.__dict__.clear()
             self.uri_reconciling_tokens.clear()
-            self.uri_schemes_cache.clear()
-            self.uri_token_map_cache.clear()
-            self.config_cache.clear()
-            self.config_mtimes.clear()
-            self.contributes_merged_cache.clear()
-            self.contributes_json_file_cache.clear()
-            self.contributes_last_clean_scan_ts.clear()
-            self.locale_file_cache.clear()
-            self.locale_module_base_dir_cache.clear()
-            self.locale_safe_subpath_cache.clear()
-            self.symbols_callable_cache.clear()
-            from core.loader import clear_loaded_modules
-
-            clear_loaded_modules()
+            self.invalidate_host_caches("all")
             self.gitignore_custom_root_store.clear()
-            self.validator_signature_cache.clear()
-            self.dispatcher_global_registry = None
-            self.dispatcher_global_registry_root = None
-            self.dispatcher_module_cache.clear()
             self.dispatcher_auto_spawn_warned = False
             self.process_can_spawn_daemon_cache = None
             self.venv_active_test_source_paths.clear()
-            with self.space_registries_lock:
-                self.space_default_registries.clear()
-            with self.space_scanners_lock:
-                self.space_default_scanners.clear()
             with self.space_subscriber_lock:
                 self.space_subscribers.clear()
             with self.space_watcher_lock:
@@ -304,11 +333,6 @@ class RuntimeContext:
                 self.server_last_touch_by_root.clear()
             with self.module_states_lock:
                 self.module_states.clear()
-            with self.epoch_states_lock:
-                self.epoch_states.clear()
-            curr_cell = _ACTIVE_CELL_SCOPE.get()
-            if curr_cell is not None and not curr_cell.is_closed:
-                curr_cell.cache.clear()
 
 
 @lru_cache(maxsize=1)
@@ -322,9 +346,42 @@ def reset_runtime_context() -> None:
     get_runtime_context().reset_all_caches()
 
 
+def invalidate_host_caches(scope: str = "all") -> None:
+    """Atomically invalidates runtime caches on the active `RuntimeContext` for the given `scope`."""
+    get_runtime_context().invalidate_host_caches(scope=scope)
+
+
 def get_current_scope() -> Optional[RuntimeScope]:
     """Returns the currently active `RuntimeScope` bound via `ContextVar`, or None."""
     return _ACTIVE_RUNTIME_SCOPE.get()
+
+
+def update_current_scope_roots(
+    *,
+    active_host_dir: Any = ...,
+    active_yscb_dir: Any = ...,
+    active_module: Any = ...,
+) -> Optional[RuntimeScope]:
+    """
+    If an active `RuntimeScope` is currently bound in `_ACTIVE_RUNTIME_SCOPE`, updates its
+    `active_host_dir`, `active_yscb_dir`, or `active_module` fields in the current context
+    so mutations via `uri.set_host_dir` / `uri.host_scope` stay synchronized with `RuntimeScope`.
+    """
+    current = _ACTIVE_RUNTIME_SCOPE.get()
+    if current is None:
+        return None
+    updates: Dict[str, Any] = {}
+    if active_host_dir is not ...:
+        updates["active_host_dir"] = active_host_dir
+    if active_yscb_dir is not ...:
+        updates["active_yscb_dir"] = active_yscb_dir
+    if active_module is not ...:
+        updates["active_module"] = active_module
+    if not updates:
+        return current
+    updated = replace(current, **updates)
+    _ACTIVE_RUNTIME_SCOPE.set(updated)
+    return updated
 
 
 @contextmanager
@@ -575,7 +632,9 @@ __all__ = (
     "RuntimeContext",
     "get_runtime_context",
     "reset_runtime_context",
+    "invalidate_host_caches",
     "get_current_scope",
+    "update_current_scope_roots",
     "bind_runtime_context",
     "get_current_cell",
     "bind_cell_context",

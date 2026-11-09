@@ -8,6 +8,7 @@ Invariants:
 - When config.auto_sync is True, subscribes to core.space.subscribe and deterministically
   invokes _unsubscribe() upon stop().
 """
+from dataclasses import replace
 import os
 import threading
 import time
@@ -102,7 +103,7 @@ except ImportError:
                     thread.join(timeout=timeout)
                 self.set_state(self.STATE_STOPPED)
 
-from .config import GDriveConfig, load_gdrive_config
+from .config import GDriveConfig, load_gdrive_config, normalize_remote_rel_path
 from .coordinator import SyncCoordinator
 from .transport import create_transport
 
@@ -123,6 +124,7 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
         self._subscribe_fn = subscribe_fn
         self._config: Optional[GDriveConfig] = config
         self._coordinator: Optional[SyncCoordinator] = coordinator
+        self._owned_transport: Optional[Any] = None
         self._unsubscribe: Optional[Callable[[], None]] = None
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
@@ -144,7 +146,17 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
         self._stop_event.clear()
         self._wake_event.clear()
         self.set_state(self.STATE_STARTING)
-        cfg = self._explicit_config or load_gdrive_config()
+        if self._explicit_config is not None:
+            cfg = self._explicit_config
+        else:
+            try:
+                cfg = load_gdrive_config()
+            except Exception as exc:
+                self._last_error = str(exc)
+                self.standby_mode = True
+                self._started = True
+                self.set_state(self.STATE_READY)
+                return
         self._config = cfg
         self._started = True
 
@@ -161,6 +173,7 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
         self.standby_mode = False
         if self._coordinator is None:
             transport = create_transport(cfg)
+            self._owned_transport = transport
             self._coordinator = SyncCoordinator(config=cfg, transport=transport)
 
         sub_fn = self._subscribe_fn
@@ -189,6 +202,34 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
     def _on_file_space_changed(self, space_name: str, _diff: Any = None) -> None:
         self._wake_event.set()
 
+    def _refresh_active_branch(self) -> None:
+        """
+        Dynamically refresh active_branch on each sync cycle from persisted state or updated config
+        so a foreground 'gdrive checkout <branch>' is immediately honored by the background worker.
+        """
+        if self._coordinator is None:
+            return
+        candidate_branch = ""
+        if self._explicit_config is None:
+            try:
+                latest_cfg = load_gdrive_config()
+                if latest_cfg.active_branch:
+                    candidate_branch = latest_cfg.active_branch
+            except Exception:
+                pass
+        try:
+            state = self._coordinator._load_local_state()
+            state_branch = normalize_remote_rel_path(str(state.get("active_branch") or ""))
+            if state_branch and "/" not in state_branch:
+                candidate_branch = state_branch
+        except Exception:
+            pass
+
+        if candidate_branch and candidate_branch != self._coordinator.config.active_branch:
+            updated_cfg = replace(self._coordinator.config, active_branch=candidate_branch)
+            self._coordinator.config = updated_cfg
+            self._config = updated_cfg
+
     def _run_loop(self) -> None:
         assert self._config is not None
         interval = max(1.0, float(self._config.poll_interval_sec))
@@ -210,6 +251,7 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
                 self.touch_activity()
             except Exception:
                 pass
+            self._refresh_active_branch()
             report = self._coordinator.run_sync(
                 mode="sync",
                 non_blocking_lock=True,
@@ -229,7 +271,7 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
             return None
 
     def stop(self) -> None:
-        """Gracefully stop background thread and deterministically unsubscribe from core.space."""
+        """Gracefully stop background thread, unsubscribe from core.space, and close owned transport."""
         self._stop_event.set()
         self._wake_event.set()
         if self._unsubscribe is not None:
@@ -244,6 +286,13 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
             timeout=5.0,
         )
         self._thread = None
+        if self._owned_transport is not None:
+            try:
+                self._owned_transport.close()
+            except Exception:
+                pass
+            self._owned_transport = None
+        self._coordinator = self._explicit_coordinator
         self._started = False
         self.set_state(self.STATE_STOPPED)
 
@@ -268,4 +317,3 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
             "sync_runs": self._sync_runs,
             "last_error": self._last_error,
         }
-

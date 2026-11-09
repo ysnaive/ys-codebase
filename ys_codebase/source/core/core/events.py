@@ -3,14 +3,14 @@ YS-Codebase Microkernel Event Bus.
 Decoupled, zero-dependency, ultra-lightweight lifecycle event dispatcher.
 Scans module://{mod}/scripts/hook.{emit_module}.py or specified search roots.
 """
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 import os
 import sys
 from core import uri
 from core import vfs
-from core.context import ExecutionContext, get_env
+from core.context import ExecutionContext, get_env, get_runtime_context
 from core.loader import load_module_from_path
-from core.log import log_error, log_info, log_stream, log_warn
+from core.log import log_info, log_stream, log_warn
 
 
 def _is_meta_key(k: Any) -> bool:
@@ -93,9 +93,17 @@ def broadcast(
     else:
         candidate_funcs = [f"on_{event_name}", event_name, "on_event"]
 
-    from core.platform import ensure_installed_modules_path, restore_sys_path
+    from core.platform.venv import (
+        _norm_key,
+        ensure_installed_modules_path,
+        remove_inserted_sys_paths,
+    )
 
-    orig_sys_path = list(sys.path) if search_roots is not None else None
+    rt_ctx = get_runtime_context()
+    with rt_ctx.sys_path_lock:
+        pre_existing_keys: Set[str] = {_norm_key(p) for p in sys.path if p}
+    transient_extra_paths: List[str] = []
+
     try:
         if targets:
             ensure_installed_modules_path(priority_module="core")
@@ -106,9 +114,14 @@ def broadcast(
             mod_key = f"_yscb_mod_{mod_pkg}_hook_{emit_pkg}"
             try:
                 hook_root = os.path.dirname(os.path.dirname(hook_real_path))
+                extra_list = [hook_root] if os.path.isdir(hook_root) else None
+                if search_roots is not None and extra_list:
+                    for ep in extra_list:
+                        if _norm_key(ep) not in pre_existing_keys:
+                            transient_extra_paths.append(ep)
                 ensure_installed_modules_path(
                     priority_module=mod_name,
-                    extra_paths=[hook_root] if os.path.isdir(hook_root) else None,
+                    extra_paths=extra_list,
                 )
                 hook_mod = load_module_from_path(
                     mod_key,
@@ -141,8 +154,8 @@ def broadcast(
                     import traceback
                     log_stream(traceback.format_exc(), stream="stderr", record_hint=False)
     finally:
-        if orig_sys_path is not None:
-            restore_sys_path(orig_sys_path)
+        if search_roots is not None and transient_extra_paths:
+            remove_inserted_sys_paths(transient_extra_paths)
 
     return results
 

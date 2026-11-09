@@ -2,6 +2,7 @@
 Configuration parsing, core.space integration, and path mapping validation for gdrive-support.
 """
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -70,6 +71,11 @@ def normalize_remote_rel_path(remote_path: str) -> str:
     return "/".join(parts)
 
 
+def _realpath_no_stat(p: Path) -> Path:
+    """Resolve symlinks and relative segments via os.path.realpath without invoking Path.stat()."""
+    return Path(os.path.realpath(os.fspath(p)))
+
+
 @dataclass(frozen=True)
 class PathMappingRule:
     """
@@ -102,16 +108,19 @@ class SyncSpaceSpec:
             )
         )
         object.__setattr__(self, "mappings", sorted_rules)
-        norm_roots = tuple(Path(p).resolve() for p in self.include_roots)
+        norm_roots = tuple(_realpath_no_stat(Path(p)) for p in self.include_roots)
         object.__setattr__(self, "include_roots", norm_roots)
 
     def is_local_abs_allowed(self, target_abs: Path, proj_root: Path) -> bool:
         """
-        Verify target_abs resides inside project_root AND (when include_roots are configured)
-        within at least one of this space's registered include_roots.
+        Verify target_abs is not a symlink, resides inside project_root, AND (when include_roots
+        are configured) resides within at least one of this space's registered include_roots.
         """
-        resolved_target = target_abs.resolve()
-        if not _is_path_within_roots(resolved_target, [proj_root.resolve()]):
+        if os.path.islink(os.fspath(target_abs)):
+            return False
+        resolved_target = _realpath_no_stat(target_abs)
+        resolved_proj = _realpath_no_stat(proj_root)
+        if not _is_path_within_roots(resolved_target, [resolved_proj]):
             return False
         if not self.include_roots:
             return True
@@ -219,9 +228,9 @@ class GDriveConfig:
 
 def _resolve_project_root(explicit_project_root: Optional[Path] = None) -> Path:
     if explicit_project_root is not None:
-        return Path(explicit_project_root).resolve()
+        return _realpath_no_stat(Path(explicit_project_root))
     resolved = uri.resolve("project://")
-    return Path(resolved).resolve()
+    return _realpath_no_stat(Path(resolved))
 
 
 def _resolve_local_uri_to_abs(local_uri_str: str, proj_root: Path) -> Path:
@@ -231,22 +240,22 @@ def _resolve_local_uri_to_abs(local_uri_str: str, proj_root: Path) -> Path:
     if "://" in raw:
         if raw.startswith("project://"):
             rel_part = raw[len("project://") :].lstrip("/")
-            return (proj_root / rel_part).resolve()
+            return _realpath_no_stat(proj_root / rel_part)
         try:
             resolved = uri.resolve(raw)
             if resolved:
-                return Path(resolved).resolve()
+                return _realpath_no_stat(Path(resolved))
         except Exception as exc:
             raise GDriveConfigError(f"Failed to resolve mapping URI '{raw}': {exc}") from exc
     candidate = Path(raw)
     if candidate.is_absolute():
-        return candidate.resolve()
-    return (proj_root / raw).resolve()
+        return _realpath_no_stat(candidate)
+    return _realpath_no_stat(proj_root / raw)
 
 
 def _is_path_within_roots(target_abs: Path, allowed_roots: List[Path]) -> bool:
     for root in allowed_roots:
-        resolved_root = root.resolve()
+        resolved_root = _realpath_no_stat(root)
         if target_abs == resolved_root:
             return True
         try:
@@ -263,7 +272,7 @@ def _load_space_include_roots(
 ) -> Dict[str, List[Path]]:
     if explicit_include_roots is not None:
         return {
-            k: [Path(p).resolve() for p in v]
+            k: [_realpath_no_stat(Path(p)) for p in v]
             for k, v in explicit_include_roots.items()
         }
     try:
@@ -276,7 +285,7 @@ def _load_space_include_roots(
             if hasattr(reg, "collect_all_entry_paths") and s_cfg.qualified_name:
                 try:
                     roots = [
-                        Path(p).resolve()
+                        _realpath_no_stat(Path(p))
                         for p in reg.collect_all_entry_paths(s_cfg.qualified_name)
                     ]
                 except Exception:
@@ -285,7 +294,7 @@ def _load_space_include_roots(
                 for raw_ent in s_cfg.entries:
                     resolved_p = resolve_semantic_or_rel_path(raw_ent, proj_root)
                     if resolved_p is not None:
-                        roots.append(Path(resolved_p).resolve())
+                        roots.append(_realpath_no_stat(Path(resolved_p)))
             if s_cfg.short_name and (roots or s_cfg.short_name not in result):
                 if roots and s_cfg.short_name in result and result[s_cfg.short_name]:
                     merged = list(result[s_cfg.short_name])
@@ -331,13 +340,8 @@ _FORBIDDEN_CREDENTIAL_FILENAMES = frozenset(
 )
 
 
-def is_sensitive_credential_path(abs_path: Path, proj_root: Path) -> bool:
-    """
-    Hard security guard: Return True if abs_path points to any credential, token,
-    private key, or local/module secret file that must NEVER be uploaded to
-    Google Drive or overwritten by repo_sync.
-    """
-    name_low = abs_path.name.lower()
+def _check_single_path_credential_sensitivity(cand_path: Path, resolved_proj: Path) -> bool:
+    name_low = cand_path.name.lower()
     if name_low in _FORBIDDEN_CREDENTIAL_FILENAMES:
         return True
     if "secret" in name_low and name_low.endswith(".json"):
@@ -345,20 +349,44 @@ def is_sensitive_credential_path(abs_path: Path, proj_root: Path) -> bool:
     if name_low.endswith((".pem", ".key", ".p12", ".pfx")):
         return True
     try:
-        rel_posix = abs_path.relative_to(proj_root).as_posix()
+        rel_posix = cand_path.relative_to(resolved_proj).as_posix()
     except ValueError:
-        try:
-            rel_posix = abs_path.resolve().relative_to(proj_root.resolve()).as_posix()
-        except ValueError:
-            rel_posix = ""
-    if rel_posix and rel_posix.startswith(
-        (
-            "ys_codebase/.config.local/",
-            "ys_codebase/.storage.local/",
-            "ys_codebase/config/gdrive-support/",
-            "ys_codebase/.cache/gdrive-support/",
+        rel_posix = ""
+    if (
+        rel_posix
+        and rel_posix.startswith(
+            (
+                "ys_codebase/.config.local/",
+                "ys_codebase/.storage.local/",
+                "ys_codebase/config/gdrive-support/",
+                "ys_codebase/.cache/gdrive-support/",
+                ".config.local/",
+                ".storage.local/",
+                "config/gdrive-support/",
+                ".cache/gdrive-support/",
+            )
         )
-    ) and rel_posix != "ys_codebase/config/gdrive-support/config.project.json":
+        and rel_posix
+        not in (
+            "ys_codebase/config/gdrive-support/config.project.json",
+            "config/gdrive-support/config.project.json",
+        )
+    ):
+        return True
+    return False
+
+
+def is_sensitive_credential_path(abs_path: Path, proj_root: Path) -> bool:
+    """
+    Hard security guard: Return True if abs_path (or its resolved symlink target) points to
+    any credential, token, private key, or local/module secret file that must NEVER be
+    uploaded to Google Drive or overwritten by repo_sync.
+    """
+    resolved_proj = _realpath_no_stat(proj_root)
+    if _check_single_path_credential_sensitivity(abs_path, proj_root):
+        return True
+    real_cand = _realpath_no_stat(abs_path)
+    if _check_single_path_credential_sensitivity(real_cand, resolved_proj):
         return True
     return False
 
@@ -441,6 +469,88 @@ def parse_sync_spaces(
     return tuple(specs)
 
 
+def load_lightweight_repo_sync_settings(
+    registry: Any = None,
+) -> Tuple[bool, bool, List[str]]:
+    """
+    Lightweight reader for `gdrive-support` config (`repo_sync` & `sync_spaces`).
+    Never calls `load_gdrive_config()` or `SpaceRegistry()` to avoid recursion during space registration.
+    """
+    raw_cfg: Dict[str, Any] = {}
+    raw_sync_spaces: List[Any] = []
+
+    if isinstance(registry, (Path, str)):
+        proj_root_obj = Path(registry)
+        yscb_dir_obj = None
+    else:
+        proj_root_obj = getattr(registry, "project_root", None)
+        yscb_dir_obj = getattr(registry, "yscb_dir", None)
+    proj_str = str(proj_root_obj) if proj_root_obj is not None else None
+    if yscb_dir_obj is not None:
+        yscb_str: Optional[str] = str(yscb_dir_obj)
+    elif proj_str:
+        p_obj = Path(proj_str)
+        if (p_obj / "config" / "gdrive-support").is_dir() or not (p_obj / "ys_codebase").is_dir():
+            yscb_str = proj_str
+        else:
+            yscb_str = str(p_obj / "ys_codebase")
+    else:
+        yscb_str = None
+
+    try:
+        if proj_str and yscb_str:
+            with uri.host_scope(proj_str, yscb_str):
+                loaded = core_config.get("gdrive-support")
+                if isinstance(loaded, dict):
+                    raw_cfg.update(loaded)
+                contrib = core_contributes.get("gdrive-support")
+                if isinstance(contrib, dict) and isinstance(contrib.get("sync_spaces"), list):
+                    raw_sync_spaces = list(contrib["sync_spaces"])
+        else:
+            loaded = core_config.get("gdrive-support")
+            if isinstance(loaded, dict):
+                raw_cfg.update(loaded)
+            contrib = core_contributes.get("gdrive-support")
+            if isinstance(contrib, dict) and isinstance(contrib.get("sync_spaces"), list):
+                raw_sync_spaces = list(contrib["sync_spaces"])
+    except Exception:
+        pass
+
+    repo_sync_sec = raw_cfg.get("repo_sync")
+    repo_sync_dict = dict(repo_sync_sec) if isinstance(repo_sync_sec, dict) else {}
+
+    if isinstance(repo_sync_dict.get("sync_spaces"), list):
+        raw_sync_spaces = list(repo_sync_dict["sync_spaces"])
+    elif isinstance(raw_cfg.get("sync_spaces"), list):
+        raw_sync_spaces = list(raw_cfg["sync_spaces"])
+
+    if "enable" in repo_sync_dict:
+        enabled = bool(repo_sync_dict["enable"])
+    elif "repo_sync_enabled" in raw_cfg:
+        enabled = bool(raw_cfg["repo_sync_enabled"])
+    else:
+        enabled = False
+
+    auto_sync = bool(
+        enabled and repo_sync_dict.get("auto_sync", raw_cfg.get("auto_sync", False))
+    )
+
+    compose_spaces: List[str] = []
+    for item in raw_sync_spaces:
+        sp = ""
+        if isinstance(item, dict):
+            sp = str(item.get("space") or "").strip()
+        elif isinstance(item, str) and item.strip():
+            sp = item.strip()
+        if sp and sp not in ("cloud", "/cloud", "gdrive-support/cloud") and sp not in compose_spaces:
+            compose_spaces.append(sp)
+
+    if not compose_spaces:
+        compose_spaces = ["source", "docs", "plans"]
+
+    return enabled, auto_sync, compose_spaces
+
+
 def load_gdrive_config(
     config_override: Optional[Dict[str, Any]] = None,
     project_root: Optional[Path] = None,
@@ -463,9 +573,18 @@ def load_gdrive_config(
     if config_override:
         raw_cfg.update(config_override)
 
+    raw_repo_sync = raw_cfg.get("repo_sync")
+    repo_sync_dict: Dict[str, Any] = (
+        dict(raw_repo_sync) if isinstance(raw_repo_sync, dict) else {}
+    )
+
     raw_sync_spaces: Optional[List[Dict[str, Any]]] = None
     if config_override and "sync_spaces" in config_override:
         raw_sync_spaces = config_override["sync_spaces"]
+    elif isinstance(repo_sync_dict.get("sync_spaces"), list):
+        raw_sync_spaces = repo_sync_dict["sync_spaces"]
+    elif isinstance(raw_cfg.get("sync_spaces"), list):
+        raw_sync_spaces = raw_cfg["sync_spaces"]
     else:
         try:
             contrib = core_contributes.get("gdrive-support")
@@ -481,11 +600,6 @@ def load_gdrive_config(
         compiled_spaces = parse_sync_spaces(
             raw_sync_spaces, proj_root, inc_map, thresh_map
         )
-
-    raw_repo_sync = raw_cfg.get("repo_sync")
-    repo_sync_dict: Dict[str, Any] = (
-        dict(raw_repo_sync) if isinstance(raw_repo_sync, dict) else {}
-    )
 
     if "enable" in repo_sync_dict:
         repo_sync_enabled = bool(repo_sync_dict["enable"])
@@ -615,13 +729,17 @@ def collect_space_local_files_with_stat(
 
     for abs_path, mtime_ns, size in raw_items:
         local_abs = abs_path if isinstance(abs_path, Path) else Path(abs_path)
+        if os.path.islink(os.fspath(local_abs)):
+            continue
         if is_sensitive_credential_path(local_abs, proj_root):
+            continue
+        if not spec.is_local_abs_allowed(local_abs, proj_root):
             continue
         try:
             proj_rel = local_abs.relative_to(proj_root).as_posix()
         except ValueError:
             try:
-                local_abs = local_abs.resolve()
+                local_abs = _realpath_no_stat(local_abs)
                 proj_rel = local_abs.relative_to(proj_root).as_posix()
             except ValueError:
                 continue
@@ -630,4 +748,3 @@ def collect_space_local_files_with_stat(
             continue
         mapped_files[remote_rel] = (local_abs, mtime_ns, size)
     return mapped_files
-

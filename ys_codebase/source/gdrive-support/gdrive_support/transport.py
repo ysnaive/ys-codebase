@@ -24,12 +24,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import urllib.error
 import urllib.parse
 import urllib.request
-from core.log import log
 import uuid
 import webbrowser
 
 from core import uri
 from core import vfs
+from core.log import log
 
 from .config import (
     GDriveConfig,
@@ -158,7 +158,11 @@ class AbstractSyncTransport(ABC):
 
     @abstractmethod
     def list_files(
-        self, remote_path: str = "", recursive: bool = False
+        self,
+        remote_path: str = "",
+        recursive: bool = False,
+        *,
+        deduplicate: bool = True,
     ) -> List[RemoteEntry]:
         """List files, directories, and shortcuts under remote_path."""
 
@@ -289,7 +293,7 @@ class LocalSandboxTransport(AbstractSyncTransport):
             ) from exc
         return target
 
-    def _sync_filesystem_into_meta(self) -> Dict[str, Any]:
+    def _sync_filesystem_into_meta(self, *, persist: bool = True) -> Dict[str, Any]:
         meta = self._ensure_meta()
         items: Dict[str, Dict[str, Any]] = meta.setdefault("items", {})
         path_to_ids: Dict[str, List[str]] = {}
@@ -348,7 +352,7 @@ class LocalSandboxTransport(AbstractSyncTransport):
                     path_to_ids[rel_d] = [fid]
                     changed = True
 
-        if changed:
+        if changed and persist:
             self._save_meta(meta)
         return meta
 
@@ -511,12 +515,19 @@ class LocalSandboxTransport(AbstractSyncTransport):
         return items
 
     def list_files(
-        self, remote_path: str = "", recursive: bool = False
+        self,
+        remote_path: str = "",
+        recursive: bool = False,
+        *,
+        deduplicate: bool = True,
     ) -> List[RemoteEntry]:
         norm_prefix = normalize_remote_rel_path(remote_path)
         with self._lock:
-            meta = self._sync_filesystem_into_meta()
-            items = self._deduplicate_same_path_items(meta)
+            meta = self._sync_filesystem_into_meta(persist=deduplicate)
+            if deduplicate:
+                items = self._deduplicate_same_path_items(meta)
+            else:
+                items = meta.get("items", {})
 
             results: List[RemoteEntry] = []
             for info in items.values():
@@ -1016,6 +1027,9 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
         self._scanned_prefixes: set[str] = set()
         self._cache_lock = threading.RLock()
         self._token_lock = threading.RLock()
+        self._conn_lock = threading.RLock()
+        self._conn_pool: Dict[str, List[HTTPSConnection]] = {}
+        self._tls_conn_dicts: List[Dict[str, HTTPSConnection]] = []
         self._tls = threading.local()
 
     def reset_scan_state(self) -> None:
@@ -1043,15 +1057,32 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 self._folder_cache.pop(k, None)
 
     def _get_https_conn(self, host: str) -> HTTPSConnection:
-        conns: Dict[str, HTTPSConnection] = getattr(self._tls, "conns", None)
+        conns: Optional[Dict[str, HTTPSConnection]] = getattr(self._tls, "conns", None)
         if conns is None:
             conns = {}
             self._tls.conns = conns
+            with self._conn_lock:
+                self._tls_conn_dicts.append(conns)
         conn = conns.get(host)
         if conn is None:
-            conn = HTTPSConnection(host, timeout=60)
+            with self._conn_lock:
+                pooled = self._conn_pool.get(host)
+                if pooled:
+                    conn = pooled.pop()
+            if conn is None:
+                conn = HTTPSConnection(host, timeout=60)
             conns[host] = conn
         return conn
+
+    def _release_thread_conns_to_pool(self) -> None:
+        """Return thread-local HTTPSConnections from short-lived worker threads to the instance pool."""
+        conns: Optional[Dict[str, HTTPSConnection]] = getattr(self._tls, "conns", None)
+        if not conns:
+            return
+        with self._conn_lock:
+            for host, conn in list(conns.items()):
+                conns.pop(host, None)
+                self._conn_pool.setdefault(host, []).append(conn)
 
     def _drop_https_conn(self, host: str) -> None:
         conns: Optional[Dict[str, HTTPSConnection]] = getattr(self._tls, "conns", None)
@@ -1062,12 +1093,33 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 pass
 
     def close(self) -> None:
-        """Close any open thread-local HTTPS connections."""
-        conns: Optional[Dict[str, HTTPSConnection]] = getattr(self._tls, "conns", None)
-        if not conns:
-            return
-        for host in list(conns.keys()):
-            self._drop_https_conn(host)
+        """Deterministically close all open thread-local and pooled HTTPS connections."""
+        closed_conns: set[int] = set()
+
+        def _safe_close_conn(conn_obj: Any) -> None:
+            cid = id(conn_obj)
+            if cid in closed_conns:
+                return
+            closed_conns.add(cid)
+            try:
+                conn_obj.close()
+            except OSError:
+                pass
+
+        cur_conns: Optional[Dict[str, HTTPSConnection]] = getattr(self._tls, "conns", None)
+        if cur_conns:
+            for host in list(cur_conns.keys()):
+                _safe_close_conn(cur_conns.pop(host))
+
+        with self._conn_lock:
+            for t_dict in self._tls_conn_dicts:
+                for host in list(t_dict.keys()):
+                    _safe_close_conn(t_dict.pop(host))
+            self._tls_conn_dicts.clear()
+            for host, pool_list in list(self._conn_pool.items()):
+                while pool_list:
+                    _safe_close_conn(pool_list.pop())
+            self._conn_pool.clear()
 
     def _clear_cached_token(self) -> None:
         with self._token_lock:
@@ -1128,6 +1180,12 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     refreshed = json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                try:
+                    exc.close()
+                except Exception:
+                    pass
+                raise GDriveTransportError(f"Failed to refresh OAuth2 token: {exc}") from exc
             except Exception as exc:
                 raise GDriveTransportError(f"Failed to refresh OAuth2 token: {exc}") from exc
 
@@ -1169,8 +1227,14 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 conn = self._get_https_conn(host)
                 conn.request(method, path_with_query, body=body, headers=req_headers)
                 resp = conn.getresponse()
-                raw = resp.read()
-                status = resp.status
+                try:
+                    raw = resp.read()
+                    status = resp.status
+                finally:
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
                 if 200 <= status < 300:
                     return json.loads(raw.decode("utf-8")) if raw else {}
                 if status == 401 and not refreshed_on_401 and attempt < 3:
@@ -1294,7 +1358,7 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
         if not target_ids:
             return {}
 
-        def _fetch_target(tid: str) -> Optional[Tuple[str, Dict[str, Any]]]:
+        def _fetch_target(tid: str, release_to_pool: bool = False) -> Optional[Tuple[str, Dict[str, Any]]]:
             try:
                 url = (
                     f"{self.DRIVE_API_BASE}/files/{urllib.parse.quote(tid)}"
@@ -1305,18 +1369,21 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                     return tid, obj
             except GDriveFileNotFoundError:
                 return None
+            finally:
+                if release_to_pool:
+                    self._release_thread_conns_to_pool()
             return None
 
         resolved: Dict[str, Dict[str, Any]] = {}
         if len(target_ids) == 1:
-            pair = _fetch_target(target_ids[0])
+            pair = _fetch_target(target_ids[0], release_to_pool=False)
             if pair is not None:
                 resolved[pair[0]] = pair[1]
             return resolved
 
         with ThreadPoolExecutor(max_workers=min(8, len(target_ids))) as pool:
             futs = [
-                pool.submit(contextvars.copy_context().run, _fetch_target, tid)
+                pool.submit(contextvars.copy_context().run, _fetch_target, tid, True)
                 for tid in target_ids
             ]
             for fut in as_completed(futs):
@@ -1371,7 +1438,11 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
         return str(last_item["id"]), last_item
 
     def list_files(
-        self, remote_path: str = "", recursive: bool = False
+        self,
+        remote_path: str = "",
+        recursive: bool = False,
+        *,
+        deduplicate: bool = True,
     ) -> List[RemoteEntry]:
         norm = normalize_remote_rel_path(remote_path)
         resolved_folder = self._resolve_folder_id_by_path(norm)
@@ -1392,24 +1463,25 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                     reverse=True,
                 )
                 winner = group[0]
-                for loser in group[1:]:
-                    if loser.get("mimeType") == FOLDER_MIME_TYPE:
-                        continue
-                    loser_id = str(loser.get("id") or "")
-                    if loser_id:
-                        try:
-                            t_url = (
-                                f"{self.DRIVE_API_BASE}/files/{urllib.parse.quote(loser_id)}"
-                                f"?fields=id&supportsAllDrives=true"
-                            )
-                            self._request_json(
-                                "PATCH",
-                                t_url,
-                                body=json.dumps({"trashed": True}).encode("utf-8"),
-                                headers={"Content-Type": "application/json; charset=utf-8"},
-                            )
-                        except (GDriveError, OSError):
-                            pass
+                if deduplicate:
+                    for loser in group[1:]:
+                        if loser.get("mimeType") == FOLDER_MIME_TYPE:
+                            continue
+                        loser_id = str(loser.get("id") or "")
+                        if loser_id:
+                            try:
+                                t_url = (
+                                    f"{self.DRIVE_API_BASE}/files/{urllib.parse.quote(loser_id)}"
+                                    f"?fields=id&supportsAllDrives=true"
+                                )
+                                self._request_json(
+                                    "PATCH",
+                                    t_url,
+                                    body=json.dumps({"trashed": True}).encode("utf-8"),
+                                    headers={"Content-Type": "application/json; charset=utf-8"},
+                                )
+                            except (GDriveError, OSError):
+                                pass
                 child_rel = f"{curr_prefix}/{name}".strip("/") if curr_prefix else name
                 collected_raw.append((child_rel, winner))
                 if winner.get("mimeType") == FOLDER_MIME_TYPE:
@@ -1643,6 +1715,10 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 os.replace(tmp_dst, dst)
                 return entry
             except urllib.error.HTTPError as exc:
+                try:
+                    exc.close()
+                except Exception:
+                    pass
                 if tmp_dst.exists():
                     tmp_dst.unlink(missing_ok=True)
                 if exc.code == 401 and not refreshed_on_401 and attempt < 3:
@@ -1968,7 +2044,13 @@ def exchange_oauth_code_for_token(
         with urllib.request.urlopen(req, timeout=30) as resp:
             token_resp = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="replace")
+        try:
+            err_body = exc.read().decode("utf-8", errors="replace")
+        finally:
+            try:
+                exc.close()
+            except Exception:
+                pass
         raise GDriveTransportError(
             f"OAuth2 token exchange failed (HTTP {exc.code}): {err_body}"
         ) from exc
@@ -2100,10 +2182,15 @@ def create_transport(
     """
     effective_sandbox = (sandbox_dir or config.sandbox_dir or "").strip()
     if effective_sandbox:
-        resolved = (
-            Path(uri.resolve(effective_sandbox)).resolve()
-            if "://" in effective_sandbox
-            else Path(effective_sandbox).resolve()
-        )
+        if "://" in effective_sandbox:
+            resolved = Path(uri.resolve(effective_sandbox)).resolve()
+        else:
+            from core.context import get_virtual_cwd
+            p_cand = Path(effective_sandbox)
+            if not p_cand.is_absolute():
+                vcwd = get_virtual_cwd()
+                if vcwd:
+                    p_cand = Path(vcwd) / p_cand
+            resolved = p_cand.resolve()
         return LocalSandboxTransport(resolved)
     return GoogleDriveApiTransport(config)

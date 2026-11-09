@@ -910,5 +910,180 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         self.mark_passed()
 
 
+    @require(Requirement.LOGIC)
+    def test_csharp_partial_class_two_phase_dirty_closure_and_multigen_jump(self):
+        """驗證 C# partial class 兩階段 dirty_keys 閉包收集不抹除主檔非 partial 符號，以及跨多世代 AST 跳號自動補齊"""
+        src_dir = self.root_path / "src_cs_partial"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        storage_dir = self.root_path / "storage_cs_partial"
+
+        f_main = src_dir / "Player.cs"
+        f_main.write_text(
+            "public partial class PlayerService { public void Move() {} }\n"
+            "public class HelperStruct { public void Assist() {} }\n",
+            encoding="utf-8",
+        )
+        sp = SpaceConfig(
+            qualified_name="project/cs_space",
+            owner="project",
+            short_name="cs_space",
+            entries=(str(src_dir),),
+        )
+        engine = KnowledgeEngine(
+            storage_dir=storage_dir,
+            contributes_data={"spaces": {"cs_space": sp}},
+            embedding_mock_mode=True,
+        )
+        idx = engine.build_unified_index(force=True)
+        sym_names_init = {s.name for s in idx.symbols.values()}
+        self.assertIn("PlayerService", sym_names_init)
+        self.assertIn("HelperStruct", sym_names_init)
+
+        # Add secondary partial file Player.Combat.cs -> hot_patch_unified_index must preserve HelperStruct in Player.cs!
+        f_part2 = src_dir / "Player.Combat.cs"
+        f_part2.write_text(
+            "public partial class PlayerService { public void Attack() {} }\n",
+            encoding="utf-8",
+        )
+        with engine.scanner.consume_diff(consumer_id="knowledge-db") as diff_res:
+            patch_res = engine.pipeline.hot_patch_unified_index(diff_res.detail)
+            self.assertTrue(patch_res.success)
+
+        sym_names_after = {s.name for s in engine.pipeline.unified_index.symbols.values()}
+        self.assertIn("PlayerService", sym_names_after)
+        self.assertIn("HelperStruct", sym_names_after)
+
+        # Simulate ASTEngine jumping multiple generations ahead before hot_patch_unified_index runs
+        f_gen2 = src_dir / "Gen2Node.py"
+        f_gen2.write_text("class Gen2AddedNode:\n    pass\n", encoding="utf-8")
+        engine.ast_engine.ensure_jit_synced()
+
+        f_gen3 = src_dir / "Gen3Node.py"
+        f_gen3.write_text("class Gen3AddedNode:\n    pass\n", encoding="utf-8")
+        engine.ast_engine.ensure_jit_synced()
+
+        # Pass only Gen3Node.py in diff_detail while acked_ast_generation lags by 2 generations
+        from core.space import ScanDiffDetail
+        partial_detail = ScanDiffDetail(added={"Gen3Node.py"}, modified=set(), deleted=set())
+        res_jump = engine.pipeline.hot_patch_unified_index(partial_detail)
+        self.assertTrue(res_jump.success)
+        final_names = {s.name for s in engine.pipeline.unified_index.symbols.values()}
+        self.assertIn("Gen2AddedNode", final_names)
+        self.assertIn("Gen3AddedNode", final_names)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_mutual_yield_paradox_defense_and_idle_worker_jit_sync(self):
+        """驗證 Stage 2 禮讓前景時持久化且標記 yielded_to_foreground 不被洗掉記憶體向量，以及空閒 Worker 下前景 JIT 同步與 build_unified_index(force=False) 補齊"""
+        src_dir = self.root_path / "src_yield_test"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        storage_dir = self.root_path / "storage_yield_test"
+        f1 = src_dir / "alpha.py"
+        f1.write_text("class YieldAlpha:\n    pass\nclass YieldBeta:\n    pass\n", encoding="utf-8")
+
+        sp = SpaceConfig(
+            qualified_name="project/y_space",
+            owner="project",
+            short_name="y_space",
+            entries=(str(src_dir),),
+        )
+        engine = KnowledgeEngine(
+            storage_dir=storage_dir,
+            contributes_data={"spaces": {"y_space": sp}},
+            embedding_mock_mode=True,
+        )
+        engine.pipeline.build_unified_index(force=True, skip_vectors=True)
+        indices_dir = engine.pipeline.get_indices_dir()
+
+        # Step 1: Compute 1 vector in memory without persisting to disk (dirty in-memory vectors)
+        step_res = engine.pipeline.sync_vector_deficit_step(batch_size=1, persist=False)
+        self.assertEqual(step_res["embedded_in_step"], 1)
+        self.assertTrue(engine.pipeline._vector_index_dirty)
+        self.assertEqual(len(engine.hybrid_engine.vector_index.doc_ids), 1)
+
+        # Write a stale empty vector file on disk, then verify _ensure_indices_loaded(force_reload=True) does NOT wipe dirty in-memory vectors
+        from knowledge_db.embedding import VectorIndex
+        import numpy as np
+        stale_vec = VectorIndex(model_name=engine.embedding_service.model_name, dim=512)
+        stale_vec.build([], np.zeros((0, 512), dtype=np.float32))
+        stale_vec.save_binary(indices_dir / "unified.vectors.bin.gz")
+
+        engine.pipeline._ensure_indices_loaded(load_vectors=True, force_reload=True)
+        self.assertEqual(len(engine.hybrid_engine.vector_index.doc_ids), 1)
+
+        # Step 2: Idle worker (`worker_running=True, busy=False, phase="idle"`) must allow foreground search to sync new file edits
+        clear_worker_state(indices_dir, worker_running=True, phase="idle")
+        write_text_and_advance_mtime(
+            f1,
+            "class YieldAlpha:\n    pass\nclass YieldBeta:\n    pass\nclass IdleSyncedGamma:\n    pass\n",
+        )
+        hits = engine.search("IdleSyncedGamma", auto_rebuild=True)
+        self.assertEqual(len(hits), 1)
+
+        # Step 3: build_unified_index(force=False) must fill missing vectors and update _GLOBAL_INDEX_CACHE
+        clear_worker_state(indices_dir, worker_running=False, phase="idle")
+        idx_nb = engine.build_unified_index(force=False)
+        self.assertIsNotNone(idx_nb)
+        self.assertEqual(engine.pipeline.get_vector_deficit_info()["missing_count"], 0)
+        self.assertIs(_GLOBAL_INDEX_CACHE["unified_index"], engine.pipeline.unified_index)
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_purify_lines_glob_star_selector_multiword_and_vector_prefilter(self):
+        """驗證 purify_lines 不吞噬含 'src/*' 之程式碼行、SymbolSelector 不誤吞雙詞查詢首詞、向量檢索預過濾與其他邊界防護"""
+        from knowledge_db.formatter import UniversalRedundancyFilter
+        from knowledge_db.selector import SymbolSelector
+        from knowledge_db.schema import InvalidConfigError, validate_space_weights
+        from knowledge_db.config import KnowledgeDBConfig
+        from knowledge_db.embedding import VectorIndex
+        import numpy as np
+
+        # 1. purify_lines with 'src/*' inside quotes must preserve subsequent lines
+        flt = UniversalRedundancyFilter()
+        code_lines = [
+            (1, "def scan_glob():"),
+            (2, '    pattern = "src/*"'),
+            (3, "    return list_files(pattern)"),
+        ]
+        purified = flt.purify_lines(code_lines, target_line=1, symbol_name="scan_glob", language="python")
+        self.assertEqual([ln for ln, _ in purified], [1, 2, 3])
+
+        # 2. SymbolSelector.parse preserves multi-word query when first word is not in KIND_PREFIX_MAP
+        sel = SymbolSelector.parse("user profile")
+        self.assertEqual(sel.identifier, "user profile")
+        self.assertIsNone(sel.target_kinds)
+
+        # 3. validate_space_weights rejects NaN and Inf
+        with self.assertRaises(InvalidConfigError):
+            validate_space_weights({"main": float("nan")})
+        with self.assertRaises(InvalidConfigError):
+            validate_space_weights({"main": float("inf")})
+
+        # 4. KnowledgeDBConfig.load reconciles mutually exclusive timeout unit keys
+        cfg = KnowledgeDBConfig.load(
+            project_config={"knowledge-db": {"jit_vector_timeout_ms": 3000}},
+            local_config={"knowledge-db": {"jit_vector_timeout_seconds": 1.2}},
+        )
+        self.assertEqual(cfg.jit_vector_timeout_ms, 1200)
+
+        # 5. Empty VectorIndex load_binary restores model_name and dim, and allowed_doc_ids pre-filters search
+        vec_path = self.root_path / "empty_vecs.bin.gz"
+        v_idx = VectorIndex(model_name="BAAI/bge-small-zh-v1.5", dim=512)
+        v_idx.build([], np.zeros((0, 512), dtype=np.float32))
+        v_idx.save_binary(vec_path)
+        loaded_empty = VectorIndex.load_binary(vec_path)
+        self.assertEqual(loaded_empty.model_name, "BAAI/bge-small-zh-v1.5")
+        self.assertEqual(loaded_empty.dim, 512)
+
+        v_idx2 = VectorIndex(model_name="BAAI/bge-small-zh-v1.5", dim=4)
+        vecs = np.array([[1.0, 0.0, 0.0, 0.0], [0.9, 0.1, 0.0, 0.0], [0.8, 0.2, 0.0, 0.0]], dtype=np.float32)
+        v_idx2.build(["other_1", "other_2", "target_3"], vecs)
+        q_vec = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        hits_prefiltered = v_idx2.search(q_vec, top_k=1, allowed_doc_ids={"target_3"})
+        self.assertEqual(len(hits_prefiltered), 1)
+        self.assertEqual(hits_prefiltered[0][0], "target_3")
+        self.mark_passed()
+
+
 if __name__ == "__main__":
     unittest.main()

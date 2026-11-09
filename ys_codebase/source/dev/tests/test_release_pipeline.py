@@ -537,3 +537,25 @@ class TestReleasePipeline(YSCBTestCase):
         self.assertEqual(idx_active["releases"]["1.0.0.0"]["urgency"], "high")
         self.assertEqual(idx_active["releases"]["1.0.0.0"]["summary"], "Restored active version")
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_release_module_preflight_failure_rolls_back_manifest(self):
+        """Verify release_module validates pre-flight checks before mutating manifest.json and restores manifest.json if packaging fails."""
+        mod_name = "mock_atomic_rel"
+        self.create_mock_source_module(mod_name, "1.0.0.0")
+        mf_uri = f"module.source://{mod_name}/manifest.json"
+        orig_raw = vfs.read_text(mf_uri)
+
+        with patch.object(self.releaser, "release_check", return_value=(False, ["Simulated pre-flight check failure"])):
+            ok, msg = self.releaser.release_module(
+                mod_name,
+                release_meta={
+                    "type": "bugfix",
+                    "urgency": "high",
+                    "summary": "Should not persist on failure",
+                },
+            )
+        self.assertFalse(ok)
+        self.assertIn("Release pre-flight check failed", msg)
+        self.assertEqual(vfs.read_text(mf_uri), orig_raw)
+        self.mark_passed()

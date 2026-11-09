@@ -325,7 +325,7 @@ def is_watcher_active(
             and os.path.normcase(os.path.abspath(str(worker_proj)))
             == os.path.normcase(os.path.abspath(str(reg.project_root)))
         )
-        if callable(is_alive_fn) and is_alive_fn() and proj_matches and worker_obs is not None:
+        if callable(is_alive_fn) and is_alive_fn() and proj_matches and (worker_obs is not None or not getattr(worker, 'HAS_WATCHDOG', True)):
             return True
 
     sf_path = (

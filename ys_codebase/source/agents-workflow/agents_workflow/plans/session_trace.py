@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from ._common import resolve_plan_uri
+from ._common import parse_changelog_table, resolve_plan_uri
 from ._trace_parser import (
     EDIT_TOOL_NAMES as _EDIT_TOOL_NAMES,
     GATE_COMMANDS as _GATE_COMMANDS,
@@ -365,17 +365,12 @@ class SessionTraceEngine:
         entries: List[Dict[str, str]] = []
 
         try:
-            for line in cl_path.read_text(encoding="utf-8", errors="replace").splitlines():
-                s = line.strip()
-                if not s.startswith("|") or "時間" in s or re.match(r"^\|?\s*[-:]+\s*\|", s):
-                    continue
-                parts = [p.strip() for p in re.split(r"(?<!\\)\|", s.strip("|"))]
-                if len(parts) < 3:
-                    continue
-                ts_str = parts[0]
-                l_type = parts[1].strip("`").strip().upper()
-                raw_summary = parts[3] if len(parts) >= 4 else parts[2]
-                summary = raw_summary.replace(r"\|", "|").strip()
+            content = cl_path.read_text(encoding="utf-8", errors="replace")
+            _, _, rows = parse_changelog_table(content)
+            for row in rows:
+                ts_str = row["timestamp"]
+                l_type = row["type"]
+                summary = row["summary"]
                 ep = _parse_ts(ts_str)
                 if ep is None:
                     continue
@@ -799,15 +794,14 @@ class SessionTraceEngine:
             "subagent_calls": 0,
             "total_read_ops": 0,
             "unique_files_read": 0,
+            "duplicate_read_ops": 0,
             "total_edit_ops": 0,
             "unique_files_edited": 0,
         }
         default_efficiency = {
-            "total_tokens": 0,
             "effective_tokens": 0,
             "wasted_tokens": 0,
             "efficiency_pct": 100.0,
-            "waste_pct": 0.0,
             "wasted_breakdown": {
                 "duplicate_reads": 0,
                 "failed_tool_steps": 0,
@@ -817,42 +811,51 @@ class SessionTraceEngine:
         }
         default_consumers = {
             "by_tool": [],
-            "heavy_steps": [],
-            "heavy_cli_commands": [],
+            "by_file_read": [],
+            "largest_steps": [],
+        }
+
+        time_and_cli: Dict[str, Any] = {
+            "first_ts": start_ts_for_dur,
+            "last_ts": end_ts_for_dur,
+            "session_duration_sec": dur_sec,
+            "session_duration_human": _format_duration(dur_sec),
+            **t2_stats,
         }
         session_stats: Dict[str, Any] = {
+            "overview": {
+                "first_ts": start_ts_for_dur,
+                "last_ts": end_ts_for_dur,
+                "duration_seconds": dur_sec,
+                "duration_human": _format_duration(dur_sec),
+                "models": t1_stats.get("models", []),
+                "primary_model": (t1_stats.get("models") or ["Unknown"])[0],
+            },
             "tokens": t1_stats.get("tokens", default_tokens),
+            "steps_and_tools": t1_stats.get("steps_and_tools", default_steps),
+            "time_and_cli": time_and_cli,
             "token_efficiency": t1_stats.get("token_efficiency", default_efficiency),
             "top_consumers": t1_stats.get("top_consumers", default_consumers),
-            "steps_and_tools": t1_stats.get("steps_and_tools", default_steps),
-            "time_and_cli": {
-                "session_start_ts": start_ts_for_dur,
-                "session_end_ts": end_ts_for_dur,
-                "session_duration_sec": dur_sec,
-                "session_duration_human": _format_duration(dur_sec),
-                "cli_total_calls": t2_stats.get("cli_total_calls", 0),
-                "cli_failed_calls": t2_stats.get("cli_failed_calls", 0),
-                "cli_total_duration_ms": t2_stats.get("cli_total_duration_ms", 0),
-                "cli_avg_duration_ms": t2_stats.get("cli_avg_duration_ms", 0),
-                "cli_by_mode": t2_stats.get("cli_by_mode", {}),
-                "cli_by_module": t2_stats.get("cli_by_module", {}),
-            },
+            "cli_telemetry": t2_stats,
         }
 
         if locked_transcript is not None:
             active_tier = "Tier 1+2 (Transcript + Core Telemetry)"
-            fallback_checklist: List[str] = []
-        elif telem_count > 0 or plan_signals:
-            active_tier = "Tier 2 (Core Telemetry & Plan mtime)"
-            fallback_checklist = []
+            checklist: List[str] = []
+        elif telem_count > 0 or plan_signals or candidates:
+            active_tier = "Tier 2 (Core Telemetry + Plan Audit)"
+            checklist = [
+                "檢視上方 Telemetry CLI 失敗指令與檔案逆序修改訊號，定位核心卡點。",
+                "若上方列出 Candidate Transcripts，請以 `--transcript=<path>` 指定正確對話紀錄重新執行。",
+            ]
         else:
             active_tier = "Tier 3 (In-Context Fallback)"
-            fallback_checklist = [
-                "盤點本輪對話中是否有同一檔案被原生編輯/寫入工具修改 >= 2 次（MULTI_EDIT_CHURN）？",
-                "盤點本輪對話中是否有 CLI 報錯、參數猜錯或連續搜尋 >= 3 次才命中目標（TOOL_MISS_AND_RETRY）？",
-                "盤點是否在後期階段回頭修改了前期 P01~P04 規格而未登記於 changelog.md（SILENT_BACKPATCH）？",
-                "盤點是否曾被 plan verify、dev check 或 Reviewer 退件重修（GATE_BOUNCE）？",
-                "盤點是否重複讀取相同檔案、讀取超長截斷暫存檔，或未先執行 knowledge-db 定位即盲讀多檔（CONTEXT_WASTE）？",
+            checklist = [
+                "Q1 [盲讀與重複檢索]: 本次對話是否對同一組超過 100 行之檔案重複讀取 >= 2 次，或未使用 knowledge-db / ast 檢索即盲目 grep？",
+                "Q2 [驗證退件與格式違規]: 執行 plan verify、dev check 或測試時是否曾因未知規則、欄位缺失或語意 URI 格式錯誤遭退件？",
+                "Q3 [同檔反覆修改]: 是否對同一業務檔案或計畫檔連續呼叫 >= 3 次編輯才收斂？原因為何？",
+                "Q4 [跨階段回頭修補]: 進入實作或測試階段後，是否發現前置規格遺漏邊界條件而回頭修改？",
+                "Q5 [規範衝突或死胡同]: 現有 AGENTS.md 或 SKILL.md 是否有模糊、過時或互相矛盾之處？",
             ]
 
         return SessionTraceReport(
@@ -861,11 +864,11 @@ class SessionTraceEngine:
             transcript_candidates=candidates,
             target_plan=plan_dir.name if plan_dir else None,
             plan_resolution_note=plan_note,
-            session_start_ts=session_start_ts or effective_since_iso,
+            session_start_ts=session_start_ts,
             telemetry_count=telem_count,
             git_changed_files=git_files,
             session_stats=session_stats,
             signals=all_signals,
             thinking_excerpts=thinking_excerpts,
-            fallback_checklist=fallback_checklist,
+            fallback_checklist=checklist,
         )

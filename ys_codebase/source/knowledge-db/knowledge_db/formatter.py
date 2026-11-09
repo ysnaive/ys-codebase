@@ -7,7 +7,6 @@ knowledge-db 呈現層格式化中樞 (formatter.py)
 4. search 檢索命令格式化輸出 (format_search_output)
 """
 
-import os
 from pathlib import Path
 import re
 from typing import Any, List, Optional, Tuple, Union
@@ -66,6 +65,40 @@ class UniversalRedundancyFilter:
         re.compile(r"^/\*+\s*=+\s*\*+/$"),
     )
 
+    @staticmethod
+    def _find_unquoted_block_comment_start(line: str) -> int:
+        """
+        Scan a single line outside string literals ('...' / \"...\") and single-line comments (# / //)
+        to find the starting index of a true `/*` block comment, or -1 if none.
+        """
+        in_quote: Optional[str] = None
+        i = 0
+        n = len(line)
+        while i < n:
+            ch = line[i]
+            if in_quote is not None:
+                if ch == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if ch == in_quote:
+                    in_quote = None
+                i += 1
+                continue
+            if ch in ('"', "'"):
+                in_quote = ch
+                i += 1
+                continue
+            if ch == "#":
+                return -1
+            if ch == "/" and i + 1 < n:
+                nxt = line[i + 1]
+                if nxt == "/":
+                    return -1
+                if nxt == "*":
+                    return i
+            i += 1
+        return -1
+
     def purify_lines(
         self,
         lines: List[Tuple[int, str]],
@@ -110,22 +143,36 @@ class UniversalRedundancyFilter:
                 ):
                     continue
 
-            # 3. 程式碼 Docstring 區塊剔除 (Python: """ 或 ''')
+            # 3. 程式碼 Docstring 區塊剔除 (Python: """ 或 '''，C/JS/C#: /* ... */)
             if not is_md:
                 if not in_docstring_block:
-                    for q in ('"""', "'''", "/*"):
-                        if q in stripped:
-                            end_q = "*/" if q == "/*" else q
-                            first_idx = stripped.find(q)
-                            second_idx = stripped.find(end_q, first_idx + len(q))
+                    skip_whole_line = False
+                    for q in ('"""', "'''"):
+                        if stripped.startswith(q):
+                            second_idx = stripped.find(q, len(q))
                             if second_idx != -1:
                                 if ln != target_line:
-                                    stripped = ""
-                                    break
+                                    skip_whole_line = True
+                                break
+                            in_docstring_block = True
+                            docstring_quote = q
+                            break
+
+                    if not skip_whole_line and not in_docstring_block:
+                        c_idx = self._find_unquoted_block_comment_start(stripped)
+                        if c_idx != -1:
+                            close_idx = stripped.find("*/", c_idx + 2)
+                            if close_idx != -1:
+                                before_c = stripped[:c_idx].strip()
+                                after_c = stripped[close_idx + 2 :].strip()
+                                if not before_c and not after_c and ln != target_line:
+                                    skip_whole_line = True
                             else:
                                 in_docstring_block = True
-                                docstring_quote = end_q
-                                break
+                                docstring_quote = "*/"
+
+                    if skip_whole_line:
+                        continue
 
                     if in_docstring_block:
                         if stripped in ('"""', "'''", "/*", "/**"):
@@ -206,19 +253,21 @@ class ResultFormatter:
 
     def __init__(
         self,
-        workspace_root: Optional[Path] = None,
+        workspace_root: Optional[Union[str, Path]] = None,
         redundancy_filter: Optional[UniversalRedundancyFilter] = None,
         styler: Optional[TerminalStyler] = None,
         file_uri: bool = False,
     ):
-        self.workspace_root = workspace_root
+        self.workspace_root: Optional[Path] = (
+            Path(workspace_root).resolve() if workspace_root is not None else None
+        )
         self.redundancy_filter = redundancy_filter or UniversalRedundancyFilter()
         self.styler = styler or TerminalStyler()
         self.file_uri = bool(file_uri)
 
     def get_workspace_root(self) -> Path:
-        if self.workspace_root:
-            return self.workspace_root
+        if self.workspace_root is not None:
+            return Path(self.workspace_root).resolve()
         try:
             from core import uri
             p_res = uri.resolve("project://", interactive=False)

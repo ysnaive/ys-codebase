@@ -3,6 +3,7 @@ Atomic Gzip + Pickle Binary Persistence, Project Root Discovery, and Dirty File 
 """
 
 import gzip
+import io
 import os
 from pathlib import Path
 import pickle
@@ -73,13 +74,30 @@ def atomic_save_gzip_pickle(
     compresslevel: int = 1,
 ) -> Path:
     """
-    Serialize payload via pickle + gzip and atomically write to target_path via core.vfs.write_bytes.
+    Serialize payload via pickle + gzip context manager and atomically write to target_path via core.vfs.write_bytes.
+    Ensures any temporary `.tmp` file in the parent directory is cleaned up in `finally` on write error.
     """
     p = Path(target_path)
     p.parent.mkdir(parents=True, exist_ok=True)
     raw_pickle = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
-    compressed = gzip.compress(raw_pickle, compresslevel=compresslevel)
-    write_bytes(str(p), compressed)
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb", compresslevel=compresslevel) as gz:
+        gz.write(raw_pickle)
+    compressed = buf.getvalue()
+    tmp_path = p.with_name(f".{p.name}.tmp.{os.getpid()}")
+    try:
+        write_bytes(str(p), compressed, atomic=True)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        for leftover in p.parent.glob(f"*{p.name}*.tmp*"):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
     return p
 
 

@@ -445,6 +445,9 @@ def _extract_safe_zip(zip_path: str, dest_dir: str) -> None:
     dest_abs = os.path.abspath(dest_dir)
     with zipfile.ZipFile(zip_path, "r") as zf:
         for m in zf.infolist():
+            norm_member = m.filename.replace("\\", "/")
+            if norm_member.startswith("/") or (len(norm_member) > 1 and norm_member[1] == ":") or ".." in norm_member.split("/"):
+                raise RuntimeError(f"Zip Slip vulnerability detected: '{m.filename}'")
             tgt = os.path.abspath(os.path.join(dest_abs, m.filename))
             if not tgt.startswith(dest_abs + os.sep) and tgt != dest_abs:
                 raise RuntimeError(f"Zip Slip vulnerability detected: '{m.filename}'")
@@ -626,13 +629,51 @@ def _safe_replace_dir(src_dir: str, dst_dir: str) -> None:
         raise
 
 
+def atomic_swap_directory(staging_dir: str, dest_dir: str) -> None:
+    """Atomically swaps `staging_dir` into `dest_dir` with `.old` backup and deterministic rollback on failure."""
+    dest_abs = os.path.abspath(dest_dir)
+    staging_abs = os.path.abspath(staging_dir)
+    parent_dir, base_name = os.path.dirname(dest_abs), os.path.basename(dest_abs)
+    old_dir = os.path.join(parent_dir, f".old_{base_name}_{os.getpid()}")
+    moved_old = False
+    swap_succeeded = False
+    try:
+        if os.path.exists(old_dir):
+            shutil.rmtree(old_dir, ignore_errors=True)
+        if os.path.exists(dest_abs):
+            try:
+                _safe_replace_dir(dest_abs, old_dir)
+                moved_old = True
+            except OSError as rename_err:
+                if _is_dir_handle_locked_for_rename(rename_err, parent_dir, dest_abs):
+                    _inplace_atomic_sync_dir(staging_abs, dest_abs)
+                    swap_succeeded = True
+                    return
+                raise
+        _safe_replace_dir(staging_abs, dest_abs)
+        swap_succeeded = True
+    except BaseException:
+        if moved_old and os.path.exists(old_dir):
+            try:
+                if os.path.exists(dest_abs):
+                    shutil.rmtree(dest_abs, ignore_errors=True)
+                _safe_replace_dir(old_dir, dest_abs)
+            except Exception:
+                pass
+        raise
+    finally:
+        if swap_succeeded and os.path.exists(old_dir):
+            shutil.rmtree(old_dir, ignore_errors=True)
+        if os.path.exists(staging_abs):
+            shutil.rmtree(staging_abs, ignore_errors=True)
+
+
 def _fetch_and_extract_zip(source: str, dest_dir: str, expected_sha256: Optional[str] = None) -> None:
     """自舉提取壓縮包至同父目錄 .staging 臨時空間，完成後原子替換至 dest_dir，嚴防 Zip Slip 與非原子撕裂。"""
     dest_abs = os.path.abspath(dest_dir)
     parent_dir, base_name = os.path.dirname(dest_abs), os.path.basename(dest_abs)
     os.makedirs(parent_dir, exist_ok=True)
     staging_dir = os.path.join(parent_dir, f".staging_{base_name}_{os.getpid()}")
-    old_dir = os.path.join(parent_dir, f".old_{base_name}_{os.getpid()}")
     if os.path.exists(staging_dir):
         shutil.rmtree(staging_dir, ignore_errors=True)
     os.makedirs(staging_dir, exist_ok=True)
@@ -658,30 +699,8 @@ def _fetch_and_extract_zip(source: str, dest_dir: str, expected_sha256: Optional
         else:
             raise FileNotFoundError(f"[yscb] Error: Package source '{source}' not found or is not a valid zip archive.")
 
-        moved_old = False
-        try:
-            if os.path.exists(old_dir):
-                shutil.rmtree(old_dir, ignore_errors=True)
-            if os.path.exists(dest_abs):
-                try:
-                    _safe_replace_dir(dest_abs, old_dir)
-                    moved_old = True
-                except OSError as rename_err:
-                    if _is_dir_handle_locked_for_rename(rename_err, parent_dir, dest_abs):
-                        _inplace_atomic_sync_dir(staging_dir, dest_abs)
-                        return
-                    raise
-            _safe_replace_dir(staging_dir, dest_abs)
-        except Exception:
-            if moved_old and not os.path.exists(dest_abs) and os.path.exists(old_dir):
-                try:
-                    _safe_replace_dir(old_dir, dest_abs)
-                except Exception:
-                    pass
-            raise
+        atomic_swap_directory(staging_dir, dest_abs)
     finally:
-        if os.path.exists(old_dir):
-            shutil.rmtree(old_dir, ignore_errors=True)
         if os.path.exists(staging_dir):
             shutil.rmtree(staging_dir, ignore_errors=True)
 
@@ -832,7 +851,7 @@ def cmd_self_update(argv: List[str]) -> int:
         return 1
 
     current_file = os.path.abspath(__file__)
-    tmp_file = current_file + ".tmp"
+    tmp_file = f"{current_file}.tmp_{os.getpid()}"
     bak_file = current_file + ".bak"
     try:
         with open(tmp_file, "w", encoding="utf-8", newline="\n") as f:
@@ -1289,28 +1308,6 @@ def _bootstrap_package_from_provider(
     return False
 
 
-def _restore_module_package(
-    base_dir: str,
-    yscb_root: str,
-    module_name: str,
-    version: str,
-    provider_arg: str,
-    dest_dir: str,
-    mirror_dir: str,
-    ignore_sha256: bool = False,
-) -> bool:
-    yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
-    core_dir = _activate_runtime_env(yscb_abs)
-    if _is_core_healthy(core_dir)[0]:
-        from core.installer import Installer
-        return Installer()._restore_module_package(
-            base_dir, yscb_root, module_name, version, provider_arg, dest_dir, mirror_dir, ignore_sha256=ignore_sha256
-        )
-    return _bootstrap_package_from_provider(
-        base_dir, yscb_root, module_name, version, provider_arg, dest_dir, mirror_dir, ignore_sha256=ignore_sha256
-    )
-
-
 def _auto_bootstrap_and_restore_if_needed(
     host_dir: str,
     yscb_rel: str,
@@ -1375,35 +1372,46 @@ def _auto_bootstrap_and_restore_if_needed(
     return True
 
 
+_restore_module_package = _bootstrap_package_from_provider
+
+
 def cmd_restore(argv: List[str]) -> int:
+    """相容轉發函式：確保環境掛載並委派至 `core restore`（若 core 入口缺失則退回標準庫最小還原）。"""
     cfg_path, cfg = load_config()
     if not cfg_path or not cfg or "yscb_root" not in cfg:
         return 1
     base_dir, yscb_root = os.path.dirname(cfg_path), cfg["yscb_root"]
     yscb_abs = os.path.normpath(os.path.join(base_dir, yscb_root))
     installed = cfg.get("installed_modules", {})
-    if not installed:
+    if not isinstance(installed, dict) or not installed:
         return 0
-    if os.path.isfile(os.path.join(yscb_abs, ".modules", "core", "scripts", "cli.py")):
-        return dispatch_module("core", ["restore"] + argv)
-    mods_dir, mirror_dir, force, failed = os.path.join(yscb_abs, ".modules"), os.path.join(yscb_abs, ".mirror"), "--force" in argv, []
     ignore_sha256 = "--ignore-sha256" in argv
-    default_prov = cfg.get("default_provider", "")
-    for mod, info in sorted(installed.items(), key=lambda x: (0 if x[0] == "core" else 1, x[0])):
-        ver = info.get("version", "") if isinstance(info, dict) else str(info)
-        prov = (info.get("provider") if isinstance(info, dict) else None) or default_prov
-        dest = os.path.join(mods_dir, mod)
+    force = "--force" in argv or "-f" in argv
+    core_cli = os.path.join(yscb_abs, ".modules", "core", "scripts", "cli.py")
+    if not os.path.isfile(core_cli):
+        _auto_bootstrap_and_restore_if_needed(base_dir, yscb_root, cfg, "restore", ignore_sha256=ignore_sha256)
+    if os.path.isfile(core_cli):
+        _activate_runtime_env(yscb_abs, host_dir=base_dir)
+        return dispatch_module("core", ["restore"] + argv)
+
+    default_prov = _normalize_provider_url(cfg.get("default_provider", DEFAULT_PROVIDER_URL))
+    mod_keys = sorted(installed.keys(), key=lambda x: (0 if x == "core" else 1, x))
+    failed = False
+    for m_name in mod_keys:
+        m_info = installed[m_name]
+        ver = m_info.get("version", "1.0.0.0") if isinstance(m_info, dict) else str(m_info)
+        prov = (m_info.get("provider", default_prov) if isinstance(m_info, dict) else default_prov) or default_prov
+        dest = os.path.join(yscb_abs, ".modules", m_name)
+        mirror = os.path.join(yscb_abs, ".mirror", m_name)
         mf_file = os.path.join(dest, "manifest.json")
         if not force and os.path.isdir(dest) and os.path.isfile(mf_file):
-            installed_ver = _read_module_manifest_version(mf_file)
-            if ver == "build" or installed_ver == ver:
+            if ver == "build" or _read_module_manifest_version(mf_file) == ver:
                 continue
-        if not ver or not prov or not _restore_module_package(
-            base_dir, yscb_root, mod, ver, prov, dest, os.path.join(mirror_dir, mod), ignore_sha256=ignore_sha256
+        if not _restore_module_package(
+            base_dir, yscb_root, m_name, ver, prov, dest, mirror, ignore_sha256=ignore_sha256
         ):
-            _print_missing_source_remediation(mod, str(ver or "unknown"), str(prov or "unknown"))
-            failed.append(mod)
-    return 0 if not failed else 1
+            failed = True
+    return 1 if failed else 0
 
 
 def _read_module_manifest_version(manifest_path: str) -> Optional[str]:

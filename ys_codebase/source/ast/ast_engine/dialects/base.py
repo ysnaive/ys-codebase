@@ -12,6 +12,7 @@ _STATIC_SIG_RE = re.compile(r"(?:^|\s|@)(?:static|staticmethod|classmethod)\b")
 _GENERIC_CALL_RECEIVER_RE = re.compile(r"<\s*([A-Za-z_][A-Za-z0-9_.]*)\s*>\s*\([^)]*\)$")
 _TRAILING_CALL_PARENS_RE = re.compile(r"\([^)]*\)$")
 _GENERIC_ARGS_RE = re.compile(r"<[^>]+>")
+_SUPER_CALL_PREFIX_RE = re.compile(r"^(?:super|base)\s*\([^)]*\)\.")
 
 
 class DialectAdapter:
@@ -162,13 +163,14 @@ class DialectAdapter:
                 prefix = gen_m.group(1).strip()
             else:
                 prefix = _TRAILING_CALL_PARENS_RE.sub("", prefix).strip()
+        prefix = _SUPER_CALL_PREFIX_RE.sub("super.", prefix)
         prefix = _GENERIC_ARGS_RE.sub("", prefix).strip()
 
         if prefix == "this":
             return "self"
-        if prefix in ("base", "super"):
+        if prefix in ("base", "super", "__super"):
             return "base"
-        if prefix.startswith(("this.", "base.", "super.")):
+        if prefix.startswith(("this.", "base.", "super.", "__super.")):
             return "self." + prefix.split(".", 1)[1]
         return prefix
 

@@ -1,7 +1,7 @@
 """
 Compliance & Architecture Checker for YS-Codebase modules.
 Implements a pure static 7-step compliance check pipeline, 3-tier severity classification,
-and single-pass AST runtime isolation guardrail analysis.
+per-module context caching, and single-pass AST runtime isolation guardrail analysis.
 """
 import os
 import ast
@@ -101,6 +101,15 @@ class CheckReport:
         return res
 
 
+@dataclass(frozen=True)
+class ModuleCheckContext:
+    """Per-module cached metadata context avoiding redundant disk reads of manifest.json and contributes/core.json."""
+    module_name: str
+    real_dir: str
+    manifest_data: Optional[Dict[str, Any]] = None
+    core_contrib_data: Optional[Dict[str, Any]] = None
+
+
 def _extract_ast_tokens(expr_node: ast.AST) -> List[str]:
     tokens: List[str] = []
     for n in ast.walk(expr_node):
@@ -111,30 +120,42 @@ def _extract_ast_tokens(expr_node: ast.AST) -> List[str]:
     return tokens
 
 
-def _collect_declared_cli_commands(module_dir: str) -> List[Tuple[str, str]]:
-    """Collect (full_cmd, primary_cmd) pairs from contributes/core.json if present."""
+def _extract_cli_commands_from_core_data(cdata: Optional[Dict[str, Any]]) -> List[Tuple[str, str]]:
+    """Extract `(full_cmd, primary_cmd)` pairs from parsed `contributes/core.json` data."""
+    if not isinstance(cdata, dict):
+        return []
+    cmd_map = cdata.get("commands", {}).get("cmd", {})
+    if not isinstance(cmd_map, dict) or not cmd_map:
+        return []
+
+    def _collect_leaves(d: dict, pfx: str = "") -> List[Tuple[str, str]]:
+        leaves: List[Tuple[str, str]] = []
+        for k, v in d.items():
+            if isinstance(v, dict) and isinstance(v.get("cmd"), dict) and v["cmd"]:
+                leaves.extend(_collect_leaves(v["cmd"], pfx=f"{pfx}{k}_"))
+            else:
+                full_c = f"{pfx}{k}"
+                primary_c = full_c.split("_", 1)[0]
+                leaves.append((full_c, primary_c))
+        return leaves
+
+    return _collect_leaves(cmd_map)
+
+
+def _collect_declared_cli_commands(
+    module_dir: str,
+    core_contrib_data: Optional[Dict[str, Any]] = None,
+) -> List[Tuple[str, str]]:
+    """Collect (full_cmd, primary_cmd) pairs from cached contributes/core.json or disk if not provided."""
+    if isinstance(core_contrib_data, dict):
+        return _extract_cli_commands_from_core_data(core_contrib_data)
     contrib_file = os.path.join(module_dir, "contributes", "core.json")
     if not os.path.isfile(contrib_file):
         return []
     try:
         with open(contrib_file, "r", encoding="utf-8") as f:
             cdata = json.load(f)
-        cmd_map = cdata.get("commands", {}).get("cmd", {})
-        if not isinstance(cmd_map, dict) or not cmd_map:
-            return []
-
-        def _collect_leaves(d: dict, pfx: str = "") -> List[Tuple[str, str]]:
-            leaves: List[Tuple[str, str]] = []
-            for k, v in d.items():
-                if isinstance(v, dict) and isinstance(v.get("cmd"), dict) and v["cmd"]:
-                    leaves.extend(_collect_leaves(v["cmd"], pfx=f"{pfx}{k}_"))
-                else:
-                    full_c = f"{pfx}{k}"
-                    primary_c = full_c.split("_", 1)[0]
-                    leaves.append((full_c, primary_c))
-            return leaves
-
-        return _collect_leaves(cmd_map)
+        return _extract_cli_commands_from_core_data(cdata)
     except (OSError, json.JSONDecodeError):
         return []
 
@@ -215,11 +236,29 @@ def _method_has_none_requirement(item: ast.AST) -> bool:
     return False
 
 
+def _is_self_mark_passed_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "mark_passed"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+    )
+
+
 def _method_calls_mark_passed(item: ast.AST) -> bool:
-    for sub_n in ast.walk(item):
-        if isinstance(sub_n, ast.Call) and isinstance(sub_n.func, ast.Attribute):
-            if sub_n.func.attr == "mark_passed" and isinstance(sub_n.func.value, ast.Name) and sub_n.func.value.id == "self":
+    body = getattr(item, "body", None)
+    if isinstance(body, list):
+        for stmt in reversed(body):
+            if isinstance(stmt, ast.Expr) and _is_self_mark_passed_call(stmt.value):
                 return True
+            if isinstance(stmt, ast.Try):
+                for fstmt in reversed(stmt.finalbody):
+                    if isinstance(fstmt, ast.Expr) and _is_self_mark_passed_call(fstmt.value):
+                        return True
+    for sub_n in ast.walk(item):
+        if _is_self_mark_passed_call(sub_n):
+            return True
     return False
 
 
@@ -343,7 +382,7 @@ _MUTABLE_TYPE_NAMES: FrozenSet[str] = frozenset({
     "Set",
     "bytearray",
     "defaultdict",
-    " DefaultDict",
+    "DefaultDict",
     "OrderedDict",
     "Counter",
     "deque",
@@ -542,13 +581,9 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
             )
         )
 
-    def _collect_imports_and_docs(self, tree: ast.Module) -> None:
-        if tree.body and isinstance(tree.body[0], ast.Expr) and isinstance(tree.body[0].value, ast.Constant):
-            self.doc_nodes.add(id(tree.body[0].value))
-        for n in ast.walk(tree):
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                if n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant):
-                    self.doc_nodes.add(id(n.body[0].value))
+    def _mark_body_docstring(self, body: List[ast.stmt]) -> None:
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+            self.doc_nodes.add(id(body[0].value))
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -656,10 +691,22 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
             elif isinstance(stmt, ast.With):
                 self._check_top_level_stmts(stmt.body, in_except_handler=in_except_handler)
 
-    def analyze(self, tree: ast.Module) -> None:
-        self._collect_imports_and_docs(tree)
-        if not self.is_test_file:
-            self._check_top_level_stmts(tree.body)
+    def analyze(self, tree: ast.Module, content: str = "") -> None:
+        if self.is_test_file:
+            if content and "except:" not in content.replace(" ", "").replace("\t", ""):
+                return
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ExceptHandler) and node.type is None:
+                    lineno = getattr(node, "lineno", None)
+                    self._record_issue(
+                        lineno,
+                        f"Bare 'except:' clause detected in '{self.rel_path}:{lineno or 0}'. Catch 'Exception' or specific exception types instead.",
+                        category="ANTIPATTERN",
+                        severity=CheckSeverity.WARN,
+                    )
+            return
+        self._mark_body_docstring(tree.body)
+        self._check_top_level_stmts(tree.body)
         self.visit(tree)
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
@@ -697,7 +744,6 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
                     f"Direct contributes probing: access to '{s_val}' detected in '{self.rel_path}:{lineno}'. Use 'core.contributes.get()' SDK instead.",
                     category="ANTIPATTERN",
                 )
-        self.generic_visit(node)
 
     def visit_Global(self, node: ast.Global) -> None:
         if not self.is_test_file:
@@ -708,6 +754,7 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._mark_body_docstring(node.body)
         if not self.is_test_file:
             is_dc = False
             is_frozen = False
@@ -755,13 +802,12 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
         self._pop_alias_scope()
 
     def _visit_func(self, node: ast.AST) -> None:
+        self._mark_body_docstring(getattr(node, "body", []))
         self._push_alias_scope()
         args_obj = getattr(node, "args", None)
         if args_obj is not None:
             for arg_list in (args_obj.posonlyargs, args_obj.args, args_obj.kwonlyargs):
                 for a in arg_list:
-                    if _is_mutable_type_annotation(a.annotation):
-                        pass
                     if a.annotation is not None:
                         ann_target = self._resolve_target(a.annotation)
                         if ann_target in ("pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath", "pathlib.WindowsPath"):
@@ -1124,25 +1170,60 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
 
 class Checker:
     def __init__(self) -> None:
-        self._parsed_py_cache: Dict[str, Any] = {}
+        self._parsed_py_cache: Dict[str, Tuple[int, int, Any]] = {}
+        self._json_cache: Dict[str, Tuple[int, int, Any]] = {}
+        self._module_ctx_cache: Dict[str, ModuleCheckContext] = {}
         self._syntax_reported_files: Set[str] = set()
 
     def _get_parsed_py(self, full_path: str, filename: Optional[str] = None) -> Tuple[str, ast.Module]:
-        """Reads and parses a Python file into (content, ast.Module), caching per check_module run."""
+        """Reads and parses a Python file into `(content, ast.Module)`, caching by `(norm_p, mtime_ns, size)`."""
         norm_p = os.path.abspath(full_path)
-        if norm_p in self._parsed_py_cache:
-            cached = self._parsed_py_cache[norm_p]
-            if isinstance(cached, BaseException):
-                raise cached
-            return cached
+        try:
+            st = os.stat(full_path)
+            mtime_ns = int(getattr(st, "st_mtime_ns", 0))
+            fsize = int(getattr(st, "st_size", 0))
+        except OSError:
+            mtime_ns, fsize = -1, -1
+
+        if mtime_ns >= 0 and norm_p in self._parsed_py_cache:
+            c_mtime, c_size, cached = self._parsed_py_cache[norm_p]
+            if c_mtime == mtime_ns and c_size == fsize:
+                if isinstance(cached, BaseException):
+                    raise cached
+                return cached
         try:
             with open(full_path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
             tree = ast.parse(content, filename=filename or full_path)
-            self._parsed_py_cache[norm_p] = (content, tree)
+            self._parsed_py_cache[norm_p] = (mtime_ns, fsize, (content, tree))
             return content, tree
         except Exception as exc:
-            self._parsed_py_cache[norm_p] = exc
+            self._parsed_py_cache[norm_p] = (mtime_ns, fsize, exc)
+            raise
+
+    def _read_cached_json(self, full_path: str) -> Any:
+        """Reads and parses a JSON file with `(norm_p, mtime_ns, size)` caching."""
+        norm_p = os.path.abspath(full_path)
+        try:
+            st = os.stat(full_path)
+            mtime_ns = int(getattr(st, "st_mtime_ns", 0))
+            fsize = int(getattr(st, "st_size", 0))
+        except OSError:
+            mtime_ns, fsize = -1, -1
+
+        if mtime_ns >= 0 and norm_p in self._json_cache:
+            c_mtime, c_size, cached = self._json_cache[norm_p]
+            if c_mtime == mtime_ns and c_size == fsize:
+                if isinstance(cached, BaseException):
+                    raise cached
+                return cached
+        try:
+            with open(full_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self._json_cache[norm_p] = (mtime_ns, fsize, data)
+            return data
+        except Exception as exc:
+            self._json_cache[norm_p] = (mtime_ns, fsize, exc)
             raise
 
     def _record_syntax_issue(self, report: CheckReport, norm_p: str, rel_p: str, exc: Exception) -> None:
@@ -1167,7 +1248,6 @@ class Checker:
 
     def check_module(self, name: str) -> CheckReport:
         with cell_span("dev.check"):
-            self._parsed_py_cache = {}
             self._syntax_reported_files = set()
             report = CheckReport(module=name)
             src_uri = f"module.source://{name}"
@@ -1182,8 +1262,15 @@ class Checker:
             else:
                 real_dir = uri.resolve(src_uri)
                 m_data = self._check_manifest(name, real_dir, report)
-                self._check_core_injection(name, real_dir, report, m_data=m_data)
-                self._check_file_structure(name, real_dir, report)
+                core_c_data = self._check_core_injection(name, real_dir, report, m_data=m_data)
+                mod_ctx = ModuleCheckContext(
+                    module_name=name,
+                    real_dir=real_dir,
+                    manifest_data=m_data,
+                    core_contrib_data=core_c_data,
+                )
+                self._module_ctx_cache[name] = mod_ctx
+                self._check_file_structure(name, real_dir, report, mod_ctx=mod_ctx)
                 self._check_source_files(name, real_dir, report)
                 self._check_test_classes(name, real_dir, report)
                 self._check_sandbox_hooks(name, real_dir, report)
@@ -1213,8 +1300,7 @@ class Checker:
             return None
 
         try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                m_data = json.load(f)
+            m_data = self._read_cached_json(manifest_path)
             if not isinstance(m_data, dict):
                 report.issues.append(
                     CheckIssue(
@@ -1461,7 +1547,7 @@ class Checker:
         real_dir: str,
         report: CheckReport,
         m_data: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    ) -> Optional[Dict[str, Any]]:
         core_contribute_path = os.path.join(real_dir, "contributes", "core.json")
         if name != "core" and not os.path.exists(core_contribute_path):
             report.issues.append(
@@ -1475,7 +1561,7 @@ class Checker:
 
         contrib_dir = os.path.join(real_dir, "contributes")
         if not os.path.isdir(contrib_dir):
-            return
+            return None
 
         from core.validator import ContributesValidator
 
@@ -1483,8 +1569,7 @@ class Checker:
         fmt_path = os.path.join(contrib_dir, "_format.json")
         if os.path.exists(fmt_path):
             try:
-                with open(fmt_path, "r", encoding="utf-8") as f:
-                    fmt_data = json.load(f)
+                fmt_data = self._read_cached_json(fmt_path)
                 meta_res = ContributesValidator.validate_format_schema(fmt_data)
                 for err in meta_res.errors:
                     report.issues.append(
@@ -1520,14 +1605,14 @@ class Checker:
         except OSError:
             files = []
 
+        core_c_data: Optional[Dict[str, Any]] = None
         for fname in files:
             if fname.startswith("_"):
                 continue
             target = fname[:-5]
             f_path = os.path.join(contrib_dir, fname)
             try:
-                with open(f_path, "r", encoding="utf-8") as f:
-                    c_data = json.load(f)
+                c_data = self._read_cached_json(f_path)
             except Exception as e:
                 report.issues.append(
                     CheckIssue(
@@ -1539,11 +1624,18 @@ class Checker:
                 )
                 continue
 
+            if target == "core" and isinstance(c_data, dict):
+                core_c_data = c_data
+
             target_fmt = None
             src_fmt_uri = f"module.source://{target}/contributes/_format.json"
             if vfs.exists(src_fmt_uri):
                 try:
-                    target_fmt = vfs.read_json(src_fmt_uri)
+                    src_fmt_real = uri.resolve(src_fmt_uri)
+                    if src_fmt_real and os.path.isfile(src_fmt_real):
+                        target_fmt = self._read_cached_json(src_fmt_real)
+                    else:
+                        target_fmt = vfs.read_json(src_fmt_uri)
                 except Exception:
                     target_fmt = None
             if target_fmt is None:
@@ -1559,8 +1651,7 @@ class Checker:
                         manifest_path = os.path.join(real_dir, "manifest.json")
                         if os.path.exists(manifest_path):
                             try:
-                                with open(manifest_path, "r", encoding="utf-8") as mf:
-                                    loaded_mf = json.load(mf)
+                                loaded_mf = self._read_cached_json(manifest_path)
                                 if isinstance(loaded_mf, dict):
                                     manifest_obj = loaded_mf
                             except (OSError, json.JSONDecodeError):
@@ -1615,8 +1706,15 @@ class Checker:
                         file_path=f"contributes/{fname}",
                     )
                 )
+        return core_c_data
 
-    def _check_file_structure(self, name: str, real_dir: str, report: CheckReport) -> None:
+    def _check_file_structure(
+        self,
+        name: str,
+        real_dir: str,
+        report: CheckReport,
+        mod_ctx: Optional[ModuleCheckContext] = None,
+    ) -> None:
         # 1. Entry point check
         cli_path = os.path.join(real_dir, "scripts", "cli.py")
         if not os.path.exists(cli_path):
@@ -1629,7 +1727,12 @@ class Checker:
                 )
             )
         else:
-            self._check_cli_compliance(name, cli_path, report)
+            self._check_cli_compliance(
+                name,
+                cli_path,
+                report,
+                core_contrib_data=(mod_ctx.core_contrib_data if mod_ctx is not None else None),
+            )
 
         # 2. Check for scattered config.*.json at root
         for item in sorted(os.listdir(real_dir)):
@@ -1659,8 +1762,7 @@ class Checker:
                 if cfg_f.endswith(".json"):
                     cfg_full = os.path.join(cfg_dir, cfg_f)
                     try:
-                        with open(cfg_full, "r", encoding="utf-8") as f:
-                            json.load(f)
+                        self._read_cached_json(cfg_full)
                     except Exception as e:
                         report.issues.append(
                             CheckIssue(
@@ -1710,7 +1812,13 @@ class Checker:
                 )
             )
 
-    def _check_cli_compliance(self, name: str, cli_path: str, report: CheckReport) -> None:
+    def _check_cli_compliance(
+        self,
+        name: str,
+        cli_path: str,
+        report: CheckReport,
+        core_contrib_data: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """
         以 AST 靜態檢核 scripts/cli.py 的合規性：
         1. 必須宣告對應 contributes/core.json 的具名命令函式 def <cmd>(cmd_bags: CmdBags) -> int
@@ -1727,7 +1835,7 @@ class Checker:
         declared_funcs, has_main_func, has_if_name_main, invalid_top_level_nodes = _audit_cli_script_ast(tree)
 
         module_dir = os.path.dirname(os.path.dirname(os.path.abspath(cli_path)))
-        cmd_leaves = _collect_declared_cli_commands(module_dir)
+        cmd_leaves = _collect_declared_cli_commands(module_dir, core_contrib_data=core_contrib_data)
 
         if cmd_leaves:
             missing_cmd_funcs = []
@@ -1799,13 +1907,13 @@ class Checker:
                 is_test_file = rel_p.startswith("tests/")
 
                 try:
-                    _, tree = self._get_parsed_py(full_p, filename=rel_p)
+                    content, tree = self._get_parsed_py(full_p, filename=rel_p)
                 except Exception as e:
                     self._record_syntax_issue(report, os.path.abspath(full_p), rel_p, e)
                     continue
 
                 visitor = _SourceGuardrailVisitor(name, rel_p, is_test_file, report)
-                visitor.analyze(tree)
+                visitor.analyze(tree, content)
 
     def _check_test_classes(self, name: str, real_dir: str, report: CheckReport) -> None:
         tests_dir = os.path.join(real_dir, "tests")

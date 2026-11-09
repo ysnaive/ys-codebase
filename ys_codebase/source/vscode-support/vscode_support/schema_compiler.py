@@ -30,6 +30,7 @@ class SchemaCompiler:
     def __init__(self, yscb_dir: Optional[str] = None) -> None:
         self.yscb_dir = os.path.abspath(yscb_dir or uri.resolve_yscb_root())
         self._cached_uri_snippets: Optional[List[Dict[str, Any]]] = None
+        self._mirror_zip_bundle_cache: Dict[Tuple[str, int], Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]] = {}
 
     def _collect_uri_scheme_snippets(self) -> List[Dict[str, Any]]:
         """
@@ -143,27 +144,25 @@ class SchemaCompiler:
         else:
             schema = {}
 
-        # 若為 $ref 且附帶 default、description 或 merge_strategy，於非 $ref 節點直接合成完整說明
-        if has_default and default_val is not None and "$ref" not in schema:
+        if has_default and default_val is not None:
             schema["default"] = default_val
 
         field_desc = parsed.get("description")
-        if "$ref" not in schema:
-            md_parts: List[str] = []
-            if field_desc:
-                schema["description"] = str(field_desc)
-                md_parts.append(str(field_desc))
-            elif "markdownDescription" in schema:
-                md_parts.append(str(schema["markdownDescription"]))
+        md_parts: List[str] = []
+        if field_desc:
+            schema["description"] = str(field_desc)
+            md_parts.append(str(field_desc))
+        elif "markdownDescription" in schema:
+            md_parts.append(str(schema["markdownDescription"]))
 
-            if t_name in ("uri", "path") and field_desc:
-                md_parts.append("*(支援輸入語意 URI 協議前綴如 `project://`, `config://`, `module://`)*")
+        if t_name in ("uri", "path") and field_desc:
+            md_parts.append("*(支援輸入語意 URI 協議前綴如 `project://`, `config://`, `module://`)*")
 
-            if merge_strategy:
-                md_parts.append(f"*(合併策略: `{merge_strategy}`)*")
+        if merge_strategy:
+            md_parts.append(f"*(合併策略: `{merge_strategy}`)*")
 
-            if md_parts:
-                schema["markdownDescription"] = "\n\n".join(md_parts)
+        if md_parts:
+            schema["markdownDescription"] = "\n\n".join(md_parts)
 
         return schema, required
 
@@ -239,10 +238,12 @@ class SchemaCompiler:
             prop_schema, _ = self._format_node_to_json_schema(fmt_body)
             desc = ext_spec.get("description")
             merge_strat = ext_spec.get("merge")
-            if desc and "$ref" not in prop_schema:
+            if desc:
                 prop_schema["description"] = str(desc)
                 if merge_strat:
                     prop_schema["markdownDescription"] = f"{desc} *(合併策略: `{merge_strat}`)*"
+                elif "markdownDescription" not in prop_schema:
+                    prop_schema["markdownDescription"] = str(desc)
             ext_properties[ext_key] = prop_schema
 
         # 支援 config/<mod>/contribute.json 外層包裹 {"<mod>": { ... }}
@@ -345,16 +346,18 @@ class SchemaCompiler:
                 is_rule_wrapper = (
                     isinstance(v, dict)
                     and "format" in v
-                    and set(v.keys()).issubset({"format", "description", "merge"})
+                    and set(v.keys()).issubset({"format", "description", "merge", "default"})
                     and isinstance(v.get("description"), (str, type(None)))
                 )
                 if is_rule_wrapper:
                     prop_schema, is_req = self._format_node_to_json_schema(v["format"])
                     desc = v.get("description")
-                    if desc and "$ref" not in prop_schema:
+                    if desc:
                         prop_schema["description"] = str(desc)
                         if "markdownDescription" not in prop_schema:
                             prop_schema["markdownDescription"] = str(desc)
+                    if "default" in v and v["default"] is not None:
+                        prop_schema["default"] = v["default"]
                 else:
                     prop_schema, is_req = self._format_node_to_json_schema(v)
                 props[k] = prop_schema
@@ -537,6 +540,55 @@ class SchemaCompiler:
 
         return sorted(zip_files, key=functools.cmp_to_key(_cmp_zip_paths))[-1]
 
+    def _read_mirror_zip_config_bundle(
+        self, latest_zip: str
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        """
+        Single-pass reader for `.mirror/<mod>/*.zip` that extracts both `configurable/_format.json`
+        and merged `configurable/config.*.json` templates while caching by `(path, mtime_ns)`.
+        """
+        if not latest_zip or not os.path.isfile(latest_zip):
+            return None, None
+        try:
+            st_mtime_ns = int(getattr(os.stat(latest_zip), "st_mtime_ns", 0))
+        except OSError:
+            return None, None
+
+        cache_key = (os.path.normcase(os.path.abspath(latest_zip)), st_mtime_ns)
+        if cache_key in self._mirror_zip_bundle_cache:
+            return self._mirror_zip_bundle_cache[cache_key]
+
+        fmt_data: Optional[Dict[str, Any]] = None
+        merged_tpl: Dict[str, Any] = {}
+        found_tpl = False
+        try:
+            with zipfile.ZipFile(latest_zip, "r") as zf:
+                for member in sorted(zf.namelist()):
+                    norm_m = member.replace("\\", "/")
+                    if norm_m == "configurable/_format.json":
+                        try:
+                            loaded_fmt = json.loads(zf.read(member).decode("utf-8"))
+                            if isinstance(loaded_fmt, dict):
+                                fmt_data = loaded_fmt
+                        except Exception:
+                            pass
+                    elif norm_m.startswith("configurable/") and norm_m.endswith(".json"):
+                        base_m = os.path.basename(norm_m)
+                        if not base_m.startswith("_"):
+                            try:
+                                loaded_tpl = json.loads(zf.read(member).decode("utf-8"))
+                                if isinstance(loaded_tpl, dict):
+                                    merged_tpl.update(loaded_tpl)
+                                    found_tpl = True
+                            except Exception:
+                                pass
+        except Exception:
+            return None, None
+
+        res = (fmt_data, merged_tpl if found_tpl else None)
+        self._mirror_zip_bundle_cache[cache_key] = res
+        return res
+
     def _load_module_config_format(self, mod_name: str, latest_zip: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """優先自 `self.yscb_dir/.modules/<mod>/configurable/_format.json`、`module://<mod>/configurable/_format.json` 或 `module.mirror://<mod>/*.zip` 讀取組態 `_format.json` 契約。"""
         local_modules_dir = os.path.join(self.yscb_dir, ".modules")
@@ -563,16 +615,8 @@ class SchemaCompiler:
             latest_zip = self._select_latest_mirror_zip(os.path.join(self.yscb_dir, ".mirror", mod_name))
         if not latest_zip:
             return None
-        try:
-            with zipfile.ZipFile(latest_zip, "r") as zf:
-                for member in sorted(zf.namelist()):
-                    if member.replace("\\", "/") == "configurable/_format.json":
-                        data = json.loads(zf.read(member).decode("utf-8"))
-                        if isinstance(data, dict):
-                            return data
-        except Exception:
-            pass
-        return None
+        fmt_data, _ = self._read_mirror_zip_config_bundle(latest_zip)
+        return fmt_data
 
     def _load_module_config_template(self, mod_name: str, latest_zip: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """嚴守 Zero-Probing：自 `module.mirror://<mod>/*.zip` 記憶體讀取 `configurable/config.*.json` 原始組態模板並合併。"""
@@ -580,23 +624,8 @@ class SchemaCompiler:
             latest_zip = self._select_latest_mirror_zip(os.path.join(self.yscb_dir, ".mirror", mod_name))
         if not latest_zip:
             return None
-
-        merged_tpl: Dict[str, Any] = {}
-        found_any = False
-        try:
-            with zipfile.ZipFile(latest_zip, "r") as zf:
-                for member in sorted(zf.namelist()):
-                    norm_m = member.replace("\\", "/")
-                    base_m = os.path.basename(norm_m)
-                    if norm_m.startswith("configurable/") and norm_m.endswith(".json") and not base_m.startswith("_"):
-                        data = json.loads(zf.read(member).decode("utf-8"))
-                        if isinstance(data, dict):
-                            merged_tpl.update(data)
-                            found_any = True
-        except Exception:
-            return None
-
-        return merged_tpl if found_any else None
+        _, tpl_data = self._read_mirror_zip_config_bundle(latest_zip)
+        return tpl_data
 
     def _write_json_zero_touch(self, file_path: str, data: Dict[str, Any]) -> bool:
         """Zero-Touch JSON 寫入：若既有檔案內容完全一致則略過寫盤，避免變更 mtime。"""

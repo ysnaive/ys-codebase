@@ -2,13 +2,14 @@
 Space event subscriber hook for module:knowledge-db.
 Listens to `on_file_space_changed` emitted by `core.space` and triggers
 transactional cursor consumption (`consume_diff(consumer_id="knowledge-db")`)
-and incremental hot-patching of the unified semantic index.
+and incremental hot-patching of the unified semantic index via `IndexingPipeline.sync_incremental_changes`.
 """
 
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
 from core.space import ScanDiffResult, consume_diff
+
 
 def get_engine() -> Any:
     """Resolve `knowledge_db.engine.get_engine` dynamically while allowing test monkeypatching."""
@@ -22,7 +23,6 @@ def get_active_worker() -> Any:
     from knowledge_db.service import get_active_worker as _get_active_worker
 
     return _get_active_worker()
-
 
 
 @contextmanager
@@ -73,8 +73,7 @@ def on_file_space_changed(
 ) -> Dict[str, Any]:
     """
     當 `core.space` 完成二進位指紋快照更新並廣播 `on_file_space_changed` 時觸發。
-    使用 `consume_diff(consumer_id="knowledge-db")` 拉取自上次游標水位以來的增量變更，
-    並對全域統一索引執行 4 階段熱修補（若基礎索引尚未建置則觸發全量建置）。
+    統一委派至 `engine.pipeline.sync_incremental_changes` 執行交易式游標消費與增量熱修補。
     """
     explicit_engine_obj: Optional[Any] = None
     target_space: Optional[str] = None
@@ -105,43 +104,25 @@ def on_file_space_changed(
             }
 
     engine = explicit_engine_obj or get_engine()
-    indices_dir = engine.pipeline.get_indices_dir()
-    bin_file = indices_dir / "unified.index.bin.gz"
     auto_refresh = False if diff_summary is not None else None
 
-    with _resolve_consume_diff(
-        engine,
+    @contextmanager
+    def _hook_consume(
+        space_name: Optional[str] = None,
+        consumer_id: str = "knowledge-db",
+        auto_refresh: Optional[bool] = None,
+    ) -> Iterator[ScanDiffResult]:
+        with _resolve_consume_diff(
+            engine,
+            space_name=space_name,
+            consumer_id=consumer_id,
+            auto_refresh=auto_refresh,
+        ) as diff_res:
+            yield diff_res
+
+    return engine.pipeline.sync_incremental_changes(
         space_name=target_space,
-        consumer_id="knowledge-db",
         auto_refresh=auto_refresh,
-    ) as diff_res:
-        if not diff_res.has_changes:
-            return {
-                "status": "noop",
-                "patched_count": 0,
-                "to_generation": diff_res.to_generation,
-            }
-
-        if not bin_file.exists() and engine.pipeline.unified_index is None:
-            engine.pipeline.build_unified_index(force=True, allow_parallel=False)
-            return {
-                "status": "rebuilt",
-                "patched_count": len(diff_res.detail.dirty_files),
-                "to_generation": diff_res.to_generation,
-            }
-
-        patch_res = engine.pipeline.hot_patch_unified_index(diff_res.detail)
-        if not patch_res.success:
-            engine.pipeline.build_unified_index(force=True, allow_parallel=False)
-            return {
-                "status": "rebuilt",
-                "patched_count": len(diff_res.detail.dirty_files),
-                "to_generation": diff_res.to_generation,
-            }
-
-        return {
-            "status": "patched",
-            "patched_count": patch_res.patched_count,
-            "vector_degraded": patch_res.vector_degraded,
-            "to_generation": diff_res.to_generation,
-        }
+        allow_parallel=False,
+        consume_fn=_hook_consume,
+    )

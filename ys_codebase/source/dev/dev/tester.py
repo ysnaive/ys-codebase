@@ -747,7 +747,11 @@ class Tester:
                     return 1
 
         if not is_nested and get_env("YSCB_TEST_SANDBOX") != "1":
-            SandboxProvisioner.adapt_build_pip_dependencies(target_modules=modules)
+            try:
+                SandboxProvisioner.adapt_build_pip_dependencies(target_modules=modules)
+            except Exception as pip_err:
+                if not quiet_mode:
+                    log(f"[dev:test] Warning: Offline or pip dependency adaptation skipped: {pip_err}", stream="stderr")
 
         cpu_limit = os.cpu_count() or 4
         max_workers = jobs if (jobs and jobs > 0) else min(cpu_limit, len(modules))
@@ -942,7 +946,15 @@ class Tester:
             for mod in valid_targets:
                 safe_print(f"\n[dev:test:sync] Auto-installing '{mod}@build' into local environment...")
                 cmd = [sys.executable, yscb_py, "install", f"{mod}@build", "--force"]
-                res = subprocess.run(cmd, cwd=host_dir, timeout=300.0)
+                if subprocess.run is _ORIG_SUBPROCESS_RUN:
+                    rc_val, _, _ = run_subprocess_with_tree_timeout(
+                        cmd,
+                        timeout_sec=300.0,
+                        cwd=host_dir,
+                    )
+                    res = subprocess.CompletedProcess(cmd, rc_val)
+                else:
+                    res = subprocess.run(cmd, cwd=host_dir, timeout=300.0)
                 if res.returncode == 0:
                     safe_print(f"[dev:test:sync] Successfully synced '{mod}@build'.")
                 else:

@@ -10,8 +10,17 @@ if TYPE_CHECKING:
     from core import uri
     from core import semver
     from core import context
-    from core.context import ExecutionContext, RuntimeContext, RuntimeScope, bind_runtime_context, get_runtime_context
+    from core.context import (
+        ExecutionContext,
+        RuntimeContext,
+        RuntimeScope,
+        bind_runtime_context,
+        get_runtime_context,
+        invalidate_host_caches,
+    )
     from core import loader
+    from core import service_contract
+    from core.service_contract import BaseServiceWorkerContract, BaseServiceWorker
     from core.engine import AtomicEngine
     from core.contributes import ContributesAggregator
     from core.installer import Installer, generate_internal_gitignore
@@ -45,7 +54,11 @@ _MODULE_MAP = types.MappingProxyType({
     "RuntimeScope": ("core.context", "RuntimeScope"),
     "bind_runtime_context": ("core.context", "bind_runtime_context"),
     "get_runtime_context": ("core.context", "get_runtime_context"),
+    "invalidate_host_caches": ("core.context", "invalidate_host_caches"),
     "loader": ("core.loader", None),
+    "service_contract": ("core.service_contract", None),
+    "BaseServiceWorkerContract": ("core.service_contract", "BaseServiceWorkerContract"),
+    "BaseServiceWorker": ("core.service_contract", "BaseServiceWorker"),
     "AtomicEngine": ("core.engine", "AtomicEngine"),
     "ContributesAggregator": ("core.contributes", "ContributesAggregator"),
     "Installer": ("core.installer", "Installer"),
@@ -102,7 +115,11 @@ __all__ = (
     "RuntimeScope",
     "bind_runtime_context",
     "get_runtime_context",
+    "invalidate_host_caches",
     "loader",
+    "service_contract",
+    "BaseServiceWorkerContract",
+    "BaseServiceWorker",
     "AtomicEngine",
     "ContributesAggregator",
     "Installer",

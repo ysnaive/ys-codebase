@@ -583,6 +583,7 @@ def _atomic_swap_dir(
             raise last_err
 
     moved_old = False
+    swap_succeeded = False
     try:
         if os.path.exists(old_abs):
             _force_rmtree_with_retry(old_abs)
@@ -594,23 +595,31 @@ def _atomic_swap_dir(
             except OSError as rename_err:
                 if _is_dir_handle_locked_for_rename(rename_err, parent_dir, target_abs):
                     _inplace_atomic_sync_dir(staging_abs, target_abs)
+                    swap_succeeded = True
                     return
                 raise
 
         _replace_with_retry(staging_abs, target_abs)
-    except Exception:
-        if moved_old and not os.path.exists(target_abs) and os.path.exists(old_abs):
+        swap_succeeded = True
+    except BaseException:
+        if moved_old and os.path.exists(old_abs):
             try:
+                if os.path.exists(target_abs):
+                    _force_rmtree_with_retry(target_abs)
                 _replace_with_retry(old_abs, target_abs)
             except Exception:
                 pass
         raise
     finally:
-        if os.path.exists(old_abs):
+        if swap_succeeded and os.path.exists(old_abs):
             _force_rmtree_with_retry(old_abs)
         if os.path.exists(staging_abs):
             _force_rmtree_with_retry(staging_abs)
-        _cleanup_stale_swap_dirs(parent_dir)
+        if swap_succeeded:
+            _cleanup_stale_swap_dirs(parent_dir)
+
+
+atomic_swap_directory = _atomic_swap_dir
 
 
 def _clean_module_cache(module_name: str) -> None:
@@ -633,6 +642,12 @@ def _extract_zip_safely(zip_path: str, dest_dir: str, source_label: str = "") ->
             raise RuntimeError(f"Corrupted zip archive from '{source_label or zip_path}'.")
         dest_abs = os.path.abspath(dest_dir)
         for member in zf.infolist():
+            norm_member = member.filename.replace("\\", "/")
+            if norm_member.startswith("/") or (len(norm_member) > 1 and norm_member[1] == ":") or ".." in norm_member.split("/"):
+                raise RuntimeError(
+                    f"Zip Slip vulnerability detected: '{member.filename}' in '{source_label or zip_path}' "
+                    f"attempts to extract outside destination '{dest_abs}'."
+                )
             target_path = os.path.abspath(os.path.join(dest_abs, member.filename))
             if not target_path.startswith(dest_abs + os.sep) and target_path != dest_abs:
                 raise RuntimeError(
@@ -750,15 +765,25 @@ class AtomicEngine:
         except Exception as e:
             return False, str(e)
 
-    def act_lock(self, operation: str = "global", timeout: float = 10.0) -> None:
+    def act_lock(self, operation: str = "global", timeout: float = 10.0) -> bool:
         """
         Acquire inter-process lock on cache://.yscb.lock using core.platform.InterProcessLock.
-        Supports same-operation reentrancy and stale-lock auto-healing.
+        Supports same-process reentrancy across operations sharing the underlying lock handle,
+        and stale-lock auto-healing.
         """
         existing = self._active_locks.get(operation)
         if existing is not None and existing.is_locked:
             self._lock_counts[operation] = self._lock_counts.get(operation, 1) + 1
-            return
+            return True
+
+        shared_lock = next(
+            (lk for lk in self._active_locks.values() if lk is not None and lk.is_locked),
+            None,
+        )
+        if shared_lock is not None:
+            self._active_locks[operation] = shared_lock
+            self._lock_counts[operation] = self._lock_counts.get(operation, 0) + 1
+            return True
 
         lock_uri = "cache://.yscb.lock"
         lock_path = uri.resolve(lock_uri)
@@ -776,12 +801,6 @@ class AtomicEngine:
                     if probe.acquire(blocking=False):
                         probe.release()
                         vfs.remove(lock_uri)
-                elif self._active_locks:
-                    raise BlockingIOError(
-                        f"Another yscb operation is currently holding the lock for operation '{operation}'."
-                    )
-            except BlockingIOError:
-                raise
             except OSError:
                 pass
 
@@ -794,33 +813,37 @@ class AtomicEngine:
             pass
         self._active_locks[operation] = lock
         self._lock_counts[operation] = 1
+        return True
 
-    def act_unlock(self, operation: str = "global") -> None:
-        """Release inter-process lock on cache://.yscb.lock."""
+    def act_unlock(self, operation: str = "global") -> bool:
+        """Release inter-process lock on cache://.yscb.lock when all active operation counts reach zero."""
         count = self._lock_counts.get(operation, 0)
         if count > 1:
             self._lock_counts[operation] = count - 1
-            return
+            return True
 
         self._lock_counts.pop(operation, None)
         lock = self._active_locks.pop(operation, None)
+        remaining_active = sum(self._lock_counts.values()) > 0 or bool(self._active_locks)
         lock_uri = "cache://.yscb.lock"
         if lock is not None:
-            lock.release()
-            if not self._active_locks and vfs.exists(lock_uri):
-                try:
-                    vfs.remove(lock_uri)
-                except OSError:
-                    pass
-        else:
-            try:
-                lock_p = uri.resolve(lock_uri)
-                if os.path.exists(lock_p):
-                    InterProcessLock(lock_p).release()
-                    if not self._active_locks:
+            if not remaining_active:
+                lock.release()
+                if vfs.exists(lock_uri):
+                    try:
                         vfs.remove(lock_uri)
-            except Exception:
-                pass
+                    except OSError:
+                        pass
+        else:
+            if not remaining_active:
+                try:
+                    lock_p = uri.resolve(lock_uri)
+                    if os.path.exists(lock_p):
+                        InterProcessLock(lock_p).release()
+                        vfs.remove(lock_uri)
+                except Exception:
+                    pass
+        return True
 
     @contextmanager
     def transaction_lock(self, operation: str, timeout: float = 10.0) -> Generator[None, None, None]:
@@ -2041,6 +2064,7 @@ class AtomicEngine:
         inject_stage: bool = True,
         reconcile_deps: bool = True,
         ignore_sha256: bool = False,
+        skip_materialize_modules: Optional[Sequence[str]] = None,
     ) -> None:
         """
         4-Stage Atomic Reload Pipeline:
@@ -2117,7 +2141,13 @@ class AtomicEngine:
                             _force_rmtree_with_retry(mod_real, retries=3, retry_delay=0.03)
                     _clean_module_cache(mod)
 
+        skip_set = set(skip_materialize_modules or ())
+        if reconcile_deps and locals().get("healed"):
+            for h_mod, _h_old, _h_new in locals()["healed"]:
+                skip_set.discard(h_mod)
         for mod, meta in installed.items():
+            if mod in skip_set:
+                continue
             ver = meta.get("version", "1.0.0.0") if isinstance(meta, dict) else str(meta)
             self._reload_materialize_single_module(mod, ver, modules_root_real)
 
@@ -2128,12 +2158,16 @@ class AtomicEngine:
         try:
             from core import config as cfg_mod, locale as loc_mod, symbols as sym_mod, contributes as contrib_mod
             from core.commands import dispatcher as disp_mod
+            from core.context import invalidate_host_caches
+            from core.space import reset_default_instances as reset_space_instances
             cfg_mod.reload()
             loc_mod.clear_cache()
             sym_mod.clear_callable_cache()
             contrib_mod.invalidate_cache()
             uri.invalidate_uri_cache()
             disp_mod.clear_cache()
+            reset_space_instances()
+            invalidate_host_caches("all")
         except Exception:
             pass
 

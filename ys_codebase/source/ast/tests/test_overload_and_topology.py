@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+from types import MappingProxyType
 
 _AST_ROOT = str(Path(__file__).resolve().parents[1])
 if _AST_ROOT not in sys.path:
@@ -16,10 +17,11 @@ if "tests" in sys.modules and getattr(sys.modules["tests"], "__file__", None) !=
     del sys.modules["tests"]
 
 from ast_engine.bundler import aggregate_partial_symbols, ensure_unique_overload_ids
+from ast_engine.engine import ASTEngine
 from ast_engine.exceptions import ASTIndexNotFoundError
 from ast_engine.formatter import ASTResultFormatter
 from ast_engine.graph import CallGraphIndex
-from ast_engine.linker import TopologyLinker
+from ast_engine.linker import TopologyLinker, WorkspaceGraphLinker, expand_contract_symbol_ids
 from ast_engine.parsers import ParserRegistry
 from ast_engine.resolver import (
     DeterministicSymbolResolver,
@@ -30,7 +32,7 @@ from ast_engine.resolver import (
     query_callers,
     query_impact,
 )
-from ast_engine.schema import ASTSnapshot, SymbolCallSite, UnifiedSymbol
+from ast_engine.schema import ASTSnapshot, Span, SymbolCallSite, SymbolNode, UnifiedSymbol
 from tests import ASTTestCase, Requirement, require
 
 
@@ -165,6 +167,13 @@ class TestOverloadAndTopology(ASTTestCase):
         self.assertEqual(sel_generic.scope, "Map")
         self.assertEqual(sel_generic.param_types, ("Dictionary<string, int>", "int"))
 
+        sel_template = SymbolSelector.parse("method Box<T>::unwrap<U>(int)")
+        self.assertEqual(sel_template.identifier, "unwrap")
+        self.assertEqual(sel_template.scope, "Box")
+        self.assertEqual(sel_template.target_kinds, frozenset({"method"}))
+        self.assertTrue(sel_template.is_callable)
+        self.assertEqual(sel_template.param_types, ("int",))
+
         sel_zero = SymbolSelector.parse("Window.Open()")
         self.assertTrue(sel_zero.is_callable)
         sel_any = SymbolSelector.parse("Window.Open")
@@ -265,25 +274,29 @@ class TestOverloadAndTopology(ASTTestCase):
             extractor.extract(str(f_p), line_number=1, end_line=1)
         self.assertLessEqual(len(extractor._file_lines_cache), 32)
 
-        # 4-Tier TopologyLinker disambiguation (Tier 0 self/base, Tier 1 same-file, Tier 2 import alias, Tier 3 space-unique)
+        # 4-Tier TopologyLinker disambiguation (including qualified base types `pkg.Base`)
         s_base = UnifiedSymbol(
             id="s_base", name="Base.Init", kind="method", file_path="base.py", line_number=1, language="python",
             fqn="Base.Init", metadata={"parent_scope": "Base", "short_name": "Init", "spaces": ["code"]},
         )
         s_sub_cls = UnifiedSymbol(
             id="s_sub_cls", name="Sub", kind="class", file_path="sub.py", line_number=1, language="python",
-            fqn="Sub", metadata={"short_name": "Sub", "base_types": ["Base"], "spaces": ["code"]},
+            fqn="Sub", metadata={"short_name": "Sub", "base_types": ["pkg.Base"], "spaces": ["code"]},
         )
         s_sub_run = UnifiedSymbol(
             id="s_sub_run", name="Sub.Run", kind="method", file_path="sub.py", line_number=2, language="python",
             fqn="Sub.Run", parent_id="s_sub_cls", metadata={"parent_scope": "Sub", "short_name": "Run", "spaces": ["code"]},
+        )
+        s_sub_init = UnifiedSymbol(
+            id="s_sub_init", name="Sub.Init", kind="method", file_path="sub.py", line_number=5, language="python",
+            fqn="Sub.Init", parent_id="s_sub_cls", metadata={"parent_scope": "Sub", "short_name": "Init", "spaces": ["code"]},
         )
         s_ext = UnifiedSymbol(
             id="s_ext", name="compute", kind="function", file_path="pkg/math_utils.py", line_number=1, language="python",
             fqn="pkg.math_utils.compute", metadata={"short_name": "compute", "spaces": ["code"]},
         )
         linker4 = TopologyLinker(
-            [s_base, s_sub_cls, s_sub_run, s_ext],
+            [s_base, s_sub_cls, s_sub_run, s_sub_init, s_ext],
             file_imports={"sub.py": {"calc_alias": "pkg.math_utils.compute"}},
         )
         self.assertEqual(
@@ -292,10 +305,83 @@ class TestOverloadAndTopology(ASTTestCase):
             ),
             "s_base",
         )
+        expanded_contract = expand_contract_symbol_ids(linker4, s_base)
+        self.assertIn("s_sub_init", expanded_contract)
         self.assertEqual(
             linker4.resolve_call_site(
                 SymbolCallSite(callee_name="calc_alias", line_number=4, caller_symbol_id="s_sub_run", file_path="sub.py", space="code")
             ),
             "s_ext",
         )
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_overload_slice_part_multi_hop_barrel_and_recursive_facet_freezing(self) -> None:
+        """Verify slice_part on overloaded UnifiedSymbols, multi-hop barrel re-exports, and recursive SymbolNode facet freezing."""
+        # 1. Recursive facet freezing & thawing on SymbolNode
+        deep_node = SymbolNode(
+            id="pkg/a.py::Service",
+            name="Service",
+            scope_path=(),
+            kinds=frozenset({"class"}),
+            language="python",
+            span=Span(0, 20, 1, 0, 2, 0),
+            facets={"nested": [{"meta": {"tags": {"a", "b"}}}]},
+        )
+        self.assertIsInstance(deep_node.facets["nested"], tuple)
+        self.assertIsInstance(deep_node.facets["nested"][0], MappingProxyType)
+        self.assertIsInstance(deep_node.facets["nested"][0]["meta"], MappingProxyType)
+        self.assertIsInstance(deep_node.facets["nested"][0]["meta"]["tags"], frozenset)
+        import json
+
+        serialized_json = json.dumps(deep_node.to_dict())
+        restored_node = SymbolNode.from_dict(json.loads(serialized_json))
+        self.assertEqual(restored_node.facets["nested"][0]["meta"]["tags"], ("a", "b"))
+
+        # 2. Multi-hop barrel re-export resolution independent of alphabetical file order
+        reg = ParserRegistry(register_defaults=True)
+        fg_core = reg.extract_file_graph("pkg/a_core.py", "class CoreEngine:\n    def execute(self) -> int:\n        return 1\n")
+        fg_mid = reg.extract_file_graph("pkg/z_mid/__init__.py", "from ..a_core import CoreEngine\n")
+        fg_top = reg.extract_file_graph("pkg/b_top/__init__.py", "from ..z_mid import CoreEngine\n")
+        fg_app = reg.extract_file_graph("pkg/c_app.py", "from .b_top import CoreEngine\n\ndef main() -> None:\n    CoreEngine.execute()\n")
+
+        ws_fwd = WorkspaceGraphLinker([fg_core, fg_mid, fg_top, fg_app], language_configs=reg.language_configs).link_workspace()
+        ws_rev = WorkspaceGraphLinker([fg_app, fg_top, fg_mid, fg_core], language_configs=reg.language_configs).link_workspace()
+        self.assertEqual(ws_fwd.to_dict(), ws_rev.to_dict())
+        app_binding = ws_fwd.file_import_tables["pkg/c_app.py"].bindings["CoreEngine"]
+        self.assertEqual(app_binding.resolved_symbol_ids, ("pkg/a_core.py::CoreEngine",))
+        self.assertTrue(app_binding.is_reexport)
+
+        # 3. ASTEngine.slice_part on same-file overloaded UnifiedSymbol instances
+        proj_dir = self.temp_dir / "slice_proj"
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        cs_file = proj_dir / "Window.cs"
+        cs_file.write_text(
+            "namespace UI {\n"
+            "    public class Window {\n"
+            "        public void Open(string title) {\n"
+            "            InitTitle(title);\n"
+            "        }\n"
+            "        public void Open(string title, int width) {\n"
+            "            InitSize(width);\n"
+            "        }\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        eng = ASTEngine(project_root=proj_dir, storage_dir=self.storage_dir / "slice_store")
+        res = eng.resolve("Window.Open")
+        self.assertEqual(res.status, "overload_group")
+        self.assertEqual(len(res.targets), 2)
+        sig_0 = eng.slice_part(res.targets[0], "parameters")
+        sig_1 = eng.slice_part(res.targets[1], "parameters")
+        self.assertNotEqual(sig_0, sig_1)
+        self.assertIn("string title", sig_0)
+        self.assertIn("int width", sig_1)
+
+        # 4. query_callers / query_callees / query_impact consulting WorkspaceSymbolGraph directly
+        ws_graph = eng.get_workspace_graph()
+        snap = eng.get_snapshot(auto_sync=False)
+        callees_ws = query_callees("Window.Open", snap.symbols, ws_graph)
+        self.assertEqual(callees_ws["status"], "overload_group")
         self.mark_passed()

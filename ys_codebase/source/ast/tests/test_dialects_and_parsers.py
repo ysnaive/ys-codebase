@@ -107,6 +107,9 @@ class TestDialectsAndParsers(ASTTestCase):
 
         self.assertEqual(base_adapter.normalize_call_receiver("this._svc?."), "self._svc")
         self.assertEqual(base_adapter.normalize_call_receiver("super()."), "base")
+        self.assertEqual(base_adapter.normalize_call_receiver("super()._svc."), "self._svc")
+        self.assertEqual(base_adapter.normalize_call_receiver("__super::"), "base")
+        self.assertEqual(base_adapter.normalize_call_receiver("__super._svc."), "self._svc")
         self.assertEqual(base_adapter.normalize_call_receiver("base->"), "base")
 
         py_dialect = PythonDialect()
@@ -153,6 +156,8 @@ class TestDialectsAndParsers(ASTTestCase):
         cpp_dialect = CppDialect()
         short_n, parent_s, eff_k = cpp_dialect.resolve_out_of_line_scope("Box<T>::resize", "", "function")
         self.assertEqual((short_n, parent_s, eff_k), ("resize", "Box", "method"))
+        nested_short, nested_parent, nested_k = cpp_dialect.resolve_out_of_line_scope("Outer::Inner::compute", "", "function")
+        self.assertEqual((nested_short, nested_parent, nested_k), ("compute", "Outer::Inner", "method"))
 
         js_dialect = JavaScriptDialect()
         self.assertEqual(js_dialect.extract_visibility(None, short_name="#secretField", kind="property"), "private")
@@ -246,36 +251,48 @@ class TestDialectsAndParsers(ASTTestCase):
         """Verify PythonASTParser, MarkdownParser fenced blocks, SpiceParser, HtmlParser inline comments, and CssParser inline comments."""
         py_ast_parser = PythonASTParser()
         self.assertTrue(py_ast_parser.can_parse("mod.py"))
-        py_syms = py_ast_parser.parse(
-            "mod.py",
+        py_src = (
             "class Greeter(BaseGreeter):\n"
+            "    def __init__(self) -> None:\n"
+            "        self.logger: Logger = make_logger()\n"
             "    def greet(\n"
             "        self,\n"
             "        who: str,\n"
             "    ) -> str:\n"
+            "        def _format_msg(msg: str) -> str:\n"
+            "            return msg.strip()\n"
             "        super().greet(who)\n"
-            "        return who\n",
-            space="code",
+            "        self.logger.client.send(_format_msg(who))\n"
+            "        return who\n"
         )
+        py_syms = py_ast_parser.parse("mod.py", py_src, space="code")
         greet_sym = next((s for s in py_syms if s.kind == "method" and s.name.endswith("greet")), None)
         self.assertIsNotNone(greet_sym)
         assert greet_sym is not None
         self.assertIn("who: str", greet_sym.signature)
-        py_calls = py_ast_parser.extract_call_sites(
-            "mod.py",
-            "class Greeter(BaseGreeter):\n    def greet(self, who: str) -> str:\n        super().greet(who)\n",
-            space="code",
-            symbols=py_syms,
-        )
+        nested_fn = next((s for s in py_syms if s.fqn == "Greeter.greet._format_msg"), None)
+        self.assertIsNotNone(nested_fn)
+        greeter_cls = next((s for s in py_syms if s.kind == "class" and s.name == "Greeter"), None)
+        self.assertIsNotNone(greeter_cls)
+        assert greeter_cls is not None
+        self.assertEqual(greeter_cls.metadata.get("field_types", {}).get("logger"), "Logger")
+
+        py_calls = py_ast_parser.extract_call_sites("mod.py", py_src, space="code", symbols=py_syms)
         greet_call = next((c for c in py_calls if c.callee_name == "greet"), None)
         self.assertIsNotNone(greet_call)
         self.assertEqual(greet_call.context_prefix, "base")
+        send_call = next((c for c in py_calls if c.callee_name == "send"), None)
+        self.assertIsNotNone(send_call)
+        assert send_call is not None
+        self.assertEqual(send_call.context_prefix, "self.logger.client")
 
-        # MarkdownParser: fenced code block comments and pipe tables inside fences must be ignored
+        # MarkdownParser: fenced code block comments, Setext headings, and pipe tables
         md_parser = MarkdownParser()
         md_content = (
             "# System Architecture\n"
             "Overview referencing `OrderService.SubmitOrder()` and [OrderService](Services/OrderService.cs#L4).\n\n"
+            "Setext Section\n"
+            "--------------\n\n"
             "```python\n"
             "# Not A Heading Inside Code Block\n"
             "| Fake | Table |\n"
@@ -287,60 +304,72 @@ class TestDialectsAndParsers(ASTTestCase):
         )
         md_syms = md_parser.parse("docs/ARCH.md", md_content, space="docs")
         heading_names = [s.name for s in md_syms if s.kind.startswith("doc_heading")]
-        self.assertEqual(heading_names, ["System Architecture"])
+        self.assertEqual(heading_names, ["System Architecture", "Setext Section"])
         table_syms = [s for s in md_syms if s.kind == SymbolKind.DOC_TABLE.value]
         self.assertEqual(len(table_syms), 1)
         md_calls = md_parser.extract_call_sites("docs/ARCH.md", md_content, space="docs")
         self.assertTrue(any(c.callee_name == "SubmitOrder" for c in md_calls))
         self.assertTrue(any(c.callee_name == "OrderService" for c in md_calls))
 
-        # SpiceParser: .SUBCKT, X instances, and .INCLUDE imports
+        # SpiceParser: nested and unclosed .SUBCKT, X instances, and .INCLUDE imports
         spice_parser = SpiceParser()
         spice_content = (
             "* CMOS Inverter Subcircuit\n"
             ".INCLUDE 'models/cmos.lib'\n"
             ".SUBCKT INV in out vdd vss\n"
             ".PARAM wp=2u wn=1u\n"
+            ".SUBCKT INNER_CELL a b\n"
+            "R1 a b 1k\n"
+            ".ENDS INNER_CELL\n"
             "MP1 out in vdd vdd PMOS W=wp L=0.18u\n"
             "MN1 out in vss vss NMOS W=wn L=0.18u\n"
             ".ENDS INV\n"
+            ".SUBCKT UNCLOSED_SUB p1 p2\n"
             "XINV1 clk clk_b vdd vss INV\n"
         )
         spice_syms = spice_parser.parse("circuits/inv.sp", spice_content, space="eda")
         subckt = next((s for s in spice_syms if s.name == "INV" and s.kind == "class"), None)
         self.assertIsNotNone(subckt)
+        inner_sub = next((s for s in spice_syms if s.name == "INNER_CELL" and s.kind == "class"), None)
+        self.assertIsNotNone(inner_sub)
+        assert inner_sub is not None
+        self.assertEqual(inner_sub.fqn, "INV.INNER_CELL")
+        unclosed_sub = next((s for s in spice_syms if s.name == "UNCLOSED_SUB"), None)
+        self.assertIsNotNone(unclosed_sub)
         spice_calls = spice_parser.extract_call_sites("circuits/inv.sp", spice_content, space="eda")
         self.assertTrue(any(c.callee_name == "INV" for c in spice_calls))
         inc_sym = next((s for s in spice_syms if "cmos.lib" in s.name), None)
         self.assertIsNotNone(inc_sym)
 
-        # HtmlParser: inline trailing comment on the same line as heading/element must not skip the line
+        # HtmlParser: multiple inline comments and unclosed comment handling
         html_parser = HtmlParser()
         html_syms = html_parser.parse(
             "ui/index.html",
             "<html><head><title>Dashboard</title></head>"
-            "<body><h1 id='main-title'>Welcome</h1> <!-- inline comment -->\n"
-            "<main>Content</main></body></html>",
+            "<body><!-- c1 --> <h1 id='main-title'>Welcome</h1> <!-- c2 -->\n"
+            "<main>Content</main><!-- unclosed comment</body></html>",
             space="web",
         )
         self.assertTrue(any(s.name == "Dashboard" for s in html_syms))
         self.assertTrue(any(s.name == "Welcome" for s in html_syms))
         self.assertTrue(any("#main-title" in s.name for s in html_syms))
 
-        # CssParser: inline trailing comment on selector line must not skip the selector
+        # CssParser: multiple inline comments on selector line and unclosed comment handling
         css_parser = CssParser()
         css_syms = css_parser.parse(
             "ui/styles.css",
             ":root {\n"
-            "  --primary-color: #336699; /* brand color */\n"
+            "  /* c1 */ --primary-color: #336699; /* c2 */\n"
             "}\n"
-            ".btn-primary { /* button rule */\n"
+            "/* lead */ .btn-primary { /* trail */\n"
             "  color: var(--primary-color);\n"
-            "}\n",
+            "}\n"
+            "/* unclosed comment at eof .ignored { }",
             space="web",
         )
         self.assertTrue(any(s.name == "--primary-color" for s in css_syms))
         self.assertTrue(any(s.name == ".btn-primary" for s in css_syms))
+        self.assertFalse(any(s.name == ".ignored" for s in css_syms))
         self.mark_passed()
 
     @require(Requirement.LOGIC)
@@ -407,13 +436,12 @@ class TestDialectsAndParsers(ASTTestCase):
     @require(Requirement.LOGIC)
     def test_commutative_multi_scm_merge_recursive_hierarchy_and_space_scoping(self) -> None:
         """Verify peer .scm commutative merging (A U B == B U A), deep recursive hierarchy, SymbolProcessor refinement, and core.space rule scoping."""
-        from ast_engine.parsers.base import SymbolProcessor
+        from ast_engine.parsers.base import SymbolProcessor, convert_legacy_symbols_to_file_graph
         from ast_engine.parsers.treesitter import TreeSitterDriver
         from ast_engine.schema import LanguageConfig, ProvenanceStep, Span, SymbolNode
         from unittest.mock import MagicMock
 
         # 1. Verify end-to-end commutative merging ($A \cup B = B \cup A$) across real `.scm` files
-        # including official `tags.scm` directives (`#strip!`, `#select-adjacent!`) and extended `@def.*` / `@part.*` / `@facet.*`
         tags_scm_path = self.temp_dir / "official_tags.scm"
         tags_scm_path.write_text(
             '(\n'
@@ -479,18 +507,65 @@ class TestDialectsAndParsers(ASTTestCase):
         self.assertIn("parameters", merged_fn.parts)
         self.assertIn("body", merged_fn.parts)
         self.assertIn("cli_route", merged_fn.facets)
-        # Verify #select-adjacent! excluded the top header comment and #strip! stripped leading `# `
         doc_val = str(merged_fn.facets.get("docstring") or "")
         self.assertIn("Adjacent doc line 1", doc_val)
         self.assertIn("Adjacent doc line 2", doc_val)
         self.assertNotIn("Unrelated top header comment", doc_val)
         self.assertTrue(any(e.edge_kind == "calls" and e.target_expr == "run_helper" for e in graph_ab.outgoing_edges))
 
-        # Verify parse() also commutatively merges multi-query definitions without duplicate symbols
         syms_ab = driver_ab.parse("pkg/cli.py", sample_py_code, space="code")
         syms_ba = driver_ba.parse("pkg/cli.py", sample_py_code, space="code")
         self.assertEqual(len(syms_ab), 1)
         self.assertEqual(syms_ab[0].id, syms_ba[0].id)
+
+        # Verify Mapping facets union in _merge_symbol_nodes_commutative
+        n_left = SymbolNode(
+            id="f.py::Svc",
+            name="Svc",
+            scope_path=(),
+            kinds=frozenset({"class"}),
+            language="python",
+            span=Span(0, 10, 1, 0, 1, 10),
+            facets={"field_types": {"a": "int"}},
+        )
+        n_right = SymbolNode(
+            id="f.py::Svc",
+            name="Svc",
+            scope_path=(),
+            kinds=frozenset({"service"}),
+            language="python",
+            span=Span(0, 10, 1, 0, 1, 10),
+            facets={"field_types": {"b": "str"}},
+        )
+        merged_lr = ParserRegistry._merge_symbol_nodes_commutative(n_left, n_right)
+        merged_rl = ParserRegistry._merge_symbol_nodes_commutative(n_right, n_left)
+        self.assertEqual(dict(merged_lr.facets["field_types"]), {"a": "int", "b": "str"})
+        self.assertEqual(merged_lr.to_dict(), merged_rl.to_dict())
+
+        # Verify convert_legacy_symbols_to_file_graph builds nested hierarchy, rich parts, and inherits edges
+        py_parser = PythonASTParser()
+        legacy_fg = py_parser.extract_file_graph(
+            file_path="svc/legacy.py",
+            content=(
+                "class ChildSvc(BaseSvc):\n"
+                '    """Doc for ChildSvc."""\n'
+                "    def run(self, count: int) -> bool:\n"
+                '        """Run doc."""\n'
+                "        return True\n"
+            ),
+            space="code",
+        )
+        self.assertEqual(len(legacy_fg.root_nodes), 1)
+        root_cls = legacy_fg.root_nodes[0]
+        self.assertEqual(root_cls.name, "ChildSvc")
+        self.assertIn("doc", root_cls.parts)
+        self.assertIn("body", root_cls.parts)
+        self.assertEqual(len(root_cls.children), 1)
+        run_child = root_cls.children[0]
+        self.assertEqual(run_child.name, "run")
+        self.assertIn("parameters", run_child.parts)
+        self.assertIn("return_type", run_child.parts)
+        self.assertTrue(any(e.edge_kind == "inherits" and e.target_expr == "BaseSvc" for e in legacy_fg.outgoing_edges))
 
         # 2. Verify deep recursive hierarchy (>2 levels: OuterClass -> InnerClass -> DeepMethod) and SymbolProcessor refinement
         class CustomMarkerProcessor(SymbolProcessor):

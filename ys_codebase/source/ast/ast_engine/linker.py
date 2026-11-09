@@ -184,6 +184,11 @@ class TopologyLinker:
                         bt_str = str(bt)
                         self._class_bases[short_name].add(bt_str)
                         self._base_derived[bt_str].add(short_name)
+                        if "." in bt_str or "::" in bt_str:
+                            bt_short = re.split(r"[.:]+", bt_str)[-1].strip()
+                            if bt_short:
+                                self._class_bases[short_name].add(bt_short)
+                                self._base_derived[bt_short].add(short_name)
 
             field_types = sym.metadata.get("field_types")
             if field_types and isinstance(field_types, dict):
@@ -765,6 +770,17 @@ def _expand_contract_from_workspace_graph(
                 norm_p = rt.file_path.replace("\\", "/")
                 cand_id = SymbolNode.compute_canonical_id(norm_p, rt.fqn or rt.name)
                 node = ws_graph.nodes_by_id.get(cand_id)
+                if node is None:
+                    fg = ws_graph.file_graphs.get(norm_p)
+                    if fg is not None:
+                        target_fqn = rt.fqn or rt.name
+                        short_n = (rt.metadata or {}).get("short_name") or rt.name.split(".")[-1]
+                        for cand_n in fg.all_nodes_by_id.values():
+                            if cand_n.span.start_line == rt.line_number and (
+                                cand_n.fqn == target_fqn or cand_n.name == short_n
+                            ):
+                                node = cand_n
+                                break
             if node is not None:
                 _add_id(node.id)
                 target_nodes.append(node)
@@ -932,6 +948,11 @@ def expand_contract_symbol_ids(
                         bt_str = str(bt)
                         class_bases[s_short].add(bt_str)
                         base_derived[bt_str].add(s_short)
+                        if "." in bt_str or "::" in bt_str:
+                            bt_short = re.split(r"[.:]+", bt_str)[-1].strip()
+                            if bt_short:
+                                class_bases[s_short].add(bt_short)
+                                base_derived[bt_short].add(s_short)
         with _LINKER_CACHE_LOCK:
             last_cache["symbols_map_id"] = id(sym_dict)
             last_cache["symbols_count"] = len(sym_dict)
@@ -1317,6 +1338,7 @@ class WorkspaceGraphLinker:
         raw_bindings_by_file: Dict[str, Dict[str, FileImportBinding]] = defaultdict(dict)
         wildcard_targets_by_file: Dict[str, List[Tuple[str, bool]]] = defaultdict(list)
         exported_by_file: Dict[str, Set[str]] = {}
+        edge_key_by_file_alias: Dict[Tuple[str, str], Tuple[str, int, str]] = {}
 
         for norm_path, fg in self._file_graphs.items():
             exports: Set[str] = set()
@@ -1401,7 +1423,8 @@ class WorkspaceGraphLinker:
                     status = "unresolved"
                     edge_targets = ()
 
-                self._resolved_import_edges[(norm_path, idx, edge.target_expr)] = RelationEdge(
+                ekey = (norm_path, idx, edge.target_expr)
+                self._resolved_import_edges[ekey] = RelationEdge(
                     source_id=edge.source_id,
                     target_expr=edge.target_expr,
                     edge_kind=edge.edge_kind,
@@ -1424,6 +1447,7 @@ class WorkspaceGraphLinker:
                         is_reexport=is_reexport,
                     )
                     raw_bindings_by_file[norm_path][local_alias] = binding
+                    edge_key_by_file_alias[(norm_path, local_alias)] = ekey
                     # If `norm_path` is an `__init__.py` or `index.ts`, treat explicit bindings as re-exports
                     if posixpath.basename(norm_path) in ("__init__.py", "index.ts", "index.tsx", "index.js"):
                         exported_by_file[norm_path].add(local_alias)
@@ -1457,23 +1481,42 @@ class WorkspaceGraphLinker:
                     if next_f not in visited_wild:
                         queue.append((next_f, is_reexp or next_reexp))
 
-        # Resolve re-exported symbols imported from `__init__.py` / `index.ts` barrel modules
-        for norm_path, b_dict in raw_bindings_by_file.items():
-            for alias_k, b_val in list(b_dict.items()):
-                if not b_val.resolved_symbol_ids and b_val.resolved_file_path:
-                    sym_tail = re.split(r"[.:/]+", b_val.target_expr)[-1].strip()
-                    target_b_dict = raw_bindings_by_file.get(b_val.resolved_file_path, {})
-                    if sym_tail in target_b_dict and target_b_dict[sym_tail].resolved_symbol_ids:
-                        re_b = target_b_dict[sym_tail]
-                        b_dict[alias_k] = FileImportBinding(
-                            local_alias=b_val.local_alias,
-                            target_expr=b_val.target_expr,
-                            resolved_file_path=re_b.resolved_file_path or b_val.resolved_file_path,
-                            resolved_symbol_ids=re_b.resolved_symbol_ids,
-                            is_wildcard=b_val.is_wildcard,
-                            is_external=False,
-                            is_reexport=True,
-                        )
+        # Bounded fixed-point resolution for multi-hop re-exported symbols (`__init__.py` / `index.ts` barrels)
+        for _ in range(8):
+            changed = False
+            for norm_path in sorted(raw_bindings_by_file.keys()):
+                b_dict = raw_bindings_by_file[norm_path]
+                for alias_k, b_val in list(b_dict.items()):
+                    if not b_val.resolved_symbol_ids and b_val.resolved_file_path:
+                        sym_tail = re.split(r"[.:/]+", b_val.target_expr)[-1].strip()
+                        target_b_dict = raw_bindings_by_file.get(b_val.resolved_file_path, {})
+                        if sym_tail in target_b_dict and target_b_dict[sym_tail].resolved_symbol_ids:
+                            re_b = target_b_dict[sym_tail]
+                            b_dict[alias_k] = FileImportBinding(
+                                local_alias=b_val.local_alias,
+                                target_expr=b_val.target_expr,
+                                resolved_file_path=re_b.resolved_file_path or b_val.resolved_file_path,
+                                resolved_symbol_ids=re_b.resolved_symbol_ids,
+                                is_wildcard=b_val.is_wildcard,
+                                is_external=False,
+                                is_reexport=True,
+                            )
+                            ekey = edge_key_by_file_alias.get((norm_path, alias_k))
+                            if ekey and ekey in self._resolved_import_edges:
+                                old_edge = self._resolved_import_edges[ekey]
+                                re_status = "resolved" if len(re_b.resolved_symbol_ids) == 1 else "overload_group"
+                                self._resolved_import_edges[ekey] = RelationEdge(
+                                    source_id=old_edge.source_id,
+                                    target_expr=old_edge.target_expr,
+                                    edge_kind=old_edge.edge_kind,
+                                    span=old_edge.span,
+                                    resolution_status=re_status,
+                                    resolved_target_ids=re_b.resolved_symbol_ids,
+                                    provenance=old_edge.provenance,
+                                )
+                            changed = True
+            if not changed:
+                break
 
         for norm_path in self._file_graphs:
             self._file_import_tables[norm_path] = FileImportTable(

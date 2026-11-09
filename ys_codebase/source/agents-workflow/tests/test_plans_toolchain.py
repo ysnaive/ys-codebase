@@ -2449,5 +2449,102 @@ class TestPlansModelRecord(_BasePlansToolchainTestCase):
         self.mark_passed()
 
 
+    def test_transactional_healing_escaped_pipes_and_umbrella_completion_consistency(self):
+        """驗證 PlanVerifier 交易式自癒回滾、changelog 轉義直線解析、空標頭攔截，以及 Umbrella 子計畫與附掛修訂狀態一致性。"""
+        real_tpl_dir = PKG_ROOT / "assets" / "templates"
+        verifier = PlanVerifier(
+            plans_dir=self.plans_dir,
+            archive_dir=self.archive_dir,
+            templates_dir=real_tpl_dir,
+        )
+        scanner = PlanScanner(plans_dir=self.plans_dir)
+        archiver = PlanArchiver(
+            plans_dir=self.plans_dir,
+            archive_dir=self.archive_dir,
+            project_root=self.root,
+        )
+        archiver.verifier = verifier
+
+        # 1. Transactional self-healing: failing plan must NOT persist healed headers or changelog rows
+        p_fail = self.plans_dir / "2026_11_09_1000_tx_rollback"
+        p_fail.mkdir(parents=True, exist_ok=True)
+        bad_p00 = (
+            "# 語意需求說明書\n\n"
+            "> 功能名稱：\n"
+            "> 建立日期：2026-11-09\n"
+            "> 狀態：Confirmed\n"
+            "> 模型：Unknown\n\n"
+            "## 1. 使用者原始需求與意圖 (User Intent)\n"
+            "```markdown\n"
+            "line 1 inside code block\n"
+            "line 2 inside code block\n"
+            "```\n"
+            "[功能名稱]\n"
+        )
+        p00_file = p_fail / "P00_discuss.md"
+        p00_file.write_text(bad_p00, encoding="utf-8")
+        rep_tx = verifier.verify_plan(p_fail, log_msg="Should rollback on fail", model="Unknown")
+        self.assertFalse(rep_tx.passed)
+        self.assertFalse((p_fail / "changelog.md").exists(), "驗證失敗時不得寫入自動生成之 changelog.md")
+        self.assertEqual(p00_file.read_text(encoding="utf-8"), bad_p00, "驗證失敗時不得改寫原檔案標頭")
+        self.assertTrue(any("功能名稱" in e for e in rep_tx.errors))
+        ph_issues = [i for i in rep_tx.issues if i.category == "PLACEHOLDER"]
+        self.assertTrue(any(i.line_number == 13 for i in ph_issues), f"圍欄代碼塊後之佔位符行號應維持 1:1 實體行號 13: {ph_issues}")
+
+        # 2. Escaped pipe in changelog.md table
+        p_pipe = self.plans_dir / "2026_11_09_1010_escaped_pipe"
+        p_pipe.mkdir(parents=True, exist_ok=True)
+        (p_pipe / "fast_track_plan.md").write_text(
+            "# Fast Track\n\n"
+            "> 功能名稱：Pipe Test\n"
+            "> 建立日期：2026-11-09\n"
+            "> 所屬主計畫：N/A (Root Plan)\n"
+            "> 狀態：Completed\n"
+            "> 模型：Unknown\n\n"
+            "## 1. 敏捷需求與實作計畫 (FP-01 Specification & Plan)\n"
+            "### 1.1 4 大剛性守門合規檢核 (Mandatory 4-Gate Check)\n- [x] ok\n"
+            "### 1.2 核心需求與邊界\n- ok\n"
+            "### 1.3 實作任務與測試規劃\n- [x] **FT-01**：ok\n"
+            "## 2. 實作與驗證成果 (FP-02 Execution & Test Log)\n- ok\n"
+            "## 3. SOP Review 審查與結案交付 (Review & FP-03 Closure)\n- [x] ok\n",
+            encoding="utf-8",
+        )
+        (p_pipe / "changelog.md").write_text(
+            "# 計畫變更紀錄 (Plan Changelog)\n\n"
+            "| 日期時間 | 類型 | 模型 | 變更與決策摘要 |\n"
+            "| :--- | :---: | :--- | :--- |\n"
+            "| 2026-11-09 10:10 | `PHASE` | `Unknown` | 支援 `A \\| B` 語法轉義測試 |\n",
+            encoding="utf-8",
+        )
+        rep_pipe = verifier.verify_plan(p_pipe)
+        self.assertTrue(rep_pipe.passed, f"含 \\| 轉義直線之 changelog 應通過驗證: {rep_pipe.errors}")
+
+        # 3. Active revision_log.md attached to completed Fast Track plan
+        (p_pipe / "revision_log.md").write_text(
+            "# 修訂紀錄\n\n> 功能名稱：Pipe Test\n> 建立日期：2026-11-09\n> 狀態：In Progress\n> 模型：Unknown\n",
+            encoding="utf-8",
+        )
+        nav_rev = PlanStatusResolver.resolve_next_action(p_pipe)
+        self.assertEqual(nav_rev["mode"], "Revision")
+        self.assertEqual(nav_rev["current_phase"], "Revision")
+
+        # 4. Umbrella with Completed header but incomplete sub_01 must report In Progress and block archive
+        umb_inc = self.plans_dir / "2026_11_09_1020_umb_incomplete_sub"
+        sub_inc = umb_inc / "sub_01_child"
+        sub_inc.mkdir(parents=True, exist_ok=True)
+        (umb_inc / "umbrella_overview.md").write_text(
+            "# 主計畫\n\n> 計畫名稱：Umb\n> 建立日期：2026-11-09\n> 狀態：Completed\n> 模型：Unknown\n",
+            encoding="utf-8",
+        )
+        (sub_inc / "P00_discuss.md").write_text(
+            "# P00\n\n> 功能名稱：Sub\n> 建立日期：2026-11-09\n> 所屬主計畫：2026_11_09_1020_umb_incomplete_sub\n> 狀態：Confirmed\n> 模型：Unknown\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(scanner.get_plan_info(umb_inc), ("Umbrella", "In Progress"))
+        with self.assertRaises(PlanIncompleteError):
+            archiver.archive_plan(umb_inc.name, force=False)
+        self.mark_passed()
+
+
 if __name__ == "__main__":
     unittest.main()

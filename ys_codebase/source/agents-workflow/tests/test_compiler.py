@@ -1490,5 +1490,49 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         self.mark_passed()
 
 
+    def test_fenced_code_slash_preservation_and_dual_token_occurrences(self):
+        """驗證 Stage 2 展開不破壞圍欄代碼塊內之 // 註解或整數除法，且同一 Token 同時出現獨立行與行內時皆能完整展開。"""
+        compiler = ArtifactCompiler(host_dir=str(PKG_ROOT.parent.parent))
+        raw_stage1 = (
+            "# Dual Token Demo\n"
+            "`__@{DUAL_TOK}__`\n"
+            "`__@{SECOND_TOK}__`\n"
+            "Inline reference: `cmd __@{DUAL_TOK}__ --ok`\n"
+        )
+        inserts = [
+            {"type": "const", "token": "DUAL_TOK", "mode": "replace", "value": "ExpandedValue"},
+            {"type": "const", "token": "SECOND_TOK", "mode": "replace", "value": "SecondValue"},
+        ]
+        s1_res = compiler.resolve_single_artifact(raw_stage1, inserts)
+        self.assertIn("ExpandedValue\nSecondValue\n", s1_res)
+        self.assertIn("Inline reference: `cmd ExpandedValue --ok`", s1_res)
+        self.assertNotIn("__@{DUAL_TOK}__", s1_res)
+
+        dst_path = str(PKG_ROOT.parent.parent / ".agents" / "skills" / "demo" / "SKILL.md")
+        dep_map = {
+            "module://agents-workflow/assets/templates/P00_discuss.md": str(
+                PKG_ROOT.parent.parent / ".agents" / ".yscb" / "templates" / "P00_discuss.md"
+            )
+        }
+        raw_stage2 = (
+            "Path join: `__#{module://agents-workflow/assets/templates/P00_discuss.md}__/`\n"
+            "Inline C++ comment: `int x = 1; // keep double slash` and `a // b`\n"
+            "```python\n"
+            "# Check integer division and URL inside fenced block\n"
+            "mid = total // 2  # // comment inside fence\n"
+            "tpl = \"__#{module://agents-workflow/assets/templates/P00_discuss.md}__\"\n"
+            "```\n"
+        )
+        s2_res = compiler.resolve_stage2_uri(raw_stage2, dst_path, dep_map)
+        self.assertIn("int x = 1; // keep double slash", s2_res)
+        self.assertIn("mid = total // 2  # // comment inside fence", s2_res)
+        self.assertIn("../../.yscb/templates/P00_discuss.md", s2_res)
+
+        stage1_out = compiler.compile_stage1()
+        self.assertTrue(stage1_out["success"])
+        self.assertTrue(all(len(it.get("sha256", "")) == 64 for it in stage1_out["resolved_items"]))
+        self.mark_passed()
+
+
 if __name__ == "__main__":
     unittest.main()

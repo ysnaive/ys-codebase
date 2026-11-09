@@ -57,6 +57,13 @@ class _FallbackNode:
         for c in self.children:
             c.parent = self
 
+    def child_by_field_name(self, field_name: str) -> Optional["_FallbackNode"]:
+        if field_name == "body":
+            for c in self.children:
+                if c.type in ("block", "statement_block", "declaration_list", "compound_statement"):
+                    return c
+        return None
+
 
 class _FallbackTree:
     def __init__(self, root_node: _FallbackNode) -> None:
@@ -238,12 +245,19 @@ def _build_python_matches(content_bytes: bytes) -> List[Tuple[int, Dict[str, Lis
                     prev_named_sibling=_extract_preceding_comment_node(lines, line_offsets, content_bytes, s_ln - 1),
                 )
                 name_b = node.name.encode("utf-8")
-                name_node = _FallbackNode("identifier", name_b, (s_ln - 1, 0), (s_ln - 1, len(name_b)), sb, sb + len(name_b))
+                cls_line_b = lines[s_ln - 1].encode("utf-8") if (s_ln - 1) < len(lines) else b""
+                cls_pos = cls_line_b.find(b"class " + name_b)
+                name_sb = (sb + cls_pos + 6) if cls_pos != -1 else sb
+                name_node = _FallbackNode("identifier", name_b, (s_ln - 1, 0), (s_ln - 1, len(name_b)), name_sb, name_sb + len(name_b))
                 cap: Dict[str, List[_FallbackNode]] = {"definition.class": [def_node], "symbol.name": [name_node]}
                 doc = _py_stdlib_ast.get_docstring(node, clean=False)
                 if doc is not None:
                     doc_b = f'"""{doc}"""'.encode("utf-8")
-                    cap["symbol.docstring"] = [_FallbackNode("string", doc_b, (s_ln, 0), (s_ln, len(doc_b)), sb, sb + len(doc_b))]
+                    raw_cls_b = content_bytes[sb:eb]
+                    doc_pos = raw_cls_b.find(doc.encode("utf-8"))
+                    doc_sb = max(sb, sb + doc_pos - 3) if doc_pos != -1 else sb
+                    doc_eb = min(eb, doc_sb + len(doc_b))
+                    cap["symbol.docstring"] = [_FallbackNode("string", content_bytes[doc_sb:doc_eb], (s_ln, 0), (s_ln, len(doc_b)), doc_sb, doc_eb)]
                 matches.append((0, cap))
 
                 for item in node.body:
@@ -297,15 +311,29 @@ def _build_python_matches(content_bytes: bytes) -> List[Tuple[int, Dict[str, Lis
 
                 name_b = node.name.encode("utf-8")
                 sig_b = sig_str.encode("utf-8")
+                raw_slice_b = content_bytes[sb:eb]
+                def_pos = raw_slice_b.find(b"def " + name_b)
+                name_sb = (sb + def_pos + 4) if def_pos != -1 else sb
+                sig_pos = raw_slice_b.find(sig_b, (def_pos + 4) if def_pos != -1 else 0)
+                sig_sb = (sb + sig_pos) if sig_pos != -1 else (name_sb + len(name_b))
+                body_sb = (sig_sb + len(sig_b))
+                colon_pos = raw_slice_b.find(b":", body_sb - sb)
+                if colon_pos != -1:
+                    body_sb = sb + colon_pos + 1
+                body_node = _FallbackNode("block", content_bytes[body_sb:eb], (s_ln - 1, 0), (e_ln - 1, 0), body_sb, eb)
+                def_node.children.append(body_node)
                 cap = {
                     "definition.function": [def_node],
-                    "symbol.name": [_FallbackNode("identifier", name_b, (s_ln - 1, 0), (s_ln - 1, len(name_b)), sb, sb + len(name_b))],
-                    "symbol.signature": [_FallbackNode("parameters", sig_b, (s_ln - 1, 0), (s_ln - 1, len(sig_b)), sb, sb + len(sig_b))],
+                    "symbol.name": [_FallbackNode("identifier", name_b, (s_ln - 1, 0), (s_ln - 1, len(name_b)), name_sb, name_sb + len(name_b))],
+                    "symbol.signature": [_FallbackNode("parameters", sig_b, (s_ln - 1, 0), (s_ln - 1, len(sig_b)), sig_sb, sig_sb + len(sig_b))],
                 }
                 doc = _py_stdlib_ast.get_docstring(node, clean=False)
                 if doc is not None:
                     doc_b = f'"""{doc}"""'.encode("utf-8")
-                    cap["symbol.docstring"] = [_FallbackNode("string", doc_b, (s_ln, 0), (s_ln, len(doc_b)), sb, sb + len(doc_b))]
+                    doc_pos = raw_slice_b.find(doc.encode("utf-8"))
+                    doc_sb = max(sb, sb + doc_pos - 3) if doc_pos != -1 else body_sb
+                    doc_eb = min(eb, doc_sb + len(doc_b))
+                    cap["symbol.docstring"] = [_FallbackNode("string", content_bytes[doc_sb:doc_eb], (s_ln, 0), (s_ln, len(doc_b)), doc_sb, doc_eb)]
                 matches.append((2, cap))
 
                 # Extract self.<field> assignments inside methods
@@ -545,7 +573,7 @@ def _build_brace_language_matches(
                 matches.append((3, cap))
     else:
         c_fn_rx = re.compile(
-            r"(?m)^([ \t]*(?:(?:public|private|protected|internal|static|virtual|override|abstract|async|inline|explicit|constexpr)[ \t]+)*)"
+            r"(?m)(?:^[ \t]*|(?<=\{)[ \t]+)((?:(?:public|private|protected|internal|static|virtual|override|abstract|async|inline|explicit|constexpr)[ \t]+)*)"
             r"(?:([A-Za-z_][A-Za-z0-9_<>,:.*& \t]*?)[ \t]+)?"
             r"([A-Za-z_~][A-Za-z0-9_<>:]*)[ \t]*\(([^)\n]*)\)[ \t]*(?:const[ \t]*)?(?:\{|;|=>[^;\n]*;)"
         )
@@ -590,10 +618,15 @@ def _build_brace_language_matches(
             )
             nb = fname.encode("utf-8")
             pb = params_str.encode("utf-8")
+            raw_fn_b = content_bytes[sb:eb]
+            p_pos = raw_fn_b.find(pb)
+            p_sb = (sb + p_pos) if p_pos != -1 else sb
+            n_pos = raw_fn_b.rfind(nb, 0, p_pos if p_pos != -1 else len(raw_fn_b))
+            n_sb = (sb + n_pos) if n_pos != -1 else sb
             cap = {
                 def_key: [def_node],
-                "symbol.name": [_FallbackNode("identifier", nb, sp, sp, sb, sb + len(nb))],
-                "symbol.signature": [_FallbackNode("parameter_list", pb, sp, sp, sb, sb + len(pb))],
+                "symbol.name": [_FallbackNode("identifier", nb, sp, sp, n_sb, n_sb + len(nb))],
+                "symbol.signature": [_FallbackNode("parameter_list", pb, sp, sp, p_sb, p_sb + len(pb))],
             }
             if ret_str:
                 rb = ret_str.encode("utf-8")
@@ -747,7 +780,10 @@ def _project_matches_for_query_scm(
     part_slots = [m.group(1) for m in re.finditer(r"@part\.([A-Za-z0-9_]+)", query_scm)]
 
     projected: List[Tuple[int, Dict[str, List[_FallbackNode]]]] = []
+    wants_call = ("@call." in query_scm) or has_ref_call or ("@edge.calls" in query_scm)
     for pat_idx, cap in base_matches:
+        if ("call.name" in cap or "call.site" in cap) and not wants_call:
+            continue
         new_cap: Dict[str, List[_FallbackNode]] = dict(cap)
         if "symbol.name" in cap and ("@name" in query_scm or "@part.name" in query_scm):
             if "@name" in query_scm:

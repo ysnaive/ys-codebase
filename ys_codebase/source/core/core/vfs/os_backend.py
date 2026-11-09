@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from typing import Optional, List, Dict, Any, Union, IO, Generator
+from typing import Optional, List, Dict, Any, Union, IO, Generator, Set
 
 from core.vfs.base import VFSBackend
 
@@ -145,6 +145,55 @@ def robust_replace(src: str, dst: str, max_retries: int = 10) -> None:
                 time.sleep(0.05 * (attempt + 1))
                 continue
             raise
+
+
+def atomic_swap_directory(
+    staging_dir: str,
+    target_dir: str,
+    retries: int = 3,
+    retry_delay: float = 0.05,
+) -> None:
+    """
+    Atomically swaps `staging_dir` into `target_dir` within the same parent filesystem:
+    1. Moves existing `target_dir` to a `.old_<name>_<pid>_<ts>` backup directory.
+    2. Moves `staging_dir` into `target_dir`.
+    3. Rolls back `.old` into `target_dir` if step 2 fails (even if `target_dir` was partially created).
+    4. Cleans up `.old` and `staging_dir` in `finally`.
+    """
+    target_abs = os.path.normpath(os.path.abspath(target_dir))
+    staging_abs = os.path.normpath(os.path.abspath(staging_dir))
+    parent_dir = os.path.dirname(target_abs)
+    base_name = os.path.basename(target_abs)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+    old_abs = os.path.join(parent_dir, f".old_{base_name}_{os.getpid()}_{int(time.time() * 1000)}")
+
+    moved_old = False
+    swap_succeeded = False
+    try:
+        if os.path.exists(old_abs) or os.path.lexists(old_abs):
+            robust_rmtree(old_abs, ignore_errors=True, max_retries=retries)
+        if os.path.exists(target_abs) or os.path.lexists(target_abs):
+            robust_replace(target_abs, old_abs, max_retries=retries)
+            moved_old = True
+
+        robust_replace(staging_abs, target_abs, max_retries=retries)
+        swap_succeeded = True
+        _maybe_invalidate_uri_cache(target_abs, is_dir_op=True)
+    except BaseException:
+        if moved_old and (os.path.exists(old_abs) or os.path.lexists(old_abs)):
+            try:
+                if os.path.exists(target_abs) or os.path.lexists(target_abs):
+                    robust_rmtree(target_abs, ignore_errors=True, max_retries=retries)
+                robust_replace(old_abs, target_abs, max_retries=retries)
+            except Exception:
+                pass
+        raise
+    finally:
+        if swap_succeeded and (os.path.exists(old_abs) or os.path.lexists(old_abs)):
+            robust_rmtree(old_abs, ignore_errors=True, max_retries=retries)
+        if os.path.exists(staging_abs) or os.path.lexists(staging_abs):
+            robust_rmtree(staging_abs, ignore_errors=True, max_retries=retries)
 
 
 class OSBackend(VFSBackend):
@@ -343,21 +392,31 @@ class OSBackend(VFSBackend):
         _maybe_invalidate_uri_cache(norm_path, is_dir_op=True)
 
     def _safe_copytree(self, src: str, dst: str) -> None:
-        """跨平台大小寫不敏感安全複製目錄樹，忽略暫態點目錄 (.old_* / .staging_*) 與過期句柄。"""
+        """跨平台安全複製目錄樹，忽略暫態點目錄 (.old_* / .staging_*)，僅於大小寫不敏感系統跳過大小寫碰撞，並對 symlink 執行邊界校驗。"""
         os.makedirs(dst, exist_ok=True)
-        seen_lower = set()
+        is_case_insensitive = os.name == "nt" or sys.platform == "darwin" or (
+            os.path.normcase("A") == os.path.normcase("a")
+        )
+        seen_lower: Set[str] = set()
         for item in sorted(os.listdir(src)):
             if item.startswith((".old_", ".staging_")):
                 continue
-            if item.lower() in seen_lower:
-                continue
-            seen_lower.add(item.lower())
+            if is_case_insensitive:
+                lower_key = item.lower()
+                if lower_key in seen_lower:
+                    continue
+                seen_lower.add(lower_key)
             s = os.path.join(src, item)
             d = os.path.join(dst, item)
             if os.path.islink(s):
+                link_target = os.readlink(s)
+                dst_root_norm = os.path.normpath(os.path.abspath(dst))
+                d_norm = os.path.normpath(os.path.abspath(d))
+                if d_norm != dst_root_norm and not d_norm.startswith(dst_root_norm + os.sep):
+                    raise PermissionError(f"Symlink destination '{d}' escaped target tree '{dst}'.")
                 if os.path.lexists(d):
                     os.remove(d)
-                os.symlink(os.readlink(s), d)
+                os.symlink(link_target, d)
             elif os.path.isdir(s):
                 self._safe_copytree(s, d)
             elif os.path.isfile(s):
@@ -377,6 +436,8 @@ class OSBackend(VFSBackend):
             if os.path.lexists(dst_norm):
                 os.remove(dst_norm)
             os.symlink(os.readlink(src_norm), dst_norm)
+            if self.root_dir:
+                self.assert_safe_path(dst_norm)
         elif is_dir:
             if dst_real.startswith(src_real + os.sep):
                 raise ValueError(f"Cannot copy directory '{src_norm}' into its own subdirectory '{dst_norm}'.")

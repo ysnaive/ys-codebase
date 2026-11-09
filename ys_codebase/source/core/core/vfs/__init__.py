@@ -5,7 +5,12 @@ YS-Codebase Unified Virtual File System (VFS).
 """
 
 from core.vfs.base import VFSBackend
-from core.vfs.os_backend import OSBackend, robust_rmtree, robust_replace
+from core.vfs.os_backend import (
+    OSBackend,
+    atomic_swap_directory,
+    robust_replace,
+    robust_rmtree,
+)
 from core.vfs.vfs import VFS
 from core.vfs.path import VirtualPath
 
@@ -60,4 +65,5 @@ __all__ = (
     "path",
     "robust_rmtree",
     "robust_replace",
+    "atomic_swap_directory",
 )

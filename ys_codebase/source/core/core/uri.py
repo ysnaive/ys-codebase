@@ -19,6 +19,7 @@ from core.context import (
     get_current_scope,
     get_env,
     get_runtime_context,
+    update_current_scope_roots,
     _ThreadLocalSet,
 )
 
@@ -120,7 +121,9 @@ class CyclicURIDependencyError(ValueError):
 
 
 def set_module_context(module_name: Optional[str]) -> None:
-    _get_uri_tls().active_module_context = module_name
+    norm_mod = str(module_name).strip() or None if module_name is not None else None
+    _get_uri_tls().active_module_context = norm_mod
+    update_current_scope_roots(active_module=norm_mod)
 
 
 def get_module_context() -> Optional[str]:
@@ -137,20 +140,26 @@ def get_module_context() -> Optional[str]:
 def module_scope(module_name: Optional[str]) -> Generator[None, None, None]:
     """
     模組上下文安全作用域 (Context Manager)：
-    退出區塊時以 finally 100% 保證還原舊執行緒本地 active_module_context，防止測試與 Hook 污染。
+    退出區塊時以 finally 100% 保證還原舊執行緒本地 active_module_context 與當前 RuntimeScope，防止測試與 Hook 污染。
     """
     tls = _get_uri_tls()
-    old = getattr(tls, "active_module_context", None)
+    old_tls = getattr(tls, "active_module_context", None)
+    prev_scope = get_current_scope()
+    old_scope_mod = prev_scope.active_module if prev_scope is not None else None
     set_module_context(module_name)
     try:
         yield
     finally:
-        tls.active_module_context = old
+        tls.active_module_context = old_tls
+        if prev_scope is not None:
+            update_current_scope_roots(active_module=old_scope_mod)
 
 
 def set_host_dir(host_dir: Optional[str]) -> None:
-    """Explicitly inject host directory."""
-    _get_uri_tls().active_host_dir = os.path.normpath(os.path.abspath(host_dir)) if host_dir else None
+    """Explicitly inject host directory into both `uri_tls` and the active `RuntimeScope` (if bound)."""
+    norm_host = os.path.normpath(os.path.abspath(host_dir)) if host_dir else None
+    _get_uri_tls().active_host_dir = norm_host
+    update_current_scope_roots(active_host_dir=norm_host)
 
 
 def get_host_dir() -> Optional[str]:
@@ -171,11 +180,14 @@ def get_host_dir() -> Optional[str]:
 def host_scope(host_dir: Optional[str], yscb_dir: Optional[str] = None) -> Generator[None, None, None]:
     """
     宿主目錄安全作用域 (Context Manager)：
-    退出區塊時以 finally 100% 保證還原舊執行緒本地 active_host_dir（與可選之 active_yscb_dir）。
+    退出區塊時以 finally 100% 保證還原舊執行緒本地 active_host_dir（與可選之 active_yscb_dir）及當前 RuntimeScope。
     """
     tls = _get_uri_tls()
     old_host = getattr(tls, "active_host_dir", None)
     old_yscb = getattr(tls, "active_yscb_dir", None)
+    prev_scope = get_current_scope()
+    old_scope_host = prev_scope.active_host_dir if prev_scope is not None else None
+    old_scope_yscb = prev_scope.active_yscb_dir if prev_scope is not None else None
     set_host_dir(host_dir)
     if yscb_dir is not None:
         if host_dir and not os.path.isabs(yscb_dir):
@@ -188,11 +200,21 @@ def host_scope(host_dir: Optional[str], yscb_dir: Optional[str] = None) -> Gener
         tls.active_host_dir = old_host
         if yscb_dir is not None:
             tls.active_yscb_dir = old_yscb
+        if prev_scope is not None:
+            if yscb_dir is not None:
+                update_current_scope_roots(
+                    active_host_dir=old_scope_host,
+                    active_yscb_dir=old_scope_yscb,
+                )
+            else:
+                update_current_scope_roots(active_host_dir=old_scope_host)
 
 
 def set_yscb_root(yscb_dir: Optional[str]) -> None:
-    """Explicitly inject YSCB toolchain root directory."""
-    _get_uri_tls().active_yscb_dir = os.path.normpath(os.path.abspath(yscb_dir)) if yscb_dir else None
+    """Explicitly inject YSCB toolchain root directory into both `uri_tls` and the active `RuntimeScope` (if bound)."""
+    norm_yscb = os.path.normpath(os.path.abspath(yscb_dir)) if yscb_dir else None
+    _get_uri_tls().active_yscb_dir = norm_yscb
+    update_current_scope_roots(active_yscb_dir=norm_yscb)
 
 
 def get_yscb_root() -> Optional[str]:
@@ -213,15 +235,19 @@ def get_yscb_root() -> Optional[str]:
 def yscb_scope(yscb_dir: Optional[str]) -> Generator[None, None, None]:
     """
     工具庫核心目錄安全作用域 (Context Manager)：
-    退出區塊時以 finally 100% 保證還原舊執行緒本地 active_yscb_dir。
+    退出區塊時以 finally 100% 保證還原舊執行緒本地 active_yscb_dir 與當前 RuntimeScope。
     """
     tls = _get_uri_tls()
-    old = getattr(tls, "active_yscb_dir", None)
+    old_tls = getattr(tls, "active_yscb_dir", None)
+    prev_scope = get_current_scope()
+    old_scope_yscb = prev_scope.active_yscb_dir if prev_scope is not None else None
     set_yscb_root(yscb_dir)
     try:
         yield
     finally:
-        tls.active_yscb_dir = old
+        tls.active_yscb_dir = old_tls
+        if prev_scope is not None:
+            update_current_scope_roots(active_yscb_dir=old_scope_yscb)
 
 
 def resolve_yscb_root() -> str:
@@ -399,72 +425,6 @@ def list_registered_schemes_summary() -> List[Dict[str, Any]]:
             "description": scheme.get("description", "")
         })
     return results
-
-
-def _print_reconcile_prompt(provider_name: str, scheme_token: str, desc: str, binding_key: str) -> None:
-    """Renders JIT prompt text for an undefined semantic URI protocol."""
-    from core.log import log
-    log(f"\n[{provider_name}] 語意協議 '{scheme_token}://' 尚未設定 (當前為 !undefined)。")
-    if desc:
-        log(f"  • 說明: {desc}")
-    log(f"  • 目標設定檔: config://{provider_name}/config.project.json ({binding_key})")
-    log("  • 路徑基準: 相對路徑一律以 'yscb://' (工具庫根目錄) 為起始，支援 '../' 穿透或直接輸入語意協議格式 (例: project://plans)")
-    log("\n是否進行及時熱更新補齊?")
-    log("  -y <path> : 設定路徑、自動更新設定檔並繼續運行")
-    log("  -n        : 終止當前操作")
-    log("  --help    : 展開詳細協議資訊與全系統可用協議清單")
-
-
-def _print_schemes_summary_table() -> None:
-    """Renders the registered URI protocols summary table to stdout."""
-    from core.log import log
-    log("\n==============================================================================================================")
-    log("YS-Codebase 語意協議註冊清冊 (Registered URI Protocols Summary)")
-    log("==============================================================================================================")
-    log(f"{'TOKEN':<23} {'PROVIDER':<12} {'RAW TARGET / VALUE':<28} {'RESOLVED PATH / STATUS'}")
-    log("--------------------------------------------------------------------------------------------------------------")
-    for s in list_registered_schemes_summary():
-        raw_v = s.get("value", "")
-        log(f"{s['token'] + '://':<23} {s['provider']:<12} {raw_v:<28} {s['resolved_path']}")
-    log("==============================================================================================================\n")
-
-
-def _persist_reconciled_uri_config(yscb_dir: str, provider_name: str, binding_key: str, input_val: str, resolved_target: str) -> None:
-    """Writes reconciled URI configuration back to config.project.json and ensures target directory exists."""
-    from core import vfs
-    from core.log import log_info
-    mod_proj_cfg = os.path.join(yscb_dir, "config", provider_name, "config.project.json")
-    cfg_data: Dict[str, Any] = {}
-    if vfs.is_file(mod_proj_cfg):
-        try:
-            loaded = vfs.read_json(mod_proj_cfg)
-            if isinstance(loaded, dict):
-                cfg_data = loaded
-        except Exception:
-            cfg_data = {}
-
-    keys = binding_key.split(".")
-    curr = cfg_data
-    for k in keys[:-1]:
-        if k not in curr or not isinstance(curr[k], dict):
-            curr[k] = {}
-        curr = curr[k]
-    curr[keys[-1]] = input_val
-
-    vfs.write_json(mod_proj_cfg, cfg_data, indent=2, atomic=True)
-    try:
-        from core import config
-        config.reload(provider_name)
-    except Exception:
-        pass
-
-    log_info(f"[{provider_name}] 已成功寫入設定檔: '{binding_key}' = '{input_val}'")
-    if not vfs.exists(resolved_target):
-        try:
-            vfs.makedirs(resolved_target, exist_ok=True)
-            log_info(f"[{provider_name}] 目錄不存在，已自動建立: {resolved_target}")
-        except Exception:
-            pass
 
 
 def reconcile_undefined_uri(

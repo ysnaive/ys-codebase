@@ -590,7 +590,7 @@ class SpaceScanner:
         self._snapshot_mgr = BinarySnapshotManager()
         self._cursor_store = CursorStore(self._storage_root, self._lock_dir)
         self._rlock = threading.RLock()
-        self._snapshot_mem_cache: Dict[str, Tuple[int, int, SnapshotState]] = {}
+        self._snapshot_mem_cache: Dict[str, Tuple[int, int, bytes, SnapshotState]] = {}
         self._hash_memo: Optional[Dict[Tuple[str, int, int, str, int], str]] = None
 
     @property
@@ -664,6 +664,14 @@ class SpaceScanner:
             with InterProcessLock(str(lock_file), timeout=10.0):
                 yield
 
+    @staticmethod
+    def _read_tail_checksum(snap_p: Path, size: int) -> bytes:
+        if size < BLAKE2B_DIGEST_SIZE:
+            return b""
+        with open(snap_p, "rb") as f:
+            f.seek(size - BLAKE2B_DIGEST_SIZE)
+            return f.read(BLAKE2B_DIGEST_SIZE)
+
     def _load_snapshot_state(self, space_key: str) -> SnapshotState:
         snap_p = self._snapshot_path(space_key)
         cache_key = snap_p.as_posix()
@@ -671,6 +679,7 @@ class SpaceScanner:
             st = snap_p.stat()
             mtime_ns = int(st.st_mtime_ns)
             size = int(st.st_size)
+            tail_sig = self._read_tail_checksum(snap_p, size)
         except OSError:
             with self._rlock:
                 self._snapshot_mem_cache.pop(cache_key, None)
@@ -678,8 +687,13 @@ class SpaceScanner:
 
         with self._rlock:
             cached = self._snapshot_mem_cache.get(cache_key)
-            if cached is not None and cached[0] == mtime_ns and cached[1] == size:
-                c_state = cached[2]
+            if (
+                cached is not None
+                and cached[0] == mtime_ns
+                and cached[1] == size
+                and cached[2] == tail_sig
+            ):
+                c_state = cached[3]
                 return SnapshotState(
                     head_generation=c_state.head_generation,
                     merkle_root=c_state.merkle_root,
@@ -693,6 +707,7 @@ class SpaceScanner:
                 self._snapshot_mem_cache[cache_key] = (
                     mtime_ns,
                     size,
+                    tail_sig,
                     SnapshotState(
                         head_generation=loaded.head_generation,
                         merkle_root=loaded.merkle_root,
@@ -700,6 +715,9 @@ class SpaceScanner:
                         entries=dict(loaded.entries),
                     ),
                 )
+        else:
+            with self._rlock:
+                self._snapshot_mem_cache.pop(cache_key, None)
         return loaded
 
     def _save_snapshot_state(
@@ -709,10 +727,13 @@ class SpaceScanner:
         cache_key = snap_p.as_posix()
         try:
             st = snap_p.stat()
+            size = int(st.st_size)
+            tail_sig = self._read_tail_checksum(snap_p, size)
             with self._rlock:
                 self._snapshot_mem_cache[cache_key] = (
                     int(st.st_mtime_ns),
-                    int(st.st_size),
+                    size,
+                    tail_sig,
                     SnapshotState(
                         head_generation=state.head_generation,
                         merkle_root=state.merkle_root,
@@ -770,16 +791,17 @@ class SpaceScanner:
                 space_gens: Dict[str, int] = {}
                 self._hash_memo = {}
                 try:
-                    for s_cfg in self._registry.list_spaces(include_synthetic=True):
-                        if (
-                            not s_cfg.watch
-                            or s_cfg.short_name == "gitignore"
-                            or (not s_cfg.entries and not s_cfg.compose)
-                        ):
-                            continue
-                        sub_res = self._scan_single_query(s_cfg.qualified_name, force=force)
-                        space_gens[s_cfg.qualified_name] = sub_res.to_generation
-                    unified_res = self._scan_single_query(None, force=force)
+                    with self._registry.batch_walk_session():
+                        for s_cfg in self._registry.list_spaces(include_synthetic=True):
+                            if (
+                                not s_cfg.watch
+                                or s_cfg.short_name == "gitignore"
+                                or (not s_cfg.entries and not s_cfg.compose)
+                            ):
+                                continue
+                            sub_res = self._scan_single_query(s_cfg.qualified_name, force=force)
+                            space_gens[s_cfg.qualified_name] = sub_res.to_generation
+                        unified_res = self._scan_single_query(None, force=force)
                 finally:
                     self._hash_memo = None
                 object.__setattr__(unified_res, "space_generations", space_gens)
@@ -1067,8 +1089,8 @@ class SpaceScanner:
                         try:
                             st = cand_abs.stat()
                             f_size = int(st.st_size)
-                            f_mtime = int(st.st_mtime_ns)
-                            f_ctime = int(getattr(st, "st_ctime_ns", f_mtime))
+                            f_mtime = max(0, int(st.st_mtime_ns))
+                            f_ctime = max(0, int(getattr(st, "st_ctime_ns", f_mtime)))
                             c_hash = compute_file_hash(
                                 cand_abs,
                                 size=f_size,

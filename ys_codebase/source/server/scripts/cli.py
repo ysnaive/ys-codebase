@@ -176,10 +176,10 @@ def stop(cmd_bags: CmdBags) -> int:
 
     if not force_flag:
         log(f"[Server] Sending graceful shutdown request to daemon (PID: {state.pid})...")
-        resp = _http_request(state, "/api/shutdown", method="POST", timeout=2.0)
+        resp = _http_request(state, "/api/shutdown", method="POST", timeout=3.0)
         summary = (resp or {}).get("summary")
         if resp:
-            for _ in range(20):
+            for _ in range(50):
                 time.sleep(0.1)
                 if not is_process_alive(state.pid):
                     if summary:
@@ -193,7 +193,19 @@ def stop(cmd_bags: CmdBags) -> int:
     _cleanup_stale_state_file(yscb_root)
     # User-initiated stop is not environment reaping: reset empirical detection
     daemon_probe.mark_clean_exit(yscb_root)
-    archived_log = ServerLogger(yscb_root=state.root).archive_and_close()
+    archived_log = ""
+    lock_file = os.path.join(state.root, ".cache", "server", "daemon.lock")
+    try:
+        archive_lock = InterProcessLock(lock_file)
+        if archive_lock.acquire(blocking=True, timeout_sec=0.5):
+            try:
+                archived_log = ServerLogger(yscb_root=state.root).archive_and_close() or ""
+            finally:
+                archive_lock.release()
+        else:
+            archived_log = ServerLogger(yscb_root=state.root).archive_and_close() or ""
+    except Exception:
+        archived_log = ""
     uptime = time.time() - state.start_time
     fallback_summary = {
         "pid": state.pid,

@@ -190,7 +190,7 @@ class TestKnowledgeDBSelfHealing(YSCBTestCase):
             self.assertTrue(res.success)
 
         # ModBInitSymbol must remain untouched (same object identity in ASTSnapshot & InvertedIndex)
-        # and SemanticBundler transient cache must be released after build/hot-patch (`[P00:DR-02]`)!
+        # and SemanticBundler transient cache must be released after build/hot-patch!
         self.assertEqual(len(engine.bundler._file_symbols_cache), 0)
         cur_b_sym = next(
             s for s in engine.pipeline.unified_index.symbols.values()

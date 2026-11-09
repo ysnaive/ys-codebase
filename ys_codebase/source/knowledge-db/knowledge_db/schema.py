@@ -3,6 +3,7 @@ knowledge-db 核心資料結構、Enums 與 Schema 模型
 """
 
 from dataclasses import dataclass, field
+import math
 from typing import Any, Dict, List, Optional
 
 from ast_engine.schema import (
@@ -29,10 +30,10 @@ def validate_space_weights(raw_weights: Any) -> Dict[str, float]:
             raise InvalidConfigError(f"Space '{space_name}' weight must be a number, got {weight_val!r}.")
         try:
             w = float(weight_val)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise InvalidConfigError(f"Space '{space_name}' weight must be a number, got {weight_val!r}.") from exc
-        if w <= 0.0:
-            raise InvalidConfigError(f"Space '{space_name}' weight must be > 0, got {w}.")
+        if not math.isfinite(w) or w <= 0.0:
+            raise InvalidConfigError(f"Space '{space_name}' weight must be a finite number > 0, got {w}.")
         validated[str(space_name)] = w
     return validated
 

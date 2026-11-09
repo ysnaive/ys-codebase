@@ -5,7 +5,7 @@ via `consume_diff(consumer_id="ast")`, hot-patches or rebuilds the unified AST s
 and broadcasts `on_ast_index_updated` to downstream subscribers.
 """
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Any, Dict, Iterator, List, Optional
 
 from core.log import log_debug
@@ -177,7 +177,9 @@ def on_file_space_changed(
             if "spaces" in diff_detail_arg
             else {"spaces": {str(space_name_arg): diff_detail_arg}}
         )
-        snap = eng.hot_patch_index(normalized_detail, spaces=spaces)
+        eng_lock = getattr(eng, "_lock", None)
+        with (eng_lock if eng_lock is not None else nullcontext()):
+            snap = eng.hot_patch_index(normalized_detail, spaces=spaces)
         payload = {
             "status": "updated",
             "ast_generation": snap.ast_generation,
@@ -232,57 +234,59 @@ def on_file_space_changed(
                 "to_generation": 0,
             }
 
-    has_existing_snapshot = engine.symbols_index_path.exists() and engine.graph_index_path.exists()
-    auto_refresh = False if diff_summary is not None else None
+    eng_lock = getattr(engine, "_lock", None)
+    with (eng_lock if eng_lock is not None else nullcontext()):
+        has_existing_snapshot = engine.symbols_index_path.exists() and engine.graph_index_path.exists()
+        auto_refresh = False if diff_summary is not None else None
 
-    with _resolve_consume_diff(
-        engine,
-        space_name=target_space,
-        consumer_id="ast",
-        auto_refresh=auto_refresh,
-    ) as diff_res:
-        if not diff_res.has_changes:
-            if not has_existing_snapshot and diff_summary:
+        with _resolve_consume_diff(
+            engine,
+            space_name=target_space,
+            consumer_id="ast",
+            auto_refresh=auto_refresh,
+        ) as diff_res:
+            if not diff_res.has_changes:
+                if not has_existing_snapshot and diff_summary:
+                    snap = engine.build_index(spaces=None, allow_parallel=False)
+                    payload = {
+                        "status": "rebuilt",
+                        "ast_generation": snap.ast_generation,
+                        "space_generations": dict(snap.space_generations),
+                        "patched_count": len(snap.file_to_symbol_ids),
+                        "to_generation": diff_res.to_generation,
+                    }
+                    _broadcast_ast_updated(payload)
+                    return payload
+                return {
+                    "status": "noop",
+                    "ast_generation": _get_current_ast_generation(engine),
+                    "patched_count": 0,
+                    "to_generation": diff_res.to_generation,
+                }
+
+            if not has_existing_snapshot:
                 snap = engine.build_index(spaces=None, allow_parallel=False)
                 payload = {
                     "status": "rebuilt",
                     "ast_generation": snap.ast_generation,
                     "space_generations": dict(snap.space_generations),
-                    "patched_count": len(snap.file_to_symbol_ids),
+                    "patched_count": len(diff_res.detail.dirty_files),
                     "to_generation": diff_res.to_generation,
                 }
                 _broadcast_ast_updated(payload)
                 return payload
-            return {
-                "status": "noop",
-                "ast_generation": _get_current_ast_generation(engine),
-                "patched_count": 0,
-                "to_generation": diff_res.to_generation,
-            }
 
-        if not has_existing_snapshot:
-            snap = engine.build_index(spaces=None, allow_parallel=False)
+            snap = engine.hot_patch_index(
+                diff_res.detail,
+                spaces=spaces,
+                _cursor_already_consumed=True,
+            )
             payload = {
-                "status": "rebuilt",
+                "status": "patched",
                 "ast_generation": snap.ast_generation,
                 "space_generations": dict(snap.space_generations),
-                "patched_count": len(diff_res.detail.dirty_files),
+                "patched_count": len(diff_res.detail.dirty_files) + len(diff_res.detail.deleted),
                 "to_generation": diff_res.to_generation,
             }
             _broadcast_ast_updated(payload)
             return payload
-
-        snap = engine.hot_patch_index(
-            diff_res.detail,
-            spaces=spaces,
-            _cursor_already_consumed=True,
-        )
-        payload = {
-            "status": "patched",
-            "ast_generation": snap.ast_generation,
-            "space_generations": dict(snap.space_generations),
-            "patched_count": len(diff_res.detail.dirty_files) + len(diff_res.detail.deleted),
-            "to_generation": diff_res.to_generation,
-        }
-        _broadcast_ast_updated(payload)
-        return payload

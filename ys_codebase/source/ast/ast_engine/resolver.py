@@ -28,7 +28,14 @@ from core.context import (
 from .exceptions import ASTError
 from .graph import CallGraphIndex
 from .linker import _compute_symbols_map_fingerprint, expand_contract_symbol_ids
-from .schema import RelationEdge, SymbolKind, SymbolNode, UnifiedSymbol, WorkspaceSymbolGraph
+from .schema import (
+    RelationEdge,
+    SymbolCallSite,
+    SymbolKind,
+    SymbolNode,
+    UnifiedSymbol,
+    WorkspaceSymbolGraph,
+)
 
 KIND_PREFIX_MAP: Mapping[str, FrozenSet[str]] = MappingProxyType({
     "class": frozenset({SymbolKind.CLASS.value}),
@@ -98,6 +105,25 @@ def _split_top_level_comma(text: str) -> List[str]:
     if tail:
         parts.append(tail)
     return parts
+
+
+def _strip_angle_brackets(text: str) -> str:
+    """Remove balanced `<...>` generic/template argument blocks from a symbol path."""
+    if "<" not in text:
+        return text
+    out: List[str] = []
+    depth = 0
+    for ch in text:
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            if depth > 0:
+                depth -= 1
+            else:
+                out.append(ch)
+        elif depth == 0:
+            out.append(ch)
+    return "".join(out).strip()
 
 
 def extract_signature_params(signature: str) -> List[str]:
@@ -264,30 +290,55 @@ class SymbolSelector:
 
         m = cls._PATTERN.match(clean_expr)
         if not m:
-            is_call = clean_expr.endswith(")") and "(" in clean_expr
+            work_expr = clean_expr
+            fallback_kinds: Optional[Set[str]] = None
+            ws_parts = work_expr.split(None, 1)
+            if len(ws_parts) == 2 and ws_parts[0].lower() in KIND_PREFIX_MAP:
+                fallback_kinds = KIND_PREFIX_MAP.get(ws_parts[0].lower())
+                work_expr = ws_parts[1].strip()
+
+            p_start = -1
+            if work_expr.endswith(")") and "(" in work_expr:
+                angle_depth = 0
+                for idx, ch in enumerate(work_expr):
+                    if ch == "<":
+                        angle_depth += 1
+                    elif ch == ">":
+                        angle_depth = max(0, angle_depth - 1)
+                    elif ch == "(" and angle_depth == 0:
+                        p_start = idx
+                        break
+
+            is_call = p_start >= 0
             params_tuple: Optional[Tuple[str, ...]] = None
             if is_call:
-                p_start = clean_expr.find("(")
-                base = clean_expr[:p_start].strip()
-                p_inner = clean_expr[p_start + 1 : -1].strip()
+                base = work_expr[:p_start].strip()
+                p_inner = work_expr[p_start + 1 : -1].strip()
                 if p_inner:
                     params_tuple = tuple(_split_top_level_comma(p_inner))
             else:
-                base = clean_expr
+                base = work_expr
 
+            base_stripped = _strip_angle_brackets(base)
             scope = None
-            norm_base = base.replace("::", ".")
+            norm_base = base_stripped.replace("::", ".")
             if "." in norm_base:
-                parts = norm_base.split(".")
-                scope = ".".join(parts[:-1])
-                name = parts[-1]
+                parts = [p for p in norm_base.split(".") if p]
+                if len(parts) >= 2:
+                    scope = ".".join(parts[:-1])
+                    name = parts[-1]
+                else:
+                    name = parts[0] if parts else base_stripped
             else:
-                name = base
+                name = base_stripped
+
+            is_callable_fb = is_call or bool(fallback_kinds and fallback_kinds.issubset(CALLABLE_KINDS))
             return ParsedSelector(
                 raw_query=clean_expr,
                 identifier=name,
                 scope=scope,
-                is_callable=is_call,
+                target_kinds=fallback_kinds,
+                is_callable=is_callable_fb,
                 param_types=params_tuple,
             )
 
@@ -778,6 +829,61 @@ def _get_or_create_resolver(symbols_map: Dict[str, UnifiedSymbol]) -> Determinis
     )
 
 
+def _extract_workspace_graph(graph: Any) -> Optional[WorkspaceSymbolGraph]:
+    if isinstance(graph, WorkspaceSymbolGraph):
+        return graph
+    ws = getattr(graph, "workspace_graph", None)
+    return ws if isinstance(ws, WorkspaceSymbolGraph) else None
+
+
+def _map_symbol_to_ws_node_ids(
+    ws_graph: WorkspaceSymbolGraph,
+    sym: Optional[UnifiedSymbol],
+    sym_id: str,
+) -> List[str]:
+    out: List[str] = []
+    if sym_id in ws_graph.nodes_by_id:
+        out.append(sym_id)
+    if sym is not None:
+        norm_p = sym.file_path.replace("\\", "/")
+        cid = SymbolNode.compute_canonical_id(norm_p, sym.fqn or sym.name)
+        if cid in ws_graph.nodes_by_id and cid not in out:
+            out.append(cid)
+        fg = ws_graph.file_graphs.get(norm_p)
+        if fg is not None:
+            short_n = (sym.metadata or {}).get("short_name") or sym.name.split(".")[-1]
+            target_fqn = sym.fqn or sym.name
+            for cand in fg.all_nodes_by_id.values():
+                if cand.span.start_line == sym.line_number and (cand.fqn == target_fqn or cand.name == short_n):
+                    if cand.id not in out:
+                        out.append(cand.id)
+    return out
+
+
+def _map_ws_node_id_to_unified_id(
+    ws_graph: WorkspaceSymbolGraph,
+    nid: str,
+    symbols_map: Dict[str, UnifiedSymbol],
+    by_file_index: Dict[str, List[UnifiedSymbol]],
+) -> Optional[str]:
+    if nid in symbols_map:
+        return nid
+    node = ws_graph.nodes_by_id.get(nid)
+    if node is None:
+        return None
+    norm_p = node.file_path.replace("\\", "/")
+    file_syms = by_file_index.get(norm_p, ())
+    for s in file_syms:
+        if s.line_number == node.span.start_line and (
+            (s.fqn or s.name) == node.fqn or s.name.split(".")[-1] == node.name
+        ):
+            return s.id
+    for s in file_syms:
+        if (s.fqn or s.name) == node.fqn or s.name.split(".")[-1] == node.name:
+            return s.id
+    return None
+
+
 def _resolve_topology_query_context(
     target_query: str,
     symbols_input: Union[Dict[str, UnifiedSymbol], Any],
@@ -814,7 +920,7 @@ def _resolve_topology_query_context(
 def query_callers(
     target_query: str,
     symbols_map: Union[Dict[str, UnifiedSymbol], Any],
-    graph: CallGraphIndex,
+    graph: Union[CallGraphIndex, WorkspaceSymbolGraph],
     space: Optional[Union[str, List[str]]] = None,
     ftypes: Optional[Union[str, List[str]]] = None,
     snippet: bool = True,
@@ -840,13 +946,46 @@ def query_callers(
     caller_sites_map: Dict[str, List[Any]] = defaultdict(list)
     caller_order: List[str] = []
 
-    for tid in target_ids:
-        for cid in graph.get_callers(tid):
-            if cid not in caller_sites_map:
-                caller_order.append(cid)
-            for s in graph.get_call_sites(cid, tid):
-                if s not in caller_sites_map[cid]:
-                    caller_sites_map[cid].append(s)
+    if hasattr(graph, "get_callers"):
+        for tid in target_ids:
+            for cid in graph.get_callers(tid):
+                if cid not in caller_sites_map:
+                    caller_order.append(cid)
+                for s in graph.get_call_sites(cid, tid):
+                    if s not in caller_sites_map[cid]:
+                        caller_sites_map[cid].append(s)
+
+    ws_graph = _extract_workspace_graph(graph)
+    if ws_graph is not None and (isinstance(graph, WorkspaceSymbolGraph) or not caller_order):
+        by_file_idx: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
+        for s in symbols_map.values():
+            by_file_idx[s.file_path.replace("\\", "/")].append(s)
+        ws_target_nids: List[str] = []
+        for tid in target_ids:
+            for wnid in _map_symbol_to_ws_node_ids(ws_graph, symbols_map.get(tid), tid):
+                if wnid not in ws_target_nids:
+                    ws_target_nids.append(wnid)
+        for wnid in ws_target_nids:
+            for ed in ws_graph.incoming_edges_by_target.get(wnid, ()):
+                if ed.edge_kind != "calls" or ed.resolution_status not in ("resolved", "overload_group"):
+                    continue
+                caller_uid = _map_ws_node_id_to_unified_id(ws_graph, ed.source_id, symbols_map, by_file_idx)
+                if not caller_uid or caller_uid not in symbols_map:
+                    continue
+                caller_sym = symbols_map[caller_uid]
+                if caller_uid not in caller_sites_map:
+                    caller_order.append(caller_uid)
+                synth_site = SymbolCallSite(
+                    callee_name=ed.target_expr.split(".")[-1],
+                    line_number=ed.span.start_line,
+                    caller_symbol_id=caller_uid,
+                    caller_member_name=caller_sym.name,
+                    context_prefix=".".join(ed.target_expr.split(".")[:-1]) if "." in ed.target_expr else "",
+                    file_path=caller_sym.file_path,
+                    space=caller_sym.spaces[0] if caller_sym.spaces else "project",
+                )
+                if synth_site not in caller_sites_map[caller_uid]:
+                    caller_sites_map[caller_uid].append(synth_site)
 
     extractor = snippet_extractor or SnippetExtractor()
     callers_detail: List[Dict[str, Any]] = []
@@ -904,7 +1043,7 @@ def query_callers(
 def query_callees(
     target_query: str,
     symbols_map: Union[Dict[str, UnifiedSymbol], Any],
-    graph: CallGraphIndex,
+    graph: Union[CallGraphIndex, WorkspaceSymbolGraph],
     space: Optional[Union[str, List[str]]] = None,
     ftypes: Optional[Union[str, List[str]]] = None,
     snippet: bool = True,
@@ -926,13 +1065,42 @@ def query_callees(
     callee_sites_map: Dict[str, List[Any]] = defaultdict(list)
     callee_order: List[str] = []
 
-    for caller_sym in res.targets:
-        for cid in graph.get_callees(caller_sym.id):
-            if cid not in callee_sites_map:
-                callee_order.append(cid)
-            for s in graph.get_call_sites(caller_sym.id, cid):
-                if s not in callee_sites_map[cid]:
-                    callee_sites_map[cid].append(s)
+    if hasattr(graph, "get_callees"):
+        for caller_sym in res.targets:
+            for cid in graph.get_callees(caller_sym.id):
+                if cid not in callee_sites_map:
+                    callee_order.append(cid)
+                for s in graph.get_call_sites(caller_sym.id, cid):
+                    if s not in callee_sites_map[cid]:
+                        callee_sites_map[cid].append(s)
+
+    ws_graph = _extract_workspace_graph(graph)
+    if ws_graph is not None and (isinstance(graph, WorkspaceSymbolGraph) or not callee_order):
+        by_file_idx: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
+        for s in symbols_map.values():
+            by_file_idx[s.file_path.replace("\\", "/")].append(s)
+        for caller_sym in res.targets:
+            for wnid in _map_symbol_to_ws_node_ids(ws_graph, caller_sym, caller_sym.id):
+                for ed in ws_graph.outgoing_edges_by_source.get(wnid, ()):
+                    if ed.edge_kind != "calls" or ed.resolution_status not in ("resolved", "overload_group"):
+                        continue
+                    for tid_ws in ed.resolved_target_ids:
+                        callee_uid = _map_ws_node_id_to_unified_id(ws_graph, tid_ws, symbols_map, by_file_idx)
+                        if not callee_uid or callee_uid not in symbols_map:
+                            continue
+                        if callee_uid not in callee_sites_map:
+                            callee_order.append(callee_uid)
+                        synth_site = SymbolCallSite(
+                            callee_name=ed.target_expr.split(".")[-1],
+                            line_number=ed.span.start_line,
+                            caller_symbol_id=caller_sym.id,
+                            caller_member_name=caller_sym.name,
+                            context_prefix=".".join(ed.target_expr.split(".")[:-1]) if "." in ed.target_expr else "",
+                            file_path=caller_sym.file_path,
+                            space=caller_sym.spaces[0] if caller_sym.spaces else "project",
+                        )
+                        if synth_site not in callee_sites_map[callee_uid]:
+                            callee_sites_map[callee_uid].append(synth_site)
 
     extractor = snippet_extractor or SnippetExtractor()
     callees_detail: List[Dict[str, Any]] = []
@@ -990,7 +1158,7 @@ def query_callees(
 def query_impact(
     target_query: str,
     symbols_map: Union[Dict[str, UnifiedSymbol], Any],
-    graph: CallGraphIndex,
+    graph: Union[CallGraphIndex, WorkspaceSymbolGraph],
     depth: int = 2,
     space: Optional[Union[str, List[str]]] = None,
     ftypes: Optional[Union[str, List[str]]] = None,
@@ -1024,16 +1192,43 @@ def query_impact(
     merged_chains: Dict[str, List[Tuple[str, str]]] = {}
     seen_impacted_ids: Set[str] = set(target_ids)
 
-    for tid in target_ids:
-        impact_raw = graph.query_impact(tid, max_depth=depth)
-        for d, sids in impact_raw.get("layers", {}).items():
-            for sid in sids:
-                if sid not in seen_impacted_ids:
-                    seen_impacted_ids.add(sid)
-                    merged_layers_ids[d].append(sid)
-        for k, chain in impact_raw.get("call_chains", {}).items():
-            if k not in merged_chains:
-                merged_chains[k] = chain
+    if hasattr(graph, "query_impact"):
+        for tid in target_ids:
+            impact_raw = graph.query_impact(tid, max_depth=depth)
+            for d, sids in impact_raw.get("layers", {}).items():
+                for sid in sids:
+                    if sid not in seen_impacted_ids:
+                        seen_impacted_ids.add(sid)
+                        merged_layers_ids[d].append(sid)
+            for k, chain in impact_raw.get("call_chains", {}).items():
+                if k not in merged_chains:
+                    merged_chains[k] = chain
+
+    ws_graph = _extract_workspace_graph(graph)
+    if ws_graph is not None and (isinstance(graph, WorkspaceSymbolGraph) or not merged_layers_ids):
+        by_file_idx: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
+        for s in symbols_map.values():
+            by_file_idx[s.file_path.replace("\\", "/")].append(s)
+        seed_ws_ids: List[str] = []
+        for tid in target_ids:
+            for wnid in _map_symbol_to_ws_node_ids(ws_graph, symbols_map.get(tid), tid):
+                if wnid not in seed_ws_ids:
+                    seed_ws_ids.append(wnid)
+        if seed_ws_ids:
+            trav = traverse_workspace_edges(
+                ws_graph,
+                seed_ws_ids,
+                edge_kinds=("calls",),
+                direction="in",
+                depth=depth,
+                status_filter=("resolved", "overload_group"),
+            )
+            for d, nodes in trav.get("layers", {}).items():
+                for n in nodes:
+                    uid = _map_ws_node_id_to_unified_id(ws_graph, n.id, symbols_map, by_file_idx)
+                    if uid and uid not in seen_impacted_ids:
+                        seen_impacted_ids.add(uid)
+                        merged_layers_ids[d].append(uid)
 
     layers_detail: Dict[int, List[UnifiedSymbol]] = {}
     all_files: Set[str] = set()

@@ -430,5 +430,54 @@ class TestCoreSpaceWatcherService(YSCBTestCase):
         self.mark_passed()
 
 
+    def test_stale_unlocked_lockfile_macos_private_prefix_and_unschedule(self) -> None:
+        """Verify stale unlocked .yscb.lock does not freeze watcher, macOS /private/var prefix matching works, and removed watch dirs are unscheduled."""
+        from server.space_watcher import _match_prefix_rel
+
+        worker = CoreSpaceWatcherServiceWorker(
+            context={
+                "project_root": str(self.proj_root),
+                "yscb_root": str(self.yscb_root),
+                "debounce_seconds": 0.05,
+            }
+        )
+        # Stale empty/unlocked .yscb.lock in project_root must not report transaction locked
+        stale_lock = self.proj_root / ".yscb.lock"
+        stale_lock.write_text("", encoding="utf-8")
+        try:
+            self.assertFalse(worker.is_transaction_locked())
+        finally:
+            if stale_lock.exists():
+                stale_lock.unlink()
+
+        # Symmetric macOS /private/var alias normalization
+        rel = _match_prefix_rel("/private/var/folders/xx/proj/mod_a/file.py", "/var/folders/xx/proj")
+        self.assertEqual(rel, "mod_a/file.py")
+
+        # Verify unschedule when a watched directory is removed from desired set
+        unscheduled = []
+
+        class _FakeObserver:
+            def schedule(self, handler, path, recursive=True):
+                return f"watch:{path}"
+
+            def unschedule(self, watch_obj):
+                unscheduled.append(watch_obj)
+
+        worker._observer = _FakeObserver()
+        worker._watchdog_handler = object()
+        extra_dir = str((self.proj_root / "ephem_dir").resolve())
+        worker._scheduled_watches[extra_dir] = "watch:ephem_dir"
+        worker._scheduled_dirs.add(extra_dir)
+        worker.sync_watched_directories()
+        self.assertIn("watch:ephem_dir", unscheduled)
+        self.assertNotIn(extra_dir, worker._scheduled_watches)
+
+        # Verify is_alive() checks _stop_event before _thread.is_alive()
+        worker._stop_event.set()
+        self.assertFalse(worker.is_alive())
+        self.mark_passed()
+
+
 if __name__ == "__main__":
     unittest.main()

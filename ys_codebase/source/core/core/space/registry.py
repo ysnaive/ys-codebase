@@ -5,6 +5,7 @@ single-point `match_path` explainability, and zero-redundancy `os.scandir` prune
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import fnmatch
 import hashlib
@@ -12,7 +13,7 @@ import json
 import os
 from pathlib import Path
 import threading
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
 from core.context import get_runtime_context, get_virtual_cwd
 from .exceptions import SpaceCycleError, SpaceError, SpaceNotFoundError
@@ -278,8 +279,34 @@ class SpaceRegistry:
         self._raw_spaces_by_owner: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self._in_reload_broadcast: bool = False
         self._lock = threading.RLock()
+        self._walk_memo: Optional[Dict[str, Dict[str, List[Any]]]] = None
+        self._scandir_memo: Optional[Dict[Tuple[str, bool], List[Tuple[Path, bool, bool, bool, Optional[os.stat_result]]]]] = None
+        self._neg_dir_memo: Optional[Dict[Tuple[str, str, str], bool]] = None
+        self._neg_file_memo: Optional[Dict[Tuple[str, str, str], bool]] = None
+        self._batch_depth: int = 0
 
         self.reload()
+
+    @contextmanager
+    def batch_walk_session(self) -> Iterator[None]:
+        """Batch-scoped directory walk memoization session across space queries and aliases."""
+        with self._lock:
+            if self._batch_depth == 0:
+                self._walk_memo = {}
+                self._scandir_memo = {}
+                self._neg_dir_memo = {}
+                self._neg_file_memo = {}
+            self._batch_depth += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._batch_depth = max(0, self._batch_depth - 1)
+                if self._batch_depth == 0:
+                    self._walk_memo = None
+                    self._scandir_memo = None
+                    self._neg_dir_memo = None
+                    self._neg_file_memo = None
 
     @staticmethod
     def _resolve_roots(
@@ -544,6 +571,12 @@ class SpaceRegistry:
 
         self._spaces = ordered_spaces
         self._spaces_by_short = spaces_by_short
+        if self._walk_memo is not None:
+            self._walk_memo.clear()
+        if self._neg_dir_memo is not None:
+            self._neg_dir_memo.clear()
+        if self._neg_file_memo is not None:
+            self._neg_file_memo.clear()
         self._refresh_unresolved_compose()
 
     def _refresh_unresolved_compose(self) -> None:
@@ -1516,8 +1549,9 @@ class SpaceRegistry:
         # Dedup map: norm_physical_key -> (rel_path, abs_path, entry_path, [qualified_spaces], size, mtime_ns, ctime_ns)
         dedup_map: Dict[str, List[Any]] = {}
 
-        for space_cfg in target_spaces:
-            self._walk_single_space(space_cfg, dedup_map)
+        with self.batch_walk_session():
+            for space_cfg in target_spaces:
+                self._walk_single_space(space_cfg, dedup_map)
 
         results: List[SpaceFileEntry] = []
         norm_pattern = pattern.replace("\\", "/").strip("/") if pattern else None
@@ -1554,6 +1588,17 @@ class SpaceRegistry:
         pos_children, neg_children = self._split_compose_children(
             space_cfg, visiting
         )
+        if self._walk_memo is not None and space_cfg.qualified_name in self._walk_memo:
+            cached_own = self._walk_memo[space_cfg.qualified_name]
+            self._merge_own_map_into_dedup(
+                {
+                    k: [v[0], v[1], v[2], list(v[3]), v[4], v[5], v[6]]
+                    for k, v in cached_own.items()
+                },
+                dedup_map,
+            )
+            return
+
         next_visiting = (*visiting, space_cfg.qualified_name)
 
         own_map: Dict[str, List[Any]] = {}
@@ -1674,6 +1719,19 @@ class SpaceRegistry:
             for phys_key in excluded_phys:
                 own_map.pop(phys_key, None)
 
+        if self._walk_memo is not None:
+            self._walk_memo[space_cfg.qualified_name] = {
+                k: [v[0], v[1], v[2], list(v[3]), v[4], v[5], v[6]]
+                for k, v in own_map.items()
+            }
+
+        self._merge_own_map_into_dedup(own_map, dedup_map)
+
+    @staticmethod
+    def _merge_own_map_into_dedup(
+        own_map: Dict[str, List[Any]],
+        dedup_map: Dict[str, List[Any]],
+    ) -> None:
         # Merge own_map into caller's dedup_map (U_own takes priority over U_compose on rel_path collision)
         rel_path_index: Dict[str, List[Any]] = {
             item[0]: item for item in dedup_map.values()
@@ -1722,28 +1780,48 @@ class SpaceRegistry:
             except OSError:
                 return
 
-        try:
-            with os.scandir(current_dir) as it:
-                dir_entries = list(it)
-        except OSError:
-            return
-
-        # Sort dir_entries by name for deterministic walk order
-        dir_entries.sort(key=lambda d: d.name)
-
-        for d_entry in dir_entries:
+        follow_sym = bool(space_cfg.follow_symlinks)
+        scandir_key = (os.path.normcase(str(current_dir)), follow_sym)
+        cached_entries = (
+            self._scandir_memo.get(scandir_key)
+            if self._scandir_memo is not None
+            else None
+        )
+        if cached_entries is None:
             try:
-                is_sym = d_entry.is_symlink()
-                if is_sym and not space_cfg.follow_symlinks:
+                with os.scandir(current_dir) as it:
+                    raw_entries = list(it)
+            except OSError:
+                return
+            raw_entries.sort(key=lambda d: d.name)
+            built_entries: List[Tuple[Path, bool, bool, bool, Optional[os.stat_result]]] = []
+            for d_entry in raw_entries:
+                try:
+                    is_sym = d_entry.is_symlink()
+                    if is_sym and not follow_sym:
+                        built_entries.append((Path(d_entry.path), True, False, False, None))
+                        continue
+                    is_d = d_entry.is_dir(follow_symlinks=follow_sym)
+                    is_f = False if is_d else d_entry.is_file(follow_symlinks=follow_sym)
+                    st_val = d_entry.stat(follow_symlinks=follow_sym) if is_f else None
+                    built_entries.append((Path(d_entry.path), is_sym, is_d, is_f, st_val))
+                except OSError:
+                    continue
+            cached_entries = built_entries
+            if self._scandir_memo is not None:
+                self._scandir_memo[scandir_key] = cached_entries
+
+        for child_path, is_sym, is_d, is_f, st_val in cached_entries:
+            try:
+                if is_sym and not follow_sym:
                     continue
 
-                child_path = Path(d_entry.path)
                 # Use deepest enclosing entry in this space for entry_rel calculation
                 effective_entry = self._select_deepest_entry(
                     child_path, entry_abs, all_space_entries
                 )
 
-                if d_entry.is_dir(follow_symlinks=space_cfg.follow_symlinks):
+                if is_d:
                     # Prune excluded directory subtree BEFORE descending
                     if space_cfg.is_dir_excluded_fast(
                         child_path, effective_entry, self._project_root
@@ -1758,17 +1836,16 @@ class SpaceRegistry:
                         visited_dirs_norm=visited_dirs_norm,
                         dedup_map=dedup_map,
                     )
-                elif d_entry.is_file(follow_symlinks=space_cfg.follow_symlinks):
+                elif is_f and st_val is not None:
                     if not space_cfg.is_file_matched_fast(
                         child_path, effective_entry, self._project_root
                     ):
                         continue
-                    st = d_entry.stat(follow_symlinks=space_cfg.follow_symlinks)
                     self._record_matched_file(
                         file_abs=child_path,
                         entry_abs=effective_entry,
                         space_cfg=space_cfg,
-                        st=st,
+                        st=st_val,
                         dedup_map=dedup_map,
                     )
             except OSError:
@@ -1811,8 +1888,8 @@ class SpaceRegistry:
         else:
             phys_key = os.path.normcase(os.path.abspath(str(file_abs)))
 
-        mtime_ns = int(st.st_mtime_ns)
-        ctime_ns = int(getattr(st, "st_ctime_ns", mtime_ns))
+        mtime_ns = max(0, int(st.st_mtime_ns))
+        ctime_ns = max(0, int(getattr(st, "st_ctime_ns", mtime_ns)))
         size = int(st.st_size)
 
         existing = dedup_map.get(phys_key)

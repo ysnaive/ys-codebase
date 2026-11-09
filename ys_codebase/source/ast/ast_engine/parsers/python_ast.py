@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 import sys
 import sysconfig
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 
 def _load_stdlib_ast() -> Any:
@@ -48,10 +48,28 @@ class PythonASTParser(BaseParser):
 
     def __init__(self) -> None:
         self._dialect = PythonDialect()
+        self._last_ast_cache: Optional[Tuple[str, int, int, str, Any, List[str]]] = None
 
     def can_parse(self, file_path: Union[str, Path]) -> bool:
         ext = Path(file_path).suffix.lower()
         return ext in self.SUPPORTED_EXTENSIONS
+
+    def _get_tree_and_lines(self, normalized_path: str, content: str) -> Optional[Tuple[Any, List[str]]]:
+        cached = self._last_ast_cache
+        if (
+            cached is not None
+            and cached[0] == normalized_path
+            and cached[1] == len(content)
+            and (cached[2] == id(content) or cached[3] == content)
+        ):
+            return cached[4], cached[5]
+        try:
+            tree = py_ast.parse(content, filename=normalized_path)
+        except Exception:
+            return None
+        lines = content.splitlines()
+        self._last_ast_cache = (normalized_path, len(content), id(content), content, tree, lines)
+        return tree, lines
 
     @staticmethod
     def _format_func_signature(node: Union[py_ast.FunctionDef, py_ast.AsyncFunctionDef], lines: List[str]) -> str:
@@ -92,19 +110,24 @@ class PythonASTParser(BaseParser):
         args_list = [a.arg for a in node.args.args]
         return f"{prefix} {node.name}({', '.join(args_list)})"
 
+    @staticmethod
+    def _unroll_expr_str(expr: Any) -> str:
+        if isinstance(expr, py_ast.Name):
+            return expr.id
+        if isinstance(expr, py_ast.Attribute):
+            left = PythonASTParser._unroll_expr_str(expr.value)
+            return f"{left}.{expr.attr}" if left else expr.attr
+        return ""
+
     def parse(self, file_path: str, content: str, space: str) -> List[UnifiedSymbol]:
         normalized_path = file_path.replace("\\", "/")
         if not content or not content.strip():
             return []
 
-        try:
-            tree = py_ast.parse(content, filename=normalized_path)
-        except SyntaxError:
+        parsed = self._get_tree_and_lines(normalized_path, content)
+        if parsed is None:
             return []
-        except Exception:
-            return []
-
-        lines = content.splitlines()
+        tree, lines = parsed
         symbols: List[UnifiedSymbol] = []
 
         def _visit_block(
@@ -131,12 +154,12 @@ class PythonASTParser(BaseParser):
                     )
                     base_types: List[str] = []
                     for b in node.bases:
-                        if isinstance(b, py_ast.Name):
-                            base_types.append(b.id)
-                        elif isinstance(b, py_ast.Attribute):
-                            base_types.append(b.attr)
+                        b_str = self._unroll_expr_str(b)
+                        if b_str:
+                            base_types.append(b_str)
 
                     members_list: List[MemberInfo] = []
+                    seen_member_keys = set()
                     field_types: Dict[str, str] = {}
                     for item in node.body:
                         if isinstance(item, (py_ast.FunctionDef, py_ast.AsyncFunctionDef)):
@@ -148,6 +171,8 @@ class PythonASTParser(BaseParser):
                                 or (isinstance(d, py_ast.Attribute) and d.attr in ("staticmethod", "classmethod"))
                                 for d in getattr(item, "decorator_list", [])
                             )
+                            m_ln = getattr(item, "lineno", start_ln)
+                            seen_member_keys.add(("method", item.name, m_ln))
                             members_list.append(
                                 MemberInfo(
                                     name=item.name,
@@ -155,27 +180,76 @@ class PythonASTParser(BaseParser):
                                     signature=m_sig,
                                     docstring=m_doc,
                                     visibility=m_vis,
-                                    line_number=getattr(item, "lineno", start_ln),
+                                    line_number=m_ln,
                                     is_static=m_static,
                                 )
                             )
+                            # Also extract self.<field> assignments inside methods
+                            for sub in py_ast.walk(item):
+                                if isinstance(sub, py_ast.AnnAssign) and isinstance(sub.target, py_ast.Attribute):
+                                    if isinstance(sub.target.value, py_ast.Name) and sub.target.value.id == "self":
+                                        f_name = sub.target.attr
+                                        f_ln = getattr(sub, "lineno", m_ln)
+                                        ann_str = self._unroll_expr_str(sub.annotation)
+                                        if ann_str:
+                                            field_types[f_name] = ann_str.split(".")[-1]
+                                        if ("field", f_name) not in seen_member_keys:
+                                            seen_member_keys.add(("field", f_name))
+                                            f_sig = lines[f_ln - 1].strip() if f_ln <= len(lines) else f_name
+                                            f_vis = self._dialect.extract_visibility(None, short_name=f_name, kind="field")
+                                            members_list.append(
+                                                MemberInfo(
+                                                    name=f_name,
+                                                    kind="field",
+                                                    signature=f_sig,
+                                                    docstring="",
+                                                    visibility=f_vis,
+                                                    line_number=f_ln,
+                                                )
+                                            )
+                                elif isinstance(sub, py_ast.Assign):
+                                    for tgt in sub.targets:
+                                        if (
+                                            isinstance(tgt, py_ast.Attribute)
+                                            and isinstance(tgt.value, py_ast.Name)
+                                            and tgt.value.id == "self"
+                                        ):
+                                            f_name = tgt.attr
+                                            f_ln = getattr(sub, "lineno", m_ln)
+                                            if ("field", f_name) not in seen_member_keys:
+                                                seen_member_keys.add(("field", f_name))
+                                                f_sig = lines[f_ln - 1].strip() if f_ln <= len(lines) else f_name
+                                                f_vis = self._dialect.extract_visibility(None, short_name=f_name, kind="field")
+                                                members_list.append(
+                                                    MemberInfo(
+                                                        name=f_name,
+                                                        kind="field",
+                                                        signature=f_sig,
+                                                        docstring="",
+                                                        visibility=f_vis,
+                                                        line_number=f_ln,
+                                                    )
+                                                )
                         elif isinstance(item, py_ast.AnnAssign) and isinstance(item.target, py_ast.Name):
                             f_name = item.target.id
                             f_ln = getattr(item, "lineno", start_ln)
                             f_sig = lines[f_ln - 1].strip() if f_ln <= len(lines) else f_name
                             f_vis = self._dialect.extract_visibility(None, short_name=f_name, kind="field")
-                            if isinstance(item.annotation, py_ast.Name):
-                                field_types[f_name] = item.annotation.id
-                            members_list.append(
-                                MemberInfo(
-                                    name=f_name,
-                                    kind="field",
-                                    signature=f_sig,
-                                    docstring="",
-                                    visibility=f_vis,
-                                    line_number=f_ln,
+                            ann_str = self._unroll_expr_str(item.annotation)
+                            if ann_str:
+                                field_types[f_name] = ann_str.split(".")[-1]
+                            if ("field", f_name) not in seen_member_keys:
+                                seen_member_keys.add(("field", f_name))
+                                members_list.append(
+                                    MemberInfo(
+                                        name=f_name,
+                                        kind="field",
+                                        signature=f_sig,
+                                        docstring="",
+                                        visibility=f_vis,
+                                        line_number=f_ln,
+                                    )
                                 )
-                            )
                         elif isinstance(item, py_ast.Assign):
                             for tgt in item.targets:
                                 if isinstance(tgt, py_ast.Name):
@@ -183,16 +257,18 @@ class PythonASTParser(BaseParser):
                                     f_ln = getattr(item, "lineno", start_ln)
                                     f_sig = lines[f_ln - 1].strip() if f_ln <= len(lines) else f_name
                                     f_vis = self._dialect.extract_visibility(None, short_name=f_name, kind="field")
-                                    members_list.append(
-                                        MemberInfo(
-                                            name=f_name,
-                                            kind="field",
-                                            signature=f_sig,
-                                            docstring="",
-                                            visibility=f_vis,
-                                            line_number=f_ln,
+                                    if ("field", f_name) not in seen_member_keys:
+                                        seen_member_keys.add(("field", f_name))
+                                        members_list.append(
+                                            MemberInfo(
+                                                name=f_name,
+                                                kind="field",
+                                                signature=f_sig,
+                                                docstring="",
+                                                visibility=f_vis,
+                                                line_number=f_ln,
+                                            )
                                         )
-                                    )
 
                     cls_vis = self._dialect.extract_visibility(None, short_name=cls_name, kind="class")
                     meta: Dict[str, Any] = {
@@ -256,6 +332,12 @@ class PythonASTParser(BaseParser):
                         or (isinstance(d, py_ast.Attribute) and d.attr in ("staticmethod", "classmethod"))
                         for d in getattr(node, "decorator_list", [])
                     )
+                    ret_type_str = ""
+                    if getattr(node, "returns", None) is not None:
+                        try:
+                            ret_type_str = py_ast.unparse(node.returns).strip()
+                        except Exception:
+                            ret_type_str = self._unroll_expr_str(node.returns)
                     fn_meta: Dict[str, Any] = {
                         "short_name": fn_name,
                         "parent_scope": scope_path[-1] if scope_path else "",
@@ -281,11 +363,13 @@ class PythonASTParser(BaseParser):
                             parent_id=parent_id,
                             children=(),
                             members=(),
+                            return_type=ret_type_str,
                             search_payload=f"{fqn} {fn_name} {doc} {sig}".strip(),
                             visibility=fn_vis,
                             metadata=fn_meta,
                         )
                     )
+                    _visit_block(node.body, fqn_parts, fn_id, kind_val)
 
         _visit_block(tree.body, [], None, None)
         return symbols
@@ -300,10 +384,10 @@ class PythonASTParser(BaseParser):
         normalized_path = file_path.replace("\\", "/")
         if not content or not content.strip():
             return []
-        try:
-            tree = py_ast.parse(content, filename=normalized_path)
-        except Exception:
+        parsed = self._get_tree_and_lines(normalized_path, content)
+        if parsed is None:
             return []
+        tree, _ = parsed
 
         target_symbols = (
             symbols if symbols is not None else self.parse(file_path=file_path, content=content, space=space)
@@ -321,16 +405,24 @@ class PythonASTParser(BaseParser):
                 callee_name = node.func.id
             elif isinstance(node.func, py_ast.Attribute):
                 callee_name = node.func.attr
-                if isinstance(node.func.value, py_ast.Name):
-                    prefix = "base" if node.func.value.id == "super" else node.func.value.id
+                attr_parts: List[str] = []
+                curr_val: Any = node.func.value
+                while isinstance(curr_val, py_ast.Attribute):
+                    attr_parts.insert(0, curr_val.attr)
+                    curr_val = curr_val.value
+                if isinstance(curr_val, py_ast.Name):
+                    root_id = "base" if curr_val.id == "super" else ("self" if curr_val.id == "this" else curr_val.id)
+                    attr_parts.insert(0, root_id)
                 elif (
-                    isinstance(node.func.value, py_ast.Call)
-                    and isinstance(node.func.value.func, py_ast.Name)
-                    and node.func.value.func.id == "super"
+                    isinstance(curr_val, py_ast.Call)
+                    and isinstance(curr_val.func, py_ast.Name)
+                    and curr_val.func.id == "super"
                 ):
-                    prefix = "base"
-                elif isinstance(node.func.value, py_ast.Attribute) and isinstance(node.func.value.value, py_ast.Name):
-                    prefix = f"{node.func.value.value.id}.{node.func.value.attr}"
+                    if attr_parts:
+                        attr_parts.insert(0, "self")
+                    else:
+                        attr_parts.insert(0, "base")
+                prefix = ".".join(attr_parts)
             if not callee_name:
                 continue
 
@@ -340,7 +432,8 @@ class PythonASTParser(BaseParser):
                 (
                     s
                     for s in sorted_target_symbols
-                    if s.line_number <= line_no <= s.end_line and s.kind in ("method", "function", "class")
+                    if s.line_number <= line_no <= s.end_line
+                    and s.kind in ("method", "function", "constructor", "class")
                 ),
                 None,
             )

@@ -89,7 +89,7 @@ class EmbeddingService:
         warnings.filterwarnings("ignore", category=FutureWarning, module=r"huggingface_hub.*")
 
     def _resolve_dimension_mock(self) -> int:
-        """Mock 模式下優先從 config.MODEL_SPECS 查表，再以模型規格或名稱解析維度"""
+        """從 config.MODEL_SPECS 查表或模型名稱靜態解析維度（零模型實例載入開銷）"""
         spec = MODEL_SPECS.get(self.model_name)
         if spec and isinstance(spec.get("dim"), int):
             self._dimension = int(spec["dim"])
@@ -312,6 +312,17 @@ class EmbeddingService:
             self._init_attempted = True
             self._init_model()
 
+    def check_availability(self, interactive: bool = True) -> bool:
+        """Explicitly check model availability with controllable guard prompt behavior."""
+        prev_suppress = self.suppress_guard_prompt
+        if not interactive:
+            self.suppress_guard_prompt = True
+        try:
+            return self.is_available
+        finally:
+            if not interactive:
+                self.suppress_guard_prompt = prev_suppress
+
     @property
     def is_available(self) -> bool:
         """回傳當前環境向量推論服務是否就緒可用 (按需惰性探測加載，若快取權重被刪除則重置狀態)"""
@@ -454,15 +465,13 @@ class VectorIndex:
         dim: Optional[int] = None,
     ) -> None:
         """建置或替換當前向量索引"""
-        import numpy as np
-
         self.doc_ids = list(doc_ids)
-        self.vectors = vectors.astype(np.float32)
+        self.vectors = vectors.astype("float32") if hasattr(vectors, "astype") else vectors
         if model_name:
             self.model_name = model_name
         if dim:
             self.dim = dim
-        elif self.vectors.ndim > 1:
+        elif self.vectors is not None and self.vectors.ndim > 1:
             self.dim = self.vectors.shape[1]
 
     def is_compatible_with(self, model_name: Optional[str], dim: Optional[int] = None) -> bool:
@@ -518,11 +527,19 @@ class VectorIndex:
 
         self.build(merged_doc_ids, merged_vectors, model_name=self.model_name, dim=self.dim)
 
-    def search(self, query_vec: np.ndarray, top_k: int = 50) -> List[Tuple[str, float]]:
-        """執行頂點餘弦相似度 Top-K 檢索。"""
+    def search(
+        self,
+        query_vec: np.ndarray,
+        top_k: int = 50,
+        allowed_doc_ids: Optional[Set[str]] = None,
+    ) -> List[Tuple[str, float]]:
+        """執行頂點餘弦相似度 Top-K 檢索（支援候選 doc_id 遮罩預過濾）。"""
         import numpy as np
 
         if self.vectors is None or len(self.doc_ids) == 0 or self.vectors.ndim != 2:
+            return []
+
+        if allowed_doc_ids is not None and len(allowed_doc_ids) == 0:
             return []
 
         if query_vec.ndim == 1:
@@ -534,12 +551,27 @@ class VectorIndex:
             return []
 
         sims = np.dot(self.vectors, query_vec.T).reshape(-1)
-        k = min(top_k, len(self.doc_ids))
+        total_docs = len(self.doc_ids)
+        if allowed_doc_ids is not None:
+            order = np.argsort(-sims)
+            out: List[Tuple[str, float]] = []
+            for idx in order:
+                did = self.doc_ids[idx]
+                if did in allowed_doc_ids:
+                    out.append((did, float(sims[idx])))
+                    if len(out) >= top_k:
+                        break
+            return out
+
+        k = min(top_k, total_docs)
         if k <= 0:
             return []
 
-        top_indices = np.argpartition(-sims, k - 1)[:k]
-        top_sorted = top_indices[np.argsort(-sims[top_indices])]
+        if k >= total_docs:
+            top_sorted = np.argsort(-sims)
+        else:
+            top_indices = np.argpartition(-sims, k - 1)[:k]
+            top_sorted = top_indices[np.argsort(-sims[top_indices])]
 
         results: List[Tuple[str, float]] = []
         for idx in top_sorted:
@@ -559,7 +591,7 @@ class VectorIndex:
 
     @classmethod
     def load_binary(cls, cache_file: Union[str, Path]) -> "VectorIndex":
-        """使用 io_utils 還原向量索引與元資料"""
+        """使用 io_utils 還原向量索引與元資料（含空向量陣列之 model_name 與 dim 還原）"""
         idx = cls()
         data = load_gzip_pickle(cache_file, raise_on_missing=False)
         if not isinstance(data, dict):
@@ -568,6 +600,11 @@ class VectorIndex:
         vectors = data.get("vectors")
         model_name = data.get("model_name")
         dim = data.get("dim")
-        if doc_ids and vectors is not None:
+        if vectors is not None:
             idx.build(doc_ids, vectors, model_name=model_name, dim=dim)
+        else:
+            if model_name:
+                idx.model_name = model_name
+            if dim:
+                idx.dim = dim
         return idx

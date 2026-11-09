@@ -4,6 +4,7 @@ Delegates all language-specific rules to `get_dialect(self.language_name)` and u
 `GrammarProvisioner` for stderr-isolated grammar loading.
 """
 
+import dataclasses
 from pathlib import Path
 import re
 import threading
@@ -413,7 +414,7 @@ class TreeSitterDriver(BaseParser):
         self._query_directives: Dict[str, Dict[str, Any]] = {}
         self._processors: Tuple[SymbolProcessor, ...] = tuple(processors) if processors else ()
         self._cache_lock = threading.RLock()
-        self._last_parse_cache: Optional[Tuple[str, int, str, bytes, List[Tuple[int, Dict[str, List[Any]]]]]] = None
+        self._last_parse_cache: Optional[Any] = None
         self._init_driver()
 
     @staticmethod
@@ -431,7 +432,6 @@ class TreeSitterDriver(BaseParser):
         ):
             cap_name = m.group(1).strip()
             raw_pat = m.group(2)
-            # Unescape double-escaped backslashes common in S-expression strings
             unescaped_pat = raw_pat.replace("\\\\", "\\")
             try:
                 compiled_rx = re.compile(unescaped_pat)
@@ -484,7 +484,6 @@ class TreeSitterDriver(BaseParser):
         for dn in reversed(preceding):
             dn_start = int(dn.start_point[0])
             dn_end = int(dn.end_point[0])
-            # In Tree-sitter, single-line comments with trailing `\n` have `end_point = (dn_start + 1, 0)`
             effective_end_line = (
                 dn_end - 1
                 if (dn_end > dn_start and int(dn.end_point[1]) == 0)
@@ -667,16 +666,23 @@ class TreeSitterDriver(BaseParser):
         seen_exprs: Set[str] = set()
         try:
             for child in def_node.children:
-                if child.type in ("base_list", "base_class_clause", "class_heritage", "argument_list"):
+                if child.type in (
+                    "base_list",
+                    "base_class_clause",
+                    "class_heritage",
+                    "extends_type_clause",
+                    "extends_clause",
+                    "argument_list",
+                ):
                     raw_text = child.text.decode("utf-8", errors="replace")
-                    if child.type == "class_heritage":
-                        # TS/JS: `extends Base implements IFoo, IBar`
+                    if child.type in ("class_heritage", "extends_type_clause", "extends_clause"):
                         no_gen = re.sub(r"<[^>]+>", "", raw_text)
-                        for m_ext in re.finditer(r"\bextends\s+([^\s,{]+)", no_gen):
-                            tok = m_ext.group(1).strip()
-                            if tok and tok not in seen_exprs:
-                                seen_exprs.add(tok)
-                                relations.append((tok, "inherits"))
+                        for m_ext in re.finditer(r"\bextends\s+([^\s,{]+(?:\s*,\s*[^\s,{]+)*)", no_gen):
+                            for part in m_ext.group(1).split(","):
+                                tok = part.strip()
+                                if tok and re.match(r"^[A-Za-z_][A-Za-z0-9_.:]*$", tok) and tok not in seen_exprs:
+                                    seen_exprs.add(tok)
+                                    relations.append((tok, "inherits"))
                         for m_imp in re.finditer(r"\bimplements\s+([^\{]+)", no_gen):
                             for part in m_imp.group(1).split(","):
                                 tok = part.strip()
@@ -849,17 +855,32 @@ class TreeSitterDriver(BaseParser):
                                 end_col=0,
                             )
             if "signature" not in parts_spans and def_node is not None:
-                first_ln_len = nl if nl != -1 else len(raw_b)
-                sig_trim_len = len(raw_b[:first_ln_len].rstrip(b" \t\r\n:{"))
-                if sig_trim_len > 0:
+                if "parameters" in parts_spans or "return_type" in parts_spans:
+                    sig_end_sp = parts_spans.get("return_type") or parts_spans["parameters"]
+                    if "parameters" in parts_spans and "return_type" in parts_spans:
+                        sig_end_sp = parts_spans["parameters"].union(parts_spans["return_type"])
                     parts_spans["signature"] = Span(
                         start_byte=int(def_node.start_byte),
-                        end_byte=int(def_node.start_byte) + sig_trim_len,
+                        end_byte=max(int(def_node.start_byte), sig_end_sp.end_byte),
                         start_line=int(def_node.start_point[0]) + 1,
                         start_col=int(def_node.start_point[1]),
-                        end_line=int(def_node.start_point[0]) + 1,
-                        end_col=int(def_node.start_point[1]) + sig_trim_len,
+                        end_line=max(int(def_node.start_point[0]) + 1, sig_end_sp.end_line),
+                        end_col=sig_end_sp.end_col,
                     )
+                else:
+                    first_ln_len = nl if nl != -1 else len(raw_b)
+                    sig_slice = raw_b[:first_ln_len].rstrip(b" \t\r\n:{;")
+                    sig_trim_len = len(sig_slice)
+                    if sig_trim_len > 0:
+                        sig_char_len = len(sig_slice.decode("utf-8", errors="replace"))
+                        parts_spans["signature"] = Span(
+                            start_byte=int(def_node.start_byte),
+                            end_byte=int(def_node.start_byte) + sig_trim_len,
+                            start_line=int(def_node.start_point[0]) + 1,
+                            start_col=int(def_node.start_point[1]),
+                            end_line=int(def_node.start_point[0]) + 1,
+                            end_col=int(def_node.start_point[1]) + sig_char_len,
+                        )
 
             captured_facets: Dict[str, Any] = {}
             for cap_k, cap_nodes in captures.items():
@@ -923,7 +944,6 @@ class TreeSitterDriver(BaseParser):
         scope_sep = self.dialect.scope_separator
         stack: List[Dict[str, Any]] = []
 
-        # Track same-line overload collisions so same-line overloads receive distinct IDs
         line_name_counts: Dict[Tuple[int, str, str], int] = {}
         for item in dedup_items:
             norm_kind = "method" if item["kind"] == "function" else item["kind"]
@@ -938,8 +958,6 @@ class TreeSitterDriver(BaseParser):
 
             if stack:
                 parent = stack[-1]
-                # If a field is defined inside a method/constructor (e.g., `self.x = ...` in `__init__`),
-                # attach it to the enclosing class/struct/interface container if one exists on the stack.
                 if item["kind"] in ("field", "property") and parent["kind"] in ("method", "function", "constructor"):
                     for ancestor in reversed(stack[:-1]):
                         if ancestor["kind"] in ("class", "struct", "interface"):
@@ -948,10 +966,50 @@ class TreeSitterDriver(BaseParser):
                 item["parent_id"] = parent["id"]
                 item["parent_kind"] = parent["kind"]
                 item["scope_path"] = parent["scope_path"] + [parent["short_name"]]
-                item["fqn"] = scope_sep.join(item["scope_path"] + [item["short_name"]])
                 if item["kind"] == "function" and parent["kind"] in ("class", "struct", "interface"):
                     item["kind"] = "method"
-                if not any(
+            else:
+                item["parent_id"] = None
+                item["parent_kind"] = None
+                item["scope_path"] = []
+
+            orig_short_name = item["short_name"]
+            short_name_val, parent_scope_val, resolved_kind = self.dialect.resolve_out_of_line_scope(
+                name=orig_short_name,
+                parent_scope=item["scope_path"][-1] if item["scope_path"] else "",
+                kind=item["kind"],
+            )
+            if short_name_val != orig_short_name and parent_scope_val:
+                extra_scopes = [p for p in parent_scope_val.split(scope_sep) if p]
+                for es in extra_scopes:
+                    if not item["scope_path"] or item["scope_path"][-1] != es:
+                        if es not in item["scope_path"]:
+                            item["scope_path"].append(es)
+            item["short_name"] = short_name_val
+            item["kind"] = resolved_kind
+            item["fqn"] = scope_sep.join(item["scope_path"] + [item["short_name"]]) if item["scope_path"] else item["short_name"]
+            item["_resolved_out_of_line"] = (
+                short_name_val,
+                item["scope_path"][-1] if item["scope_path"] else parent_scope_val,
+                resolved_kind,
+            )
+
+            if stack:
+                if item["kind"] in ("field", "property"):
+                    existing_field = next(
+                        (
+                            c
+                            for c in parent["children_items"]
+                            if c["kind"] == item["kind"] and c["short_name"] == item["short_name"]
+                        ),
+                        None,
+                    )
+                    if existing_field is not None:
+                        if not existing_field.get("return_type") and item.get("return_type"):
+                            existing_field["return_type"] = item["return_type"]
+                    else:
+                        parent["children_items"].append(item)
+                elif not any(
                     c["kind"] == item["kind"]
                     and c["short_name"] == item["short_name"]
                     and c.get("signature") == item.get("signature")
@@ -959,20 +1017,6 @@ class TreeSitterDriver(BaseParser):
                     for c in parent["children_items"]
                 ):
                     parent["children_items"].append(item)
-            else:
-                item["parent_id"] = None
-                item["parent_kind"] = None
-                item["scope_path"] = []
-                item["fqn"] = item["short_name"]
-
-            resolved_out_of_line = self.dialect.resolve_out_of_line_scope(
-                name=item["short_name"],
-                parent_scope=item["scope_path"][-1] if item["scope_path"] else "",
-                kind=item["kind"],
-            )
-            item["_resolved_out_of_line"] = resolved_out_of_line
-            _, _, resolved_kind = resolved_out_of_line
-            item["kind"] = resolved_kind
 
             collision_key = (item["start_line"], "method" if item["kind"] == "function" else item["kind"], item["short_name"])
             sig_hint = item["signature"] if line_name_counts.get(collision_key, 0) > 1 else ""
@@ -1106,23 +1150,27 @@ class TreeSitterDriver(BaseParser):
             )
         return symbols
 
-    def _get_bytes_and_matches(
+    def _get_parsed_unit(
         self,
         normalized_path: str,
         content: str,
-    ) -> Optional[Tuple[bytes, List[Any]]]:
-        """Parse `content` across all compiled peer `.scm` queries or reuse thread-safe `_last_parse_cache`."""
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Parse `content` once across all compiled `.scm` queries and extract reusable single-pass
+        `raw_items`, `merged_items`, and `dialect_imports` cached by `(normalized_path, len(content), content)`.
+        """
         with self._cache_lock:
             cached = self._last_parse_cache
-            if (
-                cached is not None
-                and cached[0] == normalized_path
-                and cached[1] == len(content)
-                and cached[2] == content
+            if isinstance(cached, dict) and (
+                cached.get("path") == normalized_path
+                and cached.get("len") == len(content)
+                and (cached.get("content_id") == id(content) or cached.get("content") == content)
             ):
-                return cached[3], cached[4]
+                return cached
             try:
                 content_bytes = content.encode("utf-8", errors="replace")
+                c_hash = compute_content_hash(content_bytes)
+                lines = content.splitlines()
                 tree = self._parser.parse(content_bytes)
                 all_matches: List[Any] = []
                 active_queries = self._queries if self._queries else (
@@ -1132,11 +1180,53 @@ class TreeSitterDriver(BaseParser):
                     cursor = tree_sitter.QueryCursor(q_obj)
                     for pat_idx, cap_dict in cursor.matches(tree.root_node):
                         all_matches.append((prov_id, pat_idx, cap_dict))
+                raw_items = self._extract_raw_definition_items(all_matches, lines)
+                merged_items = self._commutatively_merge_raw_items(raw_items) if raw_items else []
+                dialect_imports = self.dialect.extract_imports(content, file_path=normalized_path)
             except Exception as exc:
                 log_warn(f"TreeSitterDriver: parse error on '{normalized_path}': {exc}", stream="stderr")
                 return None
-            self._last_parse_cache = (normalized_path, len(content), content, content_bytes, all_matches)
-            return content_bytes, all_matches
+
+            unit: Dict[str, Any] = {
+                "path": normalized_path,
+                "len": len(content),
+                "content_id": id(content),
+                "content": content,
+                "c_hash": c_hash,
+                "content_bytes": content_bytes,
+                "lines": lines,
+                "matches": all_matches,
+                "raw_items": raw_items,
+                "merged_items": merged_items,
+                "dialect_imports": dialect_imports,
+                "file_graph_by_space": {},
+                "symbols_by_space": {},
+            }
+            self._last_parse_cache = unit
+            return unit
+
+    def _get_bytes_and_matches(
+        self,
+        normalized_path: str,
+        content: str,
+    ) -> Optional[Tuple[bytes, List[Any]]]:
+        """Parse `content` across all compiled peer `.scm` queries or reuse thread-safe `_last_parse_cache`."""
+        unit = self._get_parsed_unit(normalized_path, content)
+        if unit is None:
+            return None
+        return unit["content_bytes"], unit["matches"]
+
+    @staticmethod
+    def _clone_merged_items(merged_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        cloned: List[Dict[str, Any]] = []
+        for it in merged_items:
+            c = dict(it)
+            c["kinds"] = set(it.get("kinds") or {it["kind"]})
+            c["parts"] = dict(it.get("parts") or {})
+            c["facets"] = dict(it.get("facets") or {})
+            c["provenance"] = list(it.get("provenance") or [])
+            cloned.append(c)
+        return cloned
 
     @staticmethod
     def _select_primary_kind(kinds: Set[str]) -> str:
@@ -1222,13 +1312,17 @@ class TreeSitterDriver(BaseParser):
             for fk, fv in item_facets.items():
                 if fk not in ex_facets or not ex_facets[fk]:
                     ex_facets[fk] = fv
+                elif isinstance(ex_facets[fk], Mapping) and isinstance(fv, Mapping):
+                    combined_map = dict(ex_facets[fk])
+                    for mk, mv in fv.items():
+                        if mk not in combined_map or str(mv) > str(combined_map[mk]):
+                            combined_map[mk] = mv
+                    ex_facets[fk] = combined_map
                 elif isinstance(ex_facets[fk], (set, frozenset, list, tuple)) and isinstance(fv, (set, frozenset, list, tuple)):
                     ex_facets[fk] = tuple(sorted({str(x) for x in (*ex_facets[fk], *fv)}))
                 elif str(fv) > str(ex_facets[fk]):
-                    # Deterministic tie-breaker for scalar strings
                     ex_facets[fk] = fv
 
-            # Deterministic longest non-empty signature / docstring / return_type selection
             for text_field in ("signature", "docstring", "return_type"):
                 cand_val = str(item.get(text_field) or "")
                 curr_val = str(existing.get(text_field) or "")
@@ -1237,7 +1331,6 @@ class TreeSitterDriver(BaseParser):
 
             existing["is_static"] = bool(existing.get("is_static") or item.get("is_static"))
 
-            # Prefer the wider CST node for base_types / modifier extraction
             ex_node = existing.get("node")
             cand_node = item.get("node")
             if cand_node is not None and (
@@ -1259,27 +1352,42 @@ class TreeSitterDriver(BaseParser):
         if not content or not content.strip():
             return []
 
-        lines = content.splitlines()
         if self._parser is None or self._query is None:
             if self._language is None and self.config.mode == "tree_sitter" and self.config.grammar:
                 grammar_str = self.config.grammar
                 mod_name = grammar_str.split(":", 1)[0] if ":" in grammar_str else grammar_str
                 pkg_name = DEFAULT_GRAMMAR_PACKAGES.get(mod_name) or mod_name.replace("_", "-")
                 GrammarProvisioner._emit_warning(pkg_name)
-            return self.dialect.fallback_symbols(normalized_path, lines, space)
+            if self.language_name == "python":
+                from .python_ast import PythonASTParser
 
-        parsed_res = self._get_bytes_and_matches(normalized_path, content)
-        if parsed_res is None:
+                return PythonASTParser().parse(normalized_path, content, space)
+            if self.language_name == "markdown":
+                from .markdown import MarkdownParser
+
+                return MarkdownParser().parse(normalized_path, content, space)
+            return self.dialect.fallback_symbols(normalized_path, content.splitlines(), space)
+
+        unit = self._get_parsed_unit(normalized_path, content)
+        if unit is None:
             return []
-        content_bytes, matches = parsed_res
 
-        raw_items = self._extract_raw_definition_items(matches, lines)
-        if not raw_items:
-            return self.dialect.fallback_symbols(normalized_path, lines, space)
+        with self._cache_lock:
+            cached_syms = unit["symbols_by_space"].get(space)
+            if cached_syms is not None:
+                return [dataclasses.replace(s, metadata=dict(s.metadata)) for s in cached_syms]
 
-        merged_items = self._commutatively_merge_raw_items(raw_items)
-        dedup_items, scope_sep = self._build_symbol_hierarchy(merged_items, normalized_path, space)
-        return self._materialize_unified_symbols(dedup_items, normalized_path, scope_sep, source_bytes=content_bytes)
+        if not unit["raw_items"]:
+            return self.dialect.fallback_symbols(normalized_path, unit["lines"], space)
+
+        merged_copy = self._clone_merged_items(unit["merged_items"])
+        dedup_items, scope_sep = self._build_symbol_hierarchy(merged_copy, normalized_path, space)
+        symbols = self._materialize_unified_symbols(
+            dedup_items, normalized_path, scope_sep, source_bytes=unit["content_bytes"]
+        )
+        with self._cache_lock:
+            unit["symbols_by_space"][space] = symbols
+        return [dataclasses.replace(s, metadata=dict(s.metadata)) for s in symbols]
 
     def extract_call_sites(
         self,
@@ -1297,12 +1405,16 @@ class TreeSitterDriver(BaseParser):
             return custom_sites
 
         if self._parser is None or self._query is None:
+            if self.language_name == "python":
+                from .python_ast import PythonASTParser
+
+                return PythonASTParser().extract_call_sites(normalized_path, content, space, symbols=symbols)
             return []
 
-        parsed_res = self._get_bytes_and_matches(normalized_path, content)
-        if parsed_res is None:
+        unit = self._get_parsed_unit(normalized_path, content)
+        if unit is None:
             return []
-        content_bytes, matches = parsed_res
+        content_bytes, matches = unit["content_bytes"], unit["matches"]
 
         target_symbols = (
             symbols if symbols is not None else self.parse(file_path=file_path, content=content, space=space)
@@ -1376,6 +1488,15 @@ class TreeSitterDriver(BaseParser):
     def extract_imports(self, file_path: str, content: str) -> Dict[str, str]:
         if not content:
             return {}
+        normalized_path = file_path.replace("\\", "/")
+        with self._cache_lock:
+            cached = self._last_parse_cache
+            if isinstance(cached, dict) and (
+                cached.get("path") == normalized_path
+                and cached.get("len") == len(content)
+                and (cached.get("content_id") == id(content) or cached.get("content") == content)
+            ):
+                return dict(cached["dialect_imports"])
         return self.dialect.extract_imports(content, file_path=file_path)
 
     def _build_recursive_symbol_nodes(
@@ -1388,8 +1509,10 @@ class TreeSitterDriver(BaseParser):
         scope_sep = self.dialect.scope_separator
         stack: List[Dict[str, Any]] = []
         root_items: List[Dict[str, Any]] = []
+        active_items: List[Dict[str, Any]] = []
         type_container_kinds = {"class", "struct", "interface"}
         callable_kinds = {"method", "function", "constructor"}
+        field_like_kinds = {"field", "property", "variable"}
 
         for item in merged_items:
             while stack and not (
@@ -1399,62 +1522,99 @@ class TreeSitterDriver(BaseParser):
 
             item_kinds_set: Set[str] = set(item.get("kinds") or {item["kind"]})
             item["kinds"] = item_kinds_set
+            parent_ref: Optional[Dict[str, Any]] = None
             if stack:
-                parent = stack[-1]
-                parent_kinds_set: Set[str] = set(parent.get("kinds") or {parent["kind"]})
+                parent_ref = stack[-1]
+                parent_kinds_set: Set[str] = set(parent_ref.get("kinds") or {parent_ref["kind"]})
                 if (item_kinds_set & {"field", "property"}) and (parent_kinds_set & callable_kinds):
                     for ancestor in reversed(stack[:-1]):
                         anc_kinds = set(ancestor.get("kinds") or {ancestor["kind"]})
                         if anc_kinds & type_container_kinds:
-                            parent = ancestor
+                            parent_ref = ancestor
                             parent_kinds_set = anc_kinds
                             break
                 parent_primary_kind = next(
                     (k for k in ("interface", "class", "struct") if k in parent_kinds_set),
-                    parent["kind"],
+                    parent_ref["kind"],
                 )
                 item["parent_kind"] = parent_primary_kind
-                item["scope_path"] = list(parent["scope_path"]) + [parent["short_name"]]
+                item["scope_path"] = list(parent_ref["scope_path"]) + [parent_ref["short_name"]]
                 if "function" in item["kinds"] and (parent_kinds_set & type_container_kinds):
                     item["kinds"].add("method")
                     item["kind"] = self._select_primary_kind(item["kinds"])
-                parent["children_items"].append(item)
             else:
                 item["parent_kind"] = None
                 item["scope_path"] = []
-                root_items.append(item)
 
+            orig_short_name = item["short_name"]
             short_name_val, parent_scope_val, resolved_kind = self.dialect.resolve_out_of_line_scope(
-                name=item["short_name"],
+                name=orig_short_name,
                 parent_scope=item["scope_path"][-1] if item["scope_path"] else "",
                 kind=item["kind"],
             )
             item["short_name"] = short_name_val
-            if parent_scope_val and not item["scope_path"]:
-                item["scope_path"] = [p for p in parent_scope_val.split(scope_sep) if p]
+            if short_name_val != orig_short_name and parent_scope_val:
+                extra_scopes = [p for p in parent_scope_val.split(scope_sep) if p]
+                for es in extra_scopes:
+                    if not item["scope_path"] or item["scope_path"][-1] != es:
+                        if es not in item["scope_path"]:
+                            item["scope_path"].append(es)
             item["kinds"].add(resolved_kind)
             item["kind"] = self._select_primary_kind(item["kinds"])
             item["fqn"] = scope_sep.join(item["scope_path"] + [item["short_name"]])
             item["children_items"] = []
+
+            if parent_ref is not None:
+                if (item["kinds"] & field_like_kinds) and not (item["kinds"] & callable_kinds):
+                    existing_child = next(
+                        (
+                            c
+                            for c in parent_ref["children_items"]
+                            if c["short_name"] == item["short_name"]
+                            and (set(c.get("kinds") or {c["kind"]}) & field_like_kinds)
+                        ),
+                        None,
+                    )
+                    if existing_child is not None:
+                        if not existing_child.get("return_type") and item.get("return_type"):
+                            existing_child["return_type"] = item["return_type"]
+                        continue
+                parent_ref["children_items"].append(item)
+            else:
+                root_items.append(item)
+
+            active_items.append(item)
             stack.append(item)
 
         fqn_counts: Dict[str, int] = {}
-        for item in merged_items:
+        for item in active_items:
             fqn_counts[item["fqn"]] = fqn_counts.get(item["fqn"], 0) + 1
 
-        for item in merged_items:
+        used_ids: Set[str] = set()
+        for item in active_items:
             overload_suffix = ""
             if fqn_counts.get(item["fqn"], 0) > 1:
-                param_sp: Optional[Span] = item["parts"].get("parameters")
-                if param_sp is not None:
-                    overload_suffix = self._extract_overload_param_suffix(param_sp.slice_text(content_bytes))
+                if item["kinds"] & callable_kinds:
+                    param_sp: Optional[Span] = item["parts"].get("parameters")
+                    if param_sp is not None:
+                        overload_suffix = self._extract_overload_param_suffix(param_sp.slice_text(content_bytes))
+                    else:
+                        overload_suffix = self._extract_overload_param_suffix(str(item.get("signature") or ""))
                 else:
-                    overload_suffix = self._extract_overload_param_suffix(str(item.get("signature") or ""))
-            item["canonical_id"] = SymbolNode.compute_canonical_id(
+                    overload_suffix = f"L{item['start_line']}"
+            cand_id = SymbolNode.compute_canonical_id(
                 file_path=normalized_path,
                 fqn=item["fqn"],
                 overload_suffix=overload_suffix,
             )
+            if cand_id in used_ids:
+                cand_id = SymbolNode.compute_canonical_id(
+                    file_path=normalized_path,
+                    fqn=item["fqn"],
+                    overload_suffix=f"{overload_suffix}_L{item['start_line']}" if overload_suffix else f"L{item['start_line']}",
+                )
+            used_ids.add(cand_id)
+            item["canonical_id"] = cand_id
 
         def _to_symbol_node(it: Dict[str, Any]) -> SymbolNode:
             child_nodes = tuple(_to_symbol_node(c) for c in it["children_items"])
@@ -1511,7 +1671,7 @@ class TreeSitterDriver(BaseParser):
             )
 
         root_nodes = tuple(_to_symbol_node(r) for r in root_items)
-        return root_nodes, merged_items
+        return root_nodes, active_items
 
     @staticmethod
     def _extract_call_arg_count(site_node: Any, target_node: Any, content_bytes: bytes) -> Optional[int]:
@@ -1556,6 +1716,7 @@ class TreeSitterDriver(BaseParser):
         normalized_path: str,
         content: str,
         content_bytes: bytes,
+        dialect_imports: Optional[Dict[str, str]] = None,
     ) -> Tuple[RelationEdge, ...]:
         """Extract `RelationEdge` instances (imports, inherits, implements, calls, references, documents) in a single pass."""
         edges: List[RelationEdge] = []
@@ -1563,7 +1724,6 @@ class TreeSitterDriver(BaseParser):
         file_root_id = f"{normalized_path}::<module>"
         default_prov = (ProvenanceStep(provider_id=f"ast:{self.language_name}/default.scm", action="extract", rule_or_hook="@edge"),)
 
-        # Sort items by narrowest byte range to find the tightest enclosing symbol
         enclosing_candidates = sorted(
             merged_items,
             key=lambda x: (x["end_byte"] - x["start_byte"], x["start_byte"]),
@@ -1594,7 +1754,8 @@ class TreeSitterDriver(BaseParser):
                         )
 
         # 2. Import edges (dialect + query captures)
-        dialect_imports = self.dialect.extract_imports(content, file_path=normalized_path)
+        if dialect_imports is None:
+            dialect_imports = self.dialect.extract_imports(content, file_path=normalized_path)
         for alias, target_mod in dialect_imports.items():
             alias_str = str(alias).strip()
             target_str = str(target_mod or alias).strip()
@@ -1629,7 +1790,6 @@ class TreeSitterDriver(BaseParser):
                 _, captures = match_elem
                 prov_id = f"ast:{self.language_name}/default.scm"
 
-            # Check @call.name, @reference.<kind>, @edge.<kind>
             edge_kind_matched: Optional[str] = None
             rule_tag = ""
             target_node: Optional[Any] = None
@@ -1731,7 +1891,7 @@ class TreeSitterDriver(BaseParser):
                 if active_fence is not None:
                     continue
 
-                ln_span = span_from_lines(idx_ln, idx_ln, line_offsets, total_bytes)
+                ln_span = span_from_lines(idx_ln, idx_ln, line_offsets, total_bytes, content_bytes=content_bytes)
                 src_id = _find_enclosing_id(ln_span.start_byte)
                 if src_id == file_root_id and merged_items:
                     preceding_headings = [
@@ -1803,21 +1963,52 @@ class TreeSitterDriver(BaseParser):
             )
 
         if self._parser is None or (self._query is None and not self._queries):
+            if self.language_name == "python":
+                from .python_ast import PythonASTParser
+
+                fg = PythonASTParser().extract_file_graph(file_path=normalized_path, content=content, space=space)
+                for proc in self._processors:
+                    try:
+                        fg = proc.refine_file_graph(fg, content_bytes)
+                    except Exception as exc:
+                        log_warn(
+                            f"TreeSitterDriver: SymbolProcessor '{getattr(proc, 'provider_id', proc)}' failed on '{normalized_path}': {exc}",
+                            stream="stderr",
+                        )
+                return fg
+            if self.language_name == "markdown":
+                from .markdown import MarkdownParser
+
+                fg = MarkdownParser().extract_file_graph(file_path=normalized_path, content=content, space=space)
+                for proc in self._processors:
+                    try:
+                        fg = proc.refine_file_graph(fg, content_bytes)
+                    except Exception as exc:
+                        log_warn(
+                            f"TreeSitterDriver: SymbolProcessor '{getattr(proc, 'provider_id', proc)}' failed on '{normalized_path}': {exc}",
+                            stream="stderr",
+                        )
+                return fg
             return super().extract_file_graph(file_path=normalized_path, content=content, space=space)
 
-        parsed_res = self._get_bytes_and_matches(normalized_path, content)
-        if parsed_res is None:
+        unit = self._get_parsed_unit(normalized_path, content)
+        if unit is None:
             return FileSymbolGraph(
                 file_path=normalized_path,
                 content_hash=c_hash,
                 language=self.language_name,
             )
-        content_bytes, matches = parsed_res
-        lines = content.splitlines()
-        raw_items = self._extract_raw_definition_items(matches, lines)
-        merged_items = self._commutatively_merge_raw_items(raw_items)
+
+        with self._cache_lock:
+            cached_fg = unit["file_graph_by_space"].get(space)
+            if cached_fg is not None:
+                return cached_fg
+
+        content_bytes = unit["content_bytes"]
+        matches = unit["matches"]
+        merged_copy = self._clone_merged_items(unit["merged_items"])
         root_nodes, enriched_items = self._build_recursive_symbol_nodes(
-            merged_items=merged_items,
+            merged_items=merged_copy,
             normalized_path=normalized_path,
             content_bytes=content_bytes,
         )
@@ -1827,10 +2018,11 @@ class TreeSitterDriver(BaseParser):
             normalized_path=normalized_path,
             content=content,
             content_bytes=content_bytes,
+            dialect_imports=unit["dialect_imports"],
         )
         graph = FileSymbolGraph(
             file_path=normalized_path,
-            content_hash=c_hash,
+            content_hash=unit["c_hash"],
             language=self.language_name,
             root_nodes=root_nodes,
             outgoing_edges=edges,
@@ -1843,4 +2035,6 @@ class TreeSitterDriver(BaseParser):
                     f"TreeSitterDriver: SymbolProcessor '{getattr(proc, 'provider_id', proc)}' failed on '{normalized_path}': {exc}",
                     stream="stderr",
                 )
+        with self._cache_lock:
+            unit["file_graph_by_space"][space] = graph
         return graph

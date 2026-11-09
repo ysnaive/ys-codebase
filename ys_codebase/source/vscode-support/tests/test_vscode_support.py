@@ -945,5 +945,76 @@ class TestVSCodeSupport(YSCBTestCase):
         self.mark_passed()
 
 
+    def test_workspace_exclude_patterns_hook_dedup_and_mirror_zip_schema_bundle(self) -> None:
+        """驗證 `_resolve_workspace_exclude_patterns` 納入 `core.space` 轉譯規則、`hook.core.py` 同狀態去重與 `$ref` 描述保留。"""
+        from core.context import bind_runtime_context
+
+        resolved = self.projector._resolve_workspace_exclude_patterns(self.project_root, include_all=False)
+        self.assertIn("**/__pycache__/**", resolved)
+        self.assertIn("**/.pytest_cache/**", resolved)
+
+        # Verify $ref preserves description, markdownDescription, and default when specified
+        schema_with_ref_meta = self.compiler.compile_config_schema(
+            "ref-meta-mod",
+            fmt_data={
+                "_types": {"SubCfg": {"host": "str!"}},
+                "primary": {
+                    "description": "Primary endpoint reference",
+                    "format": "$SubCfg",
+                    "default": {"host": "localhost"},
+                },
+            },
+        )
+        primary_prop = schema_with_ref_meta["properties"]["primary"]
+        self.assertEqual(primary_prop["$ref"], "#/$defs/SubCfg")
+        self.assertEqual(primary_prop["description"], "Primary endpoint reference")
+        self.assertIn("Primary endpoint reference", primary_prop["markdownDescription"])
+        self.assertEqual(primary_prop["default"], {"host": "localhost"})
+
+        # Verify hook.core.py deduplicates back-to-back on_reload and on_env_synced within same RuntimeContext
+        hook_mod = self._load_script_module("hook.core.py", "_test_vsc_hook_dedup")
+        orig_resolve = hook_mod.uri.resolve
+        sync_calls = {"count": 0}
+        orig_sync = SettingsProjector.sync_vscode_settings
+
+        def _counting_sync(proj_self, proj_root, *args, **kwargs):
+            sync_calls["count"] += 1
+            return orig_sync(proj_self, proj_root, *args, **kwargs)
+
+        with bind_runtime_context(virtual_cwd=self.project_root, host_dir=self.project_root, yscb_dir=self.yscb_dir):
+            with patch.object(
+                hook_mod.uri,
+                "resolve",
+                side_effect=lambda u, interactive=False: self.project_root
+                if u == "project://"
+                else orig_resolve(u, interactive=interactive),
+            ), patch("core.uri.resolve_yscb_root", return_value=self.yscb_dir), patch.object(
+                SchemaCompiler, "_discover_installed_modules", return_value=[]
+            ), patch.object(
+                schema_compiler_mod.contributes, "get", return_value={}
+            ), patch.object(
+                SettingsProjector, "sync_vscode_settings", _counting_sync
+            ):
+                self.assertTrue(hook_mod.on_reload())
+                self.assertTrue(hook_mod.on_env_synced())
+                self.assertEqual(sync_calls["count"], 1)
+
+        # Verify on_register_file_spaces skips duplicate registration when space already exists in _spaces
+        class _DedupRegistry:
+            def __init__(self) -> None:
+                self._spaces: Dict[str, Any] = {}
+                self.calls = 0
+
+            def register_space(self, name: str, cfg: Dict[str, Any]) -> None:
+                self.calls += 1
+                self._spaces[name] = cfg
+
+        dedup_reg = _DedupRegistry()
+        self.assertTrue(hook_mod.on_register_file_spaces({"registry": dedup_reg}))
+        self.assertTrue(hook_mod.on_register_file_spaces({"registry": dedup_reg}))
+        self.assertEqual(dedup_reg.calls, 1)
+        self.mark_passed()
+
+
 if __name__ == "__main__":
     unittest.main()

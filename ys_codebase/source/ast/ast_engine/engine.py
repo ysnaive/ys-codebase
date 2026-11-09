@@ -9,7 +9,7 @@ Coordinates:
 - Deterministic symbol resolution & overload grouping (`callers`, `callees`, `impact`).
 """
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import json
 import os
 from pathlib import Path
@@ -643,7 +643,13 @@ class ASTEngine:
                         rel_files = sorted(set(rel_from_snap))
                     elif sp_name in existing_files_map:
                         base_set = set(existing_files_map[sp_name])
-                        del_norm = normalize_dirty_paths(incremental_detail.deleted)
+                        expanded_del = self.bundler._normalize_space_dirty_paths(
+                            incremental_detail.deleted,
+                            [sp_cfg],
+                            prefer_missing=True,
+                            known_indexed_files=base_set,
+                        )
+                        del_norm = normalize_dirty_paths(expanded_del | set(incremental_detail.deleted))
                         if del_norm:
                             base_set = {p for p in base_set if not is_dirty_file_match(p, del_norm)}
                         if incremental_detail.added:
@@ -783,9 +789,27 @@ class ASTEngine:
     def _ensure_loaded_from_disk(self, force_reload: bool = False) -> bool:
         if not self.symbols_index_path.exists() or not self.graph_index_path.exists():
             return False
-        return self._ensure_symbols_loaded(force_reload=force_reload) and self._ensure_graph_loaded(
-            force_reload=force_reload
+        try:
+            s_mtime = self.symbols_index_path.stat().st_mtime
+            g_mtime = self.graph_index_path.stat().st_mtime
+        except OSError:
+            return False
+        need_load = (
+            force_reload
+            or self._snapshot is None
+            or self._graph is None
+            or s_mtime > self._symbols_mtime
+            or g_mtime > self._graph_mtime
         )
+        if not need_load:
+            return True
+        from core.platform.lock import InterProcessLock
+
+        lock_file = str(self._resolve_index_lock_path())
+        with InterProcessLock(lock_file, timeout=15.0):
+            return self._ensure_symbols_loaded(force_reload=force_reload) and self._ensure_graph_loaded(
+                force_reload=force_reload
+            )
 
     def get_persisted_meta(self) -> Optional[Dict[str, Any]]:
         """Read lightweight AST generation/metadata without decompressing unified.symbols.bin.gz or unified.graph.bin.gz."""
@@ -1183,7 +1207,8 @@ class ASTEngine:
         Ensure the AST snapshot and call graph are JIT synchronized:
         - If `force=True` or snapshot files do not exist, runs full `build_index()`.
         - Otherwise consumes incremental diff via `scanner.consume_diff(consumer_id="ast")`
-          strictly across target spaces and applies `hot_patch_index()` if any files changed.
+          strictly across target spaces and applies `hot_patch_index()` inside the transactional
+          consumption scope so the cursor is only committed after patching succeeds.
         """
         with cell_span("ast.jit_sync"), self._lock:
             norm_spaces: Optional[List[str]] = None
@@ -1231,44 +1256,49 @@ class ASTEngine:
                 merged_modified: Set[str] = set()
                 merged_deleted: Set[str] = set()
 
-                if not target_qnames:
-                    target_sp = norm_spaces[0] if (norm_spaces and len(norm_spaces) == 1) else None
-                    with self._consume_space_diff(
-                        space_name=target_sp,
-                        auto_refresh=eff_auto_refresh,
-                    ) as diff_res:
+                with ExitStack() as diff_stack:
+                    if not target_qnames:
+                        target_sp = norm_spaces[0] if (norm_spaces and len(norm_spaces) == 1) else None
+                        diff_res = diff_stack.enter_context(
+                            self._consume_space_diff(
+                                space_name=target_sp,
+                                auto_refresh=eff_auto_refresh,
+                            )
+                        )
                         if diff_res and getattr(diff_res, "has_changes", False):
                             merged_added.update(diff_res.detail.added)
                             merged_modified.update(diff_res.detail.modified)
                             merged_deleted.update(diff_res.detail.deleted)
-                else:
-                    for q_sp in target_qnames:
-                        with self._consume_space_diff(
-                            space_name=q_sp,
-                            auto_refresh=eff_auto_refresh,
-                        ) as diff_res:
+                    else:
+                        for q_sp in target_qnames:
+                            diff_res = diff_stack.enter_context(
+                                self._consume_space_diff(
+                                    space_name=q_sp,
+                                    auto_refresh=eff_auto_refresh,
+                                )
+                            )
                             if diff_res and getattr(diff_res, "has_changes", False):
                                 merged_added.update(diff_res.detail.added)
                                 merged_modified.update(diff_res.detail.modified)
                                 merged_deleted.update(diff_res.detail.deleted)
 
-                all_dirty = merged_added | merged_modified | merged_deleted
-                if all_dirty:
-                    has_parseable = any(
-                        self.parser_registry.get_parser(str(p)) is not None
-                        for p in all_dirty
-                    )
-                    if has_parseable:
-                        combined_detail = ScanDiffDetail(
-                            added=merged_added,
-                            modified=merged_modified,
-                            deleted=merged_deleted,
+                    all_dirty = merged_added | merged_modified | merged_deleted
+                    if all_dirty:
+                        has_parseable = any(
+                            self.parser_registry.get_parser(str(p)) is not None
+                            for p in all_dirty
                         )
-                        return self.hot_patch_index(
-                            combined_detail,
-                            spaces=norm_spaces,
-                            _cursor_already_consumed=True,
-                        )
+                        if has_parseable:
+                            combined_detail = ScanDiffDetail(
+                                added=merged_added,
+                                modified=merged_modified,
+                                deleted=merged_deleted,
+                            )
+                            return self.hot_patch_index(
+                                combined_detail,
+                                spaces=norm_spaces,
+                                _cursor_already_consumed=True,
+                            )
             except Exception as exc:
                 log_debug(f"JIT diff check skipped: {exc}")
 
@@ -1381,21 +1411,32 @@ class ASTEngine:
             return symbol_or_id
         if isinstance(symbol_or_id, UnifiedSymbol):
             ws_graph = self.get_workspace_graph(auto_sync=True)
+            norm_fp = symbol_or_id.file_path.replace("\\", "/")
+            fg = ws_graph.file_graphs.get(symbol_or_id.file_path) or ws_graph.file_graphs.get(norm_fp)
+            if fg is None:
+                try:
+                    fg = self.parse_file(symbol_or_id.file_path)
+                except Exception:
+                    fg = None
+            target_fqn = symbol_or_id.fqn or symbol_or_id.name
+            short_name = (symbol_or_id.metadata or {}).get("short_name") or symbol_or_id.name.split(".")[-1]
+            if fg is not None:
+                for cand in fg.all_nodes_by_id.values():
+                    if cand.span.start_line == symbol_or_id.line_number and (
+                        cand.fqn == target_fqn or cand.name == short_name
+                    ):
+                        return cand
             canonical_id = SymbolNode.compute_canonical_id(
                 symbol_or_id.file_path,
-                symbol_or_id.fqn or symbol_or_id.name,
+                target_fqn,
             )
             if canonical_id in ws_graph.nodes_by_id:
                 return ws_graph.nodes_by_id[canonical_id]
-            fg = ws_graph.file_graphs.get(symbol_or_id.file_path)
-            if fg is None:
-                fg = self.parse_file(symbol_or_id.file_path)
-            for cand in fg.all_nodes_by_id.values():
-                if cand.fqn == (symbol_or_id.fqn or symbol_or_id.name) or (
-                    cand.span.start_line == symbol_or_id.line_number and cand.name == symbol_or_id.name.split(".")[-1]
-                ):
-                    return cand
-            raise ASTError(f"SymbolNode not found for UnifiedSymbol '{symbol_or_id.fqn or symbol_or_id.name}'")
+            if fg is not None:
+                for cand in fg.all_nodes_by_id.values():
+                    if cand.fqn == target_fqn:
+                        return cand
+            raise ASTError(f"SymbolNode not found for UnifiedSymbol '{target_fqn}'")
 
         q_str = str(symbol_or_id or "").strip()
         if not q_str:

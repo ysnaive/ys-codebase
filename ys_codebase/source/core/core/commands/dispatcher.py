@@ -98,11 +98,68 @@ def _get_yscb_root() -> Tuple[str, str]:
         return host_dir, uri.resolve_yscb_root()
 
 
-def _load_registry(yscb_abs: str) -> CommandsRegistry:
-    """聚合工作區所有模組之 contributes/core.json 或 contributes/*.json。"""
-    ctx = get_runtime_context()
+def _compute_registry_fingerprint(yscb_abs: str) -> str:
+    """Computes a lightweight `(mtime_ns, size)` generation key across `.modules` contributes files."""
     norm_root = os.path.normcase(os.path.abspath(yscb_abs)) if yscb_abs else ""
-    if ctx.dispatcher_global_registry is not None and ctx.dispatcher_global_registry_root == norm_root:
+    if not yscb_abs:
+        return norm_root
+    modules_dir = os.path.join(yscb_abs, ".modules")
+    merged_file = os.path.join(yscb_abs, ".cache", "core", "contributes.merged.json")
+    parts: List[str] = [norm_root]
+    try:
+        if os.path.isfile(merged_file):
+            st_m = os.stat(merged_file)
+            parts.append(f"m:{getattr(st_m, 'st_mtime_ns', int(st_m.st_mtime * 1e9))}:{st_m.st_size}")
+    except OSError:
+        pass
+    if os.path.isdir(modules_dir):
+        try:
+            for mod_name in sorted(os.listdir(modules_dir)):
+                if mod_name.startswith("."):
+                    continue
+                mod_path = os.path.join(modules_dir, mod_name)
+                if not os.path.isdir(mod_path):
+                    continue
+                for rel_cand in (
+                    os.path.join("contributes", "core.json"),
+                    os.path.join("contributes", "commands.json"),
+                    "contributes.json",
+                ):
+                    cpath = os.path.join(mod_path, rel_cand)
+                    if os.path.isfile(cpath):
+                        try:
+                            st = os.stat(cpath)
+                            mtime_ns = getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))
+                            parts.append(f"{mod_name}/{rel_cand}:{mtime_ns}:{st.st_size}")
+                        except OSError:
+                            pass
+        except OSError:
+            pass
+    return "|".join(parts)
+
+
+def _extract_commands_dict_from_unified(u_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extracts the `commands` dictionary from a unified `module://<mod>/contributes.json` payload."""
+    if not isinstance(u_data, dict):
+        return None
+    if isinstance(u_data.get("commands"), dict) and not any(
+        isinstance(v, dict) and "commands" in v for v in u_data.values()
+    ):
+        return u_data["commands"]
+    core_sec = u_data.get("core")
+    if isinstance(core_sec, dict) and isinstance(core_sec.get("commands"), dict):
+        return core_sec["commands"]
+    cmd_sec = u_data.get("commands")
+    if isinstance(cmd_sec, dict) and isinstance(cmd_sec.get("commands"), dict):
+        return cmd_sec["commands"]
+    return None
+
+
+def _load_registry(yscb_abs: str) -> CommandsRegistry:
+    """聚合工作區所有模組之 contributes/core.json、contributes/commands.json 或單檔 contributes.json。"""
+    ctx = get_runtime_context()
+    cache_key = _compute_registry_fingerprint(yscb_abs)
+    if ctx.dispatcher_global_registry is not None and ctx.dispatcher_global_registry_root == cache_key:
         return ctx.dispatcher_global_registry
 
     registry = CommandsRegistry()
@@ -122,27 +179,40 @@ def _load_registry(yscb_abs: str) -> CommandsRegistry:
             if not os.path.isdir(mod_path):
                 continue
 
+            registered = False
             contrib_dir = os.path.join(mod_path, "contributes")
-            if not os.path.isdir(contrib_dir):
-                continue
+            if os.path.isdir(contrib_dir):
+                for cfile in ("core.json", "commands.json"):
+                    cpath = os.path.join(contrib_dir, cfile)
+                    if os.path.isfile(cpath):
+                        try:
+                            with open(cpath, "r", encoding="utf-8") as f:
+                                data = json.load(f)
+                                if isinstance(data, dict) and "commands" in data and isinstance(data["commands"], dict):
+                                    registry.register_module(mod_name, data["commands"])
+                                    registered = True
+                                    break
+                        except ValueError as err:
+                            log_warn(f"[yscb:registry] Warning: {err}", stream="stderr")
+                        except Exception:
+                            pass
 
-            # 搜尋 core.json 或 commands.json
-            for cfile in ("core.json", "commands.json"):
-                cpath = os.path.join(contrib_dir, cfile)
-                if os.path.isfile(cpath):
+            if not registered:
+                unified_cpath = os.path.join(mod_path, "contributes.json")
+                if os.path.isfile(unified_cpath):
                     try:
-                        with open(cpath, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                            if "commands" in data and isinstance(data["commands"], dict):
-                                registry.register_module(mod_name, data["commands"])
-                                break
+                        with open(unified_cpath, "r", encoding="utf-8") as f:
+                            u_data = json.load(f)
+                        cmds_dict = _extract_commands_dict_from_unified(u_data) if isinstance(u_data, dict) else None
+                        if isinstance(cmds_dict, dict):
+                            registry.register_module(mod_name, cmds_dict)
                     except ValueError as err:
                         log_warn(f"[yscb:registry] Warning: {err}", stream="stderr")
                     except Exception:
                         pass
 
     ctx.dispatcher_global_registry = registry
-    ctx.dispatcher_global_registry_root = norm_root
+    ctx.dispatcher_global_registry_root = cache_key
     return registry
 
 
@@ -680,10 +750,11 @@ def dispatch_local(
                 mod_cache[target_cli] = mod
 
             exit_code = 0
-            orig_argv = list(sys.argv)
-            try:
+            rt_ctx = get_runtime_context()
+            with rt_ctx.sys_path_lock:
+                orig_argv = list(sys.argv)
                 sys.argv = [target_cli] + raw_args
-
+            try:
                 # 優先尋找階層下劃線精確函式 (如 uri_list)
                 fn = getattr(mod, func_name, None)
                 if not callable(fn) and len(cmd_path) > 1:
@@ -721,7 +792,8 @@ def dispatch_local(
                 log_error(err_msg)
                 exit_code = 1
             finally:
-                sys.argv = orig_argv
+                with rt_ctx.sys_path_lock:
+                    sys.argv = orig_argv
                 if not primary_error_hint:
                     primary_error_hint = get_last_error_hint()
 

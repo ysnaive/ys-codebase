@@ -10,7 +10,6 @@ import json
 import os
 import platform
 import subprocess
-import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 from core import uri, vfs
@@ -188,7 +187,7 @@ class SettingsProjector:
         """
         建立或更新指向當前 Python 版本 `site-packages` 之無版本號穩定目錄連結 `yscb.venv://current-site-packages`。
         先確保目標 `site-packages` 實體目錄存在（防範無 `pip_dependencies` 時產生懸空連結）；
-        POSIX 使用 `os.symlink`，Windows 優先嘗試 `os.symlink` 或免管理員權限之 `cmd /c mklink /J` Directory Junction。
+        POSIX 使用 `os.symlink`，Windows 優先嘗試 `os.symlink`、`_winapi.CreateJunction` 或免管理員權限之 `cmd /c mklink /J`。
         若檔案系統不支援則回傳 `None` 由呼叫端自動降級為實際路徑。
         """
         target_site_pkg = os.path.abspath(self.pip_mgr.get_site_packages_dir(py_tag))
@@ -227,6 +226,14 @@ class SettingsProjector:
             return link_path
         except (OSError, NotImplementedError):
             if platform.system() == "Windows":
+                try:
+                    import _winapi
+
+                    _winapi.CreateJunction(os.path.abspath(target_site_pkg), os.path.abspath(link_path))
+                    if os.path.isdir(link_path):
+                        return link_path
+                except Exception:
+                    pass
                 try:
                     proc = subprocess.run(
                         ["cmd", "/c", "mklink", "/J", link_path, target_site_pkg],
@@ -366,7 +373,11 @@ class SettingsProjector:
             for sp_cfg in ws_spaces:
                 rules = getattr(sp_cfg, "effective_exclude", None) or getattr(sp_cfg, "exclude", ())
                 for rule_item in rules:
+                    if getattr(rule_item, "is_negated", False):
+                        continue
                     raw_pat = getattr(rule_item, "raw_pattern", rule_item)
+                    if str(raw_pat).strip().startswith("!"):
+                        continue
                     glob_pat = self._translate_exclude_to_vscode_glob(str(raw_pat))
                     if glob_pat and glob_pat not in translated:
                         translated.append(glob_pat)
@@ -374,15 +385,10 @@ class SettingsProjector:
             translated = []
 
         merged = list(self.ANALYSIS_EXCLUDE_PATTERNS)
-        if include_all:
-            for pat in translated:
-                if pat not in merged:
-                    merged.append(pat)
-            return merged
-        translated_set = set(translated)
-        if not translated_set:
-            return merged
-        return [pat for pat in self.ANALYSIS_EXCLUDE_PATTERNS if pat in translated_set or pat in merged]
+        for pat in translated:
+            if pat not in merged:
+                merged.append(pat)
+        return merged
 
     def _apply_vscode_settings_merge(
         self,
@@ -455,7 +461,7 @@ class SettingsProjector:
 
         old_managed_analysis = set(self._safe_str_list(old_managed_record, "analysisExclude"))
         if was_managed and not isinstance(old_managed_record.get("analysisExclude"), list):
-            removable_old_analysis = set(self.ANALYSIS_EXCLUDE_PATTERNS)
+            removable_old_analysis = set(self.ANALYSIS_EXCLUDE_PATTERNS) | set(base_analysis_excludes)
         else:
             removable_old_analysis = old_managed_analysis
 

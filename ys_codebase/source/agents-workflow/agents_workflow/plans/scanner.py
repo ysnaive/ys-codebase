@@ -31,22 +31,29 @@ class PlanScanner:
         )
 
     def _resolve_umbrella_status(self, plan_dir: Path, umbrella: Path) -> str:
-        """判定 Umbrella 主計畫狀態。"""
+        """判定 Umbrella 主計畫狀態（若子計畫尚未全數完成則維持 In Progress）。"""
         from .status import PlanStatusResolver
+
+        sub_dirs = [d for d in plan_dir.iterdir() if d.is_dir() and d.name.startswith("sub_")]
+        all_subs_completed = True
+        if sub_dirs:
+            sub_statuses = [self.get_plan_info(sd)[1] for sd in sub_dirs]
+            all_subs_completed = all(
+                ("Completed" in s or "Concluded" in s) and "Paused" not in s
+                for s in sub_statuses
+            )
 
         raw_status = PlanStatusResolver.get_doc_header_status(umbrella)
         if raw_status in ("completed", "concluded"):
-            return "Completed"
+            return "Completed" if all_subs_completed else "In Progress"
         if raw_status in ("in progress", "executing", "implementing"):
             return "In Progress"
         if raw_status in ("planning", "discussing", "draft", "phase 0"):
             return "Planning" if raw_status == "planning" else raw_status.title()
 
-        sub_dirs = [d for d in plan_dir.iterdir() if d.is_dir() and d.name.startswith("sub_")]
         if not sub_dirs:
             return "Planning"
-        sub_statuses = [self.get_plan_info(sd)[1] for sd in sub_dirs]
-        return "Completed" if all("Completed" in s for s in sub_statuses) else "In Progress"
+        return "Completed" if all_subs_completed else "In Progress"
 
     @staticmethod
     def _resolve_fast_track_status(ft_plan: Path) -> str:
@@ -275,8 +282,13 @@ class PlanScanner:
         if not plans:
             return None, "目前無進行中的開發計畫。"
 
+        from .status import PlanStatusResolver
+
         in_progress_plans = [
-            p for p in plans if p.get("status") not in ("Completed", "Concluded")
+            p
+            for p in plans
+            if p.get("status") not in ("Completed", "Concluded")
+            or PlanStatusResolver._has_active_attached_revision(Path(p["path"]))
         ]
         target_pool = in_progress_plans if in_progress_plans else plans
 

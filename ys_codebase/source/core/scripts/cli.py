@@ -998,89 +998,19 @@ def _dispatch_space_group(cmd_bags: CmdBags, group_cmd_name: str) -> int:
     return 1
 
 
-def file_space_spaces(cmd_bags: CmdBags) -> int:
-    """List and inspect registered logical file spaces."""
-    return _handle_space_spaces(cmd_bags)
-
-
-def file_space_match(cmd_bags: CmdBags) -> int:
-    """Evaluate and explain inclusion/exclusion rules for a single path."""
-    return _handle_space_match(cmd_bags)
-
-
-def file_space_ls(cmd_bags: CmdBags) -> int:
-    """List files in a space using zero-redundancy directory pruning."""
-    return _handle_space_ls(cmd_bags)
-
-
-def file_space_hash(cmd_bags: CmdBags) -> int:
-    """Compute atomic content fingerprints and Merkle Root for a space or file."""
-    return _handle_space_hash(cmd_bags)
-
-
-def file_space_status(cmd_bags: CmdBags) -> int:
-    """Inspect space snapshot generation, Merkle Root, and consumer cursors."""
-    return _handle_space_status(cmd_bags)
-
-
-def file_space_scan(cmd_bags: CmdBags) -> int:
-    """Execute two-stage incremental scan and update YFP2 binary snapshot."""
-    return _handle_space_scan(cmd_bags)
-
-
-def file_space_diff(cmd_bags: CmdBags) -> int:
-    """Compute delta between consumer watermark cursor and current snapshot generation."""
-    return _handle_space_diff(cmd_bags)
-
-
-def file_space_clean(cmd_bags: CmdBags) -> int:
-    """Clean persisted YFP2 binary snapshots and/or reset consumer watermark cursors."""
-    return _handle_space_clean(cmd_bags)
+def __getattr__(name: str) -> Any:
+    """PEP 562 dynamic resolution for `file_space_<subcmd>` and `fs_<subcmd>` CLI handlers."""
+    for prefix in ("file_space_", "fs_"):
+        if name.startswith(prefix):
+            sub = name[len(prefix):]
+            if sub in ("spaces", "match", "ls", "hash", "status", "scan", "diff", "clean"):
+                return globals()[f"_handle_space_{sub}"]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def file_space(cmd_bags: CmdBags) -> int:
     """Core L0 Atomic & Composite File-Space Engine (Group Dispatcher)."""
     return _dispatch_space_group(cmd_bags, "file-space")
-
-
-def fs_spaces(cmd_bags: CmdBags) -> int:
-    """List and inspect registered logical file spaces (shorthand alias)."""
-    return _handle_space_spaces(cmd_bags)
-
-
-def fs_match(cmd_bags: CmdBags) -> int:
-    """Evaluate and explain inclusion/exclusion rules for a single path (shorthand alias)."""
-    return _handle_space_match(cmd_bags)
-
-
-def fs_ls(cmd_bags: CmdBags) -> int:
-    """List files in a space using zero-redundancy directory pruning (shorthand alias)."""
-    return _handle_space_ls(cmd_bags)
-
-
-def fs_hash(cmd_bags: CmdBags) -> int:
-    """Compute atomic content fingerprints and Merkle Root for a space or file (shorthand alias)."""
-    return _handle_space_hash(cmd_bags)
-
-
-def fs_status(cmd_bags: CmdBags) -> int:
-    """Inspect space snapshot generation, Merkle Root, and consumer cursors (shorthand alias)."""
-    return _handle_space_status(cmd_bags)
-
-
-def fs_scan(cmd_bags: CmdBags) -> int:
-    """Execute two-stage incremental scan and update YFP2 binary snapshot (shorthand alias)."""
-    return _handle_space_scan(cmd_bags)
-
-
-def fs_diff(cmd_bags: CmdBags) -> int:
-    """Compute delta between consumer watermark cursor and current snapshot generation (shorthand alias)."""
-    return _handle_space_diff(cmd_bags)
-
-
-def fs_clean(cmd_bags: CmdBags) -> int:
-    """Clean persisted YFP2 binary snapshots and/or reset consumer watermark cursors (shorthand alias)."""
-    return _handle_space_clean(cmd_bags)
 
 
 def fs(cmd_bags: CmdBags) -> int:

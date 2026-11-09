@@ -8,8 +8,21 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core import uri
 from core.commands import CmdBags
+from core.context import get_virtual_cwd
 from core.guard import guard_dispatch
 from core.log import log
+
+
+def _resolve_cli_path(raw_path: str) -> Path:
+    """Resolve a CLI path argument against core.context.get_virtual_cwd() when relative."""
+    if "://" in raw_path:
+        return Path(uri.resolve(raw_path))
+    p = Path(raw_path)
+    if not p.is_absolute():
+        vcwd = get_virtual_cwd()
+        if vcwd:
+            p = Path(vcwd) / p
+    return p
 
 
 def _emit(payload: Dict[str, Any], as_json: bool, summary: str) -> None:
@@ -41,7 +54,7 @@ def _maybe_reconcile_root_readme(
 
     try:
         state_path = (
-            Path(sandbox_override) / ".yscb_readme_state.json"
+            _resolve_cli_path(sandbox_override) / ".yscb_readme_state.json"
             if sandbox_override
             else None
         )
@@ -54,8 +67,10 @@ def _maybe_reconcile_root_readme(
 
 def _prepare_atomic_transport(
     cmd_bags: CmdBags,
+    *,
+    reconcile_readme: bool = True,
 ) -> Tuple[Any, Any, str, bool]:
-    """Load config, instantiate transport, and reconcile root README state for atomic CLI commands."""
+    """Load config, instantiate transport, and optionally reconcile root README state for mutating CLI commands."""
     from gdrive_support.config import load_gdrive_config
     from gdrive_support.transport import create_transport
 
@@ -63,7 +78,8 @@ def _prepare_atomic_transport(
     sandbox_dir = str(cmd_bags.get_option_value("sandbox-dir", default="") or "")
     cfg = load_gdrive_config()
     transport = create_transport(cfg, sandbox_dir=sandbox_dir or None)
-    _maybe_reconcile_root_readme(cfg, transport, sandbox_override=sandbox_dir)
+    if reconcile_readme:
+        _maybe_reconcile_root_readme(cfg, transport, sandbox_override=sandbox_dir)
     return cfg, transport, sandbox_dir, as_json
 
 
@@ -81,7 +97,7 @@ def _build_coordinator(sandbox_dir: str = "") -> Any:
     effective_sandbox = str(sandbox_dir or cfg.sandbox_dir or "").strip()
     if effective_sandbox:
         cfg = replace(cfg, sandbox_dir=effective_sandbox)
-        sbx_root = Path(effective_sandbox).resolve()
+        sbx_root = _resolve_cli_path(effective_sandbox).resolve()
         transport = create_transport(cfg, sandbox_dir=effective_sandbox)
         return SyncCoordinator(
             config=cfg,
@@ -106,11 +122,18 @@ def _run_coordinator_action(
 
     as_json = bool(cmd_bags.options.get("json"))
     sandbox_dir = str(cmd_bags.get_option_value("sandbox-dir", default="") or "")
+    coord = None
     try:
         coord = _build_coordinator(sandbox_dir)
         res = action_fn(coord)
     except GDriveError as exc:
         return _emit_error(tag, exc, as_json)
+    finally:
+        if coord is not None and hasattr(coord, "transport"):
+            try:
+                coord.transport.close()
+            except Exception:
+                pass
 
     if summary_fn is not None:
         _emit(res, as_json, summary_fn(res))
@@ -287,19 +310,31 @@ def auth(cmd_bags: CmdBags) -> int:
 
 
 def ls(cmd_bags: CmdBags) -> int:
-    """Atomically list files, folders, and shortcuts under remote_path."""
+    """Atomically list files, folders, and shortcuts under remote_path (read-only by default)."""
     guard_dispatch("gdrive-support")
     from gdrive_support.config import GDriveError
 
     remote_path = cmd_bags.args[0] if cmd_bags.args else ""
     recursive = bool(cmd_bags.options.get("recursive"))
+    deduplicate = bool(cmd_bags.options.get("deduplicate"))
     as_json = bool(cmd_bags.options.get("json"))
+    transport = None
 
     try:
-        _cfg, transport, _sbx, as_json = _prepare_atomic_transport(cmd_bags)
-        entries = transport.list_files(remote_path=remote_path, recursive=recursive)
+        _cfg, transport, _sbx, as_json = _prepare_atomic_transport(
+            cmd_bags, reconcile_readme=False
+        )
+        entries = transport.list_files(
+            remote_path=remote_path, recursive=recursive, deduplicate=deduplicate
+        )
     except GDriveError as exc:
         return _emit_error("ls", exc, as_json)
+    finally:
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:
+                pass
 
     payload = {
         "status": "ok",
@@ -322,7 +357,7 @@ def ls(cmd_bags: CmdBags) -> int:
 
 
 def get(cmd_bags: CmdBags) -> int:
-    """Atomically download a single remote file (or shortcut target) to local_path."""
+    """Atomically download a single remote file (or shortcut target) to local_path (read-only on remote)."""
     guard_dispatch("gdrive-support")
     from gdrive_support.config import GDriveError
 
@@ -336,13 +371,22 @@ def get(cmd_bags: CmdBags) -> int:
         return 1
 
     remote_path = cmd_bags.args[0]
-    local_path = Path(cmd_bags.args[1])
+    local_path = _resolve_cli_path(cmd_bags.args[1])
+    transport = None
 
     try:
-        _cfg, transport, _sbx, as_json = _prepare_atomic_transport(cmd_bags)
+        _cfg, transport, _sbx, as_json = _prepare_atomic_transport(
+            cmd_bags, reconcile_readme=False
+        )
         entry = transport.download_file(remote_path=remote_path, local_path=local_path)
     except GDriveError as exc:
         return _emit_error("get", exc, as_json)
+    finally:
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:
+                pass
 
     payload = {
         "status": "ok",
@@ -378,12 +422,13 @@ def put(cmd_bags: CmdBags) -> int:
         )
         return 1
 
-    local_path = Path(cmd_bags.args[0])
+    local_path = _resolve_cli_path(cmd_bags.args[0])
     remote_path = cmd_bags.args[1]
+    transport = None
 
     try:
         proj_root = Path(uri.resolve("project://")).resolve()
-        if is_sensitive_credential_path(local_path.resolve(), proj_root):
+        if is_sensitive_credential_path(local_path, proj_root):
             raise GDriveConfigError(
                 f"Refusing to upload sensitive credential/token file '{local_path.as_posix()}' to Google Drive."
             )
@@ -395,6 +440,12 @@ def put(cmd_bags: CmdBags) -> int:
         )
     except GDriveError as exc:
         return _emit_error("put", exc, as_json)
+    finally:
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:
+                pass
 
     payload = {
         "status": "ok",
@@ -426,11 +477,18 @@ def rm(cmd_bags: CmdBags) -> int:
         return 1
 
     remote_path = cmd_bags.args[0]
+    transport = None
     try:
         _cfg, transport, _sbx, as_json = _prepare_atomic_transport(cmd_bags)
         removed = transport.trash_file(remote_path=remote_path)
     except GDriveError as exc:
         return _emit_error("rm", exc, as_json)
+    finally:
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:
+                pass
 
     if not removed:
         _emit(
@@ -460,11 +518,18 @@ def mkdir(cmd_bags: CmdBags) -> int:
         return 1
 
     remote_path = cmd_bags.args[0]
+    transport = None
     try:
         _cfg, transport, _sbx, as_json = _prepare_atomic_transport(cmd_bags)
         entry = transport.mkdir(remote_path=remote_path)
     except GDriveError as exc:
         return _emit_error("mkdir", exc, as_json)
+    finally:
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:
+                pass
 
     payload = {
         "status": "ok",
@@ -499,6 +564,7 @@ def shortcut(cmd_bags: CmdBags) -> int:
 
     target_file_id = cmd_bags.args[0]
     shortcut_remote_path = cmd_bags.args[1]
+    transport = None
     try:
         _cfg, transport, _sbx, as_json = _prepare_atomic_transport(cmd_bags)
         entry = transport.create_shortcut(
@@ -506,6 +572,12 @@ def shortcut(cmd_bags: CmdBags) -> int:
         )
     except GDriveError as exc:
         return _emit_error("shortcut", exc, as_json)
+    finally:
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:
+                pass
 
     payload = {
         "status": "ok",
@@ -541,12 +613,19 @@ def branch_list(cmd_bags: CmdBags) -> int:
 
     as_json = bool(cmd_bags.options.get("json"))
     sandbox_dir = str(cmd_bags.get_option_value("sandbox-dir", default="") or "")
+    coord = None
 
     try:
         coord = _build_coordinator(sandbox_dir)
         res = coord.list_branches()
     except GDriveError as exc:
         return _emit_error("branch list", exc, as_json)
+    finally:
+        if coord is not None and hasattr(coord, "transport"):
+            try:
+                coord.transport.close()
+            except Exception:
+                pass
 
     if as_json:
         log(json.dumps(res, indent=2, ensure_ascii=False))
@@ -647,6 +726,7 @@ def _run_sync_cmd(cmd_bags: CmdBags, mode: str) -> int:
     force = bool(cmd_bags.options.get("force"))
     backup = bool(cmd_bags.options.get("backup"))
     sandbox_dir = str(cmd_bags.get_option_value("sandbox-dir", default="") or "")
+    coord = None
 
     try:
         coord = _build_coordinator(sandbox_dir)
@@ -655,6 +735,12 @@ def _run_sync_cmd(cmd_bags: CmdBags, mode: str) -> int:
         )
     except GDriveError as exc:
         return _emit_error(mode, exc, as_json)
+    finally:
+        if coord is not None and hasattr(coord, "transport"):
+            try:
+                coord.transport.close()
+            except Exception:
+                pass
 
     payload = {"status": "ok", **report.to_dict()}
     summary = (

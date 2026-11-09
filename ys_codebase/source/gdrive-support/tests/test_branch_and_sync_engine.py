@@ -1834,6 +1834,73 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
         self.mark_passed()
 
 
+    @require(Requirement.ENV)
+    def test_ft_16_pull_cache_coherency_stage1_meta_persist_and_service_dynamic_branch_refresh(
+        self,
+    ) -> None:
+        """
+        Verify:
+        1. Pull updates remote_repo_cache raw_entries and fingerprint_cache so the next sync has
+           updated cache entries and zero redundant hash recomputation.
+        2. Stage 1 branch_files rebuild is persisted to remote .yscb_gdrive.json even when all files
+           are already IN_SYNC (0 pushes/deletes).
+        3. GDriveSyncServiceWorker dynamically refreshes active_branch on run_once() after checkout_branch().
+        """
+        self.coord.init_repo()
+        rem_seed = self.tmp_root / "rem_seed.md"
+        rem_seed.write_text("Seed from cloud\n", encoding="utf-8")
+        up_seed = self.transport.upload_file(rem_seed, "repo/main/docs/rem_seed.md")
+
+        rep_pull = self.coord.run_sync(mode="pull")
+        self.assertEqual(rep_pull.pulled, ["docs/rem_seed.md"])
+
+        state_after_pull = self.coord._load_local_state()
+        raw_cached = (
+            state_after_pull["remote_repo_cache"]["branches"]["main"]["raw_entries"].get("docs/rem_seed.md")
+        )
+        self.assertIsNotNone(raw_cached)
+        self.assertEqual(raw_cached["file_id"], up_seed.file_id)
+        local_seed_path = (self.docs_dir / "rem_seed.md").as_posix()
+        self.assertIn(local_seed_path, state_after_pull.get("fingerprint_cache", {}))
+
+        # Verify remote .yscb_gdrive.json persisted branch_files during the pull sync (0 pushes/deletes)
+        remote_meta = self.coord._read_remote_repo_meta()
+        assert remote_meta is not None
+        self.assertEqual(
+            remote_meta.get("branch_files", {}).get("main", {}).get("docs/rem_seed.md"),
+            up_seed.file_id,
+        )
+
+        # Create branch feat_dyn, checkout feat_dyn, and verify GDriveSyncServiceWorker refreshes active_branch
+        self.coord.create_branch("feat_dyn", from_branch="main")
+        self.coord.checkout_branch("feat_dyn")
+        state_after_co = self.coord._load_local_state()
+        self.assertEqual(state_after_co.get("active_branch"), "feat_dyn")
+
+        stale_cfg = GDriveConfig(
+            root_folder_id="sandbox_root",
+            active_branch="main",
+            auto_sync=True,
+            repo_sync_enabled=True,
+            sandbox_dir=self.sandbox_dir.as_posix(),
+            sync_spaces=self.cfg.sync_spaces,
+        )
+        self.coord.config = stale_cfg
+        worker = GDriveSyncServiceWorker(
+            config=stale_cfg,
+            coordinator=self.coord,
+            subscribe_fn=lambda cb, spaces=None: (lambda: None),
+        )
+        worker.standby_mode = False
+        (self.docs_dir / "on_feat_dyn.md").write_text("Dynamic branch push\n", encoding="utf-8")
+        rep_worker = worker.run_once()
+        assert rep_worker is not None
+        self.assertEqual(rep_worker["branch"], "feat_dyn")
+        self.assertIn("docs/on_feat_dyn.md", rep_worker["pushed"])
+        self.assertIsNotNone(self.transport.get_entry("repo/feat_dyn/docs/on_feat_dyn.md"))
+        self.mark_passed()
+
+
 if __name__ == "__main__":
     unittest.main()
 

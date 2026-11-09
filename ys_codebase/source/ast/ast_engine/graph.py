@@ -17,6 +17,76 @@ from .io_utils import atomic_save_gzip_pickle, load_gzip_pickle
 from .schema import SymbolCallSite, WorkspaceSymbolGraph
 
 
+class _StdlibDiGraph:
+    """Zero-dependency pure-Python directed graph compatible with networkx.DiGraph API."""
+
+    def __init__(self) -> None:
+        self._adj: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self._pred: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+    def add_node(self, node: str) -> None:
+        if node not in self._adj:
+            self._adj[node] = {}
+            self._pred[node] = {}
+
+    def has_node(self, node: str) -> bool:
+        return node in self._adj
+
+    def remove_node(self, node: str) -> None:
+        if node not in self._adj:
+            return
+        for v in list(self._adj[node].keys()):
+            self._pred.get(v, {}).pop(node, None)
+        for u in list(self._pred[node].keys()):
+            self._adj.get(u, {}).pop(node, None)
+        del self._adj[node]
+        del self._pred[node]
+
+    def has_edge(self, u: str, v: str) -> bool:
+        return u in self._adj and v in self._adj[u]
+
+    def add_edge(self, u: str, v: str, **attrs: Any) -> None:
+        self.add_node(u)
+        self.add_node(v)
+        if v not in self._adj[u]:
+            edge_data = dict(attrs)
+            self._adj[u][v] = edge_data
+            self._pred[v][u] = edge_data
+        else:
+            self._adj[u][v].update(attrs)
+
+    def __getitem__(self, u: str) -> Dict[str, Dict[str, Any]]:
+        return self._adj[u]
+
+    def predecessors(self, node: str) -> List[str]:
+        return list(self._pred.get(node, {}).keys())
+
+    def successors(self, node: str) -> List[str]:
+        return list(self._adj.get(node, {}).keys())
+
+    def out_edges(self, node: Optional[str] = None) -> List[Tuple[str, str]]:
+        if node is not None:
+            return [(node, v) for v in self._adj.get(node, {}).keys()]
+        return [(u, v) for u, nbrs in self._adj.items() for v in nbrs.keys()]
+
+    def in_edges(self, node: Optional[str] = None) -> List[Tuple[str, str]]:
+        if node is not None:
+            return [(u, node) for u in self._pred.get(node, {}).keys()]
+        return [(u, v) for u, nbrs in self._adj.items() for v in nbrs.keys()]
+
+    def nodes(self) -> List[str]:
+        return list(self._adj.keys())
+
+    def edges(self) -> List[Tuple[str, str]]:
+        return [(u, v) for u, nbrs in self._adj.items() for v in nbrs.keys()]
+
+    def number_of_nodes(self) -> int:
+        return len(self._adj)
+
+    def number_of_edges(self) -> int:
+        return sum(len(nbrs) for nbrs in self._adj.values())
+
+
 class CallGraphIndex:
     """
     Bidirectional call graph index backed by `networkx.DiGraph` and optional `WorkspaceSymbolGraph`.
@@ -30,9 +100,12 @@ class CallGraphIndex:
         workspace_graph: Optional[WorkspaceSymbolGraph] = None,
     ):
         if graph is None:
-            import networkx as nx
+            try:
+                import networkx as nx
 
-            graph = nx.DiGraph()
+                graph = nx.DiGraph()
+            except ImportError:
+                graph = _StdlibDiGraph()
         self._graph: nx.DiGraph = graph
         self._workspace_graph: Optional[WorkspaceSymbolGraph] = workspace_graph
 

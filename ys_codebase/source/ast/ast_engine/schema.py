@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 from types import MappingProxyType
-from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Set, Tuple
 
 from .exceptions import SchemaValidationError
 
@@ -147,24 +147,33 @@ class ProvenanceStep:
         )
 
 
+def _freeze_value(val: Any) -> Any:
+    """Recursively freeze mappings, lists, tuples, and sets into immutable equivalents."""
+    if isinstance(val, Mapping):
+        return MappingProxyType({str(k): _freeze_value(v) for k, v in val.items()})
+    if isinstance(val, (list, tuple)):
+        return tuple(_freeze_value(x) for x in val)
+    if isinstance(val, (set, frozenset)):
+        return frozenset(_freeze_value(x) for x in val)
+    return val
+
+
+def _thaw_value(val: Any) -> Any:
+    """Recursively convert frozen mappings, tuples, and frozensets into JSON-serializable structures."""
+    if isinstance(val, Mapping):
+        return {str(k): _thaw_value(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple)):
+        return [_thaw_value(x) for x in val]
+    if isinstance(val, (set, frozenset)):
+        return [_thaw_value(x) for x in sorted(val, key=str)]
+    return val
+
+
 def _freeze_facets_dict(raw_facets: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
-    """Normalize a facets mapping into an immutable MappingProxyType."""
+    """Normalize a facets mapping into a deeply immutable MappingProxyType."""
     if not raw_facets or not isinstance(raw_facets, Mapping):
         return MappingProxyType({})
-    normalized: Dict[str, Any] = {}
-    for k, v in raw_facets.items():
-        key_str = str(k)
-        if isinstance(v, list):
-            normalized[key_str] = tuple(
-                dict(x) if isinstance(x, Mapping) else x for x in v
-            )
-        elif isinstance(v, set):
-            normalized[key_str] = frozenset(v)
-        elif isinstance(v, Mapping) and not isinstance(v, MappingProxyType):
-            normalized[key_str] = MappingProxyType(dict(v))
-        else:
-            normalized[key_str] = v
-    return MappingProxyType(normalized)
+    return _freeze_value(raw_facets)
 
 
 @dataclass(frozen=True)
@@ -245,14 +254,7 @@ class SymbolNode:
         return base_id
 
     def to_dict(self) -> Dict[str, Any]:
-        facets_out: Dict[str, Any] = {}
-        for k, v in self.facets.items():
-            if isinstance(v, (tuple, frozenset, set)):
-                facets_out[k] = list(v)
-            elif isinstance(v, Mapping):
-                facets_out[k] = dict(v)
-            else:
-                facets_out[k] = v
+        facets_out: Dict[str, Any] = _thaw_value(self.facets)
         return {
             "id": self.id,
             "name": self.name,
@@ -410,12 +412,28 @@ class FileSymbolGraph:
         object.__setattr__(self, "all_nodes_by_id", MappingProxyType(index_map))
 
     def to_dict(self) -> Dict[str, Any]:
+        reachable_ids: Set[str] = set()
+
+        def _collect_reachable(nodes: Tuple[SymbolNode, ...]) -> None:
+            for n in nodes:
+                reachable_ids.add(n.id)
+                if n.children:
+                    _collect_reachable(n.children)
+
+        if self.root_nodes:
+            _collect_reachable(self.root_nodes)
+
+        extra_nodes = {
+            nid: n.to_dict()
+            for nid, n in self.all_nodes_by_id.items()
+            if nid not in reachable_ids
+        }
         return {
             "file_path": self.file_path,
             "content_hash": self.content_hash,
             "language": self.language,
             "root_nodes": [n.to_dict() for n in self.root_nodes],
-            "all_nodes_by_id": {nid: n.to_dict() for nid, n in self.all_nodes_by_id.items()},
+            "all_nodes_by_id": extra_nodes,
             "outgoing_edges": [e.to_dict() for e in self.outgoing_edges],
         }
 
@@ -431,11 +449,25 @@ class FileSymbolGraph:
             n if isinstance(n, SymbolNode) else SymbolNode.from_dict(n)
             for n in (raw_roots if isinstance(raw_roots, (list, tuple)) else ())
         )
+        reachable_ids: Set[str] = set()
+
+        def _collect_reachable(nodes: Tuple[SymbolNode, ...]) -> None:
+            for n in nodes:
+                reachable_ids.add(n.id)
+                if n.children:
+                    _collect_reachable(n.children)
+
+        if roots_tup:
+            _collect_reachable(roots_tup)
+
         raw_all = data.get("all_nodes_by_id") or {}
         all_map: Dict[str, SymbolNode] = {}
         if isinstance(raw_all, Mapping):
             for k, v in raw_all.items():
-                all_map[str(k)] = v if isinstance(v, SymbolNode) else SymbolNode.from_dict(v)
+                k_str = str(k)
+                if k_str in reachable_ids:
+                    continue
+                all_map[k_str] = v if isinstance(v, SymbolNode) else SymbolNode.from_dict(v)
         raw_edges = data.get("outgoing_edges") or ()
         edges_tup = tuple(
             e if isinstance(e, RelationEdge) else RelationEdge.from_dict(e)
@@ -575,13 +607,16 @@ class WorkspaceSymbolGraph:
         object.__setattr__(self, "file_graphs", MappingProxyType(fg_map))
 
         nodes_map: Dict[str, SymbolNode] = {}
+        for fg in fg_map.values():
+            for nid, n in fg.all_nodes_by_id.items():
+                nodes_map[nid] = n
         if isinstance(self.nodes_by_id, Mapping) and self.nodes_by_id:
             for k, v in self.nodes_by_id.items():
-                nodes_map[str(k)] = v if isinstance(v, SymbolNode) else SymbolNode.from_dict(v)
-        else:
-            for fg in fg_map.values():
-                for nid, n in fg.all_nodes_by_id.items():
-                    nodes_map[nid] = n
+                k_str = str(k)
+                if isinstance(v, SymbolNode):
+                    nodes_map[k_str] = v
+                elif k_str not in nodes_map:
+                    nodes_map[k_str] = SymbolNode.from_dict(v)
         object.__setattr__(self, "nodes_by_id", MappingProxyType(nodes_map))
 
         edges_tup = tuple(
@@ -647,9 +682,15 @@ class WorkspaceSymbolGraph:
         object.__setattr__(self, "field_types_by_class_id", MappingProxyType(ft_map))
 
     def to_dict(self) -> Dict[str, Any]:
+        fg_node_ids: Set[str] = {
+            nid for fg in self.file_graphs.values() for nid in fg.all_nodes_by_id
+        }
+        standalone_nodes = {
+            k: v.to_dict() for k, v in self.nodes_by_id.items() if k not in fg_node_ids
+        }
         return {
             "file_graphs": {k: v.to_dict() for k, v in self.file_graphs.items()},
-            "nodes_by_id": {k: v.to_dict() for k, v in self.nodes_by_id.items()},
+            "nodes_by_id": standalone_nodes,
             "resolved_edges": [e.to_dict() for e in self.resolved_edges],
             "file_import_tables": {k: v.to_dict() for k, v in self.file_import_tables.items()},
             "folded_symbol_groups": {k: list(v) for k, v in self.folded_symbol_groups.items()},
@@ -666,6 +707,8 @@ class WorkspaceSymbolGraph:
             file_graphs=data.get("file_graphs") or {},
             nodes_by_id=data.get("nodes_by_id") or {},
             resolved_edges=tuple(data.get("resolved_edges") or ()),
+            outgoing_edges_by_source=data.get("outgoing_edges_by_source") or {},
+            incoming_edges_by_target=data.get("incoming_edges_by_target") or {},
             file_import_tables=data.get("file_import_tables") or {},
             folded_symbol_groups=data.get("folded_symbol_groups") or {},
             type_bases_by_id=data.get("type_bases_by_id") or {},
@@ -842,10 +885,7 @@ class LanguageConfig:
             "spaces": list(self.spaces),
             "processors": list(self.processors),
             "receiver_aliases": {k: list(v) for k, v in self.receiver_aliases.items()},
-            "symbol_folding": {
-                k: list(v) if isinstance(v, tuple) else v
-                for k, v in self.symbol_folding.items()
-            },
+            "symbol_folding": _thaw_value(self.symbol_folding),
             "module_resolver": self.module_resolver,
             "edge_refiners": list(self.edge_refiners),
             "parser_entry": self.parser_entry,

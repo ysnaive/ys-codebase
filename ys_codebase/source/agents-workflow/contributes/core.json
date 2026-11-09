@@ -28,10 +28,22 @@
   "spaces": {
     "docs": {
       "description": "專案架構與核心知識文檔空間",
-      "entries": ["workflow.docs://"],
-      "presets": ["workspace"],
-      "exclude": [".git"],
-      "include": ["*.md", "*.txt", "*.json", "*.yaml", "*.yml"],
+      "entries": [
+        "workflow.docs://"
+      ],
+      "presets": [
+        "workspace"
+      ],
+      "exclude": [
+        ".git"
+      ],
+      "include": [
+        "*.md",
+        "*.txt",
+        "*.json",
+        "*.yaml",
+        "*.yml"
+      ],
       "hash_policy": "adaptive",
       "large_file_threshold_mb": 10,
       "follow_symlinks": false,
@@ -39,10 +51,19 @@
     },
     "plans": {
       "description": "專案演進與開發計畫空間",
-      "entries": ["workflow.plans://"],
-      "presets": ["workspace"],
-      "exclude": [".git", "workflow.archived://"],
-      "include": ["*.md"],
+      "entries": [
+        "workflow.plans://"
+      ],
+      "presets": [
+        "workspace"
+      ],
+      "exclude": [
+        ".git",
+        "workflow.archived://"
+      ],
+      "include": [
+        "*.md"
+      ],
       "hash_policy": "adaptive",
       "large_file_threshold_mb": 10,
       "follow_symlinks": false,
@@ -72,7 +93,9 @@
               "force": {
                 "force": {
                   "description": "強制覆蓋歸檔",
-                  "alias": ["f"]
+                  "alias": [
+                    "f"
+                  ]
                 }
               }
             },
@@ -196,7 +219,9 @@
               "scope": {
                 "all": {
                   "description": "包含所有活躍計畫",
-                  "alias": ["a"]
+                  "alias": [
+                    "a"
+                  ]
                 }
               },
               "phase_opt": {
@@ -266,7 +291,9 @@
           "force": {
             "force": {
               "description": "強制完整發布，略過 diff 快取",
-              "alias": ["f"]
+              "alias": [
+                "f"
+              ]
             }
           }
         },
@@ -287,7 +314,11 @@
           "action": {
             "description": "操作動作 (list, add, remove)",
             "required": false,
-            "choice": ["list", "add", "remove"]
+            "choice": [
+              "list",
+              "add",
+              "remove"
+            ]
           },
           "target": {
             "description": "目標名稱 (如 claude, antigravity)",
@@ -298,7 +329,9 @@
           "action_opt": {
             "list": {
               "description": "列出發布目標清單",
-              "alias": ["l"]
+              "alias": [
+                "l"
+              ]
             },
             "add": {
               "description": "新增發布目標",
@@ -320,7 +353,9 @@
           "target_tier": {
             "proj": {
               "description": "作用於專案層級 (config.project.json)",
-              "alias": ["project"]
+              "alias": [
+                "project"
+              ]
             }
           }
         },
@@ -360,7 +395,9 @@
           "display": {
             "list": {
               "description": "列出所有路線圖摘要表格 (自動排除 TODO.md)",
-              "alias": ["l"]
+              "alias": [
+                "l"
+              ]
             }
           },
           "filter_status": {
@@ -598,11 +635,15 @@
           "list_opt": {
             "list": {
               "description": "列出本工作區可抓取之歷史主對話 Session 清單 (自動過濾 Subagent)",
-              "alias": ["l"]
+              "alias": [
+                "l"
+              ]
             },
             "all": {
               "description": "搭配 --list 列出全機跨工作區與 Subagent 之所有歷史 Session",
-              "alias": ["a"]
+              "alias": [
+                "a"
+              ]
             }
           },
           "format": {
@@ -632,14 +673,20 @@
         "tier": "gated",
         "server_compatible": false,
         "options": {
-          "auto": {
+          "confirm": {
             "yes": {
               "description": "自動確認模式",
-              "alias": ["y"]
-            },
+              "alias": [
+                "y"
+              ]
+            }
+          },
+          "mode": {
             "default": {
               "description": "套用建議預設目錄結構"
-            },
+            }
+          },
+          "path_plans": {
             "path-plans": {
               "description": "自訂活躍計畫目錄路徑",
               "args": {
@@ -647,7 +694,9 @@
                   "description": "自訂活躍計畫目錄路徑"
                 }
               }
-            },
+            }
+          },
+          "path_archived": {
             "path-archived": {
               "description": "自訂歷史歸檔計畫目錄路徑",
               "args": {
@@ -655,7 +704,9 @@
                   "description": "自訂歷史歸檔計畫目錄路徑"
                 }
               }
-            },
+            }
+          },
+          "path_docs": {
             "path-docs": {
               "description": "自訂專案知識庫文檔目錄路徑",
               "args": {
@@ -663,7 +714,9 @@
                   "description": "自訂專案知識庫文檔目錄路徑"
                 }
               }
-            },
+            }
+          },
+          "path_roadmap": {
             "path-roadmap": {
               "description": "自訂長期演進路線圖目錄路徑",
               "args": {

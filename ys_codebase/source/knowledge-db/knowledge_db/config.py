@@ -6,6 +6,7 @@ thread budget resolution, and embedding model name normalization.
 """
 
 import json
+import math
 import os
 from pathlib import Path
 from types import MappingProxyType
@@ -81,10 +82,15 @@ def resolve_threads(explicit_threads: Optional[Union[int, str]] = None) -> int:
         if val_str in ("auto", "0", ""):
             return auto_threads
         try:
-            val = int(float(val_str))
-        except ValueError:
+            f_val = float(val_str)
+            if not math.isfinite(f_val):
+                return auto_threads
+            val = int(f_val)
+        except (ValueError, OverflowError):
             return auto_threads
     elif isinstance(target, (int, float)):
+        if not math.isfinite(float(target)):
+            return auto_threads
         val = int(target)
     else:
         return auto_threads
@@ -122,22 +128,26 @@ class KnowledgeDBConfig:
         timeout_ms = 3000
         if jit_vector_timeout_ms is not None and not isinstance(jit_vector_timeout_ms, bool):
             try:
-                timeout_ms = int(float(jit_vector_timeout_ms))
-            except (TypeError, ValueError):
+                f_ms = float(jit_vector_timeout_ms)
+                timeout_ms = int(f_ms) if math.isfinite(f_ms) else 3000
+            except (TypeError, ValueError, OverflowError):
                 timeout_ms = 3000
         elif jit_vector_timeout_seconds is not None and not isinstance(jit_vector_timeout_seconds, bool):
             try:
-                timeout_ms = int(round(float(jit_vector_timeout_seconds) * 1000.0))
-            except (TypeError, ValueError):
+                f_sec = float(jit_vector_timeout_seconds)
+                timeout_ms = int(round(f_sec * 1000.0)) if math.isfinite(f_sec) else 3000
+            except (TypeError, ValueError, OverflowError):
                 timeout_ms = 3000
         self.jit_vector_timeout_ms = max(0, timeout_ms)
 
         batch_val = 32
         if vector_batch_size is not None and not isinstance(vector_batch_size, bool):
             try:
-                parsed_b = int(float(vector_batch_size))
-                batch_val = max(1, parsed_b) if parsed_b > 0 else 32
-            except (TypeError, ValueError):
+                f_b = float(vector_batch_size)
+                if math.isfinite(f_b):
+                    parsed_b = int(f_b)
+                    batch_val = max(1, parsed_b) if parsed_b > 0 else 32
+            except (TypeError, ValueError, OverflowError):
                 batch_val = 32
         self.vector_batch_size = batch_val
 
@@ -147,8 +157,9 @@ class KnowledgeDBConfig:
             self.max_threads = 0
         else:
             try:
-                self.max_threads = max(0, int(float(max_threads)))
-            except (TypeError, ValueError):
+                f_t = float(max_threads)
+                self.max_threads = max(0, int(f_t)) if math.isfinite(f_t) else 0
+            except (TypeError, ValueError, OverflowError):
                 self.max_threads = 0
 
     @property
@@ -192,6 +203,17 @@ class KnowledgeDBConfig:
         sec = raw.get("knowledge-db", raw.get("knowledge_db", raw))
         return dict(sec) if isinstance(sec, dict) else {}
 
+    @staticmethod
+    def _merge_config_layer(target: Dict[str, Any], layer: Dict[str, Any]) -> None:
+        """Merge a higher-precedence config layer while reconciling mutually exclusive timeout unit keys."""
+        if not layer:
+            return
+        if "jit_vector_timeout_seconds" in layer and "jit_vector_timeout_ms" not in layer:
+            target.pop("jit_vector_timeout_ms", None)
+        elif "jit_vector_timeout_ms" in layer and "jit_vector_timeout_seconds" not in layer:
+            target.pop("jit_vector_timeout_seconds", None)
+        target.update(layer)
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "KnowledgeDBConfig":
         """Construct KnowledgeDBConfig from a raw dictionary."""
@@ -232,11 +254,11 @@ class KnowledgeDBConfig:
             for uri_str in ("config://knowledge-db/config.project.json", "config.local://knowledge-db/config.local.json"):
                 p = cls._resolve_config_uri(uri_str)
                 if p and p.exists():
-                    merged.update(cls._extract_config_section(p))
+                    cls._merge_config_layer(merged, cls._extract_config_section(p))
             return cls.from_dict(merged)
 
-        merged.update(cls._extract_config_section(project_config))
-        merged.update(cls._extract_config_section(local_config))
+        cls._merge_config_layer(merged, cls._extract_config_section(project_config))
+        cls._merge_config_layer(merged, cls._extract_config_section(local_config))
         return cls.from_dict(merged)
 
     @staticmethod

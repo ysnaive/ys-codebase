@@ -131,17 +131,46 @@ class _CoreSpaceWatchdogHandler(FileSystemEventHandler):
             )
 
 
+def _strip_macos_private_prefix(path_posix: str) -> str:
+    """Normalizes macOS `/private/var/...` and `/private/tmp/...` paths by stripping leading `/private`."""
+    if path_posix.startswith("/private/"):
+        return path_posix[len("/private") :]
+    return path_posix
+
+
 def _match_prefix_rel(raw_str: str, prefix: str) -> Optional[str]:
     clean_prefix = prefix.rstrip("/") + "/"
     if raw_str.startswith(clean_prefix):
         return raw_str[len(clean_prefix) :]
     if os.name == "nt" and raw_str.lower().startswith(clean_prefix.lower()):
         return raw_str[len(clean_prefix) :]
-    if clean_prefix.startswith("/private/") and raw_str.startswith(clean_prefix[8:]):
-        return raw_str[len(clean_prefix) - 8 :]
-    if raw_str.startswith("/private/") and raw_str[8:].startswith(clean_prefix):
-        return raw_str[8 + len(clean_prefix) :]
+    norm_raw = _strip_macos_private_prefix(raw_str)
+    norm_prefix = _strip_macos_private_prefix(clean_prefix)
+    if norm_raw.startswith(norm_prefix):
+        return norm_raw[len(norm_prefix) :]
     return None
+
+
+def _is_lock_path_active(lock_cand: Path) -> bool:
+    """
+    Probes whether `lock_cand` is actively held via `InterProcessLock` or contains a
+    non-empty `'locked'` sentinel marker. Stale unlocked `.yscb.lock` files return False.
+    """
+    if not lock_cand.is_file():
+        return False
+    try:
+        probe = InterProcessLock(str(lock_cand))
+        if not probe.acquire(blocking=False):
+            return True
+        probe.release()
+    except Exception:
+        return True
+    try:
+        if lock_cand.read_text(encoding="utf-8", errors="ignore").strip().lower() == "locked":
+            return True
+    except OSError:
+        pass
+    return False
 
 
 class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
@@ -154,6 +183,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
 
     DEFAULT_DEBOUNCE_SECONDS = 0.5
     MAX_PATCH_PATHS_THRESHOLD = 200
+    HAS_WATCHDOG = HAS_WATCHDOG
 
     def __init__(
         self,
@@ -201,6 +231,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         self._last_refresh_at: Optional[float] = None
         self._observer: Optional[Any] = None
         self._scheduled_dirs: Set[str] = set()
+        self._scheduled_watches: Dict[str, Any] = {}
         self._state_file_path: Optional[Path] = None
 
     @property
@@ -270,8 +301,17 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         self._thread = None
 
     def is_alive(self) -> bool:
-        """Return whether the background thread is alive."""
-        return bool(self._thread and self._thread.is_alive())
+        """Return whether the background thread is alive (race-free during startup)."""
+        if self._stop_event.is_set():
+            return False
+        th = self._thread
+        if th is not None and th.is_alive():
+            return True
+        return getattr(self, "_state", self.STATE_STOPPED) in (
+            self.STATE_STARTING,
+            self.STATE_READY,
+            self.STATE_UPDATING,
+        )
 
     def health_check(self) -> bool:
         """Probe whether the background watcher service is healthy."""
@@ -292,30 +332,24 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
     def is_transaction_locked(self) -> bool:
         """
         Check whether a global `.yscb.lock` transaction lock is currently active
-        in `project_root`, `yscb_dir`, or `yscb_dir/.cache/.yscb.lock`.
+        in `project_root`, `yscb_dir`, or `yscb_dir/.cache/.yscb.lock` using non-blocking
+        `InterProcessLock` probing so stale unlocked `.yscb.lock` files never freeze watching.
         """
         p_root = self.registry.project_root
         y_dir = self.registry.yscb_dir
 
+        lock_candidates: List[Path] = []
         if "lock_file" in self.context and self.context["lock_file"]:
-            explicit_lock = Path(str(self.context["lock_file"]))
-            if explicit_lock.exists():
-                try:
-                    probe = InterProcessLock(str(explicit_lock))
-                    if probe.acquire(blocking=False):
-                        probe.release()
-                    else:
-                        return True
-                except Exception:
-                    return True
+            lock_candidates.append(Path(str(self.context["lock_file"])))
 
-        if (p_root / ".yscb.lock").exists():
-            return True
-
-        lock_candidates: List[Path] = [
+        for cand in (
+            p_root / ".yscb.lock",
             y_dir / ".yscb.lock",
             y_dir / ".cache" / ".yscb.lock",
-        ]
+        ):
+            if cand not in lock_candidates:
+                lock_candidates.append(cand)
+
         try:
             from core import uri
 
@@ -328,15 +362,8 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
             pass
 
         for lock_cand in lock_candidates:
-            if lock_cand.exists():
-                try:
-                    probe = InterProcessLock(str(lock_cand))
-                    if probe.acquire(blocking=False):
-                        probe.release()
-                    else:
-                        return True
-                except Exception:
-                    return True
+            if _is_lock_path_active(lock_cand):
+                return True
         return False
 
     def _extract_rel_for_fast_ignore(self, raw_str: str) -> str:
@@ -711,7 +738,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         target = self._resolve_watcher_state_path()
         write_watcher_state(
             watched_spaces=self._watched_space_names(),
-            watchdog_running=self._observer is not None,
+            watchdog_running=bool(self._observer is not None or (not HAS_WATCHDOG and self.is_alive())),
             project_root=self.registry.project_root,
             yscb_dir=self.registry.yscb_dir,
             state_file=target,
@@ -729,7 +756,8 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
     def sync_watched_directories(self) -> List[str]:
         """
         Synchronize `watchdog` Observer schedules across all spaces with `watch=True`
-        (including composed child entries and newly defined runtime ephemeral spaces).
+        (including composed child entries and newly defined runtime ephemeral spaces),
+        and unschedule any removed directories to release OS directory handles.
         """
         desired_dirs: List[Path] = []
         seen_norm: Set[str] = set()
@@ -743,7 +771,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                     seen_norm.add(norm_k)
                     desired_dirs.append(watch_dir)
 
-        if HAS_WATCHDOG and Observer is not None and not self._stop_event.is_set():
+        if ((HAS_WATCHDOG and Observer is not None) or self._observer is not None) and not self._stop_event.is_set():
             with self._lock:
                 if self._observer is None and desired_dirs:
                     try:
@@ -755,15 +783,28 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                         self._observer = None
 
                 if self._observer is not None:
+                    stale_keys = [k for k in self._scheduled_dirs if k not in seen_norm]
+                    for stale_k in stale_keys:
+                        self._scheduled_dirs.discard(stale_k)
+                        watch_obj = self._scheduled_watches.pop(stale_k, None)
+                        if watch_obj is not None:
+                            try:
+                                unsched_fn = getattr(self._observer, "unschedule", None)
+                                if callable(unsched_fn):
+                                    unsched_fn(watch_obj)
+                            except Exception:
+                                pass
+
                     handler = _CoreSpaceWatchdogHandler(self)
                     for w_dir in desired_dirs:
                         norm_k = os.path.normcase(str(w_dir))
                         if norm_k not in self._scheduled_dirs:
                             try:
-                                self._observer.schedule(
+                                watch_obj = self._observer.schedule(
                                     handler, str(w_dir), recursive=True
                                 )
                                 self._scheduled_dirs.add(norm_k)
+                                self._scheduled_watches[norm_k] = watch_obj
                             except Exception as exc:
                                 log_warn(
                                     f"Failed to schedule watchdog on '{w_dir}': {exc}"
@@ -779,6 +820,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
             obs = self._observer
             self._observer = None
             self._scheduled_dirs.clear()
+            self._scheduled_watches.clear()
         if obs is not None:
             try:
                 obs.stop()

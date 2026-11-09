@@ -9,10 +9,10 @@ from types import MappingProxyType
 from typing import Dict, FrozenSet, List, Mapping, Optional, Set, Tuple
 
 VALID_STATUSES: FrozenSet[str] = frozenset({
-    "draft", "confirmed", "in progress", "in_progress",
+    "draft", "confirmed", "in progress", "in_progress", "implementing",
     "passed", "completed", "active", "archived", "pending", "review",
     "discussing", "planning", "executing", "concluded", "aborted", "cancelled",
-    "backlog", "proposed", "ready", "deferred", "seeded",
+    "backlog", "proposed", "ready", "deferred", "seeded", "phase 0",
 })
 
 ORIGIN_SEED_FILES: FrozenSet[str] = frozenset({"roadmap.md", "todo.md"})

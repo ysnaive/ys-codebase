@@ -3,7 +3,11 @@ Core Platform - Cross-Platform OS & Process Abstraction SDK.
 """
 
 from core.platform import daemon_probe
-from core.platform.lock import InterProcessLock, LockAcquisitionError
+from core.platform.lock import (
+    InterProcessLock,
+    LockAcquisitionError,
+    is_transaction_locked,
+)
 from core.platform.process import (
     can_spawn_background_daemon,
     get_host_memory_info,
@@ -25,6 +29,7 @@ from core.platform.venv import (
     init_subprocess_sys_path,
     list_installed_module_roots,
     list_module_search_roots,
+    remove_inserted_sys_paths,
     restore_process_env_and_cwd,
     restore_sys_path,
 )
@@ -43,11 +48,13 @@ __all__ = (
     "reap_sandbox_processes",
     "InterProcessLock",
     "LockAcquisitionError",
+    "is_transaction_locked",
     "ensure_private_venv",
     "get_venv_site_packages",
     "list_installed_module_roots",
     "list_module_search_roots",
     "ensure_installed_modules_path",
+    "remove_inserted_sys_paths",
     "build_runtime_pythonpath",
     "init_subprocess_sys_path",
     "activate_test_module_source_path",

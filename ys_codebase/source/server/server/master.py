@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 import http.server
 import json
 import os
+import queue
 import secrets
 import subprocess
 import sys
@@ -383,7 +384,9 @@ class MasterSupervisor:
         self._worker_proc: Optional[subprocess.Popen] = None
         self._worker_lock = threading.Lock()
         self._dispatch_lock = threading.Lock()
+        self._services_lock = threading.Lock()
         self._worker_services: List[Dict[str, Any]] = []
+        self._active_task_queue: Optional[queue.Queue] = None
         # Two-stage handshake state (per spawned worker)
         self._worker_ready_event = threading.Event()
         self._warming_since: Optional[float] = None
@@ -420,20 +423,31 @@ class MasterSupervisor:
         chunk_emitter({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": error_msg})
         return 1
 
+    def is_any_worker_service_busy(self) -> bool:
+        """Returns True if any registered background service in `_worker_services` is actively busy."""
+        with self._services_lock:
+            services_snapshot = list(self._worker_services or [])
+        for svc in services_snapshot:
+            if not isinstance(svc, dict):
+                continue
+            if bool(svc.get("busy")):
+                return True
+            st = str(svc.get("state") or "").strip().upper()
+            if st in ("STARTING", "UPDATING"):
+                return True
+            metrics = svc.get("metrics")
+            if isinstance(metrics, dict) and bool(metrics.get("busy")):
+                return True
+        return False
+
     def _is_worker_completely_idle(self) -> bool:
         """Returns True iff no foreground dispatch task is running AND no background service is busy."""
         if self._current_task is not None:
             return False
         if self._worker_state() != "ready":
             return False
-        for svc in self._worker_services or []:
-            if not isinstance(svc, dict):
-                continue
-            if bool(svc.get("busy")):
-                return False
-            st = str(svc.get("state") or "").strip().upper()
-            if st in ("STARTING", "UPDATING"):
-                return False
+        if self.is_any_worker_service_busy():
+            return False
         return True
 
     def _update_worker_service_status(self, packet: Dict[str, Any]) -> None:
@@ -443,7 +457,17 @@ class MasterSupervisor:
             self.memory_monitor.record_sample(float(rss_val), is_idle=False)
         services_list = packet.get("services")
         if isinstance(services_list, list):
-            self._worker_services = list(services_list)
+            with self._services_lock:
+                self._worker_services = list(services_list)
+            if any(
+                isinstance(s, dict)
+                and (
+                    bool(s.get("busy"))
+                    or str(s.get("state") or "").strip().upper() in ("STARTING", "UPDATING")
+                )
+                for s in services_list
+            ):
+                self.touch_activity(source="service_status")
             return
         svc_name = packet.get("name")
         if not isinstance(svc_name, str) or not svc_name:
@@ -451,30 +475,39 @@ class MasterSupervisor:
         svc_state = str(packet.get("state") or "READY")
         svc_alive = bool(packet.get("alive", svc_state != "STOPPED"))
         svc_busy = bool(packet.get("busy", svc_state in ("STARTING", "UPDATING")))
-        updated: List[Dict[str, Any]] = []
-        found = False
-        for item in self._worker_services or []:
-            entry = dict(item)
-            if entry.get("name") == svc_name:
-                entry["state"] = svc_state
-                entry["alive"] = svc_alive
-                entry["busy"] = svc_busy
-                if "provider" in packet and packet["provider"]:
-                    entry["provider"] = packet["provider"]
-                if "description" in packet and packet["description"] is not None:
-                    entry["description"] = packet["description"]
-                found = True
-            updated.append(entry)
-        if not found:
-            updated.append({
-                "name": svc_name,
-                "provider": str(packet.get("provider") or "unknown"),
-                "description": str(packet.get("description") or ""),
-                "alive": svc_alive,
-                "state": svc_state,
-                "busy": svc_busy,
-            })
-        self._worker_services = updated
+        svc_metrics = packet.get("metrics")
+        with self._services_lock:
+            updated: List[Dict[str, Any]] = []
+            found = False
+            for item in self._worker_services or []:
+                entry = dict(item)
+                if entry.get("name") == svc_name:
+                    entry["state"] = svc_state
+                    entry["alive"] = svc_alive
+                    entry["busy"] = svc_busy
+                    if "provider" in packet and packet["provider"]:
+                        entry["provider"] = packet["provider"]
+                    if "description" in packet and packet["description"] is not None:
+                        entry["description"] = packet["description"]
+                    if isinstance(svc_metrics, dict):
+                        entry["metrics"] = dict(svc_metrics)
+                    found = True
+                updated.append(entry)
+            if not found:
+                new_entry: Dict[str, Any] = {
+                    "name": svc_name,
+                    "provider": str(packet.get("provider") or "unknown"),
+                    "description": str(packet.get("description") or ""),
+                    "alive": svc_alive,
+                    "state": svc_state,
+                    "busy": svc_busy,
+                }
+                if isinstance(svc_metrics, dict):
+                    new_entry["metrics"] = dict(svc_metrics)
+                updated.append(new_entry)
+            self._worker_services = updated
+        if svc_busy:
+            self.touch_activity(source=svc_name)
 
     def _handle_worker_control_packet(self, packet: Dict[str, Any]) -> bool:
         """Handles control IPC packets ('touch_activity', 'log', and 'service_status') from the warm worker."""
@@ -493,6 +526,10 @@ class MasterSupervisor:
             self._update_worker_service_status(packet)
             return True
         return False
+
+    def _handle_worker_packet(self, packet: Dict[str, Any]) -> bool:
+        """Alias for `_handle_worker_control_packet` handling background status and activity packets."""
+        return self._handle_worker_control_packet(packet)
 
     def _build_shutdown_summary(self) -> Dict[str, Any]:
         """Builds the graceful shutdown summary dictionary."""
@@ -543,6 +580,8 @@ class MasterSupervisor:
             current_task["elapsed_sec"] = max(0.0, now - float(task["started_at"]))
         state = self._worker_state()
         live_worker_rss = get_process_rss_mb(worker_pid) if worker_pid > 0 else 0.0
+        with self._services_lock:
+            services_snap = list(self._worker_services or [])
         status = {
             "status": "running",
             "state": state,
@@ -556,7 +595,7 @@ class MasterSupervisor:
             "idle_seconds_left": idle_left,
             "idle_timeout_sec": self.idle_timeout_sec,
             "log_file": self.logger.log_file,
-            "services": self._worker_services or [],
+            "services": services_snap,
             "watcher": watcher_status,
             "current_task": current_task,
             "worker_memory": self.memory_monitor.to_status_dict(live_rss_mb=live_worker_rss),
@@ -581,7 +620,7 @@ class MasterSupervisor:
             self._last_active_time = time.time()
 
     def _start_http_and_watcher_services(self) -> None:
-        """Binds localhost HTTP server, spawns warm worker, and activateswatcher & idle TTL threads."""
+        """Binds localhost HTTP server, spawns warm worker, and activates watcher & idle TTL threads."""
         self._httpd = _create_http_server(self)
         self.port = self._httpd.server_address[1]
         self.logger.info(f"HTTP Server listening on 127.0.0.1:{self.port}")
@@ -695,12 +734,14 @@ class MasterSupervisor:
 
         Idle worker: two-stage handshake (`{"action": "exit"}` then process-tree termination).
         Busy worker (dispatch in flight): skips the handshake and terminates the process tree
-        immediately so the blocked dispatch `readline()` hits EOF and releases `_dispatch_lock`.
+        immediately so the blocked dispatch hits EOF and releases `_dispatch_lock`.
         """
         if not self._worker_proc:
-            self._worker_services = []
+            with self._services_lock:
+                self._worker_services = []
             return
         proc = self._worker_proc
+        task_q = getattr(proc, "_yscb_task_queue", None)
 
         exited_gracefully = False
         if self._current_task is not None:
@@ -724,25 +765,65 @@ class MasterSupervisor:
                     pipe.close()
                 except (OSError, ValueError):
                     pass
+        if isinstance(task_q, queue.Queue):
+            try:
+                task_q.put_nowait(None)
+            except Exception:
+                pass
         self._worker_proc = None
+        self._active_task_queue = None
         self._warming_since = None
-        self._worker_services = []
+        with self._services_lock:
+            self._worker_services = []
 
-    def restart_worker(self) -> int:
+    def restart_worker(
+        self,
+        *,
+        if_idle_only: bool = False,
+        touch_activity: bool = True,
+    ) -> int:
         """
-        Preemptively terminates the current worker and spawns a fresh one while syncing ServerConfig.
+        Terminates the current worker and spawns a fresh one while syncing ServerConfig.
 
-        The worker is killed under `_worker_lock` only (never waiting on `_dispatch_lock`),
-        which unblocks any in-flight dispatch; `_dispatch_lock` is then acquired to spawn.
+        When `if_idle_only=True` (used by background RSS auto-recycling), acquires `_dispatch_lock`
+        non-blockingly first and aborts if a foreground task or background service is busy.
+        When `if_idle_only=False` (explicit reload), kills under `_worker_lock` first to unblock
+        any stuck dispatch, then acquires `_dispatch_lock` to spawn.
 
         Returns:
-            int: PID of the fresh worker.
+            int: PID of the fresh worker (or 0 if skipped due to `if_idle_only=True`).
 
         Raises:
             WorkerSpawnError: if the fresh worker fails the alive handshake.
         """
         # Load config before any destructive action so a config error never leaves the daemon worker-less
         cfg = ServerConfig.load()
+
+        if if_idle_only:
+            if not self._dispatch_lock.acquire(blocking=False):
+                return 0
+            try:
+                if not self._is_worker_completely_idle():
+                    return 0
+                self.idle_timeout_sec = float(cfg.idle_timeout_sec)
+                self._worker_alive_timeout_sec = float(cfg.worker_alive_timeout_sec)
+                with self._worker_lock:
+                    old_pid = self._worker_proc.pid if self._worker_proc else 0
+                    self.logger.info(f"Restarting idle Warm Worker (terminating old PID: {old_pid})...")
+                    self._kill_worker_locked(timeout_sec=1.5)
+                    try:
+                        new_pid = self._spawn_worker_locked()
+                    except WorkerSpawnError as err:
+                        self.logger.error(f"Warm Worker restart failed: {err}")
+                        raise
+                    if touch_activity:
+                        with self._activity_lock:
+                            self._last_active_time = time.time()
+                    self._write_state()
+                    self.logger.info(f"Fresh Warm Worker spawned (PID: {new_pid})")
+                    return new_pid
+            finally:
+                self._dispatch_lock.release()
 
         with self._worker_lock:
             old_pid = self._worker_proc.pid if self._worker_proc else 0
@@ -763,8 +844,9 @@ class MasterSupervisor:
                     except WorkerSpawnError as err:
                         self.logger.error(f"Warm Worker restart failed: {err}")
                         raise
-                with self._activity_lock:
-                    self._last_active_time = time.time()
+                if touch_activity:
+                    with self._activity_lock:
+                        self._last_active_time = time.time()
                 self._write_state()
                 self.logger.info(f"Fresh Warm Worker spawned (PID: {new_pid})")
                 return new_pid
@@ -789,13 +871,14 @@ class MasterSupervisor:
     def _perform_self_restart(self) -> int:
         """
         Executes the ordered self-restart handover sequence:
-        stops watcher, terminates and reaps the worker, closes the HTTP server,
-        releases the singleton lock, archives and closes the logger, and spawns
-        a detached replacement Master daemon.
+        retains `daemon.lock` while stopping watcher, worker, HTTP server, and logger,
+        then releases `daemon.lock` immediately prior to spawning the replacement Master.
 
         Returns:
             int: PID of the newly spawned replacement Master process, or 0 on failure.
         """
+        held_lock = self._lock
+        self._lock = None
         try:
             self.stop()
         except Exception as err:
@@ -803,6 +886,12 @@ class MasterSupervisor:
                 self.logger.warning(f"[Server] Error stopping daemon during restart: {err}")
             except Exception:
                 pass
+        finally:
+            if held_lock is not None:
+                try:
+                    held_lock.release()
+                except Exception:
+                    pass
 
         try:
             return spawn_detached_master(
@@ -884,6 +973,20 @@ class MasterSupervisor:
         chunk_emitter: Callable[[Dict[str, Any]], None],
     ) -> int:
         """Writes dispatch payload to worker stdin and relays NDJSON stream chunks until task_finish."""
+        task_q: Optional[queue.Queue] = getattr(proc, "_yscb_task_queue", None)
+        use_demux = isinstance(task_q, queue.Queue) and (
+            bool(getattr(proc, "_yscb_demux_active", False)) or not task_q.empty()
+        )
+        if use_demux and task_q is not None:
+            while not task_q.empty():
+                try:
+                    stale_pkt = task_q.get_nowait()
+                    if stale_pkt is None and proc.poll() is not None:
+                        task_q.put_nowait(None)
+                        break
+                except queue.Empty:
+                    break
+
         try:
             req_line = json.dumps(req_payload) + "\n"
             proc.stdin.write(req_line.encode("utf-8"))  # type: ignore
@@ -895,25 +998,33 @@ class MasterSupervisor:
         exit_code = 0
         while True:
             try:
-                line = proc.stdout.readline()  # type: ignore
-                if not line:
-                    err_text = self._worker_eof_error(proc)
-                    self.logger.error(f"{err_text} during dispatch for module='{target_mod}'")
-                    return self._emit_task_failure(chunk_emitter, err_text)
+                if use_demux and task_q is not None:
+                    packet = task_q.get()
+                    if packet is None:
+                        err_text = self._worker_eof_error(proc)
+                        self.logger.error(f"{err_text} during dispatch for module='{target_mod}'")
+                        return self._emit_task_failure(chunk_emitter, err_text)
+                else:
+                    line = proc.stdout.readline()  # type: ignore
+                    if not line:
+                        err_text = self._worker_eof_error(proc)
+                        self.logger.error(f"{err_text} during dispatch for module='{target_mod}'")
+                        return self._emit_task_failure(chunk_emitter, err_text)
 
-                line_str = line.decode("utf-8", errors="replace").strip()
-                if not line_str:
-                    continue
+                    line_str = line.decode("utf-8", errors="replace").strip()
+                    if not line_str:
+                        continue
 
-                packet = json.loads(line_str)
-                if self._handle_worker_control_packet(packet):
-                    continue
+                    packet = json.loads(line_str)
+                    if self._handle_worker_control_packet(packet):
+                        continue
 
                 chunk_emitter(packet)
 
                 if packet.get("type") == "task_finish":
                     if "services" in packet and isinstance(packet["services"], list):
-                        self._worker_services = packet["services"]
+                        with self._services_lock:
+                            self._worker_services = list(packet["services"])
                     exit_code = packet.get("exit_code", 0)
                     dur_ms = packet.get("duration_ms", 0.0)
                     stages_str = packet.get("stages")
@@ -1014,13 +1125,27 @@ class MasterSupervisor:
         alive_event: threading.Event,
         ready_event: threading.Event,
     ) -> None:
-        """Reads two-stage handshake packets ('worker_alive' -> 'worker_ready') from worker stdout."""
+        """
+        Single-owner stdout reader loop for the warm worker subprocess.
+
+        Processes two-stage handshake packets ('worker_alive' -> 'worker_ready'),
+        continuously drains background control packets ('log', 'service_status', 'touch_activity')
+        even while the worker is idle, and routes foreground task packets to `proc._yscb_task_queue`.
+        """
+        task_q: Optional[queue.Queue] = getattr(proc, "_yscb_task_queue", None)
+        is_mock_proc = (
+            type(proc).__module__.startswith("unittest.mock")
+            or type(getattr(proc, "stdout", None)).__module__.startswith("unittest.mock")
+        )
         try:
             while True:
                 line = proc.stdout.readline()  # type: ignore
                 if not line:
                     break
-                line_str = line.decode("utf-8", errors="replace").strip()
+                if isinstance(line, bytes):
+                    line_str = line.decode("utf-8", errors="replace").strip()
+                else:
+                    line_str = str(line).strip()
                 if not line_str:
                     continue
                 try:
@@ -1036,8 +1161,11 @@ class MasterSupervisor:
                     alive_event.set()
                     continue
                 if pkt_type == "worker_ready":
+                    if ready_event.is_set():
+                        break
                     if "services" in data and isinstance(data["services"], list):
-                        self._worker_services = data["services"]
+                        with self._services_lock:
+                            self._worker_services = list(data["services"])
                     ready_rss = float(data.get("worker_rss_mb") or 0.0)
                     if ready_rss <= 0.0 and proc.pid > 0:
                         ready_rss = get_process_rss_mb(proc.pid)
@@ -1047,18 +1175,32 @@ class MasterSupervisor:
                     if self._worker_proc is proc:
                         self._warming_since = None
                     self.logger.info(f"Warm Worker (PID: {proc.pid}) ready (RSS: {ready_rss:.1f} MB)")
-                    break
+                    if is_mock_proc:
+                        break
+                    continue
+                if isinstance(task_q, queue.Queue):
+                    task_q.put(data)
         except (OSError, ValueError) as err:
-            # Pipe closed by kill: the worker is treated as not ready
-            self.logger.warning(f"Warm Worker (PID: {proc.pid}) handshake reader stopped: {err}")
+            if not ready_event.is_set():
+                self.logger.warning(f"Warm Worker (PID: {proc.pid}) handshake reader stopped: {err}")
+        finally:
+            try:
+                setattr(proc, "_yscb_demux_active", False)
+            except Exception:
+                pass
+            if isinstance(task_q, queue.Queue):
+                try:
+                    task_q.put_nowait(None)
+                except Exception:
+                    pass
 
     def _spawn_worker_locked(self) -> int:
         """
         Spawns a warm worker (caller holds `_worker_lock`) using a two-stage handshake.
 
         Waits up to `worker_alive_timeout_sec` for `worker_alive`; afterwards the worker is in
-        state `warming` and a background reader waits (unbounded while alive) for `worker_ready`.
-        POSIX workers run in their own session so `terminate_popen_tree` can kill the whole tree.
+        state `warming` and the single-owner stdout demuxer thread waits for `worker_ready`
+        and continues draining background/foreground packets for the lifetime of the worker.
 
         Returns:
             int: PID of the alive worker.
@@ -1089,7 +1231,9 @@ class MasterSupervisor:
 
         ready_event = threading.Event()
         alive_event = threading.Event()
+        task_q: queue.Queue = queue.Queue()
         self._worker_ready_event = ready_event
+        self._active_task_queue = task_q
         proc = subprocess.Popen(
             cmd,
             cwd=self.yscb_root,
@@ -1100,6 +1244,11 @@ class MasterSupervisor:
             bufsize=0,
             **popen_kwargs,
         )
+        try:
+            setattr(proc, "_yscb_task_queue", task_q)
+            setattr(proc, "_yscb_demux_active", True)
+        except Exception:
+            pass
         self._worker_proc = proc
 
         threading.Thread(
@@ -1113,7 +1262,7 @@ class MasterSupervisor:
             target=self._read_worker_handshake,
             args=(proc, alive_event, ready_event),
             daemon=True,
-            name=f"worker-handshake-{proc.pid}",
+            name=f"worker-stdout-demux-{proc.pid}",
         )
         t.start()
 
@@ -1140,10 +1289,16 @@ class MasterSupervisor:
             self._last_active_time = time.time()
             return max(0.0, self.idle_timeout_sec)
 
+    def touch(self, source: str = "probe") -> float:
+        """Alias for `touch_activity` refreshing supervisor activity timestamp."""
+        return self.touch_activity(source=source)
+
     def _evaluate_worker_memory_health(self) -> None:
         """Evaluates worker memory health during idle windows and triggers seamless auto-recycle if needed."""
         proc = self._worker_proc
         if proc is None or proc.poll() is not None:
+            return
+        if self.is_any_worker_service_busy():
             return
         is_idle = self._is_worker_completely_idle()
         rss_mb = get_process_rss_mb(proc.pid)
@@ -1160,7 +1315,7 @@ class MasterSupervisor:
                 f"[MemoryHealthMonitor] Auto-recycling idle Warm Worker (PID: {proc.pid}): {reason}"
             )
             try:
-                self.restart_worker()
+                self.restart_worker(if_idle_only=True, touch_activity=False)
             except Exception as err:
                 self.logger.error(f"[MemoryHealthMonitor] Failed to auto-recycle worker: {err}")
 

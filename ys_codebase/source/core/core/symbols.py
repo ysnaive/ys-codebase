@@ -98,23 +98,39 @@ def parse_code_func_uri(uri_str: str) -> Tuple[str, str, str]:
     return module_name, subpath, function_name
 
 
+def _locate_physical_module_file(module_name: str, mod_pkg: str, subpath: str) -> Optional[str]:
+    """Locates the physical `.py` file for `(module_name, subpath)` via VFS if present."""
+    file_candidates = [
+        f"module://{module_name}/{subpath}.py",
+        f"module://{module_name}/{mod_pkg}/{subpath}.py",
+        f"module://{module_name}/{subpath}/__init__.py",
+        f"module://{module_name}/{mod_pkg}/{subpath}/__init__.py",
+    ]
+    if get_env("YSCB_TEST_SANDBOX") == "1":
+        file_candidates.extend([
+            f"module.source://{module_name}/{mod_pkg}/{subpath}.py",
+            f"module.source://{module_name}/{subpath}.py",
+            f"module.source://{module_name}/{mod_pkg}/{subpath}/__init__.py",
+            f"module.source://{module_name}/{subpath}/__init__.py",
+        ])
+    for f_uri in file_candidates:
+        try:
+            if vfs.exists(f_uri):
+                real_p = uri.resolve(f_uri)
+                if os.path.isfile(real_p):
+                    return os.path.normpath(os.path.abspath(real_p))
+        except Exception:
+            continue
+    return None
+
+
 def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: bool = True) -> Callable[..., Any]:
     """
     解析 code.func:// 協議並動態載入返回 Python 可呼叫物件 (Callable)。
 
     雙軌尋址策略：
-      1. [軌道 1: Package Import] 優先透過 Python sys.modules 或標準 importlib 載入。
-      2. [軌道 2: VFS Spec Import] 透過語意 URI (module.root://, module.source.root://) 尋找實體 .py 檔案載入。
-
-    Args:
-        uri_str: code.func:// 協議字串
-        context: 可選之執行期/編譯期上下文
-        use_cache: 是否使用載入快取
-    Returns:
-        Python Callable 物件
-    Raises:
-        InvalidSymbolURIError: 格式錯誤
-        SymbolNotFoundError: 模組或函式符號不存在、非 Callable
+      1. [軌道 1: Package Import] 優先透過 Python sys.modules 或標準 importlib 載入（並同步校驗實體檔案 mtime_ns/size 防止舊版快取）。
+      2. [軌道 2: VFS Spec Import] 透過語意 URI (module://, module.source://) 尋找實體 .py 檔案委派 `core.loader` 載入。
     """
     try:
         yscb_root_key = os.path.normpath(uri.resolve_yscb_root())
@@ -122,6 +138,7 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
         yscb_root_key = ""
     cache_key = (yscb_root_key, uri_str)
     callable_cache = _get_callable_cache()
+    stale_on_disk = False
     if use_cache:
         for ck in (cache_key, uri_str):
             if ck in callable_cache:
@@ -133,19 +150,22 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
                     cur_mtime, cur_size = _file_generation(f_path)
                     if cur_mtime != -1 and cur_mtime == c_mtime and cur_size == c_size:
                         return cached_fn
+                    stale_on_disk = True
                 callable_cache.pop(ck, None)
 
     module_name, subpath, function_name = parse_code_func_uri(uri_str)
     mod_pkg = module_name.replace("-", "_")
+    script_stem = subpath.replace("/", "_").replace(".", "_")
+    mod_unique_key = f"_yscb_mod_{mod_pkg}_{script_stem}"
 
     from core.platform import ensure_installed_modules_path
     ensure_installed_modules_path(priority_module=module_name)
 
     loaded_mod = None
     resolved_file_meta: Optional[Tuple[str, int, int]] = None
+    physical_candidate = _locate_physical_module_file(module_name, mod_pkg, subpath)
 
     # --- 軌道 1: 嘗試標準 Package Import ---
-    # 嘗試模組名與 subpath 的組合（例：agents_workflow.providers 或 agents_workflow）
     import_candidates = []
     subpath_dots = subpath.replace("/", ".")
     if subpath_dots.startswith(f"{mod_pkg}."):
@@ -154,70 +174,55 @@ def resolve_callable(uri_str: str, context: Optional[Any] = None, use_cache: boo
         import_candidates.append(f"{mod_pkg}.{subpath_dots}")
         import_candidates.append(subpath_dots)
 
-    for imp_cand in import_candidates:
+    for imp_cand in ([] if stale_on_disk else import_candidates):
         try:
             cand_mod = importlib.import_module(imp_cand)
             if cand_mod is not None:
-                # 若該模組係由 Track 2 VFS loader 先前載入，交由 Track 2 執行 (mtime_ns, size) 校驗與重載
                 cand_name = getattr(cand_mod, "__name__", "")
-                if cand_name.startswith("_yscb_") or get_cached_module(f"_yscb_mod_{mod_pkg}_{subpath.replace('/', '_').replace('.', '_')}") is cand_mod:
+                if cand_name.startswith("_yscb_") or get_cached_module(mod_unique_key) is cand_mod:
                     continue
+                cand_file = getattr(cand_mod, "__file__", None)
+                if cand_file and os.path.isfile(cand_file):
+                    norm_cand_file = os.path.normpath(os.path.abspath(cand_file))
+                    if physical_candidate and norm_cand_file != physical_candidate:
+                        # Different physical file on disk in current workspace -> fall through to Track 2
+                        continue
+                    cur_mtime, cur_size = _file_generation(norm_cand_file)
+                    cached_loader_mod = get_cached_module(mod_unique_key)
+                    if cached_loader_mod is not None:
+                        continue
+                    resolved_file_meta = (norm_cand_file, cur_mtime, cur_size)
                 loaded_mod = cand_mod
                 break
         except (ImportError, ModuleNotFoundError):
             continue
 
     # --- 軌道 2: 嘗試 VFS 實體檔案載入 ---
-    if loaded_mod is None:
-        file_candidates = [
-            f"module://{module_name}/{subpath}.py",
-            f"module://{module_name}/{mod_pkg}/{subpath}.py",
-        ]
-        if get_env("YSCB_TEST_SANDBOX") == "1":
-            file_candidates.extend([
-                f"module.source://{module_name}/{mod_pkg}/{subpath}.py",
-                f"module.source://{module_name}/{subpath}.py",
-            ])
+    if loaded_mod is None and physical_candidate is not None:
+        real_file_path = physical_candidate
+        cur_mtime, cur_size = _file_generation(real_file_path)
+        resolved_file_meta = (real_file_path, cur_mtime, cur_size)
+        dot_name = subpath.replace("/", ".")
+        full_mod_name = dot_name if dot_name.startswith(f"{mod_pkg}.") else f"{mod_pkg}.{dot_name}"
+        try:
+            mod_dir = os.path.dirname(real_file_path)
+            mod_parent = os.path.dirname(mod_dir)
+            extra_dirs = [p_cand for p_cand in (mod_dir, mod_parent) if p_cand and os.path.isdir(p_cand)]
+            ensure_installed_modules_path(
+                priority_module=module_name,
+                extra_paths=extra_dirs,
+            )
 
-        for f_uri in file_candidates:
-            if vfs.exists(f_uri):
-                real_file_path = uri.resolve(f_uri)
-                if os.path.isfile(real_file_path):
-                    norm_real_path = os.path.normpath(os.path.abspath(real_file_path))
-                    cur_mtime, cur_size = _file_generation(norm_real_path)
-                    resolved_file_meta = (norm_real_path, cur_mtime, cur_size)
-                    script_stem = subpath.replace("/", "_").replace(".", "_")
-                    mod_unique_key = f"_yscb_mod_{mod_pkg}_{script_stem}"
-                    dot_name = subpath.replace("/", ".")
-                    full_mod_name = dot_name if dot_name.startswith(f"{mod_pkg}.") else f"{mod_pkg}.{dot_name}"
-                    try:
-                        mod_dir = os.path.dirname(real_file_path)
-                        mod_parent = os.path.dirname(mod_dir)
-                        extra_dirs = [p_cand for p_cand in (mod_dir, mod_parent) if p_cand and os.path.isdir(p_cand)]
-                        ensure_installed_modules_path(
-                            priority_module=module_name,
-                            extra_paths=extra_dirs,
-                        )
-
-                        if os.path.isfile(os.path.join(mod_dir, "__init__.py")):
-                            pkg_name = os.path.basename(mod_dir)
-                            sub_stem = os.path.splitext(os.path.basename(real_file_path))[0]
-                            pkg_mod_name = pkg_name if sub_stem == "__init__" else f"{pkg_name}.{sub_stem}"
-                            if get_cached_module(mod_unique_key) is None:
-                                loaded_mod = importlib.import_module(pkg_mod_name)
-                                break
-
-                        loaded_mod = load_module_from_path(
-                            mod_unique_key,
-                            real_file_path,
-                            alias_keys=(full_mod_name, subpath.replace("/", ".")),
-                            reload_if_changed=True,
-                        )
-                        break
-                    except Exception as e:
-                        raise SymbolNotFoundError(
-                            f"Failed to load module file '{real_file_path}' for symbol URI '{uri_str}': {e}"
-                        ) from e
+            loaded_mod = load_module_from_path(
+                mod_unique_key,
+                real_file_path,
+                alias_keys=(full_mod_name, subpath.replace("/", ".")),
+                reload_if_changed=True,
+            )
+        except Exception as e:
+            raise SymbolNotFoundError(
+                f"Failed to load module file '{real_file_path}' for symbol URI '{uri_str}': {e}"
+            ) from e
 
     if loaded_mod is None:
         raise SymbolNotFoundError(

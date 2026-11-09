@@ -147,6 +147,25 @@ class SymbolSelector:
     )
 
     @classmethod
+    def _fallback_parse(cls, clean_expr: str) -> ParsedSelector:
+        is_call = clean_expr.endswith("()")
+        base = clean_expr[:-2].strip() if is_call else clean_expr
+        scope = None
+        if "." in base:
+            parts = base.split(".")
+            scope = ".".join(parts[:-1])
+            name = parts[-1]
+        else:
+            name = base
+        return ParsedSelector(
+            raw_query=clean_expr,
+            identifier=name,
+            scope=scope,
+            target_kinds=None,
+            is_callable=is_call,
+        )
+
+    @classmethod
     def parse(cls, expr: str) -> ParsedSelector:
         """
         解析選擇器語法表達式為 ParsedSelector
@@ -165,23 +184,7 @@ class SymbolSelector:
 
         m = cls._PATTERN.match(clean_expr)
         if not m:
-            # 寬容回退處理：若無法正規匹配，作為純識別符查詢
-            # 檢測尾端是否有 ()
-            is_call = clean_expr.endswith("()")
-            base = clean_expr[:-2].strip() if is_call else clean_expr
-            scope = None
-            if "." in base:
-                parts = base.split(".")
-                scope = ".".join(parts[:-1])
-                name = parts[-1]
-            else:
-                name = base
-            return ParsedSelector(
-                raw_query=clean_expr,
-                identifier=name,
-                scope=scope,
-                is_callable=is_call,
-            )
+            return cls._fallback_parse(clean_expr)
 
         kind_str = m.group("kind")
         scope_str = m.group("scope")
@@ -190,8 +193,10 @@ class SymbolSelector:
 
         target_kinds: Optional[Set[str]] = None
         if kind_str:
-            target_kinds = KIND_PREFIX_MAP.get(kind_str.lower())
-            # 若未知前綴但輸入了，退回為純 name 或保留 None
+            mapped = KIND_PREFIX_MAP.get(kind_str.lower())
+            if mapped is None:
+                return cls._fallback_parse(clean_expr)
+            target_kinds = set(mapped)
 
         is_callable = bool(callable_str)
         if target_kinds and target_kinds.issubset(CALLABLE_KINDS):

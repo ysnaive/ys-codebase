@@ -9,7 +9,7 @@ Two-stage architecture:
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import FrozenSet, List, Optional, Tuple, Union
+from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
 from core.log import log_debug
 
@@ -250,12 +250,17 @@ class SpiceParser(BaseParser):
         space: str,
         end_line: int,
         unclosed: bool = False,
+        signature_hint: str = "",
+        scope_path: str = "",
     ) -> UnifiedSymbol:
-        meta = {"space": space, "spaces": [space], "type": "subcircuit"}
+        meta = {"spaces": [space], "type": "subcircuit"}
         if unclosed:
             meta["unclosed"] = True
+        fqn_str = f"{scope_path}.{subckt.name}" if scope_path else subckt.name
         return UnifiedSymbol(
-            id=UnifiedSymbol.compute_id(space, file_path, subckt.name, SymbolKind.CLASS.value, subckt.start_line),
+            id=UnifiedSymbol.compute_id(
+                space, file_path, fqn_str, SymbolKind.CLASS.value, subckt.start_line, signature_hint=signature_hint
+            ),
             name=subckt.name,
             kind=SymbolKind.CLASS.value,
             file_path=file_path,
@@ -264,6 +269,8 @@ class SpiceParser(BaseParser):
             language=LanguageType.SPICE.value,
             docstring=subckt.docstring,
             signature=subckt.signature,
+            fqn=fqn_str,
+            scope_path=scope_path,
             children=tuple(subckt.members),
             metadata=meta,
         )
@@ -275,36 +282,43 @@ class SpiceParser(BaseParser):
         log_line: LogicalLine,
         file_path: str,
         space: str,
-        current_subckt: Optional[_SubcircuitScope],
+        subckt_stack: List[_SubcircuitScope],
         symbols: List[UnifiedSymbol],
-    ) -> Tuple[bool, Optional[_SubcircuitScope]]:
+        seen_line_keys: Dict[Tuple[str, str, int], int],
+    ) -> bool:
         clean = log_line.clean_text
+        current_subckt = subckt_stack[-1] if subckt_stack else None
+
+        def _next_hint(name_val: str, kind_val: str, ln_val: int) -> str:
+            key = (name_val, kind_val, ln_val)
+            cnt = seen_line_keys.get(key, 0)
+            seen_line_keys[key] = cnt + 1
+            return f"occ_{cnt}" if cnt > 0 else ""
 
         if first_tok_upper in {".SUBCKT", ".MACRO"}:
             if len(tokens) >= 2:
                 subckt_name = tokens[1]
-                if current_subckt is not None:
-                    symbols.append(
-                        self._build_subckt_symbol(
-                            current_subckt, file_path, space, log_line.start_line - 1
-                        )
+                subckt_stack.append(
+                    _SubcircuitScope(
+                        name=subckt_name,
+                        start_line=log_line.start_line,
+                        signature=clean,
+                        docstring=log_line.docstring,
+                        members=[],
                     )
-                current_subckt = _SubcircuitScope(
-                    name=subckt_name,
-                    start_line=log_line.start_line,
-                    signature=clean,
-                    docstring=log_line.docstring,
-                    members=[],
                 )
-            return True, current_subckt
+            return True
 
         if first_tok_upper in {".ENDS", ".EOM"}:
-            if current_subckt is not None:
+            if subckt_stack:
+                closed_scope = subckt_stack.pop()
+                hint = _next_hint(closed_scope.name, SymbolKind.CLASS.value, closed_scope.start_line)
                 symbols.append(
-                    self._build_subckt_symbol(current_subckt, file_path, space, log_line.end_line)
+                    self._build_subckt_symbol(
+                        closed_scope, file_path, space, log_line.end_line, signature_hint=hint, scope_path=".".join(s.name for s in subckt_stack)
+                    )
                 )
-                current_subckt = None
-            return True, current_subckt
+            return True
 
         if first_tok_upper == ".MODEL":
             if len(tokens) >= 2:
@@ -321,23 +335,25 @@ class SpiceParser(BaseParser):
                         )
                     )
                 else:
+                    k_val = SymbolKind.STRUCT.value
+                    hint = _next_hint(model_name, k_val, log_line.start_line)
                     symbols.append(
                         UnifiedSymbol(
                             id=UnifiedSymbol.compute_id(
-                                space, file_path, model_name, SymbolKind.STRUCT.value, log_line.start_line
+                                space, file_path, model_name, k_val, log_line.start_line, signature_hint=hint
                             ),
                             name=model_name,
-                            kind=SymbolKind.STRUCT.value,
+                            kind=k_val,
                             file_path=file_path,
                             line_number=log_line.start_line,
                             end_line=log_line.end_line,
                             language=LanguageType.SPICE.value,
                             docstring=log_line.docstring,
                             signature=clean,
-                            metadata={"space": space, "spaces": [space], "model_type": model_type},
+                            metadata={"spaces": [space], "model_type": model_type},
                         )
                     )
-            return True, current_subckt
+            return True
 
         if first_tok_upper == ".PARAM":
             params = _parse_params_from_line(tokens)
@@ -354,66 +370,72 @@ class SpiceParser(BaseParser):
                         )
                     )
                 else:
+                    k_val = SymbolKind.VARIABLE.value
+                    hint = _next_hint(p_name, k_val, log_line.start_line)
                     symbols.append(
                         UnifiedSymbol(
                             id=UnifiedSymbol.compute_id(
-                                space, file_path, p_name, SymbolKind.VARIABLE.value, log_line.start_line
+                                space, file_path, p_name, k_val, log_line.start_line, signature_hint=hint
                             ),
                             name=p_name,
-                            kind=SymbolKind.VARIABLE.value,
+                            kind=k_val,
                             file_path=file_path,
                             line_number=log_line.start_line,
                             end_line=log_line.end_line,
                             language=LanguageType.SPICE.value,
                             docstring=log_line.docstring,
                             signature=sig,
-                            metadata={"space": space, "spaces": [space], "value": p_val},
+                            metadata={"spaces": [space], "value": p_val},
                         )
                     )
-            return True, current_subckt
+            return True
 
         if first_tok_upper in {".INCLUDE", ".INC", ".LIB", ".HDL"}:
             if len(tokens) >= 2:
                 raw_target = tokens[1].strip("'\"")
+                k_val = SymbolKind.MACRO.value
+                hint = _next_hint(raw_target, k_val, log_line.start_line)
                 symbols.append(
                     UnifiedSymbol(
                         id=UnifiedSymbol.compute_id(
-                            space, file_path, raw_target, SymbolKind.MACRO.value, log_line.start_line
+                            space, file_path, raw_target, k_val, log_line.start_line, signature_hint=hint
                         ),
                         name=raw_target,
-                        kind=SymbolKind.MACRO.value,
+                        kind=k_val,
                         file_path=file_path,
                         line_number=log_line.start_line,
                         end_line=log_line.end_line,
                         language=LanguageType.SPICE.value,
                         docstring=log_line.docstring,
                         signature=clean,
-                        metadata={"space": space, "spaces": [space], "directive": first_tok_upper},
+                        metadata={"spaces": [space], "directive": first_tok_upper},
                     )
                 )
-            return True, current_subckt
+            return True
 
         if first_tok_upper == ".GLOBAL":
             for node_name in tokens[1:]:
+                k_val = SymbolKind.MACRO.value
+                hint = _next_hint(node_name, k_val, log_line.start_line)
                 symbols.append(
                     UnifiedSymbol(
                         id=UnifiedSymbol.compute_id(
-                            space, file_path, node_name, SymbolKind.MACRO.value, log_line.start_line
+                            space, file_path, node_name, k_val, log_line.start_line, signature_hint=hint
                         ),
                         name=node_name,
-                        kind=SymbolKind.MACRO.value,
+                        kind=k_val,
                         file_path=file_path,
                         line_number=log_line.start_line,
                         end_line=log_line.end_line,
                         language=LanguageType.SPICE.value,
                         docstring=log_line.docstring,
                         signature=clean,
-                        metadata={"space": space, "spaces": [space], "type": "global_node"},
+                        metadata={"spaces": [space], "type": "global_node"},
                     )
                 )
-            return True, current_subckt
+            return True
 
-        return False, current_subckt
+        return False
 
     def _handle_element_instance(
         self,
@@ -424,9 +446,16 @@ class SpiceParser(BaseParser):
         space: str,
         current_subckt: Optional[_SubcircuitScope],
         symbols: List[UnifiedSymbol],
+        seen_line_keys: Dict[Tuple[str, str, int], int],
     ) -> None:
         prefix_char = first_tok_upper[0] if first_tok_upper else ""
         clean = log_line.clean_text
+
+        def _next_hint(name_val: str, kind_val: str, ln_val: int) -> str:
+            key = (name_val, kind_val, ln_val)
+            cnt = seen_line_keys.get(key, 0)
+            seen_line_keys[key] = cnt + 1
+            return f"occ_{cnt}" if cnt > 0 else ""
 
         if prefix_char == "X":
             inst_name = first_tok
@@ -441,20 +470,22 @@ class SpiceParser(BaseParser):
                     )
                 )
             else:
+                k_val = SymbolKind.FUNCTION.value
+                hint = _next_hint(inst_name, k_val, log_line.start_line)
                 symbols.append(
                     UnifiedSymbol(
                         id=UnifiedSymbol.compute_id(
-                            space, file_path, inst_name, SymbolKind.FUNCTION.value, log_line.start_line
+                            space, file_path, inst_name, k_val, log_line.start_line, signature_hint=hint
                         ),
                         name=inst_name,
-                        kind=SymbolKind.FUNCTION.value,
+                        kind=k_val,
                         file_path=file_path,
                         line_number=log_line.start_line,
                         end_line=log_line.end_line,
                         language=LanguageType.SPICE.value,
                         docstring=log_line.docstring,
                         signature=clean,
-                        metadata={"space": space, "spaces": [space], "type": "subcircuit_instance"},
+                        metadata={"spaces": [space], "type": "subcircuit_instance"},
                     )
                 )
             return
@@ -472,20 +503,22 @@ class SpiceParser(BaseParser):
                     )
                 )
             elif prefix_char in {"V", "I", "B"}:
+                k_val = SymbolKind.VARIABLE.value
+                hint = _next_hint(inst_name, k_val, log_line.start_line)
                 symbols.append(
                     UnifiedSymbol(
                         id=UnifiedSymbol.compute_id(
-                            space, file_path, inst_name, SymbolKind.VARIABLE.value, log_line.start_line
+                            space, file_path, inst_name, k_val, log_line.start_line, signature_hint=hint
                         ),
                         name=inst_name,
-                        kind=SymbolKind.VARIABLE.value,
+                        kind=k_val,
                         file_path=file_path,
                         line_number=log_line.start_line,
                         end_line=log_line.end_line,
                         language=LanguageType.SPICE.value,
                         docstring=log_line.docstring,
                         signature=clean,
-                        metadata={"space": space, "spaces": [space], "type": f"element_{prefix_char}"},
+                        metadata={"spaces": [space], "type": f"element_{prefix_char}"},
                     )
                 )
 
@@ -497,7 +530,8 @@ class SpiceParser(BaseParser):
         total_lines: int,
     ) -> List[UnifiedSymbol]:
         symbols: List[UnifiedSymbol] = []
-        current_subckt: Optional[_SubcircuitScope] = None
+        subckt_stack: List[_SubcircuitScope] = []
+        seen_line_keys: Dict[Tuple[str, str, int], int] = {}
 
         for idx, log_line in enumerate(logical_lines):
             clean = log_line.clean_text
@@ -516,23 +550,30 @@ class SpiceParser(BaseParser):
                 log_debug(f"Skipping probable SPICE title line: '{clean}'")
                 continue
 
-            handled, current_subckt = self._handle_dot_directive(
-                first_tok_upper, tokens, log_line, file_path, space, current_subckt, symbols
+            handled = self._handle_dot_directive(
+                first_tok_upper, tokens, log_line, file_path, space, subckt_stack, symbols, seen_line_keys
             )
             if handled:
                 continue
 
+            current_subckt = subckt_stack[-1] if subckt_stack else None
             self._handle_element_instance(
-                first_tok, first_tok_upper, log_line, file_path, space, current_subckt, symbols
+                first_tok, first_tok_upper, log_line, file_path, space, current_subckt, symbols, seen_line_keys
             )
 
-        if current_subckt is not None:
+        while subckt_stack:
+            unclosed_scope = subckt_stack.pop()
+            key = (unclosed_scope.name, SymbolKind.CLASS.value, unclosed_scope.start_line)
+            cnt = seen_line_keys.get(key, 0)
+            seen_line_keys[key] = cnt + 1
+            hint = f"occ_{cnt}" if cnt > 0 else ""
             symbols.append(
                 self._build_subckt_symbol(
-                    current_subckt, file_path, space, total_lines, unclosed=True
+                    unclosed_scope, file_path, space, total_lines, unclosed=True, signature_hint=hint
                 )
             )
 
+        symbols.sort(key=lambda s: s.line_number)
         return symbols
 
     def extract_call_sites(
@@ -551,20 +592,20 @@ class SpiceParser(BaseParser):
             symbols if symbols is not None else self.parse(file_path=norm_path, content=content, space=space)
         )
         sites: List[SymbolCallSite] = []
-        current_subckt_name = "<netlist>"
+        subckt_name_stack: List[str] = []
         for log_line in logical_lines:
             tokens = _split_tokens(log_line.clean_text)
             if not tokens:
                 continue
             first_upper = tokens[0].upper()
             if first_upper in {".SUBCKT", ".MACRO"} and len(tokens) >= 2:
-                current_subckt_name = tokens[1]
+                subckt_name_stack.append(tokens[1])
                 continue
             if first_upper in {".ENDS", ".EOM"}:
-                current_subckt_name = "<netlist>"
+                if subckt_name_stack:
+                    subckt_name_stack.pop()
                 continue
             if first_upper.startswith("X") and len(tokens) >= 2:
-                # Find the last token without '=' as the instantiated subcircuit name
                 callee_subckt = ""
                 for tok in reversed(tokens[1:]):
                     if "=" not in tok:
@@ -576,6 +617,7 @@ class SpiceParser(BaseParser):
                         if s.line_number <= log_line.start_line <= s.end_line and s.kind == SymbolKind.CLASS.value:
                             caller_id = s.id
                             break
+                    current_subckt_name = subckt_name_stack[-1] if subckt_name_stack else "<netlist>"
                     sites.append(
                         SymbolCallSite(
                             callee_name=callee_subckt,
@@ -588,4 +630,3 @@ class SpiceParser(BaseParser):
                         )
                     )
         return sites
-

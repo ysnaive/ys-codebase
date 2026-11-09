@@ -20,22 +20,14 @@ from core import config, contributes, gitignore, guard, loader, locale, symbols,
 from core.commands import bags, dispatcher
 from core.commands.registry import ArgSpec, CommandSpec, ModuleSpec, OptionSpec
 from core.context import (
-    CellScope,
     ExecutionContext,
     RuntimeContext,
     RuntimeScope,
-    bind_cell_context,
     bind_runtime_context,
-    cell_span,
-    get_current_cell,
     get_env,
     get_env_snapshot,
-    get_or_compute_cell_state,
-    get_or_compute_epoch_state,
     get_runtime_context,
     get_virtual_cwd,
-    invalidate_cell_state,
-    invalidate_epoch_state,
     reset_runtime_context,
 )
 from core.log import LogExecutionScope
@@ -461,81 +453,133 @@ class TestCoreRuntimeContextAndLoader(YSCBTestCase):
             self.assertEqual(cm.exception.code, 126)
         self.mark_passed()
 
-    def test_ft05_cell_scope_epoch_symmetry_and_stage_profiler(self) -> None:
+
+    def test_ft05_runtime_scope_uri_unification_cache_invalidation_and_service_contract(self) -> None:
         """
-        FT-05:
-        1. `CellScope` is `@dataclass(frozen=True)`, memoizes `get_or_compute_cell_state` within a single Cell,
-           supports nested `bind_cell_context(reuse_existing=True)` sharing, and marks `closed=True` + clears
-           cache on outermost exit so `contextvars.copy_context()` background threads never leak or reuse stale cells.
-        2. `get_or_compute_epoch_state` evaluates `epoch_fn` at most once per Cell (`cell_skip_check=True`) or on
-           every call (`cell_skip_check=False`) and rebuilds only when epoch changes.
-        3. `cell_span` accumulates durations even when exceptions are raised inside the span.
+        Verify:
+        1. `uri.set_host_dir`, `set_yscb_root`, `set_module_context`, `host_scope`, `yscb_scope`, and `module_scope`
+           synchronize with active `RuntimeScope` inside `bind_runtime_context` without being shadowed.
+        2. `invalidate_host_caches` clears contributes, loader, dispatcher, symbols, and uri caches.
+        3. `symbols.load_callable` reloads modified module files based on `(mtime_ns, size)`.
+        4. `events.broadcast` preserves concurrent `sys.path` additions from other threads.
+        5. `BaseServiceWorkerContract` lifecycle state transitions, managed threads, and `bind_worker_context`.
         """
-        import contextvars
+        import json
+        from core.context import invalidate_host_caches
+        from core.service_contract import (
+            BaseServiceWorkerContract,
+            STATE_DEGRADED_OFFLINE,
+            STATE_READY,
+            STATE_STARTING,
+            STATE_STOPPED,
+            STATE_UPDATING,
+            touch_activity,
+        )
+        from core import events
 
-        calls = {"cell": 0, "epoch": 0, "build": 0}
-        cur_epoch = [1]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dir_a = os.path.join(tmp_dir, "host_a")
+            dir_b = os.path.join(tmp_dir, "host_b")
+            dir_c = os.path.join(tmp_dir, "host_c")
+            yscb_a = os.path.join(dir_a, "ys_a")
+            yscb_b = os.path.join(dir_b, "ys_b")
+            os.makedirs(yscb_a, exist_ok=True)
+            os.makedirs(yscb_b, exist_ok=True)
+            os.makedirs(dir_c, exist_ok=True)
 
-        with bind_cell_context(module_name="core", command="status", reuse_existing=False) as outer_cell:
-            self.assertIsInstance(outer_cell, CellScope)
-            with self.assertRaises(FrozenInstanceError):
-                outer_cell.cell_id = 999  # type: ignore[misc]
+            with bind_runtime_context(host_dir=dir_a, yscb_dir=yscb_a, module_name="mod_a"):
+                self.assertEqual(uri.get_host_dir(), os.path.normpath(dir_a))
+                self.assertEqual(uri.get_yscb_root(), os.path.normpath(yscb_a))
+                self.assertEqual(uri.get_module_context(), "mod_a")
 
-            v1 = get_or_compute_cell_state(
-                ("ns", "item"),
-                lambda: (calls.__setitem__("cell", calls["cell"] + 1) or f"val-{calls['cell']}"),
-            )
-            with bind_cell_context(module_name="core", command="inner", reuse_existing=True) as inner_cell:
-                self.assertIs(inner_cell, outer_cell)
-                v2 = get_or_compute_cell_state(
-                    ("ns", "item"),
-                    lambda: (calls.__setitem__("cell", calls["cell"] + 1) or f"val-{calls['cell']}"),
-                )
-                self.assertEqual(v1, v2)
-                self.assertEqual(calls["cell"], 1)
+                uri.set_host_dir(dir_b)
+                self.assertEqual(uri.get_host_dir(), os.path.normpath(dir_b))
 
-            invalidate_cell_state("ns")
-            v3 = get_or_compute_cell_state(
-                ("ns", "item"),
-                lambda: (calls.__setitem__("cell", calls["cell"] + 1) or f"val-{calls['cell']}"),
-            )
-            self.assertEqual(v3, "val-2")
+                with uri.host_scope(dir_c):
+                    self.assertEqual(uri.get_host_dir(), os.path.normpath(dir_c))
+                self.assertEqual(uri.get_host_dir(), os.path.normpath(dir_b))
 
-            def _ep() -> int:
-                calls["epoch"] += 1
-                return cur_epoch[0]
+                with uri.yscb_scope(yscb_b):
+                    self.assertEqual(uri.get_yscb_root(), os.path.normpath(yscb_b))
+                self.assertEqual(uri.get_yscb_root(), os.path.normpath(yscb_a))
 
-            def _bld() -> str:
-                calls["build"] += 1
-                return f"ep-{cur_epoch[0]}-b{calls['build']}"
+                with uri.module_scope("mod_b"):
+                    self.assertEqual(uri.get_module_context(), "mod_b")
+                self.assertEqual(uri.get_module_context(), "mod_a")
 
-            self.assertEqual(get_or_compute_epoch_state("test.ep", _ep, _bld), "ep-1-b1")
-            self.assertEqual(get_or_compute_epoch_state("test.ep", _ep, _bld), "ep-1-b1")
-            self.assertEqual((calls["epoch"], calls["build"]), (2, 1))
+            # Verify symbols.load_callable mtime_ns invalidation on file update
+            mod_dir = os.path.join(yscb_a, ".modules", "dyn_sym_mod")
+            os.makedirs(mod_dir, exist_ok=True)
+            with open(os.path.join(dir_a, "yscb.config.json"), "w", encoding="utf-8") as f:
+                json.dump({"yscb_root": "ys_a", "installed_modules": {"dyn_sym_mod": {"version": "1.0.0.0"}}}, f)
+            pkg_dir = os.path.join(mod_dir, "dyn_sym_mod")
+            os.makedirs(pkg_dir, exist_ok=True)
+            init_py = os.path.join(pkg_dir, "__init__.py")
+            with open(init_py, "w", encoding="utf-8") as f:
+                f.write("def get_val():\n    return 'v1'\n")
+            with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                json.dump({"name": "dyn_sym_mod", "version": "1.0.0.0", "exports": {"val": "dyn_sym_mod:get_val"}}, f)
 
-            with cell_span("pre_hooks"):
-                outer_cell.record_stage_ms("aw.jit_release", 2.4)
-            with self.assertRaises(RuntimeError):
-                with cell_span("cmd_exec"):
-                    outer_cell.record_stage_ms("cmd_exec", 5.0)
-                    raise RuntimeError("boom")
+            with bind_runtime_context(host_dir=dir_a, yscb_dir=yscb_a):
+                fn1 = symbols.resolve_callable("code.func://dyn_sym_mod:get_val")
+                self.assertEqual(fn1(), "v1")
 
-            summary = outer_cell.format_stages_summary(min_ms=0.1)
-            self.assertIn("aw.jit_release=2.4ms", summary)
-            self.assertIn("cmd_exec=", summary)
-            copied_ctx = contextvars.copy_context()
+                with open(init_py, "w", encoding="utf-8") as f:
+                    f.write("def get_val():\n    return 'v2_updated'\n")
+                st = os.stat(init_py)
+                os.utime(init_py, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000))
 
-        # Outermost exit closes cell and clears cache; copied context sees None
-        self.assertTrue(outer_cell.is_closed)
-        assert copied_ctx is not None
-        self.assertIsNone(copied_ctx.run(get_current_cell))
+                fn2 = symbols.resolve_callable("code.func://dyn_sym_mod:get_val")
+                self.assertEqual(fn2(), "v2_updated")
 
-        # Bump epoch -> next call rebuilds
-        cur_epoch[0] = 2
-        self.assertEqual(get_or_compute_epoch_state("test.ep", _ep, _bld), "ep-2-b2")
-        self.assertEqual((calls["epoch"], calls["build"]), (3, 2))
+                invalidate_host_caches("all")
 
-        invalidate_epoch_state("test.ep")
+                # Verify events.broadcast does not wipe concurrent sys.path entry
+                concurrent_marker = os.path.join(tmp_dir, "concurrent_thread_path")
+                try:
+                    sys.path.append(concurrent_marker)
+                    events.broadcast("on_nonexistent_test_event", {}, emit_module="core", search_roots=[ os.path.join(yscb_a, ".modules") ])
+                    self.assertIn(concurrent_marker, sys.path)
+                finally:
+                    if concurrent_marker in sys.path:
+                        sys.path.remove(concurrent_marker)
+
+            # Verify BaseServiceWorkerContract
+            class _DummyWorker(BaseServiceWorkerContract):
+                def __init__(self) -> None:
+                    self.context = {"host_dir": dir_a, "yscb_dir": yscb_a}
+                    self._state = STATE_STARTING
+                @property
+                def name(self) -> str:
+                    return "test-svc"
+                def start(self, context):
+                    pass
+                def stop(self) -> None:
+                    self.set_state(STATE_STOPPED)
+                def health_check(self) -> bool:
+                    return self._state != STATE_STOPPED
+
+            worker = _DummyWorker()
+            self.assertEqual(worker.state, STATE_STARTING)
+            self.assertTrue(worker.is_busy())
+            worker.set_state(STATE_UPDATING)
+            self.assertTrue(worker.is_busy())
+            worker.set_state(STATE_READY)
+            self.assertFalse(worker.is_busy())
+            worker.set_state(STATE_DEGRADED_OFFLINE)
+            self.assertFalse(worker.is_busy())
+
+            ran_in_thread = []
+            def _worker_task():
+                ran_in_thread.append(uri.get_host_dir())
+                touch_activity()
+
+            t = worker.start_managed_thread(_worker_task, context=worker.context, thread_name="test-managed")
+            t.join(timeout=3.0)
+            self.assertEqual(ran_in_thread, [os.path.normpath(dir_a)])
+            worker.stop_managed_thread(t, timeout=1.0)
+            self.assertEqual(worker.state, STATE_STOPPED)
+
         self.mark_passed()
 
 

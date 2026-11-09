@@ -401,6 +401,7 @@ class CompiledRuleSet:
         self.is_exclude = is_exclude
 
         compiled_list: List[_CompiledRuleEntry] = []
+        fallback_list: List[_CompiledRuleEntry] = []
         exact_names: Set[str] = set()
         ext_suffixes: List[str] = []
         rel_exact: Set[str] = set()
@@ -422,25 +423,36 @@ class CompiledRuleSet:
             if comp is None:
                 continue
             compiled_list.append(comp)
+            covered_by_fast = False
             if comp.coordinate == "all" and not comp.dir_only:
                 has_match_all = True
+                covered_by_fast = True
             elif comp.coordinate == "name" and not comp.dir_only:
                 if comp.exact_val is not None:
                     exact_names.add(comp.exact_val)
+                    covered_by_fast = True
                 elif comp.ext_suffix is not None:
                     ext_suffixes.append(comp.ext_suffix)
+                    covered_by_fast = True
             elif comp.coordinate == "rel":
                 if comp.exact_val is not None and not comp.dir_only:
                     rel_exact.add(comp.exact_val)
+                    if comp.regex is None:
+                        covered_by_fast = True
                 if comp.prefix_val is not None and comp.regex is None:
                     rel_prefixes.append(comp.prefix_val)
             elif comp.coordinate == "uri":
                 if comp.exact_val is not None and not comp.dir_only:
                     uri_exact.add(comp.exact_val)
+                    if comp.regex is None:
+                        covered_by_fast = True
                 if comp.prefix_val is not None and comp.regex is None:
                     uri_prefixes.append(comp.prefix_val)
+            if not covered_by_fast:
+                fallback_list.append(comp)
 
         self._compiled: Tuple[_CompiledRuleEntry, ...] = tuple(compiled_list)
+        self._fallback_compiled: Tuple[_CompiledRuleEntry, ...] = tuple(fallback_list)
         self._has_match_all = has_match_all
         self._exact_names: FrozenSet[str] = frozenset(exact_names)
         self._ext_suffixes: Tuple[str, ...] = tuple(ext_suffixes)
@@ -507,17 +519,19 @@ class CompiledRuleSet:
         if self._uri_prefixes and norm_abs.startswith(self._uri_prefixes):
             return True
 
-        return (
-            self.find_matching_rule(
+        for comp in self._fallback_compiled:
+            if _entry_matches_candidate(
+                comp,
                 norm_abs=norm_abs,
                 project_rel=project_rel,
                 entry_rel=entry_rel,
                 parts=parts,
                 filename=filename,
                 is_dir=is_dir,
-            )
-            is not None
-        )
+                match_any_segment_for_name=True,
+            ):
+                return True
+        return False
 
     def has_potential_descendant_match(
         self, norm_abs: str, project_rel: Optional[str], entry_rel: str

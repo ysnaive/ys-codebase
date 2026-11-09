@@ -1063,5 +1063,114 @@ class TestGDriveAtomicApiAndConfig(YSCBTestCase):
         self.mark_passed()
 
 
+    @require(Requirement.LOGIC)
+    def test_ft_10_symlink_escape_rejection_cqs_ls_and_connection_pool_reuse(self) -> None:
+        """
+        Verify:
+        1. Symlinks inside synced spaces (or pointing to credentials/outside roots) are rejected by
+           is_sensitive_credential_path, SyncSpaceSpec.is_local_abs_allowed, and collect_space_local_files_with_stat.
+        2. load_lightweight_repo_sync_settings parses both repo_sync.sync_spaces and top-level sync_spaces.
+        3. cli.ls executes read-only listing with deduplicate=False and reconcile_readme=False.
+        4. GoogleDriveApiTransport reuses pooled connections across worker threads and closes all on close().
+        """
+        import os
+        from gdrive_support.config import (
+            GDriveConfig,
+            SyncSpaceSpec,
+            collect_space_local_files_with_stat,
+            is_sensitive_credential_path,
+            load_lightweight_repo_sync_settings,
+        )
+        from gdrive_support.transport import GoogleDriveApiTransport
+
+        docs_dir = self.proj_dir / "docs"
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        real_doc = docs_dir / "real.md"
+        real_doc.write_text("real content\n", encoding="utf-8")
+
+        outside_secret = self.tmp_root / "outside_secret.txt"
+        outside_secret.write_text("secret\n", encoding="utf-8")
+        cred_target = self.proj_dir / "ys_codebase" / ".config.local" / "gdrive-support" / "token.json"
+        cred_target.parent.mkdir(parents=True, exist_ok=True)
+        cred_target.write_text("{\"access_token\":\"secret\"}", encoding="utf-8")
+
+        sym_outside = docs_dir / "sym_outside.md"
+        sym_cred = docs_dir / "sym_cred.md"
+        try:
+            os.symlink(outside_secret, sym_outside)
+            os.symlink(cred_target, sym_cred)
+            has_symlink = True
+        except OSError:
+            has_symlink = False
+
+        spec = SyncSpaceSpec(space="docs", include_roots=(docs_dir.as_posix(),))
+        if has_symlink:
+            self.assertFalse(spec.is_local_abs_allowed(sym_outside, self.proj_dir))
+            self.assertTrue(is_sensitive_credential_path(sym_cred, self.proj_dir))
+            class _DummySpaceMgr:
+                def iter_space_files(self, _sp: str):
+                    for p in docs_dir.iterdir():
+                        yield p.name, p, docs_dir
+            collected = collect_space_local_files_with_stat(
+                spec, project_root=self.proj_dir, file_space_manager=_DummySpaceMgr()
+            )
+            self.assertIn("docs/real.md", collected)
+            self.assertNotIn("docs/sym_outside.md", collected)
+            self.assertNotIn("docs/sym_cred.md", collected)
+
+        # Lightweight repo_sync settings loader
+        cfg_dir = self.proj_dir / "config" / "gdrive-support"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        (cfg_dir / "config.project.json").write_text(
+            json.dumps(
+                {
+                    "repo_sync": {
+                        "enable": True,
+                        "auto_sync": False,
+                        "sync_spaces": [{"space": "docs"}, {"space": "plans"}],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        lw_enable, lw_auto, lw_spaces = load_lightweight_repo_sync_settings(self.proj_dir)
+        self.assertTrue(lw_enable)
+        self.assertFalse(lw_auto)
+        self.assertEqual(lw_spaces, ["docs", "plans"])
+
+        # cli.ls CQS: duplicate entries on sandbox are listed without auto-trashing when invoked via cli.ls
+        transport = LocalSandboxTransport(self.sandbox_dir)
+        dup_file = self.sandbox_dir / "cqs_dir" / "dup.txt"
+        dup_file.parent.mkdir(parents=True, exist_ok=True)
+        dup_file.write_text("dup body\n", encoding="utf-8")
+        transport.inject_virtual_entry("cqs_dir/dup.txt", mime_type="text/plain", file_id="dup_1", mtime_ns=100)
+        transport.inject_virtual_entry("cqs_dir/dup.txt", mime_type="text/plain", file_id="dup_2", mtime_ns=200)
+
+        ro_listed = transport.list_files("cqs_dir", deduplicate=False)
+        self.assertEqual(len(ro_listed), 2)
+        self.assertEqual(transport.list_files(".trash", deduplicate=False), [])
+
+        # Worker thread connection pool release and close()
+        api_cfg = GDriveConfig(root_folder_id="root_pool_test")
+        api_tr = GoogleDriveApiTransport(api_cfg)
+        closed_conns: list[str] = []
+
+        class _DummyPooledConn:
+            def __init__(self, label: str) -> None:
+                self.label = label
+
+            def close(self) -> None:
+                closed_conns.append(self.label)
+
+        api_tr._tls.conns = {"www.googleapis.com": _DummyPooledConn("worker_conn_1")}
+        api_tr._release_thread_conns_to_pool()
+        self.assertEqual(api_tr._tls.conns, {})
+        reused = api_tr._get_https_conn("www.googleapis.com")
+        self.assertEqual(getattr(reused, "label", ""), "worker_conn_1")
+        api_tr.close()
+        self.assertEqual(closed_conns, ["worker_conn_1"])
+        self.mark_passed()
+
+
 if __name__ == "__main__":
     unittest.main()

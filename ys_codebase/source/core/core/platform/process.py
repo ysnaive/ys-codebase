@@ -22,6 +22,19 @@ _TRUTHY_ENV_VALUES = ("1", "true", "True")
 _TRIM_STATE_KEY = "core.platform.process.last_trim_ts"
 
 
+def _close_popen_pipes(proc: Optional[subprocess.Popen]) -> None:
+    """Deterministically closes any open stdin/stdout/stderr pipes on a `Popen` instance."""
+    if proc is None:
+        return
+    for stream_name in ("stdin", "stdout", "stderr"):
+        stream_obj = getattr(proc, stream_name, None)
+        if stream_obj is not None:
+            try:
+                stream_obj.close()
+            except Exception:
+                pass
+
+
 def _get_can_spawn_cache() -> Optional[bool]:
     if "_CAN_SPAWN_DAEMON_CACHE" in globals():
         val = globals().pop("_CAN_SPAWN_DAEMON_CACHE")
@@ -93,6 +106,7 @@ def can_spawn_background_daemon(force_reprobe: bool = False, yscb_root: Optional
             creationflags |= subprocess.DETACHED_PROCESS
         flags_with_breakaway = creationflags | CREATE_BREAKAWAY_FROM_JOB
 
+        probe_proc: Optional[subprocess.Popen] = None
         try:
             probe_proc = subprocess.Popen(
                 [sys.executable, "-c", "pass"],
@@ -108,6 +122,15 @@ def can_spawn_background_daemon(force_reprobe: bool = False, yscb_root: Optional
         except OSError:
             _set_can_spawn_cache(False)
             return False
+        finally:
+            if probe_proc is not None:
+                _close_popen_pipes(probe_proc)
+                if probe_proc.poll() is None:
+                    try:
+                        probe_proc.kill()
+                        probe_proc.wait(timeout=0.5)
+                    except Exception:
+                        pass
     except Exception:
         _set_can_spawn_cache(False)
         return False
@@ -133,53 +156,57 @@ def spawn_detached(
     if env:
         current_env.update(env)
 
-    if sys.platform == "win32":
-        creationflags = 0
-        if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-            creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
-        if hasattr(subprocess, "DETACHED_PROCESS"):
-            creationflags |= subprocess.DETACHED_PROCESS
-        if hasattr(subprocess, "CREATE_NO_WINDOW"):
-            creationflags |= subprocess.CREATE_NO_WINDOW
+    proc: Optional[subprocess.Popen] = None
+    try:
+        if sys.platform == "win32":
+            creationflags = 0
+            if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+                creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+            if hasattr(subprocess, "DETACHED_PROCESS"):
+                creationflags |= subprocess.DETACHED_PROCESS
+            if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                creationflags |= subprocess.CREATE_NO_WINDOW
 
-        CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-        flags_with_breakaway = creationflags | CREATE_BREAKAWAY_FROM_JOB
-        try:
+            CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+            flags_with_breakaway = creationflags | CREATE_BREAKAWAY_FROM_JOB
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=cwd,
+                    env=current_env,
+                    creationflags=flags_with_breakaway,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    close_fds=True,
+                )
+            except OSError:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=cwd,
+                    env=current_env,
+                    creationflags=creationflags,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    close_fds=True,
+                )
+        else:
             proc = subprocess.Popen(
                 cmd,
                 cwd=cwd,
                 env=current_env,
-                creationflags=flags_with_breakaway,
+                start_new_session=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
                 close_fds=True,
             )
-        except OSError:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=cwd,
-                env=current_env,
-                creationflags=creationflags,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-                close_fds=True,
-            )
-    else:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=cwd,
-            env=current_env,
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            close_fds=True,
-        )
 
-    proc._child_created = False
-    return proc.pid
+        proc._child_created = False
+        return proc.pid
+    finally:
+        _close_popen_pipes(proc)
 
 
 def set_process_title(title: str) -> bool:
@@ -297,7 +324,7 @@ def is_process_alive(pid: int) -> bool:
             if not os.path.exists(proc_status):
                 return False
             try:
-                with open(proc_status, "r") as f:
+                with open(proc_status, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
                         if line.startswith("State:"):
                             # If state contains 'Z' (zombie) or 'X' (dead), it is not alive
@@ -356,23 +383,24 @@ def _collect_posix_descendants(root_pid: int) -> Tuple[Set[int], Set[int]]:
     children_map: Dict[int, Set[int]] = {}
     if os.path.isdir("/proc"):
         try:
-            for entry in os.scandir("/proc"):
-                if not entry.name.isdigit():
-                    continue
-                cpid = int(entry.name)
-                # Fast path 1: /proc/<cpid>/stat PPID
-                stat_file = os.path.join(entry.path, "stat")
-                try:
-                    with open(stat_file, "r", encoding="utf-8", errors="replace") as f:
-                        raw = f.read()
-                    rparen = raw.rfind(")")
-                    if rparen != -1:
-                        fields = raw[rparen + 2 :].split()
-                        if len(fields) >= 2:
-                            ppid = int(fields[1])
-                            children_map.setdefault(ppid, set()).add(cpid)
-                except OSError:
-                    pass
+            with os.scandir("/proc") as proc_it:
+                for entry in proc_it:
+                    if not entry.name.isdigit():
+                        continue
+                    cpid = int(entry.name)
+                    # Fast path 1: /proc/<cpid>/stat PPID
+                    stat_file = os.path.join(entry.path, "stat")
+                    try:
+                        with open(stat_file, "r", encoding="utf-8", errors="replace") as f:
+                            raw = f.read()
+                        rparen = raw.rfind(")")
+                        if rparen != -1:
+                            fields = raw[rparen + 2 :].split()
+                            if len(fields) >= 2:
+                                ppid = int(fields[1])
+                                children_map.setdefault(ppid, set()).add(cpid)
+                    except OSError:
+                        pass
         except OSError:
             pass
 
@@ -382,15 +410,16 @@ def _collect_posix_descendants(root_pid: int) -> Tuple[Set[int], Set[int]]:
         if not os.path.isdir(task_dir):
             return found
         try:
-            for t_entry in os.scandir(task_dir):
-                ch_path = os.path.join(t_entry.path, "children")
-                try:
-                    with open(ch_path, "r", encoding="utf-8", errors="replace") as cf:
-                        for tok in cf.read().split():
-                            if tok.isdigit():
-                                found.add(int(tok))
-                except OSError:
-                    pass
+            with os.scandir(task_dir) as task_it:
+                for t_entry in task_it:
+                    ch_path = os.path.join(t_entry.path, "children")
+                    try:
+                        with open(ch_path, "r", encoding="utf-8", errors="replace") as cf:
+                            for tok in cf.read().split():
+                                if tok.isdigit():
+                                    found.add(int(tok))
+                    except OSError:
+                        pass
         except OSError:
             pass
         return found
@@ -534,7 +563,7 @@ def terminate_popen_tree(proc: subprocess.Popen, timeout_sec: float = 2.0) -> bo
     """
     Terminates a child ``Popen`` process (and all its descendants/process groups on POSIX)
     while letting ``Popen`` itself reap the exit status (avoids ``waitpid`` races with
-    ``is_process_alive``).
+    ``is_process_alive``) and deterministically closing any open pipes in `finally`.
 
     Args:
         proc: Child process handle.
@@ -543,47 +572,50 @@ def terminate_popen_tree(proc: subprocess.Popen, timeout_sec: float = 2.0) -> bo
     Returns:
         bool: True if the process is confirmed terminated, False otherwise.
     """
-    if proc.poll() is not None:
-        return True
+    try:
+        if proc.poll() is not None:
+            return True
 
-    if sys.platform == "win32":
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=max(1.0, float(timeout_sec)),
-                check=False,
-            )
-        except Exception:
-            pass
-        try:
-            proc.wait(timeout=timeout_sec)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        if sys.platform == "win32":
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=max(1.0, float(timeout_sec)),
+                    check=False,
+                )
+            except Exception:
+                pass
             try:
                 proc.wait(timeout=timeout_sec)
             except subprocess.TimeoutExpired:
-                return False
-        return True
+                proc.kill()
+                try:
+                    proc.wait(timeout=timeout_sec)
+                except subprocess.TimeoutExpired:
+                    return False
+            return True
 
-    descendants, pgids = _collect_posix_descendants(proc.pid)
-    _signal_posix_tree(proc.pid, signal.SIGTERM, descendants=descendants, pgids=pgids)
-    try:
-        proc.wait(timeout=timeout_sec)
-        # Ensure any detached grandchildren that called setsid() are also reaped
-        if any(is_process_alive(d) for d in descendants):
-            _signal_posix_tree(proc.pid, signal.SIGKILL, descendants=descendants, pgids=pgids)
-        return True
-    except subprocess.TimeoutExpired:
-        pass
+        descendants, pgids = _collect_posix_descendants(proc.pid)
+        _signal_posix_tree(proc.pid, signal.SIGTERM, descendants=descendants, pgids=pgids)
+        try:
+            proc.wait(timeout=timeout_sec)
+            # Ensure any detached grandchildren that called setsid() are also reaped
+            if any(is_process_alive(d) for d in descendants):
+                _signal_posix_tree(proc.pid, signal.SIGKILL, descendants=descendants, pgids=pgids)
+            return True
+        except subprocess.TimeoutExpired:
+            pass
 
-    _signal_posix_tree(proc.pid, signal.SIGKILL, descendants=descendants, pgids=pgids)
-    try:
-        proc.wait(timeout=timeout_sec)
-    except subprocess.TimeoutExpired:
-        return False
-    return True
+        _signal_posix_tree(proc.pid, signal.SIGKILL, descendants=descendants, pgids=pgids)
+        try:
+            proc.wait(timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
+    finally:
+        _close_popen_pipes(proc)
 
 
 def get_process_rss_mb(pid: Optional[int] = None) -> float:
@@ -807,41 +839,42 @@ def reap_sandbox_processes(sandbox_dir: Union[str, Path], timeout_sec: float = 2
         )
 
     try:
-        for entry in os.scandir("/proc"):
-            if not entry.name.isdigit():
-                continue
-            pid = int(entry.name)
-            if pid <= 1 or pid == my_pid:
-                continue
-
-            # 1. Check /proc/<pid>/cwd symlink
-            try:
-                cwd_target = os.readlink(os.path.join(entry.path, "cwd"))
-                if _matches_sb(cwd_target):
-                    matched_pids.add(pid)
+        with os.scandir("/proc") as proc_it:
+            for entry in proc_it:
+                if not entry.name.isdigit():
                     continue
-            except OSError:
-                pass
-
-            # 2. Check /proc/<pid>/cmdline
-            try:
-                with open(os.path.join(entry.path, "cmdline"), "rb") as f:
-                    raw_cmd = f.read().decode("utf-8", errors="ignore")
-                if norm_sb in raw_cmd or norm_sb_abs in raw_cmd:
-                    matched_pids.add(pid)
+                pid = int(entry.name)
+                if pid <= 1 or pid == my_pid:
                     continue
-            except OSError:
-                pass
 
-            # 3. Check /proc/<pid>/environ for YSCB_SANDBOX_DIR
-            try:
-                with open(os.path.join(entry.path, "environ"), "rb") as f:
-                    raw_env = f.read().decode("utf-8", errors="ignore")
-                if f"YSCB_SANDBOX_DIR={norm_sb}" in raw_env or f"YSCB_SANDBOX_DIR={norm_sb_abs}" in raw_env:
-                    matched_pids.add(pid)
-                    continue
-            except OSError:
-                pass
+                # 1. Check /proc/<pid>/cwd symlink
+                try:
+                    cwd_target = os.readlink(os.path.join(entry.path, "cwd"))
+                    if _matches_sb(cwd_target):
+                        matched_pids.add(pid)
+                        continue
+                except OSError:
+                    pass
+
+                # 2. Check /proc/<pid>/cmdline
+                try:
+                    with open(os.path.join(entry.path, "cmdline"), "rb") as f:
+                        raw_cmd = f.read().decode("utf-8", errors="ignore")
+                    if norm_sb in raw_cmd or norm_sb_abs in raw_cmd:
+                        matched_pids.add(pid)
+                        continue
+                except OSError:
+                    pass
+
+                # 3. Check /proc/<pid>/environ for YSCB_SANDBOX_DIR
+                try:
+                    with open(os.path.join(entry.path, "environ"), "rb") as f:
+                        raw_env = f.read().decode("utf-8", errors="ignore")
+                    if f"YSCB_SANDBOX_DIR={norm_sb}" in raw_env or f"YSCB_SANDBOX_DIR={norm_sb_abs}" in raw_env:
+                        matched_pids.add(pid)
+                        continue
+                except OSError:
+                    pass
     except OSError:
         pass
 

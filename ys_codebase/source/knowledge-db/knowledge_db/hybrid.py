@@ -153,35 +153,44 @@ class HybridSearchEngine:
         if lexical_only or not self.is_vector_available:
             return self._build_bm25_results(bm25_hits, symbols_map, limit, mode="lexical_bm25")
 
-        # 3. 執行語意向量檢索
+        # 3. 執行語意向量檢索（當帶有空間/語言/類型/副檔名過濾條件時，擴大檢索池並於過濾集滿 fetch_limit 時早退，消除 Top-30 飢餓與重複拷貝）
+        has_filters = bool(norm_ftypes or spaces or kinds or languages)
+        vec_pool_k = len(self.vector_index.doc_ids) if has_filters else fetch_limit
         try:
             query_vec = self.embedding_service.embed_query(query)
-            raw_vector_hits = self.vector_index.search(query_vec, top_k=fetch_limit)
+            raw_vector_hits = self.vector_index.search(query_vec, top_k=max(fetch_limit, vec_pool_k))
         except Exception as e:
             log_warn(f"Vector search failed ({e}), falling back to pure BM25.", stream="stderr")
             return self._build_bm25_results(bm25_hits, symbols_map, limit, mode="fallback_bm25")
 
-        # 依 file_types、spaces、kinds、languages 與純語意相似度門檻過濾向量候選集
+        # 依 file_types、spaces、kinds、languages 與純語意相似度門檻過濾向量候選集並於達標 fetch_limit 時早退
         filtered_vector_hits = []
         lexical_doc_ids = {hit["doc_id"] for hit in bm25_hits}
+        space_shorts = {f.split("/")[-1] for f in spaces} if spaces else None
+        spaces_set = set(spaces) if spaces else None
+        kinds_set = set(kinds) if kinds else None
+        langs_set = set(languages) if languages else None
+
         for doc_id, sim in raw_vector_hits:
+            if doc_id not in lexical_doc_ids and sim < self.min_vector_similarity:
+                continue
             sym = symbols_map.get(doc_id)
             if sym is None:
                 continue
-            if norm_ftypes and _extract_file_ext(sym.file_path) not in norm_ftypes:
+            if kinds_set and sym.kind not in kinds_set:
                 continue
-            if spaces and not any(
-                s in spaces or s.split("/")[-1] in {f.split("/")[-1] for f in spaces}
-                for s in getattr(sym, "spaces", [])
+            if langs_set and sym.language not in langs_set:
+                continue
+            if spaces_set and not any(
+                s in spaces_set or s.split("/")[-1] in space_shorts  # type: ignore[operator]
+                for s in getattr(sym, "spaces", ())
             ):
                 continue
-            if kinds and sym.kind not in kinds:
-                continue
-            if languages and sym.language not in languages:
-                continue
-            if doc_id not in lexical_doc_ids and sim < self.min_vector_similarity:
+            if norm_ftypes and _extract_file_ext(sym.file_path) not in norm_ftypes:
                 continue
             filtered_vector_hits.append((doc_id, sim))
+            if len(filtered_vector_hits) >= fetch_limit:
+                break
 
         # 4. 構建 1-indexed 排名字典
         lexical_ranks: Dict[str, int] = {

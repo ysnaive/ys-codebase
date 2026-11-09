@@ -135,11 +135,13 @@ def ensure_private_venv(yscb_root: str) -> None:
         yscb_root: Absolute or relative path to the YSCB project root directory.
     """
     site_pkg = get_venv_site_packages(yscb_root)
-    if os.path.isdir(site_pkg) and site_pkg not in sys.path:
-        for t in reversed(_read_host_venv_pth(site_pkg)):
-            if t not in sys.path:
-                sys.path.insert(0, t)
-        sys.path.insert(0, site_pkg)
+    if os.path.isdir(site_pkg):
+        with get_runtime_context().sys_path_lock:
+            if site_pkg not in sys.path:
+                for t in reversed(_read_host_venv_pth(site_pkg)):
+                    if t not in sys.path:
+                        sys.path.insert(0, t)
+                sys.path.insert(0, site_pkg)
 
 
 def list_installed_module_roots(
@@ -271,7 +273,8 @@ def ensure_installed_modules_path(
 ) -> List[str]:
     """
     Ensure all installed `.modules/<mod>` roots (plus optional `extra_paths` and
-    host roots) are mounted in `sys.path` with deterministic front priority.
+    host roots) are mounted in `sys.path` with deterministic front priority,
+    protected by `RuntimeContext.sys_path_lock`.
     """
     root = _resolve_yscb_root(yscb_root)
     installed_roots = list_installed_module_roots(root, priority_module=priority_module)
@@ -294,46 +297,65 @@ def ensure_installed_modules_path(
         for ep in extra_paths:
             _add_front(ep, allow_source=True)
 
-    current_root_key = _norm_key(root) if root and os.path.isdir(root) else ""
-    for active_src, active_root_key in list(_get_active_test_source_paths()):
-        if not active_root_key or active_root_key == current_root_key:
-            _add_front(active_src, allow_source=True)
+    ctx = get_runtime_context()
+    with ctx.sys_path_lock:
+        current_root_key = _norm_key(root) if root and os.path.isdir(root) else ""
+        for active_src, active_root_key in list(_get_active_test_source_paths()):
+            if not active_root_key or active_root_key == current_root_key:
+                _add_front(active_src, allow_source=True)
 
-    if root:
-        modules_dir = os.path.join(root, ".modules")
-        if priority_module:
-            _add_front(os.path.join(modules_dir, priority_module))
-        _add_front(os.path.join(modules_dir, "core"))
+        if root:
+            modules_dir = os.path.join(root, ".modules")
+            if priority_module:
+                _add_front(os.path.join(modules_dir, priority_module))
+            _add_front(os.path.join(modules_dir, "core"))
 
-    promoted: List[str] = []
-    if front_paths:
-        sys.path[:] = [
-            existing for existing in sys.path
-            if not (existing and _norm_key(existing) in front_keys)
-        ]
-        for idx, fp in enumerate(front_paths):
-            sys.path.insert(idx, fp)
-            promoted.append(fp)
+        promoted: List[str] = []
+        if front_paths:
+            sys.path[:] = [
+                existing for existing in sys.path
+                if not (existing and _norm_key(existing) in front_keys)
+            ]
+            for idx, fp in enumerate(front_paths):
+                sys.path.insert(idx, fp)
+                promoted.append(fp)
 
-    existing_keys: Set[str] = {_norm_key(p) for p in sys.path if p}
-    insert_pos = len(front_paths)
-    for mod_root in installed_roots:
-        key = _norm_key(mod_root)
-        if key not in existing_keys:
-            sys.path.insert(insert_pos, mod_root)
-            insert_pos += 1
-            existing_keys.add(key)
-            promoted.append(mod_root)
-
-    if include_host_roots:
-        for host_root in _collect_host_roots(root):
-            key = _norm_key(host_root)
+        existing_keys: Set[str] = {_norm_key(p) for p in sys.path if p}
+        insert_pos = len(front_paths)
+        for mod_root in installed_roots:
+            key = _norm_key(mod_root)
             if key not in existing_keys:
-                sys.path.append(host_root)
+                sys.path.insert(insert_pos, mod_root)
+                insert_pos += 1
                 existing_keys.add(key)
-                promoted.append(host_root)
+                promoted.append(mod_root)
 
-    return promoted
+        if include_host_roots:
+            for host_root in _collect_host_roots(root):
+                key = _norm_key(host_root)
+                if key not in existing_keys:
+                    sys.path.append(host_root)
+                    existing_keys.add(key)
+                    promoted.append(host_root)
+
+        return promoted
+
+
+def remove_inserted_sys_paths(inserted_paths: Sequence[str]) -> None:
+    """
+    Thread-safely removes only the specified `inserted_paths` from `sys.path` without
+    wiping paths added concurrently by other threads.
+    """
+    if not inserted_paths:
+        return
+    remove_keys = {_norm_key(p) for p in inserted_paths if p}
+    if not remove_keys:
+        return
+    with get_runtime_context().sys_path_lock:
+        sys.path[:] = [
+            p for p in sys.path
+            if not (p and _norm_key(p) in remove_keys)
+        ]
 
 
 def build_runtime_pythonpath(
@@ -389,9 +411,10 @@ def init_subprocess_sys_path(parent_sys_path: Sequence[str]) -> None:
     """
     if not parent_sys_path:
         return
-    for entry in reversed(list(parent_sys_path)):
-        if entry and entry not in sys.path:
-            sys.path.insert(0, entry)
+    with get_runtime_context().sys_path_lock:
+        for entry in reversed(list(parent_sys_path)):
+            if entry and entry not in sys.path:
+                sys.path.insert(0, entry)
 
 
 def activate_test_module_source_path(
@@ -405,49 +428,51 @@ def activate_test_module_source_path(
     `source/*` paths under `src_root`, pins `src_real` at `sys.path[0]`, and
     returns the original `sys.path` snapshot.
     """
-    orig_sys_path = list(sys.path)
-    norm_src_real = _norm_abs(src_real)
-    real_src_key = _norm_key(norm_src_real)
-    resolved_root = _resolve_yscb_root(yscb_root)
-    target_root_key = _norm_key(resolved_root) if resolved_root and os.path.isdir(resolved_root) else ""
-    active_paths = _get_active_test_source_paths()
+    ctx = get_runtime_context()
+    with ctx.sys_path_lock:
+        orig_sys_path = list(sys.path)
+        norm_src_real = _norm_abs(src_real)
+        real_src_key = _norm_key(norm_src_real)
+        resolved_root = _resolve_yscb_root(yscb_root)
+        target_root_key = _norm_key(resolved_root) if resolved_root and os.path.isdir(resolved_root) else ""
+        active_paths = _get_active_test_source_paths()
 
-    if src_root:
-        real_root_key = _norm_key(src_root)
-        root_prefix = real_root_key + os.sep
+        if src_root:
+            real_root_key = _norm_key(src_root)
+            root_prefix = real_root_key + os.sep
+            active_paths[:] = [
+                (p, rk) for p, rk in active_paths
+                if not (
+                    (_norm_key(p) == real_root_key or _norm_key(p).startswith(root_prefix))
+                    and _norm_key(p) != real_src_key
+                )
+            ]
+
         active_paths[:] = [
-            (p, rk) for p, rk in active_paths
-            if not (
-                (_norm_key(p) == real_root_key or _norm_key(p).startswith(root_prefix))
-                and _norm_key(p) != real_src_key
-            )
+            (p, rk) for p, rk in active_paths if _norm_key(p) != real_src_key
         ]
+        active_paths.insert(0, (norm_src_real, target_root_key))
 
-    active_paths[:] = [
-        (p, rk) for p, rk in active_paths if _norm_key(p) != real_src_key
-    ]
-    active_paths.insert(0, (norm_src_real, target_root_key))
+        ensure_installed_modules_path(yscb_root=yscb_root)
 
-    ensure_installed_modules_path(yscb_root=yscb_root)
+        if src_root:
+            real_root_key = _norm_key(src_root)
+            root_prefix = real_root_key + os.sep
+            sys.path[:] = [
+                p for p in sys.path
+                if not (
+                    p
+                    and (_norm_key(p) == real_root_key or _norm_key(p).startswith(root_prefix))
+                    and _norm_key(p) != real_src_key
+                )
+            ]
 
-    if src_root:
-        real_root_key = _norm_key(src_root)
-        root_prefix = real_root_key + os.sep
         sys.path[:] = [
             p for p in sys.path
-            if not (
-                p
-                and (_norm_key(p) == real_root_key or _norm_key(p).startswith(root_prefix))
-                and _norm_key(p) != real_src_key
-            )
+            if not (p and (_norm_key(p) == real_src_key or _norm_abs(p) == norm_src_real))
         ]
-
-    sys.path[:] = [
-        p for p in sys.path
-        if not (p and (_norm_key(p) == real_src_key or _norm_abs(p) == norm_src_real))
-    ]
-    sys.path.insert(0, norm_src_real)
-    return orig_sys_path
+        sys.path.insert(0, norm_src_real)
+        return orig_sys_path
 
 
 def restore_sys_path(snapshot: Sequence[str]) -> None:
@@ -455,12 +480,13 @@ def restore_sys_path(snapshot: Sequence[str]) -> None:
     Restore `sys.path` in-place from a previously captured snapshot and prune
     any active test source paths no longer present in `sys.path`.
     """
-    sys.path[:] = list(snapshot)
-    snapshot_keys = {_norm_key(p) for p in snapshot if p}
-    active_paths = _get_active_test_source_paths()
-    active_paths[:] = [
-        (p, rk) for p, rk in active_paths if _norm_key(p) in snapshot_keys
-    ]
+    with get_runtime_context().sys_path_lock:
+        sys.path[:] = list(snapshot)
+        snapshot_keys = {_norm_key(p) for p in snapshot if p}
+        active_paths = _get_active_test_source_paths()
+        active_paths[:] = [
+            (p, rk) for p, rk in active_paths if _norm_key(p) in snapshot_keys
+        ]
 
 
 def restore_process_env_and_cwd(

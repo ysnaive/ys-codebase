@@ -9,8 +9,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-from ._common import parse_markdown_blockquote_headers, resolve_plan_uri
+from ._common import (
+    is_revision_root_dir,
+    parse_changelog_table,
+    parse_markdown_blockquote_headers,
+    resolve_plan_uri,
+)
 from ._verifier_healer import (
+    _atomic_write_text,
     append_changelog_entry as _append_changelog_entry,
     auto_heal_companions as _auto_heal_companions,
     auto_heal_deterministic_headers as _auto_heal_deterministic_headers,
@@ -223,7 +229,11 @@ class PlanVerifier:
         return specs
 
     def _check_nested_depth_and_structure(
-        self, plan_dir: Path, rel_path: str, report: PlanReport
+        self,
+        plan_dir: Path,
+        rel_path: str,
+        report: PlanReport,
+        pending_writes: Optional[Dict[Path, str]] = None,
     ) -> None:
         """Stage 1: 檢查目錄巢狀層級 (<= 2) 與 Umbrella / Changelog 存在性。"""
         parts = Path(rel_path).parts
@@ -238,7 +248,8 @@ class PlanVerifier:
             )
 
         changelog_path = plan_dir / "changelog.md"
-        if not changelog_path.exists():
+        changelog_exists = changelog_path.exists() or (pending_writes is not None and changelog_path in pending_writes)
+        if not changelog_exists:
             report.issues.append(
                 PlanIssue(
                     severity=PlanSeverity.FAIL,
@@ -250,17 +261,10 @@ class PlanVerifier:
 
         sub_dirs = [d for d in plan_dir.iterdir() if d.is_dir() and d.name.startswith("sub_")]
         if sub_dirs:
-            from .status import PlanStatusResolver
-
             umbrella_md = plan_dir / "umbrella_overview.md"
-            rev_log_md = plan_dir / "revision_log.md"
-            is_revision_root = (
-                rev_log_md.exists()
-                and not PlanStatusResolver.resolve_phase_file(plan_dir, "P01").is_file()
-                and not PlanStatusResolver.resolve_phase_file(plan_dir, "P07").is_file()
-            )
+            is_rev_root = is_revision_root_dir(plan_dir)
             umb_rel_name = f"{rel_path}/umbrella_overview.md" if rel_path != "." else "umbrella_overview.md"
-            if not umbrella_md.exists() and not is_revision_root:
+            if not umbrella_md.exists() and not is_rev_root:
                 report.issues.append(
                     PlanIssue(
                         severity=PlanSeverity.FAIL,
@@ -271,7 +275,11 @@ class PlanVerifier:
                 )
             elif umbrella_md.exists():
                 try:
-                    u_content = umbrella_md.read_text(encoding="utf-8", errors="ignore")
+                    u_content = (
+                        pending_writes[umbrella_md]
+                        if (pending_writes is not None and umbrella_md in pending_writes)
+                        else umbrella_md.read_text(encoding="utf-8", errors="ignore")
+                    )
                     for sub in sub_dirs:
                         if sub.name not in u_content:
                             report.issues.append(
@@ -286,17 +294,26 @@ class PlanVerifier:
                     pass
 
     def _check_changelog_content(
-        self, changelog_path: Path, rel_file_name: str, report: PlanReport
+        self,
+        changelog_path: Path,
+        rel_file_name: str,
+        report: PlanReport,
+        pending_writes: Optional[Dict[Path, str]] = None,
     ) -> None:
         """Stage 2: 檢查 changelog.md 表格格式與記錄完備性。"""
-        if not changelog_path.exists():
+        has_staged = pending_writes is not None and changelog_path in pending_writes
+        if not changelog_path.exists() and not has_staged:
             return
         try:
-            content = changelog_path.read_text(encoding="utf-8", errors="ignore")
+            content = (
+                pending_writes[changelog_path]
+                if has_staged
+                else changelog_path.read_text(encoding="utf-8", errors="ignore")
+            )
             lines = content.splitlines()
+            table_line_count, _, data_rows = parse_changelog_table(lines)
 
-            table_lines = [l for l in lines if "|" in l and not l.strip().startswith("<!--")]
-            if len(table_lines) < 2:
+            if table_line_count < 2:
                 report.issues.append(
                     PlanIssue(
                         severity=PlanSeverity.FAIL,
@@ -307,14 +324,6 @@ class PlanVerifier:
                 )
                 return
 
-            data_rows = [
-                l for l in table_lines
-                if not re.match(r"^\|?\s*[-:]+\s*\|", l.strip())
-                and not (
-                    [c.strip() for c in l.strip().strip("|").split("|")][:1]
-                    in (["日期時間"], ["Timestamp"])
-                )
-            ]
             if not data_rows:
                 report.issues.append(
                     PlanIssue(
@@ -356,15 +365,18 @@ class PlanVerifier:
 
     @staticmethod
     def _extract_non_code_lines(lines: List[str]) -> List[str]:
-        """剝除 fenced code blocks 與行內反引號片段，回傳純文字行清單。"""
+        """剝除 fenced code blocks 與行內反引號片段，保留 1:1 實體行號對齊之純文字行清單。"""
         non_code_lines: List[str] = []
         in_code_block = False
         for l in lines:
             if l.strip().startswith("```"):
                 in_code_block = not in_code_block
+                non_code_lines.append("")
                 continue
             if not in_code_block:
                 non_code_lines.append(re.sub(r"`+[^`]*`+", "", l))
+            else:
+                non_code_lines.append("")
         return non_code_lines
 
     def _check_comments_and_placeholders(
@@ -450,17 +462,18 @@ class PlanVerifier:
         missing_specs: List[Tuple[str, str]],
         enable_auto_heal: bool,
         report: PlanReport,
+        pending_writes: Optional[Dict[Path, str]] = None,
     ) -> None:
         """檢核並按條件自癒 Markdown 頂部 Blockquote 標頭與結案 Checkbox 狀態。"""
         base_fname = os.path.basename(rel_file_name)
         is_handoff = base_fname == "handoff.md"
         is_seed_asset = base_fname.lower() in self.ORIGIN_SEED_FILES
         headers = parse_markdown_blockquote_headers(lines, max_lines=35)
-        has_name = any(k in headers for k in HEADER_NAME_KEYS)
-        has_date = any(k in headers for k in HEADER_DATE_KEYS)
-        has_status = any(k in headers for k in HEADER_STATUS_KEYS)
-        has_parent = any(k in headers for k in HEADER_PARENT_KEYS)
-        has_model = any(k in headers for k in HEADER_MODEL_KEYS)
+        has_name = any(bool(headers.get(k, "").strip()) for k in HEADER_NAME_KEYS)
+        has_date = any(bool(headers.get(k, "").strip()) for k in HEADER_DATE_KEYS)
+        has_status = any(bool(headers.get(k, "").strip()) for k in HEADER_STATUS_KEYS)
+        has_parent = any(bool(headers.get(k, "").strip()) for k in HEADER_PARENT_KEYS)
+        has_model = any(bool(headers.get(k, "").strip()) for k in HEADER_MODEL_KEYS)
 
         has_prior_file_issues = any(i.file_name == rel_file_name for i in report.issues)
         if (
@@ -474,13 +487,13 @@ class PlanVerifier:
             and (not has_name or not has_date or (is_sub_plan and not has_parent))
         ):
             lines, headers, healed_keys = _auto_heal_deterministic_headers(
-                file_path, lines, headers, is_sub_plan
+                file_path, lines, headers, is_sub_plan, pending_writes=pending_writes
             )
             if healed_keys:
                 report.header_healed.append(f"{rel_file_name} ({', '.join(healed_keys)})")
-                has_name = any(k in headers for k in HEADER_NAME_KEYS)
-                has_date = any(k in headers for k in HEADER_DATE_KEYS)
-                has_parent = any(k in headers for k in HEADER_PARENT_KEYS)
+                has_name = any(bool(headers.get(k, "").strip()) for k in HEADER_NAME_KEYS)
+                has_date = any(bool(headers.get(k, "").strip()) for k in HEADER_DATE_KEYS)
+                has_parent = any(bool(headers.get(k, "").strip()) for k in HEADER_PARENT_KEYS)
 
         inferred_hdr = _infer_deterministic_header_values(file_path, is_sub_plan)
         inferred_name = inferred_hdr["功能名稱"]
@@ -637,10 +650,14 @@ class PlanVerifier:
         is_sub_plan: bool,
         report: PlanReport,
         enable_auto_heal: bool = False,
+        pending_writes: Optional[Dict[Path, str]] = None,
     ) -> None:
         """Stage 4: 稽核單一 Markdown 文件的 Header、佔位符、動態模板鏡像與 ID 格式。"""
         try:
-            content = file_path.read_text(encoding="utf-8", errors="ignore")
+            if pending_writes is not None and file_path in pending_writes:
+                content = pending_writes[file_path]
+            else:
+                content = file_path.read_text(encoding="utf-8", errors="ignore")
         except Exception as e:
             report.issues.append(
                 PlanIssue(
@@ -668,6 +685,7 @@ class PlanVerifier:
             missing_specs=missing_specs,
             enable_auto_heal=enable_auto_heal,
             report=report,
+            pending_writes=pending_writes,
         )
         self._check_template_and_id_matrix(
             lines=lines,
@@ -684,6 +702,7 @@ class PlanVerifier:
         rel_dir: str,
         phase_norm: str,
         report: PlanReport,
+        pending_writes: Optional[Dict[Path, str]] = None,
     ) -> None:
         """Step 3: 雙檔協同狀態檢核 (P02/P04 <-> P06) 與 P01 <-> P06 追溯鏈集合差集比對。"""
         from .status import PlanStatusResolver
@@ -694,10 +713,18 @@ class PlanVerifier:
         p04_path = PlanStatusResolver.resolve_phase_file(target_dir, "P04")
         p06_path = PlanStatusResolver.resolve_phase_file(target_dir, "P06")
 
+        def _exists(p: Path) -> bool:
+            return p.is_file() or (pending_writes is not None and p in pending_writes)
+
+        def _read_text(p: Path) -> str:
+            if pending_writes is not None and p in pending_writes:
+                return pending_writes[p]
+            return p.read_text(encoding="utf-8", errors="ignore")
+
         p_up = phase_norm.upper()
 
-        if p_up in ("P02", "ALL", "CURRENT") and p02_path.is_file():
-            if not p06_path.is_file():
+        if p_up in ("P02", "ALL", "CURRENT") and _exists(p02_path):
+            if not _exists(p06_path):
                 report.issues.append(
                     PlanIssue(
                         severity=PlanSeverity.FAIL,
@@ -710,8 +737,8 @@ class PlanVerifier:
                     )
                 )
 
-        if p_up in ("P04", "P05", "P06", "P07", "ALL", "CURRENT") and p04_path.is_file():
-            if not p06_path.is_file():
+        if p_up in ("P04", "P05", "P06", "P07", "ALL", "CURRENT") and _exists(p04_path):
+            if not _exists(p06_path):
                 report.issues.append(
                     PlanIssue(
                         severity=PlanSeverity.FAIL,
@@ -724,7 +751,7 @@ class PlanVerifier:
                     )
                 )
             else:
-                p06_st = PlanStatusResolver.get_doc_header_status(p06_path)
+                p06_st = PlanStatusResolver.get_doc_header_status(_read_text(p06_path))
                 if p06_st not in ("confirmed", "in progress", "passed", "completed"):
                     report.issues.append(
                         PlanIssue(
@@ -739,19 +766,19 @@ class PlanVerifier:
                     )
 
         should_check_traceability = False
-        if p01_path.is_file() and p06_path.is_file():
+        if _exists(p01_path) and _exists(p06_path):
             if p_up in ("P04", "P06", "P07"):
                 should_check_traceability = True
             elif p_up in ("ALL", "CURRENT") and (
-                p04_path.is_file()
-                or PlanStatusResolver.get_doc_header_status(p06_path) in ("confirmed", "in progress", "passed", "completed")
+                _exists(p04_path)
+                or PlanStatusResolver.get_doc_header_status(_read_text(p06_path)) in ("confirmed", "in progress", "passed", "completed")
             ):
                 should_check_traceability = True
 
         if should_check_traceability:
             try:
-                p01_text = p01_path.read_text(encoding="utf-8", errors="ignore")
-                p06_text = p06_path.read_text(encoding="utf-8", errors="ignore")
+                p01_text = _read_text(p01_path)
+                p06_text = _read_text(p06_path)
                 p01_ids = _extract_requirement_ids(p01_text)
                 if p01_ids:
                     p06_ids = _extract_requirement_ids(p06_text)
@@ -773,9 +800,9 @@ class PlanVerifier:
                 pass
 
         p05_path = PlanStatusResolver.resolve_phase_file(target_dir, "P05")
-        if p_up in ("P05", "P06", "P07", "ALL", "CURRENT") and p05_path.is_file():
+        if p_up in ("P05", "P06", "P07", "ALL", "CURRENT") and _exists(p05_path):
             try:
-                p05_text = p05_path.read_text(encoding="utf-8", errors="ignore")
+                p05_text = _read_text(p05_path)
                 major_lines = [
                     ln
                     for ln in p05_text.splitlines()
@@ -783,7 +810,7 @@ class PlanVerifier:
                 ]
                 if major_lines:
                     p03_path = PlanStatusResolver.resolve_phase_file(target_dir, "P03")
-                    p05_mtime = p05_path.stat().st_mtime
+                    p05_mtime = p05_path.stat().st_mtime if p05_path.is_file() else 0.0
                     stale_specs = [
                         sp.name
                         for sp in (p02_path, p03_path)
@@ -810,8 +837,8 @@ class PlanVerifier:
                         changelog_f = target_dir / "changelog.md"
                         if not changelog_f.is_file() and target_dir.parent.name != "plans":
                             changelog_f = target_dir.parent / "changelog.md"
-                        if changelog_f.is_file():
-                            cl_text = changelog_f.read_text(encoding="utf-8", errors="ignore")
+                        if _exists(changelog_f):
+                            cl_text = _read_text(changelog_f)
                             has_changelog_rev = bool(re.search(r"\bREVISION\b", cl_text, re.IGNORECASE))
                         if not has_inline_backprop and not has_changelog_rev:
                             report.issues.append(
@@ -902,6 +929,7 @@ class PlanVerifier:
         model: Optional[str],
         report: PlanReport,
         require_non_seed_for_companions: bool = False,
+        pending_writes: Optional[Dict[Path, str]] = None,
     ) -> None:
         """統一執行單一計畫目錄（主計畫或 sub_* 子計畫）之主體檔檢核、伴隨檔自癒與跨檔追溯檢查。"""
         fails_before = sum(1 for i in report.issues if i.severity == PlanSeverity.FAIL)
@@ -913,7 +941,12 @@ class PlanVerifier:
         prefix = f"{rel_dir}/" if rel_dir != "." else ""
         for md in target_mds:
             self._verify_markdown_file(
-                md, f"{prefix}{md.name}", is_sub, report, enable_auto_heal=enable_auto_heal
+                md,
+                f"{prefix}{md.name}",
+                is_sub,
+                report,
+                enable_auto_heal=enable_auto_heal,
+                pending_writes=pending_writes,
             )
 
         has_new_fails = sum(1 for i in report.issues if i.severity == PlanSeverity.FAIL) > fails_before
@@ -923,19 +956,33 @@ class PlanVerifier:
             else True
         )
         if not has_new_fails and enable_auto_heal and has_eligible_md:
-            _auto_heal_companions(target_dir, phase_norm, model, report)
+            _auto_heal_companions(
+                target_dir, phase_norm, model, report, pending_writes=pending_writes
+            )
             p06_rel = f"{prefix}P06_test_plan.md"
             if p06_rel in report.companion_created:
                 p06_new = target_dir / "P06_test_plan.md"
-                if p06_new.is_file() and p06_new not in target_mds:
+                p06_exists = p06_new.is_file() or (pending_writes is not None and p06_new in pending_writes)
+                if p06_exists and p06_new not in target_mds:
                     self._verify_markdown_file(
-                        p06_new, p06_rel, is_sub, report, enable_auto_heal=enable_auto_heal
+                        p06_new,
+                        p06_rel,
+                        is_sub,
+                        report,
+                        enable_auto_heal=enable_auto_heal,
+                        pending_writes=pending_writes,
                     )
 
-        self._check_nested_depth_and_structure(target_dir, rel_dir, report)
+        self._check_nested_depth_and_structure(
+            target_dir, rel_dir, report, pending_writes=pending_writes
+        )
         changelog_path = target_dir / "changelog.md"
-        self._check_changelog_content(changelog_path, f"{prefix}changelog.md", report)
-        self._check_cross_file_and_traceability(target_dir, rel_dir, phase_norm, report)
+        self._check_changelog_content(
+            changelog_path, f"{prefix}changelog.md", report, pending_writes=pending_writes
+        )
+        self._check_cross_file_and_traceability(
+            target_dir, rel_dir, phase_norm, report, pending_writes=pending_writes
+        )
 
     def verify_plan(
         self,
@@ -945,7 +992,7 @@ class PlanVerifier:
         log_type: str = "PHASE",
         model: Optional[str] = None,
     ) -> PlanReport:
-        """對指定計畫目錄執行四步檢核與伴隨檔自癒流水線，回傳結構化 PlanReport。"""
+        """對指定計畫目錄執行四步檢核與伴隨檔交易式自癒流水線，回傳結構化 PlanReport。"""
         if isinstance(plan_path_or_name, str):
             raw_str = plan_path_or_name.strip()
             p = Path(raw_str)
@@ -997,6 +1044,7 @@ class PlanVerifier:
         phase_norm = (phase or "all").strip().upper()
         is_sub = p.name.startswith("sub_")
         enable_auto_heal = bool(log_msg and log_msg.strip())
+        pending_writes: Dict[Path, str] = {}
 
         if phase_norm in PHASE_CANONICAL_FILES:
             from .status import PlanStatusResolver
@@ -1022,6 +1070,7 @@ class PlanVerifier:
             model=model,
             report=report,
             require_non_seed_for_companions=False,
+            pending_writes=pending_writes,
         )
 
         if phase_norm in ("ALL", "CURRENT"):
@@ -1036,14 +1085,21 @@ class PlanVerifier:
                         model=model,
                         report=report,
                         require_non_seed_for_companions=True,
+                        pending_writes=pending_writes,
                     )
 
-        # Step 4: 彙總狀態
+        # Step 4: 交易式提交或回滾
         if report.has_fails:
             report.status = PlanSeverity.FAIL
+            pending_writes.clear()
+            report.companion_created.clear()
+            report.header_healed.clear()
             if enable_auto_heal:
                 report.log_status = "skipped_on_fail"
         else:
+            for target_file, staged_content in pending_writes.items():
+                _atomic_write_text(target_file, staged_content)
+
             if report.has_warns:
                 report.status = PlanSeverity.WARN
             else:

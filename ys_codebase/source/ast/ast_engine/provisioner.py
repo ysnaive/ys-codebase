@@ -14,7 +14,7 @@ from types import MappingProxyType
 from typing import Any, ClassVar, Dict, Iterator, List, Mapping, Optional, Set
 
 from core.context import get_runtime_context
-from core.log import log_debug, log_stream, log_warn
+from core.log import log_debug, log_stream
 
 try:
     import tree_sitter
@@ -33,14 +33,18 @@ DEFAULT_GRAMMAR_PACKAGES: Mapping[str, str] = MappingProxyType({
 
 
 def _get_provisioner_state() -> Dict[str, Any]:
-    return get_runtime_context().get_module_state(
+    state = get_runtime_context().get_module_state(
         "ast.provisioner.state",
         lambda: {
             "failed_packages": set(),
             "loaded_languages": {},
             "warnings": [],
+            "inflight_events": {},
         },
     )
+    if "inflight_events" not in state:
+        state["inflight_events"] = {}
+    return state
 
 
 class _ProvisionerMeta(type):
@@ -56,12 +60,17 @@ class _ProvisionerMeta(type):
     def warnings(cls) -> List[str]:
         return _get_provisioner_state()["warnings"]
 
+    @property
+    def _INFLIGHT_EVENTS(cls) -> Dict[str, threading.Event]:
+        return _get_provisioner_state()["inflight_events"]
+
 
 class GrammarProvisioner(metaclass=_ProvisionerMeta):
     """
     On-demand Tree-sitter grammar loader and pip provisioner.
-    Enforces 100% stderr redirection for any installation subprocess and maintains
-    a session-scoped `_FAILED_PACKAGES` negative cache to prevent repeated retries in offline environments.
+    Enforces 100% stderr redirection for any installation subprocess, single-flight per-language
+    events so slow installations never block cached languages, and a session-scoped
+    `_FAILED_PACKAGES` negative cache to prevent repeated retries in offline environments.
     """
 
     _LOCK: ClassVar[threading.RLock] = threading.RLock()
@@ -77,11 +86,14 @@ class GrammarProvisioner(metaclass=_ProvisionerMeta):
 
     @classmethod
     def reset_cache(cls) -> None:
-        """Clear negative cache, loaded language cache, and accumulated warnings."""
+        """Clear negative cache, loaded language cache, inflight events, and accumulated warnings."""
         with cls._LOCK:
             cls._FAILED_PACKAGES.clear()
             cls._LOADED_LANGUAGES.clear()
             cls.warnings.clear()
+            for ev in cls._INFLIGHT_EVENTS.values():
+                ev.set()
+            cls._INFLIGHT_EVENTS.clear()
 
     @classmethod
     def get_warnings(cls, clear: bool = False) -> List[str]:
@@ -143,7 +155,7 @@ class GrammarProvisioner(metaclass=_ProvisionerMeta):
     def _try_pip_install(cls, pkg_name: str, module_name: Optional[str] = None) -> bool:
         """
         Attempt to install a missing grammar package via pip with stdout and stderr strictly redirected to sys.stderr.
-        Synchronizes across processes and performs a double-checked import check after acquiring the lock.
+        Synchronizes across processes and maintains strict `_provision_lock -> _LOCK` lock ordering without holding `_LOCK` during subprocess execution.
         """
         with cls._LOCK:
             if pkg_name in cls._FAILED_PACKAGES:
@@ -153,39 +165,41 @@ class GrammarProvisioner(metaclass=_ProvisionerMeta):
             with cls._LOCK:
                 if pkg_name in cls._FAILED_PACKAGES:
                     return False
-                if module_name:
-                    importlib.invalidate_caches()
-                    try:
-                        importlib.import_module(module_name)
-                        return True
-                    except ImportError:
-                        pass
 
+            if module_name:
+                importlib.invalidate_caches()
                 try:
-                    cmd = [
-                        sys.executable,
-                        "-m",
-                        "pip",
-                        "install",
-                        "--quiet",
-                        "--disable-pip-version-check",
-                        pkg_name,
-                    ]
-                    proc = subprocess.run(
-                        cmd,
-                        stdout=sys.stderr,
-                        stderr=sys.stderr,
-                        timeout=30,
-                        check=False,
-                    )
-                    if proc.returncode == 0:
-                        importlib.invalidate_caches()
-                        return True
-                except Exception as exc:
-                    log_debug(f"GrammarProvisioner pip install failed for '{pkg_name}': {exc}")
+                    importlib.import_module(module_name)
+                    return True
+                except ImportError:
+                    pass
 
+            try:
+                cmd = [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--quiet",
+                    "--disable-pip-version-check",
+                    pkg_name,
+                ]
+                proc = subprocess.run(
+                    cmd,
+                    stdout=sys.stderr,
+                    stderr=sys.stderr,
+                    timeout=30,
+                    check=False,
+                )
+                if proc.returncode == 0:
+                    importlib.invalidate_caches()
+                    return True
+            except Exception as exc:
+                log_debug(f"GrammarProvisioner pip install failed for '{pkg_name}': {exc}")
+
+            with cls._LOCK:
                 cls._FAILED_PACKAGES.add(pkg_name)
-                return False
+            return False
 
     @classmethod
     def load_language(
@@ -198,23 +212,40 @@ class GrammarProvisioner(metaclass=_ProvisionerMeta):
     ) -> Optional[Any]:
         """
         Load a `tree_sitter.Language` instance for `(lang_key, module_name, func_name)`.
-        If the grammar module is missing and `auto_install_pkg` is provided (or mapped),
-        optionally attempts a one-shot pip install with output isolated to `sys.stderr`.
-        On failure, records the package in `_FAILED_PACKAGES`, emits `[ast:warn]` to `sys.stderr`, and returns `None`.
+        Uses lock-decoupled single-flight coordination per `cache_key` so slow pip installations
+        never block concurrent lookups of cached languages or `get_warnings()`.
         """
-        with cls._LOCK:
-            if ":" in module_name:
-                module_name, func_name = module_name.split(":", 1)
+        if ":" in module_name:
+            module_name, func_name = module_name.split(":", 1)
 
-            cache_key = f"{lang_key}:{module_name}:{func_name}"
+        cache_key = f"{lang_key}:{module_name}:{func_name}"
+        pkg_name = auto_install_pkg or DEFAULT_GRAMMAR_PACKAGES.get(module_name) or module_name.replace("_", "-")
+
+        wait_event: Optional[threading.Event] = None
+        is_leader = False
+
+        with cls._LOCK:
             if cache_key in cls._LOADED_LANGUAGES:
                 return cls._LOADED_LANGUAGES[cache_key]
-
-            pkg_name = auto_install_pkg or DEFAULT_GRAMMAR_PACKAGES.get(module_name) or module_name.replace("_", "-")
             if pkg_name in cls._FAILED_PACKAGES or module_name in cls._FAILED_PACKAGES:
                 cls._emit_warning(pkg_name)
                 return None
+            if cache_key in cls._INFLIGHT_EVENTS:
+                wait_event = cls._INFLIGHT_EVENTS[cache_key]
+            else:
+                wait_event = threading.Event()
+                cls._INFLIGHT_EVENTS[cache_key] = wait_event
+                is_leader = True
 
+        if not is_leader and wait_event is not None:
+            wait_event.wait(timeout=95.0)
+            with cls._LOCK:
+                if cache_key in cls._LOADED_LANGUAGES:
+                    return cls._LOADED_LANGUAGES[cache_key]
+                cls._emit_warning(pkg_name)
+                return None
+
+        try:
             mod = None
             try:
                 mod = importlib.import_module(module_name)
@@ -230,35 +261,41 @@ class GrammarProvisioner(metaclass=_ProvisionerMeta):
                     except Exception:
                         mod = None
 
-            if mod is None:
-                cls._FAILED_PACKAGES.add(pkg_name)
-                cls._FAILED_PACKAGES.add(module_name)
-                cls._emit_warning(pkg_name)
-                return None
+            with cls._LOCK:
+                if mod is None:
+                    cls._FAILED_PACKAGES.add(pkg_name)
+                    cls._FAILED_PACKAGES.add(module_name)
+                    cls._emit_warning(pkg_name)
+                    return None
 
-            if tree_sitter is None:
-                cls._FAILED_PACKAGES.add("tree-sitter")
-                cls._emit_warning("tree-sitter")
-                return None
+                if tree_sitter is None:
+                    cls._FAILED_PACKAGES.add("tree-sitter")
+                    cls._emit_warning("tree-sitter")
+                    return None
 
-            try:
-                if hasattr(mod, func_name):
-                    lang_fn = getattr(mod, func_name)
-                elif hasattr(mod, f"language_{lang_key}"):
-                    lang_fn = getattr(mod, f"language_{lang_key}")
-                else:
-                    raise AttributeError(f"Module '{module_name}' has no function '{func_name}'")
+                try:
+                    if hasattr(mod, func_name):
+                        lang_fn = getattr(mod, func_name)
+                    elif hasattr(mod, f"language_{lang_key}"):
+                        lang_fn = getattr(mod, f"language_{lang_key}")
+                    else:
+                        raise AttributeError(f"Module '{module_name}' has no function '{func_name}'")
 
-                raw_lang = lang_fn()
-                ts_lang = raw_sitter_language(raw_lang)
-                cls._LOADED_LANGUAGES[cache_key] = ts_lang
-                return ts_lang
-            except Exception as exc:
-                log_debug(f"GrammarProvisioner failed initializing '{module_name}:{func_name}': {exc}")
-                cls._FAILED_PACKAGES.add(pkg_name)
-                cls._FAILED_PACKAGES.add(module_name)
-                cls._emit_warning(pkg_name)
-                return None
+                    raw_lang = lang_fn()
+                    ts_lang = raw_sitter_language(raw_lang)
+                    cls._LOADED_LANGUAGES[cache_key] = ts_lang
+                    return ts_lang
+                except Exception as exc:
+                    log_debug(f"GrammarProvisioner failed initializing '{module_name}:{func_name}': {exc}")
+                    cls._FAILED_PACKAGES.add(pkg_name)
+                    cls._FAILED_PACKAGES.add(module_name)
+                    cls._emit_warning(pkg_name)
+                    return None
+        finally:
+            with cls._LOCK:
+                cls._INFLIGHT_EVENTS.pop(cache_key, None)
+            if wait_event is not None:
+                wait_event.set()
 
 
 def raw_sitter_language(raw_lang: Any) -> Any:

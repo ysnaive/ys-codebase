@@ -223,10 +223,28 @@ class Releaser:
             merged_rel = dict(cur_rel)
             merged_rel.update(cleaned)
             mf_data["release"] = merged_rel
-            vfs.write_json(mf_uri, mf_data, indent=2)
+            vfs.write_json(mf_uri, mf_data, indent=2, atomic=True)
             return True, ""
         except Exception as e:
             return False, f"Failed to write release metadata into manifest.json for '{module_name}': {e}"
+
+    @staticmethod
+    def _snapshot_manifest_text(manifest_uri: str) -> Optional[str]:
+        if not vfs.is_file(manifest_uri):
+            return None
+        try:
+            return vfs.read_text(manifest_uri)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _restore_manifest_text(manifest_uri: str, orig_text: Optional[str]) -> None:
+        if orig_text is None:
+            return
+        try:
+            vfs.write_text(manifest_uri, orig_text, encoding="utf-8", atomic=True)
+        except Exception:
+            pass
 
     def release_module(
         self,
@@ -237,15 +255,13 @@ class Releaser:
     ) -> Tuple[bool, str]:
         """
         單一模組純淨發布 (dev release <mod> [--force]):
-        1. 若傳入 release_meta，先寫入 source/<mod>/manifest.json["release"]。
-        2. 若 _skip_check=False，執行 release_check(module_name, force=force)。
+        1. 若 _skip_check=False，先執行 pre-flight release_check(module_name, force=force)（避免預檢失敗時污染 manifest.json）。
+        2. 若傳入 release_meta，寫入 source/<mod>/manifest.json["release"]，若後續失敗則原子回滾。
         3. 調用 Builder.package_release(module_name, target_version)。
         4. 廣播標準事件 on_module_released。
         """
-        if release_meta:
-            ok_meta, err_meta = self._apply_release_meta_to_source_manifest(module_name, release_meta)
-            if not ok_meta:
-                return False, err_meta
+        manifest_uri = f"module.source://{module_name}/manifest.json"
+        orig_manifest_text = self._snapshot_manifest_text(manifest_uri) if release_meta else None
 
         if not _skip_check:
             passed, errors = self.release_check(module_name, force=force)
@@ -253,32 +269,48 @@ class Releaser:
                 err_msg = "\n  - ".join(errors)
                 return False, f"Release pre-flight check failed for '{module_name}':\n  - {err_msg}"
 
-        manifest_uri = f"module.source://{module_name}/manifest.json"
+        if release_meta:
+            ok_meta, err_meta = self._apply_release_meta_to_source_manifest(module_name, release_meta)
+            if not ok_meta:
+                self._restore_manifest_text(manifest_uri, orig_manifest_text)
+                return False, err_meta
+            if not _skip_check:
+                passed_post, errors_post = self.release_check(module_name, force=force)
+                if not passed_post:
+                    self._restore_manifest_text(manifest_uri, orig_manifest_text)
+                    err_msg = "\n  - ".join(errors_post)
+                    return False, f"Release pre-flight check failed for '{module_name}':\n  - {err_msg}"
+
         if not vfs.exists(manifest_uri):
             return False, f"manifest.json not found for module '{module_name}'."
         try:
             manifest_data = vfs.read_json(manifest_uri)
             if not isinstance(manifest_data, dict):
+                self._restore_manifest_text(manifest_uri, orig_manifest_text)
                 return False, f"Invalid manifest.json format for module '{module_name}'."
         except Exception as e:
+            self._restore_manifest_text(manifest_uri, orig_manifest_text)
             return False, f"Invalid JSON in manifest.json for module '{module_name}': {e}"
         target_version = manifest_data.get("version", "1.0.0.0")
 
         ok, msg = self.builder.package_release(module_name, target_version)
-        if ok:
-            rel_zip_uri = f"module.release://{module_name}/{target_version}.zip"
-            zip_real = uri.resolve(rel_zip_uri) if vfs.exists(rel_zip_uri) else ""
-            ctx = ExecutionContext(
-                "dev",
-                "on_module_released",
-                [module_name, target_version],
-                metadata={
-                    "module": module_name,
-                    "version": target_version,
-                    "zip_path": zip_real,
-                },
-            )
-            events.broadcast("on_module_released", context=ctx, emit_module="dev")
+        if not ok:
+            self._restore_manifest_text(manifest_uri, orig_manifest_text)
+            return ok, msg
+
+        rel_zip_uri = f"module.release://{module_name}/{target_version}.zip"
+        zip_real = uri.resolve(rel_zip_uri) if vfs.exists(rel_zip_uri) else ""
+        ctx = ExecutionContext(
+            "dev",
+            "on_module_released",
+            [module_name, target_version],
+            metadata={
+                "module": module_name,
+                "version": target_version,
+                "zip_path": zip_real,
+            },
+        )
+        events.broadcast("on_module_released", context=ctx, emit_module="dev")
         return ok, msg
 
     def release_all(self, force: bool = False) -> Dict[str, Tuple[bool, str]]:
@@ -327,8 +359,8 @@ class Releaser:
     ) -> Tuple[bool, str]:
         """
         4 步發布與版本控制安全流水線 (dev release-git <mod> "<msg>" [--force]):
-        1. 若傳入 release_meta，先寫入 source/<mod>/manifest.json["release"]。
-        2. 調用 Tester 執行 dev test <mod>（失敗即中斷）。
+        1. 若傳入 release_meta，先保存 manifest.json 原始快照並寫入 release_meta（若後續失敗自動回滾）。
+        2. 調用 Tester 執行 dev test <mod>（失敗即回滾並中斷）。
         3. 檢查目標版本是否已發布：
            - 若尚未發布：調用 release_check -> release_module(_skip_check=True)。
            - 若已發布且無 --force：略過打包動作，直接推進至本地 Git 提交。
@@ -343,16 +375,20 @@ class Releaser:
         if not vfs.exists(manifest_uri):
             return False, f"manifest.json not found for module '{module_name}'."
 
+        orig_manifest_text = self._snapshot_manifest_text(manifest_uri) if release_meta else None
         if release_meta:
             ok_meta, err_meta = self._apply_release_meta_to_source_manifest(module_name, release_meta)
             if not ok_meta:
+                self._restore_manifest_text(manifest_uri, orig_manifest_text)
                 return False, err_meta
 
         try:
             manifest_data = vfs.read_json(manifest_uri)
             if not isinstance(manifest_data, dict):
+                self._restore_manifest_text(manifest_uri, orig_manifest_text)
                 return False, f"Invalid manifest.json format for module '{module_name}'."
         except Exception as e:
+            self._restore_manifest_text(manifest_uri, orig_manifest_text)
             return False, f"Invalid JSON in manifest.json for module '{module_name}': {e}"
 
         ver = manifest_data.get("version", "1.0.0.0")
@@ -367,6 +403,7 @@ class Releaser:
             tester = Tester()
         test_ret = tester.run(["test", module_name])
         if test_ret != 0:
+            self._restore_manifest_text(manifest_uri, orig_manifest_text)
             return False, f"Step 1 Failed: E2E test failed for module '{module_name}'. Release aborted."
 
         # Step 2 & 3: Release Check and Packaging (Smart Skip or Force Overwrite)
@@ -376,11 +413,13 @@ class Releaser:
         else:
             passed, chk_errors = self.release_check(module_name, force=force)
             if not passed:
+                self._restore_manifest_text(manifest_uri, orig_manifest_text)
                 err_details = "\n  - ".join(chk_errors)
                 return False, f"Step 2 Failed: Release readiness check failed for '{module_name}':\n  - {err_details}"
 
             ok_pkg, msg_pkg = self.release_module(module_name, force=force, _skip_check=True)
             if not ok_pkg:
+                self._restore_manifest_text(manifest_uri, orig_manifest_text)
                 return False, f"Step 3 Failed: Release packaging failed for '{module_name}': {msg_pkg}"
 
         # Step 4: Local Git Commit and Tag

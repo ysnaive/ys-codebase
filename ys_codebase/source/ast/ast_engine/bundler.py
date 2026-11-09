@@ -6,6 +6,7 @@ and deterministic overload ID disambiguation.
 
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
+import copy
 import dataclasses
 from datetime import datetime, timezone
 import json
@@ -178,6 +179,14 @@ def ensure_unique_overload_ids(
     return updated
 
 
+def _clone_member_item(m: Any) -> Any:
+    if isinstance(m, MemberInfo):
+        return MemberInfo.from_dict(m.to_dict())
+    if isinstance(m, dict):
+        return MemberInfo.from_dict(m)
+    return copy.deepcopy(m)
+
+
 def _extract_unaggregated_partial_state(
     sym: UnifiedSymbol,
 ) -> Tuple[List[Any], List[str], Dict[str, str], str]:
@@ -188,18 +197,15 @@ def _extract_unaggregated_partial_state(
     meta = sym.metadata or {}
     if "_own_members" in meta:
         raw_own = meta["_own_members"]
-        own_members = [
-            MemberInfo.from_dict(m) if isinstance(m, dict) else m
-            for m in raw_own
-        ]
+        own_members = [_clone_member_item(m) for m in raw_own]
     else:
-        own_members = [
-            MemberInfo.from_dict(m) if isinstance(m, dict) else m
-            for m in sym.members
-        ]
+        own_members = [_clone_member_item(m) for m in sym.members]
 
-    own_bases = list(meta.get("_own_base_types", meta.get("base_types", [])))
-    own_fields = dict(meta.get("_own_field_types", meta.get("field_types", {})))
+    own_bases = [str(b) for b in meta.get("_own_base_types", meta.get("base_types", []))]
+    own_fields = {
+        str(k): str(v)
+        for k, v in dict(meta.get("_own_field_types", meta.get("field_types", {}))).items()
+    }
     own_doc = str(meta.get("_own_docstring", sym.docstring or ""))
     return own_members, own_bases, own_fields, own_doc
 
@@ -207,12 +213,19 @@ def _extract_unaggregated_partial_state(
 def restore_unaggregated_partial_symbol(sym: UnifiedSymbol) -> UnifiedSymbol:
     """
     Restore an already-aggregated C# `partial` symbol back to its single-file baseline state
-    for incremental re-aggregation or single-file degeneration.
+    for incremental re-aggregation or single-file degeneration without mutating the input symbol.
     """
     if "_own_members" not in (sym.metadata or {}):
-        return sym
+        cloned_members = tuple(_clone_member_item(m) for m in sym.members)
+        cloned_children = tuple(_clone_member_item(c) for c in sym.children)
+        return dataclasses.replace(
+            sym,
+            children=cloned_children,
+            members=cloned_members,
+            metadata=copy.deepcopy(dict(sym.metadata or {})),
+        )
     own_members, own_bases, own_fields, own_doc = _extract_unaggregated_partial_state(sym)
-    new_meta = dict(sym.metadata)
+    new_meta = copy.deepcopy(dict(sym.metadata))
     for k in (
         "_own_members",
         "_own_base_types",
@@ -225,11 +238,11 @@ def restore_unaggregated_partial_symbol(sym: UnifiedSymbol) -> UnifiedSymbol:
     ):
         new_meta.pop(k, None)
     if own_bases:
-        new_meta["base_types"] = own_bases
+        new_meta["base_types"] = list(own_bases)
     else:
         new_meta.pop("base_types", None)
     if own_fields:
-        new_meta["field_types"] = own_fields
+        new_meta["field_types"] = dict(own_fields)
     else:
         new_meta.pop("field_types", None)
     search_payload = f"{sym.fqn} {new_meta.get('short_name', sym.name)} {own_doc} {sym.signature}".strip()
@@ -530,6 +543,7 @@ def _normalize_space_dirty_paths(
     file_symbols_cache: Optional[Dict[str, List[UnifiedSymbol]]] = None,
     prefer_missing: bool = False,
     snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
+    known_indexed_files: Optional[Set[str]] = None,
 ) -> Set[str]:
     """
     Normalize space-relative or absolute dirty paths into `project://`-relative and canonical absolute paths.
@@ -543,6 +557,7 @@ def _normalize_space_dirty_paths(
         snap_entries_by_space = _preload_snap_entries(scanner, target_spaces)
 
     proj_root = getattr(space_manager, "project_root", None) if space_manager else None
+    known_norm = normalize_dirty_paths(known_indexed_files) if known_indexed_files else set()
 
     for raw_p in raw_list:
         p_obj = Path(raw_p)
@@ -609,10 +624,18 @@ def _normalize_space_dirty_paths(
                     (c, r)
                     for c, r in missing_cands
                     if _safe_resolve_str(c) in cache_ref
+                    or compute_project_relpath(c, r, project_root=proj_root) in cache_ref
+                    or (
+                        known_norm
+                        and (
+                            is_dirty_file_match(_safe_resolve_str(c), known_norm)
+                            or is_dirty_file_match(compute_project_relpath(c, r, project_root=proj_root), known_norm)
+                        )
+                    )
                 ]
                 cands_to_use = cached_missing or missing_cands
         else:
-            if len(existing_cands) > 1 and "/" not in raw_p:
+            if len(existing_cands) > 1:
                 max_mtime = max((_safe_mtime_ns(c) for c, _ in existing_cands), default=0)
                 existing_cands = [(c, r) for c, r in existing_cands if _safe_mtime_ns(c) >= max_mtime]
             cands_to_use = (
@@ -689,8 +712,7 @@ class SemanticBundler:
         Load declarative target spaces from:
         1. `self._contributes_data` (if explicitly injected)
         2. `core.contributes.get("ast")` + `config://ast/contribute.json`
-        3. `on_register_ast_spaces` hook broadcast (allowing downstream modules like `knowledge-db` to inject spaces)
-        4. `core.contributes.get("knowledge-db")` / `config://knowledge-db/contribute.json` (`space_weights` keys)
+        3. `on_register_ast_spaces` hook broadcast (allowing downstream modules to inject spaces)
         """
         if self._target_spaces_initialized:
             return
@@ -739,33 +761,6 @@ class SemanticBundler:
                 if cfg_p.is_file():
                     with open(cfg_p, "r", encoding="utf-8") as f:
                         _extract_from_ast_dict(json.load(f))
-        except Exception:
-            pass
-
-        try:
-            from core import contributes as core_contributes
-
-            kdb_contrib = core_contributes.get("knowledge-db")
-            if isinstance(kdb_contrib, dict) and isinstance(kdb_contrib.get("space_weights"), dict):
-                self.register_spaces(
-                    str(k) for k in kdb_contrib["space_weights"].keys() if not str(k).startswith("_")
-                )
-        except Exception:
-            pass
-
-        try:
-            from core import uri as core_uri
-
-            kdb_cfg_res = core_uri.resolve("config://knowledge-db/contribute.json", interactive=False)
-            if kdb_cfg_res and not str(kdb_cfg_res).startswith("!undefined"):
-                kdb_cfg_p = Path(str(kdb_cfg_res)).resolve()
-                if kdb_cfg_p.is_file():
-                    with open(kdb_cfg_p, "r", encoding="utf-8") as f:
-                        kdb_data = json.load(f)
-                    if isinstance(kdb_data, dict) and isinstance(kdb_data.get("space_weights"), dict):
-                        self.register_spaces(
-                            str(k) for k in kdb_data["space_weights"].keys() if not str(k).startswith("_")
-                        )
         except Exception:
             pass
 
@@ -951,6 +946,17 @@ class SemanticBundler:
 
         return unique_files
 
+    def _get_or_collect_space_files(
+        self, target_spaces: List[SpaceConfig]
+    ) -> Dict[str, Tuple[Path, str, Set[str]]]:
+        target_space_names = {_space_logical_name(sp) for sp in target_spaces}
+        if (
+            self._last_bundle_unique_files
+            and self._last_bundle_spaces == target_space_names
+        ):
+            return dict(self._last_bundle_unique_files)
+        return self._collect_space_files(target_spaces)
+
     def _resolve_dirty_files_only(
         self,
         dirty_raw_paths: Iterable[str],
@@ -1003,7 +1009,7 @@ class SemanticBundler:
                     snap_matches.append(fp_rec)
 
             if snap_matches:
-                if len(snap_matches) > 1 and "/" not in clean_p:
+                if len(snap_matches) > 1:
                     best_mtime_ns = max((int(getattr(fp, "mtime_ns", 0)) for fp in snap_matches), default=0)
                     snap_matches = [fp for fp in snap_matches if int(getattr(fp, "mtime_ns", 0)) >= best_mtime_ns]
                 for fp_rec in snap_matches:
@@ -1019,7 +1025,7 @@ class SemanticBundler:
                         cand = inc_root / clean_p
                         if _safe_is_file(cand):
                             inc_matches.append((cand, inc_root))
-                if len(inc_matches) > 1 and "/" not in clean_p:
+                if len(inc_matches) > 1:
                     max_mtime = max((_safe_mtime_ns(c) for c, _ in inc_matches), default=0)
                     inc_matches = [(c, r) for c, r in inc_matches if _safe_mtime_ns(c) >= max_mtime]
                 for cand, inc_root in inc_matches:
@@ -1106,14 +1112,30 @@ class SemanticBundler:
         from .parsers.registry import DEFAULT_LANGUAGES
 
         lang_cfgs = self.parser_registry.language_configs
-        has_custom_configs = len(getattr(self.parser_registry, "_parsers", ())) > len(lang_cfgs) or any(
-            lang_id not in DEFAULT_LANGUAGES
-            or cfg.mode != DEFAULT_LANGUAGES[lang_id].get("mode", "tree_sitter")
-            or cfg.grammar != DEFAULT_LANGUAGES[lang_id].get("grammar")
-            or cfg.query_file != DEFAULT_LANGUAGES[lang_id].get("query_file")
-            or cfg.parser_entry != DEFAULT_LANGUAGES[lang_id].get("parser_entry")
-            or tuple(cfg.extensions) != tuple(DEFAULT_LANGUAGES[lang_id].get("extensions", ()))
-            for lang_id, cfg in lang_cfgs.items()
+        has_custom_configs = (
+            self._contributes_data is not None
+            or len(getattr(self.parser_registry, "_parsers", ())) > len(lang_cfgs)
+            or any(
+                lang_id not in DEFAULT_LANGUAGES
+                or cfg.mode != DEFAULT_LANGUAGES[lang_id].get("mode", "tree_sitter")
+                or cfg.grammar != DEFAULT_LANGUAGES[lang_id].get("grammar")
+                or cfg.query_file != DEFAULT_LANGUAGES[lang_id].get("query_file")
+                or tuple(cfg.query_files) != tuple(
+                    DEFAULT_LANGUAGES[lang_id].get("query_files")
+                    or (
+                        [DEFAULT_LANGUAGES[lang_id]["query_file"]]
+                        if DEFAULT_LANGUAGES[lang_id].get("query_file")
+                        else ()
+                    )
+                )
+                or tuple(cfg.spaces) != tuple(DEFAULT_LANGUAGES[lang_id].get("spaces", ()))
+                or tuple(cfg.processors) != tuple(DEFAULT_LANGUAGES[lang_id].get("processors", ()))
+                or cfg.module_resolver != DEFAULT_LANGUAGES[lang_id].get("module_resolver")
+                or tuple(cfg.edge_refiners) != tuple(DEFAULT_LANGUAGES[lang_id].get("edge_refiners", ()))
+                or cfg.parser_entry != DEFAULT_LANGUAGES[lang_id].get("parser_entry")
+                or tuple(cfg.extensions) != tuple(DEFAULT_LANGUAGES[lang_id].get("extensions", ()))
+                for lang_id, cfg in lang_cfgs.items()
+            )
         )
         cpu_cnt = os.cpu_count() or 1
         in_server_worker = get_env("YSCB_IN_SERVER_WORKER") == "1"
@@ -1219,6 +1241,7 @@ class SemanticBundler:
         target_spaces: List[SpaceConfig],
         prefer_missing: bool = False,
         snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
+        known_indexed_files: Optional[Set[str]] = None,
     ) -> Set[str]:
         return _normalize_space_dirty_paths(
             raw_paths=raw_paths,
@@ -1228,6 +1251,7 @@ class SemanticBundler:
             file_symbols_cache=self._file_symbols_cache,
             prefer_missing=prefer_missing,
             snap_entries_by_space=snap_entries_by_space,
+            known_indexed_files=known_indexed_files,
         )
 
     def bundle_dirty_files(
@@ -1337,7 +1361,7 @@ class SemanticBundler:
                 snap_entries_by_space=snap_entries_by_space,
             )
         else:
-            unique_files = self._collect_space_files(target_spaces)
+            unique_files = self._get_or_collect_space_files(target_spaces)
         dirty_norm = normalize_dirty_paths(dirty_file_paths) if dirty_file_paths is not None else None
 
         call_sites: List[SymbolCallSite] = []
@@ -1408,7 +1432,7 @@ class SemanticBundler:
     ) -> Dict[str, FileSymbolGraph]:
         """Return `{relpath: FileSymbolGraph}` across all target spaces (reusing `_file_graphs_cache` when populated)."""
         target_spaces = self._resolve_target_spaces(spaces)
-        unique_files = self._collect_space_files(target_spaces)
+        unique_files = self._get_or_collect_space_files(target_spaces)
         out: Dict[str, FileSymbolGraph] = {}
         for c_key, (f_path, relpath, sp_set) in unique_files.items():
             cached_fg = self._file_graphs_cache.get(relpath) or self._file_graphs_cache.get(c_key)

@@ -55,7 +55,7 @@ def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
             "ver": "version",
             "version": "ver",
         }
-        args = list(cmd_bags)
+        args = [str(a) for a in cmd_bags if a is not None]
         raw_cmd = " ".join(args)
         opts: Dict[str, CmdOption] = {}
         pos: List[str] = []

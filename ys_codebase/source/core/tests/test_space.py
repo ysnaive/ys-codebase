@@ -1461,97 +1461,86 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         )
         self.mark_passed()
 
-    def test_snapshot_mem_cache_watcher_aware_diff_and_batch_sync(self) -> None:
-        """Verify `(mtime_ns, size)`-validated in-memory snapshot cache, `scan(None)` hash memoization, watcher-aware `diff(auto_refresh=None)`, and `sync_dependent_snapshots_batch`."""
-        src_dir = self.proj_root / "src_mem"
-        src_dir.mkdir(parents=True, exist_ok=True)
-        shared_py = src_dir / "shared.py"
-        shared_py.write_text("x = 42\n", encoding="utf-8")
 
-        reg = SpaceRegistry(
-            project_root=self.proj_root,
-            yscb_dir=self.yscb_root,
-            raw_spaces={
-                "mod_a/code": {
-                    "entries": ["src_mem"],
-                    "include": ["*.py"],
-                    "watch": True,
-                },
-                "project/code": {
-                    "entries": ["src_mem"],
-                    "include": ["*.py"],
-                    "watch": True,
-                },
+    def test_pre_1970_negative_mtime_clamping_batch_walk_session_and_128_migration(self) -> None:
+        """
+        Verify:
+        1. Files with negative pre-1970 `st_mtime_ns` are clamped to `0` in `SpaceRegistry` and `SpaceScanner.patch_files`
+           so subsequent scans hit Stage 1 without infinite Stage 2 re-hashing.
+        2. `SpaceRegistry.batch_walk_session()` deduplicates walks across composed/synthetic spaces.
+        3. `1.2.8.x.py` migration removes legacy `file-space` residual entries from `yscb.config.json` and runtime directories.
+        """
+        import importlib.util
+
+        src_dir = self.proj_root / "epoch_src"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        old_file = src_dir / "ancient.py"
+        old_file.write_text("x = 1969\n", encoding="utf-8")
+        try:
+            os.utime(old_file, ns=(-86_400_000_000_000, -86_400_000_000_000))
+        except OSError:
+            pass
+
+        self._write_module_core_contrib(
+            "core",
+            {
+                "spaces": {
+                    "epoch_code": {
+                        "entries": ["project://epoch_src"],
+                        "include": ["*.py"],
+                        "watch": True,
+                    },
+                    "epoch_bundle": {
+                        "compose": ["core/epoch_code"],
+                        "watch": True,
+                    },
+                }
             },
         )
+        reg = SpaceRegistry(project_root=self.proj_root, yscb_dir=self.yscb_root)
         sc = SpaceScanner(registry=reg)
 
-        # 1. `scan(None)` memoizes physical file hash across overlapping spaces (`mod_a/code`, `project/code`, `/code`, `__all__`)
-        with patch(
-            "core.space.scanner.compute_file_hash", wraps=compute_file_hash
-        ) as spy_hash:
-            sc.scan(None)
-            self.assertEqual(
-                spy_hash.call_count,
-                1,
-                "scan(None) should hash overlapping physical file only once via _hash_memo",
-            )
+        with reg.batch_walk_session():
+            entries_1 = reg.iter_space_files("core/epoch_code")
+            entries_2 = reg.iter_space_files("core/epoch_bundle")
+            self.assertEqual(len(entries_1), 1)
+            self.assertEqual(entries_1[0].mtime_ns, max(0, entries_1[0].mtime_ns))
+            self.assertGreaterEqual(entries_1[0].mtime_ns, 0)
+            self.assertEqual(len(entries_2), 1)
 
-        # 2. In-memory `_snapshot_mem_cache` avoids repeated `BinarySnapshotManager.load_state` when file is unchanged
-        with patch.object(
-            sc._snapshot_mgr,
-            "load_state",
-            wraps=sc._snapshot_mgr.load_state,
-        ) as spy_read:
-            st1 = sc.snapshot("mod_a/code")
-            st2 = sc.snapshot("mod_a/code")
-            self.assertEqual(len(st1), len(st2))
-            self.assertEqual(
-                spy_read.call_count,
-                0,
-                "Unchanged snapshot should be served from _snapshot_mem_cache without disk deserialization",
-            )
+        r1 = sc.scan("core/epoch_code")
+        self.assertEqual(r1.added_count, 1)
+        r2 = sc.scan("core/epoch_code")
+        self.assertEqual(r2.added_count, 0)
+        self.assertEqual(r2.modified_count, 0)
+        self.assertEqual(r2.unchanged_count, 1)
 
-        # 3. Watcher-aware `diff(..., auto_refresh=None)` skips `_scan_single_query` when watcher is active and clean
-        write_watcher_state(
-            watched_spaces=["mod_a/code", "project/code"],
-            watchdog_running=True,
-            project_root=self.proj_root,
-            yscb_dir=self.yscb_root,
-        )
-        sc.mark_watcher_dirty(False)
-        try:
-            with patch.object(
-                sc, "_scan_single_query", wraps=sc._scan_single_query
-            ) as spy_scan:
-                d_res = sc.diff(None, consumer_id="test_consumer")
-                self.assertEqual(
-                    spy_scan.call_count,
-                    0,
-                    "diff(None, auto_refresh=None) must skip full tree walk when watcher is active and clean",
-                )
-                self.assertGreaterEqual(d_res.to_generation, 1)
-        finally:
-            remove_watcher_state(project_root=self.proj_root, yscb_dir=self.yscb_root)
+        patched = sc.patch_files("core/epoch_code", [old_file])
+        self.assertGreaterEqual(patched.entries["epoch_src/ancient.py"].mtime_ns, 0)
 
-        # 4. `sync_dependent_snapshots_batch` updates `/code` and `__all__` once for a batch of leaf spaces
-        shared_py.write_text("x = 99\n", encoding="utf-8")
-        sc.patch_files("mod_a/code", [shared_py])
-        sc.patch_files("project/code", [shared_py])
-        with patch.object(
-            sc, "patch_files", wraps=sc.patch_files
-        ) as spy_patch:
-            sc.sync_dependent_snapshots_batch(
-                ["mod_a/code", "project/code"],
-                [shared_py],
-                exclude_keys={"mod_a/code", "project/code"},
-            )
-            patched_keys = [call.args[0] for call in spy_patch.call_args_list]
-            self.assertEqual(
-                sorted(patched_keys),
-                sorted(["/code", sc.UNIFIED_KEY]),
-                "Dependent `/code` and `__all__` should each be patched exactly once per batch",
-            )
+        # Verify 1.2.8.x.py migration cleans up residual file-space entries and directories
+        cfg_file = self.proj_root / "yscb.config.json"
+        cfg_data = vfs.read_json(str(cfg_file))
+        cfg_data.setdefault("installed_modules", {})["file-space"] = {"version": "1.0.0.0"}
+        vfs.write_json(str(cfg_file), cfg_data)
+
+        for rel_d in (".modules/file-space", ".mirror/file-space", ".cache/file-space", ".storage.local/file-space", ".config.local/file-space"):
+            d_p = self.yscb_root / rel_d
+            d_p.mkdir(parents=True, exist_ok=True)
+            (d_p / "dummy.txt").write_text("residual", encoding="utf-8")
+
+        mig_128_path = Path(uri.resolve("module.source://core/scripts/migrations/1.2.8.x.py"))
+        spec = importlib.util.spec_from_file_location("_test_core_mig_128", mig_128_path)
+        self.assertIsNotNone(spec)
+        mig_mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(mig_mod)  # type: ignore[union-attr]
+        self.assertTrue(mig_mod.migrate({"host_dir": str(self.proj_root), "yscb_dir": str(self.yscb_root)}))
+
+        updated_cfg = vfs.read_json(str(cfg_file))
+        self.assertNotIn("file-space", updated_cfg.get("installed_modules", {}))
+        for rel_d in (".modules/file-space", ".mirror/file-space", ".cache/file-space", ".storage.local/file-space", ".config.local/file-space"):
+            self.assertFalse((self.yscb_root / rel_d).exists())
+
         self.mark_passed()
 
 

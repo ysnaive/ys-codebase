@@ -6,6 +6,7 @@ enforcing Wheel-Only quiet installation and total isolation from host environmen
 """
 
 import os
+import shutil
 import sys
 import venv
 import platform
@@ -145,11 +146,48 @@ class PipManager:
         except Exception:
             return False
 
+    @staticmethod
+    def _try_copy_host_pip_to_site_packages(site_pkg: str) -> bool:
+        """
+        When offline containers lack `ensurepip` wheels, falls back to copying the host
+        system `pip` package directory (and matching `pip-*.dist-info` if present) into `site_pkg`.
+        """
+        try:
+            import importlib.util
+
+            spec = importlib.util.find_spec("pip")
+            if spec is None or not spec.submodule_search_locations:
+                return False
+            host_pip_dir = os.path.abspath(list(spec.submodule_search_locations)[0])
+            if not os.path.isdir(host_pip_dir):
+                return False
+            dst_pip_dir = os.path.join(site_pkg, "pip")
+            if os.path.abspath(dst_pip_dir) == host_pip_dir:
+                return True
+            if os.path.exists(dst_pip_dir):
+                shutil.rmtree(dst_pip_dir, ignore_errors=True)
+            shutil.copytree(
+                host_pip_dir,
+                dst_pip_dir,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+            )
+            parent_site = os.path.dirname(host_pip_dir)
+            if os.path.isdir(parent_site):
+                for entry in os.listdir(parent_site):
+                    if entry.startswith("pip-") and entry.endswith(".dist-info"):
+                        src_dist = os.path.join(parent_site, entry)
+                        dst_dist = os.path.join(site_pkg, entry)
+                        if os.path.isdir(src_dist) and not os.path.exists(dst_dist):
+                            shutil.copytree(src_dist, dst_dist)
+            return os.path.isdir(dst_pip_dir)
+        except Exception:
+            return False
+
     def _bootstrap_pip(self, venv_dir: str, site_pkg: str, py_exec: str) -> None:
-        """為微環境就緒 pip 套件：優先自 ensurepip 提取預置 wheel，次之呼叫 ensurepip。"""
+        """為微環境就緒 pip 套件：優先自 ensurepip 提取預置 wheel，次之複製宿主環境 pip，最後呼叫 ensurepip。"""
         import zipfile
         os.makedirs(site_pkg, exist_ok=True)
-        # 優先方案：自 ensurepip._WHEEL_PKG_DIR 提取 pip*.whl，零 subprocess 權限阻礙
+        # 優先方案 1：自 ensurepip._WHEEL_PKG_DIR 提取 pip*.whl，零 subprocess 權限阻礙
         candidate_wheel_dirs = []
         try:
             import ensurepip
@@ -175,7 +213,12 @@ class PipManager:
             except Exception:
                 continue
 
-        # 次選方案：呼叫 python -m ensurepip
+        # 優先方案 2：若實機微環境已建立 (py_exec 存在) 但離線容器缺少 ensurepip wheel，嘗試複製宿主 pip 套件目錄
+        if os.path.isfile(py_exec) and sys.modules.get("ensurepip", True) is not None:
+            if self._try_copy_host_pip_to_site_packages(site_pkg):
+                return
+
+        # 次選方案 3：呼叫 python -m ensurepip
         try:
             subprocess.run(
                 [py_exec, "-m", "ensurepip", "--default-pip"],
@@ -294,7 +337,8 @@ class PipManager:
                 "--only-binary=:all:",
                 "--no-warn-script-location",
                 "--no-input",
-                "--timeout=30",
+                "--retries=1",
+                "--timeout=5",
                 "--quiet",
                 *specs,
             ]

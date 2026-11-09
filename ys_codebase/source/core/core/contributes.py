@@ -4,7 +4,7 @@ Rigid Topology & Zero Speculation: strictly scans installed modules in module://
 Standard Directory: module://<donor>/contributes/<target>.json
 Project Overrides: config://<target>/config.project.json
 """
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Set, Tuple
 import os
 import copy
 import time
@@ -73,8 +73,10 @@ def _merge_providers_meta(base_dict: Dict[str, Any], overlay_dict: Dict[str, Any
         overlay_providers.append(str(overlay_dict["__provider__"]))
 
     combined: List[str] = []
+    seen_p: Set[str] = set()
     for p in base_providers + overlay_providers:
-        if p not in combined:
+        if p not in seen_p:
+            seen_p.add(p)
             combined.append(p)
 
     if combined:
@@ -135,6 +137,31 @@ def _resolve_schema_for_key(
         return None, (raw_spec[0] if raw_spec else None)
 
     return None, None
+
+
+def _extend_list_dedup(target_list: List[Any], incoming_list: List[Any]) -> None:
+    """Extends `target_list` with deduplicated elements from `incoming_list` using an $O(1)$ set for hashable scalars."""
+    seen_hashable: Set[Any] = set()
+    for existing_item in target_list:
+        if not isinstance(existing_item, (dict, list)):
+            try:
+                seen_hashable.add((type(existing_item), existing_item))
+            except TypeError:
+                pass
+
+    for x in incoming_list:
+        if isinstance(x, (dict, list)):
+            if x not in target_list:
+                target_list.append(copy.deepcopy(x))
+        else:
+            try:
+                h_key = (type(x), x)
+                if h_key not in seen_hashable:
+                    seen_hashable.add(h_key)
+                    target_list.append(x)
+            except TypeError:
+                if x not in target_list:
+                    target_list.append(x)
 
 
 def _deep_merge(
@@ -213,11 +240,7 @@ def _deep_merge(
                 if eff_strat == "replace":
                     base[k] = copy.deepcopy(v)
                 else:
-                    base[k].extend(
-                        copy.deepcopy(x) if isinstance(x, (dict, list)) else x
-                        for x in v
-                        if x not in base[k]
-                    )
+                    _extend_list_dedup(base[k], v)
             else:
                 base[k] = copy.deepcopy(v) if isinstance(v, (dict, list)) else v
         else:
@@ -361,7 +384,7 @@ def _scan_contributes_inputs() -> Dict[str, Tuple[float, int]]:
 
     if vfs.exists("module://"):
         try:
-            for donor in vfs.listdir("module://"):
+            for donor in (d for d in vfs.listdir("module://") if not d.startswith(".")):
                 _scan_donor_contributes_files(donor, files_snapshot)
         except Exception:
             pass
@@ -526,6 +549,12 @@ def get(target_module: str, key: Optional[str] = None, default: Any = None) -> A
     return copy.deepcopy(res) if isinstance(res, (dict, list)) else res
 
 
+def get_merged_contributes(target_module: str = "core") -> Dict[str, Any]:
+    """Returns the full merged contributes dictionary for `target_module` via the canonical SSOT aggregator."""
+    res = get(target_module, key=None, default={})
+    return res if isinstance(res, dict) else {}
+
+
 def get_format(module: str) -> Optional[Dict[str, Any]]:
     """讀取並返回指定目標模組之 contributes/_format.json 字典，若不存在則返回 None。"""
     fmt_uri = f"module://{module}/contributes/_format.json"
@@ -553,7 +582,7 @@ def list_points(module: Optional[str] = None) -> List[Dict[str, Any]]:
     查詢生態系開放之擴充點清單。
     回傳 [{"module": str, "point": str, "description": str, "format_type": str}, ...]
     """
-    installed = [module] if module else (vfs.listdir("module://") if vfs.exists("module://") else [])
+    installed = [module] if module else ([d for d in vfs.listdir("module://") if not d.startswith(".")] if vfs.exists("module://") else [])
     if not installed and vfs.exists("module.source://"):
         try:
             installed = vfs.listdir("module.source://")
@@ -624,7 +653,10 @@ class ContributesAggregator:
         tagged_body = _tag_payload_body(valid_body, donor)
 
         if target == "core" and "commands" in tagged_body:
-            core_modules_commands[donor] = copy.deepcopy(tagged_body["commands"])
+            if donor in core_modules_commands and isinstance(core_modules_commands[donor], dict) and isinstance(tagged_body["commands"], dict):
+                _deep_merge(core_modules_commands[donor], copy.deepcopy(tagged_body["commands"]))
+            else:
+                core_modules_commands[donor] = copy.deepcopy(tagged_body["commands"])
         if target == "core" and "locales" in tagged_body and isinstance(tagged_body["locales"], dict):
             core_modules_locales[donor] = copy.deepcopy(tagged_body["locales"])
 
@@ -656,6 +688,8 @@ class ContributesAggregator:
                     if not filename.endswith(".json") or filename.startswith("_"):
                         continue
                     target = filename[:-5]
+                    if target == "commands":
+                        target = "core"
                     aggregated.setdefault(target, {})
                     target_file_uri = f"{donor_contrib_dir}/{filename}"
                     try:
@@ -674,11 +708,19 @@ class ContributesAggregator:
             try:
                 u_data = _read_json_cached(donor_unified_file)
                 if isinstance(u_data, dict):
-                    for target, c_body in u_data.items():
-                        if isinstance(c_body, dict):
-                            self._merge_validated_donor_target(
-                                donor, target, c_body, aggregated, core_modules_commands, core_modules_locales
-                            )
+                    if "commands" in u_data and isinstance(u_data["commands"], dict) and not any(
+                        isinstance(v, dict) and "commands" in v for v in u_data.values()
+                    ):
+                        self._merge_validated_donor_target(
+                            donor, "core", u_data, aggregated, core_modules_commands, core_modules_locales
+                        )
+                    else:
+                        for target, c_body in u_data.items():
+                            if isinstance(c_body, dict):
+                                eff_target = "core" if target == "commands" else target
+                                self._merge_validated_donor_target(
+                                    donor, eff_target, c_body, aggregated, core_modules_commands, core_modules_locales
+                                )
             except Exception:
                 pass
 
@@ -739,7 +781,7 @@ class ContributesAggregator:
             target_cache_uri = f"cache://{target}/contributes.merged.json"
             if aggregated[target]:
                 vfs.makedirs(f"cache://{target}", exist_ok=True)
-                vfs.write_json(target_cache_uri, aggregated[target])
+                vfs.write_json(target_cache_uri, aggregated[target], atomic=True)
             elif vfs.exists(target_cache_uri):
                 try:
                     vfs.remove(target_cache_uri, missing_ok=True)
@@ -754,7 +796,7 @@ class ContributesAggregator:
                 "files": {k: [v[0], v[1]] for k, v in current_snapshot.items()},
             }
             vfs.makedirs("cache://core", exist_ok=True)
-            vfs.write_json(meta_uri, meta_payload)
+            vfs.write_json(meta_uri, meta_payload, atomic=True)
         except Exception as e:
             log_warn(f"Failed to update contributes.meta.json: {e}", stream="stderr")
 
@@ -766,7 +808,7 @@ class ContributesAggregator:
         """
         with cell_span("contributes.rebuild"):
             aggregated: Dict[str, Dict[str, Any]] = {}
-            installed_modules = vfs.listdir("module://") if vfs.exists("module://") else []
+            installed_modules = [d for d in vfs.listdir("module://") if not d.startswith(".")] if vfs.exists("module://") else []
             if not installed_modules:
                 return aggregated
 

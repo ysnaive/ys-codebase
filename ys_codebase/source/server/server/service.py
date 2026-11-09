@@ -17,7 +17,7 @@ import os
 import threading
 import time
 import urllib.request
-from typing import Any, Callable, ContextManager, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from core.context import bind_runtime_context, get_env, get_runtime_context, get_virtual_cwd
 from core.log import bind_log_context, log_error, log_warn
@@ -44,7 +44,7 @@ def _resolve_service_root(yscb_root: Optional[str]) -> str:
     return get_env("YSCB_HOST_DIR") or get_virtual_cwd()
 
 
-def _get_touch_state() -> tuple[threading.Lock, Dict[str, float]]:
+def _get_touch_state() -> Tuple[threading.Lock, Dict[str, float]]:
     """Returns `(server_touch_lock, server_last_touch_by_root)` bound to the active RuntimeContext."""
     ctx = get_runtime_context()
     lock = getattr(ctx, "server_touch_lock", None)
@@ -58,6 +58,16 @@ def _get_touch_state() -> tuple[threading.Lock, Dict[str, float]]:
     return lock, touch_map
 
 
+def _get_daemon_endpoint_cache() -> Dict[str, Tuple[int, int, str]]:
+    """Returns per-root `(mtime_ns, port, token)` cache dictionary bound to the active RuntimeContext."""
+    ctx = get_runtime_context()
+    cache_map = getattr(ctx, "server_touch_daemon_cache", None)
+    if cache_map is None:
+        cache_map = {}
+        setattr(ctx, "server_touch_daemon_cache", cache_map)
+    return cache_map
+
+
 def touch_activity(
     yscb_root: Optional[str] = None,
     *,
@@ -67,10 +77,10 @@ def touch_activity(
     """
     Refresh the running Server daemon's idle timeout timer (non-CLI keepalive probe SDK).
 
-    Reads `.cache/server/daemon.json` and sends an authenticated `POST /api/touch`
-    (debounced to at most once per 1.0s unless `force=True`) to the MasterSupervisor so
-    background workers (`core-space-watcher`, `knowledge-db-worker`, `gdrive-sync`) and
-    external SDK callers keep the server alive without corrupting the worker stdout pipe.
+    Reads `.cache/server/daemon.json` (caching `(mtime_ns, port, token)` when unchanged)
+    and sends an authenticated `POST /api/touch` (debounced to at most once per 1.0s
+    unless `force=True`) to the MasterSupervisor so background workers and external SDK
+    callers keep the server alive without corrupting the worker stdout pipe.
 
     Returns True if the activity timestamp was refreshed (or throttled within 1s), False if no
     active daemon was reachable.
@@ -86,15 +96,31 @@ def touch_activity(
                 return True
 
     state_file = os.path.join(resolved_root, ".cache", "server", "daemon.json")
-    if not os.path.isfile(state_file):
-        return False
     try:
-        with open(state_file, "r", encoding="utf-8") as f:
-            state = json.load(f)
-        port = int(state.get("port", 0) or 0)
-        token = str(state.get("token", "") or "")
+        st = os.stat(state_file)
+    except OSError:
+        return False
+
+    mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
+    endpoint_cache = _get_daemon_endpoint_cache()
+    port = 0
+    token = ""
+    with touch_lock:
+        cached_entry = endpoint_cache.get(root_key)
+        if cached_entry is not None and cached_entry[0] == mtime_ns:
+            port, token = cached_entry[1], cached_entry[2]
+
+    try:
         if port <= 0 or not token:
-            return False
+            with open(state_file, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            port = int(state.get("port", 0) or 0)
+            token = str(state.get("token", "") or "")
+            if port <= 0 or not token:
+                return False
+            with touch_lock:
+                endpoint_cache[root_key] = (mtime_ns, port, token)
+
         url = f"http://127.0.0.1:{port}/api/touch"
         body = json.dumps({"source": source}).encode("utf-8")
         req = urllib.request.Request(
@@ -207,6 +233,7 @@ class BaseServiceWorker(ABC):
         if prev_state == target_state:
             return
         alive = target_state != self.STATE_STOPPED
+        busy = target_state in (self.STATE_STARTING, self.STATE_UPDATING)
         notify_fn = getattr(self, "_status_notify_fn", None)
         if callable(notify_fn):
             try:
@@ -223,6 +250,7 @@ class BaseServiceWorker(ABC):
                     "name": self.name,
                     "state": target_state,
                     "alive": alive,
+                    "busy": busy,
                 })
             except Exception:
                 pass
@@ -468,20 +496,33 @@ class ServiceManager:
                 if sink is not None:
                     setattr(worker, "_log_sink", sink)
                 if callable(emit_fn):
-                    def _make_notifier(reg_name: str, prov: str, desc: str) -> Callable[[str, str, bool], None]:
+                    def _make_notifier(reg_name: str, prov: str, desc: str, w_ref: BaseServiceWorker) -> Callable[[str, str, bool], None]:
                         def _notify(_worker_name: str, state_val: str, alive_val: bool) -> None:
-                            emit_fn({
+                            custom_metrics: Optional[Dict[str, Any]] = None
+                            try:
+                                get_m = getattr(w_ref, "get_custom_metrics", None)
+                                if callable(get_m):
+                                    raw_m = get_m()
+                                    if isinstance(raw_m, dict) and raw_m:
+                                        custom_metrics = dict(raw_m)
+                            except Exception:
+                                custom_metrics = None
+                            is_busy_val = state_val in (
+                                BaseServiceWorker.STATE_STARTING,
+                                BaseServiceWorker.STATE_UPDATING,
+                            ) or bool(custom_metrics and custom_metrics.get("busy"))
+                            pkt: Dict[str, Any] = {
                                 "type": "service_status",
                                 "name": reg_name,
                                 "provider": prov,
                                 "description": desc,
                                 "state": state_val,
                                 "alive": alive_val,
-                                "busy": state_val in (
-                                    BaseServiceWorker.STATE_STARTING,
-                                    BaseServiceWorker.STATE_UPDATING,
-                                ),
-                            })
+                                "busy": is_busy_val,
+                            }
+                            if custom_metrics is not None:
+                                pkt["metrics"] = custom_metrics
+                            emit_fn(pkt)
                         return _notify
 
                     setattr(
@@ -491,6 +532,7 @@ class ServiceManager:
                             name,
                             str(meta.get("provider", "unknown")),
                             str(meta.get("description", "")),
+                            worker,
                         ),
                     )
                 with bind_log_context(
@@ -500,6 +542,10 @@ class ServiceManager:
                 ):
                     worker.start(context)
             except Exception as e:
+                try:
+                    worker.set_state(BaseServiceWorker.STATE_STOPPED)
+                except Exception:
+                    pass
                 log_error(f"[Server Service] Failed to start worker '{name}': {e}")
 
     def stop_all(self) -> None:
@@ -545,21 +591,37 @@ class ServiceManager:
                     worker_state = getattr(worker, "state", BaseServiceWorker.STATE_READY if alive else BaseServiceWorker.STATE_STOPPED)
                 except Exception:
                     worker_state = BaseServiceWorker.STATE_READY if alive else BaseServiceWorker.STATE_STOPPED
+                custom_metrics: Optional[Dict[str, Any]] = None
+                try:
+                    get_metrics = getattr(worker, "get_custom_metrics", None)
+                    if callable(get_metrics):
+                        raw_m = get_metrics()
+                        if isinstance(raw_m, dict):
+                            custom_metrics = dict(raw_m)
+                except Exception:
+                    custom_metrics = None
                 try:
                     is_busy_fn = getattr(worker, "is_busy", None)
                     worker_busy = bool(is_busy_fn()) if callable(is_busy_fn) else (
                         worker_state in (BaseServiceWorker.STATE_STARTING, BaseServiceWorker.STATE_UPDATING)
+                        or bool(custom_metrics and custom_metrics.get("busy"))
                     )
                 except Exception:
-                    worker_busy = worker_state in (BaseServiceWorker.STATE_STARTING, BaseServiceWorker.STATE_UPDATING)
-                status_list.append({
+                    worker_busy = (
+                        worker_state in (BaseServiceWorker.STATE_STARTING, BaseServiceWorker.STATE_UPDATING)
+                        or bool(custom_metrics and custom_metrics.get("busy"))
+                    )
+                entry: Dict[str, Any] = {
                     "name": name,
                     "provider": meta.get("provider", "unknown"),
                     "description": meta.get("description", ""),
                     "alive": alive,
                     "state": worker_state,
                     "busy": worker_busy,
-                })
+                }
+                if custom_metrics is not None:
+                    entry["metrics"] = custom_metrics
+                status_list.append(entry)
         return status_list
 
 

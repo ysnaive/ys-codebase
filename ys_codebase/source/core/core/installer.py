@@ -883,6 +883,7 @@ class Installer:
         log_info(f"[core:restore] Restoring {len(installed)} module(s) to '{modules_dir}'...")
         success_count = 0
         failed_mods: List[str] = []
+        materialized_mods: List[str] = []
         migrations_to_run: List[Tuple[str, str, str]] = []
 
         with self.engine.transaction_lock("restore"):
@@ -909,6 +910,7 @@ class Installer:
                     if ver == "build" or installed_ver == ver:
                         log_info(f"  -> Skipping '{mod_name}@{ver}' (already installed, use --force to overwrite)")
                         success_count += 1
+                        materialized_mods.append(mod_name)
                         continue
 
                 log_info(f"  -> Restoring '{mod_name}@{ver}'...")
@@ -916,7 +918,10 @@ class Installer:
                     host_dir, cfg.get("yscb_root", "."), mod_name, ver, prov, dest, mirror, ignore_sha256=ignore_sha256
                 )
                 if ok:
+                    self.engine._apply_release_index_override_to_staging(mod_name, ver, dest)
+                    self.engine._deploy_and_strip_single_module_config(mod_name, dest)
                     success_count += 1
+                    materialized_mods.append(mod_name)
                     if installed_ver and installed_ver != "0.0.0.0":
                         try:
                             if semver.compare_semver(ver, installed_ver) > 0:
@@ -933,7 +938,12 @@ class Installer:
                 log_info(f"[core:restore] Successfully restored all {success_count} module(s).")
 
             log_info("[core:restore] Triggering reload...")
-            self.engine.act_reload(clean_stage=True, inject_stage=True, ignore_sha256=ignore_sha256)
+            self.engine.act_reload(
+                clean_stage=True,
+                inject_stage=True,
+                ignore_sha256=ignore_sha256,
+                skip_materialize_modules=materialized_mods,
+            )
             for m_mod, m_old, m_new in migrations_to_run:
                 self.engine.act_migrate(m_mod, m_old, m_new)
             self.sync_pip_dependencies()
