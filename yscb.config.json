@@ -3,43 +3,43 @@
   "default_provider": "./ys_codebase/release",
   "installed_modules": {
     "core": {
-      "version": "1.2.7.build",
-      "installed_at": "2026-11-08 19:19:58",
+      "version": "1.2.8.0",
+      "installed_at": "2026-11-09 04:57:11",
       "provider": "./ys_codebase/release"
     },
     "dev": {
-      "version": "1.1.4.build",
-      "installed_at": "2026-11-08 18:32:27",
+      "version": "1.1.5.0",
+      "installed_at": "2026-11-09 04:57:11",
       "provider": "./ys_codebase/release"
     },
     "agents-workflow": {
-      "version": "1.2.4.build",
-      "installed_at": "2026-11-08 19:06:48",
+      "version": "1.2.4.6",
+      "installed_at": "2026-11-09 04:57:12",
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {
-      "version": "1.2.1.build",
-      "installed_at": "2026-11-09 04:31:16",
+      "version": "1.2.2.0",
+      "installed_at": "2026-11-09 04:57:12",
       "provider": "./ys_codebase/release"
     },
     "server": {
-      "version": "1.0.4.build",
-      "installed_at": "2026-11-08 19:06:13",
+      "version": "1.0.5.0",
+      "installed_at": "2026-11-09 04:57:11",
       "provider": "./ys_codebase/release"
     },
     "ast": {
-      "version": "1.0.1.build",
-      "installed_at": "2026-11-09 04:31:16",
+      "version": "1.1.0.0",
+      "installed_at": "2026-11-09 04:57:12",
       "provider": "./ys_codebase/release"
     },
     "vscode-support": {
-      "version": "1.0.0.build",
-      "installed_at": "2026-11-08 18:40:59",
+      "version": "1.0.0.6",
+      "installed_at": "2026-11-09 04:57:12",
       "provider": "./ys_codebase/release"
     },
     "gdrive-support": {
-      "version": "1.0.1.build",
-      "installed_at": "2026-11-08 18:44:12",
+      "version": "1.0.1.5",
+      "installed_at": "2026-11-09 04:57:12",
       "provider": "./ys_codebase/release"
     }
   }

@@ -1,10 +1,10 @@
 {
   "name": "server",
-  "version": "1.0.4.5",
+  "version": "1.0.5.0",
   "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.7.3"
+    "core": ">=1.2.8.0"
   },
   "pip_dependencies": {
     "watchdog": ">=4.0.0"
@@ -15,8 +15,8 @@
     "Stop daemon and view session summary: python yscb.py server stop"
   ],
   "release": {
-    "type": "bugfix",
+    "type": "feature",
     "urgency": "recommended",
-    "summary": "WarmWorker 初始化預先固化 YSCB_ROOT_DIR 與 YSCB_HOST_DIR 環境變數"
+    "summary": "解耦控制、派發與背景服務執行平面、新增 Worker 記憶體水位健康監控與自動回收、整合檔案空間背景監聽服務"
   }
 }

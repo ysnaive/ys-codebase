@@ -1,7 +1,7 @@
 """
 Deprecated facade entry point for the file-space module.
 All operations delegate 100% to `core.space`.
-Please update `core` to `>=1.2.7.5` and run `python yscb.py remove file-space`.
+Please update `core` to `>=1.2.8.0` and run `python yscb.py remove file-space`.
 """
 from contextlib import contextmanager
 from pathlib import Path
@@ -49,7 +49,7 @@ from .scanner import FingerprintScanner, compute_merkle_root
 from .schema import FileSpaceConfig, FileSpaceOrigin
 from .service import FileSpaceWatcherServiceWorker, clear_subscribers, subscribe
 
-__version__ = "1.0.1.5"
+__version__ = "1.0.1.6"
 
 _SINGLETON_LOCK = threading.RLock()
 

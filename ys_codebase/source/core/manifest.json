@@ -1,6 +1,6 @@
 {
   "name": "core",
-  "version": "1.2.7.4",
+  "version": "1.2.8.0",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "entry": "scripts/cli.py",
   "dependencies": {},
@@ -24,8 +24,8 @@
     "Explore installed modules: python yscb.py status"
   ],
   "release": {
-    "type": "bugfix",
+    "type": "feature",
     "urgency": "recommended",
-    "summary": "支援 @build 開發包無視版號約束直通與環境基底版本解析"
+    "summary": "內建 core.space 邏輯檔案空間引擎與 fs 指令、新增執行期上下文隔離與跨請求快取機制、統一結構化日誌管線"
   }
 }

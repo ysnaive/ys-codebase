@@ -11,9 +11,9 @@
     "1.2.1.1",
     "1.2.2.3",
     "1.2.3.5",
-    "1.2.4.3",
     "1.2.4.4",
-    "1.2.4.5"
+    "1.2.4.5",
+    "1.2.4.6"
   ],
   "releases": {
     "1.0.0.0": {
@@ -234,7 +234,7 @@
       "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
     },
     "1.2.4.3": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.2"
       },
@@ -264,6 +264,16 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "收口編譯、發布、路線圖與檢核修復器之原子寫入至 core.vfs 並移除硬編碼退避"
+    },
+    "1.2.4.6": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.8.0"
+      },
+      "sha256": "a88714b9d4a323b92e71db54dda9d41c6699beb3bf5b56372c377c657f85c7a1",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "遷移檔案空間存取至 core.space、收斂執行期狀態至隔離上下文並同步更新程式碼檢索與語法樹切片技能指引"
     }
   }
 }

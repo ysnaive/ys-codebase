@@ -15,9 +15,8 @@
     "1.2.4.0",
     "1.2.5.1",
     "1.2.6.0",
-    "1.2.7.2",
-    "1.2.7.3",
-    "1.2.7.4"
+    "1.2.7.4",
+    "1.2.8.0"
   ],
   "releases": {
     "1.0.0.0": {
@@ -197,7 +196,7 @@
       "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
     },
     "1.2.7.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "sha256": "2a7c715923da23dfd4df6c970f3e987a7e7245719ec966b524acba27fcdb032e",
       "type": "bugfix",
@@ -206,7 +205,7 @@
       "commit": "699fd5c166d49aa90021c9381a13f63863d68d58"
     },
     "1.2.7.3": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "sha256": "2130296f044499a9f0a46aeae23462302f3df35c2d206213fe41a7a7745c9ace",
       "type": "bugfix",
@@ -221,6 +220,14 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "支援 @build 開發包無視版號約束直通與環境基底版本解析"
+    },
+    "1.2.8.0": {
+      "status": "active",
+      "dependencies": {},
+      "sha256": "6b89981703eca1e1a1996cb6e5a54f911d47d4729c7f8de9fc04ffd2bd5e4bb0",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "內建 core.space 邏輯檔案空間引擎與 fs 指令、新增執行期上下文隔離與跨請求快取機制、統一結構化日誌管線"
     }
   }
 }

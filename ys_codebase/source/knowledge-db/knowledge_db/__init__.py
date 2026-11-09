@@ -8,7 +8,7 @@ import importlib
 from types import MappingProxyType
 from typing import Any, Dict, List, Tuple
 
-__version__ = "1.2.1.5"
+__version__ = "1.2.2.0"
 
 _LAZY_EXPORTS: Any = MappingProxyType({
     "ASTEngine": ("ast_engine", "ASTEngine"),

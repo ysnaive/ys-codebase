@@ -1,11 +1,11 @@
 {
   "name": "file-space",
-  "description": "YS-Codebase 多工作空間幾何路由、雙階段單調世代指紋掃描、多消費者獨立游標與檔案變動監聽引擎",
+  "description": "[Deprecated] 檔案空間引擎已內聚併入 core.space；本模組僅作相容轉發空殼，請將 core 更新至 >=1.2.8.0 並升級下游模組後執行 python yscb.py remove file-space 移除本模組",
   "versions": [
     "1.0.0.5",
-    "1.0.1.3",
     "1.0.1.4",
-    "1.0.1.5"
+    "1.0.1.5",
+    "1.0.1.6"
   ],
   "releases": {
     "1.0.0.0": {
@@ -108,7 +108,7 @@
       "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
     },
     "1.0.1.3": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.2"
       },
@@ -138,6 +138,16 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "根治 watcher_state.json 與 storage_root 下游路徑洩漏並收口至 core.vfs 原子寫入"
+    },
+    "1.0.1.6": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.8.0"
+      },
+      "sha256": "33baf784f036863b747504d0cfcbb65953393c2d3000ee05087b607d3176fc97",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "[Deprecated] 轉為 core.space 相容轉發殼層並移除重複背景監聽服務；建議升級 core >=1.2.8.0 後移除本模組"
     }
   }
 }

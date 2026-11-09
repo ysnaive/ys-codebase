@@ -3,9 +3,8 @@
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "versions": [
     "1.0.0.5",
-    "1.0.1.4",
-    "1.0.1.5",
-    "1.0.1.6"
+    "1.0.1.6",
+    "1.1.0.0"
   ],
   "releases": {
     "1.0.0.0": {
@@ -129,7 +128,7 @@
       "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
     },
     "1.0.1.4": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.2",
         "file-space": ">=1.0.1.3"
@@ -141,7 +140,7 @@
       "commit": "699fd5c166d49aa90021c9381a13f63863d68d58"
     },
     "1.0.1.5": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.3",
         "file-space": ">=1.0.1.4"
@@ -162,6 +161,16 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "根治 AST 儲存與鎖檔路徑退避洩漏並收口至 core.vfs.write_json"
+    },
+    "1.1.0.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.8.0"
+      },
+      "sha256": "16ed28d51f31afd4b5c5d7ae1083aecb7bc315c2e6d4384b5e069c5e5032961f",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "重構單檔語法圖快取與跨檔案確定性符號連結器、新增 slice 精準程式碼切片與 traverse 多跳關係拓撲遍歷指令"
     }
   }
 }

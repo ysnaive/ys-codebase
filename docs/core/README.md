@@ -37,7 +37,7 @@ last_updated: "2026-11-09"
 # Core 微內核架構手冊 (Core Microkernel Overview)
 
 > 模組名稱：`core`  
-> 模組版本：`1.2.7.5`  
+> 模組版本：`1.2.8.0`  
 > 職責定位：YS-Codebase 系統微內核基礎設施、套件生命週期、VFS 檔案系統、語意 URI 系統、Layer 1 邏輯檔案空間與指紋底座 (`core.space`)、SemVer 運算與依賴注入引擎。
 
 ---

@@ -1,11 +1,11 @@
 {
   "name": "knowledge-db",
-  "version": "1.2.1.5",
+  "version": "1.2.2.0",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.7.4",
-    "ast": ">=1.0.1.5"
+    "core": ">=1.2.8.0",
+    "ast": ">=1.1.0.0"
   },
   "optional": {
     "server": {
@@ -26,8 +26,8 @@
     "Search symbols & code snippets: python yscb.py knowledge-db search \"<query>\" -s"
   ],
   "release": {
-    "type": "bugfix",
+    "type": "feature",
     "urgency": "recommended",
-    "summary": "根治儲存與模組檢查路徑退避洩漏並收口 worker_state 至 core.vfs"
+    "summary": "優化倒排索引記憶體結構、支援離線向量模型快取預檢、直接複用 ast 語法圖索引加速符號檢索與影響面分析"
   }
 }

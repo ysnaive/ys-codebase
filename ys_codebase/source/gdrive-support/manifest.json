@@ -1,12 +1,12 @@
 {
   "id": "gdrive-support",
   "name": "gdrive-support",
-  "version": "1.0.1.4",
+  "version": "1.0.1.5",
   "description": "YS-Codebase Google Drive 原子雲端操作、Shortcut 差量分支與雙向同步模組",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.7.4"
+    "core": ">=1.2.8.0"
   },
   "optional": {
     "server": {
@@ -28,8 +28,8 @@
     "背景自動同步預設為關閉 (`auto_sync: false`)，僅於顯式啟用時方啟動常駐監聽與輪詢。"
   ],
   "release": {
-    "type": "bugfix",
+    "type": "refactor",
     "urgency": "recommended",
-    "summary": "保護單向 --delete 未追蹤新檔、收斂空目錄清理至當輪刪除祖先鏈、還原資料夾觸發子樹掃描與導入 sync_state.journal.jsonl WAL 持久化"
+    "summary": "遷移同步空間枚舉至 core.space 並收斂執行期快取與狀態至隔離上下文"
   }
 }

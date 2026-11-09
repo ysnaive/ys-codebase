@@ -6,9 +6,8 @@
     "1.0.1.3",
     "1.0.2.0",
     "1.0.3.2",
-    "1.0.4.3",
-    "1.0.4.4",
-    "1.0.4.5"
+    "1.0.4.5",
+    "1.0.5.0"
   ],
   "releases": {
     "1.0.0.4": {
@@ -131,7 +130,7 @@
       "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
     },
     "1.0.4.3": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.2"
       },
@@ -142,7 +141,7 @@
       "commit": "699fd5c166d49aa90021c9381a13f63863d68d58"
     },
     "1.0.4.4": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.3"
       },
@@ -161,6 +160,16 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "WarmWorker 初始化預先固化 YSCB_ROOT_DIR 與 YSCB_HOST_DIR 環境變數"
+    },
+    "1.0.5.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.8.0"
+      },
+      "sha256": "5936a246fee59816b223cf51d14fb32b84ab277ee92937abe8f23d171877867b",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "解耦控制、派發與背景服務執行平面、新增 Worker 記憶體水位健康監控與自動回收、整合檔案空間背景監聽服務"
     }
   }
 }

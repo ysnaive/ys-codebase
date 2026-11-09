@@ -9,9 +9,8 @@
     "1.1.1.2",
     "1.1.2.3",
     "1.2.0.5",
-    "1.2.1.3",
-    "1.2.1.4",
-    "1.2.1.5"
+    "1.2.1.5",
+    "1.2.2.0"
   ],
   "releases": {
     "1.0.0.0": {
@@ -218,7 +217,7 @@
       "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
     },
     "1.2.1.3": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.2",
         "file-space": ">=1.0.1.3",
@@ -231,7 +230,7 @@
       "commit": "699fd5c166d49aa90021c9381a13f63863d68d58"
     },
     "1.2.1.4": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.3",
         "file-space": ">=1.0.1.4",
@@ -254,6 +253,17 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "根治儲存與模組檢查路徑退避洩漏並收口 worker_state 至 core.vfs"
+    },
+    "1.2.2.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.8.0",
+        "ast": ">=1.1.0.0"
+      },
+      "sha256": "36673410aaee8f46fa3d8e9bf7e6d49856af44de92930f461b23f1e6ac101a71",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "優化倒排索引記憶體結構、支援離線向量模型快取預檢、直接複用 ast 語法圖索引加速符號檢索與影響面分析"
     }
   }
 }

@@ -19,11 +19,11 @@ last_updated: "2026-11-07"
 # File-Space 向下相容轉發殼層與遷移手冊 (File-Space Deprecation & Forwarding Shell)
 
 > 模組名稱：`file-space` (`[Deprecated]`)  
-> 職責定位：自 `core >= 1.2.7.5` 起，YS-Codebase 之通用邏輯檔案空間、`YFP2` 單調世代二進位指紋快照、多消費者交易游標與背景監聽協調已全面內聚為微內核 [`core.space`](../core/README.md) 子系統。`module:file-space` 現作為純標準庫輕量向下相容轉發殼層（Forwarding Shell），將舊版 `import file_space` 與 `yscb file-space` 呼叫無縫轉發至 `core.space`。
+> 職責定位：自 `core >= 1.2.8.0` 起，YS-Codebase 之通用邏輯檔案空間、`YFP2` 單調世代二進位指紋快照、多消費者交易游標與背景監聽協調已全面內聚為微內核 [`core.space`](../core/README.md) 子系統。`module:file-space` 現作為純標準庫輕量向下相容轉發殼層（Forwarding Shell），將舊版 `import file_space` 與 `yscb file-space` 呼叫無縫轉發至 `core.space`。
 
 > [!WARNING]
 > **升級與移除指引 (Migration & Removal Guide)**：
-> 1. 請先將 `core` 更新至 `>= 1.2.7.5`（含自動遷移腳本 `1.2.7.x.py`，會自動將舊版 `config/file-space/contribute.json` 轉換合併至 `config/core/contribute.json`）。
+> 1. 請先將 `core` 更新至 `>= 1.2.8.0`（含自動遷移腳本 `1.2.7.x.py` / `1.2.8.x.py`，會自動將舊版 `config/file-space/contribute.json` 轉換合併至 `config/core/contribute.json`）。
 > 2. 更新完成後，請直接執行 `python yscb.py remove file-space` 移除本過渡模組。
 > 3. 所有 CLI 操作請改用微內核原生指令：`python yscb.py fs <subcmd>`（或 `python yscb.py core file-space <subcmd>`）。
 > 4. 所有 Python SDK 開發請直接引用：`import core.space`（或 `from core import space`）。

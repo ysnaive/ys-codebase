@@ -15,7 +15,7 @@
   ],
   "commands": {
     "module_alias": [],
-    "description": "[Deprecated] 轉發至 core.space 之相容指令群（建議更新 core >=1.2.7.5 後執行 python yscb.py remove file-space）",
+    "description": "[Deprecated] 轉發至 core.space 之相容指令群（建議更新 core >=1.2.8.0 後執行 python yscb.py remove file-space）",
     "cmd": {
       "status": {
         "description": "[Deprecated] 委派 core.space 顯示各空間配置、head_generation、merkle_root 與消費者游標狀態",

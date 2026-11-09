@@ -2,9 +2,9 @@
   "name": "vscode-support",
   "description": "YS-Codebase VS Code 工作區投影、穩定微環境路徑連結與單檔級 JSON Schema 編譯模組",
   "versions": [
-    "1.0.0.3",
     "1.0.0.4",
-    "1.0.0.5"
+    "1.0.0.5",
+    "1.0.0.6"
   ],
   "releases": {
     "1.0.0.0": {
@@ -41,7 +41,7 @@
       "commit": "f2805bcad3f625369c59ab35be5a863fa725b295"
     },
     "1.0.0.3": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.0"
       },
@@ -72,6 +72,16 @@
       "urgency": "recommended",
       "summary": "新增 last_revert_error 區分 revert 冪等無操作與設定檔損毀退出碼並收斂投影路徑解析",
       "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
+    },
+    "1.0.0.6": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.8.0"
+      },
+      "sha256": "a5c055ca25af2e4b00a34a3ac00ea0fd9e308f0ed79cf7994cdb9df769e6c749",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "遷移工作區空間解析至 core.space 並對齊執行期隔離與不可變資料結構規範"
     }
   }
 }

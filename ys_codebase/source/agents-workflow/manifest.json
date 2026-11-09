@@ -1,10 +1,10 @@
 {
   "name": "agents-workflow",
-  "version": "1.2.4.5",
+  "version": "1.2.4.6",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.7.3"
+    "core": ">=1.2.8.0"
   },
   "optional": {
     "knowledge-db": {
@@ -22,8 +22,8 @@
     "Publish AGENTS.md & skills to project workspace: python yscb.py agents-workflow release"
   ],
   "release": {
-    "type": "bugfix",
+    "type": "refactor",
     "urgency": "recommended",
-    "summary": "收口編譯、發布、路線圖與檢核修復器之原子寫入至 core.vfs 並移除硬編碼退避"
+    "summary": "遷移檔案空間存取至 core.space、收斂執行期狀態至隔離上下文並同步更新程式碼檢索與語法樹切片技能指引"
   }
 }

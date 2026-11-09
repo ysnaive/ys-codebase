@@ -1,6 +1,6 @@
 # `file-space` 模組擴充貢獻宣告清單 (Contributes Manifest)
 
-> **[Deprecated]** `file-space` 引擎已內聚併入 `core.space`；本模組僅保留最小相容宣告，建議將 `core` 更新至 `>=1.2.7.5` 後執行 `python yscb.py remove file-space` 移除本模組。
+> **[Deprecated]** `file-space` 引擎已內聚併入 `core.space`；本模組僅保留最小相容宣告，建議將 `core` 更新至 `>=1.2.8.0` 後執行 `python yscb.py remove file-space` 移除本模組。
 
 ---
 
