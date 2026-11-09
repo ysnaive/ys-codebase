@@ -18,9 +18,9 @@
    - 針對 C# `partial class/struct/interface` 同時保存表層跨檔合併邏輯視圖（`members` / `children` / `partial_files`）與底層單檔物理定義（`metadata["_own_*"]`），支援單檔 `outline` 精確檢視與增量退化重聚合。
    - 以 `consumer_id="ast"` 消費 `core.space` 游標，原子持久化 `ast.storage://indices/unified.symbols.bin.gz` 與 `unified.graph.bin.gz`。
 
-4. **無 BM25 確定性符號定位與同名多載群組定址 (`DeterministicSymbolResolver` & `TopologyLinker`)**：
-   - 支援 `[kind] [scope.]name[(param_types...)]` 選擇器語法與四階消歧連結。
-   - 同名異載（Overloads）若屬於同一 `(space, parent_fqn)` 預設群組化一併展開，跨不同父型別則回傳結構化歧義清單。
+4. **四大不可變內核原子結構、4-Pass 確定性工作區連結器與 L0/L1 圖譜原語 (`WorkspaceGraphLinker` & `ASTEngine`)**：
+   - 提供 `@dataclass(frozen=True)` 之 `Span`、`ProvenanceStep`、`SymbolNode`、`RelationEdge`、`FileSymbolGraph`、`FileImportTable` 與 `WorkspaceSymbolGraph`，支援多 `.scm` 以 `@name` 物理座標執行交換律合流（$A \cup B = B \cup A$）與 4-Pass 確定性跨檔連結（零啟發式模糊計分）。
+   - 提供 L0 無狀態單檔原語（`parse_file`、`outline`、基於 UTF-8 Byte Span 之 $O(1)$ 結構化切片 `slice_part`）與 L1 全倉圖譜原語（`get_workspace_graph`、`resolve`、`select_nodes`、多跳有向邊 BFS `traverse_edges`），以及同父型別同名異載（Overloads）群組展開與跨父型別結構化歧義攔截。
 
 ---
 
@@ -29,6 +29,12 @@
 ```bash
 # 檢視單檔結構化符號大綱（支援可見度/綁定/成員型別三維正交過濾；C# partial 自動提示 [Partial Siblings]，加 --merged 展開合併視圖）
 python yscb.py ast outline <file_or_uri> [--merged] [--public|--protected|--internal|--private|--non-private] [--static|--non-static] [--methods|--fields|--types] [--json]
+
+# 無損切取指定符號之結構化源碼部位（支援 outer | name | signature | parameters | return_type | doc | body）
+python yscb.py ast slice <symbol> [--part <slot>] [--space <name>] [--json]
+
+# 對全倉語意圖譜執行通用有向邊 BFS 遍歷（支援 calls, inherits, implements, imports, references, documents, merges_with, declares）
+python yscb.py ast traverse <symbol> [--kind <kinds>] [--direction out|in|both] [--depth <N>] [--space <name>] [--json]
 
 # 查詢調用指定符號之上游調用者與調用點切片
 python yscb.py ast callers <symbol> [--space <name>] [--ftype <ext>] [--snippet] [--json]

@@ -92,8 +92,10 @@ python yscb.py knowledge-db search 'PIDController' --lexical-only --json -s
 ```
 
 > [!TIP]
-> **結構化大綱與呼叫拓撲查詢**：若已知檔案或符號座標，欲檢視單檔結構大綱或追蹤上下游呼叫鏈，請使用 Layer 2 `module:ast` 指令：
+> **結構化大綱、部位切片與語意圖譜查詢**：若已知檔案或符號座標，欲檢視單檔結構大綱、無損切取方法簽名/主體或追蹤上下游呼叫與繼承鏈，請使用 Layer 2 `module:ast` 指令：
 > - `python yscb.py ast outline <file> --json`
+> - `python yscb.py ast slice <symbol> --part=signature`
+> - `python yscb.py ast traverse <symbol> --kind=calls,inherits --direction=out --depth=1 --json`
 > - `python yscb.py ast callers <symbol> --json -s`
 > - `python yscb.py ast callees <symbol> --json -s`
 > - `python yscb.py ast impact <symbol> --depth=2 --json`

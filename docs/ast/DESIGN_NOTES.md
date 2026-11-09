@@ -37,6 +37,7 @@ last_updated: "2026-11-09"
 | **DN-AST-04** | `GrammarProvisioner` 標準錯誤流 (`stderr`) 強制隔離與會話級離線負快取 | `provisioner.py` | ⚠️ WARNING |
 | **DN-AST-05** | 多 `.scm` 以 `@name` 物理座標為錨點之交換律合流與 `core.space` 規則範圍綁定 | `schema.py`, `treesitter.py`, `registry.py` | ⚠️ WARNING |
 | **DN-AST-06** | 4-Pass 確定性工作區連結器 (`WorkspaceGraphLinker`) 之單檔純度隔離、無環繼承剪枝與零模糊計分守則 | `schema.py`, `linker.py`, `parsers/base.py` | 🚨 CRITICAL |
+| **DN-AST-07** | L0/L1 圖譜查詢原語、UTF-8 Byte Span 結構化切片與 $O(|\text{Dirty}|)$ 單次解析雙圖譜持久化守則 | `engine.py`, `bundler.py`, `resolver.py`, `graph.py` | ⚠️ WARNING |
 
 ---
 
@@ -113,4 +114,18 @@ last_updated: "2026-11-09"
   3. **零啟發式模糊計分與顯式五態 `resolution_status`**：Pass 4 廢除一切啟發式加權猜測；同父型別下的多個同名異載若無法由呼叫端 `arg_count` 唯一收斂，標記為 `"overload_group"` 並保留排序後之重載 ID；跨不同型別的同名候選一律標記為 `"ambiguous"`；非工作區之標準庫/第三方匯入呼叫標記為 `"external"`。
 
 > [!CAUTION]
-> **嚴禁在 `WorkspaceGraphLinker` 或任何 `EdgeRefiner` 中直接修改傳入之 `FileSymbolGraph` 內部結構，亦嚴禁引入模糊字串相似度或距離加權分數強行將 `"ambiguous"` 邊改寫為單一 `"resolved"` 目標！** 動態語言或巨集無法由 4-Tier 靜態作用域唯一收斂者，必須交由宣告式掛載之 `EdgeRefiner` 插件提供確定性證據（並附帶 `ProvenanceStep(action="refine")`），否則必須保持 `"ambiguous"` 或 `"unresolved"`。
+> **嚴禁在 `WorkspaceGraphLinker` 或任何 `EdgeRefiner` 中直接修改傳入之 `FileSymbolGraph` 內部結構，亦嚴禁引入模糊字串相似度或距離加權分數強行將 `"ambiguous"` 邊改寫為單一 `"resolved"`目標！** 動態語言或巨集無法由 4-Tier 靜態作用域唯一收斂者，必須交由宣告式掛載之 `EdgeRefiner` 插件提供確定性證據（並附帶 `ProvenanceStep(action="refine")`），否則必須保持 `"ambiguous"` 或 `"unresolved"`。
+
+---
+
+### [DN-AST-07] L0/L1 圖譜查詢原語、UTF-8 Byte Span 結構化切片與 $O(|\text{Dirty}|)$ 單次解析雙圖譜持久化守則
+
+- **背景與根因**：
+  1. 若上層工具或 AI Agent 為擷取函式簽名、Docstring 或方法主體（Body）而按行號近似裁切或以正則二次掃描源碼，面對多行參數、裝飾器或含中文/Emoji 之多位元組 UTF-8 源碼時極易截斷失真；且單檔結構检視（`parse_file` / `outline`）若強制載入或觸發全倉 `unified.symbols.bin.gz` 索引建置，將造成不必要的冷啟動延遲。
+  2. 此外，若 `WorkspaceSymbolGraph` 每次查詢皆重新遍歷工作區檔案提取 `FileSymbolGraph`，將破壞 $O(|\text{Dirty}|)$ 增量熱修補的效能保證。
+- **工程妥協與解法**：
+  1. **L0 零索引單檔原語與 UTF-8 Byte Span 切片**：`ASTEngine.parse_file(file_or_uri, *, content=None)` 直接調用 `ParserRegistry.extract_file_graph()`，不讀取亦不修改任何持久化索引；`TreeSitterDriver` 於單次提取時自動填充 `parts["body"]` 與 `parts["signature"]`（`outer.start_byte` 至 `body.start_byte` 前之宣告標頭），使 `ASTEngine.slice_part()` 直接透過 `Span.slice_text(raw_bytes)` 完成 $O(1)$ 無損 UTF-8 位元組切片。
+  2. **Single-Pass `FileSymbolGraph` 快取與雙圖譜持久化**：`_parse_file_task_worker` 於單次讀檔時同步產出 `FileSymbolGraph` 並暫存於 `SemanticBundler._file_graphs_cache`，由 `ASTSnapshot.file_graphs` 與 `CallGraphIndex.workspace_graph` 一併持久化至磁碟；`hot_patch_index(diff_detail)` 僅針對 `dirty_files` 重新提取 `FileSymbolGraph` 並更新 `ASTSnapshot.file_graphs` 後重連 `WorkspaceSymbolGraph`，維持 $O(|\text{Dirty}|)$ 增量讀檔保證。
+
+> [!CAUTION]
+> **嚴禁在 `ASTEngine.slice_part()` 中以 Python 字元索引 (`str[start:end]`) 替代 UTF-8 位元組切片 (`Span.slice_text(bytes)`)，亦嚴禁在 `parse_file()` 中隱式觸發 `ensure_jit_synced()` 全倉索引建置！** Tree-sitter 座標皆為 UTF-8 byte offsets，混用字元索引將在含非 ASCII 字元之檔案中產生嚴重位移。

@@ -56,16 +56,19 @@ last_updated: "2026-11-09"
   - 當檔案內型別為 `partial` 且同空間存在其他同 FQN 分部檔時，預設僅顯示本物理檔案之 `_own_members`，並自動附帶 `[Partial Siblings]` 提示列出其餘分部檔案與成員數摘要（加 `--merged` 可展開跨分部合併視圖）。
 - **按需語法依賴自舉 (On-Demand Grammar Provisioning) 之 `stderr` 與離線圍欄**：
   - 動態安裝日誌與離線降級 Warning 100% 導向 `sys.stderr`，內建會話級負快取避免重複重試，保證 `--json` stdout 在任何網路/沙盒環境下 100% 純淨可解析。
+- **L0 單檔無狀態原語 (`parse_file`, `outline`, `slice_part`) 與 L1 工作區圖譜原語 (`get_workspace_graph`, `resolve`, `select_nodes`, `traverse_edges`)**：
+  - **L0 無狀態單檔原語**：`parse_file(file_or_uri, *, content=None)` 支援零全域索引依賴與記憶體內字串/Bytes 即時提取 `FileSymbolGraph`；`slice_part(symbol_or_id, part="outer", *, file_bytes=None)` 基於 `Span(start_byte, end_byte)` 對來源檔執行 $O(1)$ UTF-8 精確位元組切片（支援 `outer`、`name`、`signature`、`parameters`、`return_type`、`doc`、`body` 7 大結構槽位，對含中文/Emoji 之多位元組源碼 100% 零偏移）。
+  - **L1 工作區語意圖譜原語**：`get_workspace_graph(auto_sync=True)` 返回已快取並與磁碟同步之 `WorkspaceSymbolGraph`；`resolve(...)` 支援 `kinds` 過濾；`select_nodes(...)` 支援依 `spaces`、`kinds`、`visibility`、`facets`、`ftypes` 正交批次篩選 `SymbolNode`；`traverse_edges(...)` 支援跨 `calls`、`inherits`、`implements`、`imports`、`references`、`documents`、`merges_with`、`declares` 任意邊型別與方向（`out`/`in`/`both`）之多跳 BFS 圖譜遍歷。
 - **Single-Parse Symbol Sharing、宣告式目標空間 (`contributes` + SDK/Hook)、單次讀檔建置與 $O(|\text{dirty}|)$ Pull-Based JIT 熱自癒**：
   - `ASTEngine.get_target_spaces()` 透過 `contributes/ast.json` 之 `"spaces"`（如 `ast` 宣告 `["source"]`、`agents-workflow` 宣告 `["docs", "plans"]`）、SDK `ASTEngine.register_spaces(...)` 與 `on_register_ast_spaces` Hook 動態決定納管目標空間（零業務空間硬編碼），避免無索引需求之純同步空間（如 `cloud`）觸發無謂解析。
-  - 全量建置 `bundle_union` 於單次讀檔中同時提取 `(symbols, call_sites, imports)` 並緩存於 `SemanticBundler`（`_file_call_sites_cache` / `_file_imports_cache`），使後續 `extract_all_call_sites_and_imports` 零重複讀盤，並於建置與熱修補完成後自動呼叫 `clear_transient_caches()` 釋放暫存記憶體。
-  - 以 `consumer_id="ast"` 消費 `core.space` 指紋差量；單檔或增量熱修補 `hot_patch_index` 透過 `_resolve_dirty_files_only` 直接從 `YFP2` 快照與 `core.space.resolve_file_path` 以 $O(|\text{dirty}|)$ 定位異動檔案（零全倉走訪）、透過 `file_to_symbol_ids` 快速淘汰舊符號並增量合成 `files_map`，原子持久化 `ast.storage://indices/unified.symbols.bin.gz` (`ASTSnapshot`) 與 `unified.graph.bin.gz` (`CallGraphIndex`)，並透過 `scripts/hook.core.py` 訂閱 `on_file_space_changed` 自動熱修補及廣播 `on_ast_index_updated`。
+  - 全量建置 `bundle_union` 於單次讀檔中同時提取 `(symbols, call_sites, imports, file_graph)` 並緩存於 `SemanticBundler`（`_file_call_sites_cache` / `_file_imports_cache` / `_file_graphs_cache`），使後續 `extract_all_call_sites_and_imports` 與 `extract_all_file_graphs` 零重複讀盤，並於建置與熱修補完成後自動呼叫 `clear_transient_caches()` 釋放暫存記憶體。
+  - 以 `consumer_id="ast"` 消費 `core.space` 指紋差量；單檔或增量熱修補 `hot_patch_index` 透過 `_resolve_dirty_files_only` 直接從 `YFP2` 快照與 `core.space.resolve_file_path` 以 $O(|\text{dirty}|)$ 定位異動檔案（零全倉走訪）、透過 `file_to_symbol_ids` 與 `file_graphs` 快速淘汰舊符號與舊單檔圖譜並重連 `WorkspaceSymbolGraph`，原子持久化 `ast.storage://indices/unified.symbols.bin.gz` (`ASTSnapshot`) 與 `unified.graph.bin.gz` (`CallGraphIndex`)，並透過 `scripts/hook.core.py` 訂閱 `on_file_space_changed` 自動熱修補及廣播 `on_ast_index_updated`。
 
 ---
 
 ## 2. CLI 快速上手 (Quick Start)
 
-`module:ast` 提供 6 個標準 CLI 指令：`outline`, `callers`, `callees`, `impact`, `status`, `clean`。
+`module:ast` 提供 8 個標準 CLI 指令：`outline`, `slice`, `traverse`, `callers`, `callees`, `impact`, `status`, `clean`。
 
 ```bash
 # 1. 檢視單一檔案之結構化符號大綱、簽名、起訖行號、正交過濾與 [Partial Siblings] 提示
@@ -73,20 +76,27 @@ python yscb.py ast outline ys_codebase/source/core/core/uri.py
 python yscb.py ast outline ys_codebase/source/core/core/uri.py --public --methods
 python yscb.py ast outline Window.cs --merged --non-private --static --json
 
-# 2. 查詢呼叫指定符號之上游呼叫者 (支援同型別 Overload 自動群組展開或帶參數精確定址)
+# 2. L0 結構化精確切片 (支援 outer / signature / doc / body / parameters / return_type / name)
+python yscb.py ast slice ASTEngine.outline --part=signature
+python yscb.py ast slice ASTEngine.outline --part=body --json
+
+# 3. L1 通用圖譜遍歷 (支援 calls, inherits, implements, imports, references, documents 等邊型別)
+python yscb.py ast traverse ASTEngine --kind=calls,inherits --direction=out --depth=1 --json
+
+# 4. 查詢呼叫指定符號之上游呼叫者 (支援同型別 Overload 自動群組展開或帶參數精確定址)
 python yscb.py ast callers UnifiedSymbol --snippet --json
 python yscb.py ast callers "Window.Open(string, int)" --json
 
-# 3. 查詢指定符號內部呼叫之下游目標
+# 5. 查詢指定符號內部呼叫之下游目標
 python yscb.py ast callees ASTEngine.ensure_jit_synced --snippet --json
 
-# 4. 執行 N 階遞迴影響半徑 (Blast Radius) 評估
+# 6. 執行 N 階遞迴影響半徑 (Blast Radius) 評估
 python yscb.py ast impact FileSpaceManager --depth 2 --json
 
-# 5. 檢視 AST 索引狀態、世代水位 (ast_generation)、已註冊方言與解析器狀態
+# 7. 檢視 AST 索引狀態、世代水位 (ast_generation)、已註冊方言與解析器狀態
 python yscb.py ast status --json
 
-# 6. 清除 AST 符號與呼叫圖譜快取並重置 ast 消費者游標
+# 8. 清除 AST 符號與呼叫圖譜快取並重置 ast 消費者游標
 python yscb.py ast clean --json
 ```
 
@@ -101,10 +111,19 @@ from ast_engine import ASTEngine
 
 engine = ASTEngine()
 
-# 1. 取得最新已同步之單次解析符號快照 (供下游模組如 knowledge-db 直接共享消費)
+# 1. 取得最新已同步之單次解析符號快照與工作區語意圖譜 (供下游模組如 knowledge-db 直接共享消費)
 snapshot = engine.get_snapshot(auto_sync=True)
+ws_graph = engine.get_workspace_graph(auto_sync=True)
 
-# 2. 單檔結構化大綱與呼叫拓撲查詢
+# 2. L0 無狀態單檔解析與 O(1) 結構化位元組切片
+file_graph = engine.parse_file("project://ys_codebase/source/core/core/uri.py")
+sig_text = engine.slice_part("ASTEngine.outline", part="signature")
+
+# 3. L1 通用節點篩選與多跳邊遍歷
+class_nodes = engine.select_nodes(kinds=["class"], visibility="public")
+trav_data = engine.traverse_edges("ASTEngine", edge_kinds=["calls", "inherits"], direction="out", depth=1)
+
+# 4. 單檔結構化大綱與呼叫拓撲查詢
 outline_data = engine.outline("project://ys_codebase/source/core/core/uri.py")
 callers_data = engine.callers("resolve_yscb_root", include_snippet=True)
 impact_data = engine.impact("ContributesValidator", depth=2)

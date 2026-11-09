@@ -214,6 +214,13 @@ class SymbolNode:
             object.__setattr__(self, "provenance", ())
 
     @property
+    def file_path(self) -> str:
+        """Extract the normalized workspace file path prefix from canonical `id` (`{file_path}::{fqn}`)."""
+        if "::" in self.id:
+            return self.id.split("::", 1)[0]
+        return str(self.facets.get("file_path") or "") if isinstance(self.facets, Mapping) else ""
+
+    @property
     def fqn(self) -> str:
         """Render the fully-qualified name using `facets.get('scope_separator', '.')`."""
         sep = str(self.facets.get("scope_separator", ".")) if isinstance(self.facets, Mapping) else "."
@@ -1174,6 +1181,7 @@ class ASTSnapshot:
         file_to_symbol_ids: Optional[Dict[str, List[str]]] = None,
         files_map: Optional[Dict[str, List[str]]] = None,
         created_at: float = 0.0,
+        file_graphs: Optional[Dict[str, FileSymbolGraph]] = None,
     ) -> None:
         self.ast_generation: int = ast_generation
         self.space_generations: Dict[str, int] = dict(space_generations) if space_generations is not None else {}
@@ -1183,6 +1191,7 @@ class ASTSnapshot:
         )
         self.files_map: Dict[str, List[str]] = dict(files_map) if files_map is not None else {}
         self.created_at: float = created_at
+        self.file_graphs: Dict[str, FileSymbolGraph] = dict(file_graphs) if file_graphs is not None else {}
         self.__post_init__()
 
     def __post_init__(self) -> None:
@@ -1207,7 +1216,7 @@ class ASTSnapshot:
         return list(self.symbols)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out: Dict[str, Any] = {
             "ast_generation": self.ast_generation,
             "space_generations": dict(self.space_generations),
             "symbols": {
@@ -1218,6 +1227,12 @@ class ASTSnapshot:
             "files_map": {k: list(v) for k, v in self.files_map.items()},
             "created_at": self.created_at,
         }
+        if self.file_graphs:
+            out["file_graphs"] = {
+                k: (fg.to_dict() if hasattr(fg, "to_dict") else fg)
+                for k, fg in self.file_graphs.items()
+            }
+        return out
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ASTSnapshot":
@@ -1246,6 +1261,17 @@ class ASTSnapshot:
         f2s_dict = raw_f2s if isinstance(raw_f2s, dict) else {}
         raw_fmap = data.get("files_map")
         fmap_dict = raw_fmap if isinstance(raw_fmap, dict) else {}
+        raw_fgraphs = data.get("file_graphs")
+        fgraphs_dict: Dict[str, FileSymbolGraph] = {}
+        if isinstance(raw_fgraphs, dict):
+            for k, v in raw_fgraphs.items():
+                if isinstance(v, FileSymbolGraph):
+                    fgraphs_dict[str(k)] = v
+                elif isinstance(v, dict):
+                    try:
+                        fgraphs_dict[str(k)] = FileSymbolGraph.from_dict(v)
+                    except Exception:
+                        pass
         return cls(
             ast_generation=int(data.get("ast_generation") or 0),
             space_generations={str(k): int(v) for k, v in space_gens_dict.items() if v is not None},
@@ -1261,6 +1287,7 @@ class ASTSnapshot:
                 if isinstance(v, (list, tuple))
             },
             created_at=float(data.get("created_at") or 0.0),
+            file_graphs=fgraphs_dict,
         )
 
 

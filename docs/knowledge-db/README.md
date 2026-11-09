@@ -50,7 +50,7 @@ last_updated: "2026-11-08"
 
 ## 3. CLI 快速上手 (Quick Start)
 
-`knowledge-db` 專注於語意與全文檢索指令集（`status`, `index`, `search`, `clean`, `model`）；單檔結構大綱（`outline`）與靜態調用拓撲（`callers`, `callees`, `impact`）正統入口位於 [`yscb ast`](../ast/README.md)（`knowledge-db` 亦保留向下相容轉發）：
+`knowledge-db` 專注於語意與全文檢索指令集（`status`, `index`, `search`, `clean`, `model`）；單檔結構大綱（`outline`）、部位切片（`slice`）與靜態語意圖譜拓撲（`traverse`, `callers`, `callees`, `impact`）正統入口位於 [`yscb ast`](../ast/README.md)（`knowledge-db` 亦保留向下相容轉發）：
 
 ```bash
 # 1. 查看所有已註冊空間、快取、索引狀態與 acked_ast_generation 水位 (支援頂層短別名 kdb)
@@ -75,8 +75,10 @@ python yscb.py knowledge-db search "狀態機更新" --kind=class --limit=5
 python yscb.py knowledge-db search "PIDController" --ftype=py --json -s
 python yscb.py knowledge-db search "開發規範" --ftype=md --json -s
 
-# 6. 單檔結構大綱與跨檔案呼叫拓撲查詢 (透過 Layer 2 module:ast)
+# 6. 單檔結構大綱、部位切片與跨檔案語意圖譜查詢 (透過 Layer 2 module:ast)
 python yscb.py ast outline yscb.py --public --methods
+python yscb.py ast slice "InvertedIndex.load_binary" --part=signature
+python yscb.py ast traverse "KnowledgeEngine" --kind=calls,inherits --direction=out --depth=1 --json
 python yscb.py ast callers "InvertedIndex.load_binary" --json -s
 python yscb.py ast callees "KnowledgeEngine.build_unified_index" --json -s
 python yscb.py ast impact "InvertedIndex.patch_incremental" --depth=2 --json

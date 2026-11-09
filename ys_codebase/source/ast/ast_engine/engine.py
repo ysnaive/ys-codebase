@@ -17,7 +17,7 @@ import re
 import shutil
 import threading
 import time
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, FrozenSet, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
 from core.context import cell_span, get_runtime_context, get_virtual_cwd
 from core.log import log_debug, log_warn
@@ -44,7 +44,7 @@ from .bundler import (
     ensure_unique_overload_ids,
     restore_unaggregated_partial_symbol,
 )
-from .exceptions import ASTCorruptedError, ASTIndexNotFoundError
+from .exceptions import ASTCorruptedError, ASTError, ASTIndexNotFoundError
 from .formatter import ASTResultFormatter
 from .graph import CallGraphIndex
 from .io_utils import (
@@ -54,16 +54,42 @@ from .io_utils import (
     normalize_dirty_paths,
     resolve_project_root,
 )
-from .linker import TopologyLinker
+from .linker import TopologyLinker, WorkspaceGraphLinker
 from .parsers.registry import ParserRegistry
 from .provisioner import GrammarProvisioner
 from .resolver import (
+    DeterministicSymbolResolver,
     SnippetExtractor,
+    SymbolResolutionResult,
+    _resolve_with_ftype_fallback,
     query_callees,
     query_callers,
     query_impact,
+    select_workspace_nodes,
+    traverse_workspace_edges,
 )
-from .schema import ASTSnapshot, MemberInfo, OutlineNode, OutlineResult, SymbolCallSite, UnifiedSymbol
+from .schema import (
+    ASTSnapshot,
+    FileSymbolGraph,
+    MemberInfo,
+    OutlineNode,
+    OutlineResult,
+    Span,
+    SymbolCallSite,
+    SymbolNode,
+    UnifiedSymbol,
+    WorkspaceSymbolGraph,
+)
+
+VALID_SLICE_PARTS: FrozenSet[str] = frozenset({
+    "outer",
+    "name",
+    "signature",
+    "parameters",
+    "return_type",
+    "doc",
+    "body",
+})
 
 _ENGINE_LOCK = threading.RLock()
 
@@ -814,10 +840,21 @@ class ASTEngine:
 
             bundle = self.bundler.bundle_union(spaces=spaces, allow_parallel=allow_parallel)
             symbols_map: Dict[str, UnifiedSymbol] = {s.id: s for s in bundle.symbols}
+            file_graphs = self.bundler.extract_all_file_graphs(spaces=spaces)
 
             call_sites, imports_map = self.bundler.extract_all_call_sites_and_imports(spaces=spaces)
             linker = TopologyLinker(symbols_map=symbols_map)
             graph_idx = linker.build_graph(call_sites=call_sites, imports_map=imports_map)
+            try:
+                ws_linker = WorkspaceGraphLinker(
+                    file_graphs=file_graphs.values(),
+                    language_configs=self.parser_registry.language_configs,
+                    module_resolvers=self.parser_registry.module_resolvers,
+                    edge_refiners=self.parser_registry.edge_refiners,
+                )
+                graph_idx.workspace_graph = ws_linker.link_workspace()
+            except Exception as ws_exc:
+                log_debug(f"WorkspaceGraphLinker in build_index skipped: {ws_exc}")
 
             space_gens, files_map = self._collect_space_generations_and_files_map(spaces=spaces)
             self.bundler.clear_transient_caches()
@@ -828,6 +865,7 @@ class ASTEngine:
                 file_to_symbol_ids=self._build_file_to_symbol_ids(symbols_map),
                 files_map=files_map,
                 created_at=time.time(),
+                file_graphs=file_graphs,
             )
             self._save_snapshot_and_graph(snapshot, graph_idx)
             try:
@@ -1078,6 +1116,22 @@ class ASTEngine:
                     incoming_edges=incoming_edges,
                     spaces=spaces,
                 )
+                try:
+                    dirty_fgs, dirty_fg_keys = self.bundler.extract_dirty_file_graphs(detail, spaces=spaces)
+                    dirty_fg_norm = normalize_dirty_paths(dirty_fg_keys)
+                    for fg_key in list(self._snapshot.file_graphs.keys()):
+                        if is_dirty_file_match(fg_key, dirty_fg_norm):
+                            self._snapshot.file_graphs.pop(fg_key, None)
+                    self._snapshot.file_graphs.update(dirty_fgs)
+                    ws_linker = WorkspaceGraphLinker(
+                        file_graphs=self._snapshot.file_graphs.values(),
+                        language_configs=self.parser_registry.language_configs,
+                        module_resolvers=self.parser_registry.module_resolvers,
+                        edge_refiners=self.parser_registry.edge_refiners,
+                    )
+                    self._graph.workspace_graph = ws_linker.link_workspace()
+                except Exception as ws_exc:
+                    log_debug(f"WorkspaceGraphLinker in hot_patch_index skipped: {ws_exc}")
 
                 space_gens, files_map = self._collect_space_generations_and_files_map(
                     spaces=spaces, incremental_detail=detail
@@ -1240,6 +1294,259 @@ class ASTEngine:
                 raise ASTIndexNotFoundError(f"AST call graph not found at {self.graph_index_path}")
             assert self._graph is not None
             return self._graph
+
+    def get_workspace_graph(self, auto_sync: bool = True) -> WorkspaceSymbolGraph:
+        """L1 Primitive: Return the current immutable `WorkspaceSymbolGraph`."""
+        with self._lock:
+            if auto_sync:
+                self.ensure_jit_synced()
+                if not self._ensure_graph_loaded():
+                    raise ASTIndexNotFoundError(f"AST call graph not found at {self.graph_index_path}")
+            else:
+                if not self._ensure_loaded_from_disk():
+                    raise ASTIndexNotFoundError(f"AST index not found at {self.graph_index_path}")
+            assert self._snapshot is not None
+            assert self._graph is not None
+            if self._graph.workspace_graph is not None:
+                return self._graph.workspace_graph
+            file_graphs = self._snapshot.file_graphs
+            if not file_graphs:
+                file_graphs = self.bundler.extract_all_file_graphs()
+                self._snapshot.file_graphs = file_graphs
+            ws_linker = WorkspaceGraphLinker(
+                file_graphs=file_graphs.values(),
+                language_configs=self.parser_registry.language_configs,
+                module_resolvers=self.parser_registry.module_resolvers,
+                edge_refiners=self.parser_registry.edge_refiners,
+            )
+            ws_graph = ws_linker.link_workspace()
+            self._graph.workspace_graph = ws_graph
+            try:
+                self._save_snapshot_and_graph(self._snapshot, self._graph)
+            except Exception as save_exc:
+                log_debug(f"Persist upgraded workspace_graph skipped: {save_exc}")
+            return ws_graph
+
+    def parse_file(
+        self,
+        file_or_uri: Union[str, Path],
+        *,
+        content: Optional[Union[str, bytes]] = None,
+        space: Optional[str] = None,
+    ) -> FileSymbolGraph:
+        """
+        L0 Primitive: Stateless single-file extraction returning an immutable `FileSymbolGraph`
+        without reading or mutating any persisted workspace index cache.
+        """
+        with cell_span("ast.parse_file"):
+            raw_target = str(file_or_uri or "").strip()
+            if not raw_target:
+                raise FileNotFoundError("Empty file path provided to parse_file().")
+            if content is not None:
+                text_str = (
+                    content.decode("utf-8", errors="replace")
+                    if isinstance(content, (bytes, bytearray))
+                    else str(content)
+                )
+                norm_rel = raw_target.replace("\\", "/")
+                if "://" in norm_rel:
+                    _, rest = norm_rel.split("://", 1)
+                    norm_rel = rest.lstrip("/")
+                try:
+                    p_cand = Path(norm_rel)
+                    if p_cand.is_absolute():
+                        norm_rel = self.bundler._get_project_relpath(p_cand, self.project_root)
+                except Exception:
+                    pass
+                return self.parser_registry.extract_file_graph(
+                    file_path=norm_rel,
+                    content=text_str,
+                    space=space or "project",
+                )
+
+            abs_path, rel_path, resolved_space = self._resolve_target_file(raw_target)
+            text_str = abs_path.read_text(encoding="utf-8", errors="replace")
+            return self.parser_registry.extract_file_graph(
+                file_path=rel_path,
+                content=text_str,
+                space=space or resolved_space,
+            )
+
+    def _resolve_symbol_node_for_slice(
+        self,
+        symbol_or_id: Union[SymbolNode, UnifiedSymbol, str],
+        space: Optional[Union[str, Sequence[str]]] = None,
+    ) -> SymbolNode:
+        if isinstance(symbol_or_id, SymbolNode):
+            return symbol_or_id
+        if isinstance(symbol_or_id, UnifiedSymbol):
+            ws_graph = self.get_workspace_graph(auto_sync=True)
+            canonical_id = SymbolNode.compute_canonical_id(
+                symbol_or_id.file_path,
+                symbol_or_id.fqn or symbol_or_id.name,
+            )
+            if canonical_id in ws_graph.nodes_by_id:
+                return ws_graph.nodes_by_id[canonical_id]
+            fg = ws_graph.file_graphs.get(symbol_or_id.file_path)
+            if fg is None:
+                fg = self.parse_file(symbol_or_id.file_path)
+            for cand in fg.all_nodes_by_id.values():
+                if cand.fqn == (symbol_or_id.fqn or symbol_or_id.name) or (
+                    cand.span.start_line == symbol_or_id.line_number and cand.name == symbol_or_id.name.split(".")[-1]
+                ):
+                    return cand
+            raise ASTError(f"SymbolNode not found for UnifiedSymbol '{symbol_or_id.fqn or symbol_or_id.name}'")
+
+        q_str = str(symbol_or_id or "").strip()
+        if not q_str:
+            raise ASTError("Empty symbol_or_id provided to slice_part().")
+        ws_graph = self.get_workspace_graph(auto_sync=True)
+        if q_str in ws_graph.nodes_by_id:
+            return ws_graph.nodes_by_id[q_str]
+        res = self.resolve(q_str, spaces=space)
+        if res.status == "not_found" or not res.targets:
+            for cand_node in ws_graph.nodes_by_id.values():
+                if cand_node.fqn == q_str or cand_node.name == q_str:
+                    return cand_node
+            raise ASTError(f"Symbol not found for slice_part: {q_str!r}")
+        if res.status == "ambiguous":
+            raise ASTError(f"Ambiguous symbol selector for slice_part: {q_str!r}")
+        return self._resolve_symbol_node_for_slice(res.targets[0], space=space)
+
+    def slice_part(
+        self,
+        symbol_or_id: Union[SymbolNode, UnifiedSymbol, str],
+        part: str = "outer",
+        *,
+        file_bytes: Optional[Union[bytes, str]] = None,
+        space: Optional[Union[str, List[str]]] = None,
+    ) -> str:
+        """
+        L0 Primitive: O(1) lossless UTF-8 byte slicing of a symbol's structural part
+        (`"outer"`, `"name"`, `"signature"`, `"parameters"`, `"return_type"`, `"doc"`, `"body"`).
+        """
+        part_norm = str(part or "outer").strip().lower()
+        if part_norm not in VALID_SLICE_PARTS:
+            raise ASTError(
+                f"Unsupported slice part: {part!r} (expected one of {sorted(VALID_SLICE_PARTS)})"
+            )
+        node = self._resolve_symbol_node_for_slice(symbol_or_id, space=space)
+        target_span: Optional[Span] = node.span if part_norm == "outer" else node.parts.get(part_norm)
+        if target_span is None:
+            return ""
+
+        if file_bytes is not None:
+            raw_bytes = (
+                file_bytes.encode("utf-8", errors="replace")
+                if isinstance(file_bytes, str)
+                else bytes(file_bytes)
+            )
+        else:
+            abs_p = self.snippet_extractor._resolve_abs_path(node.file_path)
+            if abs_p is None or not abs_p.is_file():
+                abs_p, _, _ = self._resolve_target_file(node.file_path)
+            raw_bytes = abs_p.read_bytes()
+
+        return target_span.slice_text(raw_bytes)
+
+    def resolve(
+        self,
+        selector_expr: str,
+        *,
+        spaces: Optional[Union[str, Sequence[str]]] = None,
+        kinds: Optional[Union[str, Sequence[str], Set[str], FrozenSet[str]]] = None,
+        ftypes: Optional[Union[str, Sequence[str]]] = None,
+    ) -> SymbolResolutionResult:
+        """L1 Primitive: Deterministically resolve `selector_expr` across workspace symbols."""
+        with cell_span("ast.resolve"), self._lock:
+            eff_spaces: Optional[List[str]] = None
+            if isinstance(spaces, str) and spaces.strip():
+                eff_spaces = [s.strip() for s in spaces.split(",") if s.strip()]
+            elif isinstance(spaces, (list, tuple, set, frozenset)):
+                eff_spaces = [str(s).strip() for s in spaces if str(s).strip()]
+            snapshot = self.ensure_jit_synced(spaces=eff_spaces)
+            resolver = DeterministicSymbolResolver(snapshot.symbols)
+            norm_ftypes = resolver.normalize_ftypes(list(ftypes) if isinstance(ftypes, (list, tuple, set, frozenset)) else ftypes)
+            if kinds is not None:
+                return resolver.resolve(
+                    selector_expr,
+                    space=eff_spaces,
+                    ftypes=norm_ftypes,
+                    kinds=kinds,
+                )
+            return _resolve_with_ftype_fallback(resolver, selector_expr, eff_spaces, norm_ftypes)
+
+    def select_nodes(
+        self,
+        *,
+        spaces: Optional[Union[str, Sequence[str]]] = None,
+        kinds: Optional[Union[str, Sequence[str], Set[str], FrozenSet[str]]] = None,
+        visibility: Optional[Union[str, Sequence[str]]] = None,
+        facets: Optional[Mapping[str, Any]] = None,
+        ftypes: Optional[Union[str, Sequence[str]]] = None,
+    ) -> Tuple[SymbolNode, ...]:
+        """L1 Primitive: Batch filter `SymbolNode` instances across `WorkspaceSymbolGraph`."""
+        with cell_span("ast.select_nodes"), self._lock:
+            ws_graph = self.get_workspace_graph(auto_sync=True)
+            symbols_map = self._snapshot.symbols if self._snapshot is not None else None
+            return select_workspace_nodes(
+                ws_graph,
+                spaces=spaces,
+                kinds=kinds,
+                visibility=visibility,
+                facets=facets,
+                ftypes=ftypes,
+                symbols_map=symbols_map,
+            )
+
+    def traverse_edges(
+        self,
+        seed_ids: Union[str, Sequence[str], Set[str], FrozenSet[str]],
+        *,
+        edge_kinds: Optional[Union[str, Sequence[str], Set[str], FrozenSet[str]]] = None,
+        direction: str = "out",
+        depth: int = 1,
+        status_filter: Optional[Union[str, Sequence[str], Set[str], FrozenSet[str]]] = None,
+        spaces: Optional[Union[str, Sequence[str]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        L1 Primitive: General directed BFS graph traversal across `WorkspaceSymbolGraph` supporting
+        arbitrary `edge_kinds`, `direction` (`"out"` | `"in"` | `"both"`), `depth`, and `status_filter`.
+        """
+        with cell_span("ast.traverse_edges"), self._lock:
+            ws_graph = self.get_workspace_graph(auto_sync=True)
+            raw_list = [seed_ids] if isinstance(seed_ids, str) else list(seed_ids or ())
+            resolved_seeds: List[str] = []
+            for item in raw_list:
+                s_str = str(item or "").strip()
+                if not s_str:
+                    continue
+                if s_str in ws_graph.nodes_by_id:
+                    if s_str not in resolved_seeds:
+                        resolved_seeds.append(s_str)
+                    continue
+                res = self.resolve(s_str, spaces=spaces)
+                if res.targets:
+                    for tsym in res.targets:
+                        try:
+                            snode = self._resolve_symbol_node_for_slice(tsym, space=spaces)
+                            if snode.id not in resolved_seeds:
+                                resolved_seeds.append(snode.id)
+                        except Exception:
+                            pass
+                else:
+                    for cand in ws_graph.nodes_by_id.values():
+                        if cand.fqn == s_str or cand.name == s_str:
+                            if cand.id not in resolved_seeds:
+                                resolved_seeds.append(cand.id)
+            return traverse_workspace_edges(
+                ws_graph,
+                resolved_seeds,
+                edge_kinds=edge_kinds,
+                direction=direction,
+                depth=depth,
+                status_filter=status_filter,
+            )
 
     def _resolve_target_file(self, file_or_uri: str) -> Tuple[Path, str, str]:
         """Resolve `file_or_uri` to `(abs_path, rel_path, space_name)`."""
@@ -1551,6 +1858,7 @@ def reset_default_engine() -> None:
 
 __all__ = [
     "ASTEngine",
+    "VALID_SLICE_PARTS",
     "_build_outline_tree",
     "_filter_outline_nodes",
     "_member_to_outline_node",

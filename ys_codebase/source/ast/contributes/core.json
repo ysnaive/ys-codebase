@@ -426,6 +426,119 @@
             "日常增量開發會自動熱修補，無需手動清理"
           ]
         }
+      },
+      "slice": {
+        "description": "無損提取指定符號之特定源碼部位 (outer / name / signature / parameters / return_type / doc / body)",
+        "tier": "safe",
+        "server_compatible": true,
+        "args": {
+          "symbol": {
+            "description": "目標符號選擇器或規範化 ID",
+            "required": true
+          }
+        },
+        "options": {
+          "slice": {
+            "part": {
+              "description": "部位名稱 (outer | name | signature | parameters | return_type | doc | body，預設 outer)",
+              "args": {
+                "slot": {
+                  "description": "部位名稱"
+                }
+              }
+            }
+          },
+          "scope": {
+            "space": {
+              "description": "限定檢索特定工作空間",
+              "args": {
+                "name": {
+                  "description": "空間名稱"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "基於 SymbolNode.parts 位元組座標執行 O(1) 無損源碼切片，0 重複解析"
+          ],
+          "cons": []
+        }
+      },
+      "traverse": {
+        "description": "對全倉語意圖譜 (WorkspaceSymbolGraph) 執行通用有向邊 BFS 遍歷 (支援 calls, inherits, implements, imports, references, documents, merges_with, declares)",
+        "tier": "safe",
+        "server_compatible": true,
+        "args": {
+          "symbol": {
+            "description": "起始符號選擇器或規範化 ID",
+            "required": true
+          }
+        },
+        "options": {
+          "edge_kind": {
+            "kind": {
+              "description": "過濾邊種類 (逗號分隔，如 calls,inherits,documents)",
+              "args": {
+                "kinds": {
+                  "description": "邊種類清單"
+                }
+              }
+            }
+          },
+          "direction": {
+            "direction": {
+              "description": "遍歷方向 (out | in | both，預設 out)",
+              "args": {
+                "dir": {
+                  "description": "方向"
+                }
+              }
+            }
+          },
+          "depth": {
+            "depth": {
+              "description": "展開階層深度 (預設 1)",
+              "args": {
+                "hops": {
+                  "description": "階層數"
+                }
+              }
+            }
+          },
+          "scope": {
+            "space": {
+              "description": "限定檢索特定工作空間",
+              "args": {
+                "name": {
+                  "description": "空間名稱"
+                }
+              }
+            }
+          },
+          "format": {
+            "json": {
+              "description": "以結構化 JSON 格式輸出"
+            }
+          },
+          "uri": {
+            "file-uri": {
+              "description": "於輸出中附帶完整 file:/// 絕對路徑超連結"
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "支援跨型別繼承鏈、匯入邊與文檔雙向邊之通用多跳圖譜查詢"
+          ],
+          "cons": []
+        }
       }
     }
   }

@@ -56,14 +56,22 @@ def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
         return CmdBags(raw_cmd=raw_cmd, command=default_cmd, args=pos, options=opts)
     if isinstance(cmd_bags, dict):
         # Support dict-style test bags `{"file": "...", "merged": True, "json": True}`
+        # and `{"slice": {"args": [...], "options": {...}}}`
         inner = cmd_bags.get(default_cmd) if isinstance(cmd_bags.get(default_cmd), dict) else cmd_bags
         opts_dict: Dict[str, CmdOption] = {}
         pos_args: List[str] = []
-        for k, v in inner.items():
+        if "args" in inner and isinstance(inner["args"], (list, tuple)):
+            pos_args.extend(str(a) for a in inner["args"] if a is not None)
+        raw_opts = inner.get("options") if isinstance(inner.get("options"), dict) else inner
+        for k, v in raw_opts.items():
+            if k in ("args", "options"):
+                continue
             if k in ("file", "symbol") and isinstance(v, str) and v:
                 pos_args.insert(0, v)
             elif v is True:
                 opts_dict[k] = CmdOption(name=k, params=True)
+            elif isinstance(v, (list, tuple)) and len(v) == 1:
+                opts_dict[k] = CmdOption(name=k, params=v[0])
             elif v not in (False, None):
                 opts_dict[k] = CmdOption(name=k, params=v)
         return CmdBags(raw_cmd="", command=default_cmd, args=pos_args, options=opts_dict)
@@ -493,6 +501,79 @@ def clean(cmd_bags: Any) -> int:
         return 1
 
 
+def slice(cmd_bags: Any) -> int:
+    """Losslessly slice a symbol's structural part (`yscb.py ast slice <symbol> [--part=outer|signature|doc|body|...] [--json]`)."""
+    guard_dispatch("ast")
+    bags = _normalize_bags(cmd_bags, "slice")
+    engine = _get_engine()
+
+    try:
+        if not bags.args:
+            if bags.has_option("json"):
+                _log_cli(json.dumps({"status": "error", "error": "Missing target symbol"}, ensure_ascii=False))
+            else:
+                _log_cli("[ast] 錯誤: 請指定目標符號。例如: python yscb.py ast slice 'ASTEngine.outline' --part=signature", file=sys.stderr)
+            return 1
+        target_sym = " ".join(bags.args) if len(bags.args) > 1 else bags.args[0]
+        part = bags.get_option_value("part") or "outer"
+        space_target = bags.get_option_value("space")
+        is_json = bags.has_option("json")
+
+        sliced = engine.slice_part(target_sym, part=str(part), space=space_target)
+        _log_cli(engine.formatter.format_slice_output(target_sym, str(part), sliced, as_json=is_json))
+        return 0
+    except Exception as exc:
+        if bags.has_option("json"):
+            _log_cli(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
+        else:
+            _log_cli(f"[ast] 切片失敗: {exc}", file=sys.stderr)
+        return 1
+
+
+def traverse(cmd_bags: Any) -> int:
+    """Traverse workspace symbol graph (`yscb.py ast traverse <symbol> [--kind=calls,inherits,...] [--direction=out|in|both] [--depth=1] [--json]`)."""
+    guard_dispatch("ast")
+    bags = _normalize_bags(cmd_bags, "traverse")
+    engine = _get_engine()
+
+    try:
+        if not bags.args:
+            if bags.has_option("json"):
+                _log_cli(json.dumps({"status": "error", "error": "Missing target symbol"}, ensure_ascii=False))
+            else:
+                _log_cli("[ast] 錯誤: 請指定起始符號。例如: python yscb.py ast traverse 'ASTEngine' --kind=inherits,calls --depth=1", file=sys.stderr)
+            return 1
+        target_sym = " ".join(bags.args) if len(bags.args) > 1 else bags.args[0]
+        kind_opt = bags.get_option_value("kind")
+        dir_opt = bags.get_option_value("direction") or "out"
+        depth_opt = bags.get_option_value("depth")
+        depth = 1
+        if depth_opt:
+            try:
+                depth = int(str(depth_opt).strip())
+            except ValueError:
+                depth = 1
+        space_target = bags.get_option_value("space")
+        is_json = bags.has_option("json")
+        file_uri = bags.has_option("file-uri") or bags.has_option("file_uri")
+
+        res = engine.traverse_edges(
+            target_sym,
+            edge_kinds=kind_opt,
+            direction=str(dir_opt),
+            depth=depth,
+            spaces=space_target,
+        )
+        _log_cli(engine.formatter.format_traverse_output(target_sym, res, as_json=is_json, file_uri=file_uri))
+        return 0
+    except Exception as exc:
+        if bags.has_option("json"):
+            _log_cli(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
+        else:
+            _log_cli(f"[ast] 圖譜遍歷失敗: {exc}", file=sys.stderr)
+        return 1
+
+
 def dispatch_cli(cmd_bags: Any) -> int:
     """Unified entry point (`scripts/cli.py:dispatch_cli`)."""
     if isinstance(cmd_bags, CmdBags):
@@ -501,6 +582,8 @@ def dispatch_cli(cmd_bags: Any) -> int:
             "callers": callers,
             "callees": callees,
             "impact": impact,
+            "slice": slice,
+            "traverse": traverse,
             "status": status,
             "clean": clean,
         }
@@ -512,6 +595,8 @@ def dispatch_cli(cmd_bags: Any) -> int:
             ("callers", callers),
             ("callees", callees),
             ("impact", impact),
+            ("slice", slice),
+            ("traverse", traverse),
             ("status", status),
             ("clean", clean),
         ):

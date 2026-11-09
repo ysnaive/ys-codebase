@@ -14,27 +14,41 @@ if TYPE_CHECKING:
 
 from .exceptions import ASTIndexNotFoundError, SchemaValidationError
 from .io_utils import atomic_save_gzip_pickle, load_gzip_pickle
-from .schema import SymbolCallSite
+from .schema import SymbolCallSite, WorkspaceSymbolGraph
 
 
 class CallGraphIndex:
     """
-    Bidirectional call graph index backed by `networkx.DiGraph`.
+    Bidirectional call graph index backed by `networkx.DiGraph` and optional `WorkspaceSymbolGraph`.
     Manages caller -> callee directed edges, call site coordinates, multi-hop impact analysis,
     and incremental hot-patching with external incoming edge preservation.
     """
 
-    def __init__(self, graph: Optional[nx.DiGraph] = None):
+    def __init__(
+        self,
+        graph: Optional[nx.DiGraph] = None,
+        workspace_graph: Optional[WorkspaceSymbolGraph] = None,
+    ):
         if graph is None:
             import networkx as nx
 
             graph = nx.DiGraph()
         self._graph: nx.DiGraph = graph
+        self._workspace_graph: Optional[WorkspaceSymbolGraph] = workspace_graph
 
     @property
     def graph(self) -> nx.DiGraph:
         """Access underlying `networkx.DiGraph`."""
         return self._graph
+
+    @property
+    def workspace_graph(self) -> Optional[WorkspaceSymbolGraph]:
+        """Access associated immutable `WorkspaceSymbolGraph` (if built via 4-Pass Linker)."""
+        return self._workspace_graph
+
+    @workspace_graph.setter
+    def workspace_graph(self, val: Optional[WorkspaceSymbolGraph]) -> None:
+        self._workspace_graph = val
 
     def add_edge(
         self,
@@ -217,19 +231,32 @@ class CallGraphIndex:
                         s.to_dict() if hasattr(s, "to_dict") else dict(s) for s in sites
                     ]
 
-        return {
+        out: Dict[str, Any] = {
             "int_to_id": nodes_list,
             "forward_graph": forward_graph,
             "reverse_graph": reverse_graph,
             "call_sites_map": call_sites_map,
         }
+        if self._workspace_graph is not None:
+            out["workspace_graph"] = self._workspace_graph.to_dict()
+        return out
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CallGraphIndex":
         if not isinstance(data, dict):
             raise SchemaValidationError("CallGraphIndex data must be a dictionary.")
 
-        idx = cls()
+        ws_graph: Optional[WorkspaceSymbolGraph] = None
+        raw_ws = data.get("workspace_graph")
+        if isinstance(raw_ws, WorkspaceSymbolGraph):
+            ws_graph = raw_ws
+        elif isinstance(raw_ws, dict):
+            try:
+                ws_graph = WorkspaceSymbolGraph.from_dict(raw_ws)
+            except Exception:
+                ws_graph = None
+
+        idx = cls(workspace_graph=ws_graph)
         raw_ids = data.get("int_to_id") or []
         int_to_id: List[str] = [str(x) for x in raw_ids] if isinstance(raw_ids, (list, tuple)) else []
         raw_fwd = data.get("forward_graph")

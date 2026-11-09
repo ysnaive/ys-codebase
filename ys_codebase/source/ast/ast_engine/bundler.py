@@ -29,7 +29,7 @@ from core.vfs import write_bytes
 from .exceptions import ASTError
 from .io_utils import compute_project_relpath, is_dirty_file_match, normalize_dirty_paths
 from .parsers.registry import ParserRegistry
-from .schema import MemberInfo, SemanticBundle, SymbolCallSite, SymbolKind, UnifiedSymbol
+from .schema import FileSymbolGraph, MemberInfo, SemanticBundle, SymbolCallSite, SymbolKind, SymbolNode, UnifiedSymbol
 
 PARALLEL_BUNDLE_THRESHOLD = 10
 
@@ -193,7 +193,10 @@ def _extract_unaggregated_partial_state(
             for m in raw_own
         ]
     else:
-        own_members = list(sym.members)
+        own_members = [
+            MemberInfo.from_dict(m) if isinstance(m, dict) else m
+            for m in sym.members
+        ]
 
     own_bases = list(meta.get("_own_base_types", meta.get("base_types", [])))
     own_fields = dict(meta.get("_own_field_types", meta.get("field_types", {})))
@@ -419,11 +422,11 @@ def _get_worker_registry() -> ParserRegistry:
 
 def _parse_file_task_worker(
     task: Tuple[str, str, str, List[str]],
-) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, str], Optional[str]]:
+) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, str], Optional[Dict[str, Any]], Optional[str]]:
     """
     Top-level picklable worker function for `ProcessPoolExecutor` or serial execution.
     task: `(c_key, f_path_str, relpath, sorted_spaces)`
-    return: `(c_key, [symbol.to_dict(), ...], [call_site.to_dict(), ...], imports_dict, error_message_or_None)`
+    return: `(c_key, [symbol.to_dict(), ...], [call_site.to_dict(), ...], imports_dict, file_graph_dict, error_message_or_None)`
     """
     c_key, f_path_str, relpath, sorted_spaces = task
     primary_space = sorted_spaces[0] if sorted_spaces else "unified"
@@ -431,6 +434,7 @@ def _parse_file_task_worker(
         registry = _get_worker_registry()
         with open(f_path_str, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
+        fg = registry.extract_file_graph(file_path=relpath, content=content, space=primary_space)
         symbols = registry.parse_file(file_path=relpath, content=content, space=primary_space)
         symbols = ensure_unique_overload_ids(symbols, default_space=primary_space)
         results = []
@@ -442,9 +446,9 @@ def _parse_file_task_worker(
         )
         site_dicts = [s.to_dict() for s in call_sites]
         imports = registry.extract_imports(file_path=relpath, content=content)
-        return (c_key, results, site_dicts, dict(imports or {}), None)
+        return (c_key, results, site_dicts, dict(imports or {}), fg.to_dict(), None)
     except Exception as exc:
-        return (c_key, [], [], {}, str(exc))
+        return (c_key, [], [], {}, None, str(exc))
 
 
 def _resolve_default_ast_storage_dir(project_root: Optional[Path] = None) -> Path:
@@ -660,6 +664,7 @@ class SemanticBundler:
         self._file_symbols_cache: Dict[str, List[UnifiedSymbol]] = {}
         self._file_call_sites_cache: Dict[str, List[SymbolCallSite]] = {}
         self._file_imports_cache: Dict[str, Dict[str, str]] = {}
+        self._file_graphs_cache: Dict[str, FileSymbolGraph] = {}
         self._last_bundle_unique_files: Dict[str, Tuple[Path, str, Set[str]]] = {}
         self._last_bundle_spaces: Set[str] = set()
 
@@ -800,6 +805,7 @@ class SemanticBundler:
         self._file_symbols_cache.clear()
         self._file_call_sites_cache.clear()
         self._file_imports_cache.clear()
+        self._file_graphs_cache.clear()
         self._last_bundle_unique_files.clear()
         self._last_bundle_spaces.clear()
 
@@ -894,10 +900,20 @@ class SemanticBundler:
         relpath: str,
         sorted_spaces: List[str],
     ) -> Tuple[List[UnifiedSymbol], List[SymbolCallSite], Dict[str, str]]:
-        """Read `f_path` once and extract `(symbols, call_sites, imports)`."""
+        """Read `f_path` once and extract `(symbols, call_sites, imports)` and cache `FileSymbolGraph`."""
         primary_space = sorted_spaces[0] if sorted_spaces else "unified"
         with open(f_path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
+        try:
+            fg = self.parser_registry.extract_file_graph(
+                file_path=relpath,
+                content=content,
+                space=primary_space,
+            )
+            self._file_graphs_cache[relpath] = fg
+            self._file_graphs_cache[_safe_resolve_str(f_path)] = fg
+        except Exception:
+            pass
         file_symbols = self.parser_registry.parse_file(
             file_path=relpath,
             content=content,
@@ -1080,6 +1096,7 @@ class SemanticBundler:
         self._file_symbols_cache.clear()
         self._file_call_sites_cache.clear()
         self._file_imports_cache.clear()
+        self._file_graphs_cache.clear()
 
         tasks: List[Tuple[str, str, str, List[str]]] = []
         for c_key, (f_path, relpath, sp_set) in unique_files.items():
@@ -1121,8 +1138,11 @@ class SemanticBundler:
                 ) as pool:
                     results_iter = pool.map(_parse_file_task_worker, tasks, chunksize=chunk_size)
                     for idx, item in enumerate(results_iter, start=1):
-                        if len(item) == 5:
-                            c_key, sym_dicts, site_dicts, imps, err = item
+                        fg_dict: Optional[Dict[str, Any]] = None
+                        if len(item) == 6:
+                            c_key, sym_dicts, site_dicts, imps, fg_dict, err = item
+                        elif len(item) == 5:
+                            c_key, sym_dicts, site_dicts, imps, err = item  # type: ignore[misc]
                         else:
                             c_key, sym_dicts, err = item  # type: ignore[misc]
                             site_dicts, imps = None, None
@@ -1142,6 +1162,14 @@ class SemanticBundler:
                             self._file_call_sites_cache[c_key] = [SymbolCallSite.from_dict(s) for s in site_dicts]
                         if imps is not None:
                             self._file_imports_cache[c_key] = dict(imps)
+                        if isinstance(fg_dict, dict):
+                            try:
+                                fg_obj = FileSymbolGraph.from_dict(fg_dict)
+                                rel = unique_files[c_key][1]
+                                self._file_graphs_cache[rel] = fg_obj
+                                self._file_graphs_cache[c_key] = fg_obj
+                            except Exception:
+                                pass
             except Exception as pool_err:
                 log_warn(f"ProcessPoolExecutor error, falling back to serial parsing: {pool_err}", stream="stderr")
                 use_parallel = False
@@ -1236,12 +1264,14 @@ class SemanticBundler:
                 set(self._file_symbols_cache.keys())
                 | set(self._file_call_sites_cache.keys())
                 | set(self._file_imports_cache.keys())
+                | set(self._file_graphs_cache.keys())
             )
             keys_to_pop = [k for k in all_cached_keys if is_dirty_file_match(k, evict_norm)]
             for k in keys_to_pop:
                 self._file_symbols_cache.pop(k, None)
                 self._file_call_sites_cache.pop(k, None)
                 self._file_imports_cache.pop(k, None)
+                self._file_graphs_cache.pop(k, None)
 
         parse_targets_norm = normalize_dirty_paths(expanded_added_mod)
         if not parse_targets_norm:
@@ -1371,6 +1401,90 @@ class SemanticBundler:
             dirty_file_paths=expanded_dirty,
             snap_entries_by_space=snap_entries_by_space,
         )
+
+    def extract_all_file_graphs(
+        self,
+        spaces: Optional[List[Union[str, SpaceConfig]]] = None,
+    ) -> Dict[str, FileSymbolGraph]:
+        """Return `{relpath: FileSymbolGraph}` across all target spaces (reusing `_file_graphs_cache` when populated)."""
+        target_spaces = self._resolve_target_spaces(spaces)
+        unique_files = self._collect_space_files(target_spaces)
+        out: Dict[str, FileSymbolGraph] = {}
+        for c_key, (f_path, relpath, sp_set) in unique_files.items():
+            cached_fg = self._file_graphs_cache.get(relpath) or self._file_graphs_cache.get(c_key)
+            if cached_fg is not None:
+                out[relpath] = cached_fg
+                continue
+            primary_space = sorted(list(sp_set))[0] if sp_set else "unified"
+            try:
+                with open(f_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                fg = self.parser_registry.extract_file_graph(
+                    file_path=relpath,
+                    content=content,
+                    space=primary_space,
+                )
+                self._file_graphs_cache[relpath] = fg
+                self._file_graphs_cache[c_key] = fg
+                out[relpath] = fg
+            except Exception as exc:
+                log_debug(f"Error extracting FileSymbolGraph from '{f_path}': {exc}")
+        return out
+
+    def extract_dirty_file_graphs(
+        self,
+        dirty_diff: ScanDiffDetail,
+        spaces: Optional[List[Union[str, SpaceConfig]]] = None,
+    ) -> Tuple[Dict[str, FileSymbolGraph], Set[str]]:
+        """Return `(new_file_graphs_by_relpath, dirty_keys)` for added/modified files in `dirty_diff`."""
+        target_spaces = self._resolve_target_spaces(spaces)
+        snap_entries_by_space = _preload_snap_entries(self.scanner, target_spaces)
+        expanded_added_mod = self._normalize_space_dirty_paths(
+            dirty_diff.dirty_files,
+            target_spaces,
+            prefer_missing=False,
+            snap_entries_by_space=snap_entries_by_space,
+        )
+        expanded_deleted = self._normalize_space_dirty_paths(
+            dirty_diff.deleted,
+            target_spaces,
+            prefer_missing=True,
+            snap_entries_by_space=snap_entries_by_space,
+        )
+        dirty_keys = set(expanded_added_mod | expanded_deleted)
+        parse_targets_norm = normalize_dirty_paths(expanded_added_mod)
+        if not parse_targets_norm:
+            return {}, dirty_keys
+
+        dirty_files_map = self._resolve_dirty_files_only(
+            dirty_diff.dirty_files,
+            target_spaces,
+            snap_entries_by_space=snap_entries_by_space,
+        )
+        new_fgs: Dict[str, FileSymbolGraph] = {}
+        for c_key, (f_path, relpath, sp_set) in dirty_files_map.items():
+            if is_dirty_file_match(c_key, parse_targets_norm) or is_dirty_file_match(relpath, parse_targets_norm):
+                dirty_keys.add(c_key)
+                dirty_keys.add(relpath)
+                cached_fg = self._file_graphs_cache.get(relpath) or self._file_graphs_cache.get(c_key)
+                if cached_fg is not None:
+                    new_fgs[relpath] = cached_fg
+                    continue
+                primary_space = sorted(list(sp_set))[0] if sp_set else "unified"
+                try:
+                    with open(f_path, "r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
+                    fg = self.parser_registry.extract_file_graph(
+                        file_path=relpath,
+                        content=content,
+                        space=primary_space,
+                    )
+                    self._file_graphs_cache[relpath] = fg
+                    self._file_graphs_cache[c_key] = fg
+                    new_fgs[relpath] = fg
+                except Exception as exc:
+                    log_debug(f"Error extracting dirty FileSymbolGraph from '{f_path}': {exc}")
+        return new_fgs, dirty_keys
 
 
 __all__ = [

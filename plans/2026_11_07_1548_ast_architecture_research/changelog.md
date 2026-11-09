@@ -13,6 +13,8 @@
 
 | 日期時間 | 類型 | 模型 | 摘要 |
 | :--- | :---: | :--- | :--- |
+| 2026-11-09 04:22 | `PHASE` | Gemini 4 Argon (Low) | 完成 sub_01~sub_03 全數里程碑，主計畫結案 |
+| 2026-11-09 03:42 | `PHASE` | Gemini 4 Argon (Low) | 啟動子計畫 sub_03 (單次掃描 FileSymbolGraph 快取、L0/L1 原語與 KDB 對接) |
 | 2026-11-09 03:35 | `PHASE` | Gemini 4 Argon (Low) | 完成子計畫 sub_02 (4-Pass Linker & WorkspaceSymbolGraph) 結案並更新里程碑 2 |
 | 2026-11-09 02:42 | `PHASE` | Gemini 4 Argon (Low) | 啟動子計畫 sub_02_deterministic_linker_and_workspace_graph 並完成 P00_discuss.md 定案 |
 | 2026-11-08 13:56 | `PHASE` | Gemini 4 Argon (Low) | 完成里程碑 1 (sub_01) 結案 |

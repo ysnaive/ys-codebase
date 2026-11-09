@@ -18,6 +18,7 @@ _LAZY_EXPORTS: Mapping[str, Tuple[str, str]] = MappingProxyType({
     "get_dialect": (".dialects", "get_dialect"),
     "register_dialect": (".dialects", "register_dialect"),
     "ASTEngine": (".engine", "ASTEngine"),
+    "VALID_SLICE_PARTS": (".engine", "VALID_SLICE_PARTS"),
     "get_engine": (".engine", "get_engine"),
     "reset_default_engine": (".engine", "reset_default_engine"),
     "ASTCorruptedError": (".exceptions", "ASTCorruptedError"),
@@ -61,6 +62,8 @@ _LAZY_EXPORTS: Mapping[str, Tuple[str, str]] = MappingProxyType({
     "query_callees": (".resolver", "query_callees"),
     "query_callers": (".resolver", "query_callers"),
     "query_impact": (".resolver", "query_impact"),
+    "select_workspace_nodes": (".resolver", "select_workspace_nodes"),
+    "traverse_workspace_edges": (".resolver", "traverse_workspace_edges"),
     "ASTSnapshot": (".schema", "ASTSnapshot"),
     "FileImportBinding": (".schema", "FileImportBinding"),
     "FileImportTable": (".schema", "FileImportTable"),
@@ -130,6 +133,7 @@ __all__ = (
     "TopologyLinker",
     "TreeSitterDriver",
     "UnifiedSymbol",
+    "VALID_SLICE_PARTS",
     "WorkspaceGraphLinker",
     "WorkspaceSymbolGraph",
     "aggregate_partial_symbols",
@@ -151,6 +155,8 @@ __all__ = (
     "reset_default_engine",
     "resolve_project_root",
     "restore_unaggregated_partial_symbol",
+    "select_workspace_nodes",
+    "traverse_workspace_edges",
 )
 
 

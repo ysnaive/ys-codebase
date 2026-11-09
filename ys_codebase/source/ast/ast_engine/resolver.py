@@ -25,9 +25,10 @@ from core.context import (
     get_virtual_cwd,
 )
 
+from .exceptions import ASTError
 from .graph import CallGraphIndex
 from .linker import _compute_symbols_map_fingerprint, expand_contract_symbol_ids
-from .schema import SymbolKind, UnifiedSymbol
+from .schema import RelationEdge, SymbolKind, SymbolNode, UnifiedSymbol, WorkspaceSymbolGraph
 
 KIND_PREFIX_MAP: Mapping[str, FrozenSet[str]] = MappingProxyType({
     "class": frozenset({SymbolKind.CLASS.value}),
@@ -506,6 +507,7 @@ class DeterministicSymbolResolver:
         query: str,
         space: Optional[Union[str, List[str]]] = None,
         ftypes: Optional[Union[str, List[str]]] = None,
+        kinds: Optional[Union[str, Iterable[str]]] = None,
     ) -> SymbolResolutionResult:
         """
         Deterministically resolve `query` across `self.symbols_map`:
@@ -523,6 +525,13 @@ class DeterministicSymbolResolver:
             else:
                 space_set = {str(s).strip() for s in space if str(s).strip()}
 
+        kind_set: Optional[Set[str]] = None
+        if kinds:
+            if isinstance(kinds, str):
+                kind_set = {k.strip().lower() for k in kinds.split(",") if k.strip()}
+            else:
+                kind_set = {str(k).strip().lower() for k in kinds if str(k).strip()}
+
         parsed = SymbolSelector.parse(query_clean)
         if not parsed.identifier:
             return SymbolResolutionResult(status="not_found", query=query_clean)
@@ -537,6 +546,7 @@ class DeterministicSymbolResolver:
             sym
             for sym in ident_candidates
             if (not space_set or bool(set(sym.spaces or ["project"]).intersection(space_set)))
+            and (not kind_set or str(sym.kind).lower() in kind_set)
         ]
         filtered_pool = [sym for sym in all_space_pool if self.matches_topology_filter(sym, norm_ftypes)]
         pool = filtered_pool if (filtered_pool or norm_ftypes) else all_space_pool
@@ -1069,9 +1079,206 @@ def query_impact(
     }
 
 
+DEFAULT_TRAVERSE_STATUS_FILTER: FrozenSet[str] = frozenset({"resolved", "overload_group", "ambiguous"})
+
+
+def _normalize_str_set(val: Optional[Union[str, Iterable[str]]]) -> Optional[Set[str]]:
+    if val is None:
+        return None
+    if isinstance(val, str):
+        items = {s.strip() for s in val.split(",") if s.strip()}
+    else:
+        items = {str(s).strip() for s in val if str(s).strip()}
+    return items or None
+
+
+def select_workspace_nodes(
+    workspace_graph: WorkspaceSymbolGraph,
+    *,
+    spaces: Optional[Union[str, Iterable[str]]] = None,
+    kinds: Optional[Union[str, Iterable[str]]] = None,
+    visibility: Optional[Union[str, Iterable[str]]] = None,
+    facets: Optional[Mapping[str, Any]] = None,
+    ftypes: Optional[Union[str, Iterable[str]]] = None,
+    symbols_map: Optional[Mapping[str, UnifiedSymbol]] = None,
+) -> Tuple[SymbolNode, ...]:
+    """
+    L1 Primitive: Batch filter `SymbolNode` instances across `workspace_graph` by orthogonal criteria
+    (`spaces`, `kinds`, `visibility`, `facets`, `ftypes`).
+    """
+    space_set = _normalize_str_set(spaces)
+    kind_set = {k.lower() for k in (_normalize_str_set(kinds) or set())} or None
+    vis_set = {v.lower() for v in (_normalize_str_set(visibility) or set())} or None
+    ftype_set = {ft.lstrip(".").lower() for ft in (_normalize_str_set(ftypes) or set())} or None
+
+    file_spaces_map: Dict[str, Set[str]] = defaultdict(set)
+    if symbols_map:
+        for sym in symbols_map.values():
+            if sym.file_path and sym.spaces:
+                file_spaces_map[sym.file_path].update(sym.spaces)
+
+    matched: List[SymbolNode] = []
+    for node in workspace_graph.nodes_by_id.values():
+        if kind_set:
+            node_kinds_low = {k.lower() for k in node.kinds}
+            if not (node_kinds_low & kind_set):
+                continue
+        if vis_set:
+            n_vis = str(node.facets.get("visibility") or "public").lower()
+            if "non-private" in vis_set or "non_private" in vis_set or "api" in vis_set:
+                if n_vis == "private" and n_vis not in vis_set:
+                    continue
+            elif n_vis not in vis_set:
+                continue
+        if ftype_set:
+            f_path = node.file_path
+            ext = Path(f_path).suffix.lstrip(".").lower()
+            lang_low = (node.language or "").lower()
+            if ext not in ftype_set and lang_low not in ftype_set:
+                continue
+        if space_set:
+            f_path = node.file_path
+            node_sp = set(file_spaces_map.get(f_path, set()))
+            raw_f_sp = node.facets.get("spaces")
+            if isinstance(raw_f_sp, (list, tuple, set, frozenset)):
+                node_sp.update(str(x) for x in raw_f_sp)
+            if not node_sp:
+                node_sp.add("project")
+            if not (node_sp & space_set):
+                continue
+        if facets:
+            facets_ok = True
+            for fk, fv in facets.items():
+                actual = node.facets.get(fk)
+                if isinstance(fv, (set, frozenset, list, tuple)):
+                    if isinstance(actual, (set, frozenset, list, tuple)):
+                        if not (set(actual) & set(fv)):
+                            facets_ok = False
+                            break
+                    elif actual not in fv:
+                        facets_ok = False
+                        break
+                elif actual != fv:
+                    facets_ok = False
+                    break
+            if not facets_ok:
+                continue
+        matched.append(node)
+
+    matched.sort(key=lambda n: (n.file_path, n.span.start_byte, n.name))
+    return tuple(matched)
+
+
+def traverse_workspace_edges(
+    workspace_graph: WorkspaceSymbolGraph,
+    seed_ids: Union[str, Iterable[str]],
+    *,
+    edge_kinds: Optional[Union[str, Iterable[str]]] = None,
+    direction: str = "out",
+    depth: int = 1,
+    status_filter: Optional[Union[str, Iterable[str]]] = None,
+) -> Dict[str, Any]:
+    """
+    L1 Primitive: General directed BFS graph traversal across `workspace_graph` supporting arbitrary `edge_kinds`
+    (`calls`, `inherits`, `implements`, `imports`, `references`, `documents`, `merges_with`, `declares`),
+    direction (`"out"` | `"in"` | `"both"`), multi-hop `depth`, and `status_filter`.
+    """
+    dir_norm = str(direction or "out").strip().lower()
+    if dir_norm not in ("out", "in", "both"):
+        raise ASTError(f"Invalid traversal direction: {direction!r} (expected 'out', 'in', or 'both')")
+
+    if isinstance(seed_ids, str):
+        raw_seeds = [seed_ids] if seed_ids.strip() else []
+    else:
+        raw_seeds = [str(s).strip() for s in seed_ids if str(s).strip()]
+
+    valid_seeds: List[str] = []
+    for sid in raw_seeds:
+        if sid in workspace_graph.nodes_by_id and sid not in valid_seeds:
+            valid_seeds.append(sid)
+
+    kind_filter = _normalize_str_set(edge_kinds)
+    eff_status = _normalize_str_set(status_filter) or set(DEFAULT_TRAVERSE_STATUS_FILTER)
+
+    if not valid_seeds or depth <= 0:
+        return {
+            "seed_ids": tuple(valid_seeds),
+            "seed_nodes": tuple(workspace_graph.nodes_by_id[s] for s in valid_seeds),
+            "direction": dir_norm,
+            "depth": max(0, int(depth)),
+            "edge_kinds": tuple(sorted(kind_filter)) if kind_filter else (),
+            "status_filter": tuple(sorted(eff_status)),
+            "layers": {},
+            "edges": (),
+            "ambiguous_edges": (),
+            "total_reached_nodes": 0,
+        }
+
+    from collections import deque
+
+    visited: Set[str] = set(valid_seeds)
+    layers: Dict[int, List[SymbolNode]] = {}
+    traversed_edges: List[RelationEdge] = []
+    ambiguous_edges: List[RelationEdge] = []
+    seen_edge_keys: Set[Tuple[str, str, str, int, int]] = set()
+    queue: deque = deque((sid, 0) for sid in valid_seeds)
+
+    while queue:
+        curr_id, curr_d = queue.popleft()
+        if curr_d >= depth:
+            continue
+        next_d = curr_d + 1
+        candidate_edges: List[Tuple[RelationEdge, str]] = []
+
+        if dir_norm in ("out", "both"):
+            for ed in workspace_graph.outgoing_edges_by_source.get(curr_id, ()):
+                if kind_filter and ed.edge_kind not in kind_filter:
+                    continue
+                if ed.resolution_status not in eff_status:
+                    continue
+                for tid in ed.resolved_target_ids:
+                    candidate_edges.append((ed, tid))
+
+        if dir_norm in ("in", "both"):
+            for ed in workspace_graph.incoming_edges_by_target.get(curr_id, ()):
+                if kind_filter and ed.edge_kind not in kind_filter:
+                    continue
+                if ed.resolution_status not in eff_status:
+                    continue
+                candidate_edges.append((ed, ed.source_id))
+
+        for ed, neighbor_id in candidate_edges:
+            ekey = (ed.source_id, ed.target_expr, ed.edge_kind, ed.span.start_byte, ed.span.end_byte)
+            if ekey not in seen_edge_keys:
+                seen_edge_keys.add(ekey)
+                traversed_edges.append(ed)
+                if ed.resolution_status == "ambiguous":
+                    ambiguous_edges.append(ed)
+            if neighbor_id not in visited and neighbor_id in workspace_graph.nodes_by_id:
+                visited.add(neighbor_id)
+                layers.setdefault(next_d, []).append(workspace_graph.nodes_by_id[neighbor_id])
+                queue.append((neighbor_id, next_d))
+
+    frozen_layers = {d: tuple(nodes) for d, nodes in sorted(layers.items())}
+    total_reached = sum(len(nds) for nds in frozen_layers.values())
+    return {
+        "seed_ids": tuple(valid_seeds),
+        "seed_nodes": tuple(workspace_graph.nodes_by_id[s] for s in valid_seeds),
+        "direction": dir_norm,
+        "depth": int(depth),
+        "edge_kinds": tuple(sorted(kind_filter)) if kind_filter else (),
+        "status_filter": tuple(sorted(eff_status)),
+        "layers": frozen_layers,
+        "edges": tuple(traversed_edges),
+        "ambiguous_edges": tuple(ambiguous_edges),
+        "total_reached_nodes": total_reached,
+    }
+
+
 __all__ = [
     "CALLABLE_KINDS",
     "CodeSnippet",
+    "DEFAULT_TRAVERSE_STATUS_FILTER",
     "DeterministicSymbolResolver",
     "KIND_PREFIX_MAP",
     "ParsedSelector",
@@ -1084,4 +1291,6 @@ __all__ = [
     "query_callees",
     "query_callers",
     "query_impact",
+    "select_workspace_nodes",
+    "traverse_workspace_edges",
 ]

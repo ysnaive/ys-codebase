@@ -696,6 +696,79 @@ class ASTResultFormatter:
                 lines.append(f"    * {sp}: gen={gen}")
         return "\n".join(lines)
 
+    def format_slice_output(
+        self,
+        target_query: str,
+        part: str,
+        sliced_text: str,
+        as_json: bool = False,
+    ) -> str:
+        if as_json:
+            return format_json(
+                {
+                    "status": "matched",
+                    "target_query": target_query,
+                    "part": part,
+                    "content": sliced_text,
+                }
+            )
+        return sliced_text
+
+    def format_traverse_output(
+        self,
+        target_query: str,
+        result: Dict[str, Any],
+        as_json: bool = False,
+        file_uri: Optional[bool] = None,
+    ) -> str:
+        eff_file_uri = self.file_uri if file_uri is None else bool(file_uri)
+        if as_json:
+            payload = {
+                "status": "matched" if result.get("seed_ids") else "not_found",
+                "target_query": target_query,
+                "seed_ids": list(result.get("seed_ids") or ()),
+                "direction": result.get("direction", "out"),
+                "depth": result.get("depth", 1),
+                "edge_kinds": list(result.get("edge_kinds") or ()),
+                "total_reached_nodes": result.get("total_reached_nodes", 0),
+                "layers": {
+                    str(d): [n.to_dict() if hasattr(n, "to_dict") else n for n in nodes]
+                    for d, nodes in (result.get("layers") or {}).items()
+                },
+                "edges": [e.to_dict() if hasattr(e, "to_dict") else e for e in (result.get("edges") or ())],
+            }
+            return format_json(payload)
+
+        seeds = result.get("seed_nodes") or ()
+        if not seeds:
+            return f"[ast] 查無相符起始符號: '{target_query}'"
+
+        dir_str = result.get("direction", "out")
+        depth = result.get("depth", 1)
+        kinds_str = ", ".join(result.get("edge_kinds") or ()) or "all"
+        total_reached = result.get("total_reached_nodes", 0)
+        lines = [
+            f"[ast] 圖譜有向遍歷 (Traverse: query='{target_query}', direction={dir_str}, depth={depth}, kinds={kinds_str}, reached={total_reached}):",
+            "-" * 85,
+        ]
+        layers = result.get("layers") or {}
+        if not layers:
+            lines.append("  (無符合條件之相鄰節點)")
+            return "\n".join(lines)
+
+        for d, nodes in sorted(layers.items()):
+            lines.append(f"  [Depth {d}] ({len(nodes)} nodes):")
+            for n in nodes:
+                f_link = self.format_file_link(
+                    n.file_path,
+                    line=n.span.start_line,
+                    end_line=n.span.end_line,
+                    file_uri=eff_file_uri,
+                )
+                k_label = "/".join(sorted(n.kinds))
+                lines.append(f"    - [{k_label}] {n.fqn} ({f_link})")
+        return "\n".join(lines)
+
 
 __all__ = [
     "ASTResultFormatter",

@@ -831,6 +831,35 @@ class TreeSitterDriver(BaseParser):
                     for cn in cap_nodes[1:]:
                         slot_sp = slot_sp.union(self._node_to_span(cn))
                     parts_spans[slot] = parts_spans[slot].union(slot_sp) if slot in parts_spans else slot_sp
+            if "body" not in parts_spans and def_node is not None and hasattr(def_node, "child_by_field_name"):
+                body_node = def_node.child_by_field_name("body")
+                if body_node is not None:
+                    parts_spans["body"] = self._node_to_span(body_node)
+                    if "signature" not in parts_spans and int(body_node.start_byte) > int(def_node.start_byte):
+                        sig_end_b = int(body_node.start_byte)
+                        while sig_end_b > int(def_node.start_byte) and def_node.text[sig_end_b - int(def_node.start_byte) - 1 : sig_end_b - int(def_node.start_byte)] in (b" ", b"\t", b"\r", b"\n", b":", b"{"):
+                            sig_end_b -= 1
+                        if sig_end_b > int(def_node.start_byte):
+                            parts_spans["signature"] = Span(
+                                start_byte=int(def_node.start_byte),
+                                end_byte=sig_end_b,
+                                start_line=int(def_node.start_point[0]) + 1,
+                                start_col=int(def_node.start_point[1]),
+                                end_line=int(body_node.start_point[0]) + 1,
+                                end_col=0,
+                            )
+            if "signature" not in parts_spans and def_node is not None:
+                first_ln_len = nl if nl != -1 else len(raw_b)
+                sig_trim_len = len(raw_b[:first_ln_len].rstrip(b" \t\r\n:{"))
+                if sig_trim_len > 0:
+                    parts_spans["signature"] = Span(
+                        start_byte=int(def_node.start_byte),
+                        end_byte=int(def_node.start_byte) + sig_trim_len,
+                        start_line=int(def_node.start_point[0]) + 1,
+                        start_col=int(def_node.start_point[1]),
+                        end_line=int(def_node.start_point[0]) + 1,
+                        end_col=int(def_node.start_point[1]) + sig_trim_len,
+                    )
 
             captured_facets: Dict[str, Any] = {}
             for cap_k, cap_nodes in captures.items():
