@@ -294,13 +294,14 @@ def _read_json_cached(path_or_uri: str) -> Any:
     return data
 
 
-def invalidate_cache(target_module: Optional[str] = None) -> None:
+def invalidate_cache(target_module: Optional[str] = None, *, clear_file_cache: bool = True) -> None:
     """
     手動清空 contributes 程序內記憶體快取與免掃時窗標記。
     若指定 target_module 則僅清除該目標模組之已合併字典快取，並重置免掃時窗。
     """
     _get_last_clean_scan_ts().clear()
-    _get_json_file_cache().clear()
+    if clear_file_cache:
+        _get_json_file_cache().clear()
     merged_cache = _get_merged_memory_cache()
     ctx = get_runtime_context()
     ctx.uri_token_map_cache.clear()
@@ -424,8 +425,9 @@ def _is_contributes_dirty(target_module: Optional[str] = None) -> Tuple[bool, Di
     3. 比對即時掃描之檔案 (mtime, size) 與快取清單。
     返回 (is_dirty, current_snapshot)。
     """
-    prev_reentrancy = getattr(uri._URI_REENTRANCY, "active", False)
-    uri._URI_REENTRANCY.active = True
+    re_tls = get_runtime_context().uri_reentrancy
+    prev_reentrancy = getattr(re_tls, "active", False)
+    re_tls.active = True
     try:
         if target_module:
             target_cache_uri = f"cache://{target_module}/contributes.merged.json"
@@ -457,7 +459,7 @@ def _is_contributes_dirty(target_module: Optional[str] = None) -> Tuple[bool, Di
 
         return False, current_snapshot
     finally:
-        uri._URI_REENTRANCY.active = prev_reentrancy
+        re_tls.active = prev_reentrancy
 
 
 def get(target_module: str, key: Optional[str] = None, default: Any = None) -> Any:
@@ -504,7 +506,7 @@ def get(target_module: str, key: Optional[str] = None, default: Any = None) -> A
         res = data.get(key, default) if key is not None else (data if data else default)
         return copy.deepcopy(res) if isinstance(res, (dict, list)) else res
 
-    is_dirty, _ = _is_contributes_dirty(target_module)
+    is_dirty, current_snapshot = _is_contributes_dirty(target_module)
     data = None
     if not is_dirty:
         meta_mtime = _safe_file_mtime(meta_abs) if meta_abs else 0.0
@@ -520,8 +522,9 @@ def get(target_module: str, key: Optional[str] = None, default: Any = None) -> A
         ):
             data = cached_entry[2]
         else:
-            prev_re = getattr(uri._URI_REENTRANCY, "active", False)
-            uri._URI_REENTRANCY.active = True
+            re_tls = get_runtime_context().uri_reentrancy
+            prev_re = getattr(re_tls, "active", False)
+            re_tls.active = True
             try:
                 if vfs.exists(cache_file):
                     loaded = vfs.read_json(cache_file)
@@ -532,11 +535,11 @@ def get(target_module: str, key: Optional[str] = None, default: Any = None) -> A
             except Exception:
                 data = None
             finally:
-                uri._URI_REENTRANCY.active = prev_re
+                re_tls.active = prev_re
 
     if data is None or not isinstance(data, dict):
         aggregator = ContributesAggregator()
-        all_merged = aggregator.scan_and_inject()
+        all_merged = aggregator.scan_and_inject(input_snapshot=current_snapshot or None)
         data = all_merged.get(target_module, {})
         meta_mtime = _safe_file_mtime(meta_abs) if meta_abs else 0.0
         merged_mtime = _safe_file_mtime(merged_abs) if merged_abs else 0.0
@@ -728,6 +731,7 @@ class ContributesAggregator:
         self,
         aggregated: Dict[str, Dict[str, Any]],
         core_modules_locales: Dict[str, Any],
+        input_snapshot: Optional[Dict[str, Tuple[float, int]]] = None,
     ) -> None:
         """疊加專案層級 config://<target>/contribute.json 並物化至 cache://。"""
         if vfs.exists("config://"):
@@ -790,7 +794,7 @@ class ContributesAggregator:
 
         try:
             meta_uri = _get_contributes_meta_uri()
-            current_snapshot = _scan_contributes_inputs()
+            current_snapshot = input_snapshot if input_snapshot is not None else _scan_contributes_inputs()
             meta_payload = {
                 "updated_at": time.time(),
                 "files": {k: [v[0], v[1]] for k, v in current_snapshot.items()},
@@ -800,7 +804,11 @@ class ContributesAggregator:
         except Exception as e:
             log_warn(f"Failed to update contributes.meta.json: {e}", stream="stderr")
 
-    def scan_and_inject(self, topological_order: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
+    def scan_and_inject(
+        self,
+        topological_order: Optional[List[str]] = None,
+        input_snapshot: Optional[Dict[str, Tuple[float, int]]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
         """
         掃描所有 installed_modules 之 contributes/<target>.json，
         依拓撲排序 (topological_order) 依序合併，自動注入 __provider__，
@@ -821,8 +829,8 @@ class ContributesAggregator:
             for donor in ordered_donors:
                 self._collect_donor_contributes(donor, aggregated, core_modules_commands, core_modules_locales)
 
-            self._apply_project_overrides_and_persist(aggregated, core_modules_locales)
-            invalidate_cache()
+            self._apply_project_overrides_and_persist(aggregated, core_modules_locales, input_snapshot=input_snapshot)
+            invalidate_cache(clear_file_cache=False)
             return aggregated
 
 

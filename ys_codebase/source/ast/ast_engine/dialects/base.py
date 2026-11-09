@@ -5,7 +5,7 @@ Isolates language-specific semantics from the generic TreeSitterDriver.
 
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 _XML_TAG_RE = re.compile(r"</?[A-Za-z_][A-Za-z0-9_.:-]*(?:\s+[^<>,]*?)?/?>")
 _STATIC_SIG_RE = re.compile(r"(?:^|\s|@)(?:static|staticmethod|classmethod)\b")
@@ -197,3 +197,14 @@ class DialectAdapter:
     ) -> Optional[List[Any]]:
         """Optional custom call site extraction (returns None to use standard Tree-sitter call query)."""
         return None
+
+    def extract_custom_relation_edges(
+        self,
+        normalized_path: str,
+        content: str,
+        content_bytes: bytes,
+        enclosing_id_resolver: Callable[[int, int], str],
+        provider_id: str = "",
+    ) -> List[Any]:
+        """Optional custom relation edge extraction (e.g., Markdown `documents` edges)."""
+        return []

@@ -896,79 +896,52 @@ _install_offline_treesitter_fallback_if_needed()
 class ASTTestCase(YSCBTestCase):
     """
     Base test fixture for `module:ast`.
-    Enforces strict reset and restoration of all 7 AST global/class-level states across every test method.
+    Enforces strict reset and restoration of all AST global/class-level states across every test method.
     """
 
     def setUp(self) -> None:
         super().setUp()
         _install_offline_treesitter_fallback_if_needed()
         from ast_engine import bundler
-        from ast_engine.dialects import _DIALECT_INSTANCES
+        from ast_engine.dialects import get_dialect_instances, reset_dialect_instances
         from ast_engine.engine import reset_default_engine
-        from ast_engine.linker import _LAST_LINKER_CACHE
+        from ast_engine.linker import get_last_linker_cache, reset_linker_cache
         from ast_engine.provisioner import GrammarProvisioner
 
         self._saved_auto_install = GrammarProvisioner.auto_install_enabled
-        self._saved_dialects = dict(_DIALECT_INSTANCES)
-        self._saved_linker_cache = dict(_LAST_LINKER_CACHE)
-        self._saved_worker_registry = bundler._worker_registry
+        self._saved_dialects = dict(get_dialect_instances())
+        self._saved_linker_cache = dict(get_last_linker_cache())
+        self._saved_worker_registry = bundler._get_worker_registry_state()
         self._saved_sys_modules_keys = set(sys.modules.keys())
-
-        from ast_engine.dialects import (
-            CDialect,
-            CppDialect,
-            CSharpDialect,
-            JavaScriptDialect,
-            MarkdownDialect,
-            PythonDialect,
-            TypeScriptDialect,
-        )
 
         reset_default_engine()
         GrammarProvisioner.reset_cache()
         GrammarProvisioner.auto_install_enabled = False
-        _DIALECT_INSTANCES.clear()
-        _DIALECT_INSTANCES.update(
-            {
-                "python": PythonDialect(),
-                "c_sharp": CSharpDialect(),
-                "csharp": CSharpDialect(),
-                "cpp": CppDialect(),
-                "c": CDialect(),
-                "javascript": JavaScriptDialect(),
-                "typescript": TypeScriptDialect(),
-                "markdown": MarkdownDialect(),
-            }
-        )
-        _LAST_LINKER_CACHE.update(
-            {
-                "symbols_map_id": None,
-                "symbols_count": 0,
-                "symbols_fingerprint": 0,
-                "class_bases": None,
-                "base_derived": None,
-                "methods_by_class_and_short": None,
-            }
-        )
-        bundler._worker_registry = None
+        reset_dialect_instances()
+        reset_linker_cache()
+        bundler.reset_worker_registry()
 
     def tearDown(self) -> None:
         from ast_engine import bundler
-        from ast_engine.dialects import _DIALECT_INSTANCES
+        from ast_engine.dialects import get_dialect_instances, reset_dialect_instances
         from ast_engine.engine import reset_default_engine
-        from ast_engine.linker import _LAST_LINKER_CACHE
+        from ast_engine.linker import get_last_linker_cache, reset_linker_cache
         from ast_engine.provisioner import GrammarProvisioner
 
         reset_default_engine()
         GrammarProvisioner.reset_cache()
         GrammarProvisioner.auto_install_enabled = getattr(self, "_saved_auto_install", False)
-        _DIALECT_INSTANCES.clear()
+        reset_dialect_instances()
         if hasattr(self, "_saved_dialects"):
-            _DIALECT_INSTANCES.update(self._saved_dialects)
+            dialects_map = get_dialect_instances()
+            dialects_map.clear()
+            dialects_map.update(self._saved_dialects)
+        reset_linker_cache()
         if hasattr(self, "_saved_linker_cache"):
-            _LAST_LINKER_CACHE.clear()
-            _LAST_LINKER_CACHE.update(self._saved_linker_cache)
-        bundler._worker_registry = getattr(self, "_saved_worker_registry", None)
+            linker_cache = get_last_linker_cache()
+            linker_cache.clear()
+            linker_cache.update(self._saved_linker_cache)
+        bundler._set_worker_registry_state(getattr(self, "_saved_worker_registry", None))
 
         saved_keys = getattr(self, "_saved_sys_modules_keys", None)
         if saved_keys is not None:

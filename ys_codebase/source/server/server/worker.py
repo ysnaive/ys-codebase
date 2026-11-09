@@ -25,7 +25,12 @@ from core.context import (
     get_virtual_cwd,
 )
 from core.guard import GUARD_ENV_HOST, GUARD_ENV_TOKEN
-from core.log import bind_log_context, clear_error_hint, get_last_error_hint
+from core.log import (
+    DebouncedIOStreamer,
+    bind_log_context,
+    clear_error_hint,
+    get_last_error_hint,
+)
 from core.platform import (
     ensure_installed_modules_path,
     ensure_private_venv,
@@ -34,7 +39,6 @@ from core.platform import (
     trim_process_memory,
 )
 from server.service import ServiceManager
-from server.streamer import DebouncedIOStreamer
 
 
 @dataclass(frozen=True)

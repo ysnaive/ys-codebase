@@ -90,10 +90,16 @@ yscb.py.bak
 /.agents/skills/yscb-module-dev/references/contributes_guide.md
 /.agents/skills/yscb-module-dev/references/testing_and_sandbox.md
 # [gdrive-support]
+**/*secret*.json
+**/credentials.json
+**/service_account.json
+**/token.json
+.config.local/gdrive-support/**
 /ys_codebase/config/gdrive-support/*secret*.json
 /ys_codebase/config/gdrive-support/credentials.json
 /ys_codebase/config/gdrive-support/service_account.json
 /ys_codebase/config/gdrive-support/token.json
+ys_codebase/.config.local/gdrive-support/**
 # [vscode-support]
 /.vscode/schemas/
 # [project]

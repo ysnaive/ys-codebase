@@ -11,13 +11,12 @@ Coordinates:
 
 from contextlib import ExitStack, contextmanager
 import json
-import os
 from pathlib import Path
 import re
 import shutil
 import threading
 import time
-from typing import Any, Dict, FrozenSet, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Dict, FrozenSet, Iterator, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
 from core.context import cell_span, get_runtime_context, get_virtual_cwd
 from core.log import log_debug, log_warn
@@ -38,6 +37,7 @@ from .bundler import (
     SemanticBundler,
     _extract_unaggregated_partial_state,
     _is_partial_symbol,
+    _preload_snap_entries,
     _resolve_default_ast_storage_dir,
     _space_logical_name,
     aggregate_partial_symbols,
@@ -76,6 +76,7 @@ from .schema import (
     OutlineResult,
     Span,
     SymbolCallSite,
+    SymbolKind,
     SymbolNode,
     UnifiedSymbol,
     WorkspaceSymbolGraph,
@@ -95,21 +96,11 @@ _ENGINE_LOCK = threading.RLock()
 
 
 def _get_default_engine_instance() -> Optional["ASTEngine"]:
-    ctx = get_runtime_context()
-    if "_DEFAULT_ENGINE_INSTANCE" in globals():
-        ctx.set_module_state("ast.engine.default_instance", globals().pop("_DEFAULT_ENGINE_INSTANCE"))
-    return ctx.get_module_state("ast.engine.default_instance", lambda: None)
+    return get_runtime_context().get_module_state("ast.engine.default_instance", lambda: None)
 
 
 def _set_default_engine_instance(val: Optional["ASTEngine"]) -> None:
-    globals().pop("_DEFAULT_ENGINE_INSTANCE", None)
     get_runtime_context().set_module_state("ast.engine.default_instance", val)
-
-
-def __getattr__(name: str) -> Any:
-    if name == "_DEFAULT_ENGINE_INSTANCE":
-        return _get_default_engine_instance()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _cs_partial_type_key(sym: UnifiedSymbol) -> Optional[Tuple[str, str, str]]:
@@ -208,7 +199,6 @@ def _sym_to_outline_node(
             child_nodes.append(m_node)
 
     if is_part and snapshot is not None:
-        siblings: List[Dict[str, Any]] = []
         norm_this_path = rel_path.replace("\\", "/").lower()
         candidates = (
             snap_by_kind_fqn.get((sym.kind, fqn_key), [])
@@ -220,44 +210,43 @@ def _sym_to_outline_node(
             ]
         )
         sym_spaces = set(sym.spaces) if sym.spaces else set()
-        for snap_sym in candidates:
-            if sym_spaces and snap_sym.spaces and not sym_spaces.intersection(snap_sym.spaces):
-                continue
-            snap_meta = snap_sym.metadata or {}
-            locs = snap_meta.get("partial_locations") or []
-            if locs:
-                for loc in locs:
-                    loc_fp = str(loc.get("file_path", "")).replace("\\", "/")
-                    if loc_fp.lower() != norm_this_path or int(loc.get("line_number", 0)) != sym.line_number:
-                        sib_item = {
-                            "file_path": loc_fp,
-                            "line_number": int(loc.get("line_number", 1)),
-                            "end_line": int(loc.get("end_line", loc.get("line_number", 1))),
-                            "member_count": int(loc.get("member_count", 0)),
-                        }
-                        if sib_item not in siblings:
-                            siblings.append(sib_item)
-            elif snap_sym.file_path.replace("\\", "/").lower() != norm_this_path:
-                s_own, _, _, _ = _extract_unaggregated_partial_state(snap_sym)
-                sib_item = {
-                    "file_path": snap_sym.file_path,
-                    "line_number": snap_sym.line_number,
-                    "end_line": snap_sym.end_line,
-                    "member_count": len(s_own),
-                }
-                if sib_item not in siblings:
-                    siblings.append(sib_item)
-
+        group_candidates = [
+            s
+            for s in candidates
+            if not (sym_spaces and s.spaces and not sym_spaces.intersection(s.spaces))
+        ]
+        # Ensure current file symbol is included in aggregation pool if not already present
+        if not any(
+            s.file_path.replace("\\", "/").lower() == norm_this_path and s.line_number == sym.line_number
+            for s in group_candidates
+        ):
+            group_candidates.append(sym)
+        aggregated_group = aggregate_partial_symbols(group_candidates)
+        matched_agg = next(
+            (
+                s
+                for s in aggregated_group
+                if s.file_path.replace("\\", "/").lower() == norm_this_path and s.line_number == sym.line_number
+            ),
+            aggregated_group[0] if aggregated_group else None,
+        )
+        if matched_agg is not None:
+            agg_meta = matched_agg.metadata or {}
+            siblings = [
+                dict(loc)
+                for loc in (agg_meta.get("partial_locations") or [])
+                if str(loc.get("file_path", "")).replace("\\", "/").lower() != norm_this_path
+                or int(loc.get("line_number", 0)) != sym.line_number
+            ]
             if merged:
-                for m in snap_sym.members:
-                    m_node = _member_to_outline_node(m, default_line=snap_sym.line_number)
+                for m in matched_agg.members:
+                    m_node = _member_to_outline_node(m, default_line=matched_agg.line_number)
                     if (m_node.name, m_node.kind, m_node.signature) not in existing_child_keys:
                         existing_child_keys.add((m_node.name, m_node.kind, m_node.signature))
                         child_nodes.append(m_node)
-
-        if siblings:
-            partial_siblings_map[fqn_key] = siblings
-            node_meta["partial_siblings"] = siblings
+            if siblings:
+                partial_siblings_map[fqn_key] = siblings
+                node_meta["partial_siblings"] = siblings
 
     child_nodes.sort(key=lambda c: (c.line_number, c.name))
     return OutlineNode(
@@ -510,7 +499,10 @@ class ASTEngine:
         self.parser_registry = parser_registry or ParserRegistry(
             register_defaults=True,
             contributes_data=contributes_data,
+            space_manager=self.space_manager,
         )
+        if getattr(self.parser_registry, "_space_manager", None) is None:
+            self.parser_registry._space_manager = self.space_manager
         self.bundler = SemanticBundler(
             space_manager=self.space_manager,
             parser_registry=self.parser_registry,
@@ -567,6 +559,35 @@ class ASTEngine:
         else:
             with consume_diff(space_name, consumer_id=self.CONSUMER_ID) as diff_res:
                 yield diff_res
+
+    def _align_consumer_cursors(self, spaces: Optional[List[str]] = None) -> None:
+        """Align `core.space` consumer cursors for `spaces` (only acknowledging `None` when `spaces is None`)."""
+        try:
+            use_non_blocking_diff = bool(
+                not self._custom_storage_dir and is_watcher_active(project_root=self.project_root)
+            )
+            target_cfgs = self.bundler._resolve_target_spaces(spaces)
+            target_qnames = (
+                [sp.qualified_name or sp.short_name for sp in target_cfgs if (sp.qualified_name or sp.short_name)]
+                if use_non_blocking_diff
+                else []
+            )
+            if not target_qnames:
+                if spaces is None:
+                    with self._consume_space_diff(space_name=None):
+                        pass
+                else:
+                    for sp_name in spaces:
+                        with self._consume_space_diff(space_name=sp_name):
+                            pass
+            else:
+                for q_sp in target_qnames:
+                    with self._consume_space_diff(space_name=q_sp, auto_refresh=False):
+                        pass
+                if spaces is None and self.scanner is not None and hasattr(self.scanner, "ack"):
+                    self.scanner.ack(None, consumer_id=self.CONSUMER_ID)
+        except Exception as exc:
+            log_debug(f"Cursor alignment skipped: {exc}")
 
     def _reset_consumer_cursor(self, space_name: Optional[str] = None) -> None:
         try:
@@ -768,6 +789,8 @@ class ASTEngine:
                     raise ASTCorruptedError("Corrupted ASTSnapshot payload")
                 self._snapshot = ASTSnapshot.from_dict(raw)
                 self._symbols_mtime = s_mtime
+                if self._graph is not None and self._snapshot is not None and self._snapshot.file_graphs:
+                    self._graph.attach_file_graphs(self._snapshot.file_graphs)
             return self._snapshot is not None
         except Exception as exc:
             log_warn(f"Failed loading AST snapshot from disk: {exc}", stream="stderr")
@@ -779,8 +802,11 @@ class ASTEngine:
         try:
             g_mtime = self.graph_index_path.stat().st_mtime
             if force_reload or self._graph is None or g_mtime > self._graph_mtime:
-                self._graph = CallGraphIndex.load_binary(self.graph_index_path)
+                snap_fgs = self._snapshot.file_graphs if self._snapshot is not None else None
+                self._graph = CallGraphIndex.load_binary(self.graph_index_path, file_graphs=snap_fgs)
                 self._graph_mtime = g_mtime
+            elif self._graph is not None and self._snapshot is not None and self._snapshot.file_graphs:
+                self._graph.attach_file_graphs(self._snapshot.file_graphs)
             return self._graph is not None
         except Exception as exc:
             log_warn(f"Failed loading AST call graph from disk: {exc}", stream="stderr")
@@ -812,7 +838,7 @@ class ASTEngine:
             )
 
     def get_persisted_meta(self) -> Optional[Dict[str, Any]]:
-        """Read lightweight AST generation/metadata without decompressing unified.symbols.bin.gz or unified.graph.bin.gz."""
+        """Read lightweight AST generation/metadata without mutating disk files."""
         with self._lock:
             if not self.symbols_index_path.exists():
                 return None
@@ -829,12 +855,7 @@ class ASTEngine:
                     ):
                         return meta
                 if self._ensure_symbols_loaded() and self._snapshot is not None:
-                    meta_payload = self._build_meta_payload(self._snapshot)
-                    try:
-                        self._atomic_write_meta(meta_payload)
-                    except Exception:
-                        pass
-                    return meta_payload
+                    return self._build_meta_payload(self._snapshot)
             except Exception as exc:
                 log_debug(f"get_persisted_meta fallback skipped: {exc}")
             return None
@@ -847,7 +868,7 @@ class ASTEngine:
         """
         Full AST index build across all (or specified) spaces:
         1. Parse files & aggregate C# `partial` symbols via `SemanticBundler`.
-        2. Extract call sites & imports and build `CallGraphIndex` via `TopologyLinker`.
+        2. Extract call sites & imports and build `CallGraphIndex` via `TopologyLinker` + `WorkspaceGraphLinker`.
         3. Increment `ast_generation`, align `file-space` cursor (`consumer="ast"`), and persist binaries.
         """
         with self._lock:
@@ -892,28 +913,7 @@ class ASTEngine:
                 file_graphs=file_graphs,
             )
             self._save_snapshot_and_graph(snapshot, graph_idx)
-            try:
-                use_non_blocking_diff = bool(
-                    not self._custom_storage_dir and is_watcher_active(project_root=self.project_root)
-                )
-                target_cfgs = self.bundler._resolve_target_spaces(spaces)
-                target_qnames = (
-                    [sp.qualified_name or sp.short_name for sp in target_cfgs if (sp.qualified_name or sp.short_name)]
-                    if use_non_blocking_diff
-                    else []
-                )
-                if not target_qnames:
-                    target_sp = spaces[0] if (spaces and len(spaces) == 1) else None
-                    with self._consume_space_diff(space_name=target_sp):
-                        pass
-                else:
-                    for q_sp in target_qnames:
-                        with self._consume_space_diff(space_name=q_sp, auto_refresh=False):
-                            pass
-                    if self.scanner is not None and hasattr(self.scanner, "ack"):
-                        self.scanner.ack(None, consumer_id=self.CONSUMER_ID)
-            except Exception as exc:
-                log_debug(f"Cursor alignment after build_index skipped: {exc}")
+            self._align_consumer_cursors(spaces=spaces)
             return snapshot
 
     @staticmethod
@@ -958,7 +958,16 @@ class ASTEngine:
         self,
         detail: ScanDiffDetail,
         spaces: Optional[List[str]] = None,
-    ) -> Tuple[List[UnifiedSymbol], Set[str], Dict[str, Tuple[str, str, str]], List[Tuple[str, str, Optional[SymbolCallSite]]]]:
+        known_indexed_files: Optional[Set[str]] = None,
+        snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> Tuple[
+        List[UnifiedSymbol],
+        Set[str],
+        Dict[str, Tuple[str, str, str]],
+        List[Tuple[str, str, Optional[SymbolCallSite]]],
+        Set[str],
+        Set[str],
+    ]:
         """
         Parse dirty files, capture incoming edges before eviction, restore surviving C# partial siblings,
         evict old symbols, and re-aggregate partial types into `self._snapshot.symbols`.
@@ -966,7 +975,15 @@ class ASTEngine:
         assert self._snapshot is not None
         assert self._graph is not None
 
-        new_symbols_by_file, dirty_keys = self.bundler.bundle_dirty_files(detail, spaces=spaces)
+        if known_indexed_files is None:
+            known_indexed_files = set(self._snapshot.file_to_symbol_ids.keys()) | set(self._snapshot.file_graphs.keys())
+
+        new_symbols_by_file, dirty_keys = self.bundler.bundle_dirty_files(
+            detail,
+            spaces=spaces,
+            known_indexed_files=known_indexed_files,
+            snap_entries_by_space=snap_entries_by_space,
+        )
         all_new_symbols: List[UnifiedSymbol] = []
         for syms in new_symbols_by_file.values():
             all_new_symbols.extend(syms)
@@ -1013,9 +1030,8 @@ class ASTEngine:
             if ck:
                 affected_cs_keys.add(ck)
 
-        incoming_edges = self._graph.get_external_incoming_edges(old_doc_ids)
-
         surviving_partials: List[UnifiedSymbol] = []
+        surviving_sibling_files: Set[str] = set()
         if affected_cs_keys:
             for doc_id, sym_rem in list(self._snapshot.symbols.items()):
                 if doc_id in old_doc_ids:
@@ -1023,9 +1039,29 @@ class ASTEngine:
                 ck = _cs_partial_type_key(sym_rem)
                 if ck and ck in affected_cs_keys:
                     surviving_partials.append(restore_unaggregated_partial_symbol(sym_rem))
+                    if sym_rem.file_path:
+                        surviving_sibling_files.add(sym_rem.file_path)
+
+        # Include symbols in surviving partial sibling files so their outgoing call edges are refreshed
+        if surviving_sibling_files:
+            sib_norm = normalize_dirty_paths(surviving_sibling_files)
+            for doc_id, sym_s in self._snapshot.symbols.items():
+                if doc_id not in old_doc_ids and is_dirty_file_match(sym_s.file_path, sib_norm):
+                    old_doc_ids.add(doc_id)
+                    old_symbol_info[doc_id] = (
+                        sym_s.file_path,
+                        sym_s.name,
+                        sym_s.fqn or sym_s.name,
+                    )
+
+        incoming_edges = self._graph.get_external_incoming_edges(old_doc_ids)
 
         for doc_id in old_doc_ids:
-            self._snapshot.symbols.pop(doc_id, None)
+            # Only pop symbols that belong to dirty files (keep surviving_partials & sibling symbols in snapshot)
+            if doc_id in self._snapshot.symbols and is_dirty_file_match(
+                self._snapshot.symbols[doc_id].file_path, dirty_paths_norm
+            ):
+                self._snapshot.symbols.pop(doc_id, None)
 
         if affected_cs_keys:
             reaggregated = aggregate_partial_symbols(surviving_partials + list(all_new_symbols))
@@ -1036,7 +1072,22 @@ class ASTEngine:
             for sym in all_new_symbols:
                 self._snapshot.symbols[sym.id] = sym
 
-        return all_new_symbols, old_doc_ids, old_symbol_info, incoming_edges
+        # Also include surviving sibling symbols in `all_new_symbols` so incoming edges to them reconnect cleanly
+        if surviving_sibling_files:
+            sib_norm = normalize_dirty_paths(surviving_sibling_files)
+            existing_new_ids = {s.id for s in all_new_symbols}
+            for s_id, s_obj in self._snapshot.symbols.items():
+                if s_id not in existing_new_ids and is_dirty_file_match(s_obj.file_path, sib_norm):
+                    all_new_symbols.append(s_obj)
+
+        return (
+            all_new_symbols,
+            old_doc_ids,
+            old_symbol_info,
+            incoming_edges,
+            dirty_keys,
+            surviving_sibling_files,
+        )
 
     def _relink_and_reconnect_edges(
         self,
@@ -1046,12 +1097,27 @@ class ASTEngine:
         old_symbol_info: Dict[str, Tuple[str, str, str]],
         incoming_edges: List[Tuple[str, str, Optional[SymbolCallSite]]],
         spaces: Optional[List[str]] = None,
+        snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
+        surviving_sibling_files: Optional[Set[str]] = None,
     ) -> None:
         """Relink dirty call sites and reconnect preserved external incoming call edges in `self._graph`."""
         assert self._snapshot is not None
         assert self._graph is not None
 
-        dirty_sites, dirty_imports = self.bundler.extract_dirty_call_sites_and_imports(detail, spaces=spaces)
+        relink_detail = (
+            ScanDiffDetail(
+                added=set(detail.added),
+                modified=set(detail.modified) | set(surviving_sibling_files),
+                deleted=set(detail.deleted),
+            )
+            if surviving_sibling_files
+            else detail
+        )
+        dirty_sites, dirty_imports = self.bundler.extract_dirty_call_sites_and_imports(
+            relink_detail,
+            spaces=spaces,
+            snap_entries_by_space=snap_entries_by_space,
+        )
         linker = TopologyLinker(symbols_map=self._snapshot.symbols)
         new_edges = linker.link_call_sites(dirty_sites, dirty_imports)
 
@@ -1098,6 +1164,15 @@ class ASTEngine:
                     pass
 
             if target_new_id:
+                if caller_id == target_new_id:
+                    caller_sym = self._snapshot.symbols.get(caller_id)
+                    caller_kind = (
+                        caller_sym.kind.value
+                        if caller_sym and isinstance(caller_sym.kind, SymbolKind)
+                        else (str(caller_sym.kind) if caller_sym else "")
+                    )
+                    if caller_kind not in ("function", "method", "constructor"):
+                        continue
                 reconnected_incoming_edges.append((caller_id, target_new_id, site))
 
         self._graph.patch_incremental(
@@ -1129,8 +1204,22 @@ class ASTEngine:
                 return self._snapshot
 
             try:
-                all_new_symbols, old_doc_ids, old_symbol_info, incoming_edges = (
-                    self._evict_dirty_and_reaggregate_partials(detail, spaces=spaces)
+                target_cfgs = self.bundler._resolve_target_spaces(spaces)
+                snap_entries_by_space = _preload_snap_entries(self.scanner, target_cfgs)
+                known_indexed_files = set(self._snapshot.file_to_symbol_ids.keys()) | set(self._snapshot.file_graphs.keys())
+
+                (
+                    all_new_symbols,
+                    old_doc_ids,
+                    old_symbol_info,
+                    incoming_edges,
+                    dirty_keys,
+                    surviving_sibling_files,
+                ) = self._evict_dirty_and_reaggregate_partials(
+                    detail,
+                    spaces=spaces,
+                    known_indexed_files=known_indexed_files,
+                    snap_entries_by_space=snap_entries_by_space,
                 )
                 self._relink_and_reconnect_edges(
                     detail=detail,
@@ -1139,10 +1228,17 @@ class ASTEngine:
                     old_symbol_info=old_symbol_info,
                     incoming_edges=incoming_edges,
                     spaces=spaces,
+                    snap_entries_by_space=snap_entries_by_space,
+                    surviving_sibling_files=surviving_sibling_files,
                 )
                 try:
-                    dirty_fgs, dirty_fg_keys = self.bundler.extract_dirty_file_graphs(detail, spaces=spaces)
-                    dirty_fg_norm = normalize_dirty_paths(dirty_fg_keys)
+                    dirty_fgs, dirty_fg_keys = self.bundler.extract_dirty_file_graphs(
+                        detail,
+                        spaces=spaces,
+                        known_indexed_files=known_indexed_files,
+                        snap_entries_by_space=snap_entries_by_space,
+                    )
+                    dirty_fg_norm = normalize_dirty_paths(dirty_fg_keys | dirty_keys)
                     for fg_key in list(self._snapshot.file_graphs.keys()):
                         if is_dirty_file_match(fg_key, dirty_fg_norm):
                             self._snapshot.file_graphs.pop(fg_key, None)
@@ -1169,28 +1265,7 @@ class ASTEngine:
 
                 self._save_snapshot_and_graph(self._snapshot, self._graph)
                 if not _cursor_already_consumed:
-                    try:
-                        use_non_blocking_diff = bool(
-                            not self._custom_storage_dir and is_watcher_active(project_root=self.project_root)
-                        )
-                        target_cfgs = self.bundler._resolve_target_spaces(spaces)
-                        target_qnames = (
-                            [sp.qualified_name or sp.short_name for sp in target_cfgs if (sp.qualified_name or sp.short_name)]
-                            if use_non_blocking_diff
-                            else []
-                        )
-                        if not target_qnames:
-                            target_sp = spaces[0] if (spaces and len(spaces) == 1) else None
-                            with self._consume_space_diff(space_name=target_sp):
-                                pass
-                        else:
-                            for q_sp in target_qnames:
-                                with self._consume_space_diff(space_name=q_sp, auto_refresh=False):
-                                    pass
-                            if self.scanner is not None and hasattr(self.scanner, "ack"):
-                                self.scanner.ack(None, consumer_id=self.CONSUMER_ID)
-                    except Exception as exc:
-                        log_debug(f"Cursor alignment after hot_patch_index skipped: {exc}")
+                    self._align_consumer_cursors(spaces=spaces)
                 return self._snapshot
             except Exception as exc:
                 self.bundler.clear_transient_caches()
@@ -1258,17 +1333,29 @@ class ASTEngine:
 
                 with ExitStack() as diff_stack:
                     if not target_qnames:
-                        target_sp = norm_spaces[0] if (norm_spaces and len(norm_spaces) == 1) else None
-                        diff_res = diff_stack.enter_context(
-                            self._consume_space_diff(
-                                space_name=target_sp,
-                                auto_refresh=eff_auto_refresh,
+                        if norm_spaces is None:
+                            diff_res = diff_stack.enter_context(
+                                self._consume_space_diff(
+                                    space_name=None,
+                                    auto_refresh=eff_auto_refresh,
+                                )
                             )
-                        )
-                        if diff_res and getattr(diff_res, "has_changes", False):
-                            merged_added.update(diff_res.detail.added)
-                            merged_modified.update(diff_res.detail.modified)
-                            merged_deleted.update(diff_res.detail.deleted)
+                            if diff_res and getattr(diff_res, "has_changes", False):
+                                merged_added.update(diff_res.detail.added)
+                                merged_modified.update(diff_res.detail.modified)
+                                merged_deleted.update(diff_res.detail.deleted)
+                        else:
+                            for sp_n in norm_spaces:
+                                diff_res = diff_stack.enter_context(
+                                    self._consume_space_diff(
+                                        space_name=sp_n,
+                                        auto_refresh=eff_auto_refresh,
+                                    )
+                                )
+                                if diff_res and getattr(diff_res, "has_changes", False):
+                                    merged_added.update(diff_res.detail.added)
+                                    merged_modified.update(diff_res.detail.modified)
+                                    merged_deleted.update(diff_res.detail.deleted)
                     else:
                         for q_sp in target_qnames:
                             diff_res = diff_stack.enter_context(
@@ -1333,14 +1420,20 @@ class ASTEngine:
                 if not self._ensure_graph_loaded():
                     raise ASTIndexNotFoundError(f"AST call graph not found at {self.graph_index_path}")
             else:
-                if not self._ensure_loaded_from_disk():
+                if self._snapshot is None or self._graph is None:
+                    self._ensure_loaded_from_disk()
+                if self._snapshot is None:
                     raise ASTIndexNotFoundError(f"AST index not found at {self.graph_index_path}")
+                if self._graph is None:
+                    self._graph = CallGraphIndex()
             assert self._snapshot is not None
             assert self._graph is not None
             if self._graph.workspace_graph is not None:
+                if self._snapshot.file_graphs and not self._graph.workspace_graph.file_graphs:
+                    self._graph.attach_file_graphs(self._snapshot.file_graphs)
                 return self._graph.workspace_graph
             file_graphs = self._snapshot.file_graphs
-            if not file_graphs:
+            if not file_graphs and auto_sync:
                 file_graphs = self.bundler.extract_all_file_graphs()
                 self._snapshot.file_graphs = file_graphs
             ws_linker = WorkspaceGraphLinker(
@@ -1351,10 +1444,11 @@ class ASTEngine:
             )
             ws_graph = ws_linker.link_workspace()
             self._graph.workspace_graph = ws_graph
-            try:
-                self._save_snapshot_and_graph(self._snapshot, self._graph)
-            except Exception as save_exc:
-                log_debug(f"Persist upgraded workspace_graph skipped: {save_exc}")
+            if auto_sync:
+                try:
+                    self._save_snapshot_and_graph(self._snapshot, self._graph)
+                except Exception as save_exc:
+                    log_debug(f"Persist upgraded workspace_graph skipped: {save_exc}")
             return ws_graph
 
     def parse_file(
@@ -1637,9 +1731,10 @@ class ASTEngine:
         if not p.is_file():
             raise FileNotFoundError(f"Target file not found: '{file_or_uri}' (resolved: '{p}')")
 
-        # Determine owning space and project-relative path
+        # Determine owning space (preferring the deepest / most specific matching entry root)
         rel_path = self.bundler._get_project_relpath(p, self.project_root)
         matched_space = "project"
+        best_depth = -1
         try:
             for sp_cfg in self.space_manager.list_spaces():
                 sp_label = _space_logical_name(sp_cfg)
@@ -1647,9 +1742,12 @@ class ASTEngine:
                     if inc_root is None or not exists:
                         continue
                     try:
-                        p.relative_to(Path(inc_root).resolve())
-                        matched_space = sp_label
-                        break
+                        resolved_inc = Path(inc_root).resolve()
+                        p.relative_to(resolved_inc)
+                        depth = len(resolved_inc.parts)
+                        if depth > best_depth:
+                            best_depth = depth
+                            matched_space = sp_label
                     except ValueError:
                         continue
         except Exception:
@@ -1873,19 +1971,12 @@ def get_engine(
     force_new: bool = False,
 ) -> ASTEngine:
     """Return process-level singleton `ASTEngine` (or create a new instance when custom paths are passed)."""
-    if not isinstance(ASTEngine, type):
-        if project_root is not None or storage_dir is not None:
-            return ASTEngine(project_root=project_root, storage_dir=storage_dir)
-        return ASTEngine()
     if project_root is not None or storage_dir is not None or force_new:
         return ASTEngine(project_root=project_root, storage_dir=storage_dir)
     with _ENGINE_LOCK:
         inst = _get_default_engine_instance()
-        expected_root = ASTEngine._resolve_default_project_root()
-        if (
-            inst is None
-            or (isinstance(inst, ASTEngine) and getattr(inst, "project_root", None) != expected_root)
-        ):
+        expected_root = resolve_project_root()
+        if inst is None or getattr(inst, "project_root", None) != expected_root:
             inst = ASTEngine()
             _set_default_engine_instance(inst)
         return inst

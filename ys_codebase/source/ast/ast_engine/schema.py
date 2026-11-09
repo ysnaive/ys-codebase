@@ -681,15 +681,52 @@ class WorkspaceSymbolGraph:
                     ft_map[str(k)] = MappingProxyType({str(fn): str(ft) for fn, ft in v.items()})
         object.__setattr__(self, "field_types_by_class_id", MappingProxyType(ft_map))
 
-    def to_dict(self) -> Dict[str, Any]:
-        fg_node_ids: Set[str] = {
-            nid for fg in self.file_graphs.values() for nid in fg.all_nodes_by_id
-        }
-        standalone_nodes = {
-            k: v.to_dict() for k, v in self.nodes_by_id.items() if k not in fg_node_ids
-        }
+        type_scope_idx: Dict[Tuple[str, Tuple[str, ...]], str] = {}
+        members_idx: Dict[str, Dict[str, List[str]]] = {}
+        for nid, n in nodes_map.items():
+            file_p = nid.split("::", 1)[0]
+            if n.kinds & {"class", "struct", "interface"}:
+                type_scope_idx[(file_p, (*n.scope_path, n.name))] = nid
+                m_dict: Dict[str, List[str]] = {}
+                for ch in n.children:
+                    m_dict.setdefault(ch.name, []).append(ch.id)
+                members_idx[nid] = {mk: tuple(mv) for mk, mv in m_dict.items()}  # type: ignore[assignment]
+        object.__setattr__(self, "_type_id_by_file_and_scope", MappingProxyType(type_scope_idx))
+        object.__setattr__(
+            self,
+            "_members_by_type_id",
+            MappingProxyType({k: MappingProxyType(v) for k, v in members_idx.items()}),
+        )
+
+    def with_file_graphs(self, file_graphs: Mapping[str, FileSymbolGraph]) -> "WorkspaceSymbolGraph":
+        """Return a WorkspaceSymbolGraph hydrated with `file_graphs` if not already populated."""
+        if not file_graphs or self.file_graphs:
+            return self
+        return WorkspaceSymbolGraph(
+            file_graphs=file_graphs,
+            nodes_by_id=self.nodes_by_id,
+            resolved_edges=self.resolved_edges,
+            file_import_tables=self.file_import_tables,
+            folded_symbol_groups=self.folded_symbol_groups,
+            type_bases_by_id=self.type_bases_by_id,
+            type_derived_by_id=self.type_derived_by_id,
+            field_types_by_class_id=self.field_types_by_class_id,
+        )
+
+    def to_dict(self, include_file_graphs: bool = True) -> Dict[str, Any]:
+        if include_file_graphs:
+            fg_node_ids: Set[str] = {
+                nid for fg in self.file_graphs.values() for nid in fg.all_nodes_by_id
+            }
+            standalone_nodes = {
+                k: v.to_dict() for k, v in self.nodes_by_id.items() if k not in fg_node_ids
+            }
+            file_graphs_out = {k: v.to_dict() for k, v in self.file_graphs.items()}
+        else:
+            standalone_nodes = {}
+            file_graphs_out = {}
         return {
-            "file_graphs": {k: v.to_dict() for k, v in self.file_graphs.items()},
+            "file_graphs": file_graphs_out,
             "nodes_by_id": standalone_nodes,
             "resolved_edges": [e.to_dict() for e in self.resolved_edges],
             "file_import_tables": {k: v.to_dict() for k, v in self.file_import_tables.items()},
@@ -700,11 +737,16 @@ class WorkspaceSymbolGraph:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "WorkspaceSymbolGraph":
+    def from_dict(
+        cls,
+        data: Dict[str, Any],
+        file_graphs: Optional[Mapping[str, FileSymbolGraph]] = None,
+    ) -> "WorkspaceSymbolGraph":
         if not isinstance(data, dict):
             raise SchemaValidationError("WorkspaceSymbolGraph data must be a dict.")
+        eff_file_graphs = data.get("file_graphs") or file_graphs or {}
         return cls(
-            file_graphs=data.get("file_graphs") or {},
+            file_graphs=eff_file_graphs,
             nodes_by_id=data.get("nodes_by_id") or {},
             resolved_edges=tuple(data.get("resolved_edges") or ()),
             outgoing_edges_by_source=data.get("outgoing_edges_by_source") or {},
@@ -1310,6 +1352,8 @@ class ASTSnapshot:
                 elif isinstance(v, dict):
                     try:
                         fgraphs_dict[str(k)] = FileSymbolGraph.from_dict(v)
+                    except SchemaValidationError:
+                        raise
                     except Exception:
                         pass
         return cls(

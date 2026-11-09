@@ -31,12 +31,15 @@ def _warn_stderr(msg: str) -> None:
         log_stream(msg + "\n", stream="stderr")
 
 
-FENCED_CODE_BLOCK_REGEX = re.compile(r"```[\s\S]*?```")
+FENCED_CODE_BLOCK_REGEX = re.compile(
+    r"(?:^[ \t]*(`{3,})[^\r\n]*\r?\n[\s\S]*?^[ \t]*\1`*[ \t]*(?=\r?\n|\Z)|(`{3,})[\s\S]*?\2)",
+    re.MULTILINE,
+)
 LITERAL_BEGIN_LINE_REGEX = re.compile(r"^[ \t]*<!--\s*yscb:literal:begin\s*-->[ \t]*$")
 LITERAL_END_LINE_REGEX = re.compile(r"^[ \t]*<!--\s*yscb:literal:end\s*-->[ \t]*$")
 IGNORE_BEGIN_LINE_REGEX = re.compile(r"^[ \t]*<!--\s*yscb:ignore:begin\s*-->[ \t]*$")
 IGNORE_END_LINE_REGEX = re.compile(r"^[ \t]*<!--\s*yscb:ignore:end\s*-->[ \t]*$")
-CODE_SPAN_REGEX = re.compile(r"(`[^`\r\n]+`)")
+CODE_SPAN_REGEX = re.compile(r"(`+)(?!`)([^\r\n]*?[^`\r\n])\1(?!`)")
 UNENCLOSED_TAG_REGEX = re.compile(r"__(?:[@#%]\s*\{\s*[^}]+\s*\}|\$(?:\([^)]*\))?\{\s*[^}]+\s*\})__")
 
 TOKEN_ANCHOR_INNER_REGEX = re.compile(r"__@\{\s*([A-Za-z0-9_]+)\s*\}__")
@@ -55,23 +58,14 @@ MD_LINK_BACKTICK_CLEAN_REGEX = re.compile(r"\]\(`?([^`\r\n\)]+)`?\)")
 FRONTMATTER_BLOCK_REGEX = re.compile(r"\A---\r?\n([\s\S]*?)\r?\n---")
 FRONTMATTER_DESC_LINE_REGEX = re.compile(r"^\s*description\s*:\s*(.+?)\s*$")
 
-_WORKFLOW_FALLBACK_REL_MAP: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
-    ("workflow.docs://", ("docs",)),
-    ("workflow.plans://", ("plans",)),
-    ("workflow.archived://", ("plans", "archived")),
-    ("workflow.roadmap://", ("plans", "roadmap")),
-)
-
-
 def _resolve_workflow_uri_fallback(tag_uri: str, project_root: str) -> Optional[str]:
     """當 URI 引擎離線或未掛載時，針對內建 workflow.* 語意協定提供一致的專案相對退避解析。"""
-    if not tag_uri or not project_root:
+    if not tag_uri or not project_root or not tag_uri.startswith("workflow."):
         return None
-    for prefix, rel_parts in _WORKFLOW_FALLBACK_REL_MAP:
-        if tag_uri.startswith(prefix):
-            tail = tag_uri[len(prefix):]
-            return os.path.join(project_root, *rel_parts, tail)
-    return None
+    from .plans._common import resolve_plan_uri
+
+    resolved = resolve_plan_uri(tag_uri, host_dir=project_root)
+    return str(resolved) if resolved is not None else None
 
 
 def _clean_expanded_uri_boundary(
@@ -216,9 +210,9 @@ def make_token_tag_regex(token_name: str) -> re.Pattern:
 
 @functools.lru_cache(maxsize=128)
 def make_standalone_tag_regex(token_name: str) -> re.Pattern:
-    """構造匹配單行獨立 Token 錨點之正則表達式（嚴格要求整行僅含該錨點與空白）。"""
+    """構造匹配單行獨立 Token 錨點之正則表達式（嚴格要求整行僅含該錨點與空白，支援對稱多反引號）。"""
     return re.compile(
-        r"(?:^|(?<=\x00))[ \t]*`__@\{\s*" + re.escape(token_name) + r"\s*\}__`(?:[ \t]*\r?\n|[ \t]*$)",
+        r"(?:^|(?<=\x00))[ \t]*(`+)__@\{\s*" + re.escape(token_name) + r"\s*\}__\1(?:[ \t]*\r?\n|[ \t]*$)",
         re.MULTILINE,
     )
 
@@ -254,7 +248,7 @@ def _lookup_deployed_abs_path(tag_uri: str, deployment_map: Dict[str, str]) -> O
 def _format_relative_local_path(target_abs: str, cur_dir: str, trailing_slash: bool) -> str:
     """計算 target_abs 相對於 cur_dir 之 POSIX 相對路徑（以 ./ 或 ../ 開頭）。"""
     try:
-        rel_p = os.path.relpath(target_abs, cur_dir).replace("\\", "/")
+        rel_p = os.path.relpath(os.path.realpath(target_abs), os.path.realpath(cur_dir)).replace("\\", "/")
         res = rel_p if rel_p.startswith(".") else f"./{rel_p}"
     except Exception:
         res = target_abs.replace("\\", "/")
@@ -328,7 +322,7 @@ def _resolve_anchor_base_dir(
     if not anchor_abs:
         anchor_abs = os.path.normpath(os.path.join(project_root, anchor_str))
 
-    anchor_abs = os.path.normpath(os.path.abspath(anchor_abs))
+    anchor_abs = os.path.normpath(os.path.realpath(anchor_abs))
     if os.path.isdir(anchor_abs):
         return anchor_abs
     if os.path.isfile(anchor_abs):
@@ -361,7 +355,7 @@ def _resolve_project_uri_tag(
     if t_abs:
         try:
             base_dir = _resolve_anchor_base_dir(anchor, project_root, deployment_map)
-            rel_p = os.path.relpath(t_abs, base_dir).replace("\\", "/")
+            rel_p = os.path.relpath(os.path.realpath(t_abs), os.path.realpath(base_dir)).replace("\\", "/")
             if not anchor and (rel_p == "." or rel_p == "./"):
                 return ""
             if rel_p.startswith("./"):
@@ -485,7 +479,7 @@ class ArtifactCompiler:
         self.host_dir = host_dir
         self.module_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self._stage1_insert_cache: Optional[Dict[str, str]] = None
-        self._source_file_cache: Dict[str, Tuple[int, int, str, str, str]] = {}
+        self._source_file_cache: Dict[str, Tuple[int, int, str, str]] = {}
         self._resolved_source_path_cache: Dict[Tuple[str, str], str] = {}
 
     def _resolve_source_path(self, path_or_uri: str) -> str:
@@ -538,13 +532,13 @@ class ArtifactCompiler:
 
         return ""
 
-    def _read_and_cache_physical_file(self, abs_path: str) -> Tuple[str, str, str]:
-        """單次讀取實體檔案並快取 (mtime_ns, size, content, sha1_hex, sha256_hex)。"""
+    def _read_and_cache_physical_file(self, abs_path: str) -> Tuple[str, str]:
+        """單次讀取實體檔案並快取 (mtime_ns, size, content, sha1_hex)。"""
         try:
             st = os.stat(abs_path)
             cached = self._source_file_cache.get(abs_path)
             if cached and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
-                return cached[2], cached[3], cached[4]
+                return cached[2], cached[3]
         except Exception:
             st = None
 
@@ -564,15 +558,11 @@ class ArtifactCompiler:
             except Exception:
                 content = ""
 
-        if st is not None:
-            norm_bytes = content.replace("\r\n", "\n").encode("utf-8")
-            sha1_hex = hashlib.sha1(norm_bytes).hexdigest()
-            sha256_hex = hashlib.sha256(norm_bytes).hexdigest()
-            self._source_file_cache[abs_path] = (st.st_mtime_ns, st.st_size, content, sha1_hex, sha256_hex)
-            return content, sha1_hex, sha256_hex
-
         norm_bytes = content.replace("\r\n", "\n").encode("utf-8")
-        return content, hashlib.sha1(norm_bytes).hexdigest(), hashlib.sha256(norm_bytes).hexdigest()
+        sha1_hex = hashlib.sha1(norm_bytes).hexdigest()
+        if st is not None:
+            self._source_file_cache[abs_path] = (st.st_mtime_ns, st.st_size, content, sha1_hex)
+        return content, sha1_hex
 
     def _scan_directory_files(self, dir_path_or_uri: str) -> List[Tuple[str, str, str]]:
         """
@@ -590,7 +580,7 @@ class ArtifactCompiler:
             for fname in sorted(files):
                 abs_f = os.path.join(root, fname)
                 rel_f = os.path.relpath(abs_f, real_dir).replace("\\", "/")
-                content, _, _ = self._read_and_cache_physical_file(abs_f)
+                content, _ = self._read_and_cache_physical_file(abs_f)
                 results.append((rel_f, abs_f, content))
         return results
 
@@ -598,7 +588,7 @@ class ArtifactCompiler:
         """安全讀取語意 URI 或本機檔案文字，支援 module.root 與 module.source.root 自適應降級。"""
         real_p = self._resolve_source_path(path_or_uri)
         if real_p and (vfs.is_file(real_p) if vfs else os.path.isfile(real_p)):
-            content, _, _ = self._read_and_cache_physical_file(real_p)
+            content, _ = self._read_and_cache_physical_file(real_p)
             return content
 
         if vfs and "://" in path_or_uri:
@@ -714,9 +704,9 @@ class ArtifactCompiler:
             pass_count += 1
 
             # Step 1: 建立快照（僅自代碼塊中提取）
-            code_spans = CODE_SPAN_REGEX.findall(resolved_text)
             current_tokens = []
-            for cs in code_spans:
+            for m_cs in CODE_SPAN_REGEX.finditer(resolved_text):
+                cs = m_cs.group(2)
                 if "__@{" in cs:
                     for t in TOKEN_ANCHOR_INNER_REGEX.findall(cs):
                         if t not in current_tokens:
@@ -795,12 +785,12 @@ class ArtifactCompiler:
 
                 if token_tag_regex.search(resolved_text):
                     def _replace_inline(match: re.Match) -> str:
-                        span = match.group(0)
-                        inner = span[1:-1]
+                        ticks = match.group(1)
+                        inner = match.group(2)
                         if token_tag_regex.search(inner):
                             inner = token_tag_regex.sub(lambda _: last_inline_val, inner)
-                            return f"`{inner}`"
-                        return span
+                            return f"{ticks}{inner}{ticks}"
+                        return match.group(0)
 
                     resolved_text = CODE_SPAN_REGEX.sub(_replace_inline, resolved_text)
 
@@ -812,19 +802,21 @@ class ArtifactCompiler:
 
                 if token_tag_regex.search(resolved_text):
                     def _purge_span_tag(match: re.Match) -> str:
-                        span = match.group(0)
-                        inner = span[1:-1]
+                        ticks = match.group(1)
+                        inner = match.group(2)
                         if token_tag_regex.search(inner):
-                            return f"`{token_tag_regex.sub('', inner)}`"
-                        return span
+                            return f"{ticks}{token_tag_regex.sub('', inner)}{ticks}"
+                        return match.group(0)
 
                     resolved_text = CODE_SPAN_REGEX.sub(_purge_span_tag, resolved_text)
 
             # Step 4: 遞迴檢查是否仍有新 Token
             if "__@{" not in resolved_text:
                 break
-            code_spans = CODE_SPAN_REGEX.findall(resolved_text)
-            has_remaining = any(TOKEN_ANCHOR_INNER_REGEX.search(cs) for cs in code_spans)
+            has_remaining = any(
+                TOKEN_ANCHOR_INNER_REGEX.search(m_cs.group(2))
+                for m_cs in CODE_SPAN_REGEX.finditer(resolved_text)
+            )
             if not has_remaining:
                 break
 
@@ -873,7 +865,7 @@ class ArtifactCompiler:
             f.write(content)
         return local_cache
 
-    def compile_stage1(self) -> Dict[str, Any]:
+    def compile_stage1(self, materialize_cache: bool = True) -> Dict[str, Any]:
         """
         執行 Stage 1 全量段落佔位符解算：
         將所有 export 項目物化寫入 cache://agents-workflow/resolved_contents/。
@@ -937,8 +929,12 @@ class ArtifactCompiler:
                                 stage1_content = raw_text
 
                             cache_uri = f"{cache_target_root}/{sub_folder}/{skill_pkg_name}/{rel_f}"
-                            actual_cache = self._write_cache_file(cache_uri, stage1_content)
-                            content_sha256 = hashlib.sha256(stage1_content.encode("utf-8")).hexdigest()
+                            if materialize_cache:
+                                actual_cache = self._write_cache_file(cache_uri, stage1_content)
+                                content_sha256 = hashlib.sha256(stage1_content.encode("utf-8")).hexdigest()
+                            else:
+                                actual_cache = cache_uri
+                                content_sha256 = ""
 
                             resolved_items.append({
                                 "export": exp,
@@ -966,8 +962,12 @@ class ArtifactCompiler:
                         )
 
                         cache_uri = f"{cache_target_root}/{sub_folder}/{base_name}"
-                        actual_cache = self._write_cache_file(cache_uri, stage1_content)
-                        content_sha256 = hashlib.sha256(stage1_content.encode("utf-8")).hexdigest()
+                        if materialize_cache:
+                            actual_cache = self._write_cache_file(cache_uri, stage1_content)
+                            content_sha256 = hashlib.sha256(stage1_content.encode("utf-8")).hexdigest()
+                        else:
+                            actual_cache = cache_uri
+                            content_sha256 = ""
 
                         resolved_items.append({
                             "export": exp,
@@ -994,16 +994,16 @@ class ArtifactCompiler:
         }
 
     def _resolve_project_root(self) -> str:
-        """取得正規化之 project_root 絕對路徑。"""
+        """取得正規化之 project_root 實體路徑。"""
         if self.host_dir:
-            return os.path.normpath(os.path.abspath(self.host_dir))
+            return os.path.normpath(os.path.realpath(self.host_dir))
         if uri:
             try:
-                return os.path.normpath(os.path.abspath(uri.resolve("project://", interactive=False)))
+                return os.path.normpath(os.path.realpath(uri.resolve("project://", interactive=False)))
             except Exception:
                 pass
         cwd_p = str(get_virtual_cwd()) if get_virtual_cwd is not None else "."
-        return os.path.normpath(os.path.abspath(cwd_p))
+        return os.path.normpath(os.path.realpath(cwd_p))
 
     def resolve_stage2_uri(
         self,
@@ -1020,7 +1020,7 @@ class ArtifactCompiler:
         if not content:
             return ""
 
-        cur_dir = os.path.dirname(os.path.abspath(current_dst_path))
+        cur_dir = os.path.dirname(os.path.realpath(current_dst_path))
         doc_basename = os.path.basename(current_dst_path)
         project_root = self._resolve_project_root()
 
@@ -1052,7 +1052,8 @@ class ArtifactCompiler:
 
         def _replace_in_code_span(match: re.Match) -> str:
             span_text = match.group(0)
-            inner = span_text[1:-1]
+            ticks = match.group(1)
+            inner = match.group(2)
             if "__#{" not in inner and "__${" not in inner and "__$(" not in inner and "__%{" not in inner:
                 return span_text
 
@@ -1077,7 +1078,7 @@ class ArtifactCompiler:
                     deployment_map=deployment_map,
                     doc_basename=doc_basename,
                 )
-                return resolved if anchor else f"`{resolved or './'}`"
+                return resolved if anchor else f"{ticks}{resolved or './'}{ticks}"
 
             new_inner = _substitute_stage2_tags_in_segment(
                 inner,
@@ -1088,7 +1089,7 @@ class ArtifactCompiler:
                 target_name=target_name,
                 extra_deployment_maps=extra_deployment_maps,
             )
-            return f"`{new_inner}`"
+            return f"{ticks}{new_inner}{ticks}"
 
         res_fenced = FENCED_CODE_BLOCK_REGEX.sub(_replace_and_mask_fenced_block, content)
         res_spans = CODE_SPAN_REGEX.sub(_replace_in_code_span, res_fenced)
@@ -1135,7 +1136,7 @@ class ArtifactCompiler:
         if not os.path.isfile(skill_md_path):
             return ""
 
-        raw_md, _, _ = self._read_and_cache_physical_file(skill_md_path)
+        raw_md, _ = self._read_and_cache_physical_file(skill_md_path)
         m_fm = FRONTMATTER_BLOCK_REGEX.match(raw_md)
         if not m_fm:
             return ""

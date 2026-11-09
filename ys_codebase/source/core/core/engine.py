@@ -4,7 +4,7 @@ YS-Codebase Atomic Package Lifecycle Engine.
 Implements:
 - 3-Tier Resolution Chain (build:// -> mirror:// -> provider)
 - 4-Segment SemVer Dependency Solving
-- Dual-Layer Snapshots & Atomic Rollback (modules/, config/, .config.local/, storage/, yscb.config.json)
+- Dual-Layer Snapshots & Atomic Rollback (modules/, config/, .config.local/, storage/, .storage.local/, yscb.config.json)
 - Incremental Migration Ladder Subsystem
 """
 import os
@@ -27,6 +27,15 @@ from core import semver
 from core.contributes import ContributesAggregator
 from core import events
 from core.platform import InterProcessLock
+from core.vfs.os_backend import (
+    _cleanup_stale_swap_dirs,
+    _inplace_atomic_sync_dir,
+    _is_dir_handle_locked_for_rename,
+    atomic_swap_directory,
+    robust_rmtree as _force_rmtree_with_retry,
+)
+
+_atomic_swap_dir = atomic_swap_directory
 
 DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases"
 LEGACY_PROVIDER_URLS: Tuple[str, ...] = (
@@ -336,292 +345,6 @@ def _deep_infill_dict(
     return result, changed
 
 
-def _force_rmtree_with_retry(
-    path: str,
-    retries: int = 5,
-    retry_delay: float = 0.05,
-) -> None:
-    """
-    Best-effort recursive removal with read-only chmod handler and short backoff retries
-    to handle transient OS/virtiofs file handle release delays.
-    """
-    if not os.path.exists(path):
-        return
-
-    def _on_rm_error(func, failed_path, _exc_info):
-        try:
-            os.chmod(failed_path, 0o700)
-            func(failed_path)
-        except Exception:
-            pass
-
-    for attempt in range(max(1, retries)):
-        if not os.path.exists(path):
-            return
-        try:
-            shutil.rmtree(path, onerror=_on_rm_error)
-        except Exception:
-            pass
-        if not os.path.exists(path):
-            return
-        try:
-            os.rmdir(path)
-            return
-        except Exception:
-            if attempt + 1 < retries:
-                time.sleep(retry_delay * (attempt + 1))
-
-
-def _cleanup_stale_swap_dirs(parent_dir: str) -> None:
-    """
-    Sweeps and cleans up any residual .old_* or .staging_* directories inside parent_dir
-    left behind by prior swaps or delayed handle releases.
-    """
-    if not os.path.isdir(parent_dir):
-        return
-    try:
-        entries = os.listdir(parent_dir)
-    except Exception:
-        return
-    for entry in entries:
-        if entry.startswith((".old_", ".staging_")):
-            stale_path = os.path.join(parent_dir, entry)
-            if os.path.isdir(stale_path):
-                _force_rmtree_with_retry(stale_path, retries=3, retry_delay=0.03)
-
-
-def _is_dir_handle_locked_for_rename(err: OSError, parent_dir: str, target_dir: str) -> bool:
-    """
-    Three-stage cross-platform discriminator to distinguish transient directory handle locking
-    (e.g., Windows/virtiofs/WSL2/9p open directory handles by IDE/watchers) from genuine
-    filesystem permission or I/O failures.
-    """
-    import errno
-    err_no = getattr(err, "errno", None)
-    win_err = getattr(err, "winerror", None)
-    if err_no not in (errno.EACCES, errno.EBUSY, errno.EPERM) and win_err not in (5, 32):
-        return False
-
-    if not os.path.isdir(parent_dir) or not os.path.isdir(target_dir):
-        return False
-
-    # Stage 1: Verify local OS access mode bits on both parent_dir and target_dir
-    req_mode = os.W_OK if os.name == "nt" else (os.W_OK | os.X_OK)
-    if not os.access(parent_dir, req_mode) or not os.access(target_dir, req_mode):
-        return False
-
-    # Stage 2: Execute a physical file-level write + atomic replace + unlink probe inside target_dir
-    probe_src = os.path.join(target_dir, f".yscb_probe_src_{os.getpid()}_{int(time.time() * 1000)}")
-    probe_dst = os.path.join(target_dir, f".yscb_probe_dst_{os.getpid()}_{int(time.time() * 1000)}")
-    try:
-        with open(probe_src, "wb") as f:
-            f.write(b"1")
-            f.flush()
-        os.replace(probe_src, probe_dst)
-        os.remove(probe_dst)
-        return True
-    except Exception:
-        return False
-    finally:
-        for p in (probe_src, probe_dst):
-            if os.path.exists(p):
-                try:
-                    os.remove(p)
-                except Exception:
-                    pass
-
-
-def _inplace_atomic_sync_dir(staging_dir: str, target_dir: str) -> None:
-    """
-    Stage 3: All-or-nothing file-level atomic sync from staging_dir into target_dir when
-    directory-level rename is blocked by host/virtiofs open directory handles.
-    """
-    import stat
-
-    staging_abs = os.path.abspath(staging_dir)
-    target_abs = os.path.abspath(target_dir)
-    parent_dir = os.path.dirname(target_abs)
-    base_name = os.path.basename(target_abs)
-    backup_dir = os.path.join(parent_dir, f".old_backup_{base_name}_{os.getpid()}_{int(time.time() * 1000)}")
-
-    existing_rel_files: Set[str] = set()
-    os.makedirs(backup_dir, exist_ok=True)
-
-    try:
-        # 1. Snapshot all existing files in target_abs into backup_dir for all-or-nothing rollback
-        for root, dirs, files in os.walk(target_abs):
-            dirs[:] = [d for d in dirs if not d.startswith((".old_", ".staging_", ".yscb_probe_"))]
-            rel_root = os.path.relpath(root, target_abs)
-            if rel_root == ".":
-                rel_root = ""
-            for fname in files:
-                if fname.startswith((".yscb_probe_", ".yscb_tmp_")):
-                    continue
-                rel_path = os.path.join(rel_root, fname) if rel_root else fname
-                norm_rel = rel_path.replace("\\", "/")
-                existing_rel_files.add(norm_rel)
-                src_f = os.path.join(root, fname)
-                bak_f = os.path.join(backup_dir, rel_path)
-                os.makedirs(os.path.dirname(bak_f), exist_ok=True)
-                shutil.copy2(src_f, bak_f)
-
-        # 2. Atomically replace/create all files from staging_abs into target_abs
-        staged_rel_files: Set[str] = set()
-        for root, dirs, files in os.walk(staging_abs):
-            rel_root = os.path.relpath(root, staging_abs)
-            if rel_root == ".":
-                rel_root = ""
-            target_sub = os.path.join(target_abs, rel_root) if rel_root else target_abs
-            os.makedirs(target_sub, exist_ok=True)
-            for fname in files:
-                rel_path = os.path.join(rel_root, fname) if rel_root else fname
-                norm_rel = rel_path.replace("\\", "/")
-                staged_rel_files.add(norm_rel)
-                src_f = os.path.join(root, fname)
-                dst_f = os.path.join(target_abs, rel_path)
-                tmp_dst = os.path.join(os.path.dirname(dst_f), f".yscb_tmp_{os.getpid()}_{fname}")
-                try:
-                    if os.path.exists(dst_f) and not os.access(dst_f, os.W_OK):
-                        try:
-                            os.chmod(dst_f, stat.S_IWRITE | stat.S_IREAD)
-                        except Exception:
-                            pass
-                    shutil.copy2(src_f, tmp_dst)
-                    os.replace(tmp_dst, dst_f)
-                finally:
-                    if os.path.exists(tmp_dst):
-                        try:
-                            os.remove(tmp_dst)
-                        except Exception:
-                            pass
-
-        # 3. Remove obsolete files that no longer exist in staging_abs
-        obsolete_files = existing_rel_files - staged_rel_files
-        for norm_rel in obsolete_files:
-            obs_f = os.path.join(target_abs, norm_rel.replace("/", os.sep))
-            if os.path.isfile(obs_f):
-                try:
-                    os.chmod(obs_f, stat.S_IWRITE | stat.S_IREAD)
-                except Exception:
-                    pass
-                os.remove(obs_f)
-
-        # 4. Best-effort cleanup of empty obsolete subdirectories (safe if locked since all files are removed)
-        for root, dirs, _ in os.walk(target_abs, topdown=False):
-            for d in dirs:
-                d_abs = os.path.join(root, d)
-                rel_d = os.path.relpath(d_abs, target_abs)
-                staged_d = os.path.join(staging_abs, rel_d)
-                if not os.path.exists(staged_d):
-                    try:
-                        if not os.listdir(d_abs):
-                            os.rmdir(d_abs)
-                    except OSError:
-                        pass
-    except Exception:
-        # Full rollback from backup_dir if any file write/replace/unlink failed
-        try:
-            for root, _, files in os.walk(target_abs):
-                rel_root = os.path.relpath(root, target_abs)
-                if rel_root == ".":
-                    rel_root = ""
-                for fname in files:
-                    rel_path = os.path.join(rel_root, fname) if rel_root else fname
-                    norm_rel = rel_path.replace("\\", "/")
-                    if norm_rel not in existing_rel_files:
-                        try:
-                            os.remove(os.path.join(root, fname))
-                        except Exception:
-                            pass
-            for norm_rel in existing_rel_files:
-                rel_os = norm_rel.replace("/", os.sep)
-                bak_f = os.path.join(backup_dir, rel_os)
-                dst_f = os.path.join(target_abs, rel_os)
-                if os.path.isfile(bak_f):
-                    os.makedirs(os.path.dirname(dst_f), exist_ok=True)
-                    tmp_restore = os.path.join(os.path.dirname(dst_f), f".yscb_restore_{os.getpid()}_{os.path.basename(dst_f)}")
-                    shutil.copy2(bak_f, tmp_restore)
-                    os.replace(tmp_restore, dst_f)
-        except Exception:
-            pass
-        raise
-    finally:
-        if os.path.exists(backup_dir):
-            _force_rmtree_with_retry(backup_dir)
-
-
-def _atomic_swap_dir(
-    staging_dir: str,
-    target_dir: str,
-    retries: int = 3,
-    retry_delay: float = 0.05,
-) -> None:
-    """
-    Atomically swaps a prepared staging_dir into target_dir within the same parent filesystem.
-    Moves any existing target_dir to a hidden .old_<name>_<pid> sibling, replaces staging_dir
-    into target_dir, rolls back from .old on failure, and removes .old and stale swap dirs upon success.
-    When directory-level rename is blocked by host/virtiofs directory handles (verified via 3-stage
-    probe), falls back to all-or-nothing file-level atomic sync.
-    """
-    target_abs = os.path.abspath(target_dir)
-    staging_abs = os.path.abspath(staging_dir)
-    parent_dir = os.path.dirname(target_abs)
-    base_name = os.path.basename(target_abs)
-    old_abs = os.path.join(parent_dir, f".old_{base_name}_{os.getpid()}_{int(time.time() * 1000)}")
-
-    def _replace_with_retry(src: str, dst: str) -> None:
-        last_err: Optional[Exception] = None
-        for attempt in range(max(1, retries)):
-            try:
-                os.replace(src, dst)
-                return
-            except OSError as err:
-                last_err = err
-                if attempt + 1 < retries:
-                    time.sleep(retry_delay)
-        if last_err is not None:
-            raise last_err
-
-    moved_old = False
-    swap_succeeded = False
-    try:
-        if os.path.exists(old_abs):
-            _force_rmtree_with_retry(old_abs)
-
-        if os.path.exists(target_abs):
-            try:
-                _replace_with_retry(target_abs, old_abs)
-                moved_old = True
-            except OSError as rename_err:
-                if _is_dir_handle_locked_for_rename(rename_err, parent_dir, target_abs):
-                    _inplace_atomic_sync_dir(staging_abs, target_abs)
-                    swap_succeeded = True
-                    return
-                raise
-
-        _replace_with_retry(staging_abs, target_abs)
-        swap_succeeded = True
-    except BaseException:
-        if moved_old and os.path.exists(old_abs):
-            try:
-                if os.path.exists(target_abs):
-                    _force_rmtree_with_retry(target_abs)
-                _replace_with_retry(old_abs, target_abs)
-            except Exception:
-                pass
-        raise
-    finally:
-        if swap_succeeded and os.path.exists(old_abs):
-            _force_rmtree_with_retry(old_abs)
-        if os.path.exists(staging_abs):
-            _force_rmtree_with_retry(staging_abs)
-        if swap_succeeded:
-            _cleanup_stale_swap_dirs(parent_dir)
-
-
-atomic_swap_directory = _atomic_swap_dir
-
-
 def _clean_module_cache(module_name: str) -> None:
     """物理清空指定模組之快取空間 (cache://{module_name}/)。"""
     cache_uri = f"cache://{module_name}"
@@ -717,7 +440,7 @@ class AtomicEngine:
                         if isinstance(mp, str) and mp.strip() in LEGACY_PROVIDER_URLS:
                             m_info["provider"] = DEFAULT_PROVIDER_URL
                             changed = True
-            if changed:
+            if changed and self._active_locks:
                 try:
                     self._save_config(cfg_path, data)
                 except Exception:
@@ -768,8 +491,8 @@ class AtomicEngine:
     def act_lock(self, operation: str = "global", timeout: float = 10.0) -> bool:
         """
         Acquire inter-process lock on cache://.yscb.lock using core.platform.InterProcessLock.
-        Supports same-process reentrancy across operations sharing the underlying lock handle,
-        and stale-lock auto-healing.
+        Supports same-process reentrancy across operations sharing the underlying lock handle
+        while preserving the lock file Inode on disk.
         """
         existing = self._active_locks.get(operation)
         if existing is not None and existing.is_locked:
@@ -789,23 +512,8 @@ class AtomicEngine:
         lock_path = uri.resolve(lock_uri)
         vfs.makedirs("cache://", exist_ok=True)
 
-        if os.path.exists(lock_path):
-            try:
-                mtime = os.path.getmtime(lock_path)
-                if (time.time() - mtime) > timeout:
-                    for held_op, held_lock in list(self._active_locks.items()):
-                        held_lock.release()
-                        self._active_locks.pop(held_op, None)
-                        self._lock_counts.pop(held_op, None)
-                    probe = InterProcessLock(lock_path)
-                    if probe.acquire(blocking=False):
-                        probe.release()
-                        vfs.remove(lock_uri)
-            except OSError:
-                pass
-
-        lock = InterProcessLock(lock_path)
-        if not lock.acquire(blocking=True, timeout_sec=timeout):
+        lock = InterProcessLock(lock_path, reentrant=False)
+        if not lock.acquire(blocking=True, timeout_sec=timeout, reentrant=False):
             raise BlockingIOError(f"Another yscb process is currently holding the lock for operation '{operation}'.")
         try:
             os.utime(lock_path, None)
@@ -816,7 +524,10 @@ class AtomicEngine:
         return True
 
     def act_unlock(self, operation: str = "global") -> bool:
-        """Release inter-process lock on cache://.yscb.lock when all active operation counts reach zero."""
+        """
+        Release inter-process lock on cache://.yscb.lock when all active operation counts reach zero.
+        Preserves the lock file Inode on disk to prevent POSIX flock unlink races.
+        """
         count = self._lock_counts.get(operation, 0)
         if count > 1:
             self._lock_counts[operation] = count - 1
@@ -825,24 +536,8 @@ class AtomicEngine:
         self._lock_counts.pop(operation, None)
         lock = self._active_locks.pop(operation, None)
         remaining_active = sum(self._lock_counts.values()) > 0 or bool(self._active_locks)
-        lock_uri = "cache://.yscb.lock"
-        if lock is not None:
-            if not remaining_active:
-                lock.release()
-                if vfs.exists(lock_uri):
-                    try:
-                        vfs.remove(lock_uri)
-                    except OSError:
-                        pass
-        else:
-            if not remaining_active:
-                try:
-                    lock_p = uri.resolve(lock_uri)
-                    if os.path.exists(lock_p):
-                        InterProcessLock(lock_p).release()
-                        vfs.remove(lock_uri)
-                except Exception:
-                    pass
+        if lock is not None and not remaining_active:
+            lock.release()
         return True
 
     @contextmanager
@@ -895,7 +590,7 @@ class AtomicEngine:
                     return dest_zip_uri
 
         src_dir = find_matching_local_source_dir(module_name, [p_abs] if p_abs else [])
-        if src_dir and package_local_source_if_exact_match(src_dir, version, dest_zip_real):
+        if src_dir and package_local_source_if_exact_match(src_dir, version, dest_zip_real, release_zip_path=None):
             return dest_zip_uri
 
         raise FileNotFoundError(
@@ -1019,15 +714,28 @@ class AtomicEngine:
                 os.path.join(p_abs, "release", module_name, version),
             ):
                 if os.path.isdir(d_path) and os.path.isfile(os.path.join(d_path, "manifest.json")):
+                    if package_local_source_if_exact_match(d_path, version, dest_zip_real, release_zip_path=None):
+                        return dest_zip_uri
+                    ignores = list(_RELEASE_PACKAGE_IGNORES)
                     os.makedirs(os.path.dirname(os.path.abspath(dest_zip_real)), exist_ok=True)
                     tmp_zip = f"{dest_zip_real}.tmp_{os.getpid()}"
                     try:
                         with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-                            for root, _, files in os.walk(d_path):
-                                for f in files:
+                            for root, dirs, files in os.walk(d_path):
+                                rel_dir = os.path.relpath(root, d_path).replace("\\", "/")
+                                if rel_dir == ".":
+                                    rel_dir = ""
+                                dirs[:] = sorted(
+                                    d for d in dirs if not _should_ignore_rel_path(f"{rel_dir}/{d}".lstrip("/"), ignores)
+                                )
+                                for f in sorted(files):
+                                    arc = f"{rel_dir}/{f}".lstrip("/")
+                                    if _should_ignore_rel_path(arc, ignores):
+                                        continue
                                     f_p = os.path.join(root, f)
-                                    arc = os.path.relpath(f_p, d_path).replace("\\", "/")
-                                    zf.write(f_p, arcname=arc)
+                                    zi = _make_deterministic_zip_info(arc)
+                                    payload = _read_normalized_package_file_bytes(f_p, arc)
+                                    zf.writestr(zi, payload, compress_type=zipfile.ZIP_DEFLATED)
                         os.replace(tmp_zip, dest_zip_real)
                     finally:
                         if os.path.exists(tmp_zip):
@@ -1037,15 +745,10 @@ class AtomicEngine:
                                 pass
                     return dest_zip_uri
 
-        # Local exact-version source/<mod> dynamic packaging fallback
+        # Local exact-version source/<mod> dynamic packaging fallback (writes ONLY to .mirror, never release/)
         src_dir = find_matching_local_source_dir(module_name, [p_abs] if p_abs else [])
         if src_dir:
-            rel_zip_real = None
-            try:
-                rel_zip_real = uri.resolve(rel_zip)
-            except Exception:
-                rel_zip_real = None
-            if package_local_source_if_exact_match(src_dir, version, dest_zip_real, release_zip_path=rel_zip_real):
+            if package_local_source_if_exact_match(src_dir, version, dest_zip_real, release_zip_path=None):
                 return dest_zip_uri
 
         return None
@@ -2058,6 +1761,24 @@ class AtomicEngine:
                 if os.path.exists(staging_dir):
                     shutil.rmtree(staging_dir, ignore_errors=True)
 
+    def _invalidate_all_runtime_caches(self) -> None:
+        """Invalidates all host, config, locale, symbol, contributes, URI, dispatcher, and space caches."""
+        try:
+            from core import config as cfg_mod, locale as loc_mod, symbols as sym_mod, contributes as contrib_mod
+            from core.commands import dispatcher as disp_mod
+            from core.context import invalidate_host_caches
+            from core.space import reset_default_instances as reset_space_instances
+            cfg_mod.reload()
+            loc_mod.clear_cache()
+            sym_mod.clear_callable_cache()
+            contrib_mod.invalidate_cache()
+            uri.invalidate_uri_cache()
+            disp_mod.clear_cache()
+            reset_space_instances()
+            invalidate_host_caches("all")
+        except Exception:
+            pass
+
     def act_reload(
         self,
         clean_stage: bool = True,
@@ -2101,7 +1822,7 @@ class AtomicEngine:
                         except Exception:
                             pass
 
-        # Stage 1.5: 相依交集自檢與自動自癒 (若 installed_modules 漏列底層相依模組或相依版號過舊且存在相容交集，自動補齊並重新讀取 installed)
+        # Stage 1.5: 相依交集自檢與自動自癒
         if reconcile_deps and default_prov:
             try:
                 healed = self.reconcile_installed_dependencies(
@@ -2155,21 +1876,7 @@ class AtomicEngine:
         self.act_deploy_configs_from_modules()
         _cleanup_stale_swap_dirs(modules_root_real)
 
-        try:
-            from core import config as cfg_mod, locale as loc_mod, symbols as sym_mod, contributes as contrib_mod
-            from core.commands import dispatcher as disp_mod
-            from core.context import invalidate_host_caches
-            from core.space import reset_default_instances as reset_space_instances
-            cfg_mod.reload()
-            loc_mod.clear_cache()
-            sym_mod.clear_callable_cache()
-            contrib_mod.invalidate_cache()
-            uri.invalidate_uri_cache()
-            disp_mod.clear_cache()
-            reset_space_instances()
-            invalidate_host_caches("all")
-        except Exception:
-            pass
+        self._invalidate_all_runtime_caches()
 
         # Stage 4: 依賴注入與事件廣播
         if inject_stage:
@@ -2185,9 +1892,9 @@ class AtomicEngine:
         """
         Creates a full atomic snapshot:
         1. Backs up yscb.config.json.
-        2. Backs up config:// (config/) and config.local:// (config.local/).
-        3. Backs up storage:// (storage/).
-        4. Backs up module:// (modules/).
+        2. Backs up config:// (config/) and config.local:// (.config.local/).
+        3. Backs up storage:// (storage/) and storage.local:// (.storage.local/).
+        4. Backs up module:// (.modules/).
         """
         host_dir, _ = uri._get_host_config()
         host_cfg = os.path.join(host_dir, "yscb.config.json")
@@ -2209,6 +1916,9 @@ class AtomicEngine:
         if vfs.exists("storage://"):
             vfs.copy("storage://", f"{snap_dir}/storage/")
 
+        if vfs.exists("storage.local://"):
+            vfs.copy("storage.local://", f"{snap_dir}/storage.local/")
+
         if vfs.exists("module://"):
             modules_root_real = uri.resolve("module://")
             _cleanup_stale_swap_dirs(modules_root_real)
@@ -2224,7 +1934,7 @@ class AtomicEngine:
         """
         Restores a full atomic snapshot:
         1. Restores yscb.config.json.
-        2. Restores config/, config.local/, and storage/.
+        2. Restores config/, config.local/, storage/, and storage.local/.
         3. Restores modules/.
         """
         host_dir, _ = uri._get_host_config()
@@ -2242,6 +1952,8 @@ class AtomicEngine:
             if vfs.exists("config://"):
                 vfs.rmtree("config://", ignore_errors=True)
             vfs.copy(snap_config_dir, "config://")
+        elif vfs.exists("config://"):
+            vfs.rmtree("config://", ignore_errors=True)
 
         snap_config_local_dir = f"{snap_dir}/config.local"
         if vfs.exists(snap_config_local_dir):
@@ -2258,6 +1970,18 @@ class AtomicEngine:
             if vfs.exists("storage://"):
                 vfs.rmtree("storage://", ignore_errors=True)
             vfs.copy(snap_storage_dir, "storage://")
+        elif vfs.exists("storage://"):
+            vfs.rmtree("storage://", ignore_errors=True)
+
+        snap_storage_local_dir = f"{snap_dir}/storage.local"
+        if vfs.exists(snap_storage_local_dir):
+            if vfs.exists("storage.local://"):
+                vfs.rmtree("storage.local://", ignore_errors=True)
+            vfs.copy(snap_storage_local_dir, "storage.local://")
+        else:
+            if vfs.exists("storage.local://"):
+                vfs.rmtree("storage.local://", ignore_errors=True)
+            vfs.makedirs("storage.local://", exist_ok=True)
 
         snap_mod_dir = f"{snap_dir}/modules"
         if vfs.exists(snap_mod_dir):
@@ -2288,6 +2012,7 @@ class AtomicEngine:
           * {major}.{minor}.{patch}.{rev}.py
         - Silently skips non-existent scripts.
         - Raises RuntimeError on script failure to trigger atomic snapshot rollback.
+        - Reconciles caches, contributes, and gitignore after executing migration scripts.
         """
         if str(old_version).strip().lower() == "build" or str(new_version).strip().lower() == "build":
             return True
@@ -2378,5 +2103,16 @@ class AtomicEngine:
             except Exception as e:
                 raise RuntimeError(f"Migration step '{script_rel}' failed for module '{module_name}': {e}")
 
-        return True
+        if candidates:
+            self._invalidate_all_runtime_caches()
+            try:
+                self.contributes_aggregator.scan_and_inject()
+            except Exception:
+                pass
+            try:
+                from core import gitignore as gi_mod
+                gi_mod.sync(emit_event=False)
+            except Exception:
+                pass
 
+        return True

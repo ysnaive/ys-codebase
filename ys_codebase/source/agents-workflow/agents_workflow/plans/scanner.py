@@ -39,12 +39,14 @@ class PlanScanner:
         if sub_dirs:
             sub_statuses = [self.get_plan_info(sd)[1] for sd in sub_dirs]
             all_subs_completed = all(
-                ("Completed" in s or "Concluded" in s) and "Paused" not in s
+                ("Completed" in s or "Concluded" in s)
+                and "Paused" not in s
+                and "Revising" not in s
                 for s in sub_statuses
             )
 
         raw_status = PlanStatusResolver.get_doc_header_status(umbrella)
-        if raw_status in ("completed", "concluded"):
+        if raw_status in PlanStatusResolver.COMPLETED_STATUS_SET:
             return "Completed" if all_subs_completed else "In Progress"
         if raw_status in ("in progress", "executing", "implementing"):
             return "In Progress"
@@ -53,7 +55,7 @@ class PlanScanner:
 
         if not sub_dirs:
             return "Planning"
-        return "Completed" if all_subs_completed else "In Progress"
+        return "In Progress"
 
     @staticmethod
     def _resolve_fast_track_status(ft_plan: Path) -> str:
@@ -158,6 +160,9 @@ class PlanScanner:
             track_type = "Seeded"
             status = "Seeded (Pending Plan)"
 
+        if status in ("Completed", "Concluded") and PlanStatusResolver._has_active_attached_revision(plan_dir):
+            status = "Revising"
+
         if (plan_dir / "handoff.md").exists() and status not in ("Completed", "Concluded"):
             status = f"{status} (Paused)"
 
@@ -245,25 +250,45 @@ class PlanScanner:
             )
         return "\n".join(lines)
 
+    def _is_within_plans_dir(self, cand_dir: Path) -> bool:
+        """驗證目標目錄是否嚴格位於 self.plans_dir 內部（1 層主計畫或 2 層 sub_* 子計畫），阻擋 ../ 越界存取。"""
+        if self.plans_dir is None:
+            return False
+        try:
+            rel = cand_dir.resolve().relative_to(self.plans_dir.resolve())
+        except ValueError:
+            return False
+        parts = rel.parts
+        if len(parts) == 1 and not parts[0].startswith(".") and parts[0] not in ("archived", "roadmap"):
+            return True
+        if len(parts) == 2 and not parts[0].startswith(".") and parts[1].startswith("sub_"):
+            return True
+        return False
+
     def resolve_target_plan_dir(
         self, plan_name_or_subpath: Optional[Union[str, Path]] = None
     ) -> Tuple[Optional[Path], Optional[str]]:
         """
         解析目標計畫或子計畫目錄路徑。
-        - 若指定 plan_name_or_subpath：支援完整路徑、`<plan_name>`、`<plan_name>/sub_XX` 或唯一 `sub_XX` 名稱。
+        - 若指定 plan_name_or_subpath：支援完整路徑、`<plan_name>`、`<plan_name>/sub_XX` 或唯一 `sub_XX` 名稱（嚴格限制於 self.plans_dir 內）。
         - 若未指定：自動篩選尚未 Completed / Concluded 之活躍計畫；若僅有 1 個則自動定位，若超過 1 個則拒絕盲猜並回傳提示訊息。
         """
         if plan_name_or_subpath:
             raw_str = str(plan_name_or_subpath).strip()
             cand = Path(raw_str)
             if cand.is_absolute() and cand.is_dir():
-                return cand.resolve(), None
+                resolved_cand = cand.resolve()
+                if self._is_within_plans_dir(resolved_cand):
+                    return resolved_cand, None
+                return None, f"目標計畫目錄超出進行中計畫根目錄範圍：'{raw_str}'。"
 
             rel_cand = (self.plans_dir / raw_str).resolve()
             if rel_cand.is_dir():
-                return rel_cand, None
+                if self._is_within_plans_dir(rel_cand):
+                    return rel_cand, None
+                return None, f"目標計畫目錄超出進行中計畫根目錄範圍：'{raw_str}'。"
 
-            if raw_str.startswith("sub_") and self.plans_dir.exists():
+            if raw_str.startswith("sub_") and "/" not in raw_str and "\\" not in raw_str and self.plans_dir.exists():
                 matched_subs: List[Path] = []
                 for p_dir in sorted(self.plans_dir.iterdir(), key=lambda x: x.name, reverse=True):
                     if p_dir.is_dir() and _PLAN_DATE_PREFIX_RE.match(p_dir.name):

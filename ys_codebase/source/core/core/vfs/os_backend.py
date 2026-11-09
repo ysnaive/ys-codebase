@@ -15,6 +15,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Union, IO, Generator, Set
 
+from core.context import get_runtime_context
 from core.vfs.base import VFSBackend
 
 _CONTRIB_CACHE_TRIGGER_FILES = frozenset({
@@ -33,8 +34,8 @@ _CONTRIB_CACHE_TRIGGER_FILES = frozenset({
 def _maybe_invalidate_uri_cache(norm_path: str, is_dir_op: bool = False) -> None:
     """When contribute.json, config files, or directories are mutated via VFS, invalidate URI and contributes caches."""
     try:
-        from core import uri, contributes
-        contributes._JSON_FILE_CACHE.pop(norm_path, None)
+        from core import uri
+        get_runtime_context().contributes_json_file_cache.pop(norm_path, None)
         base = os.path.basename(norm_path)
         parent_base = os.path.basename(os.path.dirname(norm_path))
         if (
@@ -48,7 +49,7 @@ def _maybe_invalidate_uri_cache(norm_path: str, is_dir_op: bool = False) -> None
         pass
 
 
-def robust_rmtree(path: str, ignore_errors: bool = False, max_retries: int = 5) -> None:
+def robust_rmtree(path: str, ignore_errors: bool = False, max_retries: int = 5, retries: Optional[int] = None, retry_delay: float = 0.05) -> None:
     """
     Removes a directory tree across platforms, stripping read-only attributes on
     encountered files (such as Git packfiles on Windows) and retrying transient
@@ -70,7 +71,7 @@ def robust_rmtree(path: str, ignore_errors: bool = False, max_retries: int = 5) 
             if not ignore_errors:
                 raise exc
 
-    retries = max(1, max_retries)
+    retries = max(1, retries if retries is not None else max_retries)
     for attempt in range(retries):
         try:
             if os.path.islink(norm_path) or os.path.isfile(norm_path):
@@ -86,7 +87,7 @@ def robust_rmtree(path: str, ignore_errors: bool = False, max_retries: int = 5) 
             return
         except OSError:
             if attempt < retries - 1:
-                time.sleep(0.05 * (attempt + 1))
+                time.sleep(retry_delay * (attempt + 1))
                 continue
             if not ignore_errors:
                 raise
@@ -147,6 +148,191 @@ def robust_replace(src: str, dst: str, max_retries: int = 10) -> None:
             raise
 
 
+def _cleanup_stale_swap_dirs(parent_dir: str) -> None:
+    """
+    Sweeps and cleans up any residual .old_* or .staging_* directories inside parent_dir
+    left behind by prior swaps or delayed handle releases.
+    """
+    if not parent_dir or not os.path.isdir(parent_dir):
+        return
+    try:
+        entries = os.listdir(parent_dir)
+    except Exception:
+        return
+    for entry in entries:
+        if entry.startswith((".old_", ".staging_")):
+            stale_path = os.path.join(parent_dir, entry)
+            if os.path.isdir(stale_path):
+                robust_rmtree(stale_path, ignore_errors=True, max_retries=3)
+
+
+def _is_dir_handle_locked_for_rename(err: OSError, parent_dir: str, target_dir: str) -> bool:
+    """
+    Three-stage cross-platform discriminator to distinguish transient directory handle locking
+    (e.g., Windows/virtiofs/WSL2/9p open directory handles by IDE/watchers) from genuine
+    filesystem permission or I/O failures.
+    """
+    err_no = getattr(err, "errno", None)
+    win_err = getattr(err, "winerror", None)
+    if err_no not in (errno.EACCES, errno.EBUSY, errno.EPERM) and win_err not in (5, 32):
+        return False
+
+    if not os.path.isdir(parent_dir) or not os.path.isdir(target_dir):
+        return False
+
+    # Stage 1: Verify local OS access mode bits on both parent_dir and target_dir
+    req_mode = os.W_OK if os.name == "nt" else (os.W_OK | os.X_OK)
+    if not os.access(parent_dir, req_mode) or not os.access(target_dir, req_mode):
+        return False
+
+    # Stage 2: Execute a physical file-level write + atomic replace + unlink probe inside target_dir
+    probe_src = os.path.join(target_dir, f".yscb_probe_src_{os.getpid()}_{int(time.time() * 1000)}")
+    probe_dst = os.path.join(target_dir, f".yscb_probe_dst_{os.getpid()}_{int(time.time() * 1000)}")
+    try:
+        with open(probe_src, "wb") as f:
+            f.write(b"1")
+            f.flush()
+        os.replace(probe_src, probe_dst)
+        os.remove(probe_dst)
+        return True
+    except Exception:
+        return False
+    finally:
+        for p in (probe_src, probe_dst):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
+
+def _inplace_atomic_sync_dir(staging_dir: str, target_dir: str) -> None:
+    """
+    Stage 3: All-or-nothing file-level atomic sync from staging_dir into target_dir when
+    directory-level rename is blocked by host/virtiofs open directory handles.
+    """
+    staging_abs = os.path.abspath(staging_dir)
+    target_abs = os.path.abspath(target_dir)
+    parent_dir = os.path.dirname(target_abs)
+    base_name = os.path.basename(target_abs)
+    backup_dir = os.path.join(parent_dir, f".old_backup_{base_name}_{os.getpid()}_{int(time.time() * 1000)}")
+
+    existing_rel_files: Set[str] = set()
+    os.makedirs(backup_dir, exist_ok=True)
+
+    try:
+        # 1. Snapshot all existing files in target_abs into backup_dir for all-or-nothing rollback
+        for root, dirs, files in os.walk(target_abs):
+            dirs[:] = [d for d in dirs if not d.startswith((".old_", ".staging_", ".yscb_probe_"))]
+            rel_root = os.path.relpath(root, target_abs)
+            if rel_root == ".":
+                rel_root = ""
+            for fname in files:
+                if fname.startswith((".yscb_probe_", ".yscb_tmp_")):
+                    continue
+                rel_path = os.path.join(rel_root, fname) if rel_root else fname
+                norm_rel = rel_path.replace("\\", "/")
+                existing_rel_files.add(norm_rel)
+                src_f = os.path.join(root, fname)
+                bak_f = os.path.join(backup_dir, rel_path)
+                os.makedirs(os.path.dirname(bak_f), exist_ok=True)
+                shutil.copy2(src_f, bak_f)
+
+        # 2. Atomically replace/create all files from staging_abs into target_abs
+        staged_rel_files: Set[str] = set()
+        for root, _dirs, files in os.walk(staging_abs):
+            rel_root = os.path.relpath(root, staging_abs)
+            if rel_root == ".":
+                rel_root = ""
+            target_sub = os.path.join(target_abs, rel_root) if rel_root else target_abs
+            os.makedirs(target_sub, exist_ok=True)
+            for fname in files:
+                rel_path = os.path.join(rel_root, fname) if rel_root else fname
+                norm_rel = rel_path.replace("\\", "/")
+                staged_rel_files.add(norm_rel)
+                src_f = os.path.join(root, fname)
+                dst_f = os.path.join(target_abs, rel_path)
+                tmp_dst = os.path.join(os.path.dirname(dst_f), f".yscb_tmp_{os.getpid()}_{fname}")
+                try:
+                    if os.path.exists(dst_f) and not os.access(dst_f, os.W_OK):
+                        try:
+                            os.chmod(dst_f, stat.S_IWRITE | stat.S_IREAD)
+                        except Exception:
+                            pass
+                    shutil.copy2(src_f, tmp_dst)
+                    os.replace(tmp_dst, dst_f)
+                finally:
+                    if os.path.exists(tmp_dst):
+                        try:
+                            os.remove(tmp_dst)
+                        except Exception:
+                            pass
+
+        # 3. Remove obsolete files that no longer exist in staging_abs
+        obsolete_files = existing_rel_files - staged_rel_files
+        for norm_rel in obsolete_files:
+            obs_f = os.path.join(target_abs, norm_rel.replace("/", os.sep))
+            if os.path.isfile(obs_f):
+                try:
+                    os.chmod(obs_f, stat.S_IWRITE | stat.S_IREAD)
+                except Exception:
+                    pass
+                os.remove(obs_f)
+
+        # 4. Best-effort cleanup of empty obsolete subdirectories
+        for root, dirs, _ in os.walk(target_abs, topdown=False):
+            for d in dirs:
+                d_abs = os.path.join(root, d)
+                rel_d = os.path.relpath(d_abs, target_abs)
+                staged_d = os.path.join(staging_abs, rel_d)
+                if not os.path.exists(staged_d):
+                    try:
+                        if not os.listdir(d_abs):
+                            os.rmdir(d_abs)
+                    except OSError:
+                        pass
+    except Exception:
+        # Full rollback from backup_dir if any file write/replace/unlink failed
+        try:
+            for root, _, files in os.walk(target_abs):
+                rel_root = os.path.relpath(root, target_abs)
+                if rel_root == ".":
+                    rel_root = ""
+                for fname in files:
+                    rel_path = os.path.join(rel_root, fname) if rel_root else fname
+                    norm_rel = rel_path.replace("\\", "/")
+                    if norm_rel not in existing_rel_files:
+                        target_f = os.path.join(root, fname)
+                        try:
+                            os.chmod(target_f, stat.S_IWRITE | stat.S_IREAD)
+                        except Exception:
+                            pass
+                        try:
+                            os.remove(target_f)
+                        except Exception:
+                            pass
+            for norm_rel in existing_rel_files:
+                rel_os = norm_rel.replace("/", os.sep)
+                bak_f = os.path.join(backup_dir, rel_os)
+                dst_f = os.path.join(target_abs, rel_os)
+                if os.path.isfile(bak_f):
+                    os.makedirs(os.path.dirname(dst_f), exist_ok=True)
+                    tmp_restore = os.path.join(os.path.dirname(dst_f), f".yscb_restore_{os.getpid()}_{os.path.basename(dst_f)}")
+                    shutil.copy2(bak_f, tmp_restore)
+                    if os.path.exists(dst_f):
+                        try:
+                            os.chmod(dst_f, stat.S_IWRITE | stat.S_IREAD)
+                        except Exception:
+                            pass
+                    os.replace(tmp_restore, dst_f)
+        except Exception:
+            pass
+        raise
+    finally:
+        if os.path.exists(backup_dir):
+            robust_rmtree(backup_dir, ignore_errors=True)
+
+
 def atomic_swap_directory(
     staging_dir: str,
     target_dir: str,
@@ -155,11 +341,13 @@ def atomic_swap_directory(
 ) -> None:
     """
     Atomically swaps `staging_dir` into `target_dir` within the same parent filesystem:
-    1. Moves existing `target_dir` to a `.old_<name>_<pid>_<ts>` backup directory.
+    1. Moves existing `target_dir` to a `.old_<name>_<pid>_<ts>` backup directory (falling back to
+       3-stage handle-lock probe and all-or-nothing file-level sync when directory rename is locked).
     2. Moves `staging_dir` into `target_dir`.
     3. Rolls back `.old` into `target_dir` if step 2 fails (even if `target_dir` was partially created).
-    4. Cleans up `.old` and `staging_dir` in `finally`.
+    4. Cleans up `.old`, `staging_dir`, and stale swap directories in `finally`.
     """
+    _ = retry_delay
     target_abs = os.path.normpath(os.path.abspath(target_dir))
     staging_abs = os.path.normpath(os.path.abspath(staging_dir))
     parent_dir = os.path.dirname(target_abs)
@@ -174,8 +362,16 @@ def atomic_swap_directory(
         if os.path.exists(old_abs) or os.path.lexists(old_abs):
             robust_rmtree(old_abs, ignore_errors=True, max_retries=retries)
         if os.path.exists(target_abs) or os.path.lexists(target_abs):
-            robust_replace(target_abs, old_abs, max_retries=retries)
-            moved_old = True
+            try:
+                robust_replace(target_abs, old_abs, max_retries=retries)
+                moved_old = True
+            except OSError as rename_err:
+                if _is_dir_handle_locked_for_rename(rename_err, parent_dir, target_abs):
+                    _inplace_atomic_sync_dir(staging_abs, target_abs)
+                    swap_succeeded = True
+                    _maybe_invalidate_uri_cache(target_abs, is_dir_op=True)
+                    return
+                raise
 
         robust_replace(staging_abs, target_abs, max_retries=retries)
         swap_succeeded = True
@@ -194,6 +390,8 @@ def atomic_swap_directory(
             robust_rmtree(old_abs, ignore_errors=True, max_retries=retries)
         if os.path.exists(staging_abs) or os.path.lexists(staging_abs):
             robust_rmtree(staging_abs, ignore_errors=True, max_retries=retries)
+        if swap_succeeded:
+            _cleanup_stale_swap_dirs(parent_dir)
 
 
 class OSBackend(VFSBackend):
@@ -391,9 +589,10 @@ class OSBackend(VFSBackend):
             robust_rmtree(norm_path, ignore_errors=ignore_errors)
         _maybe_invalidate_uri_cache(norm_path, is_dir_op=True)
 
-    def _safe_copytree(self, src: str, dst: str) -> None:
+    def _safe_copytree(self, src: str, dst: str, _root_dst: Optional[str] = None) -> None:
         """跨平台安全複製目錄樹，忽略暫態點目錄 (.old_* / .staging_*)，僅於大小寫不敏感系統跳過大小寫碰撞，並對 symlink 執行邊界校驗。"""
         os.makedirs(dst, exist_ok=True)
+        root_dst_norm = os.path.normpath(os.path.abspath(_root_dst or dst))
         is_case_insensitive = os.name == "nt" or sys.platform == "darwin" or (
             os.path.normcase("A") == os.path.normcase("a")
         )
@@ -410,15 +609,19 @@ class OSBackend(VFSBackend):
             d = os.path.join(dst, item)
             if os.path.islink(s):
                 link_target = os.readlink(s)
-                dst_root_norm = os.path.normpath(os.path.abspath(dst))
                 d_norm = os.path.normpath(os.path.abspath(d))
-                if d_norm != dst_root_norm and not d_norm.startswith(dst_root_norm + os.sep):
-                    raise PermissionError(f"Symlink destination '{d}' escaped target tree '{dst}'.")
+                if not os.path.isabs(link_target):
+                    resolved_target = os.path.normpath(os.path.join(os.path.dirname(d_norm), link_target))
+                    boundary = self._real_root_dir or root_dst_norm
+                    if resolved_target != boundary and not resolved_target.startswith(boundary + os.sep):
+                        raise PermissionError(
+                            f"Symlink target '{link_target}' at '{d}' escaped boundary '{boundary}'."
+                        )
                 if os.path.lexists(d):
                     os.remove(d)
                 os.symlink(link_target, d)
             elif os.path.isdir(s):
-                self._safe_copytree(s, d)
+                self._safe_copytree(s, d, _root_dst=root_dst_norm)
             elif os.path.isfile(s):
                 shutil.copy2(s, d)
 

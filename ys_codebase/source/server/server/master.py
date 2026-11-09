@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from core import vfs
-from core.log import log
+from core.log import RollingFileLogger, log
 from core.platform import (
     InterProcessLock,
     build_runtime_pythonpath,
@@ -32,8 +32,11 @@ from core.platform import (
     spawn_detached,
     terminate_popen_tree,
 )
-from server.config import DEFAULT_WORKER_ALIVE_TIMEOUT_SEC, ServerConfig
-from server.logger import ServerLogger
+from server.config import (
+    DEFAULT_IDLE_TIMEOUT_SEC,
+    DEFAULT_WORKER_ALIVE_TIMEOUT_SEC,
+    ServerConfig,
+)
 from server.watcher import ModulesWatcher
 
 
@@ -366,11 +369,18 @@ class MasterSupervisor:
     def __init__(
         self,
         yscb_root: str,
-        idle_timeout_sec: float = 1800.0,
+        idle_timeout_sec: Optional[float] = None,
         enable_watcher: bool = True,
     ) -> None:
         self.yscb_root = os.path.abspath(yscb_root)
-        self.idle_timeout_sec = float(idle_timeout_sec)
+        self._explicit_idle_timeout: Optional[float] = (
+            float(idle_timeout_sec) if idle_timeout_sec is not None else None
+        )
+        self.idle_timeout_sec = (
+            self._explicit_idle_timeout
+            if self._explicit_idle_timeout is not None
+            else DEFAULT_IDLE_TIMEOUT_SEC
+        )
         ensure_private_venv(self.yscb_root)
         self.enable_watcher = enable_watcher
 
@@ -378,7 +388,7 @@ class MasterSupervisor:
         self.state_file = os.path.join(self.yscb_root, ".cache", "server", "daemon.json")
         self.lock_file = os.path.join(self.yscb_root, ".cache", "server", "daemon.lock")
 
-        self.logger = ServerLogger(self.yscb_root)
+        self.logger = RollingFileLogger(self.yscb_root)
         self.watcher: Optional[ModulesWatcher] = None
 
         self._worker_proc: Optional[subprocess.Popen] = None
@@ -743,6 +753,9 @@ class MasterSupervisor:
         proc = self._worker_proc
         task_q = getattr(proc, "_yscb_task_queue", None)
 
+        has_active_services = self.is_any_worker_service_busy() or bool(self._worker_services)
+        handshake_timeout = max(float(timeout_sec), 5.0) if has_active_services else float(timeout_sec)
+
         exited_gracefully = False
         if self._current_task is not None:
             self._preempted_pids.add(proc.pid)
@@ -750,7 +763,7 @@ class MasterSupervisor:
             try:
                 proc.stdin.write(b'{"action": "exit"}\n')
                 proc.stdin.flush()
-                proc.wait(timeout=min(timeout_sec, 1.5))
+                proc.wait(timeout=handshake_timeout)
                 exited_gracefully = True
             except (OSError, ValueError, subprocess.TimeoutExpired) as err:
                 self.logger.warning(f"Worker (PID: {proc.pid}) graceful exit handshake failed: {err}")
@@ -775,6 +788,12 @@ class MasterSupervisor:
         self._warming_since = None
         with self._services_lock:
             self._worker_services = []
+
+    def _sync_config_on_restart(self, cfg: ServerConfig) -> None:
+        """Synchronizes worker alive timeout and (unless explicitly overridden via CLI) idle timeout."""
+        if self._explicit_idle_timeout is None:
+            self.idle_timeout_sec = float(cfg.idle_timeout_sec)
+        self._worker_alive_timeout_sec = float(cfg.worker_alive_timeout_sec)
 
     def restart_worker(
         self,
@@ -805,8 +824,7 @@ class MasterSupervisor:
             try:
                 if not self._is_worker_completely_idle():
                     return 0
-                self.idle_timeout_sec = float(cfg.idle_timeout_sec)
-                self._worker_alive_timeout_sec = float(cfg.worker_alive_timeout_sec)
+                self._sync_config_on_restart(cfg)
                 with self._worker_lock:
                     old_pid = self._worker_proc.pid if self._worker_proc else 0
                     self.logger.info(f"Restarting idle Warm Worker (terminating old PID: {old_pid})...")
@@ -830,8 +848,7 @@ class MasterSupervisor:
             self.logger.info(f"Restarting Warm Worker (terminating old PID: {old_pid})...")
             self._kill_worker_locked(timeout_sec=1.5)
 
-        self.idle_timeout_sec = float(cfg.idle_timeout_sec)
-        self._worker_alive_timeout_sec = float(cfg.worker_alive_timeout_sec)
+        self._sync_config_on_restart(cfg)
 
         with self._dispatch_lock:
             with self._worker_lock:
@@ -847,6 +864,11 @@ class MasterSupervisor:
                 if touch_activity:
                     with self._activity_lock:
                         self._last_active_time = time.time()
+                if self.watcher is not None and hasattr(self.watcher, "refresh_snapshot"):
+                    try:
+                        self.watcher.refresh_snapshot()
+                    except Exception:
+                        pass
                 self._write_state()
                 self.logger.info(f"Fresh Warm Worker spawned (PID: {new_pid})")
                 return new_pid
@@ -948,12 +970,18 @@ class MasterSupervisor:
         Blocks until the current worker reports `worker_ready`.
 
         Args:
-            timeout_sec: Optional upper bound; None waits as long as the worker stays alive.
+            timeout_sec: Optional upper bound; defaults to `max(30.0, self._worker_alive_timeout_sec * 6.0)`
+                so a hung pre-warm hook never permanently deadlocks `_dispatch_lock`.
 
         Returns:
             bool: True once ready; False if the worker died or the timeout elapsed.
         """
-        deadline = None if timeout_sec is None else time.time() + timeout_sec
+        eff_timeout = (
+            float(timeout_sec)
+            if timeout_sec is not None
+            else max(30.0, float(self._worker_alive_timeout_sec) * 6.0)
+        )
+        deadline = time.time() + eff_timeout
         while True:
             proc = self._worker_proc
             event = self._worker_ready_event
@@ -961,9 +989,31 @@ class MasterSupervisor:
                 return False
             if event.is_set():
                 return True
-            if deadline is not None and time.time() >= deadline:
+            if time.time() >= deadline:
                 return False
-            event.wait(0.1)
+            event.wait(0.05)
+
+    def _ensure_worker_demux_queue(self, proc: subprocess.Popen) -> queue.Queue:
+        """Ensures `proc` has an active single-owner stdout demuxer queue attached."""
+        task_q = getattr(proc, "_yscb_task_queue", None)
+        if isinstance(task_q, queue.Queue):
+            return task_q
+        task_q = queue.Queue()
+        try:
+            setattr(proc, "_yscb_task_queue", task_q)
+            setattr(proc, "_yscb_demux_active", True)
+        except Exception:
+            pass
+        self._active_task_queue = task_q
+        alive_evt = threading.Event()
+        alive_evt.set()
+        threading.Thread(
+            target=self._read_worker_handshake,
+            args=(proc, alive_evt, self._worker_ready_event),
+            daemon=True,
+            name=f"worker-stdout-demux-{getattr(proc, 'pid', 0)}",
+        ).start()
+        return task_q
 
     def _stream_task_over_worker_pipe(
         self,
@@ -972,20 +1022,8 @@ class MasterSupervisor:
         req_payload: Dict[str, Any],
         chunk_emitter: Callable[[Dict[str, Any]], None],
     ) -> int:
-        """Writes dispatch payload to worker stdin and relays NDJSON stream chunks until task_finish."""
-        task_q: Optional[queue.Queue] = getattr(proc, "_yscb_task_queue", None)
-        use_demux = isinstance(task_q, queue.Queue) and (
-            bool(getattr(proc, "_yscb_demux_active", False)) or not task_q.empty()
-        )
-        if use_demux and task_q is not None:
-            while not task_q.empty():
-                try:
-                    stale_pkt = task_q.get_nowait()
-                    if stale_pkt is None and proc.poll() is not None:
-                        task_q.put_nowait(None)
-                        break
-                except queue.Empty:
-                    break
+        """Writes dispatch payload to worker stdin and relays NDJSON stream chunks via single-owner demux queue."""
+        task_q = self._ensure_worker_demux_queue(proc)
 
         try:
             req_line = json.dumps(req_payload) + "\n"
@@ -998,26 +1036,11 @@ class MasterSupervisor:
         exit_code = 0
         while True:
             try:
-                if use_demux and task_q is not None:
-                    packet = task_q.get()
-                    if packet is None:
-                        err_text = self._worker_eof_error(proc)
-                        self.logger.error(f"{err_text} during dispatch for module='{target_mod}'")
-                        return self._emit_task_failure(chunk_emitter, err_text)
-                else:
-                    line = proc.stdout.readline()  # type: ignore
-                    if not line:
-                        err_text = self._worker_eof_error(proc)
-                        self.logger.error(f"{err_text} during dispatch for module='{target_mod}'")
-                        return self._emit_task_failure(chunk_emitter, err_text)
-
-                    line_str = line.decode("utf-8", errors="replace").strip()
-                    if not line_str:
-                        continue
-
-                    packet = json.loads(line_str)
-                    if self._handle_worker_control_packet(packet):
-                        continue
+                packet = task_q.get()
+                if packet is None:
+                    err_text = self._worker_eof_error(proc)
+                    self.logger.error(f"{err_text} during dispatch for module='{target_mod}'")
+                    return self._emit_task_failure(chunk_emitter, err_text)
 
                 chunk_emitter(packet)
 
@@ -1085,7 +1108,13 @@ class MasterSupervisor:
                 if not self._wait_worker_ready():
                     err_text = self._worker_eof_error(proc)
                     if err_text != _PREEMPTED_ERROR:
-                        err_text = "Worker exited before becoming ready"
+                        if proc.poll() is None:
+                            err_text = "Worker pre-warm timed out before becoming ready"
+                            with self._worker_lock:
+                                if self._worker_proc is proc:
+                                    self._kill_worker_locked(timeout_sec=1.0)
+                        else:
+                            err_text = "Worker exited before becoming ready"
                     self.logger.error(f"Task dispatch aborted for module='{target_mod}': {err_text}")
                     return self._emit_task_failure(chunk_emitter, err_text)
                 req_payload = {
@@ -1133,10 +1162,6 @@ class MasterSupervisor:
         even while the worker is idle, and routes foreground task packets to `proc._yscb_task_queue`.
         """
         task_q: Optional[queue.Queue] = getattr(proc, "_yscb_task_queue", None)
-        is_mock_proc = (
-            type(proc).__module__.startswith("unittest.mock")
-            or type(getattr(proc, "stdout", None)).__module__.startswith("unittest.mock")
-        )
         try:
             while True:
                 line = proc.stdout.readline()  # type: ignore
@@ -1175,8 +1200,6 @@ class MasterSupervisor:
                     if self._worker_proc is proc:
                         self._warming_since = None
                     self.logger.info(f"Warm Worker (PID: {proc.pid}) ready (RSS: {ready_rss:.1f} MB)")
-                    if is_mock_proc:
-                        break
                     continue
                 if isinstance(task_q, queue.Queue):
                     task_q.put(data)
@@ -1324,6 +1347,9 @@ class MasterSupervisor:
             time.sleep(2.0)
             if not self._is_running:
                 break
+            if not self._is_worker_completely_idle():
+                self.touch_activity(source="busy_guard")
+                continue
             with self._activity_lock:
                 last_active = self._last_active_time
             idle_seconds = time.time() - last_active

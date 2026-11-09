@@ -21,7 +21,6 @@ from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Set,
 from core.context import (
     cell_span,
     get_or_compute_epoch_state,
-    get_runtime_context,
     get_virtual_cwd,
 )
 
@@ -80,18 +79,38 @@ CALLABLE_KINDS: FrozenSet[str] = frozenset({
 })
 
 
-def _split_top_level_comma(text: str) -> List[str]:
-    """Split `text` by top-level commas while ignoring commas inside `<...>`, `(...)`, `[...]`, or `{...}`."""
+def _split_top_level_comma(text: str, track_angles: bool = True) -> List[str]:
+    """Split `text` by top-level commas while ignoring commas inside quotes, `<...>`, `(...)`, `[...]`, or `{...}`."""
     if not text:
         return []
     parts: List[str] = []
     depth = 0
     current: List[str] = []
+    in_quote: Optional[str] = None
+    escaped = False
+    open_chars = "<([{" if track_angles else "([{"
+    close_chars = ">)]}" if track_angles else ")]}"
     for ch in text:
-        if ch in "<([{":
+        if escaped:
+            current.append(ch)
+            escaped = False
+            continue
+        if ch == "\\":
+            current.append(ch)
+            escaped = True
+            continue
+        if in_quote:
+            if ch == in_quote:
+                in_quote = None
+            current.append(ch)
+            continue
+        if ch in ("'", '"', "`"):
+            in_quote = ch
+            current.append(ch)
+        elif ch in open_chars:
             depth += 1
             current.append(ch)
-        elif ch in ">)]}":
+        elif ch in close_chars:
             depth = max(0, depth - 1)
             current.append(ch)
         elif ch == "," and depth == 0:
@@ -133,9 +152,23 @@ def extract_signature_params(signature: str) -> List[str]:
     start = signature.find("(")
     depth = 0
     end = -1
+    in_quote: Optional[str] = None
+    escaped = False
     for idx in range(start, len(signature)):
         ch = signature[idx]
-        if ch == "(":
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if in_quote:
+            if ch == in_quote:
+                in_quote = None
+            continue
+        if ch in ("'", '"', "`"):
+            in_quote = ch
+        elif ch == "(":
             depth += 1
         elif ch == ")":
             depth -= 1
@@ -820,13 +853,20 @@ def _coerce_symbols_dict(symbols_input: Any) -> Dict[str, UnifiedSymbol]:
     return {s.id: s for s in symbols_input}
 
 
-def _get_or_create_resolver(symbols_map: Dict[str, UnifiedSymbol]) -> DeterministicSymbolResolver:
+def _get_or_create_resolver_with_fp(
+    symbols_map: Dict[str, UnifiedSymbol],
+) -> Tuple[DeterministicSymbolResolver, int]:
     current_fp = _compute_symbols_map_fingerprint(symbols_map)
-    return get_or_compute_epoch_state(
+    resolver = get_or_compute_epoch_state(
         "ast.resolver.last_cache",
         epoch_fn=lambda: (id(symbols_map), len(symbols_map), current_fp),
         builder_fn=lambda: DeterministicSymbolResolver(symbols_map),
     )
+    return resolver, current_fp
+
+
+def _get_or_create_resolver(symbols_map: Dict[str, UnifiedSymbol]) -> DeterministicSymbolResolver:
+    return _get_or_create_resolver_with_fp(symbols_map)[0]
 
 
 def _extract_workspace_graph(graph: Any) -> Optional[WorkspaceSymbolGraph]:
@@ -890,11 +930,11 @@ def _resolve_topology_query_context(
     space: Optional[Union[str, List[str]]],
     ftypes: Optional[Union[str, List[str]]],
     empty_extra_fields: Dict[str, Any],
-) -> Tuple[Dict[str, UnifiedSymbol], DeterministicSymbolResolver, Optional[List[str]], SymbolResolutionResult, Optional[Dict[str, Any]]]:
+) -> Tuple[Dict[str, UnifiedSymbol], DeterministicSymbolResolver, Optional[List[str]], SymbolResolutionResult, Optional[Dict[str, Any]], int]:
     """Resolve target query and build early-return payload if status is `not_found` or `ambiguous`."""
     with cell_span("ast.resolve"):
         symbols_map = _coerce_symbols_dict(symbols_input)
-        resolver = _get_or_create_resolver(symbols_map)
+        resolver, current_fp = _get_or_create_resolver_with_fp(symbols_map)
         norm_ftypes = resolver.normalize_ftypes(ftypes)
         res = _resolve_with_ftype_fallback(resolver, target_query, space, norm_ftypes)
 
@@ -912,9 +952,9 @@ def _resolve_topology_query_context(
                 **empty_extra_fields,
                 "candidates": res.candidates if is_ambig else [],
             }
-            return symbols_map, resolver, norm_ftypes, res, early_payload
+            return symbols_map, resolver, norm_ftypes, res, early_payload, current_fp
 
-        return symbols_map, resolver, norm_ftypes, res, None
+        return symbols_map, resolver, norm_ftypes, res, None, current_fp
 
 
 def query_callers(
@@ -932,7 +972,7 @@ def query_callers(
       and returns `"overloads": [t.to_dict() for t in res.targets]`.
     - When `status` is `"ambiguous"`, returns `"status": "ambiguous"`, `"ambiguous": True`, and `"candidates"`.
     """
-    symbols_map, resolver, norm_ftypes, res, early_payload = _resolve_topology_query_context(
+    symbols_map, resolver, norm_ftypes, res, early_payload, current_fp = _resolve_topology_query_context(
         target_query=target_query,
         symbols_input=symbols_map,
         space=space,
@@ -942,7 +982,7 @@ def query_callers(
     if early_payload is not None:
         return early_payload
 
-    target_ids = expand_contract_symbol_ids(symbols_map, res.targets)
+    target_ids = expand_contract_symbol_ids(symbols_map, res.targets, precomputed_fingerprint=current_fp)
     caller_sites_map: Dict[str, List[Any]] = defaultdict(list)
     caller_order: List[str] = []
 
@@ -1052,7 +1092,7 @@ def query_callees(
     """
     Query downstream callees for `target_query` (unions callees across all overloads when `status == "overload_group"`).
     """
-    symbols_map, resolver, norm_ftypes, res, early_payload = _resolve_topology_query_context(
+    symbols_map, resolver, norm_ftypes, res, early_payload, _ = _resolve_topology_query_context(
         target_query=target_query,
         symbols_input=symbols_map,
         space=space,
@@ -1169,7 +1209,7 @@ def query_impact(
     """
     if max_depth is not None:
         depth = max_depth
-    symbols_map, resolver, norm_ftypes, res, early_payload = _resolve_topology_query_context(
+    symbols_map, resolver, norm_ftypes, res, early_payload, current_fp = _resolve_topology_query_context(
         target_query=target_query,
         symbols_input=symbols_map,
         space=space,
@@ -1187,7 +1227,7 @@ def query_impact(
     if early_payload is not None:
         return early_payload
 
-    target_ids = expand_contract_symbol_ids(symbols_map, res.targets)
+    target_ids = expand_contract_symbol_ids(symbols_map, res.targets, precomputed_fingerprint=current_fp)
     merged_layers_ids: Dict[int, List[str]] = defaultdict(list)
     merged_chains: Dict[str, List[Tuple[str, str]]] = {}
     seen_impacted_ids: Set[str] = set(target_ids)

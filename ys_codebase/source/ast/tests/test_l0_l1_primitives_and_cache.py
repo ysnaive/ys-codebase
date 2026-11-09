@@ -20,14 +20,15 @@ if "tests" in sys.modules and getattr(sys.modules["tests"], "__file__", None) !=
 
 from ast_engine.engine import ASTEngine
 from ast_engine.exceptions import ASTError
-from ast_engine.schema import FileSymbolGraph, WorkspaceSymbolGraph
+from ast_engine.io_utils import load_gzip_pickle
+from ast_engine.schema import ASTSnapshot, FileSymbolGraph, WorkspaceSymbolGraph
 from core.space import ScanDiffDetail
 from scripts.cli import dispatch_cli
 from tests import ASTTestCase, Requirement, require
 
 
 class TestL0L1PrimitivesAndCache(ASTTestCase):
-    """Test suite for R03 (`sub_03_l0_l1_primitives_cache_and_kdb_migration`)."""
+    """Test suite for L0/L1 primitives, single-pass `FileSymbolGraph` caching, and CQS persistence invariants."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -79,9 +80,19 @@ class TestL0L1PrimitivesAndCache(ASTTestCase):
         )
 
     @require(Requirement.LOGIC)
-    def test_ft01_single_pass_file_graph_cache_and_persistence(self) -> None:
-        """FT-01 & EC-04: Verify `build_index` caches `FileSymbolGraph` and `WorkspaceSymbolGraph` and persists/reloads cleanly."""
+    def test_single_pass_file_graph_cache_and_persistence(self) -> None:
+        """Verify `build_index` caches `FileSymbolGraph` and `WorkspaceSymbolGraph`, omits duplicate `file_graphs` in `unified.graph.bin.gz`, and obeys CQS on `auto_sync=False`."""
         engine = self._create_sample_workspace()
+
+        # Verify get_workspace_graph(auto_sync=False) when _snapshot is in memory does NOT scan disk or write binary files
+        engine._snapshot = ASTSnapshot(symbols={}, file_graphs={})
+        ws_empty = engine.get_workspace_graph(auto_sync=False)
+        self.assertEqual(len(ws_empty.nodes_by_id), 0)
+        self.assertFalse(engine.symbols_index_path.exists())
+        self.assertFalse(engine.graph_index_path.exists())
+        engine._snapshot = None
+        engine._graph = None
+
         snap = engine.build_index(allow_parallel=False)
 
         self.assertGreaterEqual(len(snap.file_graphs), 3)
@@ -89,9 +100,21 @@ class TestL0L1PrimitivesAndCache(ASTTestCase):
         self.assertIn("pkg/impl.py", snap.file_graphs)
         self.assertIsInstance(snap.file_graphs["pkg/base.py"], FileSymbolGraph)
 
+        # Verify unified.graph.bin.gz does not redundantly serialize `file_graphs`
+        raw_graph_dict = load_gzip_pickle(engine.graph_index_path, raise_on_missing=True)
+        self.assertEqual(raw_graph_dict.get("workspace_graph", {}).get("file_graphs"), {})
+
+        # Verify get_persisted_meta() does NOT write unified.meta.json when missing
+        engine.meta_index_path.unlink(missing_ok=True)
+        engine._snapshot = None
+        meta_read = engine.get_persisted_meta()
+        self.assertIsNotNone(meta_read)
+        self.assertFalse(engine.meta_index_path.exists())
+
         ws_graph = engine.get_workspace_graph(auto_sync=False)
         self.assertIsInstance(ws_graph, WorkspaceSymbolGraph)
         self.assertGreaterEqual(len(ws_graph.nodes_by_id), 4)
+        self.assertEqual(set(ws_graph.file_graphs.keys()), set(snap.file_graphs.keys()))
         self.assertTrue(any(e.edge_kind == "inherits" and e.resolution_status == "resolved" for e in ws_graph.resolved_edges))
 
         # Reload into a fresh ASTEngine instance from disk binary caches
@@ -108,12 +131,13 @@ class TestL0L1PrimitivesAndCache(ASTTestCase):
         snap_reloaded = engine_reloaded.get_snapshot(auto_sync=False)
         ws_reloaded = engine_reloaded.get_workspace_graph(auto_sync=False)
         self.assertEqual(set(snap_reloaded.file_graphs.keys()), set(snap.file_graphs.keys()))
+        self.assertEqual(set(ws_reloaded.file_graphs.keys()), set(snap.file_graphs.keys()))
         self.assertEqual(set(ws_reloaded.nodes_by_id.keys()), set(ws_graph.nodes_by_id.keys()))
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft02_hot_patch_dirty_file_graphs_and_partial_classes(self) -> None:
-        """FT-02: Verify $O(|Dirty|)$ hot_patch_index updates `file_graphs`, `WorkspaceSymbolGraph`, and C# partial symbols."""
+    def test_hot_patch_dirty_file_graphs_and_partial_classes(self) -> None:
+        """Verify $O(|Dirty|)$ hot_patch_index updates `file_graphs`, `WorkspaceSymbolGraph`, and C# partial symbols."""
         engine = self._create_sample_workspace()
         cs_a = self.project_root / "pkg" / "PartA.cs"
         cs_b = self.project_root / "pkg" / "PartB.cs"
@@ -155,8 +179,8 @@ class TestL0L1PrimitivesAndCache(ASTTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft03_l0_stateless_primitives_parse_file_and_slice_part(self) -> None:
-        """FT-03, EC-01, EC-02: Verify L0 `parse_file` (stateless/zero-index) and `slice_part` (UTF-8 byte slicing & error guards)."""
+    def test_l0_stateless_primitives_parse_file_and_slice_part(self) -> None:
+        """Verify L0 `parse_file` (stateless/zero-index) and `slice_part` (UTF-8 byte slicing & error guards)."""
         engine = self._create_sample_workspace()
 
         # 1. Stateless parse_file with in-memory content must not create disk index files
@@ -187,7 +211,7 @@ class TestL0L1PrimitivesAndCache(ASTTestCase):
         exec_sig = engine.slice_part("BaseWorker.execute", part="signature")
         self.assertIn("def execute(self, payload: str)", exec_sig)
 
-        # 4. EC-01 & EC-02: Missing optional slot returns "", invalid part or unknown symbol raises ASTError
+        # 4. Missing optional slot returns "", invalid part or unknown symbol raises ASTError
         var_fg = engine.parse_file("virtual/vars.py", content="MAX_COUNT = 42\n")
         if var_fg.root_nodes:
             self.assertEqual(engine.slice_part(var_fg.root_nodes[0], part="doc", file_bytes="MAX_COUNT = 42\n"), "")
@@ -198,8 +222,8 @@ class TestL0L1PrimitivesAndCache(ASTTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft04_l1_workspace_primitives_resolve_select_and_traverse(self) -> None:
-        """FT-04 & EC-03: Verify L1 `resolve`, `select_nodes`, and `traverse_edges` across code and doc edges."""
+    def test_l1_workspace_primitives_resolve_select_and_traverse(self) -> None:
+        """Verify L1 `resolve`, `select_nodes`, and `traverse_edges` across code and doc edges."""
         engine = self._create_sample_workspace()
 
         # 1. resolve with kinds filter
@@ -234,7 +258,7 @@ class TestL0L1PrimitivesAndCache(ASTTestCase):
         self.assertEqual(calls_out["total_reached_nodes"], 1)
         self.assertEqual(calls_out["layers"][1][0].name, "execute")
 
-        # 6. EC-03: depth=0 and invalid direction guard
+        # 6. depth=0 and invalid direction guard
         zero_res = engine.traverse_edges("ConcreteWorker", depth=0)
         self.assertEqual(zero_res["total_reached_nodes"], 0)
         self.assertEqual(zero_res["layers"], {})
@@ -243,8 +267,8 @@ class TestL0L1PrimitivesAndCache(ASTTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft05_cli_slice_and_traverse_commands(self) -> None:
-        """FT-05: Verify CLI `slice` and `traverse` dispatch and JSON output contracts."""
+    def test_cli_slice_and_traverse_commands(self) -> None:
+        """Verify CLI `slice` and `traverse` dispatch and JSON output contracts."""
         from unittest.mock import patch
 
         engine = self._create_sample_workspace()
@@ -281,4 +305,33 @@ class TestL0L1PrimitivesAndCache(ASTTestCase):
             self.assertEqual(trav_payload["status"], "matched")
             self.assertEqual(trav_payload["total_reached_nodes"], 1)
             self.assertEqual(trav_payload["layers"]["1"][0]["name"], "BaseWorker")
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_cqs_partial_outline_and_self_loop_guard(self) -> None:
+        """Verify unified partial outline aggregation, non-recursive class self-loop guard in hot_patch_index, and single-pass worker projection."""
+        from ast_engine.bundler import project_file_artifacts_from_graph
+
+        engine = self._create_sample_workspace()
+        fg = engine.parse_file(
+            "pkg/sample_proj.py",
+            content="import os\n\nclass Alpha:\n    def step(self) -> int:\n        return 1\n",
+        )
+        syms, sites, imps = project_file_artifacts_from_graph(fg, default_space="project", spaces=["project"])
+        self.assertTrue(any(s.name == "Alpha" for s in syms))
+        self.assertEqual(imps.get("os"), "os")
+        self.assertIsInstance(sites, list)
+
+        # Verify _relink_and_reconnect_edges guards against non-recursive self-loops on class symbols
+        snap = engine.build_index(allow_parallel=False)
+        cls_sym = next(s for s in snap.symbols.values() if s.kind == "class" and s.name == "ConcreteWorker")
+        engine._relink_and_reconnect_edges(
+            detail=ScanDiffDetail(added=set(), modified=set(), deleted=set()),
+            all_new_symbols=[cls_sym],
+            old_doc_ids=set(),
+            old_symbol_info={},
+            incoming_edges=[(cls_sym.id, cls_sym.id, None)],
+        )
+        assert engine._graph is not None
+        self.assertNotIn(cls_sym.id, engine._graph.get_callers(cls_sym.id))
         self.mark_passed()

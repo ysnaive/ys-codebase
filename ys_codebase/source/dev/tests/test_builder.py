@@ -8,7 +8,7 @@ import shutil
 import zipfile
 from unittest.mock import patch
 from dev.testing import YSCBTestCase, require, Requirement
-from dev.builder import Builder, compute_file_sha256, _create_module_archive_atomic
+from dev.builder import Builder, compute_file_sha256, _create_module_archive_atomic, _should_ignore, _is_text_archive_entry
 from core import uri, vfs
 
 
@@ -292,4 +292,37 @@ class TestDevBuilder(YSCBTestCase):
         self.assertEqual(cli_mod.build(["mock_cli_bld_pkg"]), 0)
         self.assertEqual(cli_mod.build(["mock_nonexistent_cli_pkg"]), 1)
         self.assertEqual(cli_mod.build(["--all"]), 0)
+        self.mark_passed()
+
+    def test_should_ignore_wildcard_and_ghost_index_pruning(self):
+        """Verify _should_ignore wildcard prefix precision, case-insensitive text entry detection, and ghost/pruned exclusion in _update_release_index."""
+        self.assertFalse(_should_ignore("other/docs/v1/main.py", ["docs/v1*"]))
+        self.assertTrue(_should_ignore("docs/v1_draft.md", ["docs/v1*"]))
+        self.assertTrue(_is_text_archive_entry("README.MD"))
+        self.assertTrue(_is_text_archive_entry("CONFIG.JSON"))
+        self.assertFalse(_is_text_archive_entry("archive.ZIP"))
+
+        mod_name = "mock_ghost_win_pkg"
+        self.create_mock_source_module(mod_name, "1.0.0.1")
+        self.builder.package_release(mod_name, "1.0.0.1")
+        self.builder.package_release(mod_name, "1.0.0.2")
+
+        # Inject ghost active versions 1.0.0.3 and 1.0.0.4 (no .zip on disk) into index.json
+        idx_uri = f"module.release://{mod_name}/index.json"
+        idx_data = vfs.read_json(idx_uri)
+        idx_data["versions"] = ["1.0.0.1", "1.0.0.2", "1.0.0.3", "1.0.0.4"]
+        idx_data["releases"]["1.0.0.3"] = {"status": "active", "dependencies": {}}
+        idx_data["releases"]["1.0.0.4"] = {"status": "active", "dependencies": {}}
+        vfs.write_json(idx_uri, idx_data, indent=2)
+
+        # Packaging 1.0.0.5 must NOT purge physical 1.0.0.1.zip or 1.0.0.2.zip due to ghost 1.0.0.3/1.0.0.4
+        ok5, _ = self.builder.package_release(mod_name, "1.0.0.5")
+        self.assertTrue(ok5)
+        self.assertTrue(os.path.isfile(uri.resolve(f"module.release://{mod_name}/1.0.0.1.zip")))
+        self.assertTrue(os.path.isfile(uri.resolve(f"module.release://{mod_name}/1.0.0.2.zip")))
+        self.assertTrue(os.path.isfile(uri.resolve(f"module.release://{mod_name}/1.0.0.5.zip")))
+        updated_idx = vfs.read_json(idx_uri)
+        self.assertEqual(updated_idx["versions"], ["1.0.0.1", "1.0.0.2", "1.0.0.5"])
+        self.assertEqual(updated_idx["releases"]["1.0.0.3"]["status"], "pruned")
+        self.assertEqual(updated_idx["releases"]["1.0.0.4"]["status"], "pruned")
         self.mark_passed()

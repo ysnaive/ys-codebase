@@ -103,11 +103,38 @@ class CheckReport:
 
 @dataclass(frozen=True)
 class ModuleCheckContext:
-    """Per-module cached metadata context avoiding redundant disk reads of manifest.json and contributes/core.json."""
+    """Per-module cached metadata and single-pass directory tree scan snapshot."""
     module_name: str
     real_dir: str
     manifest_data: Optional[Dict[str, Any]] = None
     core_contrib_data: Optional[Dict[str, Any]] = None
+    junk_rel_paths: Tuple[str, ...] = ()
+    py_files: Tuple[Tuple[str, str], ...] = ()
+    doc_md_files: Tuple[Tuple[str, str], ...] = ()
+
+
+def _scan_module_tree(real_dir: str) -> Tuple[Tuple[str, ...], Tuple[Tuple[str, str], ...], Tuple[Tuple[str, str], ...]]:
+    """Performs a single `os.walk` over `real_dir` collecting junk files, `.py` files, and `docs/*.md` files."""
+    junk_rel_paths: List[str] = []
+    py_files: List[Tuple[str, str]] = []
+    doc_md_files: List[Tuple[str, str]] = []
+
+    for root, dirs, files in os.walk(real_dir):
+        dirs[:] = sorted(
+            d for d in dirs
+            if d not in ("__pycache__", ".pytest_cache", ".git", ".venv", "node_modules")
+        )
+        for f in sorted(files):
+            full_p = os.path.join(root, f)
+            rel_p = os.path.relpath(full_p, real_dir).replace("\\", "/")
+            if f.endswith((".tmp", ".bak", ".DS_Store")) or f.endswith("~"):
+                junk_rel_paths.append(rel_p)
+            if f.endswith(".py"):
+                py_files.append((full_p, rel_p))
+            elif f.endswith(".md") and (rel_p.startswith("docs/") or rel_p == "docs"):
+                doc_md_files.append((full_p, rel_p))
+
+    return tuple(junk_rel_paths), tuple(py_files), tuple(doc_md_files)
 
 
 def _extract_ast_tokens(expr_node: ast.AST) -> List[str]:
@@ -483,16 +510,28 @@ def _is_mutable_type_annotation(ann: Optional[ast.AST]) -> bool:
 
 
 def _is_safe_hook_top_level_value(val: Optional[ast.AST]) -> bool:
-    """Return True if a top-level assignment value in scripts/hook.*.py is a constant or immutable tuple/frozenset."""
+    """Return True if a top-level assignment value in scripts/hook.*.py is a constant, signed numeric literal, or immutable tuple/frozenset."""
     if val is None:
         return True
     if isinstance(val, ast.Constant) and val.value is not None:
         return True
+    if isinstance(val, ast.UnaryOp) and isinstance(val.op, (ast.UAdd, ast.USub, ast.Invert)):
+        return _is_safe_hook_top_level_value(val.operand)
     if isinstance(val, ast.Tuple):
         return all(_is_safe_hook_top_level_value(elt) for elt in val.elts)
     if isinstance(val, ast.Call):
         func = val.func
-        if isinstance(func, ast.Name) and func.id in ("frozenset", "tuple", "MappingProxyType", "TypeVar"):
+        if isinstance(func, ast.Name) and func.id in ("frozenset", "tuple"):
+            if val.keywords:
+                return False
+            for arg in val.args:
+                if isinstance(arg, (ast.Set, ast.List, ast.Tuple)):
+                    if not all(_is_safe_hook_top_level_value(elt) for elt in arg.elts):
+                        return False
+                elif not _is_safe_hook_top_level_value(arg):
+                    return False
+            return True
+        if isinstance(func, ast.Name) and func.id in ("MappingProxyType", "TypeVar"):
             return True
         if isinstance(func, ast.Attribute) and func.attr in ("RLock", "Lock", "Event", "Semaphore"):
             return True
@@ -723,7 +762,7 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
     def visit_Constant(self, node: ast.Constant) -> None:
         if id(node) in self.doc_nodes:
             return
-        if not self.is_test_file and self.module_name not in ("dev", "core") and isinstance(node.value, str):
+        if self.module_name not in ("dev", "core") and isinstance(node.value, str):
             s_val = node.value
             lineno = getattr(node, "lineno", None)
             if "module.source://" in s_val:
@@ -746,54 +785,52 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
                 )
 
     def visit_Global(self, node: ast.Global) -> None:
-        if not self.is_test_file:
-            self._record_issue(
-                node.lineno,
-                f"[C8] Forbidden 'global' statement ({', '.join(node.names)}) in '{self.rel_path}:{node.lineno}'. Store mutable state in 'core.context.get_runtime_context()'.",
-            )
+        self._record_issue(
+            node.lineno,
+            f"[C8] Forbidden 'global' statement ({', '.join(node.names)}) in '{self.rel_path}:{node.lineno}'. Store mutable state in 'core.context.get_runtime_context()'.",
+        )
         self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._mark_body_docstring(node.body)
-        if not self.is_test_file:
-            is_dc = False
-            is_frozen = False
-            for dec in node.decorator_list:
-                dec_target = self._resolve_target(dec.func if isinstance(dec, ast.Call) else dec)
-                if dec_target in ("dataclass", "dataclasses.dataclass"):
-                    is_dc = True
-                    if isinstance(dec, ast.Call):
-                        for kw in dec.keywords:
-                            if kw.arg == "frozen" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
-                                is_frozen = True
-            if is_dc and not is_frozen:
-                self._record_issue(
-                    node.lineno,
-                    f"[C9] @dataclass '{node.name}' in '{self.rel_path}:{node.lineno}' must specify 'frozen=True'.",
-                )
-
-            is_enum = any(
-                self._resolve_target(b) in ("Enum", "enum.Enum", "IntEnum", "enum.IntEnum", "Flag", "enum.Flag", "IntFlag", "enum.IntFlag")
-                for b in node.bases
+        is_dc = False
+        is_frozen = False
+        for dec in node.decorator_list:
+            dec_target = self._resolve_target(dec.func if isinstance(dec, ast.Call) else dec)
+            if dec_target in ("dataclass", "dataclasses.dataclass"):
+                is_dc = True
+                if isinstance(dec, ast.Call):
+                    for kw in dec.keywords:
+                        if kw.arg == "frozen" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                            is_frozen = True
+        if is_dc and not is_frozen:
+            self._record_issue(
+                node.lineno,
+                f"[C9] @dataclass '{node.name}' in '{self.rel_path}:{node.lineno}' must specify 'frozen=True'.",
             )
-            if not is_enum:
-                for bstmt in node.body:
-                    if isinstance(bstmt, ast.Assign) and bstmt.value is not None:
-                        if _is_mutable_expr(bstmt.value):
+
+        is_enum = any(
+            self._resolve_target(b) in ("Enum", "enum.Enum", "IntEnum", "enum.IntEnum", "Flag", "enum.Flag", "IntFlag", "enum.IntFlag")
+            for b in node.bases
+        )
+        if not is_enum:
+            for bstmt in node.body:
+                if isinstance(bstmt, ast.Assign) and bstmt.value is not None:
+                    if _is_mutable_expr(bstmt.value):
+                        self._record_issue(
+                            bstmt.lineno,
+                            f"[C9] Forbidden mutable class attribute in '{node.name}' ('{self.rel_path}:{bstmt.lineno}'). Initialize mutable attributes inside '__init__'.",
+                        )
+                elif isinstance(bstmt, ast.AnnAssign):
+                    is_cv = _is_classvar_annotation(bstmt.annotation)
+                    if not is_dc or is_cv:
+                        if (bstmt.value is not None and _is_mutable_expr(bstmt.value)) or (
+                            is_cv and _is_mutable_type_annotation(bstmt.annotation)
+                        ):
                             self._record_issue(
                                 bstmt.lineno,
                                 f"[C9] Forbidden mutable class attribute in '{node.name}' ('{self.rel_path}:{bstmt.lineno}'). Initialize mutable attributes inside '__init__'.",
                             )
-                    elif isinstance(bstmt, ast.AnnAssign):
-                        is_cv = _is_classvar_annotation(bstmt.annotation)
-                        if not is_dc or is_cv:
-                            if (bstmt.value is not None and _is_mutable_expr(bstmt.value)) or (
-                                is_cv and _is_mutable_type_annotation(bstmt.annotation)
-                            ):
-                                self._record_issue(
-                                    bstmt.lineno,
-                                    f"[C9] Forbidden mutable class attribute in '{node.name}' ('{self.rel_path}:{bstmt.lineno}'). Initialize mutable attributes inside '__init__'.",
-                                )
 
         self._push_alias_scope()
         self.scope_stack.append("class")
@@ -812,20 +849,17 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
                         ann_target = self._resolve_target(a.annotation)
                         if ann_target in ("pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath", "pathlib.WindowsPath"):
                             self.path_vars.add(a.arg)
-        if not self.is_test_file:
-            func_name = getattr(node, "name", "")
-            lineno = getattr(node, "lineno", 0)
-            if args_obj is not None:
-                defaults = list(args_obj.defaults) + [x for x in args_obj.kw_defaults if x is not None]
-                for d in defaults:
-                    if _is_mutable_expr(d):
-                        self._record_issue(
-                            lineno,
-                            f"[C7] Forbidden mutable default argument in function '{func_name}' ('{self.rel_path}:{lineno}'). Use 'None' and initialize inside the function body.",
-                        )
-            scope_tag = "dunder_getattr" if func_name == "__getattr__" and self.scope_stack[-1] == "module" else "func"
-        else:
-            scope_tag = "func"
+        func_name = getattr(node, "name", "")
+        lineno = getattr(node, "lineno", 0)
+        if args_obj is not None:
+            defaults = list(args_obj.defaults) + [x for x in args_obj.kw_defaults if x is not None]
+            for d in defaults:
+                if _is_mutable_expr(d):
+                    self._record_issue(
+                        lineno,
+                        f"[C7] Forbidden mutable default argument in function '{func_name}' ('{self.rel_path}:{lineno}'). Use 'None' and initialize inside the function body.",
+                    )
+        scope_tag = "dunder_getattr" if func_name == "__getattr__" and self.scope_stack[-1] == "module" else "func"
         self.scope_stack.append(scope_tag)
         self.generic_visit(node)
         self.scope_stack.pop()
@@ -838,8 +872,6 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
         self._visit_func(node)
 
     def _check_mutation_target(self, target: ast.AST, lineno: int, is_delete: bool = False) -> None:
-        if self.is_test_file:
-            return
         if isinstance(target, (ast.Tuple, ast.List)):
             for elt in target.elts:
                 self._check_mutation_target(elt, lineno, is_delete=is_delete)
@@ -929,10 +961,6 @@ class _SourceGuardrailVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        if self.is_test_file:
-            self.generic_visit(node)
-            return
-
         lineno = node.lineno
         target = self._resolve_target(node.func)
 
@@ -1263,18 +1291,22 @@ class Checker:
                 real_dir = uri.resolve(src_uri)
                 m_data = self._check_manifest(name, real_dir, report)
                 core_c_data = self._check_core_injection(name, real_dir, report, m_data=m_data)
+                junk_rel_paths, py_files, doc_md_files = _scan_module_tree(real_dir)
                 mod_ctx = ModuleCheckContext(
                     module_name=name,
                     real_dir=real_dir,
                     manifest_data=m_data,
                     core_contrib_data=core_c_data,
+                    junk_rel_paths=junk_rel_paths,
+                    py_files=py_files,
+                    doc_md_files=doc_md_files,
                 )
                 self._module_ctx_cache[name] = mod_ctx
                 self._check_file_structure(name, real_dir, report, mod_ctx=mod_ctx)
-                self._check_source_files(name, real_dir, report)
+                self._check_source_files(name, real_dir, report, mod_ctx=mod_ctx)
                 self._check_test_classes(name, real_dir, report)
                 self._check_sandbox_hooks(name, real_dir, report)
-                self._check_docs_pollution(name, real_dir, report)
+                self._check_docs_pollution(name, real_dir, report, mod_ctx=mod_ctx)
 
             if report.has_fails and report.agent_directive:
                 report.issues.append(
@@ -1773,20 +1805,17 @@ class Checker:
                             )
                         )
 
-        # 4. Check for leftover temp files
-        for root, dirs, files in os.walk(real_dir):
-            dirs[:] = sorted(d for d in dirs if d not in ("__pycache__", ".pytest_cache", ".git"))
-            for f in sorted(files):
-                if f.endswith((".tmp", ".bak", ".DS_Store")) or f.endswith("~"):
-                    rel_p = os.path.relpath(os.path.join(root, f), real_dir).replace("\\", "/")
-                    report.issues.append(
-                        CheckIssue(
-                            severity=CheckSeverity.WARN,
-                            category="STRUCTURE",
-                            message=f"Found leftover temporary/junk file: '{rel_p}'.",
-                            file_path=rel_p,
-                        )
-                    )
+        # 4. Check for leftover temp files (using single-pass scan from mod_ctx when available)
+        junk_paths = mod_ctx.junk_rel_paths if mod_ctx is not None else _scan_module_tree(real_dir)[0]
+        for rel_p in junk_paths:
+            report.issues.append(
+                CheckIssue(
+                    severity=CheckSeverity.WARN,
+                    category="STRUCTURE",
+                    message=f"Found leftover temporary/junk file: '{rel_p}'.",
+                    file_path=rel_p,
+                )
+            )
 
         # 5. Check contributes/_manifest.md presence
         contrib_dir = os.path.join(real_dir, "contributes")
@@ -1895,25 +1924,24 @@ class Checker:
                 )
             )
 
-    def _check_source_files(self, name: str, real_dir: str, report: CheckReport) -> None:
-        for root, dirs, files in os.walk(real_dir):
-            dirs[:] = sorted(d for d in dirs if d not in ("__pycache__", ".pytest_cache", ".git"))
-            for f in sorted(files):
-                if not f.endswith(".py"):
-                    continue
+    def _check_source_files(
+        self,
+        name: str,
+        real_dir: str,
+        report: CheckReport,
+        mod_ctx: Optional[ModuleCheckContext] = None,
+    ) -> None:
+        py_files = mod_ctx.py_files if mod_ctx is not None else _scan_module_tree(real_dir)[1]
+        for full_p, rel_p in py_files:
+            is_test_file = rel_p.startswith("tests/")
+            try:
+                content, tree = self._get_parsed_py(full_p, filename=rel_p)
+            except Exception as e:
+                self._record_syntax_issue(report, os.path.abspath(full_p), rel_p, e)
+                continue
 
-                full_p = os.path.join(root, f)
-                rel_p = os.path.relpath(full_p, real_dir).replace("\\", "/")
-                is_test_file = rel_p.startswith("tests/")
-
-                try:
-                    content, tree = self._get_parsed_py(full_p, filename=rel_p)
-                except Exception as e:
-                    self._record_syntax_issue(report, os.path.abspath(full_p), rel_p, e)
-                    continue
-
-                visitor = _SourceGuardrailVisitor(name, rel_p, is_test_file, report)
-                visitor.analyze(tree, content)
+            visitor = _SourceGuardrailVisitor(name, rel_p, is_test_file, report)
+            visitor.analyze(tree, content)
 
     def _check_test_classes(self, name: str, real_dir: str, report: CheckReport) -> None:
         tests_dir = os.path.join(real_dir, "tests")
@@ -1994,33 +2022,30 @@ class Checker:
                         )
                     )
 
-    def _check_docs_pollution(self, name: str, real_dir: str, report: CheckReport) -> None:
-        docs_dir = os.path.join(real_dir, "docs")
-        if not os.path.isdir(docs_dir):
-            return
-
-        for root, dirs, files in os.walk(docs_dir):
-            dirs[:] = sorted(d for d in dirs if d not in ("__pycache__", ".pytest_cache", ".git"))
-            for f in sorted(files):
-                if not f.endswith(".md"):
-                    continue
-                full_p = os.path.join(root, f)
-                rel_p = os.path.relpath(full_p, real_dir).replace("\\", "/")
-                try:
-                    with open(full_p, "r", encoding="utf-8", errors="replace") as df:
-                        for lineno, line in enumerate(df, start=1):
-                            if "project://source/" in line:
-                                report.issues.append(
-                                    CheckIssue(
-                                        severity=CheckSeverity.WARN,
-                                        category="DOCUMENTATION",
-                                        message=f"Documentation path pollution: Hardcoded 'project://source/' detected in '{rel_p}:{lineno}'. Downstream developers have no source/ directory; use 'module://<mod>/' semantic URI instead.",
-                                        file_path=rel_p,
-                                        line_number=lineno,
-                                    )
+    def _check_docs_pollution(
+        self,
+        name: str,
+        real_dir: str,
+        report: CheckReport,
+        mod_ctx: Optional[ModuleCheckContext] = None,
+    ) -> None:
+        doc_md_files = mod_ctx.doc_md_files if mod_ctx is not None else _scan_module_tree(real_dir)[2]
+        for full_p, rel_p in doc_md_files:
+            try:
+                with open(full_p, "r", encoding="utf-8", errors="replace") as df:
+                    for lineno, line in enumerate(df, start=1):
+                        if "project://source/" in line:
+                            report.issues.append(
+                                CheckIssue(
+                                    severity=CheckSeverity.WARN,
+                                    category="DOCUMENTATION",
+                                    message=f"Documentation path pollution: Hardcoded 'project://source/' detected in '{rel_p}:{lineno}'. Downstream developers have no source/ directory; use 'module://<mod>/' semantic URI instead.",
+                                    file_path=rel_p,
+                                    line_number=lineno,
                                 )
-                except OSError:
-                    pass
+                            )
+            except OSError:
+                pass
 
     def check_all(self) -> Dict[str, CheckReport]:
         return {mod: self.check_module(mod) for mod in discover_source_modules()}

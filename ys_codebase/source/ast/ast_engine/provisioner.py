@@ -47,30 +47,12 @@ def _get_provisioner_state() -> Dict[str, Any]:
     return state
 
 
-class _ProvisionerMeta(type):
-    @property
-    def _FAILED_PACKAGES(cls) -> Set[str]:
-        return _get_provisioner_state()["failed_packages"]
-
-    @property
-    def _LOADED_LANGUAGES(cls) -> Dict[str, Any]:
-        return _get_provisioner_state()["loaded_languages"]
-
-    @property
-    def warnings(cls) -> List[str]:
-        return _get_provisioner_state()["warnings"]
-
-    @property
-    def _INFLIGHT_EVENTS(cls) -> Dict[str, threading.Event]:
-        return _get_provisioner_state()["inflight_events"]
-
-
-class GrammarProvisioner(metaclass=_ProvisionerMeta):
+class GrammarProvisioner:
     """
     On-demand Tree-sitter grammar loader and pip provisioner.
     Enforces 100% stderr redirection for any installation subprocess, single-flight per-language
     events so slow installations never block cached languages, and a session-scoped
-    `_FAILED_PACKAGES` negative cache to prevent repeated retries in offline environments.
+    negative cache to prevent repeated retries in offline environments.
     """
 
     _LOCK: ClassVar[threading.RLock] = threading.RLock()
@@ -85,31 +67,44 @@ class GrammarProvisioner(metaclass=_ProvisionerMeta):
             return cls._instance
 
     @classmethod
+    def get_failed_packages(cls) -> Set[str]:
+        """Return the set of failed grammar package names in the current runtime context."""
+        return _get_provisioner_state()["failed_packages"]
+
+    @classmethod
+    def get_loaded_languages(cls) -> Dict[str, Any]:
+        """Return the map of loaded Tree-sitter languages in the current runtime context."""
+        return _get_provisioner_state()["loaded_languages"]
+
+    @classmethod
     def reset_cache(cls) -> None:
         """Clear negative cache, loaded language cache, inflight events, and accumulated warnings."""
         with cls._LOCK:
-            cls._FAILED_PACKAGES.clear()
-            cls._LOADED_LANGUAGES.clear()
-            cls.warnings.clear()
-            for ev in cls._INFLIGHT_EVENTS.values():
+            state = _get_provisioner_state()
+            state["failed_packages"].clear()
+            state["loaded_languages"].clear()
+            state["warnings"].clear()
+            for ev in state["inflight_events"].values():
                 ev.set()
-            cls._INFLIGHT_EVENTS.clear()
+            state["inflight_events"].clear()
 
     @classmethod
     def get_warnings(cls, clear: bool = False) -> List[str]:
         """Return accumulated grammar provisioning warnings."""
         with cls._LOCK:
-            out = list(cls.warnings)
+            warnings_list: List[str] = _get_provisioner_state()["warnings"]
+            out = list(warnings_list)
             if clear:
-                cls.warnings.clear()
+                warnings_list.clear()
             return out
 
     @classmethod
     def _emit_warning(cls, pkg_label: str) -> str:
         msg = f"[ast:warn] Grammar package '{pkg_label}' is unavailable; skipping AST parse."
         with cls._LOCK:
-            if msg not in cls.warnings:
-                cls.warnings.append(msg)
+            warnings_list: List[str] = _get_provisioner_state()["warnings"]
+            if msg not in warnings_list:
+                warnings_list.append(msg)
                 log_stream(msg + "\n", stream="stderr")
         return msg
 
@@ -158,12 +153,12 @@ class GrammarProvisioner(metaclass=_ProvisionerMeta):
         Synchronizes across processes and maintains strict `_provision_lock -> _LOCK` lock ordering without holding `_LOCK` during subprocess execution.
         """
         with cls._LOCK:
-            if pkg_name in cls._FAILED_PACKAGES:
+            if pkg_name in _get_provisioner_state()["failed_packages"]:
                 return False
 
         with cls._provision_lock():
             with cls._LOCK:
-                if pkg_name in cls._FAILED_PACKAGES:
+                if pkg_name in _get_provisioner_state()["failed_packages"]:
                     return False
 
             if module_name:
@@ -198,7 +193,7 @@ class GrammarProvisioner(metaclass=_ProvisionerMeta):
                 log_debug(f"GrammarProvisioner pip install failed for '{pkg_name}': {exc}")
 
             with cls._LOCK:
-                cls._FAILED_PACKAGES.add(pkg_name)
+                _get_provisioner_state()["failed_packages"].add(pkg_name)
             return False
 
     @classmethod
@@ -225,23 +220,28 @@ class GrammarProvisioner(metaclass=_ProvisionerMeta):
         is_leader = False
 
         with cls._LOCK:
-            if cache_key in cls._LOADED_LANGUAGES:
-                return cls._LOADED_LANGUAGES[cache_key]
-            if pkg_name in cls._FAILED_PACKAGES or module_name in cls._FAILED_PACKAGES:
+            state = _get_provisioner_state()
+            loaded_langs = state["loaded_languages"]
+            failed_pkgs = state["failed_packages"]
+            inflight = state["inflight_events"]
+            if cache_key in loaded_langs:
+                return loaded_langs[cache_key]
+            if pkg_name in failed_pkgs or module_name in failed_pkgs:
                 cls._emit_warning(pkg_name)
                 return None
-            if cache_key in cls._INFLIGHT_EVENTS:
-                wait_event = cls._INFLIGHT_EVENTS[cache_key]
+            if cache_key in inflight:
+                wait_event = inflight[cache_key]
             else:
                 wait_event = threading.Event()
-                cls._INFLIGHT_EVENTS[cache_key] = wait_event
+                inflight[cache_key] = wait_event
                 is_leader = True
 
         if not is_leader and wait_event is not None:
             wait_event.wait(timeout=95.0)
             with cls._LOCK:
-                if cache_key in cls._LOADED_LANGUAGES:
-                    return cls._LOADED_LANGUAGES[cache_key]
+                loaded_langs = _get_provisioner_state()["loaded_languages"]
+                if cache_key in loaded_langs:
+                    return loaded_langs[cache_key]
                 cls._emit_warning(pkg_name)
                 return None
 
@@ -262,14 +262,17 @@ class GrammarProvisioner(metaclass=_ProvisionerMeta):
                         mod = None
 
             with cls._LOCK:
+                state = _get_provisioner_state()
+                failed_pkgs = state["failed_packages"]
+                loaded_langs = state["loaded_languages"]
                 if mod is None:
-                    cls._FAILED_PACKAGES.add(pkg_name)
-                    cls._FAILED_PACKAGES.add(module_name)
+                    failed_pkgs.add(pkg_name)
+                    failed_pkgs.add(module_name)
                     cls._emit_warning(pkg_name)
                     return None
 
                 if tree_sitter is None:
-                    cls._FAILED_PACKAGES.add("tree-sitter")
+                    failed_pkgs.add("tree-sitter")
                     cls._emit_warning("tree-sitter")
                     return None
 
@@ -283,17 +286,17 @@ class GrammarProvisioner(metaclass=_ProvisionerMeta):
 
                     raw_lang = lang_fn()
                     ts_lang = raw_sitter_language(raw_lang)
-                    cls._LOADED_LANGUAGES[cache_key] = ts_lang
+                    loaded_langs[cache_key] = ts_lang
                     return ts_lang
                 except Exception as exc:
                     log_debug(f"GrammarProvisioner failed initializing '{module_name}:{func_name}': {exc}")
-                    cls._FAILED_PACKAGES.add(pkg_name)
-                    cls._FAILED_PACKAGES.add(module_name)
+                    failed_pkgs.add(pkg_name)
+                    failed_pkgs.add(module_name)
                     cls._emit_warning(pkg_name)
                     return None
         finally:
             with cls._LOCK:
-                cls._INFLIGHT_EVENTS.pop(cache_key, None)
+                _get_provisioner_state()["inflight_events"].pop(cache_key, None)
             if wait_event is not None:
                 wait_event.set()
 

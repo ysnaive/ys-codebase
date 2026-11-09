@@ -8,24 +8,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-
-def _collect_spaces_from_entry(entry: Any, out: List[str]) -> None:
-    if not isinstance(entry, dict):
-        return
-    sw = entry.get("space_weights")
-    if isinstance(sw, dict):
-        for k in sw.keys():
-            s = str(k).strip()
-            if s and not s.startswith("_") and s not in out:
-                out.append(s)
-    sp_map = entry.get("spaces")
-    if isinstance(sp_map, dict):
-        for s_name, s_val in sp_map.items():
-            if isinstance(s_val, dict) and s_val.get("weight") is None and "space_weights" in entry:
-                continue
-            s = str(s_name).strip()
-            if s and not s.startswith("_") and s not in out:
-                out.append(s)
+from knowledge_db.engine import collect_spaces_from_config_entry as _collect_spaces_from_entry
 
 
 def on_register_ast_spaces(context: Any = None, **kwargs: Any) -> Dict[str, List[str]]:

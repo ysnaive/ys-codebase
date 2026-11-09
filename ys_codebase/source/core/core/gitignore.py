@@ -3,16 +3,16 @@ YS-Codebase Unified Gitignore Engine (`core.gitignore`).
 100% Python Standard Library, Zero Third-Party Dependency.
 Consolidates static `contributes` (`gitignore`) and dynamic SDK registrations into a single
 root `project://.gitignore` managed block grouped by `# [<module>]`, while seamlessly
-migrating legacy blocks and cleaning up obsolete nested `.gitignore` files.
+migrating legacy blocks and cleaning up obsolete nested `.gitignore files`.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
+from core import contributes as contrib_mod
 from core import events, uri, vfs
 from core.context import ExecutionContext, get_runtime_context, get_virtual_cwd
 
@@ -176,10 +176,14 @@ def normalize_pattern(
     return f"!{clean_glob}" if is_negated else clean_glob
 
 
-def _migrate_legacy_dynamic_cache_if_needed(is_custom_root: bool) -> Dict[str, List[str]]:
+def _migrate_legacy_dynamic_cache_if_needed(
+    is_custom_root: bool,
+    *,
+    remove_file: bool = False,
+) -> Dict[str, List[str]]:
     """
-    Reads and removes legacy `storage.local://core/gitignore_dynamic.json` if present,
-    migrating its patterns into the in-memory store without creating new cache files.
+    Reads legacy `storage.local://core/gitignore_dynamic.json` if present into memory.
+    Only removes the legacy disk file when `remove_file=True` (after a mutating save or sync).
     """
     if is_custom_root:
         return {}
@@ -191,23 +195,120 @@ def _migrate_legacy_dynamic_cache_if_needed(is_custom_root: bool) -> Dict[str, L
                 for k, v in data.items():
                     if isinstance(k, str) and k.strip() and isinstance(v, list):
                         migrated[k.strip()] = [str(x) for x in v if isinstance(x, str) and x.strip()]
-            vfs.remove(DYNAMIC_CACHE_URI, missing_ok=True)
+            if remove_file:
+                vfs.remove(DYNAMIC_CACHE_URI, missing_ok=True)
     except Exception:
         pass
     return migrated
 
 
+def _parse_existing_managed_block_groups(
+    proj_root: str,
+    yscb_root: Optional[str] = None,
+    is_custom_root: bool = False,
+) -> Dict[str, List[str]]:
+    """
+    Parses `# [<module>]` rule groups from an existing `project://.gitignore` managed block
+    to preserve cross-process dynamic rules for active modules when a new process starts with
+    an empty in-memory store.
+    """
+    gi_path = os.path.join(proj_root, ".gitignore")
+    if not vfs.is_file(gi_path):
+        return {}
+    try:
+        raw = vfs.read_text(gi_path)
+    except Exception:
+        return {}
+
+    managed_re = re.compile(
+        rf"{re.escape(GITIGNORE_BEGIN_MARKER)}([\s\S]*?){re.escape(GITIGNORE_END_MARKER)}",
+        re.MULTILINE,
+    )
+    m = managed_re.search(raw)
+    if not m:
+        return {}
+
+    eff_yscb = yscb_root or proj_root
+    static_groups = _collect_static_contributes_by_module(proj_root, eff_yscb, is_custom_root)
+    static_norm_by_mod: Dict[str, Set[str]] = {}
+    for s_mod, s_pats in static_groups.items():
+        norm_set: Set[str] = set()
+        for sp in s_pats:
+            np = normalize_pattern(sp, proj_root, eff_yscb)
+            if np:
+                norm_set.add(np)
+        static_norm_by_mod[s_mod] = norm_set
+
+    has_host_cfg = False
+    installed_set: Set[str] = set()
+    for cfg_cand in (
+        os.path.join(proj_root, "yscb.config.json"),
+        os.path.join(os.path.dirname(eff_yscb), "yscb.config.json"),
+        os.path.join(eff_yscb, "yscb.config.json"),
+    ):
+        if os.path.isfile(cfg_cand):
+            try:
+                cfg_d = contrib_mod._read_json_cached(cfg_cand)
+                if isinstance(cfg_d, dict) and isinstance(cfg_d.get("installed_modules"), dict):
+                    has_host_cfg = True
+                    installed_set.update(str(k) for k in cfg_d["installed_modules"].keys())
+                    break
+            except Exception:
+                pass
+
+    modules_dir = os.path.join(eff_yscb, ".modules")
+    if os.path.isdir(modules_dir):
+        try:
+            for d_name in os.listdir(modules_dir):
+                if not d_name.startswith(".") and os.path.isdir(os.path.join(modules_dir, d_name)):
+                    installed_set.add(d_name)
+        except OSError:
+            pass
+
+    parsed_groups: Dict[str, List[str]] = {}
+    cur_mod: Optional[str] = None
+    header_re = re.compile(r"^#\s*\[([^\]]+)\]\s*$")
+    for raw_line in m.group(1).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        hm = header_re.match(line)
+        if hm:
+            cur_mod = hm.group(1).strip()
+            continue
+        if line.startswith("#"):
+            continue
+        if cur_mod and cur_mod not in ("core", "project"):
+            if has_host_cfg and cur_mod not in installed_set:
+                continue
+            if line not in static_norm_by_mod.get(cur_mod, set()):
+                bucket = parsed_groups.setdefault(cur_mod, [])
+                if line not in bucket:
+                    bucket.append(line)
+    return parsed_groups
+
+
 def _load_dynamic_registry(
     proj_root: str,
     is_custom_root: bool,
+    yscb_root: Optional[str] = None,
 ) -> Dict[str, List[str]]:
-    """Loads active runtime-registered patterns per module from memory."""
+    """Loads active runtime-registered patterns per module from memory, hydrating once per root if empty."""
     norm_key = os.path.normcase(os.path.abspath(proj_root))
-    store = _get_custom_root_dynamic_store().setdefault(norm_key, {})
-    if not is_custom_root and not store:
-        migrated = _migrate_legacy_dynamic_cache_if_needed(is_custom_root)
-        if migrated:
-            store.update(migrated)
+    all_stores = _get_custom_root_dynamic_store()
+    is_first_load = norm_key not in all_stores
+    store = all_stores.setdefault(norm_key, {})
+    if is_first_load and not store:
+        if not is_custom_root:
+            migrated = _migrate_legacy_dynamic_cache_if_needed(is_custom_root, remove_file=False)
+            if migrated:
+                store.update(migrated)
+        recovered = _parse_existing_managed_block_groups(proj_root, yscb_root=yscb_root, is_custom_root=is_custom_root)
+        for mod_k, pats in recovered.items():
+            bucket = store.setdefault(mod_k, [])
+            for p in pats:
+                if p not in bucket:
+                    bucket.append(p)
     return dict(store)
 
 
@@ -292,7 +393,7 @@ def _collect_static_contributes_by_module(
                 cpath = os.path.join(modules_dir, mod_name, "contributes", "core.json")
                 if os.path.isfile(cpath):
                     try:
-                        data = vfs.read_json(cpath)
+                        data = contrib_mod._read_json_cached(cpath)
                         pats = _extract_patterns_from_contrib_payload(data)
                         if pats:
                             bucket = grouped.setdefault(mod_name, [])
@@ -312,7 +413,7 @@ def _collect_static_contributes_by_module(
                     c_uri = f"module://{mod_name}/contributes/core.json"
                     if vfs.exists(c_uri):
                         try:
-                            data = vfs.read_json(c_uri)
+                            data = contrib_mod._read_json_cached(c_uri)
                             pats = _extract_patterns_from_contrib_payload(data)
                             if pats:
                                 bucket = grouped.setdefault(mod_name, [])
@@ -329,7 +430,7 @@ def _collect_static_contributes_by_module(
         self_contrib_path = os.path.join(core_pkg_dir, "contributes", "core.json")
         if os.path.isfile(self_contrib_path):
             try:
-                data = vfs.read_json(self_contrib_path)
+                data = contrib_mod._read_json_cached(self_contrib_path)
                 pats = _extract_patterns_from_contrib_payload(data)
                 if pats:
                     grouped["core"] = pats
@@ -339,7 +440,7 @@ def _collect_static_contributes_by_module(
     proj_contrib_path = os.path.join(yscb_root, "config", "core", "contribute.json")
     if os.path.isfile(proj_contrib_path):
         try:
-            data = vfs.read_json(proj_contrib_path)
+            data = contrib_mod._read_json_cached(proj_contrib_path)
             pats = _extract_patterns_from_contrib_payload(data)
             if pats:
                 bucket = grouped.setdefault("project", [])
@@ -392,7 +493,7 @@ def _collect_space_registry_gitignore_groups(
             bucket = grouped.setdefault(s_cfg.owner, [])
             for pat in s_cfg.include:
                 s = str(pat).strip()
-                if s and s != "*" and s not in bucket:
+                if s and s not in bucket:
                     bucket.append(s)
             for pat in s_cfg.exclude:
                 s = str(pat).strip()
@@ -415,7 +516,7 @@ def collect_grouped_patterns(
     eff_proj, eff_yscb, is_custom = _resolve_roots(proj_root=proj_root, yscb_root=yscb_root)
     static_groups = _collect_static_contributes_by_module(eff_proj, eff_yscb, is_custom)
     space_groups = _collect_space_registry_gitignore_groups(eff_proj, eff_yscb, is_custom)
-    dynamic_groups = _load_dynamic_registry(eff_proj, is_custom)
+    dynamic_groups = _load_dynamic_registry(eff_proj, is_custom, yscb_root=eff_yscb)
 
     combined_raw: Dict[str, List[str]] = {}
     for mod, pats in static_groups.items():
@@ -621,7 +722,7 @@ def register_dynamic(
                 seen.add(s)
                 clean_list.append(s)
 
-    reg = _load_dynamic_registry(eff_proj, is_custom)
+    reg = _load_dynamic_registry(eff_proj, is_custom, yscb_root=eff_yscb)
     if clean_list:
         reg[mod_name] = clean_list
     else:
@@ -653,7 +754,7 @@ def clear_dynamic(
     mod_name = _validate_module_name(module)
     eff_proj, eff_yscb, is_custom = _resolve_roots(proj_root=proj_root, yscb_root=yscb_root)
 
-    reg = _load_dynamic_registry(eff_proj, is_custom)
+    reg = _load_dynamic_registry(eff_proj, is_custom, yscb_root=eff_yscb)
     removed = mod_name in reg
     reg.pop(mod_name, None)
     _save_dynamic_registry(reg, eff_proj, is_custom)
@@ -713,7 +814,7 @@ def unregister(
     mod_name = _validate_module_name(module)
     eff_proj, eff_yscb, is_custom = _resolve_roots(proj_root=proj_root, yscb_root=yscb_root)
     remove_set = {str(p).strip() for p in patterns if isinstance(p, str) and str(p).strip()}
-    reg = _load_dynamic_registry(eff_proj, is_custom)
+    reg = _load_dynamic_registry(eff_proj, is_custom, yscb_root=eff_yscb)
     existing = list(reg.get(mod_name, []))
     remaining = [p for p in existing if p not in remove_set]
     return register_dynamic(
@@ -775,6 +876,12 @@ def sync(
     cleaned_nested = _cleanup_obsolete_nested_gitignores(eff_proj, eff_yscb)
 
     if has_existing and existing_content == merged_content:
+        if not is_custom:
+            try:
+                if vfs.exists(DYNAMIC_CACHE_URI):
+                    vfs.remove(DYNAMIC_CACHE_URI, missing_ok=True)
+            except Exception:
+                pass
         return {
             "updated": False,
             "created": False,
@@ -787,6 +894,12 @@ def sync(
     try:
         os.makedirs(eff_proj, exist_ok=True)
         vfs.write_text(gi_path, merged_content, encoding="utf-8", atomic=True)
+        if not is_custom:
+            try:
+                if vfs.exists(DYNAMIC_CACHE_URI):
+                    vfs.remove(DYNAMIC_CACHE_URI, missing_ok=True)
+            except Exception:
+                pass
         result = {
             "updated": True,
             "created": not has_existing,
@@ -849,7 +962,7 @@ def status(
         except Exception:
             pass
 
-    dynamic_reg = _load_dynamic_registry(eff_proj, is_custom)
+    dynamic_reg = _load_dynamic_registry(eff_proj, is_custom, yscb_root=eff_yscb)
     return {
         "target_path": gi_path,
         "exists": exists,
@@ -867,4 +980,3 @@ def __getattr__(name: str) -> Any:
     if name == "_CUSTOM_ROOT_DYNAMIC_STORE":
         return _get_custom_root_dynamic_store()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-

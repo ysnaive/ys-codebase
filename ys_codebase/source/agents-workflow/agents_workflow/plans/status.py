@@ -4,47 +4,32 @@ PlanStatusResolver — 開發計畫標頭狀態解析與完成度檢測服務 (S
 
 import re
 from pathlib import Path
-from types import MappingProxyType
-from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Tuple, Union
+from typing import Any, Dict, FrozenSet, Mapping, Optional, Tuple, Union
 
-from ._common import parse_markdown_blockquote_headers
+from .state_machine import (
+    COMPLETED_STATUS_SET as _COMPLETED_STATUS_SET,
+    HEADER_MODEL_KEYS,
+    HEADER_STATUS_KEYS,
+    ORIGIN_SEED_FILES as _ORIGIN_SEED_FILES,
+    PHASE_CANONICAL_STEMS as _PHASE_CANONICAL_STEMS,
+    get_doc_header_model as _get_doc_header_model,
+    get_doc_header_status as _get_doc_header_status,
+    has_active_attached_revision as _has_active_attached_revision,
+    is_doc_completed as _is_doc_completed,
+    is_research_completed as _is_research_completed,
+    read_doc_header_metadata as _read_doc_header_metadata,
+    resolve_phase_file as _resolve_phase_file,
+)
 
 
 class PlanStatusResolver:
     """計畫文件標頭狀態提取與完成度解析服務 (SSOT)。"""
 
-    STATUS_KEYS: Tuple[str, ...] = (
-        "狀態",
-        "status",
-        "計畫狀態",
-        "plan_status",
-        "調研狀態",
-        "research_status",
-        "進度",
-        "當前所在階段",
-    )
-
-    MODEL_KEYS: Tuple[str, ...] = (
-        "模型",
-        "model",
-        "ai_model",
-        "ai-model",
-        "模型名稱",
-        "model_name",
-    )
-
-    COMPLETED_STATUS_SET: FrozenSet[str] = frozenset({"completed", "concluded", "passed"})
-    ORIGIN_SEED_FILES: FrozenSet[str] = frozenset({"roadmap.md", "todo.md"})
-    PHASE_CANONICAL_STEMS: Mapping[str, str] = MappingProxyType({
-        "P00": "P00_discuss",
-        "P01": "P01_requirements_spec",
-        "P02": "P02_architecture_plan",
-        "P03": "P03_api_spec",
-        "P04": "P04_implementation_plan",
-        "P05": "P05_task",
-        "P06": "P06_test_plan",
-        "P07": "P07_walkthrough",
-    })
+    STATUS_KEYS: Tuple[str, ...] = HEADER_STATUS_KEYS
+    MODEL_KEYS: Tuple[str, ...] = HEADER_MODEL_KEYS
+    COMPLETED_STATUS_SET: FrozenSet[str] = _COMPLETED_STATUS_SET
+    ORIGIN_SEED_FILES: FrozenSet[str] = _ORIGIN_SEED_FILES
+    PHASE_CANONICAL_STEMS: Mapping[str, str] = _PHASE_CANONICAL_STEMS
 
     @classmethod
     def resolve_phase_file(cls, plan_dir: Union[Path, str], phase_code: str) -> Path:
@@ -52,51 +37,12 @@ class PlanStatusResolver:
         解析指定階段 (P00~P07) 於 plan_dir 下之實體檔案路徑，支援標準檔名、傳統 `_auto.md` 後綴與 `PXX-05_auto.md` 區段整合檔相容。
         優先順序：標準檔名 `<stem>.md` -> 傳統自動推進檔名 `<stem>_auto.md` -> 區段自動推進檔 `P0{start}-05_auto.md` -> 同階段前綴 `<P0X>_*.md` -> 預設標準路徑。
         """
-        p = Path(plan_dir)
-        p_up = (phase_code or "").strip().upper()
-        stem = cls.PHASE_CANONICAL_STEMS.get(p_up, f"{p_up}_spec")
-        std_path = p / f"{stem}.md"
-        if std_path.is_file():
-            return std_path
-        auto_path = p / f"{stem}_auto.md"
-        if auto_path.is_file():
-            return auto_path
-        if p.is_dir() and re.match(r"^P0[1-5]$", p_up):
-            target_num = int(p_up[1:])
-            for f in sorted(p.glob("P0*-05_auto.md")):
-                m_range = re.match(r"^P0([1-5])-05_auto\.md$", f.name, re.IGNORECASE)
-                if m_range and int(m_range.group(1)) <= target_num <= 5:
-                    return f
-        if p.is_dir() and re.match(r"^P0[0-7]$", p_up):
-            matches = sorted(p.glob(f"{p_up}_*.md"))
-            if matches:
-                return matches[0]
-        return std_path
+        return _resolve_phase_file(plan_dir, phase_code)
 
     @classmethod
     def _read_doc_header_metadata(cls, doc_target: Union[Path, str]) -> Optional[Dict[str, str]]:
         """讀取單一 Markdown 文件或內容字串之前 35 行 Blockquote 標頭字典。"""
-        content = ""
-        if isinstance(doc_target, Path) or (
-            isinstance(doc_target, str) and "\n" not in doc_target and Path(doc_target).exists()
-        ):
-            p = Path(doc_target)
-            if not p.is_file():
-                return None
-            try:
-                content = p.read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                return None
-        elif isinstance(doc_target, str):
-            content = doc_target
-        else:
-            return None
-
-        try:
-            lines = content.splitlines()[:35]
-            return parse_markdown_blockquote_headers(lines, max_lines=35)
-        except Exception:
-            return None
+        return _read_doc_header_metadata(doc_target)
 
     @classmethod
     def get_doc_header_status(cls, doc_target: Union[Path, str]) -> str:
@@ -109,23 +55,7 @@ class PlanStatusResolver:
         Returns:
             str: 正規化後之小寫狀態字串 (如 'in progress', 'completed', 'concluded' 等)，若無法解析則回傳 'unknown'。
         """
-        headers = cls._read_doc_header_metadata(doc_target)
-        if not headers:
-            return "unknown"
-
-        for key in cls.STATUS_KEYS:
-            if key in headers:
-                val = headers[key].strip()
-                if not val:
-                    continue
-                if val.startswith("[") and val.endswith("]") and "|" in val:
-                    return "unknown"
-                norm_val = val.lower()
-                if norm_val in ("in_progress", "implementing", "executing", "active"):
-                    return "in progress"
-                return norm_val
-
-        return "unknown"
+        return _get_doc_header_status(doc_target)
 
     @classmethod
     def is_doc_completed(cls, doc_target: Union[Path, str]) -> bool:
@@ -138,8 +68,7 @@ class PlanStatusResolver:
         Returns:
             bool: 若標頭狀態為 completed, concluded 或 passed 則為 True
         """
-        status = cls.get_doc_header_status(doc_target)
-        return status in cls.COMPLETED_STATUS_SET
+        return _is_doc_completed(doc_target)
 
     @classmethod
     def is_research_completed(cls, plan_dir_or_target: Union[Path, str]) -> bool:
@@ -152,22 +81,7 @@ class PlanStatusResolver:
         Returns:
             bool: 若為目錄且所有 R 檔完成，或為單一調研文件且已完成則為 True
         """
-        if isinstance(plan_dir_or_target, Path) or (
-            isinstance(plan_dir_or_target, str) and "\n" not in plan_dir_or_target and Path(plan_dir_or_target).exists()
-        ):
-            p = Path(plan_dir_or_target)
-            if p.is_dir():
-                r_files = [
-                    f for f in p.iterdir()
-                    if f.is_file() and re.match(r"^R\d{2}_.+\.md$", f.name, re.IGNORECASE)
-                ]
-                if not r_files:
-                    return False
-                return all(cls.is_doc_completed(rf) for rf in r_files)
-            elif p.is_file():
-                return cls.is_doc_completed(p)
-
-        return cls.is_doc_completed(plan_dir_or_target)
+        return _is_research_completed(plan_dir_or_target)
 
     @classmethod
     def get_doc_header_model(cls, doc_target: Union[Path, str]) -> str:
@@ -181,28 +95,12 @@ class PlanStatusResolver:
         Returns:
             str: 模型名稱字串或 'Unknown'
         """
-        headers = cls._read_doc_header_metadata(doc_target)
-        if not headers:
-            return "Unknown"
-
-        for key in cls.MODEL_KEYS:
-            if key in headers:
-                val = headers[key].strip()
-                if not val:
-                    return "Unknown"
-                if val.startswith("[") and val.endswith("]"):
-                    return "Unknown"
-                return val
-        return "Unknown"
+        return _get_doc_header_model(doc_target)
 
     @classmethod
     def _has_active_attached_revision(cls, p: Path) -> bool:
         """檢查目錄是否附掛尚未 Completed 之進行中 revision_log.md。"""
-        rev_log = p / "revision_log.md"
-        if not rev_log.is_file():
-            return False
-        rev_st = cls.get_doc_header_status(rev_log)
-        return rev_st not in ("completed", "concluded")
+        return _has_active_attached_revision(p)
 
     @classmethod
     def _resolve_umbrella_next_action(cls, p: Path, ref_base: str) -> Optional[Dict[str, Any]]:
@@ -216,7 +114,7 @@ class PlanStatusResolver:
         )
         for sd in sub_dirs:
             sub_nav = cls.resolve_next_action(sd)
-            if sub_nav["current_status"] not in ("completed", "concluded") or sub_nav["next_phase"] != "Completed":
+            if sub_nav["current_status"] not in cls.COMPLETED_STATUS_SET or sub_nav["next_phase"] != "Completed":
                 sub_nav["target_plan_name"] = f"{p.name}/{sd.name}"
                 sub_nav["parent_umbrella_dir"] = p
                 sub_nav["has_handoff"] = (sd / "handoff.md").exists() or (p / "handoff.md").exists()
@@ -226,7 +124,7 @@ class PlanStatusResolver:
             return cls._resolve_revision_next_action(p, ref_base, (p / "handoff.md").exists())
 
         u_status = cls.get_doc_header_status(umbrella_file)
-        is_done = u_status in ("completed", "concluded")
+        is_done = u_status in cls.COMPLETED_STATUS_SET
         return {
             "target_plan_name": p.name,
             "target_plan_dir": p,
@@ -295,7 +193,7 @@ class PlanStatusResolver:
 
         if p07_f.exists():
             st = cls.get_doc_header_status(p07_f)
-            is_done = st in ("completed", "concluded")
+            is_done = st in cls.COMPLETED_STATUS_SET
             if is_done and cls._has_active_attached_revision(p):
                 return cls._resolve_revision_next_action(p, ref_base, has_handoff)
             return {
@@ -314,7 +212,6 @@ class PlanStatusResolver:
                 "has_handoff": has_handoff,
             }
 
-        # 注意：P06 在 P02 會建立 Draft、P04 定稿為 Confirmed，因此僅當 P05 已存在時才進入 P05/P06 階段判定
         if p05_f.exists():
             p05_st = cls.get_doc_header_status(p05_f)
             p06_st = cls.get_doc_header_status(p06_f) if p06_f.exists() else "unknown"
@@ -413,7 +310,7 @@ class PlanStatusResolver:
         if not rev_log.exists():
             return None
         st = cls.get_doc_header_status(rev_log)
-        is_done = st in ("completed", "concluded")
+        is_done = st in cls.COMPLETED_STATUS_SET
         return {
             "target_plan_name": p.name,
             "target_plan_dir": p,

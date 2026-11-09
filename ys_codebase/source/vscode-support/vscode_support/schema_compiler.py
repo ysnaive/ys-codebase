@@ -13,11 +13,12 @@ import zipfile
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from core import contributes, uri, vfs
-from core.context import cell_span
+from core.context import cell_span, get_runtime_context
 from core.semver import compare_semver, parse_semver
 from core.validator import ContributesValidator
 
 DRAFT_07_URI = "http://json-schema.org/draft-07/schema#"
+_MAX_MIRROR_ZIP_CACHE_ENTRIES = 64
 
 
 class SchemaCompiler:
@@ -30,7 +31,12 @@ class SchemaCompiler:
     def __init__(self, yscb_dir: Optional[str] = None) -> None:
         self.yscb_dir = os.path.abspath(yscb_dir or uri.resolve_yscb_root())
         self._cached_uri_snippets: Optional[List[Dict[str, Any]]] = None
-        self._mirror_zip_bundle_cache: Dict[Tuple[str, int], Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]] = {}
+
+    @property
+    def _mirror_zip_bundle_cache(
+        self,
+    ) -> Dict[Tuple[str, int], Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]]:
+        return get_runtime_context().get_module_state("vscode_support.mirror_zip_cache", dict)
 
     def _collect_uri_scheme_snippets(self) -> List[Dict[str, Any]]:
         """
@@ -435,12 +441,12 @@ class SchemaCompiler:
         }
 
     def build_manifest_meta_schema(self) -> Dict[str, Any]:
-        """建構校驗 `**/manifest.json` 之元 Schema。"""
+        """建構校驗 `**/manifest.json` 之元 Schema，與 `dev.checker` 靜態檢核契約完全對齊。"""
         return {
             "$schema": DRAFT_07_URI,
             "title": "YS-Codebase Module manifest.json Meta Schema",
             "type": "object",
-            "required": ["name", "version", "description"],
+            "required": ["name", "version", "entry", "dependencies"],
             "properties": {
                 "id": {"type": "string", "minLength": 1},
                 "name": {"type": "string", "minLength": 1},
@@ -450,10 +456,18 @@ class SchemaCompiler:
                 },
                 "description": {"type": "string"},
                 "author": {"type": "string"},
-                "entry": {"type": "string"},
+                "entry": {"type": "string", "minLength": 1},
                 "dependencies": {
-                    "type": "object",
-                    "additionalProperties": {"type": "string"},
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "additionalProperties": {"type": "string"},
+                        },
+                        {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    ]
                 },
                 "optional": {
                     "type": "object",
@@ -468,7 +482,8 @@ class SchemaCompiler:
                     },
                 },
                 "pip_dependencies": {
-                    "type": ["object", "array"],
+                    "type": "object",
+                    "additionalProperties": {"type": ["string", "null"]},
                 },
                 "uris": {
                     "type": "object",
@@ -481,8 +496,14 @@ class SchemaCompiler:
                 "release": {
                     "type": "object",
                     "properties": {
-                        "type": {"type": "string", "enum": ["feature", "bugfix", "refactor", "security", "docs"]},
-                        "urgency": {"type": "string", "enum": ["low", "normal", "recommended", "high", "critical"]},
+                        "type": {
+                            "type": "string",
+                            "enum": ["feature", "bugfix", "hotfix", "refactor", "security", "docs"],
+                        },
+                        "urgency": {
+                            "type": "string",
+                            "enum": ["optional", "low", "normal", "recommended", "high", "critical"],
+                        },
                         "summary": {"type": "string"},
                         "sha256": {"type": "string"},
                     },
@@ -545,7 +566,7 @@ class SchemaCompiler:
     ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         """
         Single-pass reader for `.mirror/<mod>/*.zip` that extracts both `configurable/_format.json`
-        and merged `configurable/config.*.json` templates while caching by `(path, mtime_ns)`.
+        and merged `configurable/config.*.json` templates while caching by `(path, mtime_ns)` in `RuntimeContext`.
         """
         if not latest_zip or not os.path.isfile(latest_zip):
             return None, None
@@ -554,9 +575,10 @@ class SchemaCompiler:
         except OSError:
             return None, None
 
+        cache = self._mirror_zip_bundle_cache
         cache_key = (os.path.normcase(os.path.abspath(latest_zip)), st_mtime_ns)
-        if cache_key in self._mirror_zip_bundle_cache:
-            return self._mirror_zip_bundle_cache[cache_key]
+        if cache_key in cache:
+            return cache[cache_key]
 
         fmt_data: Optional[Dict[str, Any]] = None
         merged_tpl: Dict[str, Any] = {}
@@ -586,7 +608,9 @@ class SchemaCompiler:
             return None, None
 
         res = (fmt_data, merged_tpl if found_tpl else None)
-        self._mirror_zip_bundle_cache[cache_key] = res
+        if len(cache) >= _MAX_MIRROR_ZIP_CACHE_ENTRIES:
+            cache.pop(next(iter(cache)), None)
+        cache[cache_key] = res
         return res
 
     def _load_module_config_format(self, mod_name: str, latest_zip: Optional[str] = None) -> Optional[Dict[str, Any]]:

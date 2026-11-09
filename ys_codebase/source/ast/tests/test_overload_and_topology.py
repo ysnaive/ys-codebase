@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 from types import MappingProxyType
+from unittest.mock import patch
 
 _AST_ROOT = str(Path(__file__).resolve().parents[1])
 if _AST_ROOT not in sys.path:
@@ -149,18 +150,39 @@ class TestOverloadAndTopology(ASTTestCase):
         self.assertIn("InitCore", callee_names)
         self.assertIn("Resize", callee_names)
 
-        callers_res = query_callers("Window.Open", snapshot, graph)
+        # Verify query_callers computes symbols_map fingerprint only once per call
+        import ast_engine.linker as linker_mod
+
+        orig_fp = linker_mod._compute_symbols_map_fingerprint
+        fp_calls = []
+
+        def tracked_fp(smap):
+            fp_calls.append(len(smap))
+            return orig_fp(smap)
+
+        with patch.object(linker_mod, "_compute_symbols_map_fingerprint", side_effect=tracked_fp), patch(
+            "ast_engine.resolver._compute_symbols_map_fingerprint", side_effect=tracked_fp
+        ):
+            callers_res = query_callers("Window.Open", snapshot, graph)
+        self.assertEqual(len(fp_calls), 1)
         caller_names = {c["name"].split(".")[-1] for c in callers_res.get("callers", [])}
         self.assertIn("Launch", caller_names)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_signature_params_generic_commas_and_zero_arg_disambiguation(self) -> None:
-        """Verify extract_signature_params handles return-type parens and self: Self, and SymbolSelector disambiguates 0-arg overloads."""
+        """Verify extract_signature_params handles return-type parens, escaped quotes with commas, and self: Self, and SymbolSelector disambiguates 0-arg overloads."""
         params_ret_paren = extract_signature_params(
             "def transform(self: Self, items: Dict[str, Tuple[int, str]], flag: bool = True) -> Tuple[int, (str, bool)]"
         )
         self.assertEqual(params_ret_paren, ["items: Dict[str, Tuple[int, str]]", "flag: bool = True"])
+
+        params_escaped_quotes = extract_signature_params(
+            'def log_msg(msg: str = "a, \\"b, c\\"", level: int = 1) -> None'
+        )
+        self.assertEqual(len(params_escaped_quotes), 2)
+        self.assertTrue(params_escaped_quotes[0].startswith("msg: str"))
+        self.assertEqual(params_escaped_quotes[1], "level: int = 1")
 
         sel_generic = SymbolSelector.parse("fn Map.Get(Dictionary<string, int>, int)")
         self.assertEqual(sel_generic.identifier, "Get")

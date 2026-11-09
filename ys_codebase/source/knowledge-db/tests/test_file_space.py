@@ -21,7 +21,7 @@ from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
 import knowledge_db
 from knowledge_db.config import KnowledgeDBConfig, resolve_threads
-from knowledge_db.engine import KnowledgeEngine
+from knowledge_db.engine import KnowledgeEngine, _collect_raw_spaces_for_registry
 from knowledge_db.exceptions import InvalidConfigError
 import knowledge_db.providers as kdb_prov
 from knowledge_db.providers import get_knowledge_db_spaces
@@ -77,6 +77,7 @@ class TestSpaceIntegrationAndWeights(YSCBTestCase):
                     "proj_space": {
                         "description": "專案注入空間",
                         "include": [str(proj_src)],
+                        "weight": 1.15,
                     },
                     "shared_space": {
                         "description": "Project contribute.json 覆蓋版本",
@@ -86,7 +87,6 @@ class TestSpaceIntegrationAndWeights(YSCBTestCase):
                 },
                 "space_weights": {
                     "mod_space": 1.0,
-                    "proj_space": 1.2,
                     "shared_space": 1.5,
                 },
             }
@@ -109,7 +109,20 @@ class TestSpaceIntegrationAndWeights(YSCBTestCase):
                 indexed_spaces["shared_space"].description,
                 "Project contribute.json 覆蓋版本",
             )
+            self.assertAlmostEqual(engine.get_space_weight("proj_space"), 1.15)
             self.assertAlmostEqual(engine.get_space_weight("shared_space"), 1.5)
+
+            # 驗證不同 owner 的同名 short_name 不會在 _collect_raw_spaces_for_registry 中互相覆蓋
+            raw_multi = _collect_raw_spaces_for_registry(
+                contributes_data={
+                    "spaces": {
+                        "core/docs": {"include": [str(mod_src)]},
+                        "project/docs": {"include": [str(proj_src)]},
+                    }
+                }
+            )
+            self.assertIn("core/docs", raw_multi)
+            self.assertIn("project/docs", raw_multi)
 
             engine.build_unified_index(force=True)
             self.assertEqual(

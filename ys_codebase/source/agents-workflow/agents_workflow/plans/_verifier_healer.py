@@ -229,6 +229,8 @@ def auto_heal_companions(
     explicit_model: Optional[str],
     report: Any,
     pending_writes: Optional[Dict[Path, str]] = None,
+    initial_log_msg: Optional[str] = None,
+    initial_log_type: str = "PHASE",
 ) -> None:
     """
     Step 2: 自動初始化缺失之伴隨檔 (changelog.md 與 P02 階段伴隨之 P06_test_plan.md Draft)。
@@ -242,11 +244,20 @@ def auto_heal_companions(
 
     changelog_path = target_dir / "changelog.md"
     if not changelog_path.exists() and (pending_writes is None or changelog_path not in pending_writes):
+        if initial_log_msg and initial_log_msg.strip():
+            clean_type = initial_log_type.strip().upper().strip("`") or "PHASE"
+            raw_summary = initial_log_msg.strip().replace("\r", " ").replace("\n", " ")
+            clean_summary = _UNESCAPED_PIPE_RE.sub(r"\\|", raw_summary)
+        else:
+            clean_type = "PHASE"
+            clean_summary = "自動初始化變更日誌 (changelog.md)"
+        raw_model = model_val.strip() if model_val and model_val.strip() else "Unknown"
+        clean_model = _UNESCAPED_PIPE_RE.sub(r"\\|", raw_model)
         cl_content = _render_initial_changelog(
             target_dir,
-            model=model_val,
-            summary="自動初始化變更日誌 (changelog.md)",
-            log_type="PHASE",
+            model=clean_model,
+            summary=clean_summary,
+            log_type=clean_type,
             today_str=today_str,
         )
         if pending_writes is not None:

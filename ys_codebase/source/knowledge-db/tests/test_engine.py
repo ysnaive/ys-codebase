@@ -26,7 +26,7 @@ from tests import write_text_and_advance_mtime
 class TestEngine(YSCBTestCase):
     @require(Requirement.WORKFLOW)
     def test_engine_status_and_lifecycle(self):
-        """驗證 KnowledgeEngine 門面 API 全生命週期操作"""
+        """驗證 KnowledgeEngine 門面 API 全生命週期操作與 build_index(space=...) 統一索引對齊"""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             src_dir = temp_path / "src"
@@ -68,11 +68,13 @@ class TestEngine(YSCBTestCase):
             self.assertEqual(bundles[0].space_name, "demo_space")
             self.assertGreaterEqual(len(bundles[0].symbols), 2)
 
-            # 3. build_index 驗證
+            # 3. build_index 驗證：更新 unified.index.bin.gz 並回傳單空間視圖，不再產生孤兒 <space>.index.bin.gz
             indices = engine.build_index(space="demo_space")
             self.assertIn("demo_space", indices)
-            idx_file = storage_dir / "indices" / "demo_space.index.bin.gz"
-            self.assertTrue(idx_file.exists())
+            unified_idx_file = storage_dir / "indices" / "unified.index.bin.gz"
+            orphan_idx_file = storage_dir / "indices" / "demo_space.index.bin.gz"
+            self.assertTrue(unified_idx_file.exists())
+            self.assertFalse(orphan_idx_file.exists())
 
             # 4. search 驗證
             results = engine.search("PIDController", space="demo_space")
@@ -81,7 +83,7 @@ class TestEngine(YSCBTestCase):
 
             # 5. clean 驗證 (清除索引並重置 knowledge-db 游標)
             engine.clean(space="demo_space")
-            self.assertFalse(idx_file.exists())
+            self.assertFalse(unified_idx_file.exists())
             st_after = engine.status()
             self.assertFalse(st_after["has_unified_index"])
 
@@ -125,8 +127,8 @@ class TestEngine(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_to_file_uri_and_formatting(self):
-        """驗證 to_file_uri、format_file_link 與 TerminalStyler 色彩樣式控制"""
-        from knowledge_db.formatter import TerminalStyler
+        """驗證 to_file_uri、format_file_link、跨平台 normalize_workspace_path 與 TerminalStyler 色彩樣式控制"""
+        from knowledge_db.formatter import ResultFormatter, TerminalStyler
 
         with tempfile.TemporaryDirectory() as temp_dir:
             engine = KnowledgeEngine(storage_dir=temp_dir)
@@ -162,6 +164,31 @@ class TestEngine(YSCBTestCase):
             )
             self.assertIn("[uri.py:L10-25](file:///", link_range)
             self.assertTrue(link_range.endswith("#L10)"))
+
+            # 驗證 normalize_workspace_path 支援軟連結 (realpath) 與大小寫差異 (normcase)
+            real_ws = Path(temp_dir) / "real_ws"
+            real_ws.mkdir(parents=True)
+            (real_ws / "sub").mkdir(parents=True)
+            target_f = real_ws / "sub" / "MyFile.py"
+            target_f.write_text("x = 1\n", encoding="utf-8")
+            link_ws = Path(temp_dir) / "symlink_ws"
+            try:
+                os.symlink(str(real_ws), str(link_ws))
+                fmt_sym = ResultFormatter(workspace_root=link_ws)
+                self.assertEqual(
+                    fmt_sym.normalize_workspace_path(target_f), "sub/MyFile.py"
+                )
+            except (OSError, NotImplementedError):
+                pass
+
+            fmt_case = ResultFormatter(workspace_root=real_ws)
+            with patch("knowledge_db.formatter.os.path.normcase", side_effect=lambda s: s.lower()), patch(
+                "knowledge_db.formatter.os.path.realpath",
+                side_effect=lambda s, *_a, **_kw: str(s).upper() if "MyFile.py" not in str(s) else str(s)[:len(str(real_ws))].lower() + str(s)[len(str(real_ws)):],
+            ):
+                self.assertEqual(
+                    fmt_case.normalize_workspace_path(target_f), "sub/MyFile.py"
+                )
 
             # 驗證 TerminalStyler TTY 與 NO_COLOR 行為
             prev_no_color = os.environ.get("NO_COLOR")

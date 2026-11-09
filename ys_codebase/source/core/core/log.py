@@ -405,6 +405,7 @@ class DebouncedIOStreamer:
         self.debounce_sec = debounce_ms / 1000.0
         self.max_buffer_bytes = max_buffer_bytes
         self._lock = threading.RLock()
+        self._emit_lock = threading.RLock()
         self._buffer: List[Dict[str, str]] = []
         self._buffer_bytes: int = 0
         self._timer: Optional[threading.Timer] = None
@@ -417,34 +418,14 @@ class DebouncedIOStreamer:
         self._stdout_proxy = _StreamProxy(self, "stdout")
         self._stderr_proxy = _StreamProxy(self, "stderr")
 
-    def write(self, stream_name: str, text: str) -> None:
-        if not text:
-            return
-
-        with self._lock:
-            if self._is_closed:
-                return
-
-            self._buffer.append({"stream": stream_name, "text": text})
-            self._buffer_bytes += len(text.encode("utf-8", errors="replace"))
-
-            if self._buffer_bytes >= self.max_buffer_bytes:
-                self._flush_locked()
-            else:
-                self._ensure_timer_locked()
-
-    def flush(self) -> None:
-        with self._lock:
-            self._flush_locked()
-
-    def _flush_locked(self) -> None:
+    def _pop_consolidated_locked(self) -> List[Tuple[str, List[str]]]:
         if self._timer:
             self._timer.cancel()
             self._timer = None
 
         if not self._buffer:
             self._buffer_bytes = 0
-            return
+            return []
 
         consolidated: List[Tuple[str, List[str]]] = []
         for item in self._buffer:
@@ -454,22 +435,56 @@ class DebouncedIOStreamer:
             else:
                 consolidated.append((s_name, [item["text"]]))
 
-        # Clear buffer state BEFORE calling emit_chunk to prevent re-entrant duplication
         self._buffer.clear()
         self._buffer_bytes = 0
+        return consolidated
 
-        for s_name, chunks in consolidated:
-            combined_text = "".join(chunks)
-            if combined_text:
-                packet = {
-                    "type": "terminal_stream",
-                    "stream": s_name,
-                    "text": combined_text,
-                }
-                try:
-                    self.emit_chunk(packet)
-                except Exception:
-                    pass
+    def _emit_consolidated(self, consolidated: List[Tuple[str, List[str]]]) -> None:
+        if not consolidated:
+            return
+        with self._emit_lock:
+            for s_name, chunks in consolidated:
+                combined_text = "".join(chunks)
+                if combined_text:
+                    packet = {
+                        "type": "terminal_stream",
+                        "stream": s_name,
+                        "text": combined_text,
+                    }
+                    try:
+                        self.emit_chunk(packet)
+                    except Exception:
+                        pass
+
+    def write(self, stream_name: str, text: str) -> None:
+        if not text:
+            return
+
+        to_emit: List[Tuple[str, List[str]]] = []
+        with self._lock:
+            if self._is_closed:
+                return
+
+            self._buffer.append({"stream": stream_name, "text": text})
+            self._buffer_bytes += len(text.encode("utf-8", errors="replace"))
+
+            if self._buffer_bytes >= self.max_buffer_bytes:
+                to_emit = self._pop_consolidated_locked()
+            else:
+                self._ensure_timer_locked()
+        if to_emit:
+            self._emit_consolidated(to_emit)
+
+    def flush(self) -> None:
+        with self._lock:
+            to_emit = self._pop_consolidated_locked()
+        if to_emit:
+            self._emit_consolidated(to_emit)
+
+    def _flush_locked(self) -> None:
+        to_emit = self._pop_consolidated_locked()
+        if to_emit:
+            self._emit_consolidated(to_emit)
 
     def _ensure_timer_locked(self) -> None:
         if self._timer is None and not self._is_closed:
@@ -478,8 +493,7 @@ class DebouncedIOStreamer:
             self._timer.start()
 
     def _on_timer(self) -> None:
-        with self._lock:
-            self._flush_locked()
+        self.flush()
 
     def send_task_finish(
         self,
@@ -498,10 +512,11 @@ class DebouncedIOStreamer:
         }
         if stages:
             packet["stages"] = stages
-        try:
-            self.emit_chunk(packet)
-        except Exception:
-            pass
+        with self._emit_lock:
+            try:
+                self.emit_chunk(packet)
+            except Exception:
+                pass
 
     def start_capture(self) -> "DebouncedIOStreamer":
         with self._lock:
@@ -525,10 +540,11 @@ class DebouncedIOStreamer:
         return self
 
     def stop_capture(self) -> None:
+        to_emit: List[Tuple[str, List[str]]] = []
         with self._lock:
             if self._is_closed:
                 return
-            self._flush_locked()
+            to_emit = self._pop_consolidated_locked()
             self._is_closed = True
             if self._timer:
                 self._timer.cancel()
@@ -544,6 +560,8 @@ class DebouncedIOStreamer:
                     _ACTIVE_LOG_SCOPE.reset(token)
                 except ValueError:
                     pass
+        if to_emit:
+            self._emit_consolidated(to_emit)
 
     def __enter__(self) -> "DebouncedIOStreamer":
         return self.start_capture()
@@ -608,11 +626,15 @@ def _extract_log_file_timestamp(file_path: str, time_format: str, header_regex: 
 
 def _safe_replace_file(src: str, dst: str) -> None:
     """
-    Safely moves `src` to `dst` using cross-platform atomic `os.replace`,
-    falling back to `shutil.copy2` + `os.remove` across filesystems or Windows handle locks.
+    Safely moves `src` to `dst` using cross-platform atomic `robust_replace`
+    (with transient Windows lock retries and EXDEV staging), falling back to
+    `shutil.copy2` + `os.remove` only if atomic replace cannot succeed.
     """
     try:
-        os.replace(src, dst)
+        from core.vfs.os_backend import robust_replace
+
+        robust_replace(src, dst, max_retries=5)
+        return
     except OSError:
         shutil.copy2(src, dst)
         try:
@@ -1015,6 +1037,42 @@ def log_file_jsonl(
         return False
 
 
+def _read_tail_jsonl_records(path: Path, limit: int) -> List[Dict[str, Any]]:
+    """Reads up to `limit` valid JSONL records from the tail of `path` using reverse 64KB chunk scanning."""
+    records: List[Dict[str, Any]] = []
+    chunk_size = 65536
+    with open(path, "rb") as fb:
+        fb.seek(0, os.SEEK_END)
+        pos = fb.tell()
+        rem = b""
+        while pos > 0 and len(records) < limit:
+            read_sz = min(chunk_size, pos)
+            pos -= read_sz
+            fb.seek(pos, os.SEEK_SET)
+            buf = fb.read(read_sz) + rem
+            lines = buf.split(b"\n")
+            if pos > 0:
+                rem = lines[0]
+                cand_lines = lines[1:]
+            else:
+                rem = b""
+                cand_lines = lines
+            for raw_ln in reversed(cand_lines):
+                if not raw_ln.strip():
+                    continue
+                item = _parse_jsonl_dict_line(raw_ln.decode("utf-8", errors="replace"))
+                if item is not None:
+                    records.append(item)
+                    if len(records) >= limit:
+                        break
+        if rem and len(records) < limit:
+            item = _parse_jsonl_dict_line(rem.decode("utf-8", errors="replace"))
+            if item is not None:
+                records.append(item)
+    records.reverse()
+    return records
+
+
 def read_log_file_jsonl(
     target: PathTarget,
     *,
@@ -1030,20 +1088,10 @@ def read_log_file_jsonl(
         if path is None or not path.is_file():
             return []
 
-        records: List[Dict[str, Any]] = []
         if filter_fn is None and limit is not None and limit > 0:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                raw_lines = f.readlines()
-            for line in reversed(raw_lines):
-                item = _parse_jsonl_dict_line(line)
-                if item is None:
-                    continue
-                records.append(item)
-                if len(records) >= limit:
-                    break
-            records.reverse()
-            return records
+            return _read_tail_jsonl_records(path, limit)
 
+        records: List[Dict[str, Any]] = []
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 item = _parse_jsonl_dict_line(line)
@@ -1098,36 +1146,68 @@ def read_log_file_tail(
 
 
 __all__ = (
-    "PathTarget",
     "LogExecutionScope",
-    "bind_log_context",
     "get_current_log_scope",
+    "bind_log_context",
+    "extract_error_hint",
+    "record_error_hint",
+    "get_last_error_hint",
+    "clear_error_hint",
     "log",
     "log_stream",
     "log_info",
     "log_warn",
     "log_error",
     "log_debug",
-    "extract_error_hint",
-    "record_error_hint",
-    "get_last_error_hint",
-    "clear_error_hint",
-    "_StreamProxy",
     "DebouncedIOStreamer",
-    "_extract_log_file_timestamp",
-    "_safe_replace_file",
     "RollingFileLogger",
     "log_file",
     "log_file_jsonl",
     "read_log_file_jsonl",
     "read_log_file_tail",
+    "create_managed_thread",
 )
 
 
 def create_managed_thread(
-    target: Any,
-    name: str,
+    target: Callable[..., Any],
+    *,
+    name: Optional[str] = None,
+    args: Tuple[Any, ...] = (),
+    kwargs: Optional[Dict[str, Any]] = None,
     daemon: bool = True,
 ) -> threading.Thread:
-    """Create a managed background thread instance within core's authorized runtime layer."""
-    return threading.Thread(target=target, name=name, daemon=daemon)
+    """
+    Creates a `threading.Thread` wrapping `target` with structured uncaught exception logging
+    to the active `LogExecutionScope` (or `log_error` fallback) so background thread failures
+    are never silently lost.
+    """
+    eff_kwargs = dict(kwargs) if kwargs else {}
+
+    def _safe_runner() -> None:
+        try:
+            target(*args, **eff_kwargs)
+        except BaseException as exc:
+            if isinstance(exc, SystemExit):
+                return
+            scope = _ACTIVE_LOG_SCOPE.get()
+            t_label = name or threading.current_thread().name
+            if scope is not None and scope.background_sink is not None:
+                try:
+                    scope.background_sink.error(
+                        f"Unhandled exception in managed thread '{t_label}': {exc}",
+                        component=scope.component or t_label,
+                        exc_info=exc,
+                    )
+                    return
+                except Exception:
+                    pass
+            try:
+                log_error(
+                    f"[core:thread] Unhandled exception in '{t_label}': {type(exc).__name__}: {exc}",
+                    stream="stderr",
+                )
+            except Exception:
+                pass
+
+    return threading.Thread(target=_safe_runner, name=name, daemon=daemon)

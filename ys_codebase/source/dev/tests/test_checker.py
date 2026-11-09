@@ -651,6 +651,8 @@ class TestDevChecker(YSCBTestCase):
         with open(os.path.join(mod_dir, "scripts", "hook.core.py"), "w", encoding="utf-8") as f:
             f.write(
                 "SAFE_CONST = 'v1'\n"
+                "DEFAULT_TIMEOUT = -1\n"
+                "SAFE_SET = frozenset(('a', 'b'))\n"
                 "def on_reload(ctx=None, /):\n"
                 "    return True\n"
             )
@@ -867,14 +869,23 @@ class TestDevChecker(YSCBTestCase):
         self.mark_passed()
 
     def test_checker_defaultdict_classvar_and_context_cache(self):
-        """Verify DefaultDict in _MUTABLE_TYPE_NAMES and Checker AST/JSON cache reuse across repeated check_module runs."""
+        """Verify DefaultDict in _MUTABLE_TYPE_NAMES, single os.walk per check_module, and Checker AST/JSON cache reuse."""
         from dev.checker import _MUTABLE_TYPE_NAMES
 
         self.assertIn("DefaultDict", _MUTABLE_TYPE_NAMES)
         self.assertNotIn(" DefaultDict", _MUTABLE_TYPE_NAMES)
 
-        rep1 = self.checker.check_module("dev")
+        walk_calls = []
+        orig_walk = os.walk
+
+        def spy_walk(top, *args, **kwargs):
+            walk_calls.append(top)
+            return orig_walk(top, *args, **kwargs)
+
+        with patch("os.walk", side_effect=spy_walk):
+            rep1 = self.checker.check_module("dev")
         self.assertTrue(rep1.passed)
+        self.assertEqual(len(walk_calls), 1, "check_module should perform only a single os.walk pre-scan")
         self.assertGreater(len(self.checker._parsed_py_cache), 0)
         self.assertGreater(len(self.checker._json_cache), 0)
 

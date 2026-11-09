@@ -2,7 +2,7 @@
 Dialect registry and factory for module:ast.
 """
 
-from typing import Any, Dict
+from typing import Dict
 
 from core.context import get_runtime_context
 
@@ -37,18 +37,19 @@ def _create_default_dialects() -> Dict[str, DialectAdapter]:
 
 
 def _get_dialect_instances() -> Dict[str, DialectAdapter]:
-    ctx = get_runtime_context()
-    if "_DIALECT_INSTANCES" in globals():
-        ext_inst = globals().pop("_DIALECT_INSTANCES")
-        if isinstance(ext_inst, dict):
-            ctx.set_module_state("ast.dialects.instances", ext_inst)
-    return ctx.get_module_state("ast.dialects.instances", _create_default_dialects)
+    return get_runtime_context().get_module_state("ast.dialects.instances", _create_default_dialects)
 
 
-def __getattr__(name: str) -> Any:
-    if name == "_DIALECT_INSTANCES":
-        return _get_dialect_instances()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+def get_dialect_instances() -> Dict[str, DialectAdapter]:
+    """Return the active map of language keys to DialectAdapter instances."""
+    return _get_dialect_instances()
+
+
+def reset_dialect_instances() -> None:
+    """Reset the active DialectAdapter registry to built-in default dialects."""
+    inst = _get_dialect_instances()
+    inst.clear()
+    inst.update(_create_default_dialects())
 
 
 def get_dialect(lang_name: str) -> DialectAdapter:
@@ -75,5 +76,7 @@ __all__ = [
     "TypeScriptDialect",
     "MarkdownDialect",
     "get_dialect",
+    "get_dialect_instances",
     "register_dialect",
+    "reset_dialect_instances",
 ]

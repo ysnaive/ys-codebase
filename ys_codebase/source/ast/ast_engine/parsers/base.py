@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 import bisect
 import hashlib
 from pathlib import Path
+import re
 from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Set, Tuple, Union
 
 from ..schema import (
@@ -19,6 +20,34 @@ from ..schema import (
     SymbolNode,
     UnifiedSymbol,
 )
+
+_PARTIAL_SIG_RE = re.compile(r"\bpartial\s+(?:class|struct|interface|record)\b")
+
+
+def is_partial_declaration(
+    kind_or_kinds: Union[str, FrozenSet[str], Set[str], Tuple[str, ...]],
+    signature: str = "",
+    facets_or_meta: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    """Check whether a symbol or node declaration is a C# `partial class/struct/interface/record`."""
+    type_container_kinds = {"class", "struct", "interface"}
+    if isinstance(kind_or_kinds, str):
+        if kind_or_kinds not in type_container_kinds:
+            return False
+    else:
+        if not (set(kind_or_kinds) & type_container_kinds):
+            return False
+    if facets_or_meta:
+        if facets_or_meta.get("is_partial"):
+            return True
+        mods = facets_or_meta.get("modifiers")
+        if isinstance(mods, (list, tuple, set, frozenset)) and "partial" in mods:
+            return True
+        if not signature:
+            signature = str(facets_or_meta.get("signature") or "")
+    if signature and _PARTIAL_SIG_RE.search(signature):
+        return True
+    return False
 
 
 class SymbolProcessor:
@@ -526,7 +555,7 @@ def convert_legacy_symbols_to_file_graph(
         }
         if meta.get("is_static"):
             facets_dict["is_static"] = True
-        if meta.get("is_partial"):
+        if is_partial_declaration(sym.kind, sym.signature, meta):
             facets_dict["is_partial"] = True
         if meta.get("base_types"):
             facets_dict["base_types"] = tuple(meta["base_types"])

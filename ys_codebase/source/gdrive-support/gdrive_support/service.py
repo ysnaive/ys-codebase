@@ -9,11 +9,10 @@ Invariants:
   invokes _unsubscribe() upon stop().
 """
 from dataclasses import replace
-import os
 import threading
-import time
 from typing import Any, Callable, Dict, Optional
 
+from core import vfs
 from core.log import bind_log_context, log_debug
 from core.platform import ensure_installed_modules_path
 
@@ -204,31 +203,39 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
 
     def _refresh_active_branch(self) -> None:
         """
-        Dynamically refresh active_branch on each sync cycle from persisted state or updated config
-        so a foreground 'gdrive checkout <branch>' is immediately honored by the background worker.
+        Dynamically refresh configuration and active_branch on each sync cycle without calling
+        _load_local_state() before acquiring sync.lock (preventing lockless WAL journal replay/deletion
+        and stale sync_state.json branch overrides in non-sandbox mode).
         """
         if self._coordinator is None:
             return
-        candidate_branch = ""
         if self._explicit_config is None:
             try:
                 latest_cfg = load_gdrive_config()
-                if latest_cfg.active_branch:
-                    candidate_branch = latest_cfg.active_branch
+                self._coordinator.config = latest_cfg
+                self._config = latest_cfg
             except Exception:
                 pass
-        try:
-            state = self._coordinator._load_local_state()
-            state_branch = normalize_remote_rel_path(str(state.get("active_branch") or ""))
-            if state_branch and "/" not in state_branch:
-                candidate_branch = state_branch
-        except Exception:
-            pass
 
-        if candidate_branch and candidate_branch != self._coordinator.config.active_branch:
-            updated_cfg = replace(self._coordinator.config, active_branch=candidate_branch)
-            self._coordinator.config = updated_cfg
-            self._config = updated_cfg
+        if self._coordinator.config.sandbox_dir and self._coordinator.state_path.is_file():
+            try:
+                raw_state = vfs.read_json(self._coordinator.state_path)
+                if isinstance(raw_state, dict):
+                    state_branch = normalize_remote_rel_path(
+                        str(raw_state.get("active_branch") or "")
+                    )
+                    if (
+                        state_branch
+                        and "/" not in state_branch
+                        and state_branch != self._coordinator.config.active_branch
+                    ):
+                        updated_cfg = replace(
+                            self._coordinator.config, active_branch=state_branch
+                        )
+                        self._coordinator.config = updated_cfg
+                        self._config = updated_cfg
+            except Exception:
+                pass
 
     def _run_loop(self) -> None:
         assert self._config is not None

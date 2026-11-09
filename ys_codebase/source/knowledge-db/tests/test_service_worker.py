@@ -23,12 +23,11 @@ if _pkg_root not in sys.path:
 from core.space import SpaceConfig
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-import knowledge_db.engine as kdb_engine
 import knowledge_db.pipeline as kdb_pipeline
 from knowledge_db import service as svc_mod
 from knowledge_db.embedding import EmbeddingService
-from knowledge_db.engine import KnowledgeEngine, get_engine
-from knowledge_db.pipeline import HotPatchResult, IndexingPipeline, _GLOBAL_INDEX_CACHE
+from knowledge_db.engine import KnowledgeEngine, get_engine, set_engine_for_testing
+from knowledge_db.pipeline import HotPatchResult, IndexingPipeline, get_index_cache
 from knowledge_db.retrieval import InvertedIndex
 from knowledge_db.schema import SymbolKind, UnifiedSymbol
 from knowledge_db.service import (
@@ -49,15 +48,17 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         super().setUp()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root_path = Path(self.temp_dir.name)
-        self._old_global_engine = kdb_engine._GLOBAL_ENGINE_INSTANCE
-        self._old_global_cache = dict(kdb_pipeline._GLOBAL_INDEX_CACHE)
+        self._old_global_cache = dict(get_index_cache())
+        self._old_global_engine = set_engine_for_testing(None)
+        set_engine_for_testing(self._old_global_engine)
 
     def tearDown(self):
         svc_mod._IDLE_EVENT.set()
-        kdb_engine._GLOBAL_ENGINE_INSTANCE = self._old_global_engine
+        set_engine_for_testing(self._old_global_engine)
         with kdb_pipeline._CACHE_LOCK:
-            kdb_pipeline._GLOBAL_INDEX_CACHE.clear()
-            kdb_pipeline._GLOBAL_INDEX_CACHE.update(self._old_global_cache)
+            cache = get_index_cache()
+            cache.clear()
+            cache.update(self._old_global_cache)
         self.temp_dir.cleanup()
         super().tearDown()
 
@@ -251,7 +252,7 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_mtime_cache_invalidation(self):
-        """驗證 _GLOBAL_INDEX_CACHE 與 _ensure_indices_loaded 透過微秒級 mtime 比對熱刷新"""
+        """驗證 get_index_cache() 與 _ensure_indices_loaded 透過微秒級 mtime 比對熱刷新"""
         indices_dir = self.root_path / "indices"
         indices_dir.mkdir(parents=True, exist_ok=True)
         bin_file = indices_dir / "unified.index.bin.gz"
@@ -274,7 +275,7 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
 
         pipeline._ensure_indices_loaded(load_vectors=False)
         self.assertIsNotNone(pipeline.unified_index)
-        self.assertEqual(_GLOBAL_INDEX_CACHE["unified_mtime"], mtime1)
+        self.assertEqual(get_index_cache()["unified_mtime"], mtime1)
 
         old_ns = bin_file.stat().st_mtime_ns
         idx2 = InvertedIndex()
@@ -286,13 +287,13 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
 
         pipeline._ensure_indices_loaded(load_vectors=False)
         self.assertEqual(pipeline.unified_index.doc_count, 42)
-        self.assertEqual(_GLOBAL_INDEX_CACHE["unified_mtime"], mtime2)
+        self.assertEqual(get_index_cache()["unified_mtime"], mtime2)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
     def test_singleton_engine(self):
         """驗證 KnowledgeEngine 單例化：get_engine() 多次調用返回同一實例物件"""
-        kdb_engine._GLOBAL_ENGINE_INSTANCE = None
+        set_engine_for_testing(None)
         e1 = get_engine()
         e2 = get_engine()
         self.assertIs(e1, e2)
@@ -660,11 +661,25 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         self.assertEqual(res1["embedded_in_step"], 2)
         self.assertEqual(res1["remaining"], 2)
         self.assertTrue(engine.pipeline._vector_index_dirty)
+        self.assertTrue(get_index_cache()["vector_dirty"])
         self.assertFalse(vec_file.exists())
+
+        # 驗證新建另一個 KnowledgeEngine 實例呼叫 _ensure_indices_loaded 不會洗掉背景未持久化之微批次向量
+        engine_second = KnowledgeEngine(
+            storage_dir=storage_dir,
+            local_config={
+                "knowledge-db": {"enable_vector_search": True, "vector_batch_size": 2}
+            },
+            contributes_data={"spaces": {"l_space": sp}},
+            embedding_mock_mode=True,
+        )
+        engine_second.pipeline._ensure_indices_loaded(load_vectors=True)
+        self.assertEqual(len(engine_second.hybrid_engine.vector_index.doc_ids), 2)
 
         # Explicit flush_vector_index() persists to disk and clears dirty flag
         self.assertTrue(engine.pipeline.flush_vector_index())
         self.assertFalse(engine.pipeline._vector_index_dirty)
+        self.assertFalse(get_index_cache()["vector_dirty"])
         self.assertTrue(vec_file.exists())
 
         # 2. Verify _index_lock is released during embed_texts and deleted symbols are filtered on re-entry
@@ -909,7 +924,6 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         self.assertNotIn("to_generation", ack_calls[0][1])
         self.mark_passed()
 
-
     @require(Requirement.LOGIC)
     def test_csharp_partial_class_two_phase_dirty_closure_and_multigen_jump(self):
         """驗證 C# partial class 兩階段 dirty_keys 閉包收集不抹除主檔非 partial 符號，以及跨多世代 AST 跳號自動補齊"""
@@ -1020,12 +1034,12 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         hits = engine.search("IdleSyncedGamma", auto_rebuild=True)
         self.assertEqual(len(hits), 1)
 
-        # Step 3: build_unified_index(force=False) must fill missing vectors and update _GLOBAL_INDEX_CACHE
+        # Step 3: build_unified_index(force=False) must fill missing vectors and update get_index_cache()
         clear_worker_state(indices_dir, worker_running=False, phase="idle")
         idx_nb = engine.build_unified_index(force=False)
         self.assertIsNotNone(idx_nb)
         self.assertEqual(engine.pipeline.get_vector_deficit_info()["missing_count"], 0)
-        self.assertIs(_GLOBAL_INDEX_CACHE["unified_index"], engine.pipeline.unified_index)
+        self.assertIs(get_index_cache()["unified_index"], engine.pipeline.unified_index)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
@@ -1082,6 +1096,92 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         hits_prefiltered = v_idx2.search(q_vec, top_k=1, allowed_doc_ids={"target_3"})
         self.assertEqual(len(hits_prefiltered), 1)
         self.assertEqual(hits_prefiltered[0][0], "target_3")
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_transactional_multispace_cursor_rollback_and_worker_state_isolation(self):
+        """驗證 sync_incremental_changes(target_spaces=...) 異常時 ExitStack 回滾全部游標，以及 read_worker_state 跨目錄隔離"""
+        sp_a_dir = self.root_path / "tx_sp_a"
+        sp_b_dir = self.root_path / "tx_sp_b"
+        sp_a_dir.mkdir(parents=True, exist_ok=True)
+        sp_b_dir.mkdir(parents=True, exist_ok=True)
+        f_a = sp_a_dir / "mod_a.py"
+        f_b = sp_b_dir / "mod_b.py"
+        f_a.write_text("class TxAlpha:\n    pass\n", encoding="utf-8")
+        f_b.write_text("class TxBeta:\n    pass\n", encoding="utf-8")
+
+        sp_a = SpaceConfig(
+            qualified_name="project/tx_a",
+            owner="project",
+            short_name="tx_a",
+            entries=(str(sp_a_dir),),
+        )
+        sp_b = SpaceConfig(
+            qualified_name="project/tx_b",
+            owner="project",
+            short_name="tx_b",
+            entries=(str(sp_b_dir),),
+        )
+        storage_dir = self.root_path / "storage_tx"
+        engine = KnowledgeEngine(
+            storage_dir=storage_dir,
+            contributes_data={
+                "spaces": {"tx_a": sp_a, "tx_b": sp_b},
+                "space_weights": {"tx_a": 1.0, "tx_b": 1.0},
+            },
+            embedding_mock_mode=True,
+        )
+        engine.build_unified_index(force=True)
+
+        # 修改兩個空間的檔案，並模擬 hot_patch_unified_index 中途拋出未預期 RuntimeError
+        write_text_and_advance_mtime(f_a, "class TxAlphaV2:\n    pass\n")
+        write_text_and_advance_mtime(f_b, "class TxBetaV2:\n    pass\n")
+
+        with patch.object(
+            engine.pipeline,
+            "hot_patch_unified_index",
+            side_effect=RuntimeError("Simulated I/O crash during hot patch"),
+        ):
+            with self.assertRaises(RuntimeError):
+                engine.pipeline.sync_incremental_changes(
+                    target_spaces=["project/tx_a", "project/tx_b"],
+                    skip_vectors=True,
+                )
+
+        # 驗證 tx_a 與 tx_b 的游標皆未被提前 ACK（diff 仍為 has_changes=True）
+        self.assertTrue(
+            engine.scanner.diff("project/tx_a", consumer_id="knowledge-db", auto_refresh=False).has_changes
+        )
+        self.assertTrue(
+            engine.scanner.diff("project/tx_b", consumer_id="knowledge-db", auto_refresh=False).has_changes
+        )
+
+        # 恢復正常後再次執行 sync_incremental_changes 應成功修補並推進游標
+        res_ok = engine.pipeline.sync_incremental_changes(
+            target_spaces=["project/tx_a", "project/tx_b"],
+            skip_vectors=True,
+        )
+        self.assertEqual(res_ok["status"], "patched")
+        self.assertFalse(
+            engine.scanner.diff("project/tx_a", consumer_id="knowledge-db", auto_refresh=False).has_changes
+        )
+        self.assertFalse(
+            engine.scanner.diff("project/tx_b", consumer_id="knowledge-db", auto_refresh=False).has_changes
+        )
+
+        # 驗證 write_worker_state 於目錄 A 標記 busy 時，讀取無磁碟檔案之目錄 B 絕不回退誤報 busy
+        dir_a = engine.pipeline.get_indices_dir()
+        dir_b = self.root_path / "unrelated_indices_dir"
+        dir_b.mkdir(parents=True, exist_ok=True)
+        write_worker_state(dir_a, busy=True, phase="stage2_vector_microbatch")
+        try:
+            st_b = read_worker_state(dir_b)
+            self.assertFalse(st_b["busy"])
+            self.assertFalse(st_b["worker_running"])
+            self.assertEqual(get_worker_busy_ms(dir_b), 0)
+        finally:
+            clear_worker_state(dir_a, worker_running=False)
+
         self.mark_passed()
 
 

@@ -180,7 +180,7 @@ def get_host_dir() -> Optional[str]:
 def host_scope(host_dir: Optional[str], yscb_dir: Optional[str] = None) -> Generator[None, None, None]:
     """
     宿主目錄安全作用域 (Context Manager)：
-    退出區塊時以 finally 100% 保證還原舊執行緒本地 active_host_dir（與可選之 active_yscb_dir）及當前 RuntimeScope。
+    退出區塊時以 finally 100% 保證還原舊執行緒本地 active_host_dir 與 active_yscb_dir 及當前 RuntimeScope。
     """
     tls = _get_uri_tls()
     old_host = getattr(tls, "active_host_dir", None)
@@ -198,16 +198,12 @@ def host_scope(host_dir: Optional[str], yscb_dir: Optional[str] = None) -> Gener
         yield
     finally:
         tls.active_host_dir = old_host
-        if yscb_dir is not None:
-            tls.active_yscb_dir = old_yscb
+        tls.active_yscb_dir = old_yscb
         if prev_scope is not None:
-            if yscb_dir is not None:
-                update_current_scope_roots(
-                    active_host_dir=old_scope_host,
-                    active_yscb_dir=old_scope_yscb,
-                )
-            else:
-                update_current_scope_roots(active_host_dir=old_scope_host)
+            update_current_scope_roots(
+                active_host_dir=old_scope_host,
+                active_yscb_dir=old_scope_yscb,
+            )
 
 
 def set_yscb_root(yscb_dir: Optional[str]) -> None:
@@ -304,11 +300,14 @@ def _get_project_dir(host_dir: str, yscb_dir: str) -> Optional[str]:
         rel_proj = None
 
     if rel_proj:
-        if str(rel_proj).startswith("!undefined"):
+        val_str = str(rel_proj)
+        if val_str.startswith("!undefined"):
             return None
-        if os.path.isabs(str(rel_proj)):
-            return os.path.normpath(str(rel_proj))
-        return os.path.normpath(os.path.join(host_dir, str(rel_proj)))
+        if "://" in val_str:
+            return resolve(val_str, current_module="core", interactive=False)
+        if os.path.isabs(val_str):
+            return os.path.normpath(val_str)
+        return os.path.normpath(os.path.join(host_dir, val_str))
     return None
 
 
@@ -465,7 +464,7 @@ def _expand_module_placeholder_in_rel(rel: str, active_mod: Optional[str], raw_u
 def _ensure_safe_subpath(target_base: str, rel: str, raw_uri: str) -> str:
     """
     Verifies that a non-empty relative URI subpath stays within target_base
-    without '..' escape or Windows drive reset.
+    without '..' escape, symlink escape, or Windows drive reset.
     """
     base_norm = os.path.normpath(os.path.abspath(target_base))
     if not rel:
@@ -485,6 +484,19 @@ def _ensure_safe_subpath(target_base: str, rel: str, raw_uri: str) -> str:
         raise PermissionError(
             f"Path traversal detected in URI '{raw_uri}': subpath '{rel}' escaped base '{base_norm}'."
         )
+    rel_norm_slash = rel.replace("\\", "/").lstrip("/")
+    if not (rel_norm_slash == ".venv" or rel_norm_slash.startswith(".venv/")):
+        real_base = os.path.normcase(os.path.normpath(os.path.realpath(base_norm)))
+        real_joined = os.path.normcase(os.path.normpath(os.path.realpath(joined_norm)))
+        try:
+            if os.path.commonpath([real_base, real_joined]) != real_base:
+                raise PermissionError(
+                    f"Path traversal or symlink escape detected in URI '{raw_uri}': subpath '{rel}' escaped base '{base_norm}'."
+                )
+        except ValueError as err:
+            raise PermissionError(
+                f"Path traversal or drive reset detected in URI '{raw_uri}': escaped base '{base_norm}'."
+            ) from err
     return joined_norm
 
 
@@ -496,23 +508,35 @@ def _resolve_const_scheme(
     active_mod: Optional[str],
     context: Optional[ExecutionContext],
     interactive: bool,
+    scheme_token: str = "",
 ) -> str:
-    """Resolves a 'const' type contributed URI scheme with path traversal protection."""
+    """Resolves a 'const' type contributed URI scheme with cycle and path traversal protection."""
+    reconciling = _get_reconciling_tokens()
+    if scheme_token and scheme_token in reconciling:
+        raise CyclicURIDependencyError(
+            f"Cyclic or self-referencing URI dependency detected for '{scheme_token}://'"
+        )
+    if scheme_token:
+        reconciling.add(scheme_token)
     try:
-        host_dir, _ = _get_host_config()
-    except Exception:
-        host_dir = get_host_dir() or os.path.normpath(os.path.dirname(yscb_dir))
+        try:
+            host_dir, _ = _get_host_config()
+        except Exception:
+            host_dir = get_host_dir() or os.path.normpath(os.path.dirname(yscb_dir))
 
-    if "{module}" in sval:
-        if not active_mod:
-            raise UndefinedModuleContextError(raw_uri)
-        val_expanded = sval.replace("{module}", active_mod)
-    else:
-        val_expanded = sval
-    val_expanded = val_expanded.replace("{yscb_root}", yscb_dir).replace("{yscb_host}", host_dir or "")
+        if "{module}" in sval:
+            if not active_mod:
+                raise UndefinedModuleContextError(raw_uri)
+            val_expanded = sval.replace("{module}", active_mod)
+        else:
+            val_expanded = sval
+        val_expanded = val_expanded.replace("{yscb_root}", yscb_dir).replace("{yscb_host}", host_dir or "")
 
-    target_base = resolve(val_expanded, current_module=active_mod, context=context, interactive=interactive)
-    return _ensure_safe_subpath(target_base, rel, raw_uri)
+        target_base = resolve(val_expanded, current_module=active_mod, context=context, interactive=interactive)
+        return _ensure_safe_subpath(target_base, rel, raw_uri)
+    finally:
+        if scheme_token:
+            reconciling.discard(scheme_token)
 
 
 def _resolve_config_scheme(
@@ -526,7 +550,12 @@ def _resolve_config_scheme(
     context: Optional[ExecutionContext],
     interactive: bool,
 ) -> str:
-    """Resolves a 'config' type contributed URI scheme with JIT hot-reconciliation fallback."""
+    """Resolves a 'config' type contributed URI scheme with cycle protection and JIT hot-reconciliation fallback."""
+    reconciling = _get_reconciling_tokens()
+    if scheme_token in reconciling:
+        raise CyclicURIDependencyError(
+            f"Cyclic or self-referencing URI dependency detected for '{scheme_token}://'"
+        )
     _get_host_config()
     curr_val = None
     try:
@@ -551,14 +580,18 @@ def _resolve_config_scheme(
         )
         return _ensure_safe_subpath(target_base, rel, raw_uri)
 
-    val_str = str(curr_val)
-    if "://" in val_str:
-        target_base = resolve(val_str, current_module=active_mod, context=context, interactive=interactive)
-    elif os.path.isabs(val_str) or (len(val_str) > 1 and val_str[1] == ":"):
-        target_base = os.path.normpath(val_str)
-    else:
-        target_base = os.path.normpath(os.path.join(yscb_dir, val_str))
-    return _ensure_safe_subpath(target_base, rel, raw_uri)
+    reconciling.add(scheme_token)
+    try:
+        val_str = str(curr_val)
+        if "://" in val_str:
+            target_base = resolve(val_str, current_module=active_mod, context=context, interactive=interactive)
+        elif os.path.isabs(val_str) or (len(val_str) > 1 and val_str[1] == ":"):
+            target_base = os.path.normpath(val_str)
+        else:
+            target_base = os.path.normpath(os.path.join(yscb_dir, val_str))
+        return _ensure_safe_subpath(target_base, rel, raw_uri)
+    finally:
+        reconciling.discard(scheme_token)
 
 
 def resolve(
@@ -604,8 +637,15 @@ def resolve(
 
     # 1. Check project:// with strict explicit configuration rule & JIT Hot-Reconciliation
     if uri.startswith("project://"):
+        reconciling = _get_reconciling_tokens()
+        if "project" in reconciling:
+            raise CyclicURIDependencyError("Cyclic or self-referencing URI dependency detected for 'project://'")
         host_dir, _ = _get_host_config()
-        proj_dir = _get_project_dir(host_dir, yscb_dir)
+        reconciling.add("project")
+        try:
+            proj_dir = _get_project_dir(host_dir, yscb_dir)
+        finally:
+            reconciling.discard("project")
         if proj_dir is None:
             proj_dir = reconcile_undefined_uri(
                 scheme_token="project",
@@ -631,7 +671,9 @@ def resolve(
             provider_name = scheme.get("__provider__", active_mod or "core")
 
             if stype == "const":
-                return _resolve_const_scheme(uri, sval, rel, yscb_dir, active_mod, context, interactive)
+                return _resolve_const_scheme(
+                    uri, sval, rel, yscb_dir, active_mod, context, interactive, scheme_token=scheme_token
+                )
             if stype == "config":
                 return _resolve_config_scheme(
                     scheme_token, scheme, sval, rel, yscb_dir, provider_name, active_mod, context, interactive
@@ -648,6 +690,9 @@ def resolve(
 
 def to_uri(abs_path: str, current_module: Optional[str] = None) -> str:
     norm = os.path.normpath(os.path.abspath(abs_path))
+    real_norm = os.path.normpath(os.path.realpath(norm))
+    norm_nc = os.path.normcase(norm)
+    real_norm_nc = os.path.normcase(real_norm)
     yscb_dir = resolve_yscb_root()
     mod = current_module or get_module_context() or "core"
 
@@ -679,11 +724,20 @@ def to_uri(abs_path: str, current_module: Optional[str] = None) -> str:
     check_order.sort(key=lambda x: len(os.path.normpath(x[0])), reverse=True)
 
     for base_p, prefix in check_order:
-        base_norm = os.path.normpath(base_p)
-        if norm == base_norm:
+        base_norm = os.path.normpath(os.path.abspath(base_p))
+        base_norm_nc = os.path.normcase(base_norm)
+        if norm_nc == base_norm_nc:
             return prefix
-        if norm.startswith(base_norm + os.sep):
+        if norm_nc.startswith(base_norm_nc + os.sep):
             sub = norm[len(base_norm) + 1:].replace("\\", "/")
+            return prefix + sub
+
+        base_real = os.path.normpath(os.path.realpath(base_norm))
+        base_real_nc = os.path.normcase(base_real)
+        if real_norm_nc == base_real_nc:
+            return prefix
+        if real_norm_nc.startswith(base_real_nc + os.sep):
+            sub = real_norm[len(base_real) + 1:].replace("\\", "/")
             return prefix + sub
 
     return norm

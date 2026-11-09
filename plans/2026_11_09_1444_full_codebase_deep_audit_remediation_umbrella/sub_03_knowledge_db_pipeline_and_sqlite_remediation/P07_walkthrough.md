@@ -113,3 +113,10 @@ fix(knowledge-db): resolve mutual yield paradox, unify incremental sync, and fix
 ### 模擬新環境全 CLI 部署驗收補充紀錄
 
 - **實機驗收結果**：於模擬新環境部署全 CLI 實機測試中，捕獲並修復全新環境尚未生成 `worker_state.json` 時 `KnowledgeDbServiceWorker.start()` 呼叫 `set_state(STATE_STARTING)` 觸發 `_notify() -> get_custom_metrics() -> read_worker_state()` 之同執行緒鎖重入死鎖（將 `_WORKER_LOCK` 升級為 `threading.RLock()`），並驗證 `kdb status`、`model status`、`index`、`search`、`clean` 全數 CLI 指令 100% 通過。
+
+---
+
+### 第二輪九維度深度審計 (`R03`) 增補驗收成果
+
+- **修復範圍**：完成 `R03-E-01` ~ `R03-E-10` 與 `R03-F-01` ~ `R03-F-10`（共 20 項）及 `S2`/`S3` 架構收斂（刪除 `indexer.py` 重複之 `_parse_note_file` 與 `_format_symbol_card`，統一委派 `NoteParser` 與 `ast_engine.formatting.format_symbol_card`）。
+- **驗證結果**：`python3 yscb.py dev check knowledge-db` **PASS**；`python3 -W error::ResourceWarning yscb.py dev test knowledge-db --no-build` **117/117 PASS (`0 ResourceWarning`)**；模擬新環境 `kdb init/build/rebuild/add-note/search/query-code/list-notes/stats/export/import/gc` 全 CLI 指令驗證 **100% PASS**。

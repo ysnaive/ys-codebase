@@ -7,6 +7,7 @@ runtime ephemeral space (`define_ephemeral_space`) dynamic watcher scheduling, a
 """
 
 import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -227,6 +228,12 @@ class TestCoreSpaceWatcherService(YSCBTestCase):
         scan("project/source", project_root=self.proj_root, yscb_dir=self.yscb_root)
         scan("source", project_root=self.proj_root, yscb_dir=self.yscb_root)
         scan("project/composite_all", project_root=self.proj_root, yscb_dir=self.yscb_root)
+        scan(None, project_root=self.proj_root, yscb_dir=self.yscb_root)
+
+        # Idle flush_dirty_spaces must NOT probe is_transaction_locked() when _dirty_spaces is empty
+        with patch.object(worker, "is_transaction_locked") as mock_lock_probe:
+            self.assertEqual(worker.flush_dirty_spaces(force=False), {})
+            mock_lock_probe.assert_not_called()
 
         # 1. Fast-ignored paths return [] and do not mark watcher dirty
         self.assertEqual(
@@ -250,8 +257,10 @@ class TestCoreSpaceWatcherService(YSCBTestCase):
         self.assertIn("project/composite_all", matched)
         self.assertTrue(worker.scanner.has_watcher_dirty_marker())
 
-        # Before debounce window elapses, `flush_dirty_spaces(force=False)` is a no-op
-        self.assertEqual(worker.flush_dirty_spaces(force=False), {})
+        # Before debounce window elapses, `flush_dirty_spaces(force=False)` is a no-op and does not probe lock
+        with patch.object(worker, "is_transaction_locked") as mock_lock_debounce:
+            self.assertEqual(worker.flush_dirty_spaces(force=False), {})
+            mock_lock_debounce.assert_not_called()
 
         # 3. Active `.yscb.lock` defers flushing and increments `deferred_by_lock_count`
         lock_file = self.yscb_root / ".cache" / ".yscb.lock"
@@ -259,7 +268,6 @@ class TestCoreSpaceWatcherService(YSCBTestCase):
         ip_lock = InterProcessLock(str(lock_file))
         self.assertTrue(ip_lock.acquire(blocking=False))
         try:
-            # Mock another process holding lock by using a separate lock file in project_root
             proj_lock = self.proj_root / ".yscb.lock"
             proj_lock.write_text("locked", encoding="utf-8")
             self.assertTrue(worker.is_transaction_locked())
@@ -272,10 +280,33 @@ class TestCoreSpaceWatcherService(YSCBTestCase):
                 (self.proj_root / ".yscb.lock").unlink()
             ip_lock.release()
 
-        # 4. Subscribe and flush with `force=True` -> verifies `emit_module="core"` broadcast & short-name/composite sync
+        # 4. Subscribe and flush with `force=True` -> verifies dependent snapshots (`source` & `__all__`)
+        # are already updated BEFORE subscribers and `on_file_space_changed` broadcast fire!
         sub_notifications: list = []
+        observed_union_gen_at_broadcast: list = []
+        observed_all_gen_at_broadcast: list = []
+
+        def _on_sub(sp, df):
+            sub_notifications.append((sp, df.to_generation, df.modified))
+            d_u = diff(
+                "source",
+                consumer_id="probe_sub",
+                auto_refresh=False,
+                project_root=self.proj_root,
+                yscb_dir=self.yscb_root,
+            )
+            d_all = diff(
+                None,
+                consumer_id="probe_all",
+                auto_refresh=False,
+                project_root=self.proj_root,
+                yscb_dir=self.yscb_root,
+            )
+            observed_union_gen_at_broadcast.append(d_u.to_generation)
+            observed_all_gen_at_broadcast.append(d_all.to_generation)
+
         unsub = subscribe(
-            lambda sp, df: sub_notifications.append((sp, df.to_generation, df.modified)),
+            _on_sub,
             spaces=["source", "project/composite_all"],
         )
         try:
@@ -297,6 +328,10 @@ class TestCoreSpaceWatcherService(YSCBTestCase):
                         ("project/composite_all", 2, ["mod_a/a.py"]),
                     ],
                 )
+                # At the exact moment subscriber/broadcast fired, `"source"` and `__all__` were ALREADY gen 2
+                self.assertEqual(observed_union_gen_at_broadcast, [2, 2])
+                self.assertEqual(observed_all_gen_at_broadcast, [2, 2])
+
                 # Broadcast was emitted with `emit_module="core"`
                 self.assertTrue(mock_bcast.called)
                 b_args, b_kwargs = mock_bcast.call_args_list[0]
@@ -429,10 +464,25 @@ class TestCoreSpaceWatcherService(YSCBTestCase):
             register_active_watcher(None)
         self.mark_passed()
 
-
     def test_stale_unlocked_lockfile_macos_private_prefix_and_unschedule(self) -> None:
-        """Verify stale unlocked .yscb.lock does not freeze watcher, macOS /private/var prefix matching works, and removed watch dirs are unscheduled."""
+        """Verify stale unlocked .yscb.lock does not freeze watcher, macOS /private/var symlink dir/file matching works, and removed watch dirs are unscheduled."""
         from server.space_watcher import _match_prefix_rel
+
+        src_dir = self.proj_root / "src_mod"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        (src_dir / "init.py").write_text("x = 1\n", encoding="utf-8")
+        self._write_module_contrib(
+            "core",
+            "core.json",
+            {
+                "spaces": {
+                    "source": {
+                        "entries": ["project://src_mod"],
+                        "include": ["*.py"],
+                    }
+                }
+            },
+        )
 
         worker = CoreSpaceWatcherServiceWorker(
             context={
@@ -454,6 +504,37 @@ class TestCoreSpaceWatcherService(YSCBTestCase):
         rel = _match_prefix_rel("/private/var/folders/xx/proj/mod_a/file.py", "/var/folders/xx/proj")
         self.assertEqual(rel, "mod_a/file.py")
 
+        # Verify symlinked project_root alias (simulating macOS /var -> /private/var) matches both directory and file events
+        alias_root = self.temp_dir / "alias_workspace"
+        has_symlink = False
+        try:
+            os.symlink(str(self.proj_root), str(alias_root))
+            has_symlink = True
+        except OSError:
+            has_symlink = False
+
+        if has_symlink:
+            sub_dir_via_real = self.proj_root / "src_mod" / "nested"
+            sub_dir_via_real.mkdir(parents=True, exist_ok=True)
+            # Configure registry with alias_root while watchdog emits physical self.proj_root paths
+            alias_worker = CoreSpaceWatcherServiceWorker(
+                context={
+                    "project_root": str(alias_root),
+                    "yscb_root": str(alias_root / "ys_codebase"),
+                    "debounce_seconds": 0.05,
+                }
+            )
+            matched_dir = alias_worker.notify_file_event(
+                sub_dir_via_real, is_directory=True, event_type="created"
+            )
+            self.assertIn("core/source", matched_dir)
+            matched_file = alias_worker.notify_file_event(
+                self.proj_root / "src_mod" / "init.py",
+                is_directory=False,
+                event_type="modified",
+            )
+            self.assertIn("core/source", matched_file)
+
         # Verify unschedule when a watched directory is removed from desired set
         unscheduled = []
 
@@ -466,7 +547,7 @@ class TestCoreSpaceWatcherService(YSCBTestCase):
 
         worker._observer = _FakeObserver()
         worker._watchdog_handler = object()
-        extra_dir = str((self.proj_root / "ephem_dir").resolve())
+        extra_dir = os.path.normcase(str((self.proj_root / "ephem_dir").resolve()))
         worker._scheduled_watches[extra_dir] = "watch:ephem_dir"
         worker._scheduled_dirs.add(extra_dir)
         worker.sync_watched_directories()

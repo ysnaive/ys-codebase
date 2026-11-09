@@ -20,19 +20,20 @@ class Scaffolder:
 
         final_desc = description or f"YS-Codebase module: {name}"
 
-        # 1. Create manifest.json
-        vfs.write_json(f"{target_src_uri}/manifest.json", {
-            "name": name,
-            "version": "0.1.0.0",
-            "description": final_desc,
-            "entry": "scripts/cli.py",
-            "dependencies": {
-                "core": ">=1.0.0"
-            }
-        })
+        try:
+            # 1. Create manifest.json
+            vfs.write_json(f"{target_src_uri}/manifest.json", {
+                "name": name,
+                "version": "0.1.0.0",
+                "description": final_desc,
+                "entry": "scripts/cli.py",
+                "dependencies": {
+                    "core": ">=1.2.0"
+                }
+            }, atomic=True)
 
-        # 2. Create scripts/cli.py
-        cli_content = f'''"""
+            # 2. Create scripts/cli.py
+            cli_content = f'''"""
 CLI Entry point for module {name}.
 """
 from typing import Any
@@ -48,20 +49,20 @@ def hello(cmd_bags: Any) -> int:
     log(f"[{name}] Hello from YSCB module {name}!")
     return 0
 '''
-        vfs.write_text(f"{target_src_uri}/scripts/cli.py", cli_content)
+            vfs.write_text(f"{target_src_uri}/scripts/cli.py", cli_content, atomic=True)
 
-        # 3. Create <pkg_name>/__init__.py
-        pkg_name = name.replace("-", "_")
-        init_content = f'''"""
+            # 3. Create <pkg_name>/__init__.py
+            pkg_name = name.replace("-", "_")
+            init_content = f'''"""
 {name} package initialization.
 """
 __version__ = "0.1.0.0"
 '''
-        vfs.write_text(f"{target_src_uri}/{pkg_name}/__init__.py", init_content)
+            vfs.write_text(f"{target_src_uri}/{pkg_name}/__init__.py", init_content, atomic=True)
 
-        # 4. Create tests/__init__.py and tests/test_basic.py
-        vfs.write_text(f"{target_src_uri}/tests/__init__.py", '"""\nTest package.\n"""\n')
-        test_content = f'''"""
+            # 4. Create tests/__init__.py and tests/test_basic.py
+            vfs.write_text(f"{target_src_uri}/tests/__init__.py", '"""\nTest package.\n"""\n', atomic=True)
+            test_content = f'''"""
 Basic test for {name}.
 """
 import unittest
@@ -81,55 +82,62 @@ class TestBasic(YSCBTestCase):
 if __name__ == "__main__":
     unittest.main()
 '''
-        vfs.write_text(f"{target_src_uri}/tests/test_basic.py", test_content)
+            vfs.write_text(f"{target_src_uri}/tests/test_basic.py", test_content, atomic=True)
 
-        # 5. Create .yscbignore
-        ignore_content = '''# Development ignore list
+            # 5. Create .yscbignore
+            ignore_content = '''# Development ignore list
 tests/
 *.tmp
 *.bak
 .pytest_cache/
 '''
-        vfs.write_text(f"{target_src_uri}/.yscbignore", ignore_content)
+            vfs.write_text(f"{target_src_uri}/.yscbignore", ignore_content, atomic=True)
 
-        # 6. Create contributes/_format.json, contributes/_manifest.md, and sample contributes/core.json
-        format_content = {
-            "_types": {},
-            "sample_point": {
-                "description": f"Contribution point provided by {name}",
-                "format": {
-                    "item_name": "str!",
-                    "enabled": "bool? = true"
+            # 6. Create contributes/_format.json, contributes/_manifest.md, and sample contributes/core.json
+            format_content = {
+                "_types": {},
+                "sample_point": {
+                    "description": f"Contribution point provided by {name}",
+                    "format": {
+                        "item_name": "str!",
+                        "enabled": "bool? = true"
+                    }
                 }
             }
-        }
-        vfs.write_json(f"{target_src_uri}/contributes/_format.json", format_content)
+            vfs.write_json(f"{target_src_uri}/contributes/_format.json", format_content, atomic=True)
 
-        manifest_content = f"""# {name} Contributes Manifest
+            manifest_content = f"""# {name} Contributes Manifest
 
 > 本清冊記錄 `{name}` 模組對外貢獻之擴充能力與協議。
 
 ## 1. 外部注入清冊 (Egress Contributions)
 - `core.json`: 向微內核註冊之 CLI 指令。
 """
-        vfs.write_text(f"{target_src_uri}/contributes/_manifest.md", manifest_content)
+            vfs.write_text(f"{target_src_uri}/contributes/_manifest.md", manifest_content, atomic=True)
 
-        core_contrib_content = {
-            "commands": {
-                "description": final_desc,
-                "cmd": {
-                    "hello": {
-                        "description": f"Say hello from {name}",
-                        "tier": "safe",
-                        "server_compatible": True,
-                        "usage": {
-                            "pros": [f"執行 {name} 基礎打招呼指令"],
-                            "cons": []
+            core_contrib_content = {
+                "commands": {
+                    "description": final_desc,
+                    "cmd": {
+                        "hello": {
+                            "description": f"Say hello from {name}",
+                            "tier": "safe",
+                            "server_compatible": True,
+                            "usage": {
+                                "pros": [f"執行 {name} 基礎打招呼指令"],
+                                "cons": []
+                            }
                         }
                     }
                 }
             }
-        }
-        vfs.write_json(f"{target_src_uri}/contributes/core.json", core_contrib_content)
+            vfs.write_json(f"{target_src_uri}/contributes/core.json", core_contrib_content, atomic=True)
 
-        return True, f"Successfully created module '{name}' at {target_src_uri}."
+            return True, f"Successfully created module '{name}' at {target_src_uri}."
+        except Exception as exc:
+            try:
+                if vfs.exists(target_src_uri):
+                    vfs.rmtree(target_src_uri)
+            except Exception:
+                pass
+            return False, f"Failed to create module '{name}': {exc}"

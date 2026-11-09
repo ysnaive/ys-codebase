@@ -142,6 +142,35 @@ class ContributesValidator(metaclass=_ContributesValidatorMeta):
             i += 1
         return "".join(out_chars).strip(), attrs
 
+    @staticmethod
+    def _split_top_level_delim(
+        text: str,
+        delim: str,
+        from_right: bool = False,
+    ) -> Optional[Tuple[str, str]]:
+        """Splits `text` on `delim` only at top level (outside quotes and parentheses/brackets)."""
+        depth = 0
+        in_quote: Optional[str] = None
+        match_idx: Optional[int] = None
+        for idx, ch in enumerate(text):
+            if in_quote:
+                if ch == in_quote and (idx == 0 or text[idx - 1] != "\\"):
+                    in_quote = None
+                continue
+            if ch in ("'", '"'):
+                in_quote = ch
+            elif ch in "([":
+                depth += 1
+            elif ch in ")]":
+                depth = max(0, depth - 1)
+            elif ch == delim and depth == 0:
+                if not from_right:
+                    return text[:idx].strip(), text[idx + 1 :].strip()
+                match_idx = idx
+        if match_idx is not None:
+            return text[:match_idx].strip(), text[match_idx + 1 :].strip()
+        return None
+
     @classmethod
     def parse_type_signature(cls, sig: str) -> Dict[str, Any]:
         """
@@ -164,19 +193,19 @@ class ContributesValidator(metaclass=_ContributesValidatorMeta):
         raw, attributes = cls._extract_attributes(sig.strip())
         description = attributes.get("desc") or attributes.get("doc") or attributes.get("anno") or None
         merge_strategy: Optional[str] = None
-        if "|" in raw:
-            raw_part, strat_part = raw.rsplit("|", 1)
-            raw = raw_part.strip()
-            merge_strategy = strat_part.strip() or None
+        pipe_split = cls._split_top_level_delim(raw, "|", from_right=True)
+        if pipe_split is not None:
+            raw, strat_part = pipe_split
+            merge_strategy = strat_part or None
 
         required = False
         default_val: Any = None
         has_default = False
 
-        if "=" in raw:
-            parts = raw.split("=", 1)
-            raw = parts[0].strip()
-            default_val = cls._parse_default_literal(parts[1].strip())
+        eq_split = cls._split_top_level_delim(raw, "=", from_right=False)
+        if eq_split is not None:
+            raw, def_part = eq_split
+            default_val = cls._parse_default_literal(def_part)
             has_default = True
 
         if raw.endswith("!"):
@@ -222,17 +251,9 @@ class ContributesValidator(metaclass=_ContributesValidatorMeta):
         cache[sig] = copy.deepcopy(res)
         return res
 
-    @staticmethod
-    def _split_top_level_comma(inner: str) -> Optional[Tuple[str, str]]:
-        depth = 0
-        for i, ch in enumerate(inner):
-            if ch in "([":
-                depth += 1
-            elif ch in ")]":
-                depth = max(0, depth - 1)
-            elif ch == "," and depth == 0:
-                return inner[:i].strip(), inner[i + 1 :].strip()
-        return None
+    @classmethod
+    def _split_top_level_comma(cls, inner: str) -> Optional[Tuple[str, str]]:
+        return cls._split_top_level_delim(inner, ",", from_right=False)
 
     @classmethod
     def _validate_primitive_or_container_rule(

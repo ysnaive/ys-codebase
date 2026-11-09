@@ -36,6 +36,7 @@ class CommandSpec:
     description: str = ""
     tier: str = "safe"
     server_compatible: bool = False
+    alias: List[str] = field(default_factory=list, compare=False)
     args: Dict[str, ArgSpec] = field(default_factory=dict, compare=False)
     options: Dict[str, OptionSpec] = field(default_factory=dict, compare=False)         # 規範名及別名均索引至對應 OptionSpec
     canonical_options: Dict[str, OptionSpec] = field(default_factory=dict, compare=False) # 僅以規範名索引
@@ -108,8 +109,8 @@ class CommandsRegistry:
 
     def register_module(self, module_name: str, commands_data: Dict[str, Any]) -> ModuleSpec:
         """
-        解析 commands contributes 結構並註冊模組。
-        支援新版 Schema (含 module_alias, cmd, orthogonal groups, args, usage: {pros, cons})。
+        解析 commands contributes 結構並註冊或合併至模組。
+        支援新版 Schema (含 module_alias, cmd, command alias, orthogonal groups, args, usage: {pros, cons})。
         """
         if not isinstance(commands_data, dict):
             commands_data = {}
@@ -132,11 +133,24 @@ class CommandsRegistry:
             self._alias_to_module[alias] = module_name
 
         mod_desc = commands_data.get("description", "")
-        mod_spec = ModuleSpec(
-            module_name=module_name,
-            description=mod_desc,
-            module_alias=module_aliases,
-        )
+        existing_spec = self._modules.get(module_name)
+        if existing_spec is not None:
+            merged_aliases = list(existing_spec.module_alias)
+            for a in module_aliases:
+                if a not in merged_aliases:
+                    merged_aliases.append(a)
+            mod_spec = ModuleSpec(
+                module_name=module_name,
+                description=mod_desc or existing_spec.description,
+                module_alias=merged_aliases,
+                commands=dict(existing_spec.commands),
+            )
+        else:
+            mod_spec = ModuleSpec(
+                module_name=module_name,
+                description=mod_desc,
+                module_alias=module_aliases,
+            )
 
         # 解析 cmd 集合 (判斷是否為新版嵌套結構或舊版扁平結構)
         raw_cmd_map = commands_data.get("cmd")
@@ -151,6 +165,9 @@ class CommandsRegistry:
                 continue
             cmd_spec = self._parse_command_spec(cmd_name, raw_spec)
             mod_spec.commands[cmd_name] = cmd_spec
+            for c_alias in cmd_spec.alias:
+                if c_alias and c_alias not in mod_spec.commands:
+                    mod_spec.commands[c_alias] = cmd_spec
 
         self._modules[module_name] = mod_spec
         return mod_spec
@@ -160,6 +177,10 @@ class CommandsRegistry:
         tier = raw_spec.get("tier", "safe")
         # server_compatible 為指令層級原生布林宣告
         server_compatible = bool(raw_spec.get("server_compatible", False))
+        raw_cmd_aliases = raw_spec.get("alias", [])
+        if isinstance(raw_cmd_aliases, str):
+            raw_cmd_aliases = [raw_cmd_aliases]
+        cmd_aliases = [str(a).strip() for a in raw_cmd_aliases if isinstance(a, str) and str(a).strip()]
         cmd_args = self._parse_args_dict(raw_spec.get("args"))
 
         usage_pros: List[str] = []
@@ -176,6 +197,7 @@ class CommandsRegistry:
             description=desc,
             tier=tier,
             server_compatible=server_compatible,
+            alias=cmd_aliases,
             args=cmd_args,
             usage_pros=usage_pros,
             usage_cons=usage_cons,
@@ -217,7 +239,11 @@ class CommandsRegistry:
         if isinstance(raw_sub_cmd, dict):
             for sub_name, sub_spec in raw_sub_cmd.items():
                 if isinstance(sub_spec, dict):
-                    cmd_spec.cmd[sub_name] = self._parse_command_spec(sub_name, sub_spec)
+                    parsed_sub = self._parse_command_spec(sub_name, sub_spec)
+                    cmd_spec.cmd[sub_name] = parsed_sub
+                    for s_alias in parsed_sub.alias:
+                        if s_alias and s_alias not in cmd_spec.cmd:
+                            cmd_spec.cmd[s_alias] = parsed_sub
 
         return cmd_spec
 

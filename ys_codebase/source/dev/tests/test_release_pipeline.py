@@ -540,7 +540,7 @@ class TestReleasePipeline(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_release_module_preflight_failure_rolls_back_manifest(self):
-        """Verify release_module validates pre-flight checks before mutating manifest.json and restores manifest.json if packaging fails."""
+        """Verify release_module and release_git protect manifest.json against dirty mutations on pre-flight, smart-skip, or git failures, and scope git add to the target module."""
         mod_name = "mock_atomic_rel"
         self.create_mock_source_module(mod_name, "1.0.0.0")
         mf_uri = f"module.source://{mod_name}/manifest.json"
@@ -558,4 +558,50 @@ class TestReleasePipeline(YSCBTestCase):
         self.assertFalse(ok)
         self.assertIn("Release pre-flight check failed", msg)
         self.assertEqual(vfs.read_text(mf_uri), orig_raw)
+
+        # Verify release_git rolls back manifest.json on git commit failure and scopes git add
+        git_add_args = []
+        original_git = self.releaser._run_git_cmd
+
+        class PassingTester:
+            def run(self, argv):
+                return 0
+
+        def fake_git_fail_commit(args, cwd=None, timeout=30.0):
+            if args and args[0] == "add":
+                git_add_args.append(list(args))
+                return 0, "", ""
+            if args and args[0] == "commit":
+                return 1, "", "fatal: commit rejected"
+            return 0, "", ""
+
+        try:
+            self.releaser.tester = PassingTester()
+            self.releaser._run_git_cmd = fake_git_fail_commit
+            ok_git_fail, msg_git_fail = self.releaser.release_git(
+                mod_name,
+                "commit msg",
+                force=True,
+                release_meta={"type": "hotfix", "urgency": "critical", "summary": "Rolled back on git failure"},
+            )
+            self.assertFalse(ok_git_fail)
+            self.assertIn("Git commit failed", msg_git_fail)
+            self.assertEqual(vfs.read_text(mf_uri), orig_raw)
+            self.assertEqual(len(git_add_args), 1)
+            self.assertNotIn("-A", git_add_args[0])
+
+            # Verify smart-skip (already packaged, force=False) does not mutate manifest.json with new release_meta
+            self.releaser._run_git_cmd = lambda args, cwd=None, timeout=30.0: (0, "", "")
+            ok_skip, _ = self.releaser.release_git(
+                mod_name,
+                "smart skip msg",
+                force=False,
+                release_meta={"type": "docs", "urgency": "low", "summary": "Should not write on skip"},
+            )
+            self.assertTrue(ok_skip)
+            self.assertEqual(vfs.read_text(mf_uri), orig_raw)
+        finally:
+            self.releaser._run_git_cmd = original_git
+            self.releaser.tester = None
+
         self.mark_passed()

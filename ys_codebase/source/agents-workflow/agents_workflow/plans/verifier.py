@@ -365,16 +365,24 @@ class PlanVerifier:
 
     @staticmethod
     def _extract_non_code_lines(lines: List[str]) -> List[str]:
-        """剝除 fenced code blocks 與行內反引號片段，保留 1:1 實體行號對齊之純文字行清單。"""
+        """剝除 fenced code blocks（支援 3+ 反引號對稱閉合）與行內反引號片段，保留 1:1 實體行號對齊之純文字行清單。"""
         non_code_lines: List[str] = []
-        in_code_block = False
+        fence_len = 0
         for l in lines:
-            if l.strip().startswith("```"):
-                in_code_block = not in_code_block
-                non_code_lines.append("")
-                continue
-            if not in_code_block:
-                non_code_lines.append(re.sub(r"`+[^`]*`+", "", l))
+            line_s = l.strip()
+            m_fence = re.match(r"^(`{3,})", line_s)
+            if m_fence:
+                ticks = len(m_fence.group(1))
+                if fence_len == 0:
+                    fence_len = ticks
+                    non_code_lines.append("")
+                    continue
+                if ticks >= fence_len and line_s == "`" * ticks:
+                    fence_len = 0
+                    non_code_lines.append("")
+                    continue
+            if fence_len == 0:
+                non_code_lines.append(re.sub(r"(`+)(?!`)(?:[^\r\n]*?[^`\r\n])?\1(?!`)", "", l))
             else:
                 non_code_lines.append("")
         return non_code_lines
@@ -930,6 +938,8 @@ class PlanVerifier:
         report: PlanReport,
         require_non_seed_for_companions: bool = False,
         pending_writes: Optional[Dict[Path, str]] = None,
+        initial_log_msg: Optional[str] = None,
+        initial_log_type: str = "PHASE",
     ) -> None:
         """統一執行單一計畫目錄（主計畫或 sub_* 子計畫）之主體檔檢核、伴隨檔自癒與跨檔追溯檢查。"""
         fails_before = sum(1 for i in report.issues if i.severity == PlanSeverity.FAIL)
@@ -957,7 +967,13 @@ class PlanVerifier:
         )
         if not has_new_fails and enable_auto_heal and has_eligible_md:
             _auto_heal_companions(
-                target_dir, phase_norm, model, report, pending_writes=pending_writes
+                target_dir,
+                phase_norm,
+                model,
+                report,
+                pending_writes=pending_writes,
+                initial_log_msg=initial_log_msg if rel_dir == "." else None,
+                initial_log_type=initial_log_type,
             )
             p06_rel = f"{prefix}P06_test_plan.md"
             if p06_rel in report.companion_created:
@@ -991,6 +1007,7 @@ class PlanVerifier:
         log_msg: Optional[str] = None,
         log_type: str = "PHASE",
         model: Optional[str] = None,
+        heal: Optional[bool] = None,
     ) -> PlanReport:
         """對指定計畫目錄執行四步檢核與伴隨檔交易式自癒流水線，回傳結構化 PlanReport。"""
         if isinstance(plan_path_or_name, str):
@@ -1043,7 +1060,7 @@ class PlanVerifier:
 
         phase_norm = (phase or "all").strip().upper()
         is_sub = p.name.startswith("sub_")
-        enable_auto_heal = bool(log_msg and log_msg.strip())
+        enable_auto_heal = bool(heal) if heal is not None else bool(log_msg and log_msg.strip())
         pending_writes: Dict[Path, str] = {}
 
         if phase_norm in PHASE_CANONICAL_FILES:
@@ -1071,6 +1088,8 @@ class PlanVerifier:
             report=report,
             require_non_seed_for_companions=False,
             pending_writes=pending_writes,
+            initial_log_msg=log_msg,
+            initial_log_type=log_type,
         )
 
         if phase_norm in ("ALL", "CURRENT"):
@@ -1107,12 +1126,15 @@ class PlanVerifier:
 
             report.next_phase_hint = self._build_next_phase_hint(p)
 
-            if enable_auto_heal and log_msg:
-                resolved_model = _resolve_companion_model(p, phase_norm, model)
-                _, l_status = _append_changelog_entry(
-                    p, summary=log_msg, log_type=log_type, model=resolved_model
-                )
-                report.log_status = l_status
+            if log_msg and log_msg.strip():
+                if "changelog.md" in report.companion_created and (p / "changelog.md") in pending_writes:
+                    report.log_status = "appended"
+                elif enable_auto_heal:
+                    resolved_model = _resolve_companion_model(p, phase_norm, model)
+                    _, l_status = _append_changelog_entry(
+                        p, summary=log_msg, log_type=log_type, model=resolved_model
+                    )
+                    report.log_status = l_status
 
         return report
 

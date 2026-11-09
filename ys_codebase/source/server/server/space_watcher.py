@@ -14,7 +14,6 @@ import time
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
 from core.log import log_error, log_warn
-from core.platform.lock import InterProcessLock
 from core.space.registry import SpaceConfig, SpaceRegistry, get_default_registry
 from core.space.scanner import ScanDiffResult, SpaceScanner, get_default_scanner
 from core.space.watcher import (
@@ -30,6 +29,7 @@ from core.space.watcher import (
 )
 
 from .service import BaseServiceWorker
+from .watcher import _is_lock_file_active
 
 _FAST_IGNORED_SEGMENTS: FrozenSet[str] = frozenset(
     {
@@ -138,6 +138,14 @@ def _strip_macos_private_prefix(path_posix: str) -> str:
     return path_posix
 
 
+def _canonical_dir_path(p: Union[str, Path]) -> Path:
+    """Returns canonical realpath with platform case normalization for symlink-safe directory matching."""
+    try:
+        return Path(os.path.normcase(os.path.realpath(str(p))))
+    except OSError:
+        return Path(os.path.normcase(os.path.abspath(str(p))))
+
+
 def _match_prefix_rel(raw_str: str, prefix: str) -> Optional[str]:
     clean_prefix = prefix.rstrip("/") + "/"
     if raw_str.startswith(clean_prefix):
@@ -148,6 +156,13 @@ def _match_prefix_rel(raw_str: str, prefix: str) -> Optional[str]:
     norm_prefix = _strip_macos_private_prefix(clean_prefix)
     if norm_raw.startswith(norm_prefix):
         return norm_raw[len(norm_prefix) :]
+    try:
+        canon_raw = os.path.normcase(os.path.realpath(raw_str)).replace("\\", "/")
+        canon_pref = os.path.normcase(os.path.realpath(prefix.rstrip("/"))).replace("\\", "/") + "/"
+        if canon_raw.startswith(canon_pref):
+            return canon_raw[len(canon_pref) :]
+    except OSError:
+        pass
     return None
 
 
@@ -156,21 +171,7 @@ def _is_lock_path_active(lock_cand: Path) -> bool:
     Probes whether `lock_cand` is actively held via `InterProcessLock` or contains a
     non-empty `'locked'` sentinel marker. Stale unlocked `.yscb.lock` files return False.
     """
-    if not lock_cand.is_file():
-        return False
-    try:
-        probe = InterProcessLock(str(lock_cand))
-        if not probe.acquire(blocking=False):
-            return True
-        probe.release()
-    except Exception:
-        return True
-    try:
-        if lock_cand.read_text(encoding="utf-8", errors="ignore").strip().lower() == "locked":
-            return True
-    except OSError:
-        pass
-    return False
+    return _is_lock_file_active(lock_cand)
 
 
 class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
@@ -378,27 +379,72 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         return raw_str.rsplit("/", 1)[-1]
 
     def _dir_belongs_to_space(self, dir_abs: Path, s_cfg: SpaceConfig) -> bool:
+        canon_dir = _canonical_dir_path(dir_abs)
         all_entries = self.registry.collect_all_entry_paths(s_cfg.qualified_name)
         for entry_p in all_entries:
             if entry_p.is_file():
                 continue
-            if os.path.normcase(str(dir_abs)) == os.path.normcase(str(entry_p)):
+            canon_entry = _canonical_dir_path(entry_p)
+            if canon_dir == canon_entry:
                 return True
             try:
-                rel = dir_abs.relative_to(entry_p)
+                rel = canon_dir.relative_to(canon_entry)
                 if str(rel) != "." and not str(rel).startswith(".."):
+                    try:
+                        real_dir = Path(os.path.realpath(str(dir_abs)))
+                        real_entry = Path(os.path.realpath(str(entry_p)))
+                        aligned_dir = entry_p / real_dir.relative_to(real_entry)
+                    except (OSError, ValueError):
+                        aligned_dir = dir_abs
                     if not s_cfg.is_dir_excluded_fast(
-                        dir_abs, entry_p, self.registry.project_root
+                        aligned_dir, entry_p, self.registry.project_root
                     ):
                         return True
             except ValueError:
                 try:
-                    rel_rev = entry_p.relative_to(dir_abs)
+                    rel_rev = canon_entry.relative_to(canon_dir)
                     if not str(rel_rev).startswith(".."):
                         return True
                 except ValueError:
                     continue
         return False
+
+    def _normalize_event_path(self, file_path: Union[str, Path]) -> Path:
+        """
+        Normalizes an incoming file system event path and aligns symlinked aliases
+        (such as macOS `/private/var` -> `/var`) back onto `self.registry.project_root`.
+        """
+        p = Path(str(file_path))
+        raw_abs = (
+            Path(os.path.normpath(str(p)))
+            if p.is_absolute()
+            else Path(os.path.normpath(str(self.registry.project_root / p)))
+        )
+        proj_root = self.registry.project_root
+        try:
+            canon_target = _canonical_dir_path(raw_abs)
+            canon_proj = _canonical_dir_path(proj_root)
+            if canon_target == canon_proj:
+                return proj_root
+            rel_to_proj = canon_target.relative_to(canon_proj)
+            if str(rel_to_proj) != "." and not str(rel_to_proj).startswith(".."):
+                raw_norm = os.path.normcase(str(raw_abs))
+                proj_norm = os.path.normcase(str(proj_root))
+                if not raw_norm.startswith(proj_norm + os.sep):
+                    real_target = Path(os.path.realpath(str(raw_abs)))
+                    real_proj = Path(os.path.realpath(str(proj_root)))
+                    return Path(os.path.normpath(str(proj_root / real_target.relative_to(real_proj))))
+        except (OSError, ValueError):
+            pass
+        try:
+            norm_raw_posix = _strip_macos_private_prefix(raw_abs.as_posix())
+            norm_proj_posix = _strip_macos_private_prefix(proj_root.as_posix()).rstrip("/") + "/"
+            if norm_raw_posix.startswith(norm_proj_posix):
+                rel_tail = norm_raw_posix[len(norm_proj_posix) :]
+                return Path(os.path.normpath(str(proj_root / rel_tail)))
+        except Exception:
+            pass
+        return raw_abs
 
     def notify_file_event(
         self,
@@ -437,12 +483,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         ):
             return []
 
-        p = Path(str(file_path))
-        abs_p = (
-            Path(os.path.normpath(str(p)))
-            if p.is_absolute()
-            else Path(os.path.normpath(str(self.registry.project_root / p)))
-        )
+        abs_p = self._normalize_event_path(file_path)
 
         matched: List[str] = []
         watched_spaces = self._watched_space_configs()
@@ -519,12 +560,12 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                     dirty_paths if use_patch else None,
                     exclude_keys=batch_qnames,
                 )
-            try:
-                self.touch_activity()
-            except Exception:
-                pass
-            notify_subscribers(q_name, diff_res)
-            broadcast_file_space_changed(q_name, diff_res)
+                try:
+                    self.touch_activity()
+                except Exception:
+                    pass
+                notify_subscribers(q_name, diff_res)
+                broadcast_file_space_changed(q_name, diff_res)
 
         return diff_res, use_patch
 
@@ -568,113 +609,23 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         with self._lock:
             return [name for name in cand_qnames if name in self._dirty_spaces]
 
-    def flush_space_now(
-        self, space_query: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+    def _execute_space_flush_batch(
+        self,
+        target_spaces: List[str],
+        dirty_batch: Dict[str, Set[Path]],
+        full_rescan_batch: Set[str],
+        *,
+        error_verb: str = "refreshing dirty space",
+    ) -> Dict[str, ScanDiffResult]:
         """
-        Synchronously flush pending dirty paths for `space_query` (supports `<owner>/<space>`,
-        `<space>` short-name union, `compose` spaces, or `None` for all dirty spaces)
-        without waiting for the debounce window.
+        Shared batch execution helper for `flush_space_now` and `flush_dirty_spaces`.
+        Updates all target spaces, synchronizes dependent snapshots (synthetic short-name unions,
+        composite spaces, and `__all__`), and only afterwards notifies subscribers and broadcasts
+        `on_file_space_changed`.
         """
-        if self.is_transaction_locked():
-            with self._lock:
-                if self._dirty_spaces:
-                    self._deferred_by_lock_count += 1
-            return None
-
-        target_qnames = self._expand_query_to_dirty_qnames(space_query)
-        if not target_qnames:
-            return None
-
-        batch_set = set(target_qnames)
-        last_dict: Optional[Dict[str, Any]] = None
-        changed_qnames: List[str] = []
-        combined_patch_paths: Set[Path] = set()
-        all_patchable = True
-        self.set_state(self.STATE_UPDATING)
-        try:
-            for q_name in target_qnames:
-                with self._lock:
-                    is_dirty = q_name in self._dirty_spaces
-                    dirty_paths = set(self._dirty_paths_by_space.pop(q_name, set()))
-                    full_rescan = q_name in self._full_rescan_spaces
-                    self._full_rescan_spaces.discard(q_name)
-                    self._dirty_spaces.discard(q_name)
-
-                if not is_dirty and not dirty_paths and not full_rescan:
-                    continue
-
-                try:
-                    diff_res, used_patch = self._refresh_or_patch_space(
-                        q_name,
-                        dirty_paths,
-                        full_rescan,
-                        batch_qnames=batch_set,
-                        sync_dependents=False,
-                    )
-                    if diff_res.has_changes:
-                        changed_qnames.append(q_name)
-                        if used_patch:
-                            combined_patch_paths.update(dirty_paths)
-                        else:
-                            all_patchable = False
-                    last_dict = diff_res.to_dict()
-                except Exception as exc:
-                    self._rollback_space_batch(q_name, dirty_paths, full_rescan)
-                    log_error(f"Error flushing space '{q_name}' immediately: {exc}")
-            if changed_qnames:
-                dep_dirty = (
-                    combined_patch_paths
-                    if (
-                        all_patchable
-                        and 0 < len(combined_patch_paths) <= self.MAX_PATCH_PATHS_THRESHOLD
-                    )
-                    else None
-                )
-                self.scanner.sync_dependent_snapshots_batch(
-                    changed_qnames,
-                    dep_dirty,
-                    exclude_keys=batch_set,
-                )
-        finally:
-            if not self._stop_event.is_set():
-                self.set_state(self.STATE_READY)
-
-        self._finalize_dirty_marker()
-        return last_dict
-
-    def flush_dirty_spaces(self, *, force: bool = False) -> Dict[str, ScanDiffResult]:
-        """
-        If debounce window has elapsed and no `.yscb.lock` is active (or `force=True`),
-        refresh all dirty spaces, invoke subscribers, and broadcast `on_file_space_changed`.
-        """
-        if self.is_transaction_locked():
-            with self._lock:
-                if self._dirty_spaces:
-                    self._deferred_by_lock_count += 1
-            return {}
-
-        now_mono = time.monotonic()
-        with self._lock:
-            if not self._dirty_spaces:
-                return {}
-            if (
-                not force
-                and (now_mono - self._last_event_time) < self.debounce_seconds
-            ):
-                return {}
-            target_spaces = sorted(self._dirty_spaces)
-            self._dirty_spaces.clear()
-            dirty_batch: Dict[str, Set[Path]] = {
-                s: set(self._dirty_paths_by_space.pop(s, set()))
-                for s in target_spaces
-            }
-            full_rescan_batch: Set[str] = set(self._full_rescan_spaces)
-            self._full_rescan_spaces.difference_update(target_spaces)
-
         batch_set = set(target_spaces)
         results: Dict[str, ScanDiffResult] = {}
-        changed_qnames: List[str] = []
+        changed_diffs: List[Tuple[str, ScanDiffResult]] = []
         combined_patch_paths: Set[Path] = set()
         all_patchable = True
         self.set_state(self.STATE_UPDATING)
@@ -692,15 +643,17 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                     )
                     results[q_name] = diff_res
                     if diff_res.has_changes:
-                        changed_qnames.append(q_name)
+                        changed_diffs.append((q_name, diff_res))
                         if used_patch:
                             combined_patch_paths.update(s_dirty)
                         else:
                             all_patchable = False
                 except Exception as exc:
                     self._rollback_space_batch(q_name, s_dirty, s_full)
-                    log_error(f"Error refreshing dirty space '{q_name}': {exc}")
-            if changed_qnames:
+                    log_error(f"Error {error_verb} '{q_name}': {exc}")
+
+            if changed_diffs:
+                changed_qnames = [q_name for q_name, _ in changed_diffs]
                 dep_dirty = (
                     combined_patch_paths
                     if (
@@ -714,12 +667,114 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                     dep_dirty,
                     exclude_keys=batch_set,
                 )
+                try:
+                    self.touch_activity()
+                except Exception:
+                    pass
+                for q_name, diff_res in changed_diffs:
+                    notify_subscribers(q_name, diff_res)
+                    broadcast_file_space_changed(q_name, diff_res)
         finally:
             if not self._stop_event.is_set():
                 self.set_state(self.STATE_READY)
 
         self._finalize_dirty_marker()
         return results
+
+    def flush_space_now(
+        self, space_query: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Synchronously flush pending dirty paths for `space_query` (supports `<owner>/<space>`,
+        `<space>` short-name union, `compose` spaces, or `None` for all dirty spaces)
+        without waiting for the debounce window.
+        """
+        target_qnames = self._expand_query_to_dirty_qnames(space_query)
+        if not target_qnames:
+            return None
+
+        if self.is_transaction_locked():
+            with self._lock:
+                if self._dirty_spaces:
+                    self._deferred_by_lock_count += 1
+            return None
+
+        active_qnames: List[str] = []
+        dirty_batch: Dict[str, Set[Path]] = {}
+        full_rescan_batch: Set[str] = set()
+        with self._lock:
+            for q_name in target_qnames:
+                is_dirty = q_name in self._dirty_spaces
+                dirty_paths = set(self._dirty_paths_by_space.pop(q_name, set()))
+                full_rescan = q_name in self._full_rescan_spaces
+                self._full_rescan_spaces.discard(q_name)
+                self._dirty_spaces.discard(q_name)
+                if not is_dirty and not dirty_paths and not full_rescan:
+                    continue
+                active_qnames.append(q_name)
+                dirty_batch[q_name] = dirty_paths
+                if full_rescan:
+                    full_rescan_batch.add(q_name)
+
+        if not active_qnames:
+            return None
+
+        results = self._execute_space_flush_batch(
+            active_qnames,
+            dirty_batch,
+            full_rescan_batch,
+            error_verb="flushing space immediately",
+        )
+        last_dict: Optional[Dict[str, Any]] = None
+        for q_name in active_qnames:
+            if q_name in results:
+                last_dict = results[q_name].to_dict()
+        return last_dict
+
+    def flush_dirty_spaces(self, *, force: bool = False) -> Dict[str, ScanDiffResult]:
+        """
+        If debounce window has elapsed and no `.yscb.lock` is active (or `force=True`),
+        refresh all dirty spaces, invoke subscribers, and broadcast `on_file_space_changed`.
+        """
+        now_mono = time.monotonic()
+        with self._lock:
+            if not self._dirty_spaces:
+                return {}
+            if (
+                not force
+                and (now_mono - self._last_event_time) < self.debounce_seconds
+            ):
+                return {}
+
+        if self.is_transaction_locked():
+            with self._lock:
+                if self._dirty_spaces:
+                    self._deferred_by_lock_count += 1
+            return {}
+
+        with self._lock:
+            if not self._dirty_spaces:
+                return {}
+            if (
+                not force
+                and (time.monotonic() - self._last_event_time) < self.debounce_seconds
+            ):
+                return {}
+            target_spaces = sorted(self._dirty_spaces)
+            self._dirty_spaces.clear()
+            dirty_batch: Dict[str, Set[Path]] = {
+                s: set(self._dirty_paths_by_space.pop(s, set()))
+                for s in target_spaces
+            }
+            full_rescan_batch: Set[str] = set(self._full_rescan_spaces)
+            self._full_rescan_spaces.difference_update(target_spaces)
+
+        return self._execute_space_flush_batch(
+            target_spaces,
+            dirty_batch,
+            full_rescan_batch,
+            error_verb="refreshing dirty space",
+        )
 
     def _resolve_watcher_state_path(self) -> Path:
         if self._state_file_path is not None:

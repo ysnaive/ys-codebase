@@ -470,8 +470,10 @@ class CompiledRuleSet:
         parts: Sequence[str],
         filename: str,
         is_dir: bool,
+        match_any_segment: Optional[bool] = None,
     ) -> Optional[RuleItem]:
         """Return the first matching RuleItem, or None."""
+        eff_any_seg = (self.is_exclude or is_dir) if match_any_segment is None else bool(match_any_segment)
         for comp in self._compiled:
             if _entry_matches_candidate(
                 comp,
@@ -481,7 +483,7 @@ class CompiledRuleSet:
                 parts=parts,
                 filename=filename,
                 is_dir=is_dir,
-                match_any_segment_for_name=True,
+                match_any_segment_for_name=eff_any_seg,
             ):
                 return comp.rule
         return None
@@ -495,13 +497,16 @@ class CompiledRuleSet:
         parts: Sequence[str],
         filename: str,
         is_dir: bool,
+        match_any_segment: Optional[bool] = None,
     ) -> bool:
         """Fast boolean check during directory walk (`ls`)."""
         if self._has_match_all:
             return True
-        if self._exact_names and any(p in self._exact_names for p in parts):
+        eff_any_seg = (self.is_exclude or is_dir) if match_any_segment is None else bool(match_any_segment)
+        name_pool = parts if eff_any_seg else (filename,)
+        if self._exact_names and any(p in self._exact_names for p in name_pool):
             return True
-        if self._ext_suffixes and any(p.endswith(self._ext_suffixes) for p in parts):
+        if self._ext_suffixes and any(p.endswith(self._ext_suffixes) for p in name_pool):
             return True
 
         if self._rel_exact:
@@ -528,7 +533,7 @@ class CompiledRuleSet:
                 parts=parts,
                 filename=filename,
                 is_dir=is_dir,
-                match_any_segment_for_name=True,
+                match_any_segment_for_name=eff_any_seg,
             ):
                 return True
         return False
@@ -796,6 +801,7 @@ class SpaceConfig:
                 parts=parts,
                 filename=filename,
                 is_dir=True,
+                match_any_segment=True,
             ):
                 if not neg_sp._compiled_exclude.matches_fast(
                     norm_abs=norm_abs,
@@ -842,6 +848,7 @@ class SpaceConfig:
                 parts=parts,
                 filename=filename,
                 is_dir=True,
+                match_any_segment=True,
             )
             if neg_inc_rule is not None:
                 if not neg_sp._compiled_exclude.matches_fast(
@@ -893,6 +900,7 @@ class SpaceConfig:
                 parts=parts,
                 filename=filename,
                 is_dir=False,
+                match_any_segment=True,
             ) and not neg_sp._compiled_exclude.matches_fast(
                 norm_abs=norm_abs,
                 project_rel=project_rel,
@@ -975,6 +983,7 @@ class SpaceConfig:
                 parts=parts,
                 filename=filename,
                 is_dir=is_dir,
+                match_any_segment=True,
             )
             if neg_inc_rule is not None and not neg_sp._compiled_exclude.matches_fast(
                 norm_abs=norm_abs,

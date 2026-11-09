@@ -6,15 +6,10 @@ when `repo_sync.enable` is True without instantiating `SpaceRegistry` recursivel
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from core.log import log
 from gdrive_support.config import load_lightweight_repo_sync_settings
-
-
-def _load_lightweight_repo_sync_settings(registry: Any = None) -> tuple[bool, bool, List[str]]:
-    """Delegate lightweight repo_sync configuration extraction to gdrive_support.config."""
-    return load_lightweight_repo_sync_settings(registry)
 
 
 def on_register_file_spaces(ctx: Optional[Any] = None) -> bool:
@@ -27,7 +22,7 @@ def on_register_file_spaces(ctx: Optional[Any] = None) -> bool:
         if registry is None:
             return False
 
-        enabled, auto_sync, compose_spaces = _load_lightweight_repo_sync_settings(registry)
+        enabled, auto_sync, compose_spaces = load_lightweight_repo_sync_settings(registry)
         if not enabled:
             return False
 

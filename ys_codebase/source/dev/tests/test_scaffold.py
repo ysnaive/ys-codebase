@@ -2,6 +2,7 @@
 Official test suite for dev.scaffold.Scaffolder.
 """
 import importlib.util
+from unittest.mock import patch
 from dev.testing import YSCBTestCase, require, Requirement
 from dev.scaffold import Scaffolder
 from dev.checker import Checker
@@ -23,6 +24,7 @@ class TestDevScaffolder(YSCBTestCase):
 
             src_uri = f"module.source://{mod_name}"
             self.assertTrue(vfs.exists(f"{src_uri}/manifest.json"))
+            self.assertEqual(vfs.read_json(f"{src_uri}/manifest.json")["dependencies"]["core"], ">=1.2.0")
             self.assertTrue(vfs.exists(f"{src_uri}/scripts/cli.py"))
             self.assertTrue(vfs.exists(f"{src_uri}/{mod_name}/__init__.py"))
             self.assertTrue(vfs.exists(f"{src_uri}/.yscbignore"))
@@ -47,16 +49,24 @@ class TestDevScaffolder(YSCBTestCase):
         self.mark_passed()
 
     def test_create_duplicate_module_rejected(self):
-        """Verify scaffolding over existing module fails."""
+        """Verify scaffolding over existing module fails, and failed scaffolding rolls back partial directory."""
         mod_name = "test_mod_dup"
+        rollback_mod = "test_mod_rollback"
         try:
             ok1, _ = self.scaffolder.create_module(mod_name)
             self.assertTrue(ok1)
             ok2, msg2 = self.scaffolder.create_module(mod_name)
             self.assertFalse(ok2)
             self.assertIn("already exists", msg2)
+
+            with patch("core.vfs.write_text", side_effect=OSError("simulated disk write failure")):
+                ok_rb, msg_rb = self.scaffolder.create_module(rollback_mod)
+            self.assertFalse(ok_rb)
+            self.assertIn("Failed to create module", msg_rb)
+            self.assertFalse(vfs.exists(f"module.source://{rollback_mod}"))
         finally:
             vfs.rmtree(f"module.source://{mod_name}")
+            vfs.rmtree(f"module.source://{rollback_mod}")
         self.mark_passed()
 
     def test_scaffold_cli_format(self):

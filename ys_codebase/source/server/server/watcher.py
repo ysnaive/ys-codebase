@@ -6,27 +6,29 @@ and triggers warm worker replacement when changes are detected.
 """
 
 import os
+from pathlib import Path
 import threading
 import time
-from typing import Callable, Dict, Optional, Set
+from typing import Callable, Dict, Optional, Set, Union
 
 from core.log import log_warn
 from core.platform import InterProcessLock
 
 
-def _is_lock_file_active(lock_file: str) -> bool:
+def _is_lock_file_active(lock_file: Union[str, os.PathLike]) -> bool:
     """Probes whether a `.yscb.lock` file is actively held via `InterProcessLock` or contains a `locked` sentinel."""
-    if not os.path.isfile(lock_file):
+    lock_str = os.fspath(lock_file)
+    if not os.path.isfile(lock_str):
         return False
     try:
-        probe = InterProcessLock(lock_file)
+        probe = InterProcessLock(lock_str)
         if not probe.acquire(blocking=False):
             return True
         probe.release()
     except Exception:
         return True
     try:
-        with open(lock_file, "r", encoding="utf-8", errors="ignore") as f:
+        with open(lock_str, "r", encoding="utf-8", errors="ignore") as f:
             if f.read(64).strip().lower() == "locked":
                 return True
     except OSError:
@@ -84,11 +86,15 @@ class ModulesWatcher:
         """Return whether the watcher thread is currently running."""
         return self._is_running
 
+    def refresh_snapshot(self) -> None:
+        """Synchronize the baseline snapshot with the current .modules directory state."""
+        self._last_snapshot = _scan_modules_dir(self.modules_dir)
+
     def start(self) -> None:
         if self._is_running:
             return
         self._is_running = True
-        self._last_snapshot = _scan_modules_dir(self.modules_dir)
+        self.refresh_snapshot()
         self._thread = threading.Thread(target=self._poll_loop, daemon=True, name="modules-watcher")
         self._thread.start()
 
@@ -158,3 +164,10 @@ class ModulesWatcher:
             except (ValueError, OSError):
                 pass
         return affected
+
+
+__all__ = [
+    "ModulesWatcher",
+    "_is_lock_file_active",
+    "_scan_modules_dir",
+]

@@ -437,7 +437,7 @@ class TestVSCodeSupport(YSCBTestCase):
         self.mark_passed()
 
     def test_jsonc_comments_trailing_commas_and_non_dict_guards(self) -> None:
-        """驗證多行區塊註解、連續尾隨逗號、損毀語法備份與非 dict 設定檔之安全防護。"""
+        """驗證多行區塊註解、未閉合區塊註解攔截、連續尾隨逗號、損毀語法備份與非 dict 設定檔之安全防護。"""
         raw_multiline_jsonc = (
             "{\n"
             "  /* multi-line\n"
@@ -450,6 +450,11 @@ class TestVSCodeSupport(YSCBTestCase):
         parsed_stripped = json.loads(strip_jsonc(raw_multiline_jsonc))
         self.assertEqual(parsed_stripped["editor.tabSize"], 4)
         self.assertEqual(parsed_stripped["arr"], [1, 2])
+
+        # Unclosed /* block comment must preserve syntax error so json.loads rejects it
+        unclosed_jsonc = '{\n  "editor.tabSize": 4,\n  /* unclosed block comment\n}\n'
+        with self.assertRaises(json.JSONDecodeError):
+            json.loads(strip_jsonc(unclosed_jsonc))
 
         raw_bytes = raw_multiline_jsonc.encode("utf-8")
         settings_path = self._write_settings(raw_bytes)
@@ -599,7 +604,7 @@ class TestVSCodeSupport(YSCBTestCase):
         self.mark_passed()
 
     def test_revert_side_effects_deferred_until_valid_managed_settings(self) -> None:
-        """驗證 `revert_vscode_settings` 先確認 `_yscb_managed` 存在後才刪除 `schemas/` 與穩定連結。"""
+        """驗證 `revert_vscode_settings` 先確認 `_yscb_managed` 存在且 `settings.json` 寫入成功後才刪除 `schemas/` 與穩定連結，並對 JSONC 備份 `.bak`。"""
         schemas_dir = os.path.join(self.project_root, ".vscode", "schemas")
         os.makedirs(schemas_dir, exist_ok=True)
         dummy_schema = os.path.join(schemas_dir, "user_kept.schema.json")
@@ -620,9 +625,16 @@ class TestVSCodeSupport(YSCBTestCase):
         self.assertFalse(self.projector.revert_vscode_settings(self.project_root))
         self.assertTrue(os.path.isfile(dummy_schema))
 
-        # 4. settings.json 含 _yscb_managed 時，正常執行清理
-        self._write_settings({"editor.tabSize": 4, "_yscb_managed": {"extraPaths": []}})
+        # 4. settings.json 含 _yscb_managed 但 vfs.write_json 寫盤失敗時，不應提前刪除 schemas_dir 或穩定連結
+        jsonc_revert_content = '{\n  // revert jsonc comment\n  "editor.tabSize": 4,\n  "_yscb_managed": {"extraPaths": []}\n}\n'
+        settings_path = self._write_settings(jsonc_revert_content)
+        with patch("core.vfs.write_json", side_effect=OSError("simulated write failure")):
+            self.assertFalse(self.projector.revert_vscode_settings(self.project_root))
+        self.assertTrue(os.path.isfile(dummy_schema), "schemas_dir must remain intact if settings.json write fails")
+
+        # 5. settings.json 寫盤成功後，執行清理並保留 JSONC .bak
         self.assertTrue(self.projector.revert_vscode_settings(self.project_root))
+        self.assertTrue(os.path.isfile(settings_path + ".bak"))
         self.assertFalse(os.path.exists(schemas_dir))
         self.assertFalse(os.path.lexists(self.projector.get_stable_link_path()))
         self.mark_passed()
@@ -923,6 +935,14 @@ class TestVSCodeSupport(YSCBTestCase):
             "**/.modules/**",
         )
         self.assertEqual(
+            SettingsProjector._translate_exclude_to_vscode_glob("ys_codebase/.modules/**"),
+            "**/ys_codebase/.modules/**",
+        )
+        self.assertEqual(
+            SettingsProjector._translate_exclude_to_vscode_glob("sub/dir/*"),
+            "**/sub/dir/**",
+        )
+        self.assertEqual(
             SettingsProjector._translate_exclude_to_vscode_glob("__pycache__"),
             "**/__pycache__/**",
         )
@@ -930,6 +950,14 @@ class TestVSCodeSupport(YSCBTestCase):
         resolved_excl = self.projector._resolve_workspace_exclude_patterns(self.project_root)
         self.assertIn("**/.cache/**", resolved_excl)
         self.assertIn("**/.venv/**", resolved_excl)
+
+        # Verify manifest.schema.json contract alignment with Checker
+        mf_schema = self.compiler.build_manifest_meta_schema()
+        self.assertEqual(mf_schema["required"], ["name", "version", "entry", "dependencies"])
+        self.assertIn("hotfix", mf_schema["properties"]["release"]["properties"]["type"]["enum"])
+        self.assertIn("optional", mf_schema["properties"]["release"]["properties"]["urgency"]["enum"])
+        self.assertEqual(mf_schema["properties"]["pip_dependencies"]["type"], "object")
+        self.assertIn("oneOf", mf_schema["properties"]["dependencies"])
 
         self.mark_passed()
 
@@ -944,12 +972,11 @@ class TestVSCodeSupport(YSCBTestCase):
         self.assertIn("[hook.dev] Teardown vscode-support sandbox:", joined_logs)
         self.mark_passed()
 
-
     def test_workspace_exclude_patterns_hook_dedup_and_mirror_zip_schema_bundle(self) -> None:
-        """驗證 `_resolve_workspace_exclude_patterns` 納入 `core.space` 轉譯規則、`hook.core.py` 同狀態去重與 `$ref` 描述保留。"""
+        """驗證 `_resolve_workspace_exclude_patterns` 納入 `core.space` 轉譯規則、`hook.core.py` 同狀態去重（及子目錄時間戳穿透）與 `$ref` 描述保留。"""
         from core.context import bind_runtime_context
 
-        resolved = self.projector._resolve_workspace_exclude_patterns(self.project_root, include_all=False)
+        resolved = self.projector._resolve_workspace_exclude_patterns(self.project_root)
         self.assertIn("**/__pycache__/**", resolved)
         self.assertIn("**/.pytest_cache/**", resolved)
 
@@ -972,6 +999,7 @@ class TestVSCodeSupport(YSCBTestCase):
         self.assertEqual(primary_prop["default"], {"host": "localhost"})
 
         # Verify hook.core.py deduplicates back-to-back on_reload and on_env_synced within same RuntimeContext
+        # and invalidates when a module subdirectory mtime changes
         hook_mod = self._load_script_module("hook.core.py", "_test_vsc_hook_dedup")
         orig_resolve = hook_mod.uri.resolve
         sync_calls = {"count": 0}
@@ -980,6 +1008,9 @@ class TestVSCodeSupport(YSCBTestCase):
         def _counting_sync(proj_self, proj_root, *args, **kwargs):
             sync_calls["count"] += 1
             return orig_sync(proj_self, proj_root, *args, **kwargs)
+
+        mod_sub_dir = os.path.join(self.yscb_dir, ".modules", "demo_mod")
+        os.makedirs(mod_sub_dir, exist_ok=True)
 
         with bind_runtime_context(virtual_cwd=self.project_root, host_dir=self.project_root, yscb_dir=self.yscb_dir):
             with patch.object(
@@ -998,6 +1029,11 @@ class TestVSCodeSupport(YSCBTestCase):
                 self.assertTrue(hook_mod.on_reload())
                 self.assertTrue(hook_mod.on_env_synced())
                 self.assertEqual(sync_calls["count"], 1)
+
+                # Mutating child directory mtime must invalidate shallow fingerprint and trigger re-sync
+                os.utime(mod_sub_dir, (1700000100, 1700000100))
+                self.assertTrue(hook_mod.on_reload())
+                self.assertEqual(sync_calls["count"], 2)
 
         # Verify on_register_file_spaces skips duplicate registration when space already exists in _spaces
         class _DedupRegistry:

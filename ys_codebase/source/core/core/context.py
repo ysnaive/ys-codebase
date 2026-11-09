@@ -114,14 +114,20 @@ class CellScope:
     module_name: Optional[str] = None
     command: Optional[str] = None
     _state: Dict[str, Any] = field(
-        default_factory=lambda: {"closed": False, "cache": {}, "stages_ms": {}},
+        default_factory=lambda: {
+            "closed": False,
+            "cache": {},
+            "stages_ms": {},
+            "lock": threading.RLock(),
+        },
         compare=False,
         repr=False,
     )
 
     @property
     def is_closed(self) -> bool:
-        return bool(self._state.get("closed", False))
+        with self._state["lock"]:
+            return bool(self._state.get("closed", False))
 
     @property
     def cache(self) -> Dict[Any, Any]:
@@ -132,13 +138,17 @@ class CellScope:
         return self._state["stages_ms"]
 
     def record_stage_ms(self, stage_name: str, elapsed_ms: float) -> None:
-        if self.is_closed or not stage_name:
+        if not stage_name:
             return
-        stages = self._state["stages_ms"]
-        stages[stage_name] = float(stages.get(stage_name, 0.0)) + max(0.0, float(elapsed_ms))
+        with self._state["lock"]:
+            if self._state.get("closed", False):
+                return
+            stages = self._state["stages_ms"]
+            stages[stage_name] = float(stages.get(stage_name, 0.0)) + max(0.0, float(elapsed_ms))
 
     def format_stages_summary(self, min_ms: float = 0.5) -> str:
-        stages = self._state.get("stages_ms") or {}
+        with self._state["lock"]:
+            stages = dict(self._state.get("stages_ms") or {})
         if not stages:
             return ""
         parts = [
@@ -149,8 +159,9 @@ class CellScope:
         return ", ".join(parts)
 
     def close_and_clear_cache(self) -> None:
-        self._state["closed"] = True
-        self._state["cache"].clear()
+        with self._state["lock"]:
+            self._state["closed"] = True
+            self._state["cache"].clear()
 
 
 _ACTIVE_CELL_SCOPE: ContextVar[Optional[CellScope]] = ContextVar(
@@ -209,10 +220,14 @@ class RuntimeContext:
         self.dispatcher_global_registry_root: Optional[str] = None
         self.dispatcher_module_cache: Dict[str, Any] = {}
         self.dispatcher_auto_spawn_warned: bool = False
+        self.dispatcher_argv_depth: int = 0
+        self.dispatcher_orig_argv: Optional[List[str]] = None
 
         # 9. core.platform state & caches
         self.process_can_spawn_daemon_cache: Optional[bool] = None
         self.venv_active_test_source_paths: List[Tuple[str, str]] = []
+        self.interprocess_locks_lock = threading.RLock()
+        self.held_interprocess_locks: Dict[str, Tuple[int, int, int]] = {}
 
         # 10. core.space state & caches
         self.space_registries_lock = threading.RLock()
@@ -230,8 +245,9 @@ class RuntimeContext:
         self.log_file_op_lock = threading.RLock()
 
         # 12. server.service touch activity state
-        self.server_touch_lock = threading.Lock()
+        self.server_touch_lock = threading.RLock()
         self.server_last_touch_by_root: Dict[str, float] = {}
+        self.server_touch_daemon_cache: Dict[str, Tuple[int, int, str]] = {}
 
         # 13. Upper-layer domain module states (`get_module_state` / `set_module_state`)
         self.module_states_lock = threading.RLock()
@@ -240,7 +256,7 @@ class RuntimeContext:
         # 14. Epoch-bound kernel cache & monotonic Cell counter
         self.epoch_states_lock = threading.RLock()
         self.epoch_states: Dict[str, Tuple[Any, Any]] = {}
-        self.cell_seq_lock = threading.Lock()
+        self.cell_seq_lock = threading.RLock()
         self.cell_seq: int = 0
 
     def next_cell_id(self) -> int:
@@ -307,7 +323,8 @@ class RuntimeContext:
                 self.epoch_states.clear()
             curr_cell = _ACTIVE_CELL_SCOPE.get()
             if curr_cell is not None and not curr_cell.is_closed:
-                curr_cell.cache.clear()
+                with curr_cell._state["lock"]:
+                    curr_cell.cache.clear()
 
     def reset_all_caches(self) -> None:
         """
@@ -321,8 +338,12 @@ class RuntimeContext:
             self.invalidate_host_caches("all")
             self.gitignore_custom_root_store.clear()
             self.dispatcher_auto_spawn_warned = False
+            self.dispatcher_argv_depth = 0
+            self.dispatcher_orig_argv = None
             self.process_can_spawn_daemon_cache = None
             self.venv_active_test_source_paths.clear()
+            with self.interprocess_locks_lock:
+                self.held_interprocess_locks.clear()
             with self.space_subscriber_lock:
                 self.space_subscribers.clear()
             with self.space_watcher_lock:
@@ -331,6 +352,7 @@ class RuntimeContext:
                 self.log_error_chunks.clear()
             with self.server_touch_lock:
                 self.server_last_touch_by_root.clear()
+                self.server_touch_daemon_cache.clear()
             with self.module_states_lock:
                 self.module_states.clear()
 
@@ -439,11 +461,18 @@ def bind_runtime_context(
         active_yscb_dir=eff_yscb,
         active_module=eff_mod,
     )
+    tls = get_runtime_context().uri_tls
+    prev_tls_state = (
+        getattr(tls, "active_host_dir", None),
+        getattr(tls, "active_yscb_dir", None),
+        getattr(tls, "active_module_context", None),
+    )
     token: Token = _ACTIVE_RUNTIME_SCOPE.set(new_scope)
     try:
         yield new_scope
     finally:
         _ACTIVE_RUNTIME_SCOPE.reset(token)
+        tls.active_host_dir, tls.active_yscb_dir, tls.active_module_context = prev_tls_state
 
 
 def get_virtual_cwd(fallback: Optional[Union[str, Path]] = None) -> str:
@@ -545,12 +574,14 @@ def get_or_compute_cell_state(key: Any, builder_fn: Callable[[], Any]) -> Any:
     cell = get_current_cell()
     if cell is None:
         return builder_fn()
-    cache = cell.cache
-    if key in cache:
-        return cache[key]
+    with cell._state["lock"]:
+        cache = cell.cache
+        if key in cache:
+            return cache[key]
     val = builder_fn()
-    if not cell.is_closed:
-        cache[key] = val
+    with cell._state["lock"]:
+        if not cell._state.get("closed", False):
+            cell.cache[key] = val
     return val
 
 
@@ -559,19 +590,20 @@ def invalidate_cell_state(key_or_prefix: Optional[Any] = None) -> None:
     cell = get_current_cell()
     if cell is None:
         return
-    cache = cell.cache
-    if key_or_prefix is None:
-        cache.clear()
-        return
-    keys_to_remove = [
-        k
-        for k in list(cache.keys())
-        if k == key_or_prefix
-        or (isinstance(k, tuple) and len(k) > 0 and k[0] == key_or_prefix)
-        or (isinstance(k, str) and isinstance(key_or_prefix, str) and k.startswith(key_or_prefix))
-    ]
-    for k in keys_to_remove:
-        cache.pop(k, None)
+    with cell._state["lock"]:
+        cache = cell.cache
+        if key_or_prefix is None:
+            cache.clear()
+            return
+        keys_to_remove = [
+            k
+            for k in list(cache.keys())
+            if k == key_or_prefix
+            or (isinstance(k, tuple) and len(k) > 0 and k[0] == key_or_prefix)
+            or (isinstance(k, str) and isinstance(key_or_prefix, str) and k.startswith(key_or_prefix))
+        ]
+        for k in keys_to_remove:
+            cache.pop(k, None)
 
 
 def get_or_compute_epoch_state(

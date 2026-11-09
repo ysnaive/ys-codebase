@@ -9,9 +9,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import threading
 import time
-from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Set, Union
 
 from core import vfs
 from core.context import (
@@ -390,10 +389,4 @@ def __getattr__(name: str) -> Any:
     ctx = get_runtime_context()
     if name == "_SUBSCRIBERS":
         return ctx.space_subscribers
-    if name == "_SUBSCRIBER_LOCK":
-        return ctx.space_subscriber_lock
-    if name == "_ACTIVE_WATCHER_WORKER":
-        return ctx.space_active_watcher_worker
-    if name == "_ACTIVE_WATCHER_LOCK":
-        return ctx.space_watcher_lock
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

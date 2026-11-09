@@ -61,16 +61,27 @@ class HybridSearchEngine:
         symbols_map: Dict[str, UnifiedSymbol],
         limit: int,
         mode: str = "lexical_bm25",
+        min_score: float = 0.0,
     ) -> List[Dict[str, Any]]:
-        return [
-            {
-                "symbol": symbols_map.get(hit["doc_id"]),
-                "score": hit["score"],
-                "matched_terms": hit.get("matched_terms", []),
-                "mode": mode,
-            }
-            for hit in bm25_hits[:limit]
-        ]
+        results: List[Dict[str, Any]] = []
+        for hit in bm25_hits:
+            score_val = float(hit["score"])
+            if min_score > 0.0 and score_val < min_score:
+                continue
+            sym = symbols_map.get(hit["doc_id"])
+            if sym is None and symbols_map:
+                continue
+            results.append(
+                {
+                    "symbol": sym,
+                    "score": score_val,
+                    "matched_terms": hit.get("matched_terms", []),
+                    "mode": mode,
+                }
+            )
+            if len(results) >= limit:
+                break
+        return results
 
     @property
     def is_vector_available(self) -> bool:
@@ -104,6 +115,30 @@ class HybridSearchEngine:
 
         return rrf_scores
 
+    @staticmethod
+    def _matches_symbol_constraints(
+        sym: Optional[UnifiedSymbol],
+        kinds_set: Optional[Set[str]],
+        langs_set: Optional[Set[str]],
+        spaces_set: Optional[Set[str]],
+        space_shorts: Optional[Set[str]],
+        norm_ftypes: Optional[Set[str]],
+    ) -> bool:
+        if sym is None:
+            return False
+        if kinds_set and sym.kind not in kinds_set:
+            return False
+        if langs_set and sym.language not in langs_set:
+            return False
+        if spaces_set and not any(
+            s in spaces_set or s.split("/")[-1] in space_shorts  # type: ignore[operator]
+            for s in getattr(sym, "spaces", ())
+        ):
+            return False
+        if norm_ftypes and _extract_file_ext(sym.file_path) not in norm_ftypes:
+            return False
+        return True
+
     def search(
         self,
         query: str,
@@ -114,11 +149,12 @@ class HybridSearchEngine:
         languages: Optional[List[str]] = None,
         lexical_only: bool = False,
         space_weights: Optional[Dict[str, float]] = None,
+        min_score: float = 0.0,
     ) -> List[Dict[str, Any]]:
         """
         執行複合檢索：
         1. 若 lexical_only 為 True 或向量服務未就緒，100% 平滑退化為純 BM25 檢索。
-        2. 否則並行獲取 BM25 排名與向量語意排名，計算 RRF 融合分數並重排輸出。
+        2. 否則並行獲取 BM25 排名與向量語意排名，計算 RRF 融合分數並套用 min_score 門檻後重排輸出。
         """
         if not query or not str(query).strip():
             return []
@@ -136,6 +172,7 @@ class HybridSearchEngine:
                 kinds=kinds,
                 languages=languages,
                 ftypes=list(norm_ftypes) if norm_ftypes else None,
+                min_score=min_score,
                 limit=fetch_limit,
                 space_weights=effective_weights if effective_weights else None,
             )
@@ -151,25 +188,42 @@ class HybridSearchEngine:
 
         # 2. 若指定 lexical_only 或向量管線未就緒，執行 100% 剛性平滑降級
         if lexical_only or not self.is_vector_available:
-            return self._build_bm25_results(bm25_hits, symbols_map, limit, mode="lexical_bm25")
+            return self._build_bm25_results(
+                bm25_hits, symbols_map, limit, mode="lexical_bm25", min_score=min_score
+            )
 
-        # 3. 執行語意向量檢索（當帶有空間/語言/類型/副檔名過濾條件時，擴大檢索池並於過濾集滿 fetch_limit 時早退，消除 Top-30 飢餓與重複拷貝）
+        # 3. 執行語意向量檢索（當帶有過濾條件時，預先建構 allowed_doc_ids 遮罩傳入 VectorIndex.search）
         has_filters = bool(norm_ftypes or spaces or kinds or languages)
-        vec_pool_k = len(self.vector_index.doc_ids) if has_filters else fetch_limit
-        try:
-            query_vec = self.embedding_service.embed_query(query)
-            raw_vector_hits = self.vector_index.search(query_vec, top_k=max(fetch_limit, vec_pool_k))
-        except Exception as e:
-            log_warn(f"Vector search failed ({e}), falling back to pure BM25.", stream="stderr")
-            return self._build_bm25_results(bm25_hits, symbols_map, limit, mode="fallback_bm25")
-
-        # 依 file_types、spaces、kinds、languages 與純語意相似度門檻過濾向量候選集並於達標 fetch_limit 時早退
-        filtered_vector_hits = []
-        lexical_doc_ids = {hit["doc_id"] for hit in bm25_hits}
         space_shorts = {f.split("/")[-1] for f in spaces} if spaces else None
         spaces_set = set(spaces) if spaces else None
         kinds_set = set(kinds) if kinds else None
         langs_set = set(languages) if languages else None
+
+        allowed_doc_ids: Optional[Set[str]] = None
+        if has_filters and symbols_map:
+            allowed_doc_ids = {
+                doc_id
+                for doc_id, sym in symbols_map.items()
+                if self._matches_symbol_constraints(
+                    sym, kinds_set, langs_set, spaces_set, space_shorts, norm_ftypes
+                )
+            }
+
+        try:
+            query_vec = self.embedding_service.embed_query(query)
+            raw_vector_hits = self.vector_index.search(
+                query_vec,
+                top_k=fetch_limit,
+                allowed_doc_ids=allowed_doc_ids,
+            )
+        except Exception as e:
+            log_warn(f"Vector search failed ({e}), falling back to pure BM25.", stream="stderr")
+            return self._build_bm25_results(
+                bm25_hits, symbols_map, limit, mode="fallback_bm25", min_score=min_score
+            )
+
+        filtered_vector_hits = []
+        lexical_doc_ids = {hit["doc_id"] for hit in bm25_hits}
 
         for doc_id, sim in raw_vector_hits:
             if doc_id not in lexical_doc_ids and sim < self.min_vector_similarity:
@@ -177,17 +231,11 @@ class HybridSearchEngine:
             sym = symbols_map.get(doc_id)
             if sym is None:
                 continue
-            if kinds_set and sym.kind not in kinds_set:
-                continue
-            if langs_set and sym.language not in langs_set:
-                continue
-            if spaces_set and not any(
-                s in spaces_set or s.split("/")[-1] in space_shorts  # type: ignore[operator]
-                for s in getattr(sym, "spaces", ())
-            ):
-                continue
-            if norm_ftypes and _extract_file_ext(sym.file_path) not in norm_ftypes:
-                continue
+            if allowed_doc_ids is None and has_filters:
+                if not self._matches_symbol_constraints(
+                    sym, kinds_set, langs_set, spaces_set, space_shorts, norm_ftypes
+                ):
+                    continue
             filtered_vector_hits.append((doc_id, sim))
             if len(filtered_vector_hits) >= fetch_limit:
                 break
@@ -217,17 +265,22 @@ class HybridSearchEngine:
         bm25_terms_map = {hit["doc_id"]: hit.get("matched_terms", []) for hit in bm25_hits}
 
         final_results = []
-        for doc_id in sorted_doc_ids[:limit]:
+        for doc_id in sorted_doc_ids:
+            score_val = float(rrf_scores[doc_id])
+            if min_score > 0.0 and score_val < min_score:
+                continue
             sym = symbols_map.get(doc_id)
             if sym is None:
                 continue
             final_results.append({
                 "symbol": sym,
-                "score": float(rrf_scores[doc_id]),
+                "score": score_val,
                 "matched_terms": bm25_terms_map.get(doc_id, []),
                 "lexical_rank": lexical_ranks.get(doc_id),
                 "vector_rank": vector_ranks.get(doc_id),
                 "mode": "hybrid_rrf",
             })
+            if len(final_results) >= limit:
+                break
 
         return final_results

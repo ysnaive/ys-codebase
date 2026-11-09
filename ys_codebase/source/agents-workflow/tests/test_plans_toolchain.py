@@ -532,6 +532,11 @@ class TestPlansToolchainInternal(_BasePlansToolchainTestCase):
         scanner = PlanScanner(plans_dir=self.plans_dir)
         self.assertEqual(scanner.get_plan_info(rev_only_dir), ("Revision", "In Progress"))
         self.assertEqual(scanner.get_plan_info(rev_p00_dir), ("Revision", "Completed"))
+        self.assertEqual(scanner.get_plan_info(full_dir), ("Full Track", "Revising"))
+        (full_dir / "revision_log.md").write_text(
+            "> 功能名稱：Full\n> 建立日期：2026-10-17\n> 狀態：Completed\n> 模型：Gemini Flash\n",
+            encoding="utf-8",
+        )
         self.assertEqual(scanner.get_plan_info(full_dir), ("Full Track", "Completed"))
         self.mark_passed()
 
@@ -2543,6 +2548,64 @@ class TestPlansModelRecord(_BasePlansToolchainTestCase):
         self.assertEqual(scanner.get_plan_info(umb_inc), ("Umbrella", "In Progress"))
         with self.assertRaises(PlanIncompleteError):
             archiver.archive_plan(umb_inc.name, force=False)
+
+        # Round 2 regressions:
+        # (a) _parse_ts local naive timestamp vs UTC Z timestamp consistency
+        from datetime import datetime
+        from agents_workflow.plans._trace_parser import _parse_ts
+        from agents_workflow.plans._common import resolve_target_projection_rule
+
+        now_local = datetime.now().replace(second=0, microsecond=0)
+        local_str = now_local.strftime("%Y-%m-%d %H:%M")
+        parsed_ep = _parse_ts(local_str)
+        self.assertIsNotNone(parsed_ep)
+        self.assertAlmostEqual(float(parsed_ep), now_local.timestamp(), delta=1.0)
+
+        # (b) resolve_target_projection_rule custom extension (.mdc) & default .agents/.yscb/templates
+        t_dir_uri, rel_sub, _, ext_val = resolve_target_projection_rule(
+            {"name": "cursor_custom", "projections": {"template": {"extension": ".mdc"}}},
+            "template",
+            subpath="P01_requirements_spec.md",
+        )
+        self.assertEqual(t_dir_uri, "project://.agents/.yscb/templates")
+        self.assertEqual(rel_sub, "P01_requirements_spec.mdc")
+        self.assertEqual(ext_val, ".mdc")
+
+        # (c) PlanScanner.resolve_target_plan_dir blocks ../ traversal outside self.plans_dir
+        outside_dir = self.workspace_root / "outside_traversal_target"
+        outside_dir.mkdir(parents=True, exist_ok=True)
+        (outside_dir / "handoff.md").write_text("# Outside Handoff\n", encoding="utf-8")
+        trav_dir, trav_err = scanner.resolve_target_plan_dir("../outside_traversal_target")
+        self.assertIsNone(trav_dir)
+        self.assertIsNotNone(trav_err)
+        abs_trav_dir, abs_trav_err = scanner.resolve_target_plan_dir(outside_dir)
+        self.assertIsNone(abs_trav_dir)
+        self.assertIsNotNone(abs_trav_err)
+        self.assertTrue((outside_dir / "handoff.md").is_file())
+
+        # (d) 4-backtick code fence in PlanVerifier does not prematurely close on inner 3-backtick block
+        p_fence = self.plans_dir / "2026_11_09_1100_four_backtick_fence"
+        p_fence.mkdir(parents=True, exist_ok=True)
+        (p_fence / "P00_discuss.md").write_text(
+            "# 語意需求討論\n\n"
+            "> 功能名稱：FourBacktick\n> 建立日期：2026-11-09\n> 狀態：Confirmed\n> 模型：Gemini 4 Argon (Low)\n\n"
+            "## 1. 使用者原始需求與意圖 (User Intent)\n"
+            "````markdown\n"
+            "Example with inner fence and template token:\n"
+            "```python\n"
+            "# <!-- comment inside nested 3-backtick fence -->\n"
+            "placeholder = '[功能名稱]'\n"
+            "```\n"
+            "````\n\n"
+            "## 2. 核心討論與決策紀錄 (Discussion & Decisions)\n- ok\n\n"
+            "## 3. 開放議題與確認紀錄\n- ok\n",
+            encoding="utf-8",
+        )
+        rep_fence = verifier.verify_plan(p_fence, phase="P00", log_msg="驗證四反引號與單次日誌初始化")
+        self.assertTrue(rep_fence.passed, f"4-backtick nested fence should pass: {rep_fence.errors}")
+        cl_lines = (p_fence / "changelog.md").read_text(encoding="utf-8").splitlines()
+        self.assertFalse(any("自動初始化變更日誌" in ln for ln in cl_lines))
+        self.assertTrue(any("驗證四反引號與單次日誌初始化" in ln for ln in cl_lines))
         self.mark_passed()
 
 

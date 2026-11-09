@@ -8,6 +8,7 @@ import shutil
 import zipfile
 import platform
 import stat
+import subprocess
 import threading
 import functools
 from datetime import datetime
@@ -21,7 +22,7 @@ from dev.checker import discover_source_modules
 def _safe_extract_zip(zf: zipfile.ZipFile, dest_dir: str) -> None:
     """
     Extracts all members from `zf` into `dest_dir` after validating that no member
-    escapes `dest_dir` via relative traversal (`../`) or absolute paths.
+    escapes `dest_dir` via relative traversal (`../`), drive-prefixed paths, or absolute paths.
     """
     dest_real = os.path.normcase(os.path.realpath(os.path.abspath(dest_dir)))
     prefix = dest_real if dest_real.endswith(os.sep) else dest_real + os.sep
@@ -31,7 +32,7 @@ def _safe_extract_zip(zf: zipfile.ZipFile, dest_dir: str) -> None:
             continue
         norm_member = member_name.replace("\\", "/")
         parts = [p for p in norm_member.split("/") if p]
-        if norm_member.startswith("/") or ".." in parts:
+        if norm_member.startswith("/") or (len(norm_member) > 1 and norm_member[1] == ":") or ".." in parts:
             raise ValueError(f"Unsafe zip member path '{member_name}' outside '{dest_dir}'")
         cand_real = os.path.normcase(os.path.realpath(os.path.abspath(os.path.join(dest_dir, member_name))))
         if cand_real != dest_real and not cand_real.startswith(prefix):
@@ -149,29 +150,23 @@ def hello(cmd_bags: Any) -> int:
         return pkg_ver_dir
 
 
-class _SandboxStateMeta(type):
-    @property
-    def _ACTIVE_SANDBOXES(cls) -> Set[str]:
-        return get_runtime_context().get_module_state("dev.sandbox.active_sandboxes", set)
-
-    @_ACTIVE_SANDBOXES.setter
-    def _ACTIVE_SANDBOXES(cls, val: Set[str]) -> None:
-        get_runtime_context().set_module_state("dev.sandbox.active_sandboxes", set(val))
-
-    @property
-    def _ADAPTED_SPECS(cls) -> Set[str]:
-        return get_runtime_context().get_module_state("dev.sandbox.adapted_specs", set)
-
-    @_ADAPTED_SPECS.setter
-    def _ADAPTED_SPECS(cls, val: Set[str]) -> None:
-        get_runtime_context().set_module_state("dev.sandbox.adapted_specs", set(val))
-
-
-class SandboxProvisioner(metaclass=_SandboxStateMeta):
+class SandboxProvisioner:
     """Sandbox environment lifecycle manager and provisioner (dev op-mksb engine)."""
     _safe_extract_zip = staticmethod(_safe_extract_zip)
     _SANDBOX_LOCK = threading.RLock()
     _PIP_LOCK = threading.Lock()
+
+    @staticmethod
+    def _get_active_sandboxes() -> Set[str]:
+        return get_runtime_context().get_module_state("dev.sandbox.active_sandboxes", set)
+
+    @staticmethod
+    def _get_adapted_specs() -> Set[str]:
+        return get_runtime_context().get_module_state("dev.sandbox.adapted_specs", set)
+
+    @staticmethod
+    def _set_adapted_specs(specs: Set[str]) -> None:
+        get_runtime_context().set_module_state("dev.sandbox.adapted_specs", set(specs))
 
     @staticmethod
     def _sort_zip_filenames_by_semver(filenames: List[str]) -> List[str]:
@@ -229,14 +224,17 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
                 return 0
 
             exclude_set = set(exclude or [])
-            for active_p in list(SandboxProvisioner._ACTIVE_SANDBOXES):
+            for active_p in list(SandboxProvisioner._get_active_sandboxes()):
                 exclude_set.add(active_p)
+                exclude_set.add(os.path.realpath(active_p))
                 exclude_set.add(os.path.basename(active_p))
-            if max_keep is not None:
-                active_sb_env = os.environ.get("YSCB_SANDBOX_DIR")
-                if active_sb_env:
-                    exclude_set.add(os.path.abspath(active_sb_env))
-                    exclude_set.add(os.path.basename(os.path.abspath(active_sb_env)))
+
+            active_sb_env = os.environ.get("YSCB_SANDBOX_DIR")
+            if active_sb_env:
+                abs_env = os.path.abspath(active_sb_env)
+                exclude_set.add(abs_env)
+                exclude_set.add(os.path.realpath(abs_env))
+                exclude_set.add(os.path.basename(abs_env))
 
             entries = sorted(
                 d for d in os.listdir(sandbox_parent)
@@ -244,6 +242,7 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
                 and os.path.isdir(os.path.join(sandbox_parent, d))
                 and d not in exclude_set
                 and os.path.join(sandbox_parent, d) not in exclude_set
+                and os.path.realpath(os.path.join(sandbox_parent, d)) not in exclude_set
             )
 
             if max_keep is not None:
@@ -433,7 +432,8 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
 
         if deduped:
             with SandboxProvisioner._PIP_LOCK:
-                to_install = [s for s in deduped if s not in SandboxProvisioner._ADAPTED_SPECS]
+                adapted_specs = SandboxProvisioner._get_adapted_specs()
+                to_install = [s for s in deduped if s not in adapted_specs]
                 if to_install:
                     yscb_d = uri.resolve("yscb://")
                     pm = PipManager(yscb_d)
@@ -441,7 +441,7 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
                         pm.install_packages(to_install)
                     except Exception:
                         pass
-                    SandboxProvisioner._ADAPTED_SPECS.update(to_install)
+                    adapted_specs.update(to_install)
 
         return deduped
 
@@ -473,9 +473,7 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
     def _project_venv(host_yscb_dir: str, sandbox_engine_dir: str) -> bool:
         """
         跨平台零拷貝投影宿主微環境至沙盒 engine/.venv。
-        Windows: 優先調用 _winapi.CreateJunction。
-        POSIX: 優先調用 os.symlink。
-        降級兜底: 若引發 OSError，建立輕量 site-packages 並寫入 host_venv.pth。
+        三級目錄連結降級鏈：os.symlink -> _winapi.CreateJunction -> cmd /c mklink /J -> host_venv.pth。
         """
         host_venv_dir = os.path.join(host_yscb_dir, ".venv")
         if not os.path.exists(host_venv_dir):
@@ -490,24 +488,41 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
             if os.path.exists(sandbox_venv_dir):
                 shutil.rmtree(sandbox_venv_dir, ignore_errors=True)
 
+        abs_host_venv = os.path.abspath(host_venv_dir)
+        abs_sb_venv = os.path.abspath(sandbox_venv_dir)
+
+        try:
+            os.symlink(abs_host_venv, abs_sb_venv, target_is_directory=True)
+            if os.path.exists(sandbox_venv_dir):
+                return True
+            try:
+                if os.path.islink(sandbox_venv_dir):
+                    os.unlink(sandbox_venv_dir)
+            except OSError:
+                pass
+        except Exception:
+            pass
+
         if platform.system() == "Windows":
             try:
                 import _winapi
-                _winapi.CreateJunction(os.path.abspath(host_venv_dir), os.path.abspath(sandbox_venv_dir))
-                return True
-            except OSError:
-                pass
-        else:
-            try:
-                os.symlink(os.path.abspath(host_venv_dir), os.path.abspath(sandbox_venv_dir), target_is_directory=True)
+                _winapi.CreateJunction(abs_host_venv, abs_sb_venv)
                 if os.path.exists(sandbox_venv_dir):
                     return True
-                try:
-                    if os.path.islink(sandbox_venv_dir):
-                        os.unlink(sandbox_venv_dir)
-                except OSError:
-                    pass
-            except OSError:
+            except Exception:
+                pass
+            try:
+                res = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", abs_sb_venv, abs_host_venv],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=5.0,
+                    check=False,
+                )
+                if res.returncode == 0 and os.path.exists(sandbox_venv_dir):
+                    return True
+            except Exception:
                 pass
 
         try:
@@ -538,7 +553,8 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
                 target_dir = uri.resolve(f"cache://dev/sandbox/{sandbox_id}")
 
             abs_target = os.path.abspath(target_dir)
-            SandboxProvisioner._ACTIVE_SANDBOXES.add(abs_target)
+            active_sandboxes = SandboxProvisioner._get_active_sandboxes()
+            active_sandboxes.add(abs_target)
             ctx = SandboxContext(target_dir)
             for d in (
                 ctx.sandbox_dir,
@@ -554,7 +570,7 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
             ):
                 os.makedirs(d, exist_ok=True)
             if not had_explicit_target and os.environ.get("YSCB_TEST_SANDBOX") != "1":
-                effective_keep = max(8, len(SandboxProvisioner._ACTIVE_SANDBOXES) + 2)
+                effective_keep = max(8, len(active_sandboxes) + 2)
                 SandboxProvisioner.prune_sandboxes(max_keep=effective_keep, exclude=[abs_target])
             return ctx
 
@@ -698,7 +714,7 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
         """
         Builds a full-fidelity micro virtual environment with rollback protection:
         1. Adapts build pip dependencies into host venv
-        2. Allocates sandbox directories and registers in _ACTIVE_SANDBOXES
+        2. Allocates sandbox directories and registers in active sandboxes state
         3. Deploys target/dependency modules and source tree
         4. Writes host_env/yscb.config.json and copies yscb.py
         5. Projects host venv and dispatches on_test_setup hooks
@@ -728,8 +744,9 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
         """Tears down the virtual sandbox safely with active running sandbox guardrail."""
         target_abs = os.path.abspath(sandbox_dir)
         with SandboxProvisioner._SANDBOX_LOCK:
+            active_sandboxes = SandboxProvisioner._get_active_sandboxes()
             if not os.path.exists(sandbox_dir):
-                SandboxProvisioner._ACTIVE_SANDBOXES.discard(target_abs)
+                active_sandboxes.discard(target_abs)
                 return True
 
             if not is_harness_cleanup and os.environ.get("YSCB_TEST_SANDBOX") == "1":
@@ -742,7 +759,7 @@ class SandboxProvisioner(metaclass=_SandboxStateMeta):
                 if curr_cwd == real_target or curr_cwd.startswith(real_target + os.sep):
                     return True
 
-            SandboxProvisioner._ACTIVE_SANDBOXES.discard(target_abs)
+            active_sandboxes.discard(target_abs)
 
         try:
             ctx = SandboxContext(sandbox_dir)

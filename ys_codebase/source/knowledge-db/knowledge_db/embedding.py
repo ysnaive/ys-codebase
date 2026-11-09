@@ -75,7 +75,7 @@ class EmbeddingService:
         self._init_lock = threading.RLock()
         self._dimension: Optional[int] = None
         self.last_error: Optional[Dict[str, Any]] = None
-        self.suppress_guard_prompt: bool = False
+        self._guard_prompt_emitted: bool = False
         self._suppress_hf_warnings()
         if self.mock_mode:
             self._is_available = True
@@ -216,6 +216,7 @@ class EmbeddingService:
         self._dimension = int(dim)
         self._is_available = True
         self._init_attempted = True
+        self._guard_prompt_emitted = False
         self.last_error = None
         return threads_count
 
@@ -247,7 +248,7 @@ class EmbeddingService:
                 raise KnowledgeDBError(f"Failed to download FastEmbed model '{self.model_name}': {e}") from e
 
     def _init_model(self) -> None:
-        """嘗試加載 FastEmbed ONNX 模型；本地探針先行，若未下載則平滑降級為 BM25 模式。"""
+        """嘗試加載 FastEmbed ONNX 模型；本地探針先行，若未下載則平滑降級為 BM25 模式（純無終端 GUARD 阻斷副作用）。"""
         self._suppress_hf_warnings()
 
         if not self.is_model_downloaded():
@@ -262,8 +263,6 @@ class EmbeddingService:
                 "[knowledge-db:embedding] Vector model not found locally. Gracefully fallback to BM25.",
                 stream="stderr",
             )
-            if self.enable_vector_search and not self.suppress_guard_prompt and is_agents_workflow_installed():
-                log("[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？", stream="stderr", flush=True)
             return
 
         try:
@@ -281,8 +280,20 @@ class EmbeddingService:
                 f"[knowledge-db:embedding] Vector model unavailable ({type(e).__name__}: {e}). Gracefully fallback to BM25.",
                 stream="stderr",
             )
-            if self.enable_vector_search and not self.suppress_guard_prompt and is_agents_workflow_installed():
-                log("[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？", stream="stderr", flush=True)
+
+    def emit_missing_model_guard_if_needed(self) -> bool:
+        """當啟用向量檢索但本地無模型（或載入失敗）且已安裝 agents-workflow 時，顯式輸出一次 [GUARD] 提示。"""
+        if self.mock_mode or not self.enable_vector_search or self._guard_prompt_emitted:
+            return False
+        if not self.is_available and is_agents_workflow_installed():
+            self._guard_prompt_emitted = True
+            log(
+                "[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？",
+                stream="stderr",
+                flush=True,
+            )
+            return True
+        return False
 
     @property
     def dimension(self) -> int:
@@ -313,19 +324,15 @@ class EmbeddingService:
             self._init_model()
 
     def check_availability(self, interactive: bool = True) -> bool:
-        """Explicitly check model availability with controllable guard prompt behavior."""
-        prev_suppress = self.suppress_guard_prompt
-        if not interactive:
-            self.suppress_guard_prompt = True
-        try:
-            return self.is_available
-        finally:
-            if not interactive:
-                self.suppress_guard_prompt = prev_suppress
+        """Explicitly check model availability and emit missing-model guard prompt once when interactive=True."""
+        avail = self.is_available
+        if not avail and interactive:
+            self.emit_missing_model_guard_if_needed()
+        return avail
 
     @property
     def is_available(self) -> bool:
-        """回傳當前環境向量推論服務是否就緒可用 (按需惰性探測加載，若快取權重被刪除則重置狀態)"""
+        """回傳當前環境向量推論服務是否就緒可用 (純唯讀查詢屬性，無終端 [GUARD] 阻斷副作用)"""
         if self.mock_mode:
             return self._is_available
         if self._is_available:
@@ -336,6 +343,7 @@ class EmbeddingService:
                 self._model = None
                 self._verified_onnx_path = None
                 self._init_attempted = False
+                self._guard_prompt_emitted = False
         if not self._is_available:
             self._ensure_model()
         return self._is_available
@@ -553,15 +561,20 @@ class VectorIndex:
         sims = np.dot(self.vectors, query_vec.T).reshape(-1)
         total_docs = len(self.doc_ids)
         if allowed_doc_ids is not None:
-            order = np.argsort(-sims)
-            out: List[Tuple[str, float]] = []
-            for idx in order:
-                did = self.doc_ids[idx]
-                if did in allowed_doc_ids:
-                    out.append((did, float(sims[idx])))
-                    if len(out) >= top_k:
-                        break
-            return out
+            valid_indices = [i for i, did in enumerate(self.doc_ids) if did in allowed_doc_ids]
+            if not valid_indices:
+                return []
+            idx_arr = np.asarray(valid_indices, dtype=np.intp)
+            sub_sims = sims[idx_arr]
+            k_sub = min(top_k, len(idx_arr))
+            if k_sub <= 0:
+                return []
+            if k_sub >= len(idx_arr):
+                sub_order = np.argsort(-sub_sims)
+            else:
+                part = np.argpartition(-sub_sims, k_sub - 1)[:k_sub]
+                sub_order = part[np.argsort(-sub_sims[part])]
+            return [(self.doc_ids[int(idx_arr[j])], float(sub_sims[j])) for j in sub_order]
 
         k = min(top_k, total_docs)
         if k <= 0:

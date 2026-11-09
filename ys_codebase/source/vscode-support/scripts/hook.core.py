@@ -5,7 +5,7 @@ Subscribes to `on_env_synced`, `on_reload`, and `on_remove` emitted by `core`.
 
 import os
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from core import uri
 from core.context import get_runtime_context
@@ -26,8 +26,16 @@ def _dir_shallow_fingerprint(dir_path: str) -> Tuple[Any, ...]:
         return ()
     try:
         st = os.stat(dir_path)
-        entries = tuple(sorted(os.listdir(dir_path)))
-        return (int(getattr(st, "st_mtime_ns", 0)), entries)
+        names = sorted(os.listdir(dir_path))
+        child_entries: List[Tuple[str, int]] = []
+        for name in names:
+            child_path = os.path.join(dir_path, name)
+            try:
+                c_st = os.stat(child_path)
+                child_entries.append((name, int(getattr(c_st, "st_mtime_ns", 0))))
+            except OSError:
+                child_entries.append((name, 0))
+        return (int(getattr(st, "st_mtime_ns", 0)), tuple(child_entries))
     except OSError:
         return ()
 

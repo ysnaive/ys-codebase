@@ -1,7 +1,8 @@
 """
-agents_workflow.plans._common — Plans 工具鏈共用基礎設施（語意 URI 解析、Markdown 標頭提取、生命周期完成度判定與變更日誌表格解析 SSOT）。
+agents_workflow.plans._common — Plans 工具鏈共用基礎設施（語意 URI 解析、Markdown 標頭提取、生命周期完成度判定、目標投影規則與變更日誌表格解析 SSOT）。
 """
 
+import os
 import re
 from pathlib import Path
 from types import MappingProxyType
@@ -28,28 +29,49 @@ def resolve_plan_uri(
     host_dir: Optional[Union[str, Path]] = None,
 ) -> Optional[Path]:
     """
-    安全解析語意 URI；若無 core 上下文或解析失敗，則依 default_fallback 或 DEFAULT_URI_FALLBACKS 退避。
+    安全解析語意 URI；若無 core 上下文或解析失敗，則依 default_fallback 或 DEFAULT_URI_FALLBACKS 退避（支援帶子路徑之 workflow.*:// URI）。
 
     Args:
-        uri_str: 語意 URI 字串（如 'workflow.plans://'、'workflow.archived://'、'project://'）
+        uri_str: 語意 URI 字串（如 'workflow.plans://'、'workflow.archived://'、'project://' 或帶子路徑）
         default_fallback: 選填退避相對路徑；若未指定則查表 DEFAULT_URI_FALLBACKS
-        host_dir: 選填宿主基準目錄；當 host_dir is None 時維持 Path.cwd().resolve()
+        host_dir: 選填宿主基準目錄；當 host_dir is None 時維持 Path(get_virtual_cwd()).resolve()
 
     Returns:
         Optional[Path]: 解析後之絕對路徑，若無對應退避則回傳 None
     """
+    if not uri_str:
+        return None
     try:
         from core.uri import resolve
+
         resolved = resolve(uri_str, interactive=False)
         if resolved and not str(resolved).startswith("!"):
             return Path(resolved).resolve()
     except Exception:
         pass
 
-    fallback = default_fallback if default_fallback is not None else DEFAULT_URI_FALLBACKS.get(uri_str)
-    if fallback is not None:
-        base = Path(host_dir).resolve() if host_dir is not None else Path(get_virtual_cwd()).resolve()
-        return (base / fallback).resolve() if fallback else base
+    base = (
+        Path(host_dir).resolve()
+        if host_dir is not None
+        else Path(get_virtual_cwd()).resolve()
+    )
+
+    if default_fallback is not None:
+        tail = ""
+        if "://" in uri_str:
+            tail = uri_str.split("://", 1)[1].lstrip("/\\")
+        root_p = (base / default_fallback).resolve() if default_fallback else base
+        return (root_p / tail).resolve() if tail else root_p
+
+    for prefix, rel_dir in DEFAULT_URI_FALLBACKS.items():
+        if uri_str == prefix or uri_str.startswith(prefix):
+            tail = uri_str[len(prefix) :].lstrip("/\\")
+            eff_rel = rel_dir
+            if prefix == "workflow.roadmap://":
+                if not (base / "plans" / "roadmap").exists() and (base / "roadmap").exists():
+                    eff_rel = "roadmap"
+            root_p = (base / eff_rel).resolve() if eff_rel and eff_rel != "." else base
+            return (root_p / tail).resolve() if tail else root_p
     return None
 
 
@@ -159,18 +181,9 @@ def is_revision_root_dir(plan_dir: Union[str, Path]) -> bool:
     """
     判定目錄是否為純獨立修訂根目錄（含 revision_log.md，且不含 umbrella_overview.md、fast_track_plan.md、P01 或 P07）。
     """
-    from .status import PlanStatusResolver
+    from .state_machine import is_revision_root_dir as _is_rev_root
 
-    p = Path(plan_dir)
-    if not (p / "revision_log.md").is_file():
-        return False
-    if (p / "umbrella_overview.md").is_file() or (p / "fast_track_plan.md").is_file():
-        return False
-    if PlanStatusResolver.resolve_phase_file(p, "P01").is_file():
-        return False
-    if PlanStatusResolver.resolve_phase_file(p, "P07").is_file():
-        return False
-    return True
+    return _is_rev_root(plan_dir)
 
 
 def evaluate_plan_completion(plan_dir: Union[str, Path]) -> Tuple[bool, Optional[str]]:
@@ -180,85 +193,85 @@ def evaluate_plan_completion(plan_dir: Union[str, Path]) -> Tuple[bool, Optional
     Returns:
         Tuple[bool, Optional[str]]: (is_completed, blocking_reason)
     """
-    from .status import PlanStatusResolver
+    from .state_machine import evaluate_plan_completion as _eval_completion
 
-    p = Path(plan_dir)
-    plan_name = p.name
+    return _eval_completion(plan_dir)
 
-    all_rev_logs: List[Path] = []
-    root_rev = p / "revision_log.md"
-    if root_rev.is_file():
-        all_rev_logs.append(root_rev)
 
-    sub_dirs = sorted(
-        [d for d in p.iterdir() if d.is_dir() and d.name.startswith("sub_")],
-        key=lambda x: x.name,
-    ) if p.is_dir() else []
+def resolve_target_projection_rule(
+    target_cfg: Dict[str, Any],
+    artifact_type: str,
+    artifact_name: str = "",
+    subpath: str = "",
+) -> Tuple[str, str, Optional[str], str]:
+    """
+    解析單一 Target 對指定資產類型之投影規則 (SSOT)。
 
-    for sub_dir in sub_dirs:
-        sub_rev = sub_dir / "revision_log.md"
-        if sub_rev.is_file():
-            all_rev_logs.append(sub_rev)
-
-    for r_file in all_rev_logs:
-        if not PlanStatusResolver.is_doc_completed(r_file):
-            rel_r = r_file.relative_to(p)
-            return (
-                False,
-                f"計畫 '{plan_name}' 內存在尚未完成之修訂紀錄 '{rel_r}'（標頭未標記 Completed），為確保結案無遺漏，無法歸檔。若確定要強制歸檔，請使用 --force 參數。",
-            )
-
-    umbrella_overview = p / "umbrella_overview.md"
-    ft_plan = p / "fast_track_plan.md"
-    p01_file = PlanStatusResolver.resolve_phase_file(p, "P01")
-    p07_walkthrough = PlanStatusResolver.resolve_phase_file(p, "P07")
-
-    if umbrella_overview.is_file():
-        if not PlanStatusResolver.is_doc_completed(umbrella_overview):
-            return (
-                False,
-                f"計畫 '{plan_name}' 之 'umbrella_overview.md' 尚未完成（未找到標頭 Completed/Concluded 標記）。若確定要強制歸檔，請使用 --force 參數。",
-            )
-        for sub_dir in sub_dirs:
-            sub_ok, sub_reason = evaluate_plan_completion(sub_dir)
-            if not sub_ok:
-                return (
-                    False,
-                    f"計畫 '{plan_name}' 之子計畫 '{sub_dir.name}' 尚未完成（{sub_reason or '未標記 Completed'}），無法歸檔。若確定要強制歸檔，請使用 --force 參數。",
-                )
-        return True, None
-
-    if ft_plan.is_file():
-        if PlanStatusResolver.is_doc_completed(ft_plan):
-            return True, None
-        return (
-            False,
-            f"計畫 '{plan_name}' 之 'fast_track_plan.md' 尚未完成（未找到標頭 Completed/Concluded 標記）。若確定要強制歸檔，請使用 --force 參數。",
-        )
-
-    if p01_file.is_file() or p07_walkthrough.is_file():
-        if p07_walkthrough.is_file() and PlanStatusResolver.is_doc_completed(p07_walkthrough):
-            return True, None
-        return (
-            False,
-            f"計畫 '{plan_name}' 尚未完成（'P07_walkthrough.md' 未找到標頭 Completed/Concluded 標記）。若確定要強制歸檔，請使用 --force 參數。",
-        )
-
-    if root_rev.is_file():
-        if PlanStatusResolver.is_doc_completed(root_rev):
-            return True, None
-        return (
-            False,
-            f"計畫 '{plan_name}' 之 'revision_log.md' 尚未完成（未找到標頭 Completed/Concluded 標記）。若確定要強制歸檔，請使用 --force 參數。",
-        )
-
-    if PlanStatusResolver.is_research_completed(p):
-        return True, None
-
-    return (
-        False,
-        f"計畫 '{plan_name}' 尚未完成（未找到標頭 Completed/Concluded 標記）。若確定要強制歸檔，請使用 --force 參數。",
+    Returns:
+        Tuple[str, str, Optional[str], str]:
+            - target_dir_uri: 展開巨集後之目標目錄 URI（如 'project://.agents/.yscb/templates'）
+            - rel_subpath: 套用副檔名替換後之相對子路徑（如 'P01_requirements_spec.md'）
+            - header_tpl: 投影標頭模板（若無則為 None）
+            - ext: 目標副檔名（預設 '.md'）
+    """
+    norm_type = (artifact_type or "template").strip()
+    singular_type = norm_type.rstrip("s").lower()
+    is_skill = singular_type in ("skill", "workflow")
+    sub_folder = "skills" if is_skill else f"{singular_type}s"
+    default_target_dir_uri = (
+        f"project://.agents/skills/{artifact_name}"
+        if is_skill
+        else f"project://.agents/.yscb/{sub_folder}"
     )
+
+    projections = target_cfg.get("projections", {}) if isinstance(target_cfg, dict) else {}
+    proj_cfg: Optional[Dict[str, Any]] = None
+    if isinstance(projections, dict):
+        cand = projections.get(norm_type)
+        if isinstance(cand, dict):
+            proj_cfg = cand
+        else:
+            for k, v in projections.items():
+                if isinstance(v, dict) and k.rstrip("s").lower() == singular_type:
+                    proj_cfg = v
+                    break
+        if proj_cfg is None and is_skill:
+            wf_cand = projections.get("workflow") or projections.get("workflows")
+            if isinstance(wf_cand, dict):
+                proj_cfg = wf_cand
+
+    if isinstance(proj_cfg, dict) and proj_cfg:
+        raw_target_dir = str(proj_cfg.get("target_dir") or default_target_dir_uri).strip()
+        ext = str(proj_cfg.get("extension", ".md"))
+        header_tpl = proj_cfg.get("header")
+    else:
+        raw_target_dir = default_target_dir_uri
+        ext = ".md"
+        header_tpl = None
+
+    base_ref = os.path.basename((subpath or artifact_name).replace("\\", "/"))
+    export_basename = os.path.splitext(base_ref)[0] if base_ref else ""
+    target_name_str = str(target_cfg.get("name", "")) if isinstance(target_cfg, dict) else ""
+
+    target_dir_uri = (
+        raw_target_dir
+        .replace("{export.name}", artifact_name)
+        .replace("{export.basename}", export_basename)
+        .replace("{target.name}", target_name_str)
+    )
+
+    clean_sub = subpath.replace("\\", "/").lstrip("/")
+    if not clean_sub:
+        rel_subpath = ""
+    elif is_skill:
+        rel_subpath = clean_sub
+    else:
+        sub_dir_part = os.path.dirname(clean_sub)
+        file_stem = os.path.splitext(os.path.basename(clean_sub))[0]
+        target_filename = f"{file_stem}{ext}"
+        rel_subpath = f"{sub_dir_part}/{target_filename}" if sub_dir_part else target_filename
+
+    return target_dir_uri, rel_subpath, header_tpl, ext
 
 
 def resolve_active_target_projected_path(
@@ -270,14 +283,15 @@ def resolve_active_target_projected_path(
     依據當前啟用之 release_targets (local ∪ project) 動態解析 template / standard / skill 的專案相對路徑。
     若無啟用 Target 或讀取失敗，安全退回 .agents/... 預設路徑。
     """
-    norm_type = (artifact_type or "").strip()
-    singular_type = norm_type.rstrip("s")
-    default_base = (
-        f".agents/skills/{artifact_name}"
-        if singular_type in ("skill", "workflow")
-        else f".agents/.yscb/{singular_type}s"
+    default_dir_uri, default_subpath, _, _ = resolve_target_projection_rule(
+        {}, artifact_type, artifact_name=artifact_name, subpath=subpath
     )
-    fallback = f"{default_base}/{subpath}".strip("/") if subpath else default_base
+    default_base = (
+        default_dir_uri[len("project://") :].lstrip("/")
+        if default_dir_uri.startswith("project://")
+        else default_dir_uri.lstrip("/")
+    ).rstrip("/")
+    fallback = f"{default_base}/{default_subpath}".strip("/") if default_subpath else default_base
 
     try:
         from agents_workflow.compiler import ArtifactCompiler
@@ -292,51 +306,33 @@ def resolve_active_target_projected_path(
         if len(active_targets) > 1:
             try:
                 from core.locale import detect_active_host_dialect
+
                 dialect = detect_active_host_dialect()
                 if dialect and dialect.startswith("nouns-"):
-                    cand_t = dialect[len("nouns-"):]
+                    cand_t = dialect[len("nouns-") :]
                     if cand_t in active_targets:
                         selected_target = cand_t
             except Exception:
                 pass
 
         compiler = ArtifactCompiler()
-        target_defs = {t["name"]: t for t in compiler.get_release_targets() if isinstance(t, dict) and "name" in t}
+        target_defs = {
+            t["name"]: t
+            for t in compiler.get_release_targets()
+            if isinstance(t, dict) and "name" in t
+        }
         t_obj = target_defs.get(selected_target)
         if not t_obj:
             return fallback
 
-        projections = t_obj.get("projections", {})
-        if not isinstance(projections, dict):
-            return fallback
-
-        proj_cfg = projections.get(norm_type)
-        if not isinstance(proj_cfg, dict):
-            for k, v in projections.items():
-                if isinstance(v, dict) and k.rstrip("s") == singular_type:
-                    proj_cfg = v
-                    break
-        if not isinstance(proj_cfg, dict) and singular_type in ("skill", "workflow"):
-            proj_cfg = projections.get("workflow") or projections.get("workflows")
-
-        if not isinstance(proj_cfg, dict) or "target_dir" not in proj_cfg:
-            return fallback
-
-        raw_dir = str(proj_cfg["target_dir"]).strip()
-        if raw_dir.startswith("project://"):
-            rel_dir = raw_dir[len("project://"):].lstrip("/")
-        else:
-            rel_dir = raw_dir.lstrip("/")
-
-        export_basename = Path(subpath or artifact_name).stem if (subpath or artifact_name) else ""
-        rel_dir = (
-            rel_dir
-            .replace("{export.name}", artifact_name)
-            .replace("{export.basename}", export_basename)
-            .replace("{target.name}", str(selected_target))
+        target_dir_uri, rel_subpath, _, _ = resolve_target_projection_rule(
+            t_obj, artifact_type, artifact_name=artifact_name, subpath=subpath
         )
-
+        if target_dir_uri.startswith("project://"):
+            rel_dir = target_dir_uri[len("project://") :].lstrip("/")
+        else:
+            rel_dir = target_dir_uri.lstrip("/")
         rel_dir = rel_dir.rstrip("/")
-        return f"{rel_dir}/{subpath.lstrip('/')}" if subpath else rel_dir
+        return f"{rel_dir}/{rel_subpath}" if rel_subpath else rel_dir
     except Exception:
         return fallback

@@ -6,11 +6,10 @@ import os
 import subprocess
 import sys
 import threading
-import time
 import unittest
 from io import StringIO
 from typing import List, Dict, Any, Optional, Set, Tuple
-from core import uri, vfs
+from core import uri
 from core.context import get_runtime_context
 from core.platform.process import is_process_alive, kill_process_tree, reap_sandbox_processes, terminate_popen_tree
 from dev.checker import discover_source_modules
@@ -344,7 +343,6 @@ def get_test_category(test_case: unittest.TestCase) -> str:
 
 class OutputCapturer:
     """Context manager for buffering stdout and stderr during test execution."""
-    _ACTIVE_INSTANCE: Optional["OutputCapturer"] = None
 
     def __init__(self, enabled: bool = True):
         self.enabled = enabled
@@ -355,17 +353,18 @@ class OutputCapturer:
 
     def __enter__(self) -> "OutputCapturer":
         if self.enabled:
-            OutputCapturer._ACTIVE_INSTANCE = self
+            get_runtime_context().set_module_state("dev.testing.active_capturer", self)
             self._orig_stdout = sys.stdout
             self._orig_stderr = sys.stderr
             sys.stdout = self._stdout_buf
             sys.stderr = self._stderr_buf
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         if self.enabled:
-            if OutputCapturer._ACTIVE_INSTANCE is self:
-                OutputCapturer._ACTIVE_INSTANCE = None
+            ctx = get_runtime_context()
+            if ctx.get_module_state("dev.testing.active_capturer") is self:
+                ctx.set_module_state("dev.testing.active_capturer", None)
             if self._orig_stdout is not None:
                 sys.stdout = self._orig_stdout
             if self._orig_stderr is not None:
@@ -529,7 +528,11 @@ class SafeStreamWriter:
         except UnicodeEncodeError:
             enc = getattr(self.target, "encoding", None) or "utf-8"
             safe_s = s.encode(enc, errors="replace").decode(enc, errors="replace")
-            self.target.write(safe_s)
+            try:
+                self.target.write(safe_s)
+            except Exception:
+                ascii_s = s.encode("ascii", errors="replace").decode("ascii")
+                self.target.write(ascii_s)
 
     def flush(self) -> None:
         try:

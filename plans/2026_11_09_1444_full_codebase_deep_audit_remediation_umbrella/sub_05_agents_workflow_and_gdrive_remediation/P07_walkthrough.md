@@ -109,3 +109,10 @@ fix(agents-workflow,gdrive-support): complete S6 remediation for compiler fence 
 ### 模擬新環境全 CLI 部署驗收補充紀錄
 
 - **實機驗收結果**：於模擬新環境部署全 CLI 實機測試中，修復 `agents-workflow/contributes/core.json` 中 `init` 指令選項分組衝突（使 `init --default -y` 與 `--path-*` 組合正交相容）、補齊 `GDriveSyncServiceWorker.start()` 於 `project://` 未綁定時優雅轉入 `standby_mode=True` (`STATE_READY`)，並修復 `gdrive-support/scripts/cli.py` 與 `transport.py` 於 `server` 熱 IPC 模式下透過 `get_virtual_cwd()` 解析相對路徑，驗證 `agents-workflow` 16 項指令與 `gdrive` 16 項非 OAuth/沙盒指令 100% 通過。
+
+---
+
+### 第二輪九維度深度審計 (`R03`) 增補驗收成果
+
+- **修復範圍**：完成 `R03-J-01` ~ `R03-J-04`、`R03-K-01` ~ `R03-K-04`、`R03-L-01` ~ `R03-L-07`（共 15 項）、`S5`/`S6` 上帝物件職責拆解（新增 `agents_workflow/plans/state_machine.py`、`gdrive_support/incremental_cache.py`、`gdrive_support/ledger.py`、`gdrive_support/readme_sync.py`、`gdrive_support/sandbox_transport.py`、`gdrive_support/auth_flow.py`）及新環境實測發現之 `gdrive` 沙盒目錄自我遞迴排除修復。
+- **驗證結果**：`python3 yscb.py dev check agents-workflow gdrive-support` **PASS**；`dev test`（`agents-workflow` **147/147**、`gdrive-support` **37/37**，合計 **184/184 PASS, `0 ResourceWarning`**）；模擬新環境 `agents` 與 `gdrive --sandbox` 全 CLI 指令驗證 **100% PASS**。

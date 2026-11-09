@@ -388,7 +388,7 @@ class CursorStore:
         safe_id = _sanitize_target_key(consumer_id or "default")
         lock_file = self._lock_dir / f"cursor_{safe_id}.lock"
         with self._rlock:
-            with InterProcessLock(str(lock_file), timeout=5.0):
+            with InterProcessLock(str(lock_file), timeout=5.0, reentrant=True):
                 yield
 
     def load_consumer(self, consumer_id: str = "default") -> Dict[str, Dict[str, Any]]:
@@ -575,6 +575,7 @@ class SpaceScanner:
     """
 
     UNIFIED_KEY = "__all__"
+    MAX_TOMBSTONE_GEN_WINDOW = 64
 
     def __init__(
         self,
@@ -661,7 +662,7 @@ class SpaceScanner:
         safe_name = _sanitize_target_key(space_key)
         lock_file = self._lock_dir / f"snap_{safe_name}.lock"
         with self._rlock:
-            with InterProcessLock(str(lock_file), timeout=10.0):
+            with InterProcessLock(str(lock_file), timeout=10.0, reentrant=True):
                 yield
 
     @staticmethod
@@ -745,6 +746,39 @@ class SpaceScanner:
             with self._rlock:
                 self._snapshot_mem_cache.pop(cache_key, None)
 
+    def _prune_expired_tombstones(
+        self,
+        space_key: str,
+        entries: Dict[str, FileFingerprint],
+        head_gen: int,
+    ) -> Dict[str, FileFingerprint]:
+        """Evicts historical `is_deleted=True` tombstones that have exceeded the retention window and consumer watermarks."""
+        window = max(1, int(self.MAX_TOMBSTONE_GEN_WINDOW))
+        if head_gen <= window:
+            return entries
+
+        active_watermarks: List[int] = []
+        try:
+            for cid in self._cursor_store.list_consumers():
+                rec = self._cursor_store.get_cursor(space_key, cid)
+                acked = int(rec.get("acked_generation", 0))
+                if acked > 0:
+                    active_watermarks.append(acked)
+        except Exception:
+            pass
+
+        min_watermark = min(active_watermarks) if active_watermarks else head_gen
+        pruned: Dict[str, FileFingerprint] = {}
+        for rel_k, fp in entries.items():
+            if not fp.is_deleted:
+                pruned[rel_k] = fp
+                continue
+            age = head_gen - fp.updated_gen
+            if age > window and (fp.updated_gen <= min_watermark or age > window * 4):
+                continue
+            pruned[rel_k] = fp
+        return pruned
+
     def _get_cursor_record(
         self, space_key: str, consumer_id: str
     ) -> Dict[str, Any]:
@@ -787,7 +821,6 @@ class SpaceScanner:
         """
         with cell_span("space.scan"):
             if space_query is None or str(space_query).strip() in ("", "*"):
-                # Scan each non-synthetic watched space with entries/compose + synthetic union spaces + unified "__all__" snapshot
                 space_gens: Dict[str, int] = {}
                 self._hash_memo = {}
                 try:
@@ -810,7 +843,15 @@ class SpaceScanner:
                 return unified_res
 
             res = self._scan_single_query(space_query, force=force)
-            object.__setattr__(res, "space_generations", {res.space_name or str(space_query): res.to_generation})
+            single_gens: Dict[str, int] = {res.space_name or str(space_query): res.to_generation}
+            if res.from_generation != res.to_generation or res.has_changes:
+                try:
+                    synced_deps = self.sync_dependent_snapshots(res.space_name or str(space_query))
+                    for dep_k, dep_res in synced_deps.items():
+                        single_gens[dep_k] = dep_res.to_generation
+                except Exception:
+                    pass
+            object.__setattr__(res, "space_generations", single_gens)
             return res
 
     def refresh(
@@ -967,7 +1008,6 @@ class SpaceScanner:
                         entry_path=old_fp.entry_path,
                     )
                 else:
-                    # Retain tombstone for historical generation delta calculation
                     new_entries[old_rel] = old_fp
 
             active_fps = [fp for fp in new_entries.values() if not fp.is_deleted]
@@ -975,6 +1015,7 @@ class SpaceScanner:
 
             if prev_state.head_generation == 0 or detail.has_changes or config_changed:
                 final_gen = next_gen if (detail.has_changes or prev_state.head_generation == 0 or config_changed) else prev_state.head_generation
+                new_entries = self._prune_expired_tombstones(space_key, new_entries, final_gen)
                 new_state = SnapshotState(
                     head_generation=final_gen,
                     merkle_root=merkle,
@@ -984,12 +1025,12 @@ class SpaceScanner:
                 self._save_snapshot_state(space_key, new_state)
             else:
                 final_gen = prev_state.head_generation
-                # If mtime was updated on touch-only file, still persist updated mtime without bumping generation
                 if any(
                     new_entries[r].mtime_ns != prev_state.entries[r].mtime_ns
                     for r in detail.unchanged
                     if r in prev_state.entries
                 ):
+                    new_entries = self._prune_expired_tombstones(space_key, new_entries, final_gen)
                     new_state = SnapshotState(
                         head_generation=final_gen,
                         merkle_root=merkle,
@@ -1076,7 +1117,6 @@ class SpaceScanner:
                         cand_abs, space=target_key
                     )
                     if match_res.matched:
-                        # Determine matched entry_path and primary space config
                         matched_entry_abs = self._find_best_entry_for_file(
                             cand_abs, all_entry_paths
                         )
@@ -1189,6 +1229,7 @@ class SpaceScanner:
                 )
                 return prev_state
 
+            entries = self._prune_expired_tombstones(space_key, entries, next_gen)
             active_fps = [fp for fp in entries.values() if not fp.is_deleted]
             for fp in active_fps:
                 if fp.rel_path not in detail.added and fp.rel_path not in detail.modified:
@@ -1246,13 +1287,11 @@ class SpaceScanner:
         if norm_raw in existing_entries:
             candidates.append(norm_raw)
 
-        # Compute via project_root and all participating entry_paths
         for entry_p in [self._registry.project_root, *all_entry_paths]:
             rel_c = compute_canonical_rel_path(cand_abs, entry_p, self._registry.project_root)
             if rel_c in existing_entries and rel_c not in candidates:
                 candidates.append(rel_c)
 
-        # Also check stored entry_path on existing active fingerprints
         for rel_k, fp in existing_entries.items():
             if fp.is_deleted or not fp.entry_path:
                 continue
@@ -1616,7 +1655,6 @@ class SpaceScanner:
         from_gen = int(cursor.get("acked_generation", 0))
         cursor_cfg_hash = str(cursor.get("config_hash", ""))
 
-        # If config_hash changed since last ack or from_gen > head_generation, treat as baseline 0
         if (cursor_cfg_hash and cursor_cfg_hash != state.config_hash) or (
             from_gen > state.head_generation
         ):
@@ -1733,24 +1771,20 @@ class SpaceScanner:
         spaces_report: List[Dict[str, Any]] = []
         for s_cfg in target_spaces:
             q_name = s_cfg.qualified_name
+            is_synth = s_cfg.owner == ""
             state = self._load_snapshot_state(q_name)
-            if state.head_generation == 0 and s_cfg.short_name != q_name:
-                short_state = self._load_snapshot_state(f"/{s_cfg.short_name}")
-                if short_state.head_generation == 0:
-                    short_state = self._load_snapshot_state(s_cfg.short_name)
+            if is_synth and state.head_generation == 0 and s_cfg.short_name != q_name:
+                short_state = self._load_snapshot_state(s_cfg.short_name)
                 if short_state.head_generation > 0:
                     state = short_state
             active_count = len(state.active_entries())
             snap_file = self._snapshot_path(q_name)
-            synth_snap_file = self._snapshot_path(f"/{s_cfg.short_name}")
-            short_snap_file = self._snapshot_path(s_cfg.short_name)
+            short_snap_file = self._snapshot_path(s_cfg.short_name) if is_synth else None
             cursors_info: Dict[str, Any] = {}
             for cid in consumers:
                 c_rec = self._get_cursor_record(q_name, cid)
-                if c_rec.get("acked_generation", 0) == 0 and s_cfg.short_name != q_name:
-                    c_rec = self._get_cursor_record(f"/{s_cfg.short_name}", cid)
-                    if c_rec.get("acked_generation", 0) == 0:
-                        c_rec = self._get_cursor_record(s_cfg.short_name, cid)
+                if is_synth and c_rec.get("acked_generation", 0) == 0 and s_cfg.short_name != q_name:
+                    c_rec = self._get_cursor_record(s_cfg.short_name, cid)
                 if c_rec.get("acked_generation", 0) > 0:
                     cursors_info[cid] = c_rec
 
@@ -1763,8 +1797,7 @@ class SpaceScanner:
                     "active_file_count": active_count,
                     "snapshot_exists": (
                         snap_file.is_file()
-                        or synth_snap_file.is_file()
-                        or short_snap_file.is_file()
+                        or (short_snap_file is not None and short_snap_file.is_file())
                     ),
                     "cursors": cursors_info,
                 }
@@ -1814,7 +1847,6 @@ class SpaceScanner:
             }
 
         if space_query is not None and str(space_query).strip() not in ("", "*"):
-            # Resolve spaces first so SpaceNotFoundError is raised if space_query is invalid
             resolved_spaces = self._registry.resolve_spaces(space_query)
             space_key = self._canonical_space_key(space_query)
             snap_p = self._snapshot_path(space_key)
@@ -1826,7 +1858,6 @@ class SpaceScanner:
                     removed_snapshots.append(snap_p.name)
                 except Exception:
                     pass
-            # Also clean resolved qualified spaces if space_query was a short name
             for s_cfg in resolved_spaces:
                 for cand_k in (
                     s_cfg.qualified_name,
@@ -1900,7 +1931,6 @@ def get_default_scanner(
     and the active in-process Watcher.
     """
     if registry is not None:
-        # When an explicit custom SpaceRegistry is supplied, bind a SpaceScanner to it
         return SpaceScanner(registry=registry, storage_root=storage_root)
 
     reg = get_default_registry(project_root=project_root, yscb_dir=yscb_dir)
@@ -2131,6 +2161,4 @@ def __getattr__(name: str) -> Any:
     ctx = get_runtime_context()
     if name == "_DEFAULT_SCANNERS":
         return ctx.space_default_scanners
-    if name == "_DEFAULT_SCANNERS_LOCK":
-        return ctx.space_scanners_lock
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

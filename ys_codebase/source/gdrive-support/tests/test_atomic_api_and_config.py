@@ -1163,12 +1163,43 @@ class TestGDriveAtomicApiAndConfig(YSCBTestCase):
                 closed_conns.append(self.label)
 
         api_tr._tls.conns = {"www.googleapis.com": _DummyPooledConn("worker_conn_1")}
-        api_tr._release_thread_conns_to_pool()
+        api_tr._tls_conn_dicts.append(api_tr._tls.conns)
+        api_tr.release_thread_resources()
         self.assertEqual(api_tr._tls.conns, {})
+        self.assertNotIn(api_tr._tls.conns, api_tr._tls_conn_dicts)
         reused = api_tr._get_https_conn("www.googleapis.com")
         self.assertEqual(getattr(reused, "label", ""), "worker_conn_1")
+        self.assertIn(api_tr._tls.conns, api_tr._tls_conn_dicts)
         api_tr.close()
         self.assertEqual(closed_conns, ["worker_conn_1"])
+
+        # get_entry CQS: reading an entry with duplicate path items returns the newest without trashing
+        picked_dup = transport.get_entry("cqs_dir/dup.txt")
+        self.assertIsNotNone(picked_dup)
+        assert picked_dup is not None
+        self.assertEqual(picked_dup.file_id, "dup_2")
+        self.assertEqual(len(transport.list_files("cqs_dir", deduplicate=False)), 2)
+
+        # Custom credentials_uri / token_uri sensitive path interception
+        custom_cred_cfg = GDriveConfig(
+            root_folder_id="root_pool_test",
+            credentials_uri=(self.proj_dir / "config" / "my_custom_oauth.json").as_posix(),
+            token_uri=(self.proj_dir / "config" / "my_custom_tok.json").as_posix(),
+        )
+        self.assertTrue(
+            is_sensitive_credential_path(
+                self.proj_dir / "config" / "my_custom_oauth.json",
+                self.proj_dir,
+                config=custom_cred_cfg,
+            )
+        )
+        self.assertTrue(
+            is_sensitive_credential_path(
+                self.proj_dir / "config" / "my_custom_tok.json",
+                self.proj_dir,
+                config=custom_cred_cfg,
+            )
+        )
         self.mark_passed()
 
 

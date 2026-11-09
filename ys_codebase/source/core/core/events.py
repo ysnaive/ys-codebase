@@ -105,8 +105,11 @@ def broadcast(
     transient_extra_paths: List[str] = []
 
     try:
+        mounted_keys: Set[str] = set()
         if targets:
             ensure_installed_modules_path(priority_module="core")
+            with rt_ctx.sys_path_lock:
+                mounted_keys = {_norm_key(p) for p in sys.path if p}
 
         for mod_name, hook_real_path in targets:
             mod_pkg = mod_name.replace("-", "_")
@@ -119,10 +122,17 @@ def broadcast(
                     for ep in extra_list:
                         if _norm_key(ep) not in pre_existing_keys:
                             transient_extra_paths.append(ep)
-                ensure_installed_modules_path(
-                    priority_module=mod_name,
-                    extra_paths=extra_list,
-                )
+                    ensure_installed_modules_path(
+                        priority_module=mod_name,
+                        extra_paths=extra_list,
+                    )
+                elif extra_list and _norm_key(hook_root) not in mounted_keys:
+                    ensure_installed_modules_path(
+                        priority_module=mod_name,
+                        extra_paths=extra_list,
+                    )
+                    with rt_ctx.sys_path_lock:
+                        mounted_keys = {_norm_key(p) for p in sys.path if p}
                 hook_mod = load_module_from_path(
                     mod_key,
                     hook_real_path,

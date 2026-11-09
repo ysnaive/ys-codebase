@@ -51,17 +51,6 @@ def _resolve_consume_diff(
         ) as diff_res:
             yield diff_res
 
-    if space_name is not None:
-        try:
-            if scanner is not None and hasattr(scanner, "ack"):
-                scanner.ack(None, consumer_id=consumer_id)
-            else:
-                from core.space import ack as _space_ack
-
-                _space_ack(None, consumer_id=consumer_id)
-        except Exception:
-            pass
-
 
 def _broadcast_ast_updated(payload: Dict[str, Any]) -> None:
     try:
@@ -154,6 +143,7 @@ def on_file_space_changed(
     and broadcasts `on_ast_index_updated`.
     """
     from ast_engine.engine import get_engine
+    from ast_engine.io_utils import is_dirty_file_match, normalize_dirty_paths
 
     # Support explicit diff_detail argument passed by direct unit test callers
     diff_detail_arg = kwargs.get("diff_detail")
@@ -275,6 +265,27 @@ def on_file_space_changed(
                 }
                 _broadcast_ast_updated(payload)
                 return payload
+
+            all_dirty = set(diff_res.detail.dirty_files) | set(diff_res.detail.deleted)
+            parser_reg = getattr(engine, "parser_registry", None)
+            if parser_reg is not None and all_dirty:
+                known_files = set()
+                snap_cur = getattr(engine, "_snapshot", None)
+                if snap_cur is not None:
+                    known_files = set(snap_cur.file_to_symbol_ids.keys()) | set(snap_cur.file_graphs.keys())
+                known_norm = normalize_dirty_paths(known_files) if known_files else set()
+                has_parseable = any(
+                    parser_reg.get_parser(str(p)) is not None
+                    or (known_norm and is_dirty_file_match(str(p), known_norm))
+                    for p in all_dirty
+                )
+                if not has_parseable:
+                    return {
+                        "status": "noop",
+                        "ast_generation": _get_current_ast_generation(engine),
+                        "patched_count": 0,
+                        "to_generation": diff_res.to_generation,
+                    }
 
             snap = engine.hot_patch_index(
                 diff_res.detail,

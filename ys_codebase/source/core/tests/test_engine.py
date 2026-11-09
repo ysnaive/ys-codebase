@@ -3,18 +3,32 @@ Official test suite for core.engine.AtomicEngine.
 """
 import copy
 import errno
+import io
+import json
 import os
 import shutil
+import sys
 import time
 import zipfile
-from unittest.mock import patch
+from contextlib import redirect_stdout
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from dev.testing import YSCBTestCase, require, Requirement
 from core.engine import AtomicEngine, _parse_dependencies, _deep_infill_dict, _atomic_swap_dir
 from core.installer import Installer
-from core.uri import ExecutionContext
-from core import uri, vfs
-from tests import create_provider_release_zip
+from core.uri import ExecutionContext, CyclicURIDependencyError
+from core import uri, vfs, gitignore
+from core.context import bind_runtime_context, bind_cell_context, get_runtime_context
+from core.service_contract import BaseServiceWorkerContract, touch_activity
+from core.validator import ContributesValidator
+from core.platform.lock import InterProcessLock
+from core.commands import dispatcher
+from core.commands.bags import CmdBags, CmdOption
+from core.commands.contributes_cmd import check_contributes
+from core.space.registry import SpaceRegistry
+from core.space.scanner import SpaceScanner
+from tests import create_provider_release_zip, load_core_cli_module
 
 
 @require(Requirement.ENV | Requirement.ISOLATED_SANDBOX)
@@ -112,20 +126,25 @@ class TestCoreEngine(YSCBTestCase):
 
     @require(Requirement.WORKFLOW)
     def test_inter_process_lock_and_auto_healing(self):
-        """Verify process lock exclusivity and stale lock auto-healing."""
+        """Verify process lock exclusivity, Inode preservation on unlock, and stale lock auto-healing."""
         self.engine.act_unlock("test_op")
         try:
             self.engine.act_lock("test_op")
             self.assertTrue(vfs.exists("cache://.yscb.lock"))
+            lock_p = uri.resolve("cache://.yscb.lock")
+            inode_before = os.stat(lock_p).st_ino
 
             with self.assertRaises(BlockingIOError):
                 self.engine.act_lock("test_op_2", timeout=10.0)
 
             self.engine.act_unlock("test_op")
-            self.assertFalse(vfs.exists("cache://.yscb.lock"))
+            self.assertTrue(vfs.exists("cache://.yscb.lock"))
+            self.assertEqual(os.stat(lock_p).st_ino, inode_before)
+            probe_lk = InterProcessLock(lock_p, reentrant=False)
+            self.assertTrue(probe_lk.acquire(blocking=False, reentrant=False))
+            probe_lk.release()
 
             self.engine.act_lock("stale_op")
-            lock_p = uri.resolve("cache://.yscb.lock")
             past_ts = time.time() - 30.0
             os.utime(lock_p, (past_ts, past_ts))
             self.engine.act_lock("new_op", timeout=10.0)
@@ -294,7 +313,7 @@ class TestCoreEngine(YSCBTestCase):
         self.mark_passed()
 
     def test_dual_layer_snapshot_and_execution_context_immutability(self):
-        """驗證雙層快照完整還原與 ExecutionContext 屬性不可變性。"""
+        """驗證雙層快照完整還原（含 storage.local:// 備份與殘留清除）與 ExecutionContext 屬性不可變性。"""
         ctx = ExecutionContext("core", "test_cmd", ["arg1"], {"key": "val"})
         self.assertEqual(ctx.module_name, "core")
         self.assertEqual(ctx.command, "test_cmd")
@@ -316,11 +335,12 @@ class TestCoreEngine(YSCBTestCase):
         snap_id = self.engine.act_snapshot("test_dual_snap")
         try:
             self.assertTrue(vfs.exists(f"snapshot://{snap_id}/config.local/test_snap_mod/config.local.json"))
-            self.assertFalse(vfs.exists(f"snapshot://{snap_id}/storage.local"))
+            self.assertTrue(vfs.exists(f"snapshot://{snap_id}/storage.local/test_snap_mod/heavy_index.bin"))
             self.assertFalse(vfs.exists(f"snapshot://{snap_id}/cache"))
 
             vfs.write_json(cfg_p, {"project_root": "mutated_val"})
             vfs.write_json(cfg_loc_test, {"local_secret": "mutated_secret"})
+            vfs.write_text(stg_loc_test, "MUTATED_LOCAL_MODEL")
             self.assertEqual(vfs.read_json(cfg_p).get("project_root"), "mutated_val")
             self.assertEqual(vfs.read_json(cfg_loc_test).get("local_secret"), "mutated_secret")
             self.engine.act_restore_snapshot(snap_id)
@@ -330,10 +350,14 @@ class TestCoreEngine(YSCBTestCase):
             self.assertEqual(vfs.read_text(stg_loc_test), "PERSISTENT_LOCAL_MODEL")
 
             vfs.rmtree(f"snapshot://{snap_id}/config.local", ignore_errors=True)
+            vfs.rmtree(f"snapshot://{snap_id}/storage.local", ignore_errors=True)
             vfs.write_json("config.local://test_snap_mod/dirty_after_snap.json", {"dirty": True})
+            vfs.write_text("storage.local://test_snap_mod/dirty_after_snap.bin", "dirty")
             self.engine.act_restore_snapshot(snap_id)
             self.assertTrue(vfs.is_dir("config.local://"))
             self.assertFalse(vfs.exists("config.local://test_snap_mod/dirty_after_snap.json"))
+            self.assertTrue(vfs.is_dir("storage.local://"))
+            self.assertFalse(vfs.exists("storage.local://test_snap_mod/dirty_after_snap.bin"))
         finally:
             if orig_p:
                 vfs.write_json(cfg_p, orig_p)
@@ -578,7 +602,7 @@ class TestCoreEngine(YSCBTestCase):
             self.engine.act_reload(clean_stage=True, inject_stage=True, reconcile_deps=False)
 
     def test_snapshot_collision_cleanup_and_lock_reentrancy(self):
-        """驗證 act_snapshot 覆寫同名舊快照時清除殘留檔案，以及 act_lock / act_unlock 同操作重入計數。"""
+        """驗證 act_snapshot 覆寫同名舊快照時清除殘留檔案，以及 act_lock / act_unlock 同操作重入計數與 Inode 保留。"""
         snap_uri = "snapshot://snap_collision_test"
         try:
             vfs.makedirs(f"{snap_uri}/modules/GhostMod", exist_ok=True)
@@ -590,11 +614,210 @@ class TestCoreEngine(YSCBTestCase):
                 vfs.rmtree(snap_uri, ignore_errors=True)
 
         self.engine.act_lock("test_reentrant_op")
+        lock_p = uri.resolve("cache://.yscb.lock")
         try:
             self.engine.act_lock("test_reentrant_op")
             self.engine.act_unlock("test_reentrant_op")
             self.assertTrue(vfs.exists("cache://.yscb.lock"))
+            probe_held = InterProcessLock(lock_p, reentrant=False)
+            self.assertFalse(probe_held.acquire(blocking=False, reentrant=False))
         finally:
             self.engine.act_unlock("test_reentrant_op")
-        self.assertFalse(vfs.exists("cache://.yscb.lock"))
+        self.assertTrue(vfs.exists("cache://.yscb.lock"))
+        probe_free = InterProcessLock(lock_p, reentrant=False)
+        self.assertTrue(probe_free.acquire(blocking=False, reentrant=False))
+        probe_free.release()
+        self.mark_passed()
+
+    def test_uri_cycle_detection_and_tls_context_restoration(self):
+        """驗證 URI const/config 循環依賴防護、TLS 狀態快照還原與 symlink 子路徑安全邊界。"""
+        # 1. Self-referencing const/project scheme raises CyclicURIDependencyError
+        core_cfg = "config://core/config.project.json"
+        saved_cfg = vfs.read_json(core_cfg) if vfs.exists(core_cfg) else None
+        try:
+            vfs.write_json(core_cfg, {"project_root": "project://recursive_self"})
+            with self.assertRaises(CyclicURIDependencyError):
+                uri.resolve("project://file.txt", interactive=False)
+        finally:
+            if saved_cfg is not None:
+                vfs.write_json(core_cfg, saved_cfg)
+
+        # 2. bind_runtime_context restores uri_tls fields and host_scope restores active_yscb_dir
+        orig_host = uri.get_host_dir()
+        orig_yscb = uri.get_yscb_root()
+        orig_mod = uri.get_module_context()
+        temp_host = os.path.join(self.sandbox_dir, "tls_host")
+        temp_yscb = os.path.join(self.sandbox_dir, "tls_yscb")
+        os.makedirs(temp_host, exist_ok=True)
+        os.makedirs(temp_yscb, exist_ok=True)
+        with bind_runtime_context(host_dir=temp_host, yscb_dir=temp_yscb):
+            uri.set_host_dir(temp_host)
+            uri.set_yscb_root(temp_yscb)
+            uri.set_module_context("tls_mod")
+            self.assertEqual(uri.get_host_dir(), os.path.normpath(os.path.abspath(temp_host)))
+            self.assertEqual(uri.get_yscb_root(), os.path.normpath(os.path.abspath(temp_yscb)))
+            self.assertEqual(uri.get_module_context(), "tls_mod")
+            with uri.host_scope(temp_host, None):
+                uri.set_yscb_root(temp_host)
+            self.assertEqual(uri.get_yscb_root(), os.path.normpath(os.path.abspath(temp_yscb)))
+        self.assertEqual(uri.get_host_dir(), orig_host)
+        self.assertEqual(uri.get_yscb_root(), orig_yscb)
+        self.assertEqual(uri.get_module_context(), orig_mod)
+
+        # 3. _ensure_safe_subpath blocks symlink escape outside base_dir
+        base_d = os.path.join(self.sandbox_dir, "safe_base")
+        outside_d = os.path.join(self.sandbox_dir, "outside_secret")
+        os.makedirs(base_d, exist_ok=True)
+        os.makedirs(outside_d, exist_ok=True)
+        secret_f = os.path.join(outside_d, "secret.txt")
+        with open(secret_f, "w", encoding="utf-8") as f:
+            f.write("secret")
+        esc_link = os.path.join(base_d, "esc_link")
+        try:
+            os.symlink(outside_d, esc_link)
+            has_symlink = True
+        except (OSError, NotImplementedError):
+            has_symlink = False
+        if has_symlink:
+            with self.assertRaises(PermissionError):
+                uri._ensure_safe_subpath(base_d, "esc_link/secret.txt", "test://esc_link/secret.txt")
+        self.mark_passed()
+
+    def test_service_contract_vcwd_busy_and_ipc_touch_activity(self):
+        """驗證 BaseServiceWorkerContract.bind_worker_context vcwd 優先序、set_state busy 欄位與 IPC touch_activity。"""
+        from core.context import get_virtual_cwd
+
+        class _DummyWorker(BaseServiceWorkerContract):
+            @property
+            def name(self) -> str:
+                return "dummy_svc"
+
+            def start(self, context):
+                pass
+
+            def stop(self) -> None:
+                pass
+
+            def health_check(self) -> bool:
+                return True
+
+        w = _DummyWorker()
+        pkts = []
+        mock_sink = MagicMock()
+        mock_sink.emit_packet_fn = lambda pkt: pkts.append(pkt)
+        w._log_sink = mock_sink
+
+        w.set_state(w.STATE_UPDATING)
+        self.assertEqual(len(pkts), 1)
+        self.assertEqual(pkts[0]["type"], "service_status")
+        self.assertTrue(pkts[0]["busy"])
+
+        self.assertTrue(w.touch_activity())
+        self.assertEqual(pkts[-1]["type"], "touch_activity")
+        self.assertEqual(pkts[-1]["source"], "dummy_svc")
+
+        host_p = os.path.join(self.sandbox_dir, "svc_host")
+        yscb_p = os.path.join(host_p, "ys_codebase")
+        os.makedirs(yscb_p, exist_ok=True)
+        with w.bind_worker_context({"host_dir": host_p, "yscb_dir": yscb_p}):
+            self.assertEqual(os.path.normpath(str(get_virtual_cwd())), os.path.normpath(os.path.abspath(host_p)))
+        self.mark_passed()
+
+    def test_gitignore_cqs_status_and_cross_process_dynamic_persistence(self):
+        """驗證 gitignore.status() 唯讀不刪檔，且新進程可從 .gitignore 現有受控區塊還原已安裝模組之動態規則。"""
+        proj_d = os.path.join(self.sandbox_dir, "gi_cqs_proj")
+        yscb_d = os.path.join(proj_d, "ys_codebase")
+        os.makedirs(os.path.join(yscb_d, ".modules", "dyn_mod"), exist_ok=True)
+        with open(os.path.join(proj_d, "yscb.config.json"), "w", encoding="utf-8") as f:
+            json.dump({"yscb_root": "./ys_codebase", "installed_modules": {"dyn_mod": {"version": "1.0.0.0"}}}, f)
+
+        gitignore.register("dyn_mod", ["/.dyn_generated/"], sync_now=True, proj_root=proj_d, yscb_root=yscb_d)
+        gi_file = os.path.join(proj_d, ".gitignore")
+        self.assertIn("# [dyn_mod]\n/.dyn_generated/", vfs.read_text(gi_file))
+
+        # Simulate a fresh process where in-memory _CUSTOM_ROOT_DYNAMIC_STORE is empty
+        gitignore._CUSTOM_ROOT_DYNAMIC_STORE.clear()
+        st = gitignore.status(proj_root=proj_d, yscb_root=yscb_d)
+        self.assertTrue(st["in_sync"])
+        self.assertIn("dyn_mod", st["groups"])
+
+        res_sync = gitignore.sync(proj_root=proj_d, yscb_root=yscb_d)
+        self.assertIn("dyn_mod", res_sync["groups"])
+        self.assertIn("# [dyn_mod]\n/.dyn_generated/", vfs.read_text(gi_file))
+        self.mark_passed()
+
+    def test_validator_type_signature_and_interprocess_lock_reentrancy(self):
+        """驗證 ContributesValidator.parse_type_signature 引號/括號感知切分與 InterProcessLock 同執行緒跨實例重入保護。"""
+        parsed = ContributesValidator.parse_type_signature('str? = "a,b|c=d" | replace')
+        self.assertEqual(parsed["type"], "str")
+        self.assertFalse(parsed["required"])
+        self.assertEqual(parsed["default"], "a,b|c=d")
+        self.assertEqual(parsed["merge_strategy"], "replace")
+
+        parsed_enum = ContributesValidator.parse_type_signature("enum(a=1, b|2, c)!")
+        self.assertEqual(parsed_enum["type"], "enum")
+        self.assertTrue(parsed_enum["required"])
+        self.assertEqual(parsed_enum["enum_values"], ["a=1", "b|2", "c"])
+
+        lock_file = os.path.join(self.sandbox_dir, "reentrant_test.lock")
+        lock1 = InterProcessLock(lock_file)
+        lock2 = InterProcessLock(lock_file)
+        self.assertTrue(lock1.acquire(blocking=False))
+        try:
+            # Default non-reentrant across instances blocks same-thread duplicate acquire
+            self.assertFalse(lock2.acquire(blocking=False))
+            # Explicit reentrant=True allows same-thread re-entry
+            self.assertTrue(lock2.acquire(blocking=False, reentrant=True))
+            lock2.release()
+        finally:
+            lock1.release()
+        self.mark_passed()
+
+    def test_space_positive_filename_rule_and_status_owner_isolation(self):
+        """驗證 CompiledRuleSet 正向純檔名規則不誤匹配同名父目錄，以及 SpaceScanner.status() 不誤套用其他 owner 的同名合成快照。"""
+        proj_d = Path(self.sandbox_dir) / "sp_fix_proj"
+        yscb_d = proj_d / "ys_codebase"
+        (proj_d / "SKILL.md").mkdir(parents=True, exist_ok=True)
+        (proj_d / "SKILL.md" / "unrelated.txt").write_text("nope\n", encoding="utf-8")
+        (proj_d / "docs").mkdir(parents=True, exist_ok=True)
+        (proj_d / "docs" / "SKILL.md").write_text("yes\n", encoding="utf-8")
+
+        reg = SpaceRegistry(
+            project_root=proj_d,
+            yscb_dir=yscb_d,
+            raw_spaces={
+                "mod_a/skills": {
+                    "entries": ["project://"],
+                    "include": ["SKILL.md"],
+                },
+                "mod_b/skills": {
+                    "entries": ["project://docs"],
+                    "include": ["SKILL.md"],
+                },
+            },
+        )
+        matched_files = [f.rel_path for f in reg.iter_space_files("mod_a/skills")]
+        self.assertEqual(matched_files, ["docs/SKILL.md"])
+
+        scanner = SpaceScanner(registry=reg, storage_root=yscb_d / ".storage.local" / "core" / "spaces")
+        scanner.scan("mod_a/skills")
+        st_payload = scanner.status("mod_b/skills")
+        self.assertEqual(len(st_payload["spaces"]), 1)
+        self.assertEqual(st_payload["spaces"][0]["head_generation"], 0)
+        self.mark_passed()
+
+    def test_dispatcher_reentrant_argv_and_contributes_check_commands_alias(self):
+        """驗證 dispatch_local 重入時 sys.argv 完整還原、純分支群組 Help 路由，以及 contributes check commands 映射。"""
+        orig_argv = list(sys.argv)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc_group = dispatcher.dispatch(["core", "uri"])
+        self.assertEqual(rc_group, 0)
+        self.assertIn("AVAILABLE SUBCOMMANDS:", buf.getvalue())
+        self.assertEqual(sys.argv, orig_argv)
+
+        buf_chk = io.StringIO()
+        with redirect_stdout(buf_chk):
+            rc_chk = check_contributes("module.source://core/contributes/core.json")
+        self.assertEqual(rc_chk, 0)
         self.mark_passed()

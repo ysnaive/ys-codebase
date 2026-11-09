@@ -7,23 +7,23 @@ from pathlib import Path
 import re
 from typing import Dict, FrozenSet, List, Optional, Union
 
-from ..dialects.markdown import MarkdownDialect
+from ..dialects.markdown import (
+    _FENCE_RE,
+    _HEADING_RE,
+    _MD_BACKTICK_DOC_RE,
+    _MD_LINK_DOC_RE,
+    MarkdownDialect,
+)
 from ..schema import (
     FileSymbolGraph,
     LanguageType,
-    ProvenanceStep,
-    RelationEdge,
     SymbolCallSite,
     SymbolKind,
     UnifiedSymbol,
 )
-from .base import BaseParser, build_line_byte_offsets, compute_content_hash, span_from_lines
+from .base import BaseParser, compute_content_hash, convert_legacy_symbols_to_file_graph
 
-_FENCE_RE = re.compile(r"^(`{3,}|~{3,})")
-_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
 _SETEXT_UNDERLINE_RE = re.compile(r"^(=+|-+)\s*$")
-_MD_LINK_DOC_RE = re.compile(r"\[([^\]]+)\]\((?:file:///)?([^)\s]+)\)")
-_MD_BACKTICK_DOC_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_.]*)(?:\([^`]*\))?`")
 
 
 class MarkdownParser(BaseParser):
@@ -237,94 +237,65 @@ class MarkdownParser(BaseParser):
                 language=LanguageType.MARKDOWN.value,
             )
 
-        base_graph = super().extract_file_graph(file_path=normalized_path, content=content, space=space)
-        line_offsets = build_line_byte_offsets(content_bytes)
-        total_bytes = len(content_bytes)
-        file_root_id = f"{normalized_path}::<module>"
-        doc_prov = (ProvenanceStep(provider_id="ast:MarkdownParser", action="extract", rule_or_hook="@edge.documents"),)
+        syms = self.parse(file_path=normalized_path, content=content, space=space)
+        imps = self.extract_imports(file_path=normalized_path, content=content)
+        base_graph = convert_legacy_symbols_to_file_graph(
+            file_path=normalized_path,
+            content=content,
+            language=LanguageType.MARKDOWN.value,
+            provider_id="ast:MarkdownParser",
+            symbols=syms,
+            call_sites=None,
+            imports=imps,
+        )
 
+        file_root_id = f"{normalized_path}::<module>"
         heading_nodes = sorted(
             base_graph.all_nodes_by_id.values(),
             key=lambda n: (n.span.end_line - n.span.start_line, n.span.start_line),
         )
 
-        def _enclosing_doc_node_id(line_no: int) -> str:
+        def _enclosing_doc_node_id(byte_off: int, line_no: int) -> str:
             for hn in heading_nodes:
                 if hn.span.start_line <= line_no <= hn.span.end_line:
                     return hn.id
             return file_root_id
 
-        edges: List[RelationEdge] = list(base_graph.outgoing_edges)
-        seen_doc_edges = {
-            (e.source_id, e.target_expr, e.edge_kind, e.span.start_line)
-            for e in edges
-        }
-
-        active_fence: Optional[str] = None
-        for idx, line in enumerate(content.splitlines(), start=1):
-            stripped = line.strip()
-            fm = _FENCE_RE.match(stripped)
-            if fm:
-                fence_marker = fm.group(1)
-                if active_fence is None:
-                    active_fence = fence_marker
-                elif stripped.startswith(active_fence[0] * len(active_fence)):
-                    active_fence = None
-                continue
-            if active_fence is not None:
-                continue
-
-            src_id = _enclosing_doc_node_id(idx)
-            ln_span = span_from_lines(idx, idx, line_offsets, total_bytes, content_bytes=content_bytes)
-
-            for m_link in _MD_LINK_DOC_RE.finditer(line):
-                link_label = m_link.group(1).strip().strip("`")
-                link_target = m_link.group(2).strip()
-                if link_target.startswith(("http://", "https://", "mailto:")):
-                    continue
-                if "#" in link_target:
-                    path_part, anchor_part = link_target.split("#", 1)
-                    if re.match(r"^L?\d+(?:-\d+)?$", anchor_part) and re.match(r"^[A-Za-z_][A-Za-z0-9_.]*$", link_label):
-                        doc_expr = f"{path_part}#{link_label}"
-                    else:
-                        doc_expr = link_target
-                elif re.match(r"^[A-Za-z_][A-Za-z0-9_.]*$", link_label) and "." in link_label:
-                    doc_expr = f"{link_target}#{link_label}"
-                else:
-                    doc_expr = link_target
-
-                dkey = (src_id, doc_expr, "documents", idx)
-                if dkey not in seen_doc_edges:
-                    seen_doc_edges.add(dkey)
-                    edges.append(
-                        RelationEdge(
-                            source_id=src_id,
-                            target_expr=doc_expr,
-                            edge_kind="documents",
-                            span=ln_span,
-                            provenance=doc_prov,
-                        )
-                    )
-
-            for m_bt in _MD_BACKTICK_DOC_RE.finditer(line):
-                bt_sym = m_bt.group(1).strip()
-                dkey = (src_id, bt_sym, "documents", idx)
-                if dkey not in seen_doc_edges:
-                    seen_doc_edges.add(dkey)
-                    edges.append(
-                        RelationEdge(
-                            source_id=src_id,
-                            target_expr=bt_sym,
-                            edge_kind="documents",
-                            span=ln_span,
-                            provenance=doc_prov,
-                        )
-                    )
-
-        return FileSymbolGraph(
+        doc_edges = self._dialect.extract_custom_relation_edges(
+            normalized_path=normalized_path,
+            content=content,
+            content_bytes=content_bytes,
+            enclosing_id_resolver=_enclosing_doc_node_id,
+            provider_id="ast:MarkdownParser",
+        )
+        edges = list(base_graph.outgoing_edges) + doc_edges
+        fg = FileSymbolGraph(
             file_path=base_graph.file_path,
             content_hash=base_graph.content_hash,
             language=base_graph.language,
             root_nodes=base_graph.root_nodes,
             outgoing_edges=tuple(edges),
         )
+        calls = self.extract_call_sites(file_path=normalized_path, content=content, space=space, symbols=syms)
+        self._last_base_extract_cache = (
+            normalized_path,
+            len(content),
+            id(content),
+            content,
+            space,
+            syms,
+            calls,
+            dict(imps or {}),
+            fg,
+        )
+        return fg
+
+
+__all__ = [
+    "MarkdownParser",
+    "_FENCE_RE",
+    "_HEADING_RE",
+    "_MD_BACKTICK_DOC_RE",
+    "_MD_LINK_DOC_RE",
+    "_SETEXT_UNDERLINE_RE",
+]

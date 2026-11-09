@@ -8,7 +8,9 @@
     }
   ],
   "commands": {
-    "module_alias": ["gdrive"],
+    "module_alias": [
+      "gdrive"
+    ],
     "description": "Google Drive 原子雲端操作、Shortcut 差量分支與雙向同步指令群",
     "cmd": {
       "status": {
@@ -99,7 +101,9 @@
           "recursive": {
             "recursive": {
               "description": "遞迴列舉所有子目錄內容",
-              "alias": ["r"]
+              "alias": [
+                "r"
+              ]
             }
           },
           "sandbox": {
@@ -337,7 +341,9 @@
           "force": {
             "force": {
               "description": "即使已存在 .yscb_gdrive.json 仍重新覆寫初始化",
-              "alias": ["f"]
+              "alias": [
+                "f"
+              ]
             }
           },
           "sandbox": {
@@ -494,7 +500,9 @@
           "force": {
             "force": {
               "description": "忽略本地未同步修改強制切換分支",
-              "alias": ["f"]
+              "alias": [
+                "f"
+              ]
             }
           },
           "backup": {
@@ -540,7 +548,9 @@
           "force": {
             "force": {
               "description": "遭遇衝突時強制以雲端版本覆寫本地",
-              "alias": ["f"]
+              "alias": [
+                "f"
+              ]
             }
           },
           "backup": {
@@ -586,7 +596,9 @@
           "force": {
             "force": {
               "description": "遭遇衝突時強制以本地版本覆寫雲端",
-              "alias": ["f"]
+              "alias": [
+                "f"
+              ]
             }
           },
           "backup": {
@@ -663,10 +675,12 @@
         "project://"
       ],
       "include": [
-        "config://gdrive-support/credentials.json",
-        "config://gdrive-support/service_account.json",
-        "config://gdrive-support/token.json",
-        "config://gdrive-support/*secret*.json"
+        "**/credentials.json",
+        "**/service_account.json",
+        "**/token.json",
+        "**/*secret*.json",
+        ".config.local/gdrive-support/**",
+        "ys_codebase/.config.local/gdrive-support/**"
       ],
       "watch": false
     }

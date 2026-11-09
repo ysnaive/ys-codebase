@@ -41,13 +41,20 @@ class YSCBTestCase(unittest.TestCase):
     sandbox_project_dir: str
     sandbox_provider_dir: str
 
-    _shared_sandbox_ctx: Optional[SandboxContext] = None
     _is_isolated_sandbox: bool = False
     _test_passed: bool
     _has_exception: bool = False
     _execution_status: str = "UNKNOWN"
     _orig_sys_path: List[str]
     _orig_env: Dict[str, str]
+
+    @staticmethod
+    def _get_shared_sandbox_ctx() -> Optional[SandboxContext]:
+        return get_runtime_context().get_module_state("dev.testing.shared_sandbox_ctx")
+
+    @staticmethod
+    def _set_shared_sandbox_ctx(ctx: Optional[SandboxContext]) -> None:
+        get_runtime_context().set_module_state("dev.testing.shared_sandbox_ctx", ctx)
 
     @property
     def execution_status(self) -> str:
@@ -57,9 +64,9 @@ class YSCBTestCase(unittest.TestCase):
     @classmethod
     def cleanup_shared_sandbox(cls) -> None:
         """Session-level teardown: cleanup shared sandbox when test suite finishes."""
-        ctx = YSCBTestCase._shared_sandbox_ctx
+        ctx = cls._get_shared_sandbox_ctx()
         if ctx is not None:
-            YSCBTestCase._shared_sandbox_ctx = None
+            cls._set_shared_sandbox_ctx(None)
             is_harness_managed = os.environ.get("YSCB_TEST_SANDBOX") == "1"
             keep_all = _is_keep_sandbox_enabled()
             if not keep_all and not is_harness_managed:
@@ -67,9 +74,7 @@ class YSCBTestCase(unittest.TestCase):
 
     def _callTestMethod(self, method: Any) -> Any:
         """Wrap test method execution to reliably capture unhandled exceptions and per-test output slice."""
-        from dev.testing.runner import OutputCapturer
-
-        active_cap = OutputCapturer._ACTIVE_INSTANCE
+        active_cap = get_runtime_context().get_module_state("dev.testing.active_capturer")
         start_offsets = active_cap.snapshot_offsets() if active_cap is not None else None
         try:
             return super()._callTestMethod(method)
@@ -133,13 +138,15 @@ class YSCBTestCase(unittest.TestCase):
                 self._is_isolated_sandbox = False
                 env_sb = os.environ.get("YSCB_SANDBOX_DIR")
                 env_sb_valid = bool(env_sb and os.path.isdir(env_sb) and os.path.isdir(os.path.join(env_sb, "host_env")))
-                shared_ctx = YSCBTestCase._shared_sandbox_ctx
+                shared_ctx = YSCBTestCase._get_shared_sandbox_ctx()
                 if (
                     shared_ctx is None
                     or not os.path.isdir(shared_ctx.host_dir)
                     or (
                         env_sb_valid
-                        and os.path.abspath(getattr(shared_ctx, "root_dir", shared_ctx.sandbox_dir)) != os.path.abspath(env_sb)
+                        and env_sb is not None
+                        and os.path.normcase(os.path.realpath(os.path.abspath(getattr(shared_ctx, "root_dir", shared_ctx.sandbox_dir))))
+                        != os.path.normcase(os.path.realpath(os.path.abspath(env_sb)))
                     )
                 ):
                     sb_dir = None
@@ -160,8 +167,9 @@ class YSCBTestCase(unittest.TestCase):
                             f"[dev:test] Security Guard Blocked: Unable to resolve an authentic virtual sandbox directory from '{get_virtual_cwd()}'. "
                             "Running tests directly on the host workspace is strictly forbidden to prevent environment contamination."
                         )
-                    YSCBTestCase._shared_sandbox_ctx = SandboxContext(sb_dir)
-                self.ctx = YSCBTestCase._shared_sandbox_ctx
+                    shared_ctx = SandboxContext(sb_dir)
+                    YSCBTestCase._set_shared_sandbox_ctx(shared_ctx)
+                self.ctx = shared_ctx
 
             self.sandbox_dir = self.ctx.sandbox_dir
             self.sandbox_host_dir = self.ctx.host_dir

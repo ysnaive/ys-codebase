@@ -35,359 +35,20 @@ from .base import BaseParser, SymbolProcessor, compute_content_hash
 
 _DEFAULT_SCM_DIR = Path(__file__).resolve().parents[2] / "assets" / "queries"
 
-BUILTIN_QUERIES: Mapping[str, str] = MappingProxyType({
-    "python.scm": """
-;; Python S-Expression Query for Universal AST
-(class_definition
-  name: (identifier) @symbol.name
-  body: (block
-    (expression_statement
-      (string) @symbol.docstring)?
-  )?
-) @definition.class
 
-(class_definition
-  body: (block
-    (expression_statement
-      (assignment
-        left: (identifier) @symbol.name
-        type: (type)? @symbol.return_type
-      ) @definition.field
-    )
-  )
-)
+def _load_builtin_queries() -> Mapping[str, str]:
+    """Load canonical S-Expression queries from `assets/queries/*.scm` as single source of truth."""
+    loaded: Dict[str, str] = {}
+    if _DEFAULT_SCM_DIR.is_dir():
+        for p in sorted(_DEFAULT_SCM_DIR.glob("*.scm")):
+            try:
+                loaded[p.name] = p.read_text(encoding="utf-8")
+            except OSError:
+                pass
+    return MappingProxyType(loaded)
 
-(function_definition
-  name: (identifier) @symbol.name
-  parameters: (parameters) @symbol.signature
-  return_type: (type)? @symbol.return_type
-  body: (block
-    (expression_statement
-      (string) @symbol.docstring)?
-  )?
-) @definition.function
 
-(assignment
-  left: (attribute
-    object: (identifier) @_self (#eq? @_self "self")
-    attribute: (identifier) @symbol.name
-  )
-  type: (type)? @symbol.return_type
-) @definition.field
-
-(call
-  function: [
-    (identifier) @call.name
-    (attribute attribute: (identifier) @call.name)
-  ]
-) @call.site
-
-(import_statement) @import.stmt
-(import_from_statement) @import.stmt
-""",
-    "c_sharp.scm": """
-;; C# S-Expression Query for Universal AST
-(class_declaration
-  name: (identifier) @symbol.name
-) @definition.class
-
-(interface_declaration
-  name: (identifier) @symbol.name
-) @definition.interface
-
-(struct_declaration
-  name: (identifier) @symbol.name
-) @definition.struct
-
-(record_declaration
-  name: (identifier) @symbol.name
-) @definition.struct
-
-(enum_declaration
-  name: (identifier) @symbol.name
-) @definition.enum
-
-(namespace_declaration
-  name: [(identifier) (qualified_name)] @symbol.name
-) @definition.namespace
-
-(file_scoped_namespace_declaration
-  name: [(identifier) (qualified_name)] @symbol.name
-) @definition.namespace
-
-(method_declaration
-  name: (identifier) @symbol.name
-  parameters: (parameter_list) @symbol.signature
-  type: (_)? @symbol.return_type
-) @definition.method
-
-(local_function_statement
-  name: (identifier) @symbol.name
-  parameters: (parameter_list) @symbol.signature
-  type: (_)? @symbol.return_type
-) @definition.function
-
-(constructor_declaration
-  name: (identifier) @symbol.name
-  parameters: (parameter_list) @symbol.signature
-) @definition.constructor
-
-(property_declaration
-  name: (identifier) @symbol.name
-  type: (_)? @symbol.return_type
-) @definition.property
-
-(field_declaration
-  (variable_declaration
-    type: (_) @symbol.return_type
-    (variable_declarator
-      name: (identifier) @symbol.name
-    )
-  )
-) @definition.field
-
-(invocation_expression
-  function: [
-    (identifier) @call.name
-    (generic_name
-      (identifier) @call.name
-    )
-    (member_access_expression
-      name: (identifier) @call.name
-    )
-    (member_access_expression
-      name: (generic_name
-        (identifier) @call.name
-      )
-    )
-    (conditional_access_expression
-      (member_binding_expression
-        name: (identifier) @call.name
-      )
-    )
-    (conditional_access_expression
-      (member_binding_expression
-        name: (generic_name
-          (identifier) @call.name
-        )
-      )
-    )
-  ]
-) @call.site
-
-(using_directive) @import.stmt
-""",
-    "cpp.scm": """
-;; C/C++ S-Expression Query for Universal AST
-(class_specifier
-  name: [(type_identifier) (template_type)] @symbol.name
-) @definition.class
-
-(struct_specifier
-  name: [(type_identifier) (template_type)] @symbol.name
-) @definition.struct
-
-(enum_specifier
-  name: (type_identifier) @symbol.name
-) @definition.enum
-
-(namespace_definition
-  name: [(namespace_identifier) (nested_namespace_specifier)] @symbol.name
-) @definition.namespace
-
-(function_definition
-  declarator: (function_declarator
-    declarator: [(identifier) (field_identifier) (qualified_identifier) (destructor_name)] @symbol.name
-    parameters: (parameter_list) @symbol.signature
-  )
-) @definition.function
-
-(field_declaration
-  declarator: (function_declarator
-    declarator: [(field_identifier) (destructor_name)] @symbol.name
-    parameters: (parameter_list) @symbol.signature
-  )
-) @definition.method
-
-(field_declaration
-  declarator: (field_identifier) @symbol.name
-) @definition.field
-
-(preproc_def
-  name: (identifier) @symbol.name
-) @definition.macro
-
-(preproc_function_def
-  name: (identifier) @symbol.name
-  parameters: (preproc_params) @symbol.signature
-) @definition.macro
-
-(call_expression
-  function: [
-    (identifier) @call.name
-    (template_function
-      name: (identifier) @call.name
-    )
-    (field_expression
-      field: (field_identifier) @call.name
-    )
-    (field_expression
-      field: (template_method
-        name: (field_identifier) @call.name
-      )
-    )
-    (qualified_identifier
-      name: (identifier) @call.name
-    )
-    (qualified_identifier
-      name: (template_function
-        name: (identifier) @call.name
-      )
-    )
-  ]
-) @call.site
-""",
-    "c.scm": """
-;; C S-Expression Query for Universal AST
-(struct_specifier
-  name: (type_identifier) @symbol.name
-) @definition.struct
-
-(enum_specifier
-  name: (type_identifier) @symbol.name
-) @definition.enum
-
-(union_specifier
-  name: (type_identifier) @symbol.name
-) @definition.union
-
-(function_definition
-  declarator: (function_declarator
-    declarator: (identifier) @symbol.name
-    parameters: (parameter_list) @symbol.signature
-  )
-) @definition.function
-
-(call_expression
-  function: [
-    (identifier) @call.name
-    (field_expression
-      field: (field_identifier) @call.name
-    )
-  ]
-) @call.site
-""",
-    "javascript.scm": """
-;; JavaScript S-Expression Query for Universal AST
-(class_declaration
-  name: (identifier) @symbol.name
-) @definition.class
-
-(function_declaration
-  name: (identifier) @symbol.name
-  parameters: (formal_parameters) @symbol.signature
-) @definition.function
-
-(method_definition
-  name: [(property_identifier) (identifier)] @symbol.name
-  parameters: (formal_parameters) @symbol.signature
-) @definition.method
-
-(variable_declarator
-  name: (identifier) @symbol.name
-  value: (function_expression
-    parameters: (formal_parameters) @symbol.signature
-  )
-) @definition.function
-
-(variable_declarator
-  name: (identifier) @symbol.name
-  value: (arrow_function
-    parameters: (formal_parameters) @symbol.signature
-  )
-) @definition.function
-
-(call_expression
-  function: [
-    (identifier) @call.name
-    (member_expression
-      property: (property_identifier) @call.name
-    )
-  ]
-) @call.site
-
-(import_statement) @import.stmt
-(export_statement) @export.stmt
-""",
-    "typescript.scm": """
-;; TypeScript S-Expression Query for Universal AST
-(class_declaration
-  name: (type_identifier) @symbol.name
-) @definition.class
-
-(interface_declaration
-  name: (type_identifier) @symbol.name
-) @definition.interface
-
-(enum_declaration
-  name: (identifier) @symbol.name
-) @definition.enum
-
-(type_alias_declaration
-  name: (type_identifier) @symbol.name
-) @definition.type
-
-(function_declaration
-  name: (identifier) @symbol.name
-  parameters: (formal_parameters) @symbol.signature
-  return_type: (type_annotation)? @symbol.return_type
-) @definition.function
-
-(method_definition
-  name: [(property_identifier) (identifier)] @symbol.name
-  parameters: (formal_parameters) @symbol.signature
-  return_type: (type_annotation)? @symbol.return_type
-) @definition.method
-
-(variable_declarator
-  name: (identifier) @symbol.name
-  value: (function_expression
-    parameters: (formal_parameters) @symbol.signature
-  )
-) @definition.function
-
-(variable_declarator
-  name: (identifier) @symbol.name
-  value: (arrow_function
-    parameters: (formal_parameters) @symbol.signature
-  )
-) @definition.function
-
-(call_expression
-  function: [
-    (identifier) @call.name
-    (member_expression
-      property: (property_identifier) @call.name
-    )
-  ]
-) @call.site
-
-(import_statement) @import.stmt
-(export_statement) @export.stmt
-""",
-    "markdown.scm": """
-;; Markdown S-Expression Query for Universal AST
-(atx_heading
-  (inline) @symbol.name
-) @definition.heading
-
-(setext_heading
-  (paragraph) @symbol.name
-) @definition.heading
-
-(pipe_table) @definition.table
-""",
-})
+BUILTIN_QUERIES: Mapping[str, str] = _load_builtin_queries()
 
 
 class TreeSitterDriver(BaseParser):
@@ -1692,16 +1353,23 @@ class TreeSitterDriver(BaseParser):
             depth = 0
             count = 1
             in_str: Optional[str] = None
+            escaped = False
             for ch in inner:
+                if escaped:
+                    escaped = False
+                    continue
+                if ch == "\\":
+                    escaped = True
+                    continue
                 if in_str:
                     if ch == in_str:
                         in_str = None
                     continue
-                if ch in ("'", '"'):
+                if ch in ("'", '"', "`"):
                     in_str = ch
-                elif ch in ("(", "[", "{", "<"):
+                elif ch in ("(", "[", "{"):
                     depth += 1
-                elif ch in (")", "]", "}", ">"):
+                elif ch in (")", "]", "}"):
                     depth = max(0, depth - 1)
                 elif ch == "," and depth == 0:
                     count += 1
@@ -1863,84 +1531,30 @@ class TreeSitterDriver(BaseParser):
                     )
                 )
 
-        # 4. Markdown `documents` edges (`[Label](path#Symbol)` and `` `Class.method` ``)
-        if self.language_name == "markdown" and content:
-            from .base import build_line_byte_offsets, span_from_lines
-            from .markdown import _FENCE_RE, _MD_BACKTICK_DOC_RE, _MD_LINK_DOC_RE
+        # 4. Dialect-specific custom relation edges (e.g., Markdown `documents` edges)
+        def _enclosing_with_heading_fallback(byte_off: int, line_no: int) -> str:
+            sid = _find_enclosing_id(byte_off)
+            if sid == file_root_id and merged_items:
+                preceding_headings = [
+                    it for it in merged_items
+                    if str(it.get("kind", "")).startswith("doc_heading") and it["start_byte"] <= byte_off
+                ]
+                if preceding_headings:
+                    return str(preceding_headings[-1]["canonical_id"])
+            return sid
 
-            line_offsets = build_line_byte_offsets(content_bytes)
-            total_bytes = len(content_bytes)
-            doc_prov = (
-                ProvenanceStep(
-                    provider_id=f"ast:{self.language_name}/default.scm",
-                    action="extract",
-                    rule_or_hook="@edge.documents",
-                ),
-            )
-            active_fence: Optional[str] = None
-            for idx_ln, line_str in enumerate(content.splitlines(), start=1):
-                stripped_ln = line_str.strip()
-                fm = _FENCE_RE.match(stripped_ln)
-                if fm:
-                    fence_marker = fm.group(1)
-                    if active_fence is None:
-                        active_fence = fence_marker
-                    elif stripped_ln.startswith(active_fence[0] * len(active_fence)):
-                        active_fence = None
-                    continue
-                if active_fence is not None:
-                    continue
-
-                ln_span = span_from_lines(idx_ln, idx_ln, line_offsets, total_bytes, content_bytes=content_bytes)
-                src_id = _find_enclosing_id(ln_span.start_byte)
-                if src_id == file_root_id and merged_items:
-                    preceding_headings = [
-                        it for it in merged_items
-                        if str(it.get("kind", "")).startswith("doc_heading") and it["start_byte"] <= ln_span.start_byte
-                    ]
-                    if preceding_headings:
-                        src_id = str(preceding_headings[-1]["canonical_id"])
-                for m_link in _MD_LINK_DOC_RE.finditer(line_str):
-                    link_label = m_link.group(1).strip().strip("`")
-                    link_target = m_link.group(2).strip()
-                    if link_target.startswith(("http://", "https://", "mailto:")):
-                        continue
-                    if "#" in link_target:
-                        path_part, anchor_part = link_target.split("#", 1)
-                        if re.match(r"^L?\d+(?:-\d+)?$", anchor_part) and re.match(r"^[A-Za-z_][A-Za-z0-9_.]*$", link_label):
-                            doc_expr = f"{path_part}#{link_label}"
-                        else:
-                            doc_expr = link_target
-                    elif re.match(r"^[A-Za-z_][A-Za-z0-9_.]*$", link_label) and "." in link_label:
-                        doc_expr = f"{link_target}#{link_label}"
-                    else:
-                        doc_expr = link_target
-                    dkey = (src_id, doc_expr, "documents", ln_span.start_byte, ln_span.end_byte)
-                    if dkey not in seen_edges:
-                        seen_edges.add(dkey)
-                        edges.append(
-                            RelationEdge(
-                                source_id=src_id,
-                                target_expr=doc_expr,
-                                edge_kind="documents",
-                                span=ln_span,
-                                provenance=doc_prov,
-                            )
-                        )
-                for m_bt in _MD_BACKTICK_DOC_RE.finditer(line_str):
-                    bt_sym = m_bt.group(1).strip()
-                    dkey = (src_id, bt_sym, "documents", ln_span.start_byte, ln_span.end_byte)
-                    if dkey not in seen_edges:
-                        seen_edges.add(dkey)
-                        edges.append(
-                            RelationEdge(
-                                source_id=src_id,
-                                target_expr=bt_sym,
-                                edge_kind="documents",
-                                span=ln_span,
-                                provenance=doc_prov,
-                            )
-                        )
+        custom_edges = self.dialect.extract_custom_relation_edges(
+            normalized_path=normalized_path,
+            content=content,
+            content_bytes=content_bytes,
+            enclosing_id_resolver=_enclosing_with_heading_fallback,
+            provider_id=f"ast:{self.language_name}/default.scm",
+        )
+        for ce in custom_edges:
+            dkey = (ce.source_id, ce.target_expr, ce.edge_kind, ce.span.start_byte, ce.span.end_byte)
+            if dkey not in seen_edges:
+                seen_edges.add(dkey)
+                edges.append(ce)
 
         return tuple(edges)
 

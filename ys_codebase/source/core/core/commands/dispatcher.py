@@ -70,8 +70,6 @@ def clear_cache() -> None:
     ctx.dispatcher_global_registry_root = None
     ctx.dispatcher_module_cache.clear()
     clear_loaded_modules()
-    globals().pop("_GLOBAL_REGISTRY", None)
-    globals().pop("_GLOBAL_REGISTRY_ROOT", None)
 
 
 # 環境與模組生命週期變異指令（執行前禁止自動拉起背景 Server，防範解壓/重載中途引發重啟風暴）
@@ -156,7 +154,7 @@ def _extract_commands_dict_from_unified(u_data: Dict[str, Any]) -> Optional[Dict
 
 
 def _load_registry(yscb_abs: str) -> CommandsRegistry:
-    """聚合工作區所有模組之 contributes/core.json、contributes/commands.json 或單檔 contributes.json。"""
+    """聚合工作區所有模組之 contributes/core.json、contributes/commands.json 與單檔 contributes.json。"""
     ctx = get_runtime_context()
     cache_key = _compute_registry_fingerprint(yscb_abs)
     if ctx.dispatcher_global_registry is not None and ctx.dispatcher_global_registry_root == cache_key:
@@ -179,7 +177,6 @@ def _load_registry(yscb_abs: str) -> CommandsRegistry:
             if not os.path.isdir(mod_path):
                 continue
 
-            registered = False
             contrib_dir = os.path.join(mod_path, "contributes")
             if os.path.isdir(contrib_dir):
                 for cfile in ("core.json", "commands.json"):
@@ -190,26 +187,23 @@ def _load_registry(yscb_abs: str) -> CommandsRegistry:
                                 data = json.load(f)
                                 if isinstance(data, dict) and "commands" in data and isinstance(data["commands"], dict):
                                     registry.register_module(mod_name, data["commands"])
-                                    registered = True
-                                    break
                         except ValueError as err:
                             log_warn(f"[yscb:registry] Warning: {err}", stream="stderr")
                         except Exception:
                             pass
 
-            if not registered:
-                unified_cpath = os.path.join(mod_path, "contributes.json")
-                if os.path.isfile(unified_cpath):
-                    try:
-                        with open(unified_cpath, "r", encoding="utf-8") as f:
-                            u_data = json.load(f)
-                        cmds_dict = _extract_commands_dict_from_unified(u_data) if isinstance(u_data, dict) else None
-                        if isinstance(cmds_dict, dict):
-                            registry.register_module(mod_name, cmds_dict)
-                    except ValueError as err:
-                        log_warn(f"[yscb:registry] Warning: {err}", stream="stderr")
-                    except Exception:
-                        pass
+            unified_cpath = os.path.join(mod_path, "contributes.json")
+            if os.path.isfile(unified_cpath):
+                try:
+                    with open(unified_cpath, "r", encoding="utf-8") as f:
+                        u_data = json.load(f)
+                    cmds_dict = _extract_commands_dict_from_unified(u_data) if isinstance(u_data, dict) else None
+                    if isinstance(cmds_dict, dict):
+                        registry.register_module(mod_name, cmds_dict)
+                except ValueError as err:
+                    log_warn(f"[yscb:registry] Warning: {err}", stream="stderr")
+                except Exception:
+                    pass
 
     ctx.dispatcher_global_registry = registry
     ctx.dispatcher_global_registry_root = cache_key
@@ -752,7 +746,10 @@ def dispatch_local(
             exit_code = 0
             rt_ctx = get_runtime_context()
             with rt_ctx.sys_path_lock:
-                orig_argv = list(sys.argv)
+                if rt_ctx.dispatcher_argv_depth == 0:
+                    rt_ctx.dispatcher_orig_argv = list(sys.argv)
+                rt_ctx.dispatcher_argv_depth += 1
+                prev_argv = list(sys.argv)
                 sys.argv = [target_cli] + raw_args
             try:
                 # 優先尋找階層下劃線精確函式 (如 uri_list)
@@ -793,7 +790,12 @@ def dispatch_local(
                 exit_code = 1
             finally:
                 with rt_ctx.sys_path_lock:
-                    sys.argv = orig_argv
+                    rt_ctx.dispatcher_argv_depth = max(0, rt_ctx.dispatcher_argv_depth - 1)
+                    if rt_ctx.dispatcher_argv_depth == 0 and rt_ctx.dispatcher_orig_argv is not None:
+                        sys.argv = list(rt_ctx.dispatcher_orig_argv)
+                        rt_ctx.dispatcher_orig_argv = None
+                    else:
+                        sys.argv = prev_argv
                 if not primary_error_hint:
                     primary_error_hint = get_last_error_hint()
 
@@ -962,22 +964,10 @@ def _dispatch_inner(argv: List[str], host_dir: str, yscb_abs: str) -> int:
             log(HelpRenderer.render_module_help(module_name, mod_spec))
             return 0
 
-    # 7. 純分支未接子指令檢查
-    if cmd_spec and cmd_spec.cmd and not sub_args:
-        target_cli = _find_module_cli(module_name, yscb_abs)
-        has_fn = False
-        if target_cli:
-            func_name = "_".join(cmd_path).replace("-", "_")
-            try:
-                with open(target_cli, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
-                    if f"def {func_name}(" in content:
-                        has_fn = True
-            except Exception:
-                pass
-        if not has_fn:
-            log(HelpRenderer.render_cmd_help(module_name, cmd_disp_name, cmd_spec))
-            return 0
+    # 7. 純分支群組未接子指令時直接於路由層渲染 Help
+    if cmd_spec and cmd_spec.cmd and not cmd_spec.args and not sub_args:
+        log(HelpRenderer.render_cmd_help(module_name, cmd_disp_name, cmd_spec))
+        return 0
 
     # 8. 檢查未知子指令
     if cmd_spec and cmd_spec.cmd and not cmd_spec.args and sub_args and not sub_args[0].startswith("-"):

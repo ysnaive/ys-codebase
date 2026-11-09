@@ -259,8 +259,7 @@ class ReleasePublisher:
                                     text = raw.decode("utf-8")
                                     norm_bytes = text.replace("\r\n", "\n").encode("utf-8")
                                     file_sha1 = hashlib.sha1(norm_bytes).hexdigest()
-                                    sha256_hex = hashlib.sha256(norm_bytes).hexdigest()
-                                    compiler_cache[fp] = (st.st_mtime_ns, st.st_size, text, file_sha1, sha256_hex)
+                                    compiler_cache[fp] = (st.st_mtime_ns, st.st_size, text, file_sha1)
                                 except UnicodeDecodeError:
                                     file_sha1 = hashlib.sha1(raw).hexdigest()
                             self._sha1_cache[fp] = [st.st_mtime_ns, st.st_size, file_sha1]
@@ -280,7 +279,7 @@ class ReleasePublisher:
                 if comp_hit and comp_hit[0] == st.st_mtime_ns and comp_hit[1] == st.st_size:
                     sha1_val = comp_hit[3]
                 else:
-                    _, sha1_val, _ = self.compiler._read_and_cache_physical_file(real_p)
+                    _, sha1_val = self.compiler._read_and_cache_physical_file(real_p)
                 self._sha1_cache[real_p] = [st.st_mtime_ns, st.st_size, sha1_val]
                 self._sha1_cache_dirty = True
                 return sha1_val
@@ -385,7 +384,8 @@ class ReleasePublisher:
             - deployment_map: {source_uri: target_abs_path}
             - target_items: 帶目標實體路徑與投影設定的項目清單
         """
-        projections = target_cfg.get("projections", {})
+        from .plans._common import resolve_target_projection_rule
+
         deployment_map: Dict[str, str] = {}
         target_items: List[Dict[str, Any]] = []
 
@@ -411,33 +411,9 @@ class ReleasePublisher:
             skill_name = it.get("skill_name", exp.get("name", os.path.splitext(base_name)[0]))
             rel_path = it.get("rel_path", base_name)
 
-            proj_rule = projections.get(exp_type, {})
-            if not proj_rule:
-                for k, v in projections.items():
-                    if k.rstrip("s") == exp_type.rstrip("s"):
-                        proj_rule = v
-                        break
-            if not proj_rule and is_skill:
-                proj_rule = projections.get("workflow") or projections.get("workflows") or {}
-
-            if not proj_rule:
-                if is_skill:
-                    target_dir_uri = f"project://.agents/skills/{skill_name}"
-                else:
-                    target_dir_uri = f"project://.agents/{sub_folder}"
-                ext = ".md"
-                header_tpl = None
-            else:
-                raw_target_dir = proj_rule.get("target_dir", f"project://.agents/{sub_folder}")
-                ext = proj_rule.get("extension", ".md")
-                header_tpl = proj_rule.get("header")
-
-                target_dir_uri = (
-                    raw_target_dir
-                    .replace("{export.name}", skill_name)
-                    .replace("{export.basename}", os.path.splitext(base_name)[0])
-                    .replace("{target.name}", target_cfg.get("name", ""))
-                )
+            target_dir_uri, rel_subpath, header_tpl, _ = resolve_target_projection_rule(
+                target_cfg, exp_type, artifact_name=skill_name, subpath=rel_path
+            )
 
             target_dir_abs = ""
             if explicit_proj_root and target_dir_uri.startswith("project://"):
@@ -458,12 +434,9 @@ class ReleasePublisher:
                 else:
                     target_dir_abs = os.path.join(proj_root, target_dir_uri.replace("/", os.sep))
 
-            file_main_name = os.path.splitext(base_name)[0]
-            if is_skill:
-                target_abs_path = os.path.normpath(os.path.join(target_dir_abs, rel_path.replace("/", os.sep)))
-            else:
-                target_filename = f"{file_main_name}{ext}"
-                target_abs_path = os.path.normpath(os.path.join(target_dir_abs, target_filename))
+            target_abs_path = os.path.normpath(
+                os.path.join(target_dir_abs, rel_subpath.replace("/", os.sep))
+            )
 
             if is_skill:
                 if source_uri:
@@ -1027,7 +1000,7 @@ class ReleasePublisher:
                 self._save_manifest(PROJECT_MANIFEST_CACHE_URI, new_proj_manifest)
 
         if eff_local_targets or eff_old_local:
-            sorted_local_files = sorted(list(eff_pre_local.keys()))
+            sorted_local_files = sorted(self._to_project_uri(f, eff_proj_root) for f in eff_pre_local.keys())
             if (
                 eff_old_local
                 and eff_old_local.get("fingerprint") == eff_local_fp
@@ -1172,7 +1145,7 @@ class ReleasePublisher:
                 "fingerprint": combined_fingerprint,
             }
 
-        stage1_res = self.compiler.compile_stage1()
+        stage1_res = self.compiler.compile_stage1(materialize_cache=False)
         if not stage1_res.get("success", False):
             return {
                 "success": False,
@@ -1373,10 +1346,7 @@ def ensure_jit_release(force: bool = False) -> bool:
         from core.context import cell_span, get_or_compute_epoch_state, invalidate_epoch_state
 
         with cell_span("aw.jit_release"):
-            orig_method = getattr(ReleasePublisher.release_all, "__name__", "") == "release_all" and not hasattr(
-                ReleasePublisher.release_all, "assert_called"
-            )
-            if not force and orig_method:
+            if not force:
                 now_bucket = int(time.monotonic() / 5.0)
                 manifest_mtimes = []
                 if uri:
@@ -1393,6 +1363,15 @@ def ensure_jit_release(force: bool = False) -> bool:
                             manifest_mtimes.append(os.stat(p).st_mtime_ns if os.path.isfile(p) else 0)
                         except Exception:
                             manifest_mtimes.append(0)
+                assets_dir = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets"
+                )
+                try:
+                    manifest_mtimes.append(
+                        os.stat(assets_dir).st_mtime_ns if os.path.isdir(assets_dir) else 0
+                    )
+                except Exception:
+                    manifest_mtimes.append(0)
                 epoch_token = (now_bucket, tuple(manifest_mtimes))
 
                 def _run_jit() -> bool:

@@ -227,11 +227,6 @@ class UpdateChecker:
                     pass
         return None, None
 
-    def _get_local_host_script_version(self) -> Optional[str]:
-        """讀取本機工作區入口檔 yscb.py 之 __version__。"""
-        ver, _ = self._get_local_host_script_info()
-        return ver
-
     def _fetch_latest_host_script_info(self, cfg: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
         """探測來源端最新 yscb.py 之 (__version__, sha256)（支援本地路徑與遠端 HTTP）。"""
         self_update_url = cfg.get("self_update_url") if isinstance(cfg, dict) else None
@@ -282,34 +277,13 @@ class UpdateChecker:
             pass
         return None, None
 
-    def _fetch_latest_host_script_version(self, cfg: Dict[str, Any]) -> Optional[str]:
-        """探測來源端最新 yscb.py 之 __version__（支援本地路徑與遠端 HTTP）。"""
-        ver, _ = self._fetch_latest_host_script_info(cfg)
-        return ver
-
     def _check_host_script_update(self, cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """比對本機與來源端 yscb.py 版本與內容 SHA-256，若有新版或內容漂移則回傳更新資訊字典。"""
-        if (
-            "_get_local_host_script_version" in self.__dict__
-            or getattr(type(self), "_get_local_host_script_version", None)
-            is not UpdateChecker._get_local_host_script_version
-        ):
-            cur_ver, local_sha256 = self._get_local_host_script_version(), None
-        else:
-            cur_ver, local_sha256 = self._get_local_host_script_info()
-
+        cur_ver, local_sha256 = self._get_local_host_script_info()
         if not cur_ver or cur_ver == "build" or cur_ver.endswith(".build"):
             return None
 
-        if (
-            "_fetch_latest_host_script_version" in self.__dict__
-            or getattr(type(self), "_fetch_latest_host_script_version", None)
-            is not UpdateChecker._fetch_latest_host_script_version
-        ):
-            latest_ver, latest_sha256 = self._fetch_latest_host_script_version(cfg), None
-        else:
-            latest_ver, latest_sha256 = self._fetch_latest_host_script_info(cfg)
-
+        latest_ver, latest_sha256 = self._fetch_latest_host_script_info(cfg)
         if not latest_ver:
             return None
         try:

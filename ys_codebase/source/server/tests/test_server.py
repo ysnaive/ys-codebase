@@ -83,8 +83,7 @@ class TestServerModule(YSCBTestCase):
         self.root_dir = self.temp_dir.name
         self.cache_dir = os.path.join(self.root_dir, ".cache", "server")
         os.makedirs(self.cache_dir, exist_ok=True)
-        server_service._LAST_TOUCH_TS = 0.0
-        server_service._LAST_TOUCH_BY_ROOT.clear()
+        server_service.reset_touch_state()
 
     def tearDown(self):
         self.doCleanups()
@@ -104,8 +103,7 @@ class TestServerModule(YSCBTestCase):
             core_dispatcher._GLOBAL_REGISTRY = None
             core_dispatcher._GLOBAL_REGISTRY_ROOT = None
 
-        server_service._LAST_TOUCH_TS = 0.0
-        server_service._LAST_TOUCH_BY_ROOT.clear()
+        server_service.reset_touch_state()
         try:
             super().tearDown()
         finally:
@@ -1885,6 +1883,120 @@ class TestServerModule(YSCBTestCase):
             finally:
                 with sup._worker_lock:
                     sup._kill_worker_locked(timeout_sec=1.0)
+        self.mark_passed()
+
+
+    def test_ipc_touch_activity_idle_ttl_busy_guard_ready_timeout_and_cli_ttl_preservation(self):
+        """Verify BaseServiceWorker IPC touch_activity, _idle_ttl_loop busy guard, _wait_worker_ready timeout cleanup, explicit CLI TTL preservation across restart_worker, and locked stop log protection."""
+        from core.commands.bags import CmdBags, CmdOption
+        from core import vfs
+
+        # 1. BaseServiceWorker.touch_activity sends IPC packet via _log_sink.emit_packet_fn with 1s throttling
+        ipc_packets = []
+
+        class _Sink:
+            def __init__(self):
+                self.emit_packet_fn = ipc_packets.append
+
+        svc = MockService("ipc-keepalive-svc")
+        svc._log_sink = _Sink()
+        with unittest.mock.patch("server.service.touch_activity") as mock_http_touch:
+            self.assertTrue(svc.touch_activity())
+            self.assertTrue(svc.touch_activity())
+            mock_http_touch.assert_not_called()
+        self.assertEqual(ipc_packets, [{"type": "touch_activity", "source": "ipc-keepalive-svc"}])
+
+        # 2. _idle_ttl_loop refreshes activity via busy_guard instead of shutting down when worker is busy
+        sup = self._make_supervisor(idle_timeout_sec=0.01, enable_watcher=False)
+        sup._is_running = True
+        sup._last_active_time = 1.0
+        sup._current_task = {"module": "dev", "args": ["test"], "started_at": time.time()}
+
+        sleep_calls = 0
+
+        def _fake_sleep(_sec):
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls >= 2:
+                sup._is_running = False
+
+        with unittest.mock.patch("server.master.time.sleep", side_effect=_fake_sleep), \
+             unittest.mock.patch.object(sup, "stop") as mock_stop:
+            sup._idle_ttl_loop()
+            mock_stop.assert_not_called()
+            self.assertGreater(sup._last_active_time, 100.0)
+        sup._current_task = None
+
+        # 3. _wait_worker_ready timeout terminates hung warming worker and releases _dispatch_lock
+        hung_warming = self._write_fake_worker(
+            "emit({'type': 'worker_alive'})\n"
+            "time.sleep(60)\n"
+        )
+        sup_hang = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
+        real_popen = subprocess.Popen
+        with unittest.mock.patch(
+            "server.master.subprocess.Popen",
+            side_effect=lambda cmd, **kw: real_popen([sys.executable, hung_warming], **kw),
+        ):
+            try:
+                with sup_hang._worker_lock:
+                    sup_hang._spawn_worker_locked()
+                self.assertFalse(sup_hang._wait_worker_ready(timeout_sec=0.15))
+                pkts = []
+                with unittest.mock.patch.object(sup_hang, "_wait_worker_ready", return_value=False):
+                    rc = sup_hang.dispatch_task({"module": "core", "args": ["status"]}, pkts.append)
+                self.assertEqual(rc, 1)
+                self.assertIn("timed out", pkts[-1].get("error", ""))
+                self.assertIsNone(sup_hang._worker_proc)
+            finally:
+                with sup_hang._worker_lock:
+                    sup_hang._kill_worker_locked(timeout_sec=1.0)
+
+        # 4. Explicit CLI idle_timeout_sec is preserved across restart_worker, whereas default (None) syncs config
+        sup_explicit = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=45.0, enable_watcher=False)
+        self.addCleanup(sup_explicit.logger.archive_and_close)
+        self.addCleanup(sup_explicit.stop)
+        sup_default = MasterSupervisor(yscb_root=self.root_dir, idle_timeout_sec=None, enable_watcher=False)
+        self.addCleanup(sup_default.logger.archive_and_close)
+        self.addCleanup(sup_default.stop)
+        with unittest.mock.patch.object(sup_explicit, "_kill_worker_locked"), \
+             unittest.mock.patch.object(sup_explicit, "_spawn_worker_locked", return_value=11111), \
+             unittest.mock.patch.object(sup_explicit, "_write_state"):
+            sup_explicit.restart_worker()
+        self.assertEqual(sup_explicit.idle_timeout_sec, 45.0)
+
+        with unittest.mock.patch("server.config.ServerConfig.load") as mock_cfg_load, \
+             unittest.mock.patch.object(sup_default, "_kill_worker_locked"), \
+             unittest.mock.patch.object(sup_default, "_spawn_worker_locked", return_value=22222), \
+             unittest.mock.patch.object(sup_default, "_write_state"):
+            from server.config import ServerConfig
+            mock_cfg_load.return_value = ServerConfig(idle_timeout_sec=720.0)
+            sup_default.restart_worker()
+        self.assertEqual(sup_default.idle_timeout_sec, 720.0)
+
+        # 5. cli.stop() does NOT archive active log when daemon.lock is held by another process
+        server_cli = _load_server_cli()
+        active_log = os.path.join(self.root_dir, ".cache", "server", "log")
+        vfs.write_text(active_log, 'server start at time "2026_11_09_01.00.00"\n', encoding="utf-8", atomic=True)
+        state = ServerDaemonState(
+            pid=424242,
+            worker_pid=0,
+            port=1,
+            token="t",
+            root=self.root_dir,
+            start_time=time.time(),
+            idle_timeout_sec=0.0,
+        )
+        force_bags = CmdBags(raw_cmd="stop --force", command="stop", args=[], options={"force": CmdOption(name="force", params=True)})
+        with unittest.mock.patch.object(server_cli, "guard_dispatch"), \
+             unittest.mock.patch.object(server_cli, "_get_yscb_root", return_value=self.root_dir), \
+             unittest.mock.patch.object(server_cli, "read_daemon_state", return_value=state), \
+             unittest.mock.patch.object(server_cli, "is_process_alive", return_value=True), \
+             unittest.mock.patch.object(server_cli, "kill_process_tree"), \
+             unittest.mock.patch.object(server_cli.InterProcessLock, "acquire", return_value=False), \
+             redirect_stdout(io.StringIO()):
+            self.assertEqual(server_cli.stop(force_bags), 0)
+        self.assertTrue(os.path.exists(active_log), "Active log must NOT be archived without acquiring daemon.lock")
         self.mark_passed()
 
 

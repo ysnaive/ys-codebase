@@ -17,7 +17,7 @@ import os
 import threading
 import time
 import urllib.request
-from typing import Any, Callable, Dict, Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
 from core.context import bind_runtime_context, get_env, get_runtime_context, get_virtual_cwd
 from core.log import bind_log_context
@@ -29,6 +29,15 @@ STATE_DEGRADED_OFFLINE: str = "DEGRADED_OFFLINE"
 STATE_STOPPED: str = "STOPPED"
 
 _TOUCH_MIN_INTERVAL_SEC: float = 1.0
+_ORIGINAL_URLOPEN = urllib.request.urlopen
+_LOCAL_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _open_local_no_proxy(req: urllib.request.Request, timeout: float) -> Any:
+    """Opens a localhost request bypassing system HTTP proxy unless `urllib.request.urlopen` is patched."""
+    if urllib.request.urlopen is not _ORIGINAL_URLOPEN:
+        return urllib.request.urlopen(req, timeout=timeout)
+    return _LOCAL_NO_PROXY_OPENER.open(req, timeout=timeout)
 
 
 def _resolve_service_root(yscb_root: Optional[str]) -> str:
@@ -49,18 +58,22 @@ def _resolve_service_root(yscb_root: Optional[str]) -> str:
     return get_env("YSCB_HOST_DIR") or get_virtual_cwd()
 
 
-def _get_touch_state() -> tuple[threading.Lock, Dict[str, float]]:
-    """Returns `(server_touch_lock, server_last_touch_by_root)` bound to the active RuntimeContext."""
+def _get_touch_state() -> Tuple[threading.RLock, Dict[str, float], Dict[str, Tuple[int, int, str]]]:
+    """Returns `(server_touch_lock, server_last_touch_by_root, server_touch_daemon_cache)` bound to RuntimeContext."""
     ctx = get_runtime_context()
     lock = getattr(ctx, "server_touch_lock", None)
     if lock is None:
-        lock = threading.Lock()
+        lock = threading.RLock()
         setattr(ctx, "server_touch_lock", lock)
     touch_map = getattr(ctx, "server_last_touch_by_root", None)
     if touch_map is None:
         touch_map = {}
         setattr(ctx, "server_last_touch_by_root", touch_map)
-    return lock, touch_map
+    daemon_cache = getattr(ctx, "server_touch_daemon_cache", None)
+    if daemon_cache is None:
+        daemon_cache = {}
+        setattr(ctx, "server_touch_daemon_cache", daemon_cache)
+    return lock, touch_map, daemon_cache
 
 
 def touch_activity(
@@ -72,9 +85,9 @@ def touch_activity(
     """
     Refresh the running Server daemon's idle timeout timer (non-CLI keepalive probe SDK).
 
-    Reads `.cache/server/daemon.json` and sends an authenticated `POST /api/touch`
-    (debounced to at most once per 1.0s unless `force=True`) to the MasterSupervisor so
-    background workers (`core-space-watcher`, `knowledge-db-worker`, `gdrive-sync`) and
+    Reads `.cache/server/daemon.json` (with `(mtime_ns, port, token)` caching) and sends an
+    authenticated `POST /api/touch` (debounced to at most once per 1.0s unless `force=True`)
+    via a direct no-proxy localhost opener to the MasterSupervisor so background workers and
     external SDK callers keep the server alive without corrupting the worker stdout pipe.
 
     Returns True if the activity timestamp was refreshed (or throttled within 1s), False if no
@@ -83,7 +96,7 @@ def touch_activity(
     now = time.monotonic()
     resolved_root = _resolve_service_root(yscb_root)
     root_key = os.path.normcase(os.path.abspath(resolved_root))
-    touch_lock, touch_map = _get_touch_state()
+    touch_lock, touch_map, daemon_cache = _get_touch_state()
     if not force:
         with touch_lock:
             last_ts = touch_map.get(root_key, 0.0)
@@ -91,15 +104,33 @@ def touch_activity(
                 return True
 
     state_file = os.path.join(resolved_root, ".cache", "server", "daemon.json")
-    if not os.path.isfile(state_file):
-        return False
     try:
-        with open(state_file, "r", encoding="utf-8") as f:
-            state = json.load(f)
-        port = int(state.get("port", 0) or 0)
-        token = str(state.get("token", "") or "")
+        st = os.stat(state_file)
+        mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
+    except OSError:
+        with touch_lock:
+            daemon_cache.pop(root_key, None)
+        return False
+
+    try:
+        port = 0
+        token = ""
+        with touch_lock:
+            cached_ep = daemon_cache.get(root_key)
+            if cached_ep is not None and cached_ep[0] == mtime_ns:
+                _, port, token = cached_ep
         if port <= 0 or not token:
-            return False
+            with open(state_file, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            if not isinstance(state, dict):
+                return False
+            port = int(state.get("port", 0) or 0)
+            token = str(state.get("token", "") or "")
+            if port <= 0 or not token:
+                return False
+            with touch_lock:
+                daemon_cache[root_key] = (mtime_ns, port, token)
+
         url = f"http://127.0.0.1:{port}/api/touch"
         body = json.dumps({"source": source}).encode("utf-8")
         req = urllib.request.Request(
@@ -111,7 +142,7 @@ def touch_activity(
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
+        with _open_local_no_proxy(req, timeout=1.5) as resp:
             if resp.status != 200:
                 return False
         with touch_lock:
@@ -176,6 +207,7 @@ class BaseServiceWorkerContract(ABC):
         if prev_state == target_state:
             return
         alive = target_state != self.STATE_STOPPED
+        busy = target_state in (self.STATE_STARTING, self.STATE_UPDATING)
         notify_fn = getattr(self, "_status_notify_fn", None)
         if callable(notify_fn):
             try:
@@ -192,6 +224,7 @@ class BaseServiceWorkerContract(ABC):
                     "name": self.name,
                     "state": target_state,
                     "alive": alive,
+                    "busy": busy,
                 })
             except Exception:
                 pass
@@ -199,6 +232,11 @@ class BaseServiceWorkerContract(ABC):
     def _resolve_worker_runtime_dirs(
         self, context: Optional[Dict[str, Any]] = None
     ) -> tuple[Optional[str], Optional[str]]:
+        if isinstance(context, dict) and context:
+            if not isinstance(getattr(self, "context", None), dict):
+                self.context = dict(context)
+            else:
+                self.context.update(context)
         ctx_dict = context if isinstance(context, dict) else getattr(self, "context", None)
         yscb_dir: Optional[str] = None
         host_dir: Optional[str] = None
@@ -238,7 +276,13 @@ class BaseServiceWorkerContract(ABC):
         `LogExecutionScope` (`bind_worker_log_context`) for background worker threads and callbacks.
         """
         host_dir, yscb_dir = self._resolve_worker_runtime_dirs(context)
-        vcwd = yscb_dir or host_dir
+        ctx_dict = context if isinstance(context, dict) else getattr(self, "context", None)
+        explicit_vcwd: Optional[str] = None
+        if isinstance(ctx_dict, dict):
+            raw_vcwd = ctx_dict.get("virtual_cwd") or ctx_dict.get("cwd")
+            if raw_vcwd:
+                explicit_vcwd = os.path.abspath(str(raw_vcwd))
+        vcwd = explicit_vcwd or host_dir or yscb_dir
         env_overrides: Optional[Dict[str, Optional[str]]] = None
         if host_dir or yscb_dir:
             env_overrides = {}
@@ -266,8 +310,13 @@ class BaseServiceWorkerContract(ABC):
         and wrapping execution in `bind_worker_context` (`bind_runtime_context` + `bind_worker_log_context`)
         so all `core.uri` and `core.log` calls on the worker thread remain isolated.
         """
-        if isinstance(context, dict) and context.get("log_sink") is not None:
-            self._log_sink = context.get("log_sink")
+        if isinstance(context, dict) and context:
+            if not isinstance(getattr(self, "context", None), dict):
+                self.context = dict(context)
+            else:
+                self.context.update(context)
+            if context.get("log_sink") is not None:
+                self._log_sink = context.get("log_sink")
 
         ctx = contextvars.copy_context()
 
@@ -316,7 +365,16 @@ class BaseServiceWorkerContract(ABC):
 
     def touch_activity(self) -> bool:
         """Notify the server supervisor that this background worker is actively processing work."""
-        return touch_activity(source=self.name)
+        sink = getattr(self, "_log_sink", None)
+        emit_fn = getattr(sink, "emit_packet_fn", None) if sink is not None else None
+        if callable(emit_fn):
+            try:
+                emit_fn({"type": "touch_activity", "source": self.name})
+                return True
+            except Exception:
+                pass
+        _, yscb_dir = self._resolve_worker_runtime_dirs()
+        return touch_activity(yscb_root=yscb_dir, source=self.name)
 
     def is_busy(self) -> bool:
         """Returns True if this service worker is actively starting or updating state."""

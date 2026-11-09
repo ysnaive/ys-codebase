@@ -25,7 +25,9 @@ from ast_engine.dialects.csharp import CSharpDialect
 from ast_engine.engine import ASTEngine
 from ast_engine.exceptions import SchemaValidationError
 from ast_engine.formatter import ASTResultFormatter
+from ast_engine.graph import CallGraphIndex
 from ast_engine.io_utils import (
+    _format_cross_drive_relpath,
     atomic_save_gzip_pickle,
     compute_project_relpath,
     is_dirty_file_match,
@@ -116,7 +118,7 @@ class TestASTEngineCore(ASTTestCase):
 
     @require(Requirement.LOGIC)
     def test_schema_validation_errors_and_none_container_defenses(self) -> None:
-        """Verify all schema dataclasses validate input types, defend against None containers, and index partial_files."""
+        """Verify all schema dataclasses validate input types, propagate inner SchemaValidationError, defend against None containers, and index partial_files."""
         for cls_type in (
             MemberInfo,
             LanguageConfig,
@@ -126,6 +128,7 @@ class TestASTEngineCore(ASTTestCase):
             ASTSnapshot,
             OutlineNode,
             OutlineResult,
+            CallGraphIndex,
         ):
             with self.assertRaises(SchemaValidationError):
                 cls_type.from_dict("invalid_non_dict")  # type: ignore[arg-type]
@@ -136,6 +139,10 @@ class TestASTEngineCore(ASTTestCase):
             LanguageConfig.from_dict({"id": "python"})
         with self.assertRaises(SchemaValidationError):
             UnifiedSymbol.from_dict({"id": "s1", "name": "Foo"})
+        with self.assertRaises(SchemaValidationError):
+            ASTSnapshot.from_dict({"symbols": {"bad_sym": {"id": "s1", "name": "MissingFields"}}})
+        with self.assertRaises(SchemaValidationError):
+            CallGraphIndex.from_dict({"workspace_graph": {"nodes_by_id": {"bad": {"invalid": "node"}}}})
 
         # None container defense across dataclasses
         cfg = LanguageConfig.from_dict({"id": "py", "extensions": None, "custom_kinds": None})
@@ -210,15 +217,20 @@ class TestASTEngineCore(ASTTestCase):
 
     @require(Requirement.LOGIC)
     def test_io_utils_gzip_pickle_and_relpath_boundaries(self) -> None:
-        """Verify atomic_save_gzip_pickle, load_gzip_pickle corruption/missing handling, and compute_project_relpath '..' boundaries."""
+        """Verify atomic_save_gzip_pickle preserves concurrent .tmp files on normal write, load_gzip_pickle corruption/missing handling, and compute_project_relpath cross-drive boundaries."""
         missing_p = self.temp_dir / "missing.bin.gz"
         self.assertIsNone(load_gzip_pickle(missing_p, raise_on_missing=False))
         with self.assertRaises(FileNotFoundError):
             load_gzip_pickle(missing_p, raise_on_missing=True)
 
         valid_p = self.temp_dir / "valid.bin.gz"
+        concurrent_tmp = self.temp_dir / ".valid.bin.gz.tmp.88888"
+        concurrent_tmp.write_bytes(b"in_flight_concurrent_writer")
         atomic_save_gzip_pickle(valid_p, {"hello": "world", "count": 7})
         self.assertEqual(load_gzip_pickle(valid_p), {"hello": "world", "count": 7})
+        # Normal write completion must NOT delete another concurrent writer's .tmp file
+        self.assertTrue(concurrent_tmp.exists())
+        concurrent_tmp.unlink()
 
         corrupt_p = self.temp_dir / "corrupt.bin.gz"
         corrupt_p.write_bytes(b"not a valid gzip stream")
@@ -226,7 +238,7 @@ class TestASTEngineCore(ASTTestCase):
         with self.assertRaises(Exception):
             load_gzip_pickle(corrupt_p, raise_on_missing=True)
 
-        # Verify compute_project_relpath handles '..foo.py' inside root vs file outside root
+        # Verify compute_project_relpath handles '..foo.py' inside root vs file outside root and cross-drive formatting
         proj_root = self.temp_dir / "workspace"
         proj_root.mkdir(parents=True, exist_ok=True)
         dotdot_file = proj_root / "..weird_name.py"
@@ -240,6 +252,8 @@ class TestASTEngineCore(ASTTestCase):
             compute_project_relpath(outside_file, fallback_base=fb_dir, project_root=proj_root),
             f"{fb_dir.name}/outside.py",
         )
+        self.assertEqual(_format_cross_drive_relpath(Path("D:/ext_pkg/a/mod.py")), "D/ext_pkg/a/mod.py")
+        self.assertEqual(_format_cross_drive_relpath(Path("D:/ext_pkg/b/mod.py")), "D/ext_pkg/b/mod.py")
         self.mark_passed()
 
     @require(Requirement.LOGIC)
@@ -430,10 +444,12 @@ class TestASTEngineCore(ASTTestCase):
 
     @require(Requirement.LOGIC)
     def test_is_dirty_file_match_and_mtime_disambiguation(self) -> None:
-        """Verify dirty_files path matching and multi-space root-level mtime_ns disambiguation."""
+        """Verify dirty_files path matching, cross-module relative path isolation, deepest space resolution, and multi-space mtime_ns disambiguation."""
         dirty_set = normalize_dirty_paths(["ys_codebase/source/dev/scripts/cli.py"])
         self.assertFalse(is_dirty_file_match("cli.py", dirty_set))
-        self.assertTrue(is_dirty_file_match("source/dev/scripts/cli.py", dirty_set))
+        self.assertFalse(is_dirty_file_match("scripts/cli.py", dirty_set))
+        self.assertFalse(is_dirty_file_match("ys_codebase/source/ast/scripts/cli.py", normalize_dirty_paths(["scripts/cli.py"])))
+        self.assertTrue(is_dirty_file_match("/workspace/ys_codebase/source/dev/scripts/cli.py", dirty_set))
         self.assertTrue(is_dirty_file_match("ys_codebase/source/dev/scripts/cli.py", dirty_set))
 
         self.assertTrue(is_dirty_file_match("src/utils.py", {"/workspace/proj/src/utils.py"}))
@@ -475,6 +491,22 @@ class TestASTEngineCore(ASTTestCase):
         self.assertEqual(Path(abs_p).resolve(), file_b.resolve())
         self.assertTrue(rel_p.endswith("root_mod.py"))
         self.assertEqual(matched_spaces, {"space_b"})
+
+        # Verify _resolve_target_file picks the deepest matching space rather than being overwritten by a broader parent space
+        nested_dir = space_a / "deep"
+        nested_dir.mkdir(parents=True, exist_ok=True)
+        nested_file = nested_dir / "inner.py"
+        nested_file.write_text("z = 3\n", encoding="utf-8")
+        eng_nested = ASTEngine(
+            project_root=self.temp_dir,
+            storage_dir=self.temp_dir / ".ast_store_nested",
+            custom_spaces={
+                "deep_space": {"entries": [str(nested_dir)]},
+                "broad_space": {"entries": [str(self.temp_dir)]},
+            },
+        )
+        _, _, chosen_space = eng_nested._resolve_target_file(str(nested_file))
+        self.assertEqual(chosen_space, "deep_space")
         self.mark_passed()
 
     @require(Requirement.LOGIC)

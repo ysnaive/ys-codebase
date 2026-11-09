@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from core.context import get_env, get_runtime_context, get_virtual_cwd
@@ -29,28 +28,24 @@ from core.vfs import write_bytes
 
 from .exceptions import ASTError
 from .io_utils import compute_project_relpath, is_dirty_file_match, normalize_dirty_paths
+from .parsers.base import is_partial_declaration
 from .parsers.registry import ParserRegistry
-from .schema import FileSymbolGraph, MemberInfo, SemanticBundle, SymbolCallSite, SymbolKind, SymbolNode, UnifiedSymbol
+from .schema import FileSymbolGraph, MemberInfo, SemanticBundle, SymbolCallSite, SymbolNode, UnifiedSymbol
 
 PARALLEL_BUNDLE_THRESHOLD = 10
 
 
 def _get_worker_registry_state() -> Optional[ParserRegistry]:
-    ctx = get_runtime_context()
-    if "_worker_registry" in globals():
-        ctx.set_module_state("ast.bundler.worker_registry", globals().pop("_worker_registry"))
-    return ctx.get_module_state("ast.bundler.worker_registry", lambda: None)
+    return get_runtime_context().get_module_state("ast.bundler.worker_registry", lambda: None)
 
 
 def _set_worker_registry_state(val: Optional[ParserRegistry]) -> None:
-    globals().pop("_worker_registry", None)
     get_runtime_context().set_module_state("ast.bundler.worker_registry", val)
 
 
-def __getattr__(name: str) -> Any:
-    if name == "_worker_registry":
-        return _get_worker_registry_state()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+def reset_worker_registry() -> None:
+    """Reset the worker-process `ParserRegistry` cache in the current runtime context."""
+    _set_worker_registry_state(None)
 
 
 def _safe_resolve_path(p: Union[str, Path]) -> Path:
@@ -179,6 +174,183 @@ def ensure_unique_overload_ids(
     return updated
 
 
+def project_file_artifacts_from_graph(
+    fg: FileSymbolGraph,
+    default_space: str = "unified",
+    spaces: Optional[List[str]] = None,
+) -> Tuple[List[UnifiedSymbol], List[SymbolCallSite], Dict[str, str]]:
+    """
+    Project legacy `UnifiedSymbol`, `SymbolCallSite`, and `imports` directly from a single-pass
+    `FileSymbolGraph` without re-running parser extraction.
+    """
+    sorted_spaces = list(spaces) if spaces else ([default_space] if default_space else ["unified"])
+    primary_space = sorted_spaces[0]
+    norm_path = fg.file_path.replace("\\", "/")
+    type_container_kinds = ("class", "struct", "interface", "enum", "namespace", "module")
+    callable_kinds = ("constructor", "method", "function")
+    field_like_kinds = ("property", "field", "variable", "constant")
+    priority_order = (*type_container_kinds, *callable_kinds, *field_like_kinds)
+
+    def _primary_kind(kinds: Iterable[str]) -> str:
+        k_set = set(kinds)
+        for pk in priority_order:
+            if pk in k_set:
+                return pk
+        return sorted(k_set)[0] if k_set else "variable"
+
+    symbols: List[UnifiedSymbol] = []
+    node_id_to_sym: Dict[str, UnifiedSymbol] = {}
+
+    def _walk_node(node: SymbolNode, parent_sym_id: Optional[str]) -> None:
+        p_kind = _primary_kind(node.kinds)
+        if p_kind == "field" and parent_sym_id is not None:
+            return
+
+        sep = str(node.facets.get("scope_separator") or ".")
+        fqn_str = node.fqn
+        short_name_val = node.name
+        parent_scope_val = node.scope_path[-1] if node.scope_path else ""
+        sig_str = str(node.facets.get("signature") or "")
+        doc_str = str(node.facets.get("docstring") or "")
+        ret_str = str(node.facets.get("return_type") or "")
+        vis_str = str(node.facets.get("visibility") or "public")
+        is_st = bool(node.facets.get("is_static", False))
+
+        members_list: List[MemberInfo] = []
+        for ch in node.children:
+            ch_kind = _primary_kind(ch.kinds)
+            members_list.append(
+                MemberInfo(
+                    name=ch.name,
+                    kind=ch_kind,
+                    signature=str(ch.facets.get("signature") or ""),
+                    docstring=str(ch.facets.get("docstring") or ""),
+                    visibility=str(ch.facets.get("visibility") or "public"),
+                    line_number=ch.span.start_line,
+                    is_static=bool(ch.facets.get("is_static", False)),
+                )
+            )
+
+        sym_id = UnifiedSymbol.compute_id(
+            space=primary_space,
+            file_path=norm_path,
+            name=fqn_str,
+            kind=p_kind,
+            line_number=node.span.start_line,
+        )
+        sym_name = fqn_str if parent_sym_id is not None else short_name_val
+        search_payload = f"{fqn_str} {short_name_val} {doc_str} {sig_str}".strip()
+
+        meta: Dict[str, Any] = {
+            "short_name": short_name_val,
+            "parent_scope": parent_scope_val,
+            "end_line": node.span.end_line,
+            "scope_path": list(node.scope_path),
+            "start_byte": node.span.start_byte,
+            "end_byte": node.span.end_byte,
+            "spaces": list(sorted_spaces),
+        }
+        if node.facets.get("base_types"):
+            meta["base_types"] = list(node.facets["base_types"])
+        if is_partial_declaration(node.kinds, sig_str, node.facets):
+            meta["is_partial"] = True
+        if is_st:
+            meta["is_static"] = True
+        if node.facets.get("field_types"):
+            meta["field_types"] = dict(node.facets["field_types"])
+        if node.facets.get("fallback"):
+            meta["fallback"] = True
+
+        sym_obj = UnifiedSymbol(
+            id=sym_id,
+            name=sym_name,
+            kind=p_kind,
+            file_path=norm_path,
+            line_number=node.span.start_line,
+            end_line=node.span.end_line,
+            language=node.language or fg.language,
+            docstring=doc_str,
+            signature=sig_str,
+            fqn=fqn_str,
+            scope_path=sep.join(node.scope_path),
+            parent_id=parent_sym_id,
+            children=tuple(members_list),
+            parameters=(),
+            return_type=ret_str,
+            search_payload=search_payload,
+            visibility=vis_str,
+            members=tuple(members_list),
+            metadata=meta,
+        )
+        symbols.append(sym_obj)
+        node_id_to_sym[node.id] = sym_obj
+        for ch in node.children:
+            _walk_node(ch, sym_id)
+
+    for rnode in fg.root_nodes:
+        _walk_node(rnode, None)
+
+    symbols = ensure_unique_overload_ids(symbols, default_space=primary_space)
+    for s in symbols:
+        s.metadata["spaces"] = list(sorted_spaces)
+
+    # Remap node_id_to_sym after ensure_unique_overload_ids
+    by_line_and_fqn: Dict[Tuple[int, str], UnifiedSymbol] = {
+        (s.line_number, s.fqn or s.name): s for s in symbols
+    }
+    for nid, n_obj in fg.all_nodes_by_id.items():
+        if (n_obj.span.start_line, n_obj.fqn) in by_line_and_fqn:
+            node_id_to_sym[nid] = by_line_and_fqn[(n_obj.span.start_line, n_obj.fqn)]
+
+    call_sites: List[SymbolCallSite] = []
+    imports_dict: Dict[str, str] = {}
+    for edge in fg.outgoing_edges:
+        if edge.edge_kind == "imports":
+            expr = edge.target_expr.strip()
+            if not expr:
+                continue
+            if expr.startswith("export*="):
+                target_str = expr.split("=", 1)[1].strip()
+                imports_dict[f"export*:{target_str}"] = target_str
+            elif expr.startswith("*="):
+                target_str = expr.split("=", 1)[1].strip()
+                imports_dict[f"*:{target_str}"] = target_str
+            elif "=" in expr:
+                alias_s, target_s = (p.strip() for p in expr.split("=", 1))
+                imports_dict[alias_s] = target_s
+            else:
+                imports_dict[expr] = expr
+        elif edge.edge_kind == "calls":
+            expr = edge.target_expr.strip()
+            if not expr:
+                continue
+            prefix, callee_name = (expr.rsplit(".", 1) if "." in expr else ("", expr))
+            caller_sym = node_id_to_sym.get(edge.source_id)
+            caller_id = caller_sym.id if caller_sym is not None else ""
+            caller_name = "<module>"
+            if caller_sym is not None:
+                if caller_sym.kind in ("method", "function", "constructor", "property"):
+                    if caller_sym.metadata.get("parent_scope"):
+                        caller_name = f"{caller_sym.metadata['parent_scope']}.{caller_sym.metadata.get('short_name', caller_sym.name)}"
+                    else:
+                        caller_name = caller_sym.name
+                else:
+                    caller_name = caller_sym.metadata.get("short_name") or caller_sym.name
+            call_sites.append(
+                SymbolCallSite(
+                    callee_name=callee_name,
+                    line_number=edge.span.start_line,
+                    caller_symbol_id=caller_id,
+                    caller_member_name=caller_name,
+                    context_prefix=prefix,
+                    file_path=norm_path,
+                    space=primary_space,
+                )
+            )
+
+    return symbols, call_sites, imports_dict
+
+
 def _clone_member_item(m: Any) -> Any:
     if isinstance(m, MemberInfo):
         return MemberInfo.from_dict(m.to_dict())
@@ -258,22 +430,7 @@ def restore_unaggregated_partial_symbol(sym: UnifiedSymbol) -> UnifiedSymbol:
 
 def _is_partial_symbol(sym: UnifiedSymbol) -> bool:
     """Check whether `sym` is a C# `partial class/struct/interface`."""
-    if sym.kind not in (
-        SymbolKind.CLASS.value,
-        SymbolKind.STRUCT.value,
-        SymbolKind.INTERFACE.value,
-        "class",
-        "struct",
-        "interface",
-    ):
-        return False
-    meta = sym.metadata or {}
-    if meta.get("is_partial"):
-        return True
-    sig = sym.signature or ""
-    if re.search(r"\bpartial\s+(?:class|struct|interface|record)\b", sig):
-        return True
-    return False
+    return is_partial_declaration(sym.kind, sym.signature or "", sym.metadata)
 
 
 def aggregate_partial_symbols(symbols: List[UnifiedSymbol]) -> List[UnifiedSymbol]:
@@ -448,17 +605,11 @@ def _parse_file_task_worker(
         with open(f_path_str, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
         fg = registry.extract_file_graph(file_path=relpath, content=content, space=primary_space)
-        symbols = registry.parse_file(file_path=relpath, content=content, space=primary_space)
-        symbols = ensure_unique_overload_ids(symbols, default_space=primary_space)
-        results = []
-        for sym in symbols:
-            sym.metadata["spaces"] = sorted_spaces
-            results.append(sym.to_dict())
-        call_sites = registry.extract_call_sites(
-            file_path=relpath, content=content, space=primary_space, symbols=symbols
+        symbols, call_sites, imports = project_file_artifacts_from_graph(
+            fg, default_space=primary_space, spaces=sorted_spaces
         )
+        results = [sym.to_dict() for sym in symbols]
         site_dicts = [s.to_dict() for s in call_sites]
-        imports = registry.extract_imports(file_path=relpath, content=content)
         return (c_key, results, site_dicts, dict(imports or {}), fg.to_dict(), None)
     except Exception as exc:
         return (c_key, [], [], {}, None, str(exc))
@@ -666,7 +817,12 @@ class SemanticBundler:
         contributes_data: Optional[Dict[str, Any]] = None,
     ):
         self.space_manager = space_manager
-        self.parser_registry = parser_registry or ParserRegistry(register_defaults=True)
+        self.parser_registry = parser_registry or ParserRegistry(
+            register_defaults=True,
+            space_manager=space_manager,
+        )
+        if getattr(self.parser_registry, "_space_manager", None) is None:
+            self.parser_registry._space_manager = space_manager
         self._contributes_data = contributes_data
         self._registered_spaces: List[str] = []
         self._target_spaces_initialized: bool = False
@@ -895,39 +1051,38 @@ class SemanticBundler:
         relpath: str,
         sorted_spaces: List[str],
     ) -> Tuple[List[UnifiedSymbol], List[SymbolCallSite], Dict[str, str]]:
-        """Read `f_path` once and extract `(symbols, call_sites, imports)` and cache `FileSymbolGraph`."""
+        """Read `f_path` once and extract `FileSymbolGraph` + projected `(symbols, call_sites, imports)` in a single pass."""
         primary_space = sorted_spaces[0] if sorted_spaces else "unified"
         with open(f_path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
-        try:
-            fg = self.parser_registry.extract_file_graph(
-                file_path=relpath,
-                content=content,
-                space=primary_space,
-            )
-            self._file_graphs_cache[relpath] = fg
-            self._file_graphs_cache[_safe_resolve_str(f_path)] = fg
-        except Exception:
-            pass
-        file_symbols = self.parser_registry.parse_file(
+        fg = self.parser_registry.extract_file_graph(
             file_path=relpath,
             content=content,
             space=primary_space,
         )
-        file_symbols = ensure_unique_overload_ids(file_symbols, default_space=primary_space)
-        for sym in file_symbols:
-            sym.metadata["spaces"] = sorted_spaces
-        call_sites = self.parser_registry.extract_call_sites(
-            file_path=relpath,
-            content=content,
-            space=primary_space,
-            symbols=file_symbols,
+        c_key = _safe_resolve_str(f_path)
+        self._file_graphs_cache[relpath] = fg
+        self._file_graphs_cache[c_key] = fg
+
+        parser = self.parser_registry.get_parser(relpath)
+        base_hit = (
+            self.parser_registry._match_base_extract_cache(parser, relpath, content, space=primary_space)
+            if parser is not None
+            else None
         )
-        imports = self.parser_registry.extract_imports(
-            file_path=relpath,
-            content=content,
+        if base_hit is not None:
+            file_symbols = [dataclasses.replace(s, metadata=dict(s.metadata)) for s in base_hit[5]]
+            file_symbols = ensure_unique_overload_ids(file_symbols, default_space=primary_space)
+            for sym in file_symbols:
+                sym.metadata["spaces"] = sorted_spaces
+            call_sites = list(base_hit[6])
+            imports = dict(base_hit[7])
+            return file_symbols, call_sites, imports
+
+        file_symbols, call_sites, imports = project_file_artifacts_from_graph(
+            fg, default_space=primary_space, spaces=sorted_spaces
         )
-        return file_symbols, call_sites, dict(imports or {})
+        return file_symbols, call_sites, imports
 
     def _collect_space_files(
         self, target_spaces: List[SpaceConfig]
@@ -1258,21 +1413,26 @@ class SemanticBundler:
         self,
         dirty_diff: ScanDiffDetail,
         spaces: Optional[List[Union[str, SpaceConfig]]] = None,
+        known_indexed_files: Optional[Set[str]] = None,
+        snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Tuple[Dict[str, List[UnifiedSymbol]], Set[str]]:
         """Parse only added/modified files in `dirty_diff` and evict deleted/modified cache entries."""
         target_spaces = self._resolve_target_spaces(spaces)
-        snap_entries_by_space = _preload_snap_entries(self.scanner, target_spaces)
+        if snap_entries_by_space is None:
+            snap_entries_by_space = _preload_snap_entries(self.scanner, target_spaces)
         expanded_added_mod = self._normalize_space_dirty_paths(
             dirty_diff.dirty_files,
             target_spaces,
             prefer_missing=False,
             snap_entries_by_space=snap_entries_by_space,
+            known_indexed_files=known_indexed_files,
         )
         expanded_deleted = self._normalize_space_dirty_paths(
             dirty_diff.deleted,
             target_spaces,
             prefer_missing=True,
             snap_entries_by_space=snap_entries_by_space,
+            known_indexed_files=known_indexed_files,
         )
         dirty_keys = set(expanded_added_mod | expanded_deleted)
         expanded_mod = self._normalize_space_dirty_paths(
@@ -1280,6 +1440,7 @@ class SemanticBundler:
             target_spaces,
             prefer_missing=False,
             snap_entries_by_space=snap_entries_by_space,
+            known_indexed_files=known_indexed_files,
         )
         evict_norm = normalize_dirty_paths(expanded_deleted | expanded_mod)
 
@@ -1383,14 +1544,18 @@ class SemanticBundler:
             primary_space = sorted(list(sp_set))[0] if sp_set else "unified"
             cached_syms = self._file_symbols_cache.get(c_key)
             try:
-                with open(f_path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()
-                sites = self.parser_registry.extract_call_sites(
-                    file_path=relpath, content=content, space=primary_space, symbols=cached_syms
-                )
-                imps = self.parser_registry.extract_imports(
-                    file_path=relpath, content=content
-                )
+                if cached_syms is None:
+                    file_syms, sites, imps = self._parse_file_full(f_path, relpath, sorted(list(sp_set)))
+                    self._file_symbols_cache[c_key] = file_syms
+                else:
+                    with open(f_path, "r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
+                    sites = self.parser_registry.extract_call_sites(
+                        file_path=relpath, content=content, space=primary_space, symbols=cached_syms
+                    )
+                    imps = self.parser_registry.extract_imports(
+                        file_path=relpath, content=content
+                    )
                 self._file_call_sites_cache[c_key] = sites
                 self._file_imports_cache[c_key] = dict(imps or {})
                 call_sites.extend(sites)
@@ -1411,14 +1576,21 @@ class SemanticBundler:
         self,
         dirty_diff: ScanDiffDetail,
         spaces: Optional[List[Union[str, SpaceConfig]]] = None,
+        snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
+        expanded_dirty_paths: Optional[Set[str]] = None,
     ) -> Tuple[List[SymbolCallSite], Dict[str, Dict[str, str]]]:
         target_spaces = self._resolve_target_spaces(spaces)
-        snap_entries_by_space = _preload_snap_entries(self.scanner, target_spaces)
-        expanded_dirty = self._normalize_space_dirty_paths(
-            dirty_diff.dirty_files,
-            target_spaces,
-            prefer_missing=False,
-            snap_entries_by_space=snap_entries_by_space,
+        if snap_entries_by_space is None:
+            snap_entries_by_space = _preload_snap_entries(self.scanner, target_spaces)
+        expanded_dirty = (
+            expanded_dirty_paths
+            if expanded_dirty_paths is not None
+            else self._normalize_space_dirty_paths(
+                dirty_diff.dirty_files,
+                target_spaces,
+                prefer_missing=False,
+                snap_entries_by_space=snap_entries_by_space,
+            )
         )
         return self._extract_call_sites_and_imports_core(
             spaces=spaces,
@@ -1459,21 +1631,26 @@ class SemanticBundler:
         self,
         dirty_diff: ScanDiffDetail,
         spaces: Optional[List[Union[str, SpaceConfig]]] = None,
+        known_indexed_files: Optional[Set[str]] = None,
+        snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Tuple[Dict[str, FileSymbolGraph], Set[str]]:
         """Return `(new_file_graphs_by_relpath, dirty_keys)` for added/modified files in `dirty_diff`."""
         target_spaces = self._resolve_target_spaces(spaces)
-        snap_entries_by_space = _preload_snap_entries(self.scanner, target_spaces)
+        if snap_entries_by_space is None:
+            snap_entries_by_space = _preload_snap_entries(self.scanner, target_spaces)
         expanded_added_mod = self._normalize_space_dirty_paths(
             dirty_diff.dirty_files,
             target_spaces,
             prefer_missing=False,
             snap_entries_by_space=snap_entries_by_space,
+            known_indexed_files=known_indexed_files,
         )
         expanded_deleted = self._normalize_space_dirty_paths(
             dirty_diff.deleted,
             target_spaces,
             prefer_missing=True,
             snap_entries_by_space=snap_entries_by_space,
+            known_indexed_files=known_indexed_files,
         )
         dirty_keys = set(expanded_added_mod | expanded_deleted)
         parse_targets_norm = normalize_dirty_paths(expanded_added_mod)
@@ -1522,5 +1699,7 @@ __all__ = [
     "_resolve_default_ast_storage_dir",
     "aggregate_partial_symbols",
     "ensure_unique_overload_ids",
+    "project_file_artifacts_from_graph",
+    "reset_worker_registry",
     "restore_unaggregated_partial_symbol",
 ]

@@ -2,7 +2,7 @@
 Contributes Command Handlers for YSCB Core.
 Provides 'contributes list' and 'contributes check'.
 """
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 import os
 
 from core import uri, vfs
@@ -25,6 +25,45 @@ def _append_locale_validation_errors(
         res.is_valid = len([i for i in res.issues if i.severity == "ERROR"]) == 0
 
 
+def _validate_unified_contributes_payload(
+    u_data: Dict[str, Any],
+    donor_mod: str,
+    base_dir: Optional[str],
+    file_label: str,
+) -> Tuple[bool, int]:
+    """Validates a unified `contributes.json` payload against its target format schemas."""
+    if "commands" in u_data and isinstance(u_data["commands"], dict) and not any(
+        isinstance(v, dict) and "commands" in v for v in u_data.values()
+    ):
+        target_format = contributes.get_format("core")
+        if target_format is None:
+            return True, 0
+        res = ContributesValidator.validate("core", u_data, donor_mod=donor_mod, format_schema=target_format, strict_points=True)
+        _append_locale_validation_errors(res, donor_mod, u_data, base_dir)
+        if not res.is_valid:
+            log(res.format_report(file_label=file_label))
+            return False, 1
+        return True, 1
+
+    all_ok = True
+    checked_targets = 0
+    for raw_target, c_body in u_data.items():
+        if not isinstance(c_body, dict):
+            continue
+        eff_target = "core" if raw_target == "commands" else raw_target
+        target_format = contributes.get_format(eff_target)
+        if target_format is None:
+            continue
+        res = ContributesValidator.validate(eff_target, c_body, donor_mod=donor_mod, format_schema=target_format, strict_points=True)
+        if eff_target == "core":
+            _append_locale_validation_errors(res, donor_mod, c_body, base_dir)
+        checked_targets += 1
+        if not res.is_valid:
+            log(res.format_report(file_label=f"{file_label}#{raw_target}"))
+            all_ok = False
+    return all_ok, (1 if checked_targets > 0 else 0)
+
+
 def list_contributes(module_filter: Optional[str] = None) -> int:
     """List all registered contribute points across ecosystem."""
     points = contributes.list_points(module_filter)
@@ -41,7 +80,6 @@ def list_contributes(module_filter: Optional[str] = None) -> int:
         pt = p.get("point", "")
         ft = p.get("format_type", "object")
         desc = p.get("description", "")
-        # Shorten description if too long
         if len(desc) > 35:
             desc = desc[:32] + "..."
         log(f"{mod:<18} | {pt:<20} | {ft:<12} | {desc}")
@@ -93,11 +131,29 @@ def _check_single_file_mode(file_uri: str) -> int:
         return 0 if res.is_valid else 1
 
     parent_dir = os.path.dirname(p.rstrip("/\\"))
+    if fname == "contributes.json":
+        donor_name = os.path.basename(parent_dir) or "unknown"
+        try:
+            u_data = vfs.read_json(file_uri) if "://" in file_uri else vfs.read_json(p)
+        except Exception as e:
+            log_error(f"[core:contributes] [FAIL] Error reading '{file_uri}': {e}")
+            return 1
+        if not isinstance(u_data, dict):
+            log_error(f"[core:contributes] [FAIL] Root of '{file_uri}' must be a JSON object.")
+            return 1
+        ok, _ = _validate_unified_contributes_payload(u_data, donor_name, parent_dir, file_uri)
+        if ok:
+            log(f"[PASS] {file_uri}: All contributes declarations are valid.")
+            return 0
+        return 1
+
     if fname == "contribute.json":
-        target_mod = os.path.basename(parent_dir)
+        raw_target = os.path.basename(parent_dir)
+        target_mod = "core" if raw_target == "commands" else raw_target
         donor_mod: Optional[str] = "project"
     else:
-        target_mod = fname[:-5]
+        raw_target = fname[:-5]
+        target_mod = "core" if raw_target == "commands" else raw_target
         if os.path.basename(parent_dir) == "contributes":
             donor_mod = os.path.basename(os.path.dirname(parent_dir)) or None
         else:
@@ -134,7 +190,7 @@ def _check_modules_mode(target_or_uri: Optional[str]) -> int:
             return 1
         modules_to_check = [target_or_uri]
     else:
-        modules_to_check = vfs.listdir("module://") if vfs.exists("module://") else []
+        modules_to_check = [d for d in vfs.listdir("module://") if not d.startswith(".")] if vfs.exists("module://") else []
     if not modules_to_check:
         log_info("[core:contributes] No installed modules found to check.")
         return 0
@@ -153,7 +209,8 @@ def _check_modules_mode(target_or_uri: Optional[str]) -> int:
             for f in files:
                 if not f.endswith(".json") or f.startswith("_"):
                     continue
-                target_mod = f[:-5]
+                raw_target = f[:-5]
+                target_mod = "core" if raw_target == "commands" else raw_target
                 target_format = contributes.get_format(target_mod)
                 if target_format is None:
                     continue
@@ -178,17 +235,39 @@ def _check_modules_mode(target_or_uri: Optional[str]) -> int:
                     log(res.format_report(file_label=f_uri))
                     all_passed = False
 
+        # Also check unified module://<donor>/contributes.json if present
+        unified_uri = f"module://{donor}/contributes.json"
+        if vfs.exists(unified_uri):
+            try:
+                u_data = vfs.read_json(unified_uri)
+                if isinstance(u_data, dict):
+                    try:
+                        donor_base = uri.resolve(f"module://{donor}", interactive=False)
+                    except Exception:
+                        donor_base = None
+                    u_ok, u_count = _validate_unified_contributes_payload(u_data, donor, donor_base, unified_uri)
+                    checked_files_count += u_count
+                    if not u_ok:
+                        all_passed = False
+                else:
+                    log_error(f"[FAIL] [{unified_uri}] Root must be a JSON object.")
+                    all_passed = False
+            except Exception as e:
+                log_error(f"[FAIL] [{unified_uri}] JSON syntax error: {e}")
+                all_passed = False
+
         # Also check project-level config://<target>/contribute.json
         cfg_uri = f"config://{donor}/contribute.json"
         if vfs.exists(cfg_uri):
-            target_format = contributes.get_format(donor)
+            eff_donor = "core" if donor == "commands" else donor
+            target_format = contributes.get_format(eff_donor)
             if target_format is not None:
                 try:
                     cfg_data = vfs.read_json(cfg_uri)
-                    if isinstance(cfg_data, dict) and donor in cfg_data and isinstance(cfg_data[donor], dict):
-                        cfg_data = cfg_data[donor]
-                    res = ContributesValidator.validate(donor, cfg_data, donor_mod="project", format_schema=target_format, strict_points=True)
-                    if donor == "core":
+                    if isinstance(cfg_data, dict) and eff_donor in cfg_data and isinstance(cfg_data[eff_donor], dict):
+                        cfg_data = cfg_data[eff_donor]
+                    res = ContributesValidator.validate(eff_donor, cfg_data, donor_mod="project", format_schema=target_format, strict_points=True)
+                    if eff_donor == "core":
                         try:
                             cfg_base = uri.resolve(f"config://{donor}", interactive=False)
                         except Exception:

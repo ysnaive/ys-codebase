@@ -121,3 +121,10 @@ fix(server,dev,vscode-support): implement idle worker pipe demuxer, checker AST/
 ### 模擬新環境全 CLI 部署驗收補充紀錄
 
 - **實機驗收結果**：於模擬新環境部署全 CLI 實機測試中，於 `server/service.py:ServiceManager.start_all()` 補齊背景服務啟動異常時強制重置為 `STATE_STOPPED` (`busy=False`) 之防禦機制，並驗證 `server` (`start`/`status`/`reload`/`stop`)、`dev` (`check`/`create`/`bump-*`/`release-check`/`build`/`test`/`release`) 與 `vscode-support` (`status`/`sync`/`revert`) 全數 CLI 指令 100% 通過。
+
+---
+
+### 第二輪九維度深度審計 (`R03`) 增補驗收成果
+
+- **修復範圍**：完成 `R03-G-01` ~ `R03-G-08`、`R03-H-01` ~ `R03-H-06`、`R03-I-01` ~ `R03-I-07`（共 21 項）、`S4` 雙語系靜態守門（`RuleH14` 自動重用 `ast_engine.parsers` 掃描 `.ts/.js`）及新環境實測發現之 `ModulesWatcher.refresh_snapshot()` 手動 `reload` 快照同步修復。
+- **驗證結果**：`python3 yscb.py dev check server dev vscode-support` **PASS**；`dev test`（`server` **67/67**、`dev` **120/120**、`vscode-support` **23/23**，合計 **210/210 PASS, `0 ResourceWarning`**）；模擬新環境常駐 Daemon 熱 IPC 與全 CLI 指令驗證 **100% PASS**。

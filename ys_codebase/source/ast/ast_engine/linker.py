@@ -16,7 +16,7 @@ from core.context import get_runtime_context
 from core.log import log_warn
 
 from .graph import CallGraphIndex
-from .parsers.base import EdgeRefiner, ModulePathResolver
+from .parsers.base import EdgeRefiner, ModulePathResolver, is_partial_declaration
 from .schema import (
     FileImportBinding,
     FileImportTable,
@@ -24,7 +24,6 @@ from .schema import (
     LanguageConfig,
     ProvenanceStep,
     RelationEdge,
-    Span,
     SymbolCallSite,
     SymbolKind,
     SymbolNode,
@@ -47,18 +46,20 @@ def _create_default_linker_cache() -> Dict[str, Any]:
 
 
 def _get_last_linker_cache() -> Dict[str, Any]:
-    ctx = get_runtime_context()
-    if "_LAST_LINKER_CACHE" in globals():
-        ext_cache = globals().pop("_LAST_LINKER_CACHE")
-        if isinstance(ext_cache, dict):
-            ctx.set_module_state("ast.linker.last_cache", ext_cache)
-    return ctx.get_module_state("ast.linker.last_cache", _create_default_linker_cache)
+    return get_runtime_context().get_module_state("ast.linker.last_cache", _create_default_linker_cache)
 
 
-def __getattr__(name: str) -> Any:
-    if name == "_LAST_LINKER_CACHE":
-        return _get_last_linker_cache()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+def get_last_linker_cache() -> Dict[str, Any]:
+    """Return the active linker cache dictionary in the current runtime context."""
+    return _get_last_linker_cache()
+
+
+def reset_linker_cache() -> None:
+    """Reset the active linker cache dictionary in the current runtime context."""
+    cache = _get_last_linker_cache()
+    with _LINKER_CACHE_LOCK:
+        cache.clear()
+        cache.update(_create_default_linker_cache())
 
 
 def _compute_symbols_map_fingerprint(symbols_map: Dict[str, UnifiedSymbol]) -> int:
@@ -790,15 +791,23 @@ def _expand_contract_from_workspace_graph(
             if node is not None:
                 target_nodes.append(node)
 
-    # Index enclosing type ID -> {member_name: [member_ids]}
-    members_by_type_id: Dict[str, Dict[str, List[str]]] = defaultdict(lambda: defaultdict(list))
-    type_id_by_file_and_scope: Dict[Tuple[str, Tuple[str, ...]], str] = {}
-    for nid, n in ws_graph.nodes_by_id.items():
-        file_p = nid.split("::", 1)[0]
-        if n.kinds & {"class", "struct", "interface"}:
-            type_id_by_file_and_scope[(file_p, (*n.scope_path, n.name))] = nid
-            for ch in n.children:
-                members_by_type_id[nid][ch.name].append(ch.id)
+    type_id_by_file_and_scope: Mapping[Tuple[str, Tuple[str, ...]], str] = getattr(
+        ws_graph, "_type_id_by_file_and_scope", None
+    ) or {}
+    members_by_type_id: Mapping[str, Mapping[str, Tuple[str, ...]]] = getattr(
+        ws_graph, "_members_by_type_id", None
+    ) or {}
+    if not type_id_by_file_and_scope and ws_graph.nodes_by_id:
+        fallback_scope: Dict[Tuple[str, Tuple[str, ...]], str] = {}
+        fallback_members: Dict[str, Dict[str, List[str]]] = defaultdict(lambda: defaultdict(list))
+        for nid, n in ws_graph.nodes_by_id.items():
+            file_p = nid.split("::", 1)[0]
+            if n.kinds & {"class", "struct", "interface"}:
+                fallback_scope[(file_p, (*n.scope_path, n.name))] = nid
+                for ch in n.children:
+                    fallback_members[nid][ch.name].append(ch.id)
+        type_id_by_file_and_scope = fallback_scope
+        members_by_type_id = fallback_members  # type: ignore[assignment]
 
     for n in target_nodes:
         if n.kinds & {"class", "struct", "interface"}:
@@ -864,6 +873,7 @@ def _expand_contract_from_workspace_graph(
 def expand_contract_symbol_ids(
     symbols_map: Union[Dict[str, UnifiedSymbol], WorkspaceSymbolGraph, Any],
     target_sym: Union[UnifiedSymbol, SymbolNode, str, List[Any]],
+    precomputed_fingerprint: Optional[int] = None,
 ) -> List[str]:
     """
     Bidirectional interface/base-class and derived-class method contract expansion.
@@ -908,10 +918,11 @@ def expand_contract_symbol_ids(
     for t in targets:
         _add(t.id)
 
-    current_fp: Optional[int] = None
+    current_fp: Optional[int] = precomputed_fingerprint
     last_cache = _get_last_linker_cache()
     if cached_bases is None:
-        current_fp = _compute_symbols_map_fingerprint(sym_dict)
+        if current_fp is None:
+            current_fp = _compute_symbols_map_fingerprint(sym_dict)
         with _LINKER_CACHE_LOCK:
             if (
                 last_cache["symbols_map_id"] == id(sym_dict)
@@ -1251,7 +1262,8 @@ class WorkspaceGraphLinker:
 
     def _run_pass1_global_indexing_and_folding(self) -> None:
         """Pass 1: Index all workspace `SymbolNode` instances and build cross-file symbol folding edges."""
-        partial_buckets: Dict[Tuple[str, str], List[SymbolNode]] = defaultdict(list)
+        type_container_kinds = ("class", "struct", "interface")
+        partial_candidates: Dict[Tuple[str, str, str], List[SymbolNode]] = defaultdict(list)
         header_stem_buckets: Dict[Tuple[str, str], List[SymbolNode]] = defaultdict(list)
         impl_stem_buckets: Dict[Tuple[str, str], List[SymbolNode]] = defaultdict(list)
 
@@ -1270,8 +1282,11 @@ class WorkspaceGraphLinker:
                 self._by_file_and_fqn[(norm_path, node.fqn)].append(node)
                 self._by_file_and_short[(norm_path, node.name)].append(node)
 
-                if node.facets.get("is_partial") or "partial" in (node.facets.get("modifiers") or ()):
-                    partial_buckets[(node.language, node.fqn)].append(node)
+                t_kind = next((k for k in type_container_kinds if k in node.kinds), None)
+                if t_kind is not None:
+                    norm_lang = "c_sharp" if node.language in ("c_sharp", "csharp") else node.language
+                    if norm_lang == "c_sharp" or is_partial_declaration(node.kinds, "", node.facets):
+                        partial_candidates[(norm_lang, t_kind, node.fqn)].append(node)
 
                 if node.language in ("c", "cpp", "typescript"):
                     if ext in (".h", ".hpp", ".hxx", ".hh") or norm_path.endswith(".d.ts"):
@@ -1285,11 +1300,14 @@ class WorkspaceGraphLinker:
             rule_or_hook="Pass1:SymbolFolding",
         )
 
-        # 1. Partial class/struct/interface folding (`merges_with`)
-        for (lang, fqn), p_nodes in sorted(partial_buckets.items()):
+        # 1. Partial class/struct/interface folding (`merges_with`) with same-group contagion and kind isolation
+        for (lang, t_kind, fqn), p_nodes in sorted(partial_candidates.items()):
+            if len(p_nodes) <= 1 or not any(is_partial_declaration(n.kinds, "", n.facets) for n in p_nodes):
+                continue
             unique_ids = tuple(sorted({n.id for n in p_nodes}))
             if len(unique_ids) > 1:
-                grp_key = f"{lang}::{fqn}"
+                base_grp_key = f"{lang}::{fqn}"
+                grp_key = base_grp_key if base_grp_key not in self._folded_groups else f"{lang}::{t_kind}::{fqn}"
                 self._folded_groups[grp_key] = unique_ids
                 for uid in unique_ids:
                     self._node_to_fold_group[uid] = unique_ids
@@ -2202,4 +2220,6 @@ __all__ = (
     "DefaultModulePathResolver",
     "WorkspaceGraphLinker",
     "expand_contract_symbol_ids",
+    "get_last_linker_cache",
+    "reset_linker_cache",
 )

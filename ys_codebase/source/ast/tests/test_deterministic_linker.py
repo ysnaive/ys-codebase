@@ -108,7 +108,7 @@ class _CustomPrefixModuleResolver(ModulePathResolver):
 
 
 class TestDeterministicLinker(ASTTestCase):
-    """Comprehensive tests for `FR-01`~`FR-05` and `EC-01`~`EC-05` of `WorkspaceGraphLinker`."""
+    """Comprehensive tests for `WorkspaceGraphLinker` 4-pass linking and symbol folding."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -142,8 +142,8 @@ class TestDeterministicLinker(ASTTestCase):
         return linker.link_workspace()
 
     @require(Requirement.LOGIC)
-    def test_ft01_workspace_symbol_graph_and_import_table_contracts(self) -> None:
-        """FT-01 (FR-01): Verify FileImportBinding, FileImportTable, WorkspaceSymbolGraph immutability, serialization, and negative validation."""
+    def test_workspace_symbol_graph_and_import_table_contracts(self) -> None:
+        """Verify FileImportBinding, FileImportTable, WorkspaceSymbolGraph immutability, serialization, and negative validation."""
         binding = FileImportBinding(
             local_alias="BaseRunner",
             target_expr="pkg.base.BaseRunner",
@@ -236,8 +236,8 @@ class TestDeterministicLinker(ASTTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft02_language_config_and_plugin_registry_extensions(self) -> None:
-        """FT-02 & ET-05 (FR-02, EC-05): Verify LanguageConfig fields, custom ModulePathResolver & EdgeRefiner registration, and broken plugin fallback."""
+    def test_language_config_and_plugin_registry_extensions(self) -> None:
+        """Verify LanguageConfig fields, custom ModulePathResolver & EdgeRefiner registration, and broken plugin fallback."""
         py_cfg = self.registry.language_configs["python"]
         self.assertIn("self", py_cfg.receiver_aliases.get("self_aliases", ()))
         self.assertIn("super", py_cfg.receiver_aliases.get("super_aliases", ()))
@@ -315,10 +315,10 @@ class TestDeterministicLinker(ASTTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft03_pass1_symbol_folding_and_pass2_import_table_resolution(self) -> None:
-        """FT-03 & ET-04 (FR-03, EC-04): Verify Pass 1 C# partial folding & C++ header/impl pairing without mutating FileSymbolGraph, and Pass 2 relative/barrel/wildcard/external imports."""
+    def test_pass1_symbol_folding_and_pass2_import_table_resolution(self) -> None:
+        """Verify Pass 1 C# partial folding (including partial contagion and kind isolation) & C++ header/impl pairing without mutating FileSymbolGraph, and Pass 2 imports."""
         files = {
-            # C# partial classes across two files
+            # C# partial classes across two files (even if Part2 omits explicit partial modifier, contagion folds same-kind group)
             "src/User.Part1.cs": (
                 "namespace App.Domain {\n"
                 "    public partial class User {\n"
@@ -328,10 +328,13 @@ class TestDeterministicLinker(ASTTestCase):
             ),
             "src/User.Part2.cs": (
                 "namespace App.Domain {\n"
-                "    public partial class User {\n"
+                "    public class User {\n"
                 "        public void Validate() {\n"
                 "            this.Save();\n"
                 "        }\n"
+                "    }\n"
+                "    public partial interface User {\n"
+                "        void Audit();\n"
                 "    }\n"
                 "}\n"
             ),
@@ -378,9 +381,12 @@ class TestDeterministicLinker(ASTTestCase):
         for fg in file_graphs:
             self.assertEqual(len(fg.outgoing_edges), orig_edge_counts[fg.file_path])
 
-        # 1. C# partial class folding: User.Part1.cs and User.Part2.cs share FQN App.Domain.User
+        # 1. C# partial class folding: User.Part1.cs and User.Part2.cs share FQN App.Domain.User (while interface is isolated)
         user_ids = ws.folded_symbol_groups.get("c_sharp::App.Domain.User", ())
         self.assertEqual(len(user_ids), 2)
+        for uid in user_ids:
+            self.assertIn("class", ws.nodes_by_id[uid].kinds)
+            self.assertNotIn("interface", ws.nodes_by_id[uid].kinds)
         primary_user_id = user_ids[0]
         merge_edges = [
             e for e in ws.outgoing_edges_by_source.get(primary_user_id, ()) if e.edge_kind == "merges_with"
@@ -432,8 +438,8 @@ class TestDeterministicLinker(ASTTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft04_pass3_inheritance_dag_and_field_dispatch(self) -> None:
-        """FT-04 & ET-01 (FR-04, EC-01): Verify Pass 3 import-disambiguated inheritance DAG, cycle-safe pruning, field type dispatch, and expand_contract_symbol_ids."""
+    def test_pass3_inheritance_dag_and_field_dispatch(self) -> None:
+        """Verify Pass 3 import-disambiguated inheritance DAG, cycle-safe pruning, field type dispatch, and expand_contract_symbol_ids."""
         files = {
             "pkg_a/base.py": (
                 "class BaseRunner:\n"
@@ -509,8 +515,8 @@ class TestDeterministicLinker(ASTTestCase):
         self.mark_passed()
 
     @require(Requirement.LOGIC)
-    def test_ft05_pass4_scope_cascade_overloads_ambiguity_markdown_and_determinism(self) -> None:
-        """FT-05, ET-02, ET-03 (FR-05, EC-02, EC-03, NFR-02): Verify 4-Tier scope cascade, overload arity vs overload_group, duck-typed ambiguous status, Markdown documents edges, and input order independence."""
+    def test_pass4_scope_cascade_overloads_ambiguity_markdown_and_determinism(self) -> None:
+        """Verify 4-Tier scope cascade, overload arity vs overload_group, duck-typed ambiguous status, Markdown documents edges, and input order independence."""
         files = {
             # C# overload disambiguation by arity vs overload_group
             "src/Calculator.cs": (
@@ -558,7 +564,7 @@ class TestDeterministicLinker(ASTTestCase):
         ws_forward = self._link_graphs(file_graphs)
         ws_reverse = self._link_graphs(list(reversed(file_graphs)))
 
-        # NFR-02: Input order independence (G([f1, f2, ...]) == G([fn, ..., f1]))
+        # Input order independence (G([f1, f2, ...]) == G([fn, ..., f1]))
         self.assertEqual(ws_forward.to_dict(), ws_reverse.to_dict())
 
         # 1. C# overload resolution: Compute(1, 2) has arg_count=2 -> resolves uniquely to Compute(int a, int b)

@@ -16,15 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from core.context import get_virtual_cwd
 from .plans._common import parse_markdown_blockquote_headers, resolve_plan_uri
 
-_STDLIB_WRITE_TEXT = Path.write_text
-
-
 def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -> None:
     """透過 core.vfs 執行原子文字寫入。"""
-    if Path.write_text is not _STDLIB_WRITE_TEXT:
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(content, encoding=encoding)
-        return
     from core import vfs
 
     vfs.write_text(str(file_path), content, encoding=encoding, atomic=True)
@@ -49,16 +42,11 @@ def _resolve_roadmap_and_plans_dirs(
         resolved_roadmap = Path(roadmap_dir).resolve()
     else:
         resolved = resolve_plan_uri("workflow.roadmap://", default_fallback=None, host_dir=host_dir)
-        if resolved is None:
-            base = Path(host_dir).resolve() if host_dir else Path(get_virtual_cwd()).resolve()
-            if (base / "plans" / "roadmap").exists():
-                resolved_roadmap = (base / "plans" / "roadmap").resolve()
-            elif (base / "roadmap").exists():
-                resolved_roadmap = (base / "roadmap").resolve()
-            else:
-                resolved_roadmap = (base / "plans" / "roadmap").resolve()
-        else:
+        if resolved is not None:
             resolved_roadmap = resolved
+        else:
+            base = Path(host_dir).resolve() if host_dir else Path(get_virtual_cwd()).resolve()
+            resolved_roadmap = (base / "plans" / "roadmap").resolve()
 
     if plans_dir is not None:
         resolved_plans = Path(plans_dir).resolve()

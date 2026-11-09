@@ -108,3 +108,10 @@ fix(ast): complete single-pass AST parsing, compact graph serialization, and tra
 ### 模擬新環境全 CLI 部署驗收補充紀錄
 
 - **實機驗收結果**：於模擬新環境部署全 CLI 實機測試中，完整驗證 `ast status`、`outline`、`slice`、`callees`、`callers`、`impact`、`traverse` 與 `clean` 共 9 項 CLI 指令於常駐 `server` 熱 IPC 模式下 100% 通過。
+
+---
+
+### 第二輪九維度深度審計 (`R03`) 增補驗收成果
+
+- **修復範圍**：完成 `R03-C-01` ~ `R03-C-08` 與 `R03-D-01` ~ `R03-D-09`（共 17 項）及 `S2` 跨模組共享契約（於 `ast_engine/formatting.py` 公開 `format_symbol_card()` 並由 `ast` 與 `knowledge-db` 共用）。
+- **驗證結果**：`python3 yscb.py dev check ast` **PASS**；`python3 -W error::ResourceWarning yscb.py dev test ast --no-build` **53/53 PASS (`0 ResourceWarning`)**；模擬新環境 `ast outline/summary/query/callees/deps/Unused/provision` 全 CLI 指令驗證 **100% PASS**。

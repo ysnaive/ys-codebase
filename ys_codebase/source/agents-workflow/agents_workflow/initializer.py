@@ -89,6 +89,12 @@ class WorkflowInitializer:
                     plans_phys = self._resolve_physical_path(fallback_plans)
                     if plans_phys:
                         return os.path.normpath(os.path.join(plans_phys, sub_rel.replace("/", os.sep))) if sub_rel else plans_phys
+            if raw_str.startswith("workflow."):
+                from .plans._common import resolve_plan_uri
+
+                fb_path = resolve_plan_uri(raw_str, host_dir=self.host_dir)
+                if fb_path is not None:
+                    return str(fb_path)
             return ""
 
         if self.host_dir and not os.path.isabs(raw_str):

@@ -15,6 +15,7 @@
     },
     "CommandNode": {
       "description": "str! @desc(子命令功能與用途說明)",
+      "alias": "list[str]? @desc(子命令短別名清單)",
       "tier": "enum(safe, conditional, gated)? = conditional @desc(CLI 執行安全分級 (safe: 唯讀安全, conditional: 條件修改, gated: 高危守門))",
       "server_compatible": "bool? = false @desc(是否支援透過常駐 Server Daemon 熱派發執行)",
       "args": {

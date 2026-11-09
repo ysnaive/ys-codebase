@@ -1409,6 +1409,10 @@ class TestHybridSearchEngine(YSCBTestCase):
         self.assertEqual(len(res_py), 1)
         self.assertEqual(res_py[0]["symbol"].id, "sym_py_ok")
 
+        # 驗證 Hybrid RRF 模式套用 min_score 門檻過濾
+        res_high_min = engine.search("build_target", file_types=["py"], lexical_only=False, min_score=0.99)
+        self.assertEqual(len(res_high_min), 0)
+
         # 驗證 pre_aggregated=True 直接建立索引而不重複呼叫 aggregate_partial_symbols
         idx = InvertedIndex(space_name="unified")
         tok = MultilingualTokenizer()

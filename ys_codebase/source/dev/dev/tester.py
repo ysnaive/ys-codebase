@@ -17,6 +17,7 @@ from dev.testing.runner import (
     TestDiscovery,
     TestRunner,
     ASCIIReportFormatter,
+    SafeStreamWriter,
     cleanup_active_test_subprocesses,
     get_test_category,
     run_subprocess_with_tree_timeout,
@@ -24,32 +25,17 @@ from dev.testing.runner import (
 )
 from dev.testing.sandbox import SandboxProvisioner
 
-_ORIG_SUBPROCESS_RUN = subprocess.run
-
 
 def safe_print(text: Any = "", file: Any = None, end: str = "\n", flush: bool = False) -> None:
     """
     Safely output text to standard streams on Windows systems where encoding
     (e.g., cp950) might throw UnicodeEncodeError on certain special characters.
     """
-    target = file or sys.stdout
-    content = str(text) + end
+    writer = SafeStreamWriter(file or sys.stdout)
     try:
-        target.write(content)
+        writer.write(str(text) + end)
         if flush:
-            target.flush()
-    except UnicodeEncodeError:
-        enc = getattr(target, "encoding", None) or "utf-8"
-        safe_str = content.encode(enc, errors="replace").decode(enc, errors="replace")
-        try:
-            target.write(safe_str)
-            if flush:
-                target.flush()
-        except Exception:
-            ascii_str = content.encode("ascii", errors="replace").decode("ascii")
-            target.write(ascii_str)
-            if flush:
-                target.flush()
+            writer.flush()
     except Exception:
         pass
 
@@ -118,6 +104,13 @@ def _parse_test_run_config(argv: List[str]) -> _TestRunConfig:
             continue
         if a.startswith(("-k=", "--k=", "--pattern=")):
             pattern_val = a.split("=", 1)[1]
+            idx += 1
+            continue
+        if a in ("--type", "--target", "--report-json"):
+            if idx + 1 < len(argv):
+                clean_argv.append(f"{a}={argv[idx + 1]}")
+                idx += 2
+                continue
             idx += 1
             continue
         if a in ("-q", "--q", "--quiet", "-v", "--v", "--verbose"):
@@ -250,11 +243,17 @@ class Tester:
     def _run_op_mksb(self, argv: List[str]) -> int:
         target_dir = None
         target_mods: List[str] = []
-        for a in argv:
+        idx = 0
+        while idx < len(argv):
+            a = argv[idx]
             if a.startswith("--dir="):
                 target_dir = a.split("=", 1)[1]
+            elif a == "--dir" and idx + 1 < len(argv):
+                target_dir = argv[idx + 1]
+                idx += 1
             elif not a.startswith("-"):
                 target_mods.append(a)
+            idx += 1
         try:
             ctx = (
                 SandboxProvisioner.create_sandbox(target_dir, target_modules=target_mods)
@@ -304,6 +303,10 @@ class Tester:
             a = argv[idx]
             if a.startswith("--report-json="):
                 report_json_path = a.split("=", 1)[1]
+            elif a == "--report-json":
+                if idx + 1 < len(argv):
+                    report_json_path = argv[idx + 1]
+                    idx += 1
             elif a == "--quiet-report":
                 quiet_report = True
             elif a in ("-q", "--q", "--quiet"):
@@ -328,9 +331,17 @@ class Tester:
                 test_type = "all"
             elif a.startswith("--type="):
                 test_type = a.split("=", 1)[1]
+            elif a == "--type":
+                if idx + 1 < len(argv):
+                    test_type = argv[idx + 1]
+                    idx += 1
             elif a.startswith("--target="):
                 target = a.split("=", 1)[1]
-            elif a in ("-k", "--pattern"):
+            elif a == "--target":
+                if idx + 1 < len(argv):
+                    target = argv[idx + 1]
+                    idx += 1
+            elif a in ("-k", "--k", "--pattern"):
                 if idx + 1 < len(argv):
                     pattern = argv[idx + 1]
                     idx += 1
@@ -573,26 +584,13 @@ class Tester:
         res = None
         mod_start = time.perf_counter()
         try:
-            if subprocess.run is _ORIG_SUBPROCESS_RUN:
-                rc_val, out_val, err_val = run_subprocess_with_tree_timeout(
-                    cmd,
-                    timeout_sec=timeout_sec,
-                    cwd=host_dir,
-                    env=p_env,
-                )
-                res = subprocess.CompletedProcess(cmd, rc_val, out_val, err_val)
-            else:
-                res = subprocess.run(
-                    cmd,
-                    cwd=host_dir,
-                    env=p_env,
-                    stdin=subprocess.DEVNULL,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=timeout_sec,
-                )
+            rc_val, out_val, err_val = run_subprocess_with_tree_timeout(
+                cmd,
+                timeout_sec=timeout_sec,
+                cwd=host_dir,
+                env=p_env,
+            )
+            res = subprocess.CompletedProcess(cmd, rc_val, out_val, err_val)
             ret_code = res.returncode
             mod_duration = time.perf_counter() - mod_start
             if mod_label and not is_nested and not quiet_mode:
@@ -946,16 +944,12 @@ class Tester:
             for mod in valid_targets:
                 safe_print(f"\n[dev:test:sync] Auto-installing '{mod}@build' into local environment...")
                 cmd = [sys.executable, yscb_py, "install", f"{mod}@build", "--force"]
-                if subprocess.run is _ORIG_SUBPROCESS_RUN:
-                    rc_val, _, _ = run_subprocess_with_tree_timeout(
-                        cmd,
-                        timeout_sec=300.0,
-                        cwd=host_dir,
-                    )
-                    res = subprocess.CompletedProcess(cmd, rc_val)
-                else:
-                    res = subprocess.run(cmd, cwd=host_dir, timeout=300.0)
-                if res.returncode == 0:
+                rc_val, _, _ = run_subprocess_with_tree_timeout(
+                    cmd,
+                    timeout_sec=300.0,
+                    cwd=host_dir,
+                )
+                if rc_val == 0:
                     safe_print(f"[dev:test:sync] Successfully synced '{mod}@build'.")
                 else:
                     safe_print(f"[dev:test:sync] Failed to sync '{mod}@build'.", file=sys.stderr)

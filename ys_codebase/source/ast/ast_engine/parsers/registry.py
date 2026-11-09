@@ -133,11 +133,13 @@ class ParserRegistry:
         self,
         register_defaults: bool = True,
         contributes_data: Optional[Dict[str, Any]] = None,
+        space_manager: Optional[Any] = None,
     ):
         self._parsers: List[Tuple[int, BaseParser]] = []
         self._language_configs: Dict[str, LanguageConfig] = {}
         self._module_resolvers: Dict[str, ModulePathResolver] = {}
         self._edge_refiners: Dict[str, Tuple[EdgeRefiner, ...]] = {}
+        self._space_manager: Optional[Any] = space_manager
         self.load_errors: Dict[str, str] = {}
 
         if register_defaults or contributes_data is not None:
@@ -457,19 +459,20 @@ class ParserRegistry:
                     exts.add(ext_clean)
         return exts
 
-    @staticmethod
-    def _matches_configured_spaces(parser: BaseParser, file_path: Union[str, Path]) -> bool:
+    def _matches_configured_spaces(self, parser: BaseParser, file_path: Union[str, Path]) -> bool:
         """
-        Check if `file_path` satisfies `parser.SPACES` via `core.space.match_path`.
+        Check if `file_path` satisfies `parser.SPACES` via `space_manager.match_path`.
         When `parser.SPACES` is empty (default), returns True immediately without I/O.
         """
         spaces = getattr(parser, "SPACES", ())
         if not spaces:
             return True
         try:
-            from core.space import get_default_registry
+            reg = self._space_manager
+            if reg is None:
+                from core.space import get_default_registry
 
-            reg = get_default_registry()
+                reg = get_default_registry()
             res = reg.match_path(file_path, list(spaces))
             return bool(res.matched)
         except Exception as exc:
@@ -762,3 +765,20 @@ class ParserRegistry:
             root_nodes=merged_roots,
             outgoing_edges=merged_edges,
         )
+
+    def extract_all_file_artifacts(
+        self,
+        file_path: str,
+        content: str,
+        *,
+        space: str = "unified",
+    ) -> Tuple[FileSymbolGraph, List[UnifiedSymbol], List[SymbolCallSite], Dict[str, str]]:
+        """
+        Single-pass file extraction returning `(file_graph, symbols, call_sites, imports)`
+        without re-reading or re-running parser CST traversal.
+        """
+        fg = self.extract_file_graph(file_path=file_path, content=content, space=space)
+        symbols = self.parse_file(file_path=file_path, content=content, space=space)
+        call_sites = self.extract_call_sites(file_path=file_path, content=content, space=space, symbols=symbols)
+        imports = self.extract_imports(file_path=file_path, content=content)
+        return fg, symbols, call_sites, imports

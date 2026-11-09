@@ -23,8 +23,8 @@ from vscode_support.schema_compiler import SchemaCompiler
 def strip_jsonc(raw_text: str) -> str:
     """
     String-aware JSONC normalizer that strips single-line comments (``//``),
-    multi-line comments (``/* ... */``), and trailing commas before ``}`` or ``]``
-    while preserving string literals intact.
+    closed multi-line comments (``/* ... */``), and trailing commas before ``}`` or ``]``
+    while preserving string literals and unclosed block comment syntax errors intact.
     """
     if not raw_text:
         return ""
@@ -60,12 +60,22 @@ def strip_jsonc(raw_text: str) -> str:
                     i += 1
                 continue
             if nxt == "*":
+                comment_start = i
                 i += 2
-                while i + 1 < n and not (raw_text[i] == "*" and raw_text[i + 1] == "/"):
+                newlines: List[str] = []
+                closed = False
+                while i + 1 < n:
+                    if raw_text[i] == "*" and raw_text[i + 1] == "/":
+                        closed = True
+                        i += 2
+                        break
                     if raw_text[i] in ("\n", "\r"):
-                        chars.append(raw_text[i])
+                        newlines.append(raw_text[i])
                     i += 1
-                i += 2
+                if not closed:
+                    chars.append(raw_text[comment_start:])
+                    break
+                chars.extend(newlines)
                 continue
 
         if ch in ("}", "]"):
@@ -188,7 +198,7 @@ class SettingsProjector:
         建立或更新指向當前 Python 版本 `site-packages` 之無版本號穩定目錄連結 `yscb.venv://current-site-packages`。
         先確保目標 `site-packages` 實體目錄存在（防範無 `pip_dependencies` 時產生懸空連結）；
         POSIX 使用 `os.symlink`，Windows 優先嘗試 `os.symlink`、`_winapi.CreateJunction` 或免管理員權限之 `cmd /c mklink /J`。
-        若檔案系統不支援則回傳 `None` 由呼叫端自動降級為實際路徑。
+        若受限容器或檔案系統不支援建立連結則回傳 `None`（呼叫端仍保持寫入穩定連結相對路徑以避免跨環境同步造成 `settings.json` 變動）。
         """
         target_site_pkg = os.path.abspath(self.pip_mgr.get_site_packages_dir(py_tag))
         try:
@@ -253,14 +263,14 @@ class SettingsProjector:
         return _safe_remove_link(self.get_stable_link_path())
 
     def _is_under_yscb_venv(self, cand_path: str, proj_root: str, allow_root: bool = False) -> bool:
-        """判定給定路徑正規化後是否位於 `self.yscb_dir/.venv` 目錄下。"""
+        """判定給定路徑經 `realpath` 正規化後是否位於 `self.yscb_dir/.venv` 目錄下。"""
         try:
             cand = cand_path.replace("\\", "/")
             if not os.path.isabs(cand):
                 cand = os.path.join(proj_root, cand)
-            abs_cand = os.path.normcase(os.path.abspath(cand))
-            venv_root = os.path.normcase(os.path.abspath(os.path.join(self.yscb_dir, ".venv")))
-            return (allow_root and abs_cand == venv_root) or abs_cand.startswith(venv_root + os.sep)
+            real_cand = os.path.normcase(os.path.realpath(os.path.abspath(cand)))
+            venv_root = os.path.normcase(os.path.realpath(os.path.abspath(os.path.join(self.yscb_dir, ".venv"))))
+            return (allow_root and real_cand == venv_root) or real_cand.startswith(venv_root + os.sep)
         except Exception:
             return False
 
@@ -329,39 +339,26 @@ class SettingsProjector:
 
     @staticmethod
     def _translate_exclude_to_vscode_glob(raw_pattern: str) -> Optional[str]:
-        """將 `core.space` 之 `workspace` 排除規則（語意 URI 如 `yscb://.modules/**` 或裸目錄名）轉譯為 VS Code `**/...` Glob。"""
+        """將 `core.space` 之 `workspace` 排除規則（語意 URI 如 `yscb://.modules/**`、多段相對路徑或裸目錄名）轉譯為 VS Code `**/...` Glob。"""
         clean = str(raw_pattern or "").strip().replace("\\", "/")
         if not clean:
             return None
         if "://" in clean:
-            after = clean.split("://", 1)[1].strip("/")
-            if after.endswith("/**"):
-                after = after[:-3].strip("/")
-            elif after.endswith("/*"):
-                after = after[:-2].strip("/")
-            if not after or "*" in after or "?" in after:
-                return None
-            return f"**/{after}/**"
-        if clean.startswith("**/") and clean.endswith("/**"):
+            clean = clean.split("://", 1)[1]
+        elif clean.startswith("**/") and clean.endswith("/**"):
             return clean
-        clean_stripped = clean.strip("/")
-        if clean_stripped.endswith("/**"):
-            clean_stripped = clean_stripped[:-3].strip("/")
-        if (
-            clean_stripped
-            and "/" not in clean_stripped
-            and "*" not in clean_stripped
-            and "?" not in clean_stripped
-            and clean_stripped not in (".DS_Store", "Thumbs.db")
-        ):
-            return f"**/{clean_stripped}/**"
-        return None
+        body = clean.strip("/")
+        if body.endswith("/**"):
+            body = body[:-3].strip("/")
+        elif body.endswith("/*"):
+            body = body[:-2].strip("/")
+        if not body or "*" in body or "?" in body or body in (".DS_Store", "Thumbs.db"):
+            return None
+        return f"**/{body}/**"
 
     def _resolve_workspace_exclude_patterns(
         self,
         proj_root: Optional[str] = None,
-        *,
-        include_all: bool = False,
     ) -> List[str]:
         """從 `core.space` 讀取 `workspace` 空間之 `effective_exclude`，搭配 `ANALYSIS_EXCLUDE_PATTERNS` 作為兜底基底。"""
         translated: List[str] = []
@@ -523,7 +520,7 @@ class SettingsProjector:
         - 建立或更新 `yscb.venv://current-site-packages` 穩定連結；
         - 編譯所有已安裝模組之單檔 JSON Schema 至 `.vscode/schemas/`；
         - 於 `.vscode/settings.json` 軟合併設定並實作 Zero-Touch 寫入守衛；
-        - 若既有 `settings.json` 含 JSONC 註解或語法錯誤，輸出 Warning 並安全略過。
+        - 若既有 `settings.json` 含合法 JSONC 註解或尾隨逗號，先備份 `.bak` 後正規化合併；若含無法恢復之語法錯誤則備份 `.bak`、輸出 Warning 並安全略過。
         """
         if not proj_root or not os.path.isdir(proj_root):
             return False
@@ -601,7 +598,7 @@ class SettingsProjector:
     def revert_vscode_settings(self, proj_root: str) -> bool:
         """
         依據 `_yscb_managed` 標記清冊，100% 乾淨剔除 YSCB 注入之 `extraPaths`、`excludes`、`analysisExclude` 與 `json.schemas`，
-        並清除 `project://.vscode/schemas/` 與 `yscb.venv://current-site-packages` 穩定連結。
+        待 `settings.json` 原子寫盤成功後，再清除 `project://.vscode/schemas/` 與 `yscb.venv://current-site-packages` 穩定連結。
         """
         self.last_revert_error = None
         if not self.is_vscode_configured(proj_root):
@@ -618,12 +615,6 @@ class SettingsProjector:
             return False
         if self.YSCB_MANAGED_KEY not in settings:
             return False
-
-        self.remove_stable_site_packages_link()
-
-        schemas_dir = os.path.join(proj_root, ".vscode", "schemas")
-        if os.path.isdir(schemas_dir):
-            vfs.robust_rmtree(schemas_dir, ignore_errors=True)
 
         managed_record = settings.pop(self.YSCB_MANAGED_KEY, {})
         if not isinstance(managed_record, dict):
@@ -672,12 +663,23 @@ class SettingsProjector:
             ]
             self._set_or_pop_list(settings, "json.schemas", clean_schemas)
 
+        if had_jsonc and raw_original is not None:
+            try:
+                vfs.write_text(settings_path + ".bak", raw_original, encoding="utf-8", atomic=True)
+            except Exception:
+                pass
+
         try:
             vfs.write_json(settings_path, settings, indent=2, atomic=True)
-            return True
         except Exception as exc:
             self.last_revert_error = f"Failed to write '{settings_path}' during revert: {exc}"
             return False
+
+        self.remove_stable_site_packages_link()
+        schemas_dir = os.path.join(proj_root, ".vscode", "schemas")
+        if os.path.isdir(schemas_dir):
+            vfs.robust_rmtree(schemas_dir, ignore_errors=True)
+        return True
 
     def get_status(self, proj_root: str) -> Dict[str, Any]:
         """查詢當前 VS Code 工作區投影、穩定連結與單檔 Schema 狀態。"""

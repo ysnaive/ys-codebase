@@ -25,8 +25,6 @@ from core import semver
 from core import events
 from core.log import log, log_error, log_info, log_warn
 
-INTERNAL_IGNORE_BEGIN = "# === YSCB INTERNAL IGNORE BEGIN ==="
-INTERNAL_IGNORE_END = "# === YSCB INTERNAL IGNORE END ==="
 INTERNAL_IGNORE_PATTERNS = (
     "/.modules/",
     "/.build/",
@@ -579,8 +577,9 @@ class Installer:
         log_info(f"[core:update] Checking updates for modules: {', '.join(targets)} (Major Lock active)...")
 
         updated_any = False
+        updated_mods: List[str] = []
         migrations_to_run: List[Tuple[str, str, str]] = []
-        newly_installed_deps: List[str] = []
+        newly_installed_deps: List[Tuple[str, str]] = []
         try:
             with self.engine.transaction_lock("update"):
                 snap_id = self.engine.act_snapshot("pre_update")
@@ -612,13 +611,14 @@ class Installer:
                             self.engine.act_register(mod, latest_ver, provider_url)
                             migrations_to_run.append((mod, cur_ver, latest_ver))
                             updated_any = True
+                            if mod not in updated_mods:
+                                updated_mods.append(mod)
                             if mod == "core":
                                 candidate_core_ver = latest_ver
                         else:
                             log_info(f"[core:update] Module '{mod}' is already up-to-date (v{cur_ver}).")
 
-                    # Reconcile dependencies across all installed & newly updated modules (auto-installs missing deps,
-                    # auto-upgrades compatible intersection deps, or raises RuntimeError on disjoint conflict)
+                    # Reconcile dependencies across all installed & newly updated modules
                     healed_deps = self.engine.reconcile_installed_dependencies(
                         provider_url=provider_url, ignore_sha256=ignore_sha256
                     )
@@ -626,18 +626,31 @@ class Installer:
                         updated_any = True
                         if h_old is None:
                             log_info(f"[core:update] Installing required dependency '{h_mod}@{h_new}'...")
-                            newly_installed_deps.append(h_mod)
+                            newly_installed_deps.append((h_mod, h_new))
                         elif semver.compare_semver(h_new, h_old) > 0:
                             log_info(f"[core:update] Auto-upgrading dependency '{h_mod}' from {h_old} -> {h_new}...")
                             migrations_to_run.append((h_mod, h_old, h_new))
+                            if h_mod not in updated_mods:
+                                updated_mods.append(h_mod)
 
                     if updated_any:
                         self.engine.act_reload(clean_stage=True, inject_stage=True, ignore_sha256=ignore_sha256)
                         for mod, old_v, new_v in migrations_to_run:
                             self.engine.act_migrate(mod, old_v, new_v)
-                        events.broadcast("on_update", ExecutionContext("core", "update", targets), emit_module="core")
+                        for dep_mod, dep_ver in newly_installed_deps:
+                            events.broadcast(
+                                "on_installed",
+                                ExecutionContext("core", "install", [dep_mod, dep_ver]),
+                                emit_module="core",
+                            )
+                        if updated_mods:
+                            events.broadcast(
+                                "on_update",
+                                ExecutionContext("core", "update", updated_mods),
+                                emit_module="core",
+                            )
                         self.sync_pip_dependencies()
-                        for dep_mod in newly_installed_deps:
+                        for dep_mod, _dep_ver in newly_installed_deps:
                             self._print_onboarding_guide(dep_mod)
                             self._check_optional_dependencies(dep_mod)
                         log_info("[core:update] Update completed successfully.")
@@ -853,9 +866,9 @@ class Installer:
 
     def cmd_restore(self, force: bool = False, provider: Optional[str] = None, ignore_sha256: bool = False) -> int:
         """
-        CLI 指令：python yscb.py restore [--force] [--ignore-sha256]
+        CLI 指令：python yscb.py restore [--force] [--provider <url>] [--ignore-sha256]
         讀取 yscb.config.json 之 installed_modules 清冊，批量還原所有模組至 .modules/，
-        並於完成後自動觸發 reload 重聚環境。
+        並於完成後自動觸發 reload 重聚環境；若中途發生未預期異常則回滾至 pre_restore 快照。
         """
         cfg_path, cfg = self.engine._get_config()
         if not cfg_path or not cfg:
@@ -887,72 +900,89 @@ class Installer:
         migrations_to_run: List[Tuple[str, str, str]] = []
 
         with self.engine.transaction_lock("restore"):
-            _notify_server_release_handles(yscb_abs)
-            _cleanup_stale_old_dirs(modules_dir)
-            mod_keys = sorted(installed.keys(), key=lambda x: (0 if x == "core" else 1, x))
-            for mod_name in mod_keys:
-                mod_info = installed[mod_name]
-                ver = mod_info.get("version", "1.0.0.0") if isinstance(mod_info, dict) else str(mod_info)
-                prov = provider or (mod_info.get("provider", default_provider) if isinstance(mod_info, dict) else default_provider)
-                dest = os.path.join(modules_dir, mod_name)
-                mirror = os.path.join(yscb_abs, ".mirror", mod_name)
-                mf_path = os.path.join(dest, "manifest.json")
-                installed_ver = None
-                if os.path.isdir(dest) and os.path.isfile(mf_path):
-                    try:
-                        mf_data = vfs.read_json(mf_path)
-                        if isinstance(mf_data, dict) and mf_data.get("version"):
-                            installed_ver = str(mf_data["version"])
-                    except Exception:
-                        installed_ver = None
-
-                if not force and os.path.isdir(dest) and os.path.isfile(mf_path):
-                    if ver == "build" or installed_ver == ver:
-                        log_info(f"  -> Skipping '{mod_name}@{ver}' (already installed, use --force to overwrite)")
-                        success_count += 1
-                        materialized_mods.append(mod_name)
-                        continue
-
-                log_info(f"  -> Restoring '{mod_name}@{ver}'...")
-                ok = self._restore_module_package(
-                    host_dir, cfg.get("yscb_root", "."), mod_name, ver, prov, dest, mirror, ignore_sha256=ignore_sha256
-                )
-                if ok:
-                    self.engine._apply_release_index_override_to_staging(mod_name, ver, dest)
-                    self.engine._deploy_and_strip_single_module_config(mod_name, dest)
-                    success_count += 1
-                    materialized_mods.append(mod_name)
-                    if installed_ver and installed_ver != "0.0.0.0":
+            snap_id = self.engine.act_snapshot("pre_restore")
+            try:
+                _notify_server_release_handles(yscb_abs)
+                _cleanup_stale_old_dirs(modules_dir)
+                mod_keys = sorted(installed.keys(), key=lambda x: (0 if x == "core" else 1, x))
+                for mod_name in mod_keys:
+                    mod_info = installed[mod_name]
+                    ver = mod_info.get("version", "1.0.0.0") if isinstance(mod_info, dict) else str(mod_info)
+                    prov = provider or (mod_info.get("provider", default_provider) if isinstance(mod_info, dict) else default_provider)
+                    dest = os.path.join(modules_dir, mod_name)
+                    mirror = os.path.join(yscb_abs, ".mirror", mod_name)
+                    mf_path = os.path.join(dest, "manifest.json")
+                    installed_ver = None
+                    if os.path.isdir(dest) and os.path.isfile(mf_path):
                         try:
-                            if semver.compare_semver(ver, installed_ver) > 0:
-                                migrations_to_run.append((mod_name, installed_ver, ver))
+                            mf_data = vfs.read_json(mf_path)
+                            if isinstance(mf_data, dict) and mf_data.get("version"):
+                                installed_ver = str(mf_data["version"])
+                        except Exception:
+                            installed_ver = None
+
+                    if not force and os.path.isdir(dest) and os.path.isfile(mf_path):
+                        if ver == "build" or installed_ver == ver:
+                            log_info(f"  -> Skipping '{mod_name}@{ver}' (already installed, use --force to overwrite)")
+                            success_count += 1
+                            materialized_mods.append(mod_name)
+                            continue
+
+                    log_info(f"  -> Restoring '{mod_name}@{ver}'...")
+                    ok = self._restore_module_package(
+                        host_dir, cfg.get("yscb_root", "."), mod_name, ver, prov, dest, mirror, ignore_sha256=ignore_sha256
+                    )
+                    if ok:
+                        effective_ver = ver
+                        try:
+                            _, latest_cfg = self.engine._get_config()
+                            latest_inst = latest_cfg.get("installed_modules", {})
+                            if isinstance(latest_inst, dict) and mod_name in latest_inst:
+                                m_meta = latest_inst[mod_name]
+                                cfg_ver = m_meta.get("version") if isinstance(m_meta, dict) else str(m_meta)
+                                if cfg_ver:
+                                    effective_ver = str(cfg_ver)
                         except Exception:
                             pass
+                        self.engine._apply_release_index_override_to_staging(mod_name, effective_ver, dest)
+                        self.engine._deploy_and_strip_single_module_config(mod_name, dest)
+                        success_count += 1
+                        materialized_mods.append(mod_name)
+                        if installed_ver and installed_ver != "0.0.0.0":
+                            try:
+                                if semver.compare_semver(effective_ver, installed_ver) > 0:
+                                    migrations_to_run.append((mod_name, installed_ver, effective_ver))
+                            except Exception:
+                                pass
+                    else:
+                        _print_restore_failure_guidance(mod_name, ver, prov)
+                        failed_mods.append(mod_name)
+
+                if failed_mods:
+                    log_warn(f"[core:restore] Warning: Completed with {len(failed_mods)} failure(s): {', '.join(failed_mods)}")
                 else:
-                    _print_restore_failure_guidance(mod_name, ver, prov)
-                    failed_mods.append(mod_name)
+                    log_info(f"[core:restore] Successfully restored all {success_count} module(s).")
 
-            if failed_mods:
-                log_warn(f"[core:restore] Warning: Completed with {len(failed_mods)} failure(s): {', '.join(failed_mods)}")
-            else:
-                log_info(f"[core:restore] Successfully restored all {success_count} module(s).")
-
-            log_info("[core:restore] Triggering reload...")
-            self.engine.act_reload(
-                clean_stage=True,
-                inject_stage=True,
-                ignore_sha256=ignore_sha256,
-                skip_materialize_modules=materialized_mods,
-            )
-            for m_mod, m_old, m_new in migrations_to_run:
-                self.engine.act_migrate(m_mod, m_old, m_new)
-            self.sync_pip_dependencies()
-            try:
-                generate_internal_gitignore(yscb_abs)
-            except Exception:
-                pass
-            log_info("[core:reload] Runtime environment reconciled and refreshed successfully.")
-            return 0 if not failed_mods else 1
+                log_info("[core:restore] Triggering reload...")
+                self.engine.act_reload(
+                    clean_stage=True,
+                    inject_stage=True,
+                    ignore_sha256=ignore_sha256,
+                    skip_materialize_modules=materialized_mods,
+                )
+                for m_mod, m_old, m_new in migrations_to_run:
+                    self.engine.act_migrate(m_mod, m_old, m_new)
+                self.sync_pip_dependencies()
+                try:
+                    generate_internal_gitignore(yscb_abs)
+                except Exception:
+                    pass
+                log_info("[core:reload] Runtime environment reconciled and refreshed successfully.")
+                return 0 if not failed_mods else 1
+            except Exception as e:
+                log_error(f"[core:restore] Error during restore: {e}")
+                self.engine.act_restore_snapshot(snap_id)
+                return 1
 
     def _resolve_same_triplet_fallback_version(
         self,
@@ -981,7 +1011,7 @@ class Installer:
         """自 Provider、Build 或本機 Mirror 提取指定版本模組，原子解壓縮至 dest_dir。"""
         import zipfile
         import shutil
-        os.makedirs(dest_dir, exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(dest_dir)), exist_ok=True)
         os.makedirs(mirror_dir, exist_ok=True)
 
         provider_arg = normalize_legacy_provider_url(provider_arg)
@@ -1090,11 +1120,9 @@ class Installer:
                         except OSError:
                             pass
 
-        # 3b. 本地同版 source/<mod> 動態打包自給自足（含 @build 同三元組匹配，但 .build 絕不寫入 release/）
+        # 3b. 本地同版 source/<mod> 動態打包自給自足（僅寫入 .mirror/，絕不反向寫入 release/）
         src_dir = find_matching_local_source_dir(module_name, [yscb_abs, p_abs or "", base_dir])
-        is_b_ver = version == "build" or version.endswith(".build")
-        rel_zip_target = None if is_b_ver else os.path.join(yscb_abs, "release", module_name, f"{version}.zip")
-        if src_dir and package_local_source_if_exact_match(src_dir, version, mirror_zip, release_zip_path=rel_zip_target):
+        if src_dir and package_local_source_if_exact_match(src_dir, version, mirror_zip, release_zip_path=None):
             try:
                 fetch_and_extract_zip(mirror_zip, dest_dir)
                 return True
@@ -1199,4 +1227,3 @@ class Installer:
             events.broadcast("on_env_synced", ExecutionContext("core", "env_sync", []), emit_module="core")
         except Exception:
             pass
-

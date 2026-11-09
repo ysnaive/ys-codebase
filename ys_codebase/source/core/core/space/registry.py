@@ -62,13 +62,16 @@ def _parse_qualified_key(
 
 
 def _merge_raw_space_dict(
-    existing: Dict[str, Any], incoming: Mapping[str, Any]
+    existing: Dict[str, Any],
+    incoming: Mapping[str, Any],
+    *,
+    collapse_wildcard: bool = True,
 ) -> Dict[str, Any]:
     """
     Merge `incoming` raw space definition into `existing` using rule-level absolute union:
     - `entries`, `compose`, `presets`, `exclude`: deduplicated ordered union.
-    - `include`: if either `existing` or `incoming` contains `*`, `**`, or `**/*`, result is `["*"]`;
-      otherwise deduplicated union (retaining `existing` if `incoming` omits `include`).
+    - `include`: if `collapse_wildcard` is True and either `existing` or `incoming` contains
+      `*`, `**`, or `**/*`, result is `["*"]`; otherwise deduplicated union.
     - Scalar fields (`description`, `hash_policy`, `large_file_threshold_mb`, `follow_symlinks`, `watch`):
       updated when explicitly provided in `incoming`.
     """
@@ -94,7 +97,7 @@ def _merge_raw_space_dict(
                     cur_list.append(s)
         merged[field_name] = cur_list
 
-    # Merge `include` with wildcard absorption
+    # Merge `include` with optional wildcard absorption
     has_existing_inc = "include" in merged and isinstance(merged["include"], (list, tuple))
     cur_inc: List[str] = (
         [str(x).strip() for x in merged["include"] if str(x).strip()]
@@ -112,7 +115,7 @@ def _merge_raw_space_dict(
         for pat in (*cur_inc, *new_inc):
             if pat not in combined_inc:
                 combined_inc.append(pat)
-        if any(pat in ("*", "**", "**/*") for pat in combined_inc):
+        if collapse_wildcard and any(pat in ("*", "**", "**/*") for pat in combined_inc):
             merged["include"] = ["*"]
         else:
             merged["include"] = combined_inc
@@ -443,7 +446,9 @@ class SpaceRegistry:
             _, owner, short = _parse_qualified_key(q_name, "__unknown__")
             owner_bucket = merged_by_owner.setdefault(owner, {})
             owner_bucket[short] = _merge_raw_space_dict(
-                owner_bucket.get(short, {}), rt_raw
+                owner_bucket.get(short, {}),
+                rt_raw,
+                collapse_wildcard=(short != "gitignore"),
             )
 
         # Group owners by short_name in deterministic order
@@ -502,7 +507,11 @@ class SpaceRegistry:
             }
             if synth_qname in all_raw_by_qname:
                 existing_synth = all_raw_by_qname[synth_qname][2]
-                synth_base = _merge_raw_space_dict(synth_base, existing_synth)
+                synth_base = _merge_raw_space_dict(
+                    synth_base,
+                    existing_synth,
+                    collapse_wildcard=(short_name != "gitignore"),
+                )
             all_raw_by_qname[synth_qname] = ("", short_name, synth_base)
 
         compiled_spaces: Dict[str, SpaceConfig] = {}
@@ -608,7 +617,9 @@ class SpaceRegistry:
                 p_dict.setdefault("entries", [])
                 owner_bucket = spaces_by_owner.setdefault(owner, {})
                 owner_bucket[short] = _merge_raw_space_dict(
-                    owner_bucket.get(short, {}), p_dict
+                    owner_bucket.get(short, {}),
+                    p_dict,
+                    collapse_wildcard=(short != "gitignore"),
                 )
 
             for k, v in (self._explicit_spaces or {}).items():
@@ -619,7 +630,9 @@ class SpaceRegistry:
                 )
                 owner_bucket = spaces_by_owner.setdefault(owner, {})
                 owner_bucket[short] = _merge_raw_space_dict(
-                    owner_bucket.get(short, {}), dict(v)
+                    owner_bucket.get(short, {}),
+                    dict(v),
+                    collapse_wildcard=(short != "gitignore"),
                 )
             return spaces_by_owner
 
@@ -664,9 +677,13 @@ class SpaceRegistry:
         spaces_by_owner: Dict[str, Dict[str, Dict[str, Any]]],
     ) -> None:
         try:
-            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            from core import contributes as contrib_mod
+            payload = contrib_mod._read_json_cached(str(json_path))
         except Exception:
-            return
+            try:
+                payload = json.loads(json_path.read_text(encoding="utf-8"))
+            except Exception:
+                return
         if not isinstance(payload, dict):
             return
         body = (
@@ -688,7 +705,9 @@ class SpaceRegistry:
                 p_dict.setdefault("entries", [])
                 owner_bucket = spaces_by_owner.setdefault(owner, {})
                 owner_bucket[short] = _merge_raw_space_dict(
-                    owner_bucket.get(short, {}), p_dict
+                    owner_bucket.get(short, {}),
+                    p_dict,
+                    collapse_wildcard=(short != "gitignore"),
                 )
 
         # Backward compatibility: legacy top-level `gitignore` list converted into `<owner>/gitignore` space
@@ -716,7 +735,9 @@ class SpaceRegistry:
                 }
                 owner_bucket = spaces_by_owner.setdefault(default_owner, {})
                 owner_bucket["gitignore"] = _merge_raw_space_dict(
-                    owner_bucket.get("gitignore", {}), gi_space_dict
+                    owner_bucket.get("gitignore", {}),
+                    gi_space_dict,
+                    collapse_wildcard=False,
                 )
 
         raw_s = body.get("spaces")
@@ -727,7 +748,9 @@ class SpaceRegistry:
                 _, owner, short = _parse_qualified_key(s_key, default_owner)
                 owner_bucket = spaces_by_owner.setdefault(owner, {})
                 owner_bucket[short] = _merge_raw_space_dict(
-                    owner_bucket.get(short, {}), dict(s_val)
+                    owner_bucket.get(short, {}),
+                    dict(s_val),
+                    collapse_wildcard=(short != "gitignore"),
                 )
 
     def _build_space_config_pass2(
@@ -804,7 +827,6 @@ class SpaceRegistry:
                             negated_presets_list.append(neg_child)
                 else:
                     p_src = f"preset:{t_cfg.qualified_name}"
-                    # Only pull target's effective_include if target had explicit include or positive presets
                     has_explicit_target_inc = bool(t_cfg.include) or any(
                         r.source.startswith("preset:")
                         for r in t_cfg.effective_include
@@ -835,8 +857,10 @@ class SpaceRegistry:
             if item not in effective_inc:
                 effective_inc.append(item)
 
-        # Rule-level absolute union for include: if any rule is `*`/`**`/`**/*`, collapse to `*`
-        if any(r.raw_pattern in ("*", "**", "**/*") for r in effective_inc):
+        # Rule-level absolute union for include: if any rule is `*`/`**`/`**/*` (except for gitignore spaces), collapse to `*`
+        if short_name != "gitignore" and any(
+            r.raw_pattern in ("*", "**", "**/*") for r in effective_inc
+        ):
             first_wildcard_src = next(
                 (
                     r.source
@@ -1064,7 +1088,11 @@ class SpaceRegistry:
                 )
 
             existing = self._runtime_spaces.get(q_name, {})
-            self._runtime_spaces[q_name] = _merge_raw_space_dict(existing, raw_dict)
+            self._runtime_spaces[q_name] = _merge_raw_space_dict(
+                existing,
+                raw_dict,
+                collapse_wildcard=(short_name != "gitignore"),
+            )
 
             if self._in_reload_broadcast:
                 default_w = False if short_name == "gitignore" else True
@@ -2035,6 +2063,4 @@ def __getattr__(name: str) -> Any:
     ctx = get_runtime_context()
     if name == "_DEFAULT_REGISTRIES":
         return ctx.space_default_registries
-    if name == "_DEFAULT_REGISTRIES_LOCK":
-        return ctx.space_registries_lock
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

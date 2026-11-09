@@ -5,33 +5,18 @@ agents_workflow.plans._verifier_specs — PlanVerifier 模板佔位符規則、�
 import os
 import re
 from pathlib import Path
-from types import MappingProxyType
-from typing import Dict, FrozenSet, List, Mapping, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
-VALID_STATUSES: FrozenSet[str] = frozenset({
-    "draft", "confirmed", "in progress", "in_progress", "implementing",
-    "passed", "completed", "active", "archived", "pending", "review",
-    "discussing", "planning", "executing", "concluded", "aborted", "cancelled",
-    "backlog", "proposed", "ready", "deferred", "seeded", "phase 0",
-})
-
-ORIGIN_SEED_FILES: FrozenSet[str] = frozenset({"roadmap.md", "todo.md"})
-
-HEADER_NAME_KEYS: Tuple[str, ...] = (
-    "功能名稱", "計畫名稱", "所屬計畫", "name", "title", "調研主題", "topic", "subject", "主題",
-)
-HEADER_DATE_KEYS: Tuple[str, ...] = (
-    "建立日期", "完成日期", "暫停時間", "歸檔日期", "更新日期",
-    "date", "created_at", "updated_at", "archived_at", "日期", "time", "timestamp",
-)
-HEADER_STATUS_KEYS: Tuple[str, ...] = (
-    "狀態", "status", "調研狀態", "research_status", "plan_status", "計畫狀態", "進度", "當前所在階段",
-)
-HEADER_PARENT_KEYS: Tuple[str, ...] = (
-    "所屬主計畫", "所屬計畫", "parent_plan", "主計畫", "parent",
-)
-HEADER_MODEL_KEYS: Tuple[str, ...] = (
-    "模型", "model", "ai_model", "ai-model", "模型名稱", "model_name",
+from .state_machine import (
+    HEADER_DATE_KEYS,
+    HEADER_MODEL_KEYS,
+    HEADER_NAME_KEYS,
+    HEADER_PARENT_KEYS,
+    HEADER_STATUS_KEYS,
+    ORIGIN_SEED_FILES,
+    PHASE_CANONICAL_FILES,
+    PHASE_PREFIX_MAP,
+    VALID_STATUSES,
 )
 
 PLACEHOLDER_PATTERNS: Tuple[str, ...] = (
@@ -52,28 +37,6 @@ PLACEHOLDER_PATTERNS: Tuple[str, ...] = (
     r"\{\{\s*\.\.\.\s*\}\}",
 )
 
-PHASE_PREFIX_MAP: Mapping[str, str] = MappingProxyType({
-    "P00": "P00_",
-    "P01": "P01_",
-    "P02": "P02_",
-    "P03": "P03_",
-    "P04": "P04_",
-    "P05": "P05_",
-    "P06": "P06_",
-    "P07": "P07_",
-})
-
-PHASE_CANONICAL_FILES: Mapping[str, str] = MappingProxyType({
-    "P00": "P00_discuss.md",
-    "P01": "P01_requirements_spec.md",
-    "P02": "P02_architecture_plan.md",
-    "P03": "P03_api_spec.md",
-    "P04": "P04_implementation_plan.md",
-    "P05": "P05_task.md",
-    "P06": "P06_test_plan.md",
-    "P07": "P07_walkthrough.md",
-})
-
 _BRACKET_TOKEN_RE = re.compile(r"\[([^\]\r\n]+)\]")
 _CJK_CHAR_RE = re.compile(r"[\u4e00-\u9fa5]")
 _REV_PREFIX_RE = re.compile(r"^REV-\d+")
@@ -84,7 +47,11 @@ _H2_SECTION_NUM_RE = re.compile(r"^##\s*(\d+)\.")
 _REV_TAG_RE = re.compile(r"\[REV-\d+\]", re.IGNORECASE)
 _AUTO_RANGE_FILE_RE = re.compile(r"^P0[1-5]-05_auto\.md$", re.IGNORECASE)
 _RESEARCH_REPORT_FILE_RE = re.compile(r"^R\d{2}_.+\.md$", re.IGNORECASE)
-_FENCED_CODE_RE = re.compile(r"```[\s\S]*?```")
+_FENCE_OPEN_RE = re.compile(r"^(`{3,})")
+_FENCED_CODE_RE = re.compile(
+    r"(?:^[ \t]*(`{3,})[^\r\n]*\r?\n[\s\S]*?^[ \t]*\1`*[ \t]*(?=\r?\n|\Z)|(`{3,})[\s\S]*?\2)",
+    re.MULTILINE,
+)
 _HTML_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
 _STRIKETHROUGH_RE = re.compile(r"~~[\s\S]*?~~")
 _REQ_ID_RE = re.compile(r"\b(?:FR|EC|NFR)-\d+\b", re.IGNORECASE)
@@ -143,15 +110,21 @@ def normalize_header_title(header_line: str) -> str:
 
 
 def extract_markdown_headers(lines: List[str]) -> List[str]:
-    """自 Markdown 行清單提取非程式碼區塊之二/三級章節正規化標題清單。"""
+    """自 Markdown 行清單提取非程式碼區塊之二/三級章節正規化標題清單（支援 3+ 反引號對稱閉合）。"""
     doc_headers: List[str] = []
-    in_code_block = False
+    fence_len = 0
     for line in lines:
         line_s = line.strip()
-        if line_s.startswith("```"):
-            in_code_block = not in_code_block
-            continue
-        if in_code_block:
+        m_fence = _FENCE_OPEN_RE.match(line_s)
+        if m_fence:
+            ticks = len(m_fence.group(1))
+            if fence_len == 0:
+                fence_len = ticks
+                continue
+            if ticks >= fence_len and line_s == "`" * ticks:
+                fence_len = 0
+                continue
+        if fence_len > 0:
             continue
         if line_s.startswith("##") or line_s.startswith("###"):
             norm = normalize_header_title(line_s)
@@ -200,13 +173,19 @@ def load_template_header_specs(
         try:
             content = tmpl_path.read_text(encoding="utf-8", errors="ignore")
             current_h2_phase = 0
-            in_code_block = False
+            fence_len = 0
             for line in content.splitlines():
                 line_s = line.strip()
-                if line_s.startswith("```"):
-                    in_code_block = not in_code_block
-                    continue
-                if in_code_block:
+                m_fence = _FENCE_OPEN_RE.match(line_s)
+                if m_fence:
+                    ticks = len(m_fence.group(1))
+                    if fence_len == 0:
+                        fence_len = ticks
+                        continue
+                    if ticks >= fence_len and line_s == "`" * ticks:
+                        fence_len = 0
+                        continue
+                if fence_len > 0:
                     continue
                 if line_s.startswith("##") and not line_s.startswith("###"):
                     m_sec = _H2_SECTION_NUM_RE.match(line_s)
@@ -258,16 +237,37 @@ def extract_requirement_ids(markdown_text: str) -> Set[str]:
     """
     從 P01_requirements_spec.md 或 P06_test_plan.md 文本提取有效需求 ID 集合 (FR-XX, EC-XX, NFR-XX)。
     提取前依序預先剝除：
-      1. Fenced Code Blocks (```...```)
-      2. HTML 註解區塊 (<!--...-->)
-      3. Markdown 刪除線語法 (~~...~~)
+    1. Fenced code blocks (``` ... ``` / ```` ... ````)
+    2. HTML comments (<!-- ... -->)
+    3. Strikethrough 已取消/降級片段 (~~ ... ~~)
+    4. 行內反引號片段 (`...` / ``...``)
+    避免範例模板、註解或刪除線內之 ID 造成假陽性孤兒需求告警。
     """
     if not markdown_text:
         return set()
-
     cleaned = _FENCED_CODE_RE.sub("", markdown_text)
     cleaned = _HTML_COMMENT_RE.sub("", cleaned)
     cleaned = _STRIKETHROUGH_RE.sub("", cleaned)
+    cleaned = re.sub(r"(`+)(?!`)(?:[^\r\n]*?[^`\r\n])?\1(?!`)", "", cleaned)
+    return {m.upper() for m in _REQ_ID_RE.findall(cleaned)}
 
-    matches = _REQ_ID_RE.findall(cleaned)
-    return {m.upper() for m in matches}
+
+__all__ = [
+    "VALID_STATUSES",
+    "ORIGIN_SEED_FILES",
+    "HEADER_NAME_KEYS",
+    "HEADER_DATE_KEYS",
+    "HEADER_STATUS_KEYS",
+    "HEADER_PARENT_KEYS",
+    "HEADER_MODEL_KEYS",
+    "PLACEHOLDER_PATTERNS",
+    "PHASE_PREFIX_MAP",
+    "PHASE_CANONICAL_FILES",
+    "extract_dynamic_placeholders",
+    "normalize_header_title",
+    "extract_markdown_headers",
+    "is_header_match",
+    "load_template_header_specs",
+    "map_file_to_template",
+    "extract_requirement_ids",
+]

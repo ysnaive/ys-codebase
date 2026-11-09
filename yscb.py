@@ -100,7 +100,7 @@ def _parse_flag_options(argv: List[str]) -> Tuple[List[str], Dict[str, Any]]:
         a = argv[i]
         if a == "--fix":
             opts["fix"] = True
-        elif a == "--force":
+        elif a in ("--force", "-f"):
             opts["force"] = True
         elif a == "--ignore-sha256":
             opts["ignore_sha256"] = True
@@ -173,8 +173,11 @@ def _normalize_provider_url(url: Optional[str]) -> str:
     return s
 
 
-def load_config(start_dir: Optional[str] = None) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
-    """剛性組態載入：僅探測當前目錄同層之 yscb.config.json，並自動遷移舊版官方 Provider URL。"""
+def load_config(
+    start_dir: Optional[str] = None,
+    persist_migration: bool = False,
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """剛性組態載入：僅探測當前目錄同層之 yscb.config.json，並於記憶體正規化舊版官方 Provider URL。"""
     cfg_path = os.path.join(os.path.abspath(start_dir or os.getcwd()), CONFIG_FILENAME)
     if os.path.isfile(cfg_path):
         data = _read_json_dict(cfg_path)
@@ -192,7 +195,7 @@ def load_config(start_dir: Optional[str] = None) -> Tuple[Optional[str], Optiona
                         if isinstance(mp, str) and mp.strip() in LEGACY_PROVIDER_URLS:
                             m_info["provider"] = DEFAULT_PROVIDER_URL
                             changed = True
-            if changed:
+            if changed and persist_migration:
                 try:
                     _write_json_lf(cfg_path, data)
                 except Exception:
@@ -429,11 +432,11 @@ def _resolve_same_triplet_fallback_version(
         return None
 
     same_triplet_cands = [
-        (_parse_simple_semver(v), v)
+        (parsed, v)
         for v in active_vers
         if isinstance(v, str)
-        and not _parse_simple_semver(v)[4]
-        and _parse_simple_semver(v)[:3] == req_triplet
+        and not (parsed := _parse_simple_semver(v))[4]
+        and parsed[:3] == req_triplet
     ]
     if not same_triplet_cands:
         return None
@@ -496,6 +499,27 @@ def _force_writable(path: str) -> None:
         pass
 
 
+def _rmtree_force_writable(path: str) -> None:
+    """遞迴刪除目錄並自動解除唯讀屬性限制。"""
+    if not os.path.exists(path) and not os.path.lexists(path):
+        return
+
+    def _on_err(func: Any, failed_path: str, _exc_info: Any) -> None:
+        try:
+            _force_writable(failed_path)
+            func(failed_path)
+        except Exception:
+            pass
+
+    for attempt in range(3):
+        try:
+            shutil.rmtree(path, onerror=_on_err)
+            return
+        except OSError:
+            if attempt < 2:
+                time.sleep(0.03 * (attempt + 1))
+
+
 def _backup_dir_files(target_abs: str, backup_dir: str) -> Set[str]:
     """備份目標目錄現有檔案至 backup_dir 並返回正規化相對路徑集合。"""
     existing_rel_files: Set[str] = set()
@@ -522,8 +546,10 @@ def _rollback_dir_from_backup(target_abs: str, backup_dir: str, existing_rel_fil
             for fname in files:
                 rel_path = os.path.join(rel_root, fname) if rel_root else fname
                 if rel_path.replace("\\", "/") not in existing_rel_files:
+                    target_f = os.path.join(root, fname)
                     try:
-                        os.remove(os.path.join(root, fname))
+                        _force_writable(target_f)
+                        os.remove(target_f)
                     except Exception:
                         pass
         for norm_rel in existing_rel_files:
@@ -534,6 +560,8 @@ def _rollback_dir_from_backup(target_abs: str, backup_dir: str, existing_rel_fil
                 os.makedirs(os.path.dirname(dst_f), exist_ok=True)
                 tmp_restore = os.path.join(os.path.dirname(dst_f), f".yscb_restore_{os.getpid()}_{os.path.basename(dst_f)}")
                 shutil.copy2(bak_f, tmp_restore)
+                if os.path.exists(dst_f):
+                    _force_writable(dst_f)
                 os.replace(tmp_restore, dst_f)
     except Exception:
         pass
@@ -590,7 +618,7 @@ def _inplace_atomic_sync_dir(staging_dir: str, target_dir: str) -> None:
         raise
     finally:
         if os.path.exists(backup_dir):
-            shutil.rmtree(backup_dir, ignore_errors=True)
+            _rmtree_force_writable(backup_dir)
 
 
 def _verify_and_extract_zip_file(
@@ -617,14 +645,14 @@ def _safe_replace_dir(src_dir: str, dst_dir: str) -> None:
     except OSError as err:
         if getattr(err, "errno", None) == 18:  # errno.EXDEV
             parent = os.path.dirname(os.path.abspath(dst_dir))
-            stage = os.path.join(parent, f".exdev_{os.path.basename(dst_dir)}_{os.getpid()}")
+            stage = os.path.join(parent, f".exdev_{os.path.basename(dst_dir)}_{os.getpid()}_{int(time.time() * 1000)}")
             if os.path.exists(stage):
-                shutil.rmtree(stage, ignore_errors=True)
+                _rmtree_force_writable(stage)
             shutil.copytree(src_dir, stage, symlinks=True)
             if os.path.exists(dst_dir):
-                shutil.rmtree(dst_dir, ignore_errors=True)
+                _rmtree_force_writable(dst_dir)
             os.replace(stage, dst_dir)
-            shutil.rmtree(src_dir, ignore_errors=True)
+            _rmtree_force_writable(src_dir)
             return
         raise
 
@@ -634,12 +662,12 @@ def atomic_swap_directory(staging_dir: str, dest_dir: str) -> None:
     dest_abs = os.path.abspath(dest_dir)
     staging_abs = os.path.abspath(staging_dir)
     parent_dir, base_name = os.path.dirname(dest_abs), os.path.basename(dest_abs)
-    old_dir = os.path.join(parent_dir, f".old_{base_name}_{os.getpid()}")
+    old_dir = os.path.join(parent_dir, f".old_{base_name}_{os.getpid()}_{int(time.time() * 1000)}")
     moved_old = False
     swap_succeeded = False
     try:
         if os.path.exists(old_dir):
-            shutil.rmtree(old_dir, ignore_errors=True)
+            _rmtree_force_writable(old_dir)
         if os.path.exists(dest_abs):
             try:
                 _safe_replace_dir(dest_abs, old_dir)
@@ -656,16 +684,16 @@ def atomic_swap_directory(staging_dir: str, dest_dir: str) -> None:
         if moved_old and os.path.exists(old_dir):
             try:
                 if os.path.exists(dest_abs):
-                    shutil.rmtree(dest_abs, ignore_errors=True)
+                    _rmtree_force_writable(dest_abs)
                 _safe_replace_dir(old_dir, dest_abs)
             except Exception:
                 pass
         raise
     finally:
         if swap_succeeded and os.path.exists(old_dir):
-            shutil.rmtree(old_dir, ignore_errors=True)
+            _rmtree_force_writable(old_dir)
         if os.path.exists(staging_abs):
-            shutil.rmtree(staging_abs, ignore_errors=True)
+            _rmtree_force_writable(staging_abs)
 
 
 def _fetch_and_extract_zip(source: str, dest_dir: str, expected_sha256: Optional[str] = None) -> None:
@@ -673,9 +701,9 @@ def _fetch_and_extract_zip(source: str, dest_dir: str, expected_sha256: Optional
     dest_abs = os.path.abspath(dest_dir)
     parent_dir, base_name = os.path.dirname(dest_abs), os.path.basename(dest_abs)
     os.makedirs(parent_dir, exist_ok=True)
-    staging_dir = os.path.join(parent_dir, f".staging_{base_name}_{os.getpid()}")
+    staging_dir = os.path.join(parent_dir, f".staging_{base_name}_{os.getpid()}_{int(time.time() * 1000)}")
     if os.path.exists(staging_dir):
-        shutil.rmtree(staging_dir, ignore_errors=True)
+        _rmtree_force_writable(staging_dir)
     os.makedirs(staging_dir, exist_ok=True)
 
     try:
@@ -702,7 +730,7 @@ def _fetch_and_extract_zip(source: str, dest_dir: str, expected_sha256: Optional
         atomic_swap_directory(staging_dir, dest_abs)
     finally:
         if os.path.exists(staging_dir):
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            _rmtree_force_writable(staging_dir)
 
 
 def _resolve_self_update_target_url(provider: Optional[str] = None, custom_url: Optional[str] = None) -> str:
@@ -900,7 +928,10 @@ def _parse_simple_semver(v_str: str) -> Tuple[int, int, int, int, bool, Tuple[in
     return (parts[0], parts[1], parts[2], parts[3], is_build, pre_weight)
 
 
-def _discover_latest_core(provider: str) -> Tuple[Optional[str], Optional[str]]:
+def _discover_latest_core(
+    provider: str,
+    base_dir: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str]]:
     """
     動態探測 Provider 中的最新 core 模組。
     返回 (version_str, package_path_or_url)；若找不到或探測失敗則返回 (None, None)，嚴禁偽造預設版本。
@@ -908,7 +939,7 @@ def _discover_latest_core(provider: str) -> Tuple[Optional[str], Optional[str]]:
     p = _normalize_provider_url(provider or DEFAULT_PROVIDER_URL).strip().rstrip("/")
     # 1. 本地目錄探測
     if not p.startswith(("http://", "https://")):
-        p_abs = _normalize_local_path(p) or p
+        p_abs = _normalize_local_path(p, base_dir=base_dir) or p
         cand_dirs = [os.path.join(p_abs, "core"), os.path.join(p_abs, "release", "core"), p_abs]
         found_versions: Dict[str, str] = {}
         for c_dir in cand_dirs:
@@ -921,7 +952,7 @@ def _discover_latest_core(provider: str) -> Tuple[Optional[str], Optional[str]]:
                     if os.path.isfile(zip_cand):
                         found_versions[v] = zip_cand
                     else:
-                        src_dir = _find_matching_source_dir("core", [c_dir, os.path.dirname(c_dir), p_abs, os.getcwd()])
+                        src_dir = _find_matching_source_dir("core", [c_dir, os.path.dirname(c_dir), p_abs, base_dir or os.getcwd()])
                         if src_dir and _package_source_to_zip_if_exact_version(src_dir, str(v), zip_cand):
                             found_versions[v] = zip_cand
             for f in os.listdir(c_dir):
@@ -934,8 +965,9 @@ def _discover_latest_core(provider: str) -> Tuple[Optional[str], Optional[str]]:
                         found_versions[str(m_data["version"])] = full_f
 
         if found_versions:
-            clean_pairs = [(_parse_simple_semver(v), v, pth) for v, pth in found_versions.items() if not _parse_simple_semver(v)[4]]
-            pool = clean_pairs if clean_pairs else [(_parse_simple_semver(v), v, pth) for v, pth in found_versions.items()]
+            parsed_items = [(_parse_simple_semver(v), v, pth) for v, pth in found_versions.items()]
+            clean_pairs = [item for item in parsed_items if not item[0][4]]
+            pool = clean_pairs if clean_pairs else parsed_items
             pool.sort(key=lambda x: x[0], reverse=True)
             return pool[0][1], pool[0][2]
 
@@ -946,11 +978,16 @@ def _discover_latest_core(provider: str) -> Tuple[Optional[str], Optional[str]]:
         return None, None
 
     # 2. 遠端 HTTP/HTTPS 探測
-    data = _load_provider_index_dict(p, "core")
+    data = _load_provider_index_dict(p, "core", base_dir=base_dir)
     if isinstance(data, dict) and isinstance(data.get("versions"), list):
-        clean_versions = [v for v in data["versions"] if not _parse_simple_semver(v)[4]]
+        clean_versions = [
+            (parsed, v)
+            for v in data["versions"]
+            if isinstance(v, str) and not (parsed := _parse_simple_semver(v))[4]
+        ]
         if clean_versions:
-            best_v = sorted(clean_versions, key=_parse_simple_semver, reverse=True)[0]
+            clean_versions.sort(key=lambda x: x[0], reverse=True)
+            best_v = clean_versions[0][1]
             return best_v, f"{p}/core/{best_v}.zip"
 
     return None, None
@@ -1058,7 +1095,7 @@ def cmd_init(argv: List[str]) -> int:
         print(f"[yscb] Initializing environment at '{yscb_root}'...")
         action_tag = "init"
 
-    ver, source = _discover_latest_core(target_prov)
+    ver, source = _discover_latest_core(target_prov, base_dir=base_dir)
     if not source or not ver:
         print(f"[yscb] Error: Cannot locate core package in provider '{target_prov}'.")
         return 1
@@ -1143,7 +1180,6 @@ def _extract_and_cache_mirror(
     """提取套件至 dest_dir 並於來源為 zip 檔時先同步快取至 mirror_zip 再執行校驗與解壓。"""
     copied_to_mirror = False
     try:
-        os.makedirs(dest_dir, exist_ok=True)
         os.makedirs(mirror_dir, exist_ok=True)
         target_src = src_path
         if os.path.isfile(src_path) and (src_path.endswith(".zip") or zipfile.is_zipfile(src_path)):
@@ -1263,14 +1299,13 @@ def _bootstrap_package_from_provider(
                 return True
 
         src_dir = _find_matching_source_dir(module_name, [yscb_abs, p_abs, base_dir])
-        rel_zip_target = None if is_b_ver else os.path.join(yscb_abs, "release", module_name, f"{version}.zip")
-        if src_dir and _package_source_to_zip_if_exact_version(src_dir, version, mirror_zip, release_zip_path=rel_zip_target):
+        if src_dir and _package_source_to_zip_if_exact_version(src_dir, version, mirror_zip, release_zip_path=None):
             if _extract_and_cache_mirror(mirror_zip, dest_dir, mirror_dir, mirror_zip):
                 return True
 
     # 3b. 即便為遠端 Provider，若當前工作區具備嚴格同版本之 source/<mod>，亦優先自給自足打包
     src_dir_local = _find_matching_source_dir(module_name, [yscb_abs, base_dir])
-    if src_dir_local and _package_source_to_zip_if_exact_version(src_dir_local, version, mirror_zip):
+    if src_dir_local and _package_source_to_zip_if_exact_version(src_dir_local, version, mirror_zip, release_zip_path=None):
         if _extract_and_cache_mirror(mirror_zip, dest_dir, mirror_dir, mirror_zip):
             return True
 
@@ -1314,6 +1349,7 @@ def _auto_bootstrap_and_restore_if_needed(
     cfg: Dict[str, Any],
     target_cmd: str,
     ignore_sha256: bool = False,
+    provider_override: Optional[str] = None,
 ) -> bool:
     """
     自適應環境重建：當 yscb.config.json 存在，但 .modules/core 尚未下載或 installed_modules 有缺失時，
@@ -1338,7 +1374,11 @@ def _auto_bootstrap_and_restore_if_needed(
     if not core_healthy:
         core_info = installed.get("core")
         core_ver = core_info.get("version") if isinstance(core_info, dict) else None
-        core_prov = (core_info.get("provider") if isinstance(core_info, dict) else None) or default_prov
+        core_prov = (
+            _normalize_provider_url(provider_override)
+            if provider_override
+            else ((core_info.get("provider") if isinstance(core_info, dict) else None) or default_prov)
+        )
         if not core_ver or not core_prov:
             _print_missing_source_remediation("core", str(core_ver or "unknown"), str(core_prov or "unknown"))
             return False
@@ -1367,6 +1407,8 @@ def _auto_bootstrap_and_restore_if_needed(
         else:
             print("[yscb] Triggering auto-restore to reconcile runtime environment...")
         restore_args = ["restore"] + (["--ignore-sha256"] if ignore_sha256 else [])
+        if provider_override:
+            restore_args.extend(["--provider", provider_override])
         return dispatch_module("core", restore_args) == 0
 
     return True
@@ -1385,22 +1427,35 @@ def cmd_restore(argv: List[str]) -> int:
     installed = cfg.get("installed_modules", {})
     if not isinstance(installed, dict) or not installed:
         return 0
-    ignore_sha256 = "--ignore-sha256" in argv
-    force = "--force" in argv or "-f" in argv
+    _, opts = _parse_flag_options(argv)
+    ignore_sha256 = bool(opts.get("ignore_sha256", False))
+    force = bool(opts.get("force", False))
+    explicit_prov = opts.get("provider")
     core_cli = os.path.join(yscb_abs, ".modules", "core", "scripts", "cli.py")
     if not os.path.isfile(core_cli):
-        _auto_bootstrap_and_restore_if_needed(base_dir, yscb_root, cfg, "restore", ignore_sha256=ignore_sha256)
+        _auto_bootstrap_and_restore_if_needed(
+            base_dir,
+            yscb_root,
+            cfg,
+            "restore",
+            ignore_sha256=ignore_sha256,
+            provider_override=explicit_prov,
+        )
     if os.path.isfile(core_cli):
         _activate_runtime_env(yscb_abs, host_dir=base_dir)
         return dispatch_module("core", ["restore"] + argv)
 
-    default_prov = _normalize_provider_url(cfg.get("default_provider", DEFAULT_PROVIDER_URL))
+    default_prov = _normalize_provider_url(explicit_prov or cfg.get("default_provider", DEFAULT_PROVIDER_URL))
     mod_keys = sorted(installed.keys(), key=lambda x: (0 if x == "core" else 1, x))
     failed = False
     for m_name in mod_keys:
         m_info = installed[m_name]
         ver = m_info.get("version", "1.0.0.0") if isinstance(m_info, dict) else str(m_info)
-        prov = (m_info.get("provider", default_prov) if isinstance(m_info, dict) else default_prov) or default_prov
+        prov = (
+            _normalize_provider_url(explicit_prov)
+            if explicit_prov
+            else ((m_info.get("provider", default_prov) if isinstance(m_info, dict) else default_prov) or default_prov)
+        )
         dest = os.path.join(yscb_abs, ".modules", m_name)
         mirror = os.path.join(yscb_abs, ".mirror", m_name)
         mf_file = os.path.join(dest, "manifest.json")
@@ -1483,8 +1538,17 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if cfg is not None:
         primary_arg = argv[0] if argv else ""
-        ignore_sha = "--ignore-sha256" in (argv or [])
-        if not _auto_bootstrap_and_restore_if_needed(host_dir, yscb_rel, cfg, primary_arg, ignore_sha256=ignore_sha):
+        _, boot_opts = _parse_flag_options(argv or [])
+        ignore_sha = bool(boot_opts.get("ignore_sha256", False))
+        prov_override = boot_opts.get("provider") if primary_arg == "restore" else None
+        if not _auto_bootstrap_and_restore_if_needed(
+            host_dir,
+            yscb_rel,
+            cfg,
+            primary_arg,
+            ignore_sha256=ignore_sha,
+            provider_override=prov_override,
+        ):
             return 1
         _activate_runtime_env(yscb_abs, host_dir=host_dir)
 

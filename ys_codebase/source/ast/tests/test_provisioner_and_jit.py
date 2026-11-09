@@ -72,7 +72,7 @@ class TestProvisionerAndJit(ASTTestCase):
                 )
                 self.assertIsNone(lang1)
                 self.assertEqual(len(run_calls), 1)
-                self.assertIn("tree-sitter-nonexistent-xyz", GrammarProvisioner._FAILED_PACKAGES)
+                self.assertIn("tree-sitter-nonexistent-xyz", GrammarProvisioner.get_failed_packages())
 
                 # Clear warnings, then verify cached negative hit still populates warnings without re-running pip
                 GrammarProvisioner.get_warnings(clear=True)
@@ -92,13 +92,14 @@ class TestProvisionerAndJit(ASTTestCase):
 
     @require(Requirement.LOGIC)
     def test_ast_engine_jit_sync_hot_patch_and_external_edge_preservation(self) -> None:
-        """Verify ASTEngine.ensure_jit_synced builds index, hot-patches C# partial changes, preserves incoming edges, and increments ast_generation."""
+        """Verify ASTEngine.ensure_jit_synced builds index, hot-patches C# partial changes (including surviving sibling call relinking), preserves incoming edges, and increments ast_generation."""
         proj_dir = self.temp_dir / "project"
         svc_dir = proj_dir / "Services"
         svc_dir.mkdir(parents=True, exist_ok=True)
 
         part1 = svc_dir / "Billing.Part1.cs"
         part2 = svc_dir / "Billing.Part2.cs"
+        helper_file = svc_dir / "ReceiptValidator.cs"
         caller_file = svc_dir / "CheckoutController.cs"
 
         part1.write_text(
@@ -112,7 +113,17 @@ class TestProvisionerAndJit(ASTTestCase):
         part2.write_text(
             "namespace App.Services {\n"
             "    public partial class BillingService {\n"
-            "        public void Refund(int amount) {}\n"
+            "        public void Refund(int amount) {\n"
+            "            _validator.Verify(amount);\n"
+            "        }\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        helper_file.write_text(
+            "namespace App.Services {\n"
+            "    public class ReceiptValidator {\n"
+            "        public void Verify(int amount) {}\n"
             "    }\n"
             "}\n",
             encoding="utf-8",
@@ -137,17 +148,36 @@ class TestProvisionerAndJit(ASTTestCase):
         caller_names_initial = {c["name"].split(".")[-1] for c in callers_initial.get("callers", [])}
         self.assertIn("ProcessCheckout", caller_names_initial)
 
+        # Hot-patch Part1.cs to add `_validator` field while Part2.cs (surviving sibling) is unmodified:
+        # Part2.cs's `_validator.Verify(amount)` call must be re-linked using the newly aggregated field type!
         part1.write_text(
             "namespace App.Services {\n"
             "    public partial class BillingService {\n"
+            "        private ReceiptValidator _validator;\n"
             "        public void Charge(int amount) {}\n"
             "        public void ValidateReceipt() {}\n"
             "    }\n"
             "}\n",
             encoding="utf-8",
         )
-        part2.unlink()
+        snap_sib = engine.hot_patch_index(
+            {
+                "spaces": {
+                    "default": {
+                        "added": [],
+                        "modified": ["Services/Billing.Part1.cs"],
+                        "deleted": [],
+                    }
+                }
+            }
+        )
+        self.assertEqual(snap_sib.ast_generation, 2)
+        verify_callers = engine.callers("ReceiptValidator.Verify")
+        verify_caller_names = {c["name"].split(".")[-1] for c in verify_callers.get("callers", [])}
+        self.assertIn("Refund", verify_caller_names)
 
+        # Now delete Part2.cs and verify eviction + surviving Part1 members
+        part2.unlink()
         diff_detail = {
             "spaces": {
                 "default": {
@@ -158,13 +188,13 @@ class TestProvisionerAndJit(ASTTestCase):
             }
         }
         snap2 = engine.hot_patch_index(diff_detail)
-        self.assertEqual(snap2.ast_generation, 2)
+        self.assertEqual(snap2.ast_generation, 3)
 
         billing_cls = next((s for s in snap2.symbols.values() if s.kind == "class" and s.fqn == "App.Services.BillingService"), None)
         self.assertIsNotNone(billing_cls)
         assert billing_cls is not None
         surviving_members = {m.name for m in billing_cls.members}
-        self.assertEqual(surviving_members, {"Charge", "ValidateReceipt"})
+        self.assertEqual(surviving_members, {"_validator", "Charge", "ValidateReceipt"})
 
         callers_after = engine.callers("BillingService.Charge")
         caller_names_after = {c["name"].split(".")[-1] for c in callers_after.get("callers", [])}
@@ -172,7 +202,7 @@ class TestProvisionerAndJit(ASTTestCase):
 
         st = engine.status()
         self.assertTrue(st["snapshot_exists"])
-        self.assertEqual(st["ast_generation"], 2)
+        self.assertEqual(st["ast_generation"], 3)
 
         clean_res = engine.clean()
         self.assertEqual(len(clean_res["removed"]), 4)
@@ -181,7 +211,7 @@ class TestProvisionerAndJit(ASTTestCase):
 
     @require(Requirement.LOGIC)
     def test_file_space_hook_lifecycle_and_generation_fallback(self) -> None:
-        """Verify scripts/hook.core.py handles non-target space ignore, persisted generation fallback, rebuilt/patched/noop paths, and declarative space registration."""
+        """Verify scripts/hook.core.py handles non-target space ignore, non-parseable dirty file skip, persisted generation fallback, rebuilt/patched/noop paths, and declarative space registration."""
         hook_mod = load_ast_script("scripts/hook.core.py", "ast_hook_core")
 
         res_empty = hook_mod.on_file_space_changed(diff_detail={})
@@ -229,7 +259,13 @@ class TestProvisionerAndJit(ASTTestCase):
             self.assertEqual(res_patched.get("status"), "patched")
             self.assertEqual(res_patched.get("ast_generation"), 2)
 
-            # 4. No changes -> status == "noop"
+            # 4. Non-parseable file change (.json) -> status == "noop" without incrementing ast_generation
+            (proj_dir / "settings.json").write_text('{"debug": true}\n', encoding="utf-8")
+            res_non_parseable = hook_mod.on_file_space_changed(context={"engine": engine, "space_name": "default"})
+            self.assertEqual(res_non_parseable.get("status"), "noop")
+            self.assertEqual(res_non_parseable.get("ast_generation"), 2)
+
+            # 5. No changes -> status == "noop"
             res_noop = hook_mod.on_file_space_changed(context={"engine": engine, "space_name": "default"})
             self.assertEqual(res_noop.get("status"), "noop")
             self.assertEqual(res_noop.get("ast_generation"), 2)
@@ -394,7 +430,7 @@ class TestProvisionerAndJit(ASTTestCase):
         self.assertIn("run_beta", caller_names)
         self.assertIn("extra_helper", caller_names)
 
-        # Verify scripts/hook.core.py _resolve_consume_diff aligns UNIFIED_KEY (None) cursor after single-space consume
+        # Verify scripts/hook.core.py _resolve_consume_diff does NOT wipe UNIFIED_KEY (None) cursor after single-space consume
         from contextlib import contextmanager
 
         ack_records = []
@@ -417,7 +453,7 @@ class TestProvisionerAndJit(ASTTestCase):
         hook_core = load_ast_script("scripts/hook.core.py", "ast_hook_core")
         with hook_core._resolve_consume_diff(_FakeEng(), space_name="project/default", consumer_id="ast"):
             pass
-        self.assertIn((None, {"consumer_id": "ast"}), ack_records)
+        self.assertNotIn((None, {"consumer_id": "ast"}), ack_records)
 
         # Verify SemanticBundler transient caches are cleared after build_index and hot_patch_index
         self.assertEqual(len(engine.bundler._file_symbols_cache), 0)
@@ -533,7 +569,7 @@ class TestProvisionerAndJit(ASTTestCase):
             bar.wait(timeout=2.0)
             return False
 
-        GrammarProvisioner._FAILED_PACKAGES.clear()
+        GrammarProvisioner.reset_cache()
         with patch.object(GrammarProvisioner, "_try_pip_install", side_effect=slow_install):
             results = [None, None]
 

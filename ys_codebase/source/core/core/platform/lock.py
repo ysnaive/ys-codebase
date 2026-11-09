@@ -10,11 +10,23 @@ import errno
 import os
 from pathlib import Path
 import sys
+import threading
 import time
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
+
+from core.context import get_runtime_context
 
 _EEXIST_RETRIES: int = 3
 _STALE_PLAIN_LOCK_TTL_SEC: float = 30.0
+
+
+def _norm_lock_key(lock_file: str) -> str:
+    return os.path.normcase(os.path.normpath(os.path.realpath(os.path.abspath(lock_file))))
+
+
+def _get_held_locks_state() -> Tuple[threading.RLock, Dict[str, Tuple[int, int, int]]]:
+    ctx = get_runtime_context()
+    return ctx.interprocess_locks_lock, ctx.held_interprocess_locks
 
 
 class LockAcquisitionError(Exception):
@@ -27,26 +39,65 @@ class InterProcessLock:
     Cross-platform inter-process file lock.
 
     Guarantees mutual exclusion between separate processes on both POSIX
-    (via fcntl.flock) and Windows (via msvcrt.locking).
+    (via fcntl.flock) and Windows (via msvcrt.locking), and supports
+    same-thread cross-instance reentrancy (`reentrant=True` or via `with` context manager)
+    coordinated via `RuntimeContext.held_interprocess_locks`.
     """
 
-    def __init__(self, lock_file: str, timeout: float = 0.0) -> None:
+    def __init__(
+        self,
+        lock_file: str,
+        timeout: float = 0.0,
+        reentrant: Optional[bool] = None,
+    ) -> None:
         self.lock_file = os.path.abspath(lock_file)
         self.timeout = float(timeout)
+        self.reentrant = reentrant
         self._fd: Optional[int] = None
         self._is_locked: bool = False
+        self._shared_reentrant: bool = False
+        self._locked_key: Optional[str] = None
 
     @property
     def is_locked(self) -> bool:
         return self._is_locked
 
-    def acquire(self, blocking: bool = False, timeout_sec: float = 0.0) -> bool:
+    def _try_acquire_same_thread_reentrant(self, norm_key: str, allow_reentrant: bool) -> Optional[bool]:
+        """
+        Checks `RuntimeContext.held_interprocess_locks` for in-process lock ownership.
+        Returns:
+          - `True` if `allow_reentrant` is True and the current thread already holds `norm_key` (increments ref_count).
+          - `False` if `norm_key` is currently held in-process and cannot be re-entered (`not allow_reentrant` or different thread).
+          - `None` if `norm_key` is not currently held in-process (caller should proceed with OS lock acquisition).
+        """
+        table_lock, held_map = _get_held_locks_state()
+        my_tid = threading.get_ident()
+        with table_lock:
+            entry = held_map.get(norm_key)
+            if entry is None:
+                return None
+            owner_tid, ref_count, owner_fd = entry
+            if allow_reentrant and owner_tid == my_tid:
+                held_map[norm_key] = (owner_tid, ref_count + 1, owner_fd)
+                self._is_locked = True
+                self._shared_reentrant = True
+                self._locked_key = norm_key
+                return True
+            return False
+
+    def acquire(
+        self,
+        blocking: bool = False,
+        timeout_sec: float = 0.0,
+        reentrant: Optional[bool] = None,
+    ) -> bool:
         """
         Attempts to acquire the lock.
 
         Args:
             blocking: If True, waits until the lock is acquired or timeout expires.
             timeout_sec: Maximum seconds to wait when blocking is True (0 = wait indefinitely).
+            reentrant: Optional override for same-thread cross-instance reentrancy.
 
         Returns:
             bool: True if lock was acquired, False otherwise.
@@ -54,16 +105,27 @@ class InterProcessLock:
         if self._is_locked:
             return True
 
+        allow_reentrant = bool(self.reentrant) if reentrant is None else bool(reentrant)
         parent_dir = os.path.dirname(self.lock_file)
         if parent_dir and not os.path.exists(parent_dir):
             os.makedirs(parent_dir, exist_ok=True)
+
+        norm_key = _norm_lock_key(self.lock_file)
+        in_proc = self._try_acquire_same_thread_reentrant(norm_key, allow_reentrant)
+        if in_proc is True:
+            return True
+        if in_proc is False and not blocking:
+            return False
 
         fd = self._open_lock_fd()
         acquired = False
         try:
             start_time = time.time()
             while True:
-                if self._try_lock_fd(fd):
+                in_proc = self._try_acquire_same_thread_reentrant(norm_key, allow_reentrant)
+                if in_proc is True:
+                    return True
+                if in_proc is None and self._try_lock_fd(fd):
                     if sys.platform != "win32":
                         try:
                             st_fd = os.fstat(fd)
@@ -78,10 +140,18 @@ class InterProcessLock:
                             os.close(fd)
                             fd = self._open_lock_fd()
                             continue
-                    self._fd = fd
-                    self._is_locked = True
-                    acquired = True
-                    return True
+                    table_lock, held_map = _get_held_locks_state()
+                    with table_lock:
+                        if norm_key in held_map:
+                            self._unlock_fd(fd)
+                        else:
+                            held_map[norm_key] = (threading.get_ident(), 1, fd)
+                            self._fd = fd
+                            self._is_locked = True
+                            self._shared_reentrant = False
+                            self._locked_key = norm_key
+                            acquired = True
+                            return True
 
                 if not blocking:
                     return False
@@ -123,20 +193,42 @@ class InterProcessLock:
         raise original
 
     def release(self) -> None:
-        """Releases the lock and closes the underlying file descriptor."""
-        if not self._is_locked or self._fd is None:
+        """Releases the lock and closes the underlying file descriptor when the reference count reaches zero."""
+        if not self._is_locked:
             return
 
-        fd_to_close = self._fd
-        try:
-            self._unlock_fd(fd_to_close)
-        finally:
+        norm_key = self._locked_key or _norm_lock_key(self.lock_file)
+        table_lock, held_map = _get_held_locks_state()
+        fd_to_close: Optional[int] = None
+        with table_lock:
+            entry = held_map.get(norm_key)
+            if entry is not None:
+                owner_tid, ref_count, owner_fd = entry
+                if ref_count > 1:
+                    held_map[norm_key] = (owner_tid, ref_count - 1, owner_fd)
+                    self._fd = None
+                    self._is_locked = False
+                    self._shared_reentrant = False
+                    self._locked_key = None
+                    return
+                held_map.pop(norm_key, None)
+                fd_to_close = self._fd if self._fd is not None else owner_fd
+            else:
+                fd_to_close = self._fd
+
+        self._fd = None
+        self._is_locked = False
+        self._shared_reentrant = False
+        self._locked_key = None
+
+        if fd_to_close is not None:
             try:
-                os.close(fd_to_close)
-            except OSError:
-                pass
-            self._fd = None
-            self._is_locked = False
+                self._unlock_fd(fd_to_close)
+            finally:
+                try:
+                    os.close(fd_to_close)
+                except OSError:
+                    pass
 
     def _try_lock_fd(self, fd: int) -> bool:
         fatal_errnos = (
@@ -194,7 +286,8 @@ class InterProcessLock:
                 pass
 
     def __enter__(self) -> "InterProcessLock":
-        if not self.acquire(blocking=True, timeout_sec=self.timeout):
+        eff_reentrant = True if self.reentrant is None else bool(self.reentrant)
+        if not self.acquire(blocking=True, timeout_sec=self.timeout, reentrant=eff_reentrant):
             raise LockAcquisitionError(f"Could not acquire inter-process lock on {self.lock_file}")
         return self
 
@@ -216,9 +309,15 @@ def _probe_single_lock_file(lock_cand: Path, allow_plain_recent_file: bool = Fal
     """
     if not lock_cand.exists():
         return False
-    probe = InterProcessLock(str(lock_cand))
+    norm_key = _norm_lock_key(str(lock_cand))
+    table_lock, held_map = _get_held_locks_state()
+    with table_lock:
+        if norm_key in held_map:
+            return True
+
+    probe = InterProcessLock(str(lock_cand), reentrant=False)
     try:
-        if not probe.acquire(blocking=False):
+        if not probe.acquire(blocking=False, reentrant=False):
             return True
     except Exception:
         return True

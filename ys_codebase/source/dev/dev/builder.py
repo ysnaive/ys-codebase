@@ -9,26 +9,14 @@ import os
 import json
 import uuid
 import fnmatch
-import hashlib
 import shutil
 import functools
 import zipfile
 from typing import Tuple, Dict, List, Optional, Any, Set
 from core import uri, vfs, semver
 from core.context import cell_span
+from core.engine import compute_file_sha256
 from dev.checker import Checker, discover_source_modules
-
-
-def compute_file_sha256(file_path: str) -> str:
-    """Computes SHA-256 hex digest of a file in 64KB chunks."""
-    h = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        while True:
-            chunk = f.read(65536)
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest().lower()
 
 
 def compare_semver_safe(a: str, b: str) -> int:
@@ -63,13 +51,21 @@ def _should_ignore(rel_path: str, ignores: Any) -> bool:
         pat = pattern.replace("\\", "/").strip("/")
         if not pat:
             continue
-        pat_prefix = pat.rstrip("*").rstrip("/")
+        dir_prefix = (
+            pat[:-3].rstrip("/")
+            if pat.endswith("/**")
+            else (
+                pat[:-2].rstrip("/")
+                if pat.endswith("/*")
+                else (pat if ("*" not in pat and "?" not in pat) else "")
+            )
+        )
         if (
             fnmatch.fnmatch(name, pat)
             or fnmatch.fnmatch(norm_rel, pat)
             or fnmatch.fnmatch(norm_rel, pat + "/*")
-            or (pat_prefix and norm_rel.startswith(pat_prefix + "/"))
-            or (pat_prefix and f"/{pat_prefix}/" in f"/{norm_rel}/")
+            or (dir_prefix and norm_rel.startswith(dir_prefix + "/"))
+            or (dir_prefix and f"/{dir_prefix}/" in f"/{norm_rel}/")
             or ("/" not in pat and any(fnmatch.fnmatch(p, pat) for p in parts))
         ):
             return True
@@ -84,13 +80,13 @@ _DETERMINISTIC_ZIP_EXTERNAL_ATTR = (0o644 & 0xFFFF) << 16
 
 def _is_text_archive_entry(rel_file: str) -> bool:
     base = os.path.basename(rel_file)
-    return rel_file.endswith(_TEXT_EXTENSIONS) or base in _TEXT_BASENAMES
+    return rel_file.lower().endswith(_TEXT_EXTENSIONS) or base in _TEXT_BASENAMES
 
 
 def _create_module_archive_atomic(
     source_dir: str,
     target_zip_path: str,
-    ignores: List[str],
+    ignores: Any,
     manifest_data: Dict[str, Any],
     target_version: str,
 ) -> int:
@@ -151,7 +147,7 @@ class Builder:
     def __init__(self) -> None:
         self.checker = Checker()
 
-    def _load_module_ignores(self, src_uri: str, base_ignores: List[str]) -> List[str]:
+    def _load_module_ignores(self, src_uri: str, base_ignores: Any) -> List[str]:
         ignore_file_uri = f"{src_uri}/.yscbignore"
         ignores = list(base_ignores)
         if vfs.exists(ignore_file_uri):
@@ -165,20 +161,28 @@ class Builder:
                 pass
         return ignores
 
-    def _update_build_index(self, name: str, description: str = "") -> None:
+    def _update_build_index(
+        self,
+        name: str,
+        description: str = "",
+        only_version: Optional[str] = None,
+    ) -> None:
         """Updates build/{name}/index.json scanning *.zip files."""
         mod_build_root = f"module.build://{name}"
         if not vfs.exists(mod_build_root):
             return
 
         real_build_dir = uri.resolve(mod_build_root)
-        versions: List[str] = []
-        if os.path.isdir(real_build_dir):
-            for item in os.listdir(real_build_dir):
-                if item.endswith(".zip"):
-                    versions.append(item[:-4])
+        if only_version is not None:
+            versions = [only_version]
+        else:
+            versions = []
+            if os.path.isdir(real_build_dir):
+                for item in os.listdir(real_build_dir):
+                    if item.endswith(".zip"):
+                        versions.append(item[:-4])
+            versions.sort(key=functools.cmp_to_key(compare_semver_safe))
 
-        versions.sort(key=functools.cmp_to_key(compare_semver_safe))
         index_data = {
             "name": name,
             "description": description or f"YS-Codebase module {name} (dev build)",
@@ -218,18 +222,25 @@ class Builder:
             except Exception:
                 existing_index = {}
 
-        existing_versions = existing_index.get("versions", []) if isinstance(existing_index.get("versions"), list) else []
         existing_releases = dict(existing_index.get("releases")) if isinstance(existing_index.get("releases"), dict) else {}
 
         zip_versions: Set[str] = {
             item[:-4] for item in os.listdir(real_rel_dir) if item.endswith(".zip")
         }
-        candidate_active: Set[str] = set(existing_versions) | zip_versions
-        if new_version:
+        explicitly_pruned: Set[str] = {
+            str(k)
+            for k, v in existing_releases.items()
+            if isinstance(v, dict) and v.get("status") == "pruned" and str(k) != new_version
+        }
+        candidate_active: Set[str] = set(zip_versions) - explicitly_pruned
+        if new_version and os.path.isfile(os.path.join(real_rel_dir, f"{new_version}.zip")):
+            candidate_active.add(new_version)
+        elif new_version:
             candidate_active.add(new_version)
 
         active_versions: List[str] = []
         pruned_versions: Set[str] = set()
+        purge_paths_to_remove: List[str] = []
 
         new_tuple: Optional[semver.VersionTuple] = None
         if new_version:
@@ -260,10 +271,7 @@ class Builder:
                     pruned_versions.add(purge_ver)
                     purge_path = os.path.join(real_rel_dir, f"{purge_ver}.zip")
                     if os.path.isfile(purge_path):
-                        try:
-                            os.remove(purge_path)
-                        except OSError:
-                            pass
+                        purge_paths_to_remove.append(purge_path)
         else:
             for item_ver in candidate_active:
                 try:
@@ -338,14 +346,19 @@ class Builder:
         }
         vfs.write_json(index_uri, index_data, indent=2, atomic=True)
 
+        for purge_path in purge_paths_to_remove:
+            if os.path.isfile(purge_path):
+                try:
+                    os.remove(purge_path)
+                except OSError:
+                    pass
+
     def build_module(self, name: str, clean: bool = True) -> Tuple[bool, str]:
         """
         本地完整打包 (dev build):
-        - 打包前自動清空 build/<name>/ 目錄（當 clean=True）。
-        - 輸出單一 build/<name>/<ver>.build.zip。
+        - 先原子產出 build/<name>/<ver>.build.zip 與更新 build/{name}/index.json，再清理舊檔（當 clean=True）。
         - 100% 完整保留 tests/ 與開發檔案。
         - 產物版本號強制標記為 X.Y.Z.build。
-        - 自動更新 build/{name}/index.json。
         """
         with cell_span("dev.build"):
             return self._build_module_impl(name=name, clean=clean)
@@ -369,18 +382,8 @@ class Builder:
         vfs.makedirs(mod_build_root)
         real_build_dir = uri.resolve(mod_build_root)
 
-        if clean and os.path.isdir(real_build_dir):
-            for item in list(os.listdir(real_build_dir)):
-                p = os.path.join(real_build_dir, item)
-                if os.path.isdir(p):
-                    shutil.rmtree(p, ignore_errors=True)
-                else:
-                    try:
-                        os.remove(p)
-                    except OSError:
-                        pass
-
-        target_zip_path = os.path.join(real_build_dir, f"{build_version}.zip")
+        target_zip_name = f"{build_version}.zip"
+        target_zip_path = os.path.join(real_build_dir, target_zip_name)
         src_real = uri.resolve(src_uri)
         copied_count = _create_module_archive_atomic(
             src_real,
@@ -390,7 +393,26 @@ class Builder:
             build_version,
         )
 
-        self._update_build_index(name, description=manifest_data.get("description", ""))
+        self._update_build_index(
+            name,
+            description=manifest_data.get("description", ""),
+            only_version=build_version if clean else None,
+        )
+
+        if clean and os.path.isdir(real_build_dir):
+            keep_names = {target_zip_name, "index.json"}
+            for item in list(os.listdir(real_build_dir)):
+                if item in keep_names:
+                    continue
+                p = os.path.join(real_build_dir, item)
+                if os.path.isdir(p):
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+
         return True, f"Successfully built dev package '{name}@{build_version}' ({copied_count} files) -> {target_zip_path}."
 
     def package_release(self, name: str, target_version: str) -> Tuple[bool, str]:

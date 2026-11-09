@@ -5,7 +5,6 @@ knowledge-db 統一門面 SDK (engine.py)
 """
 
 import json
-import os
 from pathlib import Path
 import threading
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -41,7 +40,6 @@ from .service import (
     get_worker_busy_ms,
     is_worker_running,
     read_worker_state,
-    wait_until_worker_idle,
 )
 from .tokenizer import MultilingualTokenizer
 
@@ -112,20 +110,54 @@ def _normalize_raw_space_def(
     return owner, short_name, {"entries": [str(s_val)]}
 
 
+def collect_spaces_from_config_entry(entry: Any, out: List[str]) -> None:
+    """
+    從單一組態字典 (`spaces` 與 `space_weights`) 收集受索引空間名稱清單（SSOT）：
+    先收集 `spaces` 中具備權重之項目，再合併 `space_weights` 之鍵。
+    """
+    if not isinstance(entry, dict):
+        return
+    sp_map = entry.get("spaces")
+    if isinstance(sp_map, dict):
+        for s_name, s_val in sp_map.items():
+            if isinstance(s_val, dict) and s_val.get("weight") is None and "space_weights" in entry:
+                continue
+            s = str(s_name).strip()
+            if s and not s.startswith("_") and s not in out:
+                out.append(s)
+    sw = entry.get("space_weights")
+    if isinstance(sw, dict):
+        for k in sw.keys():
+            s = str(k).strip()
+            if s and not s.startswith("_") and s not in out:
+                out.append(s)
+
+
 def _collect_raw_spaces_for_registry(
     config_dir: Optional[Union[str, Path]] = None,
     contributes_data: Optional[Dict[str, Any]] = None,
     custom_spaces: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Dict[str, Any]]]:
-    """合併 contributes_data、config_dir 與 custom_spaces 中之空間定義為 SpaceRegistry raw_spaces。"""
+    """
+    合併 contributes_data、config_dir 與 custom_spaces 中之空間定義為 SpaceRegistry raw_spaces。
+    以 `qualified_name` (`f"{owner}/{s_short}"`) 為鍵，避免不同 owner 的同名 `short_name` 互相覆蓋；
+    當顯式指定 `override_mode == "replace"` 時，則移除既有同名 `s_short` 定義。
+    """
     has_explicit_spaces = False
-    by_short_name: Dict[str, Tuple[str, Dict[str, Any]]] = {}
+    by_qname: Dict[str, Dict[str, Any]] = {}
+
+    def _put_space(s_k: str, s_v: Any) -> None:
+        owner, s_short, norm_d = _normalize_raw_space_def(str(s_k), s_v, default_owner="project")
+        is_replace = isinstance(s_v, dict) and str(s_v.get("override_mode", "")).lower() == "replace"
+        if is_replace:
+            for existing_q in [q for q in by_qname if q.split("/", 1)[-1] == s_short]:
+                by_qname.pop(existing_q, None)
+        by_qname[f"{owner}/{s_short}"] = norm_d
 
     if isinstance(contributes_data, dict) and "spaces" in contributes_data and isinstance(contributes_data["spaces"], dict):
         has_explicit_spaces = True
         for s_k, s_v in contributes_data["spaces"].items():
-            owner, s_short, norm_d = _normalize_raw_space_def(str(s_k), s_v, default_owner="project")
-            by_short_name[s_short] = (owner, norm_d)
+            _put_space(str(s_k), s_v)
 
     if config_dir is not None:
         cfg_dir_path = Path(config_dir).resolve()
@@ -141,20 +173,18 @@ def _collect_raw_spaces_for_registry(
                     if isinstance(file_data, dict) and isinstance(file_data.get("spaces"), dict):
                         has_explicit_spaces = True
                         for s_k, s_v in file_data["spaces"].items():
-                            owner, s_short, norm_d = _normalize_raw_space_def(str(s_k), s_v, default_owner="project")
-                            by_short_name[s_short] = (owner, norm_d)
+                            _put_space(str(s_k), s_v)
                 except Exception:
                     pass
 
     if isinstance(custom_spaces, dict):
         has_explicit_spaces = True
         for s_k, s_v in custom_spaces.items():
-            owner, s_short, norm_d = _normalize_raw_space_def(str(s_k), s_v, default_owner="project")
-            by_short_name[s_short] = (owner, norm_d)
+            _put_space(str(s_k), s_v)
 
     if not has_explicit_spaces:
         return None
-    return {f"{owner}/{s_short}": norm_d for s_short, (owner, norm_d) in by_short_name.items()}
+    return by_qname
 
 
 class KnowledgeEngine:
@@ -324,6 +354,45 @@ class KnowledgeEngine:
     def storage_dir(self) -> Path:
         return self._storage_dir
 
+    @staticmethod
+    def _extract_weights_from_entry_dict(
+        entry: Dict[str, Any],
+        weights: Dict[str, float],
+        *,
+        default_unweighted_to_one: bool = False,
+    ) -> bool:
+        """
+        從單一組態字典提取空間權重（先讀取 `spaces` 內嵌 `weight`，再由 `space_weights` 覆寫）。
+        回傳該字典是否包含顯式 `space_weights`。
+        """
+        has_explicit_sw = (
+            "space_weights" in entry
+            and isinstance(entry.get("space_weights"), dict)
+        )
+        if isinstance(entry.get("spaces"), dict):
+            for s_name, s_val in entry["spaces"].items():
+                s_str = str(s_name).strip()
+                if not s_str or s_str.startswith("_"):
+                    continue
+                s_key = s_str if ("/" in s_str and has_explicit_sw and s_str in entry["space_weights"]) else s_str.split("/", 1)[-1]
+                if isinstance(s_val, SpaceConfig):
+                    if default_unweighted_to_one:
+                        weights.update(validate_space_weights({s_key: 1.0}))
+                elif isinstance(s_val, dict):
+                    if "weight" in s_val and s_val["weight"] is not None:
+                        weights.update(validate_space_weights({s_key: s_val["weight"]}))
+                    elif default_unweighted_to_one:
+                        weights.update(validate_space_weights({s_key: 1.0}))
+
+        if has_explicit_sw:
+            sw_clean = {
+                k: v for k, v in entry["space_weights"].items()
+                if not str(k).startswith("_")
+            }
+            if sw_clean:
+                weights.update(validate_space_weights(sw_clean))
+        return has_explicit_sw
+
     def _load_and_merge_space_weights(
         self,
         config_dir: Optional[Union[str, Path]] = None,
@@ -340,18 +409,12 @@ class KnowledgeEngine:
                 from core import contributes as core_contributes
                 raw_merged = core_contributes.get("knowledge-db")
                 if isinstance(raw_merged, dict):
-                    if isinstance(raw_merged.get("space_weights"), dict):
-                        sw_clean = {
-                            k: v for k, v in raw_merged["space_weights"].items()
-                            if not str(k).startswith("_")
-                        }
-                        if sw_clean:
-                            weights.update(validate_space_weights(sw_clean))
+                    self._extract_weights_from_entry_dict(raw_merged, weights, default_unweighted_to_one=False)
                 elif isinstance(raw_merged, list):
                     for item in raw_merged:
                         data = item.get("data", item) if isinstance(item, dict) else {}
-                        if isinstance(data, dict) and "space_weights" in data:
-                            weights.update(validate_space_weights(data["space_weights"]))
+                        if isinstance(data, dict):
+                            self._extract_weights_from_entry_dict(data, weights, default_unweighted_to_one=False)
             except (SpaceError, InvalidConfigError):
                 raise
             except Exception:
@@ -379,14 +442,10 @@ class KnowledgeEngine:
                     with open(cfg_file, "r", encoding="utf-8") as f:
                         file_data = json.load(f)
                     if isinstance(file_data, dict):
-                        if "space_weights" in file_data:
+                        if self._extract_weights_from_entry_dict(
+                            file_data, weights, default_unweighted_to_one=False
+                        ):
                             has_explicit_cfg_weights = True
-                            weights.update(validate_space_weights(file_data["space_weights"]))
-                        elif isinstance(file_data.get("spaces"), dict):
-                            for s_name, s_val in file_data["spaces"].items():
-                                if isinstance(s_val, dict) and "weight" in s_val and s_val["weight"] is not None:
-                                    s_short = str(s_name).split("/", 1)[-1]
-                                    weights.update(validate_space_weights({s_short: s_val["weight"]}))
                 except (SpaceError, InvalidConfigError):
                     raise
                 except Exception:
@@ -400,17 +459,11 @@ class KnowledgeEngine:
         )
         for raw_dict in (contributes_data, {"spaces": custom_spaces} if custom_spaces else None):
             if isinstance(raw_dict, dict):
-                if not has_explicit_dict_weights and isinstance(raw_dict.get("spaces"), dict):
-                    for s_name, s_val in raw_dict["spaces"].items():
-                        s_short = str(s_name).split("/", 1)[-1]
-                        if isinstance(s_val, SpaceConfig):
-                            weights.update(validate_space_weights({s_short: 1.0}))
-                        elif isinstance(s_val, dict):
-                            w_val = s_val.get("weight", 1.0)
-                            if w_val is not None:
-                                weights.update(validate_space_weights({s_short: w_val}))
-                if "space_weights" in raw_dict and raw_dict["space_weights"] is not None:
-                    weights.update(validate_space_weights(raw_dict["space_weights"]))
+                self._extract_weights_from_entry_dict(
+                    raw_dict,
+                    weights,
+                    default_unweighted_to_one=not has_explicit_dict_weights,
+                )
 
         if explicit_weights is not None:
             weights.update(validate_space_weights(explicit_weights))
@@ -425,12 +478,22 @@ class KnowledgeEngine:
         return sp.short_name or sp.qualified_name
 
     def get_indexed_spaces(self) -> Dict[str, SpaceConfig]:
-        """取得已宣告 `space_weights` 且納入資料庫索引之邏輯空間映射表。"""
+        """取得已宣告 `space_weights` 且納入資料庫索引之邏輯空間映射表（跨 owner 同名空間自動以 qualified_name 區分）。"""
         try:
             result: Dict[str, SpaceConfig] = {}
-            for sp in self.space_manager.list_spaces(include_synthetic=False):
-                if sp.qualified_name in self.space_weights or sp.short_name in self.space_weights:
-                    result[self._resolve_space_display_key(sp)] = sp
+            matched_sps = [
+                sp for sp in self.space_manager.list_spaces(include_synthetic=False)
+                if sp.qualified_name in self.space_weights or sp.short_name in self.space_weights
+            ]
+            short_counts: Dict[str, int] = {}
+            for sp in matched_sps:
+                short_counts[sp.short_name] = short_counts.get(sp.short_name, 0) + 1
+            for sp in matched_sps:
+                if short_counts.get(sp.short_name, 0) > 1:
+                    key = sp.qualified_name or sp.short_name
+                else:
+                    key = self._resolve_space_display_key(sp)
+                result[key] = sp
             return result
         except Exception:
             return {}
@@ -539,7 +602,7 @@ class KnowledgeEngine:
         self,
         space: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """獲取全系統空間、後台 Worker、核心索引、AST 水位線、檢索模式、組態與空間游標同步詳盡統計摘要。"""
+        """獲取全系統空間、後台 Worker、核心索引、AST 水位線、檢索模式、組態與空間游標同步詳盡統計摘要（純查詢 CQS）。"""
         if space is not None:
             resolved_list = self.space_manager.resolve_spaces(space)
             spaces: Dict[str, SpaceConfig] = {
@@ -548,20 +611,21 @@ class KnowledgeEngine:
             }
         else:
             spaces = self.get_indexed_spaces()
-        indices_dir = self.pipeline.get_indices_dir()
+        indices_dir = self.storage_dir / "indices"
 
         bin_unified = indices_dir / "unified.index.bin.gz"
         has_unified_index = bin_unified.exists()
         bin_vectors = indices_dir / "unified.vectors.bin.gz"
         has_vector_index = bin_vectors.exists()
 
-        # 載入最新磁碟索引至記憶體以便提取精確統計指標
-        try:
-            self.pipeline._ensure_indices_loaded(
-                load_vectors=has_vector_index,
-            )
-        except Exception:
-            pass
+        if has_unified_index or self.pipeline.unified_index is not None:
+            try:
+                self.pipeline._ensure_indices_loaded(
+                    load_vectors=has_vector_index,
+                    trim_memory=False,
+                )
+            except Exception:
+                pass
 
         unified_idx = self.pipeline.unified_index
         vec_idx = getattr(self.hybrid_engine, "vector_index", None)
@@ -576,13 +640,21 @@ class KnowledgeEngine:
 
         worker_st = read_worker_state(indices_dir)
         worker_running = is_worker_running(indices_dir)
-        busy_ms = self.is_worker_busy()
+        busy_ms = get_worker_busy_ms(indices_dir)
         worker_phase = str(worker_st.get("phase", "idle") or "idle")
         worker_progress = str(worker_st.get("progress", "") or "")
-        if hasattr(self, "embedding_service") and self.embedding_service is not None:
-            self.embedding_service.suppress_guard_prompt = bool(worker_running)
 
-        vec_deficit = self.pipeline.get_vector_deficit_info()
+        if has_unified_index or unified_idx is not None:
+            vec_deficit = self.pipeline.get_vector_deficit_info()
+        else:
+            vec_deficit = {
+                "total_symbols": 0,
+                "embedded_count": 0,
+                "missing_count": 0,
+                "stale_count": 0,
+                "coverage_pct": 100.0,
+                "compatible": True,
+            }
         embedded_count = int(vec_deficit.get("embedded_count", 0))
         missing_vectors = int(vec_deficit.get("missing_count", 0))
         stale_vectors = int(vec_deficit.get("stale_count", 0))
@@ -674,8 +746,7 @@ class KnowledgeEngine:
                     file_count = 0
 
             in_sync = (head_gen > 0 and acked_gen == head_gen) or (file_count == 0 and head_gen == acked_gen)
-            bin_idx = indices_dir / f"{sp_name}.index.bin.gz"
-            has_index = bin_idx.exists() or has_unified_index
+            has_index = has_unified_index
 
             space_details[sp_name] = {
                 "origin": sp.owner,
@@ -915,7 +986,6 @@ class KnowledgeEngine:
                 log_warn(f"AST engine pre-warm skipped: {ast_exc}", stream="stderr")
             engine.pipeline._ensure_indices_loaded(load_vectors=enable_vec)
             if enable_vec and hasattr(engine, "embedding_service") and engine.embedding_service:
-                engine.embedding_service.suppress_guard_prompt = True
                 if not getattr(engine.embedding_service, "mock_mode", False) and engine.embedding_service.is_model_downloaded():
                     engine.embedding_service._ensure_model()
             log_info("Knowledge-db engine pre-warmed successfully.", stream="stderr")
@@ -926,14 +996,20 @@ class KnowledgeEngine:
 _ENGINE_LOCK = threading.Lock()
 
 
+def set_engine_for_testing(engine: Optional[KnowledgeEngine] = None) -> Optional[KnowledgeEngine]:
+    """Explicit helper for tests to bind or reset the KnowledgeEngine instance in RuntimeContext."""
+    with _ENGINE_LOCK:
+        ctx = get_runtime_context()
+        prev = ctx.get_module_state("knowledge_db.engine.instance")
+        ctx.set_module_state("knowledge_db.engine.instance", engine)
+        ctx.set_module_state("knowledge_db.engine.override", engine is not None)
+        return prev
+
+
 def get_engine() -> KnowledgeEngine:
     """取得進程級唯一 KnowledgeEngine 單例，惰性初始化並全域複用。"""
     with _ENGINE_LOCK:
         ctx = get_runtime_context()
-        if "_GLOBAL_ENGINE_INSTANCE" in globals():
-            override_inst = globals().pop("_GLOBAL_ENGINE_INSTANCE")
-            ctx.set_module_state("knowledge_db.engine.instance", override_inst)
-            ctx.set_module_state("knowledge_db.engine.override", override_inst is not None)
         inst = ctx.get_module_state("knowledge_db.engine.instance")
         is_override = bool(ctx.get_module_state("knowledge_db.engine.override"))
         expected_root = get_default_registry().project_root
@@ -965,16 +1041,12 @@ def get_engine() -> KnowledgeEngine:
         return inst
 
 
-def __getattr__(name: str) -> Any:
-    if name == "_GLOBAL_ENGINE_INSTANCE":
-        return get_runtime_context().get_module_state("knowledge_db.engine.instance")
-    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-
-
 __all__ = [
     "KnowledgeEngine",
     "KnowledgeDBServiceWorker",
+    "collect_spaces_from_config_entry",
     "get_engine",
+    "set_engine_for_testing",
     "get_worker_busy_ms",
     "is_worker_running",
     "SpaceConfig",

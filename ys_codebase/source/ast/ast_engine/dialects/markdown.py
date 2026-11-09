@@ -6,9 +6,10 @@ Handles heading levels, tables, section docstring slicing, fallback section crea
 import os
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from ..schema import SymbolCallSite, SymbolKind, UnifiedSymbol
+from ..parsers.base import build_line_byte_offsets, span_from_lines
+from ..schema import ProvenanceStep, RelationEdge, SymbolCallSite, SymbolKind, UnifiedSymbol
 from .base import DialectAdapter
 
 _FENCE_RE = re.compile(r"^(`{3,}|~{3,})")
@@ -16,6 +17,8 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
 _LINK_CALL_RE = re.compile(r"\[`?([A-Za-z0-9_$.]+)`?\]\((?:file:///)?([^)#\s]+)(?:#L?\d+(?:-\d+)?)?\)")
 _CODE_CALL_RE = re.compile(r"`([A-Za-z0-9_$]+\.[A-Za-z0-9_$]+)(?:\([^`]*\))?`")
 _IMPORT_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)#\s]+)(?:#[^)]*)?\)")
+_MD_LINK_DOC_RE = re.compile(r"\[([^\]]+)\]\((?:file:///)?([^)\s]+)\)")
+_MD_BACKTICK_DOC_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_.]*)(?:\([^`]*\))?`")
 
 
 class MarkdownDialect(DialectAdapter):
@@ -144,6 +147,88 @@ class MarkdownDialect(DialectAdapter):
                     )
                 )
         return call_sites
+
+    def extract_custom_relation_edges(
+        self,
+        normalized_path: str,
+        content: str,
+        content_bytes: bytes,
+        enclosing_id_resolver: Callable[[int, int], str],
+        provider_id: str = "",
+    ) -> List[RelationEdge]:
+        if not content:
+            return []
+        line_offsets = build_line_byte_offsets(content_bytes)
+        total_bytes = len(content_bytes)
+        eff_prov_id = provider_id or "ast:markdown/default.scm"
+        doc_prov = (
+            ProvenanceStep(
+                provider_id=eff_prov_id,
+                action="extract",
+                rule_or_hook="@edge.documents",
+            ),
+        )
+        edges: List[RelationEdge] = []
+        seen_doc_edges: Set[Tuple[str, str, str, int, int]] = set()
+        active_fence: Optional[str] = None
+        for idx_ln, line_str in enumerate(content.splitlines(), start=1):
+            stripped_ln = line_str.strip()
+            fm = _FENCE_RE.match(stripped_ln)
+            if fm:
+                fence_marker = fm.group(1)
+                if active_fence is None:
+                    active_fence = fence_marker
+                elif stripped_ln.startswith(active_fence[0] * len(active_fence)):
+                    active_fence = None
+                continue
+            if active_fence is not None:
+                continue
+
+            ln_span = span_from_lines(idx_ln, idx_ln, line_offsets, total_bytes, content_bytes=content_bytes)
+            src_id = enclosing_id_resolver(ln_span.start_byte, idx_ln)
+
+            for m_link in _MD_LINK_DOC_RE.finditer(line_str):
+                link_label = m_link.group(1).strip().strip("`")
+                link_target = m_link.group(2).strip()
+                if link_target.startswith(("http://", "https://", "mailto:")):
+                    continue
+                if "#" in link_target:
+                    path_part, anchor_part = link_target.split("#", 1)
+                    if re.match(r"^L?\d+(?:-\d+)?$", anchor_part) and re.match(r"^[A-Za-z_][A-Za-z0-9_.]*$", link_label):
+                        doc_expr = f"{path_part}#{link_label}"
+                    else:
+                        doc_expr = link_target
+                elif re.match(r"^[A-Za-z_][A-Za-z0-9_.]*$", link_label) and "." in link_label:
+                    doc_expr = f"{link_target}#{link_label}"
+                else:
+                    doc_expr = link_target
+                dkey = (src_id, doc_expr, "documents", ln_span.start_byte, ln_span.end_byte)
+                if dkey not in seen_doc_edges:
+                    seen_doc_edges.add(dkey)
+                    edges.append(
+                        RelationEdge(
+                            source_id=src_id,
+                            target_expr=doc_expr,
+                            edge_kind="documents",
+                            span=ln_span,
+                            provenance=doc_prov,
+                        )
+                    )
+            for m_bt in _MD_BACKTICK_DOC_RE.finditer(line_str):
+                bt_sym = m_bt.group(1).strip()
+                dkey = (src_id, bt_sym, "documents", ln_span.start_byte, ln_span.end_byte)
+                if dkey not in seen_doc_edges:
+                    seen_doc_edges.add(dkey)
+                    edges.append(
+                        RelationEdge(
+                            source_id=src_id,
+                            target_expr=bt_sym,
+                            edge_kind="documents",
+                            span=ln_span,
+                            provenance=doc_prov,
+                        )
+                    )
+        return edges
 
     def extract_imports(self, source_text: str, file_path: str = "") -> Dict[str, str]:
         imports: Dict[str, str] = {}

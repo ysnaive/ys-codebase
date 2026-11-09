@@ -45,13 +45,11 @@ class TestServerConfig(YSCBTestCase):
         self.root_dir = self.temp_dir.name
         self.cache_dir = os.path.join(self.root_dir, ".cache", "server")
         os.makedirs(self.cache_dir, exist_ok=True)
-        server_service._LAST_TOUCH_TS = 0.0
-        server_service._LAST_TOUCH_BY_ROOT.clear()
+        server_service.reset_touch_state()
 
     def tearDown(self):
         self.doCleanups()
-        server_service._LAST_TOUCH_TS = 0.0
-        server_service._LAST_TOUCH_BY_ROOT.clear()
+        server_service.reset_touch_state()
         try:
             self.temp_dir.cleanup()
         finally:
@@ -328,17 +326,16 @@ class TestServerConfig(YSCBTestCase):
 
                 # Implicit yscb_root=None resolving to the same tmp_dir shares the 1.0s throttle window
                 with patch("server.service._resolve_service_root", return_value=tmp_dir), \
-                     patch("urllib.request.urlopen") as mock_urlopen:
+                     patch("urllib.request.build_opener") as mock_opener:
                     self.assertTrue(touch_activity(yscb_root=None, source="unit_test_implicit", force=False))
-                    mock_urlopen.assert_not_called()
+                    mock_opener.assert_not_called()
             finally:
                 httpd.shutdown()
                 httpd.server_close()
                 sup.stop()
                 sup.logger.archive_and_close()
         finally:
-            server_service._LAST_TOUCH_TS = 0.0
-            server_service._LAST_TOUCH_BY_ROOT.clear()
+            server_service.reset_touch_state()
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
         self.mark_passed()

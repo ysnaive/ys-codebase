@@ -110,6 +110,15 @@ _IDLE_EVENT = threading.Event()
 _IDLE_EVENT.set()
 
 
+def _norm_indices_dir(indices_dir: Optional[Union[str, Path]]) -> str:
+    if indices_dir is None:
+        return ""
+    try:
+        return os.path.normcase(os.path.realpath(str(indices_dir)))
+    except OSError:
+        return os.path.normcase(os.path.abspath(str(indices_dir)))
+
+
 def _invalidate_worker_cell_state() -> None:
     invalidate_cell_state(WORKER_CELL_STATE_KEY)
     invalidate_cell_state("kdb.worker_state_raw")
@@ -121,26 +130,13 @@ def _get_worker_mem_state() -> Dict[str, Any]:
     if not isinstance(st, dict):
         st = {
             "active_worker": None,
+            "indices_dir": "",
             "busy_start_ts": 0.0,
             "phase": "idle",
             "progress": "",
         }
         ctx.set_module_state("knowledge_db.service.mem_state", st)
-    if "_ACTIVE_WORKER" in globals():
-        st["active_worker"] = globals().pop("_ACTIVE_WORKER")
     return st
-
-
-def __getattr__(name: str) -> Any:
-    if name == "_ACTIVE_WORKER":
-        return _get_worker_mem_state().get("active_worker")
-    if name == "_IN_PROCESS_BUSY_START_TS":
-        return float(_get_worker_mem_state().get("busy_start_ts", 0.0) or 0.0)
-    if name == "_IN_PROCESS_PHASE":
-        return str(_get_worker_mem_state().get("phase") or "idle")
-    if name == "_IN_PROCESS_PROGRESS":
-        return str(_get_worker_mem_state().get("progress") or "")
-    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
 def _check_pid_alive(pid: int) -> bool:
@@ -170,8 +166,13 @@ def get_active_worker() -> Optional["KnowledgeDBServiceWorker"]:
 
 def is_worker_running(indices_dir: Optional[Union[str, Path]] = None) -> bool:
     """Return True if a KnowledgeDBServiceWorker is active in-process or in the server daemon."""
-    if get_active_worker() is not None:
-        return True
+    w = get_active_worker()
+    if w is not None:
+        if indices_dir is None:
+            return True
+        mem_dir = str(_get_worker_mem_state().get("indices_dir") or "")
+        if not mem_dir or mem_dir == _norm_indices_dir(indices_dir):
+            return True
     if indices_dir is not None:
         st = read_worker_state(indices_dir)
         pid = int(st.get("pid", 0) or 0)
@@ -197,8 +198,10 @@ def write_worker_state(
     now = time.time()
     eff_phase = phase if (busy or phase not in ("", "idle")) else "idle"
     eff_progress = progress if (busy or phase not in ("", "idle")) else ""
+    norm_dir = _norm_indices_dir(indices_dir)
     mem_st = _get_worker_mem_state()
     with _WORKER_LOCK:
+        mem_st["indices_dir"] = norm_dir
         if busy:
             prev_ts = float(mem_st.get("busy_start_ts", 0.0) or 0.0)
             if start_ts <= 0.0:
@@ -254,9 +257,48 @@ def clear_worker_state(
 
 def read_worker_state(indices_dir: Union[str, Path]) -> Dict[str, Any]:
     """
-    Read worker state from in-process memory or `indices/.kdb_worker_state.json`.
-    Automatically cleans up stale state if the owning PID is no longer alive.
+    Read worker state from in-process memory (when an active worker matches `indices_dir`)
+    or from `indices/.kdb_worker_state.json`.
+    Automatically cleans up stale state if the owning PID is no longer alive, and never
+    leaks in-process memory state across unrelated `indices_dir` paths.
     """
+    target_dir_norm = _norm_indices_dir(indices_dir)
+    with _WORKER_LOCK:
+        mem_st = _get_worker_mem_state()
+        w = mem_st.get("active_worker")
+        active = w is not None and w.is_alive()
+        mem_dir_norm = str(mem_st.get("indices_dir") or "")
+        if active and not mem_dir_norm and getattr(w, "_engine", None) is not None:
+            try:
+                mem_dir_norm = _norm_indices_dir(w._engine.pipeline.get_indices_dir())
+                mem_st["indices_dir"] = mem_dir_norm
+            except Exception:
+                pass
+        if active and mem_dir_norm and mem_dir_norm == target_dir_norm:
+            busy_ts = float(mem_st.get("busy_start_ts", 0.0) or 0.0)
+            phase_str = str(mem_st.get("phase") or "idle")
+            prog_str = str(mem_st.get("progress") or "")
+            if busy_ts > 0.0:
+                elapsed_ms = max(1, int((time.time() - busy_ts) * 1000))
+                return {
+                    "worker_running": True,
+                    "busy": True,
+                    "start_ts": busy_ts,
+                    "elapsed_ms": elapsed_ms,
+                    "phase": phase_str,
+                    "progress": prog_str,
+                    "pid": os.getpid(),
+                }
+            return {
+                "worker_running": True,
+                "busy": False,
+                "start_ts": 0.0,
+                "elapsed_ms": 0,
+                "phase": phase_str,
+                "progress": prog_str,
+                "pid": os.getpid(),
+            }
+
     p = get_worker_state_path(indices_dir)
     if p.exists():
         try:
@@ -302,6 +344,17 @@ def read_worker_state(indices_dir: Union[str, Path]) -> Dict[str, Any]:
         mem_st = _get_worker_mem_state()
         w = mem_st.get("active_worker")
         active = w is not None and w.is_alive()
+        mem_dir_norm = str(mem_st.get("indices_dir") or "")
+        if not mem_dir_norm or mem_dir_norm != target_dir_norm:
+            return {
+                "worker_running": False,
+                "busy": False,
+                "start_ts": 0.0,
+                "elapsed_ms": 0,
+                "phase": "idle",
+                "progress": "",
+                "pid": 0,
+            }
         busy_ts = float(mem_st.get("busy_start_ts", 0.0) or 0.0)
         phase_str = str(mem_st.get("phase") or "idle")
         prog_str = str(mem_st.get("progress") or "")
@@ -432,6 +485,11 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             self._wake_event.set()
             self.set_state(self.STATE_STARTING)
             mem_st["active_worker"] = self
+            if self._engine is not None and hasattr(self._engine, "pipeline"):
+                try:
+                    mem_st["indices_dir"] = _norm_indices_dir(self._engine.pipeline.get_indices_dir())
+                except Exception:
+                    pass
             self._thread = self.start_managed_thread(
                 self.run,
                 context=self.context,
@@ -472,8 +530,6 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             engine = self._get_engine()
             indices_dir = engine.pipeline.get_indices_dir()
             clear_worker_state(indices_dir, worker_running=True)
-            if hasattr(engine, "embedding_service") and engine.embedding_service is not None:
-                engine.embedding_service.suppress_guard_prompt = True
         except Exception as exc:
             self.set_state(self.STATE_STOPPED)
             log_warn(f"[knowledge-db-worker] Failed to initialize engine in worker: {exc}", stream="stderr")
@@ -571,7 +627,6 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             if emb_svc is None:
                 self._idle_verified_state = _current_index_signature()
                 return
-            emb_svc.suppress_guard_prompt = True
 
             # Check if there is any vector deficit before downloading/loading model
             deficit_info = engine.pipeline.get_vector_deficit_info()
@@ -588,7 +643,9 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                     self._last_download_attempt_ts = now
                     _mark_busy("downloading_model", f"背景自動下載向量模型 {emb_svc.model_name}")
                     try:
-                        emb_svc.download_model(force=False)
+                        dl_ok = emb_svc.download_model(force=False)
+                        if not dl_ok:
+                            raise RuntimeError(f"download_model returned False for {emb_svc.model_name}")
                         needs_vectors = True
                         did_sync_work = True
                     except Exception as dl_err:

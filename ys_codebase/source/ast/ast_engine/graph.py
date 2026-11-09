@@ -7,14 +7,14 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 
 if TYPE_CHECKING:
     import networkx as nx
 
 from .exceptions import ASTIndexNotFoundError, SchemaValidationError
 from .io_utils import atomic_save_gzip_pickle, load_gzip_pickle
-from .schema import SymbolCallSite, WorkspaceSymbolGraph
+from .schema import FileSymbolGraph, SymbolCallSite, WorkspaceSymbolGraph
 
 
 class _StdlibDiGraph:
@@ -122,6 +122,11 @@ class CallGraphIndex:
     @workspace_graph.setter
     def workspace_graph(self, val: Optional[WorkspaceSymbolGraph]) -> None:
         self._workspace_graph = val
+
+    def attach_file_graphs(self, file_graphs: Optional[Mapping[str, FileSymbolGraph]]) -> None:
+        """Hydrate `_workspace_graph` with `file_graphs` from `ASTSnapshot` when loaded from slim binary."""
+        if self._workspace_graph is not None and file_graphs:
+            self._workspace_graph = self._workspace_graph.with_file_graphs(file_graphs)
 
     def add_edge(
         self,
@@ -277,7 +282,7 @@ class CallGraphIndex:
         for caller_id, callee_id, site in new_edges:
             self.add_edge(caller_id, callee_id, site)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self, include_file_graphs: bool = False) -> Dict[str, Any]:
         nodes_list = list(self._graph.nodes())
         id_to_int = {sid: i for i, sid in enumerate(nodes_list)}
 
@@ -311,21 +316,27 @@ class CallGraphIndex:
             "call_sites_map": call_sites_map,
         }
         if self._workspace_graph is not None:
-            out["workspace_graph"] = self._workspace_graph.to_dict()
+            out["workspace_graph"] = self._workspace_graph.to_dict(include_file_graphs=include_file_graphs)
         return out
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "CallGraphIndex":
+    def from_dict(
+        cls,
+        data: Dict[str, Any],
+        file_graphs: Optional[Mapping[str, FileSymbolGraph]] = None,
+    ) -> "CallGraphIndex":
         if not isinstance(data, dict):
             raise SchemaValidationError("CallGraphIndex data must be a dictionary.")
 
         ws_graph: Optional[WorkspaceSymbolGraph] = None
         raw_ws = data.get("workspace_graph")
         if isinstance(raw_ws, WorkspaceSymbolGraph):
-            ws_graph = raw_ws
+            ws_graph = raw_ws.with_file_graphs(file_graphs) if file_graphs else raw_ws
         elif isinstance(raw_ws, dict):
             try:
-                ws_graph = WorkspaceSymbolGraph.from_dict(raw_ws)
+                ws_graph = WorkspaceSymbolGraph.from_dict(raw_ws, file_graphs=file_graphs)
+            except SchemaValidationError:
+                raise
             except Exception:
                 ws_graph = None
 
@@ -377,15 +388,19 @@ class CallGraphIndex:
         return idx
 
     def save_binary(self, path: Union[str, Path], compresslevel: int = 1) -> None:
-        atomic_save_gzip_pickle(path, self.to_dict(), compresslevel=compresslevel)
+        atomic_save_gzip_pickle(path, self.to_dict(include_file_graphs=False), compresslevel=compresslevel)
 
     @classmethod
-    def load_binary(cls, path: Union[str, Path]) -> "CallGraphIndex":
+    def load_binary(
+        cls,
+        path: Union[str, Path],
+        file_graphs: Optional[Mapping[str, FileSymbolGraph]] = None,
+    ) -> "CallGraphIndex":
         try:
             data = load_gzip_pickle(path, raise_on_missing=True)
         except FileNotFoundError as exc:
             raise ASTIndexNotFoundError(str(exc)) from exc
-        return cls.from_dict(data)
+        return cls.from_dict(data, file_graphs=file_graphs)
 
 
 __all__ = ["CallGraphIndex"]

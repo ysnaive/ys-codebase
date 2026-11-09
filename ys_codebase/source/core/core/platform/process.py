@@ -36,15 +36,10 @@ def _close_popen_pipes(proc: Optional[subprocess.Popen]) -> None:
 
 
 def _get_can_spawn_cache() -> Optional[bool]:
-    if "_CAN_SPAWN_DAEMON_CACHE" in globals():
-        val = globals().pop("_CAN_SPAWN_DAEMON_CACHE")
-        get_runtime_context().process_can_spawn_daemon_cache = val
-        return val
     return get_runtime_context().process_can_spawn_daemon_cache
 
 
 def _set_can_spawn_cache(val: Optional[bool]) -> None:
-    globals().pop("_CAN_SPAWN_DAEMON_CACHE", None)
     get_runtime_context().process_can_spawn_daemon_cache = val
 
 
@@ -475,9 +470,13 @@ def _signal_posix_tree(
     pgids: Optional[Set[int]] = None,
 ) -> None:
     """Send ``sig`` to ``root_pid``, its process group (if leader), and all discovered descendants/PGIDs."""
-    curr_desc, curr_pgids = _collect_posix_descendants(root_pid)
-    all_desc = (descendants or set()) | curr_desc
-    all_pgids = (pgids or set()) | curr_pgids
+    if descendants is None or pgids is None:
+        curr_desc, curr_pgids = _collect_posix_descendants(root_pid)
+        all_desc = (descendants or set()) | curr_desc
+        all_pgids = (pgids or set()) | curr_pgids
+    else:
+        all_desc = set(descendants)
+        all_pgids = set(pgids)
 
     try:
         pgid = os.getpgid(root_pid)

@@ -1531,6 +1531,29 @@ class TestWorkflowAssetsCompliance(YSCBTestCase):
         stage1_out = compiler.compile_stage1()
         self.assertTrue(stage1_out["success"])
         self.assertTrue(all(len(it.get("sha256", "")) == 64 for it in stage1_out["resolved_items"]))
+
+        # Verify compile_stage1(materialize_cache=False) skips disk writes and sha256 computation
+        from unittest.mock import patch as _mock_patch
+        with _mock_patch.object(compiler, "_write_cache_file") as mock_write_cache:
+            stage1_mem = compiler.compile_stage1(materialize_cache=False)
+            self.assertTrue(stage1_mem["success"])
+            mock_write_cache.assert_not_called()
+            self.assertTrue(all(it.get("sha256") == "" for it in stage1_mem["resolved_items"]))
+
+        # Verify 4-backtick nested code fences and double-backtick inline code spans
+        nested_md = (
+            "Double backtick inline: `` `__@{DUAL_TOK}__` ``\n"
+            "````markdown\n"
+            "Here is a nested python fence:\n"
+            "```python\n"
+            "x = '[link](`keep_backtick_in_nested_fence.py`)'\n"
+            "```\n"
+            "````\n"
+        )
+        s1_nested = compiler.resolve_single_artifact(nested_md, inserts)
+        self.assertIn("`` `ExpandedValue` ``", s1_nested)
+        s2_nested = compiler.resolve_stage2_uri(s1_nested, dst_path, dep_map)
+        self.assertIn("[link](`keep_backtick_in_nested_fence.py`)", s2_nested)
         self.mark_passed()
 
 

@@ -13,10 +13,9 @@ from typing import Any, Dict, Optional
 from core.commands.bags import CmdBags
 from core.context import get_env, get_virtual_cwd
 from core.guard import guard_dispatch
-from core.log import log, log_error
+from core.log import RollingFileLogger, log, log_error
 from core.platform import InterProcessLock, daemon_probe, is_process_alive, kill_process_tree
 from server.config import ServerConfig
-from server.logger import ServerLogger
 from server.master import (
     MasterSupervisor,
     ServerDaemonState,
@@ -74,7 +73,8 @@ def _http_request(
     data = json.dumps(payload).encode("utf-8") if payload else None
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
             return json.loads(body) if body else {}
     except Exception:
@@ -199,11 +199,9 @@ def stop(cmd_bags: CmdBags) -> int:
         archive_lock = InterProcessLock(lock_file)
         if archive_lock.acquire(blocking=True, timeout_sec=0.5):
             try:
-                archived_log = ServerLogger(yscb_root=state.root).archive_and_close() or ""
+                archived_log = RollingFileLogger(yscb_root=state.root).archive_and_close() or ""
             finally:
                 archive_lock.release()
-        else:
-            archived_log = ServerLogger(yscb_root=state.root).archive_and_close() or ""
     except Exception:
         archived_log = ""
     uptime = time.time() - state.start_time

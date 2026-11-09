@@ -68,6 +68,14 @@ def _get_daemon_endpoint_cache() -> Dict[str, Tuple[int, int, str]]:
     return cache_map
 
 
+def reset_touch_state() -> None:
+    """Clears per-root touch activity timestamps and endpoint cache in the active RuntimeContext."""
+    lock, touch_map = _get_touch_state()
+    with lock:
+        touch_map.clear()
+        _get_daemon_endpoint_cache().clear()
+
+
 def touch_activity(
     yscb_root: Optional[str] = None,
     *,
@@ -132,7 +140,8 @@ def touch_activity(
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=1.5) as resp:
             if resp.status != 200:
                 return False
         with touch_lock:
@@ -376,6 +385,20 @@ class BaseServiceWorker(ABC):
 
     def touch_activity(self) -> bool:
         """Notify the server supervisor that this background worker is actively processing work."""
+        sink = getattr(self, "_log_sink", None)
+        emit_fn = getattr(sink, "emit_packet_fn", None) if sink is not None else None
+        if callable(emit_fn):
+            now = time.monotonic()
+            last_ts = getattr(self, "_last_ipc_touch_ts", 0.0)
+            if (now - last_ts) >= _TOUCH_MIN_INTERVAL_SEC:
+                self._last_ipc_touch_ts = now
+                try:
+                    emit_fn({"type": "touch_activity", "source": self.name})
+                    return True
+                except Exception:
+                    pass
+            else:
+                return True
         return touch_activity(source=self.name)
 
     def is_busy(self) -> bool:
@@ -623,13 +646,3 @@ class ServiceManager:
                     entry["metrics"] = custom_metrics
                 status_list.append(entry)
         return status_list
-
-
-def __getattr__(name: str) -> Any:
-    """PEP 562 backward-compatible attribute delegation to active `RuntimeContext`."""
-    if name == "_LAST_TOUCH_BY_ROOT":
-        return _get_touch_state()[1]
-    if name == "_LAST_TOUCH_TS":
-        vals = list(_get_touch_state()[1].values())
-        return max(vals) if vals else 0.0
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

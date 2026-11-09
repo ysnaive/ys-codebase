@@ -376,11 +376,35 @@ def _check_single_path_credential_sensitivity(cand_path: Path, resolved_proj: Pa
     return False
 
 
-def is_sensitive_credential_path(abs_path: Path, proj_root: Path) -> bool:
+def _collect_configured_credential_uris(config: Optional[GDriveConfig] = None) -> List[str]:
+    uris: List[str] = []
+    if config is not None:
+        for u in (config.credentials_uri, config.token_uri):
+            s = str(u or "").strip()
+            if s and s not in uris:
+                uris.append(s)
+    try:
+        loaded = core_config.get("gdrive-support")
+        if isinstance(loaded, dict):
+            for key in ("credentials_uri", "token_uri"):
+                s = str(loaded.get(key) or "").strip()
+                if s and s not in uris:
+                    uris.append(s)
+    except Exception:
+        pass
+    return uris
+
+
+def is_sensitive_credential_path(
+    abs_path: Path,
+    proj_root: Path,
+    config: Optional[GDriveConfig] = None,
+) -> bool:
     """
     Hard security guard: Return True if abs_path (or its resolved symlink target) points to
-    any credential, token, private key, or local/module secret file that must NEVER be
-    uploaded to Google Drive or overwritten by repo_sync.
+    any credential, token, private key, or local/module secret file (including custom
+    credentials_uri / token_uri paths) that must NEVER be uploaded to Google Drive or
+    overwritten by repo_sync.
     """
     resolved_proj = _realpath_no_stat(proj_root)
     if _check_single_path_credential_sensitivity(abs_path, proj_root):
@@ -388,6 +412,14 @@ def is_sensitive_credential_path(abs_path: Path, proj_root: Path) -> bool:
     real_cand = _realpath_no_stat(abs_path)
     if _check_single_path_credential_sensitivity(real_cand, resolved_proj):
         return True
+
+    for raw_uri in _collect_configured_credential_uris(config):
+        try:
+            custom_abs = _resolve_local_uri_to_abs(raw_uri, resolved_proj)
+            if abs_path == custom_abs or real_cand == custom_abs:
+                return True
+        except Exception:
+            continue
     return False
 
 
@@ -417,7 +449,7 @@ def parse_sync_spaces(
         raw_mappings = item.get("mapping") or []
         if not isinstance(raw_mappings, list):
             raise GDriveConfigError(
-                f"Invalid 'mapping' in sync space '{space_name}': expected a list of {local, remote} objects."
+                f"Invalid 'mapping' in sync space '{space_name}': expected a list of {{local, remote}} objects."
             )
 
         compiled_rules: List[PathMappingRule] = []

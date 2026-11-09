@@ -3,15 +3,12 @@ CLI router entry point for module:dev.
 Migrated to core.commands active execution contract with strong-typed CmdBags.
 """
 import sys
-import os
-import re
 import json
 from typing import Any, List, Dict
 
 from core.commands import CmdBags, CmdOption
 from core.guard import guard_dispatch
 from core.log import log
-from core import uri, vfs, semver
 
 
 def _log_cli(*args: Any, **kwargs: Any) -> None:
@@ -118,45 +115,13 @@ def _handle_bump(subcmd: str, cmd_bags: CmdBags) -> int:
         return 1
 
     mod_name = targets[0]
-    src_manifest_uri = f"module.source://{mod_name}/manifest.json"
-    if not vfs.exists(src_manifest_uri):
-        _log_cli(f"[dev:{subcmd}] Error: Source module '{mod_name}' not found at {src_manifest_uri}.", file=sys.stderr)
-        return 1
-
-    try:
-        manifest_data = vfs.read_json(src_manifest_uri)
-        curr_ver = manifest_data.get("version", "1.0.0.0")
-        next_ver = semver.bump_version(curr_ver, bump_type)
-        manifest_data["version"] = next_ver
-        vfs.write_json(src_manifest_uri, manifest_data, indent=2)
-        _sync_package_dunder_version(mod_name, curr_ver, next_ver)
-        _log_cli(f"[dev:{subcmd}] Successfully bumped '{mod_name}': {curr_ver} -> {next_ver} ({bump_type}).")
+    from dev.releaser import Releaser
+    ok, msg = Releaser().bump_module_version(mod_name, bump_type)
+    if ok:
+        _log_cli(f"[dev:{subcmd}] {msg}")
         return 0
-    except Exception as e:
-        _log_cli(f"[dev:{subcmd}] Error bumping version for '{mod_name}': {e}", file=sys.stderr)
-        return 1
-
-
-def _sync_package_dunder_version(mod_name: str, old_ver: str, new_ver: str) -> None:
-    """若模組套件目錄之 __init__.py 宣告有 __version__ 字面量，自動同步更新為新版本。"""
-    src_dir = uri.resolve(f"module.source://{mod_name}")
-    if not src_dir or not os.path.isdir(src_dir):
-        return
-    for entry in sorted(os.listdir(src_dir)):
-        if entry in ("tests", "scripts", "contributes", "configurable", "assets", "skills") or entry.startswith("."):
-            continue
-        init_uri = f"module.source://{mod_name}/{entry}/__init__.py"
-        if not vfs.is_file(init_uri):
-            continue
-        content = vfs.read_text(init_uri)
-        updated = re.sub(
-            r'^(__version__\s*(?::\s*str\s*)?=\s*[\'"])' + re.escape(old_ver) + r'([\'"])',
-            rf"\g<1>{new_ver}\g<2>",
-            content,
-            flags=re.MULTILINE,
-        )
-        if updated != content:
-            vfs.write_text(init_uri, updated, atomic=True)
+    _log_cli(f"[dev:{subcmd}] Error: {msg}", file=sys.stderr)
+    return 1
 
 
 def create(cmd_bags: Any) -> int:

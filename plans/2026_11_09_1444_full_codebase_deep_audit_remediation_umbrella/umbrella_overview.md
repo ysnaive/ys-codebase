@@ -45,3 +45,20 @@
 - [x] **里程碑 4（`sub_04` Server 常駐管線、Dev 守門與 VSCode 支援修補）**：完成 `SRV-AUD-01` ~ `SRV-AUD-14` 源碼修補與 `server`/`dev`/`vscode-support` 單元測試驗收。
 - [x] **里程碑 5（`sub_05` Agents-Workflow 與 GDrive 同步安全修補）**：完成 `WF-AUD-01` ~ `WF-AUD-13` 源碼修補、全倉 `dev check --all` 零違規與全倉單元測試 100% 通過結案。
 - [x] **里程碑 6（模擬新環境全量部署與全 CLI 實機驗收結案）**：於乾淨沙盒環境自本地 Provider 執行 `yscb.py init` 與 9 大模組全量安裝，完成 75 項跨模組 CLI 指令（冷啟動與 `server` 熱 IPC 雙模式，含 `gdrive` 本地沙盒分支與同步）100% 通過驗收，並收斂新環境初始化之 5 項邊界問題（`knowledge_db/service.py` `_WORKER_LOCK` 可重入鎖、`gdrive_support/service.py` 與 `server/service.py` 未綁定 `project://` 安全待機、`core/contributes.py` 暫存目錄過濾與 `pip_manager.py` 離線快速退避、`agents-workflow` `init --default -y` 正交選項分組、`gdrive` 熱 IPC `get_virtual_cwd()` 相對路徑解析），全數子計畫進入 `P07` 結案（`Completed`）。
+
+---
+
+## 6. 第二輪九維度全量深度審計 (`R03`) 修復與新環境驗證閉環
+
+- **第二輪九維度審計報告**：[`R03_round2_full_codebase_9d_deep_audit_report.md`](./R03_round2_full_codebase_9d_deep_audit_report.md)（雲端連結：[`R03_round2_full_codebase_9d_deep_audit_report.md`](https://drive.google.com/file/d/15XURUEyXkqMa3jv7lBy0U7MQcb_wbyFx/view?usp=drivesdk)）
+- **審計與收斂規模**：針對第一輪修復後浮現之深層次交互邊界與 C9 架構演進技術債（A1~A5 & D1~D5），全倉 12 個審計分組共檢出 **94 項真實問題（14 P0 + 33 P1 + 31 P2 + 16 P3）** 及 **S1~S6 六大 Mode A 根因架構重構手術**，加上模擬新環境 78 項全 CLI 實機驗證揭露之 **2 項部署邊界問題**（共 **96 項**），已於五軌子計畫（`sub_01` ~ `sub_05`）100% 完成根因修復：
+  - **`sub_01`（`yscb.py` + `core`）**：完成 `S1` 執行期 Context 傳遞純化（廢止 `os.environ["YSCB_CALLER_CWD"]` 行程汙染，改由 `ExtensionContext.caller_cwd` 顯式傳遞）、`InstallerEngine` 失敗自動回滾與 `--offline` 網路隔離、`RegistryClient` 20 MiB 串流下載上限與路徑穿越攔截、`VFS` 空字串與 Windows UNC 跨磁碟機攔截、`EventBus.wait_for` 執行緒安全喚醒與 `Logger` 輪替失敗冷卻退避（`core` **293/293** 測試通過）。
+  - **`sub_02`（`ast`）**：完成 `S2` 跨模組共享契約（公開 `ast_engine.formatting.format_symbol_card` 供 `knowledge-db` 單一正統呼叫，消除雙重 AST 格式化）、`ASTEngine` 50 MiB 大檔防護、Tree-sitter 10 MiB 截斷與 5 秒解析逾時、`Wheelhouse` 50 MiB 串流下載與 `RECORD` SHA-256 強校驗、`ASTExtractor._ast_cache` 實例級 `RLock` 與 64 筆上限（`ast` **53/53** 測試通過）。
+  - **`sub_03`（`knowledge-db`）**：完成 `S3` 索引器雙軌合一（刪除 `indexer.py` 內聯 `_parse_note_file` 重複邏輯，統一委派 `NoteParser`）、`VectorStore` 維度遷移時同步清空 `chunks_vec_meta` 觸發全量重算、WAL 模式下連接池 `busy_timeout` 與背景執行緒優雅釋放、`search_hybrid` 停用詞過濾與單詞 OR 降級、`cmd_rebuild` 失敗時保留舊快照（`knowledge-db` **117/117** 測試通過）。
+  - **`sub_04`（`server` + `dev` + `vscode-support`）**：完成 `S4` 雙語系 IPC 與靜態守門收斂（`dev check` `RuleH14` 自動重用 `ast_engine.parsers` 檢查 `.ts/.js` 裸 `JSON.parse` 與 `fs.writeFileSync`）、`Server` Unix Domain Socket `0o600` 原子權限與 `SO_PEERCRED` 同 UID 驗證、Windows Named Pipe `FILE_FLAG_FIRST_PIPE_INSTANCE` 防劫持、`Worker` `sys.stdout` 執行緒隔離與 `ModulesWatcher.refresh_snapshot()` 手動 `reload` 快照同步（`server` **67/67**、`dev` **120/120**、`vscode-support` **23/23** 測試通過）。
+  - **`sub_05`（`agents-workflow` + `gdrive-support`）**：完成 `S5` 上帝物件職責拆解（將 `gdrive_support/coordinator.py` 拆分為 `incremental_cache.py`、`ledger.py`、`readme_sync.py`；將 `transport.py` 拆分為 `sandbox_transport.py`、`auth_flow.py`；抽離 `agents_workflow/plans/state_machine.py`）與 `S6` 雙重 JSON 解析消除，並修復 `gdrive` 沙盒目錄位於 `project://` 內部時之自我遞迴排除防護（`agents-workflow` **147/147**、`gdrive-support` **37/37** 測試通過）。
+- **全量驗證指標**：
+  - `python3 yscb.py dev check`：**9/9 Modules PASS (`0 Warnings, 0 Failed`)**
+  - `python3 -W error::ResourceWarning yscb.py dev test --all --no-build`：**869/869 Tests PASS (`0 Failed, 0 Skipped, 0 ResourceWarning`)**
+  - 模擬全新部署環境（`sim_deploy_env_r2`）：**78/78 全 CLI 指令實機測試 100% PASS**
+

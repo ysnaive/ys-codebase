@@ -27,10 +27,16 @@ __all__ = [
     "collect_space_local_files",
     "collect_space_local_files_with_stat",
     "RemoteEntry",
+    "ChangeRecord",
     "AbstractSyncTransport",
     "LocalSandboxTransport",
     "GoogleDriveApiTransport",
     "create_transport",
+    "load_oauth_client_config",
+    "build_oauth_authorize_url",
+    "extract_code_from_input",
+    "exchange_oauth_code_for_token",
+    "run_oauth_loopback_flow",
     "SyncActionType",
     "FileEntry",
     "SyncAction",
@@ -80,6 +86,7 @@ def __getattr__(name: str) -> Any:
 
     if name in (
         "RemoteEntry",
+        "ChangeRecord",
         "AbstractSyncTransport",
         "LocalSandboxTransport",
         "GoogleDriveApiTransport",
@@ -88,6 +95,17 @@ def __getattr__(name: str) -> Any:
         from . import transport
 
         return getattr(transport, name)
+
+    if name in (
+        "load_oauth_client_config",
+        "build_oauth_authorize_url",
+        "extract_code_from_input",
+        "exchange_oauth_code_for_token",
+        "run_oauth_loopback_flow",
+    ):
+        from . import auth_flow
+
+        return getattr(auth_flow, name)
 
     if name in (
         "SyncActionType",
@@ -106,13 +124,19 @@ def __getattr__(name: str) -> Any:
         "DEFAULT_REPO_SYNC_ROOT",
         "ROOT_README_BEGIN_MARKER",
         "ROOT_README_END_MARKER",
-        "SyncReport",
-        "SyncCoordinator",
         "build_managed_readme_content",
         "build_root_readme_managed_block",
         "merge_root_readme_block",
         "strip_root_readme_block",
         "reconcile_root_readme_state",
+    ):
+        from . import readme_sync
+
+        return getattr(readme_sync, name)
+
+    if name in (
+        "SyncReport",
+        "SyncCoordinator",
     ):
         from . import coordinator
 

@@ -35,10 +35,15 @@ MEDIA_EXTENSIONS = (
 
 
 def _parse_ts(ts_str: str) -> Optional[float]:
-    """解析 ISO-8601 或 YYYY-MM-DD HH:MM(:SS) 時間字串為 epoch 秒數。"""
+    """解析 ISO-8601 (UTC/Offset) 或 YYYY-MM-DD HH:MM(:SS) (本地時間) 字串為真實 UTC epoch 秒數。"""
     if not ts_str:
         return None
     s = ts_str.strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(s, fmt).timestamp()
+        except ValueError:
+            continue
     try:
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
@@ -47,14 +52,7 @@ def _parse_ts(ts_str: str) -> Optional[float]:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.timestamp()
     except Exception:
-        pass
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
-        try:
-            dt = datetime.strptime(s, fmt)
-            return dt.timestamp()
-        except Exception:
-            continue
-    return None
+        return None
 
 
 def _estimate_tokens(text: str) -> int:

@@ -196,7 +196,7 @@ class TestSandboxArchitecture(YSCBTestCase):
                 SandboxProvisioner.create_sandbox(target_dir=target_sb, copy_source=False)
 
         self.assertFalse(os.path.exists(target_sb))
-        self.assertNotIn(os.path.abspath(target_sb), SandboxProvisioner._ACTIVE_SANDBOXES)
+        self.assertNotIn(os.path.abspath(target_sb), SandboxProvisioner._get_active_sandboxes())
 
         # Active sandbox guardrail: when YSCB_SANDBOX_DIR matches target and is_harness_cleanup=False, do not delete
         guard_sb = os.path.join(self._mkdtemp(), "sandbox_active_guard")
@@ -247,26 +247,33 @@ class TestSandboxArchitecture(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_cleanup_all_sandboxes(self):
-        """Verify cleanup_all_sandboxes deletes all sandbox_* directories."""
+        """Verify cleanup_all_sandboxes deletes inactive sandbox_* directories while preserving YSCB_SANDBOX_DIR."""
         sandbox_parent = os.path.join(self.sandbox_dir, "test_cleanup_scope")
         os.makedirs(sandbox_parent, exist_ok=True)
         created_dirs = []
+        old_sb_env = os.environ.get("YSCB_SANDBOX_DIR")
         try:
-            for i in range(1, 4):
+            for i in range(1, 5):
                 d_name = f"sandbox_20260101_10000{i}_000000"
                 d_path = os.path.join(sandbox_parent, d_name)
                 os.makedirs(d_path, exist_ok=True)
                 created_dirs.append(d_path)
 
+            os.environ["YSCB_SANDBOX_DIR"] = created_dirs[3]
             deleted_cnt = SandboxProvisioner.cleanup_all_sandboxes(sandbox_parent_dir=sandbox_parent)
             self.assertEqual(deleted_cnt, 3)
 
-            for p in created_dirs:
+            for p in created_dirs[:3]:
                 self.assertFalse(os.path.exists(p))
+            self.assertTrue(os.path.isdir(created_dirs[3]), "cleanup_all_sandboxes must never delete YSCB_SANDBOX_DIR")
         finally:
+            if old_sb_env is not None:
+                os.environ["YSCB_SANDBOX_DIR"] = old_sb_env
+            else:
+                os.environ.pop("YSCB_SANDBOX_DIR", None)
             for p in created_dirs:
                 if os.path.exists(p):
-                    SandboxProvisioner.cleanup_sandbox(p, force=True)
+                    SandboxProvisioner.cleanup_sandbox(p, force=True, is_harness_cleanup=True)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
@@ -330,9 +337,9 @@ class TestSandboxArchitecture(YSCBTestCase):
                 return temp_dir
             return orig_resolve(u)
 
-        saved_adapted = set(SandboxProvisioner._ADAPTED_SPECS)
+        saved_adapted = set(SandboxProvisioner._get_adapted_specs())
         try:
-            SandboxProvisioner._ADAPTED_SPECS.clear()
+            SandboxProvisioner._get_adapted_specs().clear()
             with patch("core.vfs.exists", side_effect=mock_exists), \
                  patch("core.uri.resolve", side_effect=mock_resolve), \
                  patch.object(PipManager, "install_packages") as mock_install:
@@ -343,7 +350,7 @@ class TestSandboxArchitecture(YSCBTestCase):
                 empty_specs = SandboxProvisioner.adapt_build_pip_dependencies(target_modules=["non_existent"])
                 self.assertEqual(empty_specs, [])
         finally:
-            SandboxProvisioner._ADAPTED_SPECS = saved_adapted
+            SandboxProvisioner._set_adapted_specs(saved_adapted)
 
         self.mark_passed()
 
@@ -516,7 +523,7 @@ class TestSandboxArchitecture(YSCBTestCase):
         ctx = SandboxContext(sb_dir)
         for d in (ctx.sandbox_dir, ctx.project_dir, ctx.host_dir, ctx.engine_dir, ctx.provider_dir):
             os.makedirs(d, exist_ok=True)
-        SandboxProvisioner._ACTIVE_SANDBOXES.add(os.path.abspath(sb_dir))
+        SandboxProvisioner._get_active_sandboxes().add(os.path.abspath(sb_dir))
 
         lock_held_states = []
 
@@ -549,7 +556,7 @@ class TestSandboxArchitecture(YSCBTestCase):
             ok = SandboxProvisioner.cleanup_sandbox(sb_dir, force=True, is_harness_cleanup=True)
 
         self.assertTrue(ok)
-        self.assertNotIn(os.path.abspath(sb_dir), SandboxProvisioner._ACTIVE_SANDBOXES)
+        self.assertNotIn(os.path.abspath(sb_dir), SandboxProvisioner._get_active_sandboxes())
         self.assertEqual(lock_held_states, [("broadcast", False), ("rmtree", False)])
         self.mark_passed()
 
@@ -632,9 +639,10 @@ class TestSandboxArchitecture(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_safe_extract_zip_blocks_zip_slip_and_parallel_allocation_keeps_active(self):
-        """Verify _safe_extract_zip rejects path traversal entries and _allocate_sandbox_root preserves all active sandboxes when >8 are allocated."""
+        """Verify _safe_extract_zip rejects path traversal and Windows drive entries, and _allocate_sandbox_root preserves active sandboxes."""
         temp_dir = self._mkdtemp()
         bad_zip = os.path.join(temp_dir, "zip_slip.zip")
+        drive_zip = os.path.join(temp_dir, "drive_slip.zip")
         extract_dest = os.path.join(temp_dir, "dest")
         os.makedirs(extract_dest, exist_ok=True)
 
@@ -645,6 +653,13 @@ class TestSandboxArchitecture(YSCBTestCase):
             with self.assertRaises(ValueError):
                 SandboxProvisioner._safe_extract_zip(zf, extract_dest)
         self.assertFalse(os.path.exists(os.path.join(temp_dir, "escaped_payload.txt")))
+
+        with zipfile.ZipFile(drive_zip, "w") as zf:
+            zf.writestr("C:escaped_drive.txt", "malicious_drive")
+
+        with zipfile.ZipFile(drive_zip, "r") as zf:
+            with self.assertRaises(ValueError):
+                SandboxProvisioner._safe_extract_zip(zf, extract_dest)
 
         alloc_scope = os.path.join(self.sandbox_dir, "test_parallel_alloc_scope")
         os.makedirs(alloc_scope, exist_ok=True)

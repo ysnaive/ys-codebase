@@ -20,10 +20,10 @@ if _pkg_root not in sys.path:
 
 from dev.testing.case import YSCBTestCase
 from dev.testing.requirement import Requirement, require
-import knowledge_db.engine as kdb_engine
 import knowledge_db.pipeline as kdb_pipeline
 from knowledge_db.embedding import EmbeddingService
-from knowledge_db.engine import KnowledgeEngine
+from knowledge_db.engine import KnowledgeEngine, set_engine_for_testing
+from knowledge_db.pipeline import get_index_cache
 from knowledge_db.retrieval import CodeSnippet
 from knowledge_db.schema import AggregatedFileResult, AggregatedItem, UnifiedSymbol
 from tests import load_script_module, process
@@ -82,15 +82,15 @@ class TestCLI(YSCBTestCase):
         )
         self.engine.build_unified_index(force=True)
 
-        self._old_global_engine = kdb_engine._GLOBAL_ENGINE_INSTANCE
-        self._old_global_cache = dict(kdb_pipeline._GLOBAL_INDEX_CACHE)
-        kdb_engine._GLOBAL_ENGINE_INSTANCE = self.engine
+        self._old_global_cache = dict(get_index_cache())
+        self._old_global_engine = set_engine_for_testing(self.engine)
 
     def tearDown(self):
-        kdb_engine._GLOBAL_ENGINE_INSTANCE = self._old_global_engine
+        set_engine_for_testing(self._old_global_engine)
         with kdb_pipeline._CACHE_LOCK:
-            kdb_pipeline._GLOBAL_INDEX_CACHE.clear()
-            kdb_pipeline._GLOBAL_INDEX_CACHE.update(self._old_global_cache)
+            cache = get_index_cache()
+            cache.clear()
+            cache.update(self._old_global_cache)
         self.temp_dir.cleanup()
         super().tearDown()
 
@@ -232,7 +232,7 @@ class TestCLI(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_guard_directive_output(self):
-        """驗證當 enable_vector_search: true 但無模型時，stderr 輸出 [GUARD] 提示"""
+        """驗證 CQS：唯讀屬性 is_available 不產生 [GUARD] 副作用，顯式呼叫 emit_missing_model_guard_if_needed / check_availability 僅輸出一次 [GUARD]"""
         with tempfile.TemporaryDirectory() as empty_cache:
             err_buf = io.StringIO()
             with (
@@ -245,10 +245,17 @@ class TestCLI(YSCBTestCase):
                 svc = EmbeddingService(
                     cache_dir=empty_cache, mock_mode=False, enable_vector_search=True
                 )
-                _ = svc.is_available
-            err_out = err_buf.getvalue()
-            expected_guard = "[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？"
-            self.assertIn(expected_guard, err_out)
+                self.assertFalse(svc.is_available)
+                self.assertNotIn("[GUARD]", err_buf.getvalue())
+
+                self.assertFalse(svc.check_availability(interactive=True))
+                err_out_first = err_buf.getvalue()
+                expected_guard = "[GUARD] 如果你是 AI Agent，必須立即暫停當前作業，並向開發者提問：要執行 model download 或是於 config 中關閉向量檢索？"
+                self.assertIn(expected_guard, err_out_first)
+
+                # 第二次呼叫不重複印出 [GUARD]
+                self.assertFalse(svc.emit_missing_model_guard_if_needed())
+                self.assertEqual(err_buf.getvalue().count("[GUARD]"), 1)
         self.mark_passed()
 
     @require(Requirement.LOGIC)
@@ -567,7 +574,7 @@ class TestCLI(YSCBTestCase):
                             mock_mode=False,
                             enable_vector_search=True,
                         )
-                        svc_no_aw._init_model()
+                        svc_no_aw.emit_missing_model_guard_if_needed()
                     self.assertNotIn("[GUARD]", err_buf.getvalue())
         finally:
             if old_yscb_loc is None:

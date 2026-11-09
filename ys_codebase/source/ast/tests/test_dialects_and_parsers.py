@@ -8,7 +8,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 _AST_ROOT = str(Path(__file__).resolve().parents[1])
 if _AST_ROOT not in sys.path:
@@ -36,8 +36,9 @@ from ast_engine.parsers import (
     ParserRegistry,
     PythonASTParser,
     SpiceParser,
+    TreeSitterDriver,
 )
-from ast_engine.schema import SymbolKind
+from ast_engine.schema import LanguageConfig, SymbolKind
 from tests import ASTTestCase, Requirement, require
 
 
@@ -286,7 +287,7 @@ class TestDialectsAndParsers(ASTTestCase):
         assert send_call is not None
         self.assertEqual(send_call.context_prefix, "self.logger.client")
 
-        # MarkdownParser: fenced code block comments, Setext headings, and pipe tables
+        # MarkdownParser: fenced code block comments, Setext headings, pipe tables, and non-duplicate documents edges
         md_parser = MarkdownParser()
         md_content = (
             "# System Architecture\n"
@@ -302,14 +303,17 @@ class TestDialectsAndParsers(ASTTestCase):
             "| --- | --- |\n"
             "| AST | Parser |\n"
         )
-        md_syms = md_parser.parse("docs/ARCH.md", md_content, space="docs")
+        md_syms = md_parser.parse("docs/overview.md", md_content, space="docs")
         heading_names = [s.name for s in md_syms if s.kind.startswith("doc_heading")]
         self.assertEqual(heading_names, ["System Architecture", "Setext Section"])
         table_syms = [s for s in md_syms if s.kind == SymbolKind.DOC_TABLE.value]
         self.assertEqual(len(table_syms), 1)
-        md_calls = md_parser.extract_call_sites("docs/ARCH.md", md_content, space="docs")
+        md_calls = md_parser.extract_call_sites("docs/overview.md", md_content, space="docs")
         self.assertTrue(any(c.callee_name == "SubmitOrder" for c in md_calls))
         self.assertTrue(any(c.callee_name == "OrderService" for c in md_calls))
+        md_fg = md_parser.extract_file_graph("docs/overview.md", md_content, space="docs")
+        self.assertTrue(any(e.edge_kind == "documents" for e in md_fg.outgoing_edges))
+        self.assertFalse(any(e.edge_kind == "calls" for e in md_fg.outgoing_edges))
 
         # SpiceParser: nested and unclosed .SUBCKT, X instances, and .INCLUDE imports
         spice_parser = SpiceParser()
@@ -436,10 +440,8 @@ class TestDialectsAndParsers(ASTTestCase):
     @require(Requirement.LOGIC)
     def test_commutative_multi_scm_merge_recursive_hierarchy_and_space_scoping(self) -> None:
         """Verify peer .scm commutative merging (A U B == B U A), deep recursive hierarchy, SymbolProcessor refinement, and core.space rule scoping."""
-        from ast_engine.parsers.base import SymbolProcessor, convert_legacy_symbols_to_file_graph
-        from ast_engine.parsers.treesitter import TreeSitterDriver
-        from ast_engine.schema import LanguageConfig, ProvenanceStep, Span, SymbolNode
-        from unittest.mock import MagicMock
+        from ast_engine.parsers.base import SymbolProcessor
+        from ast_engine.schema import ProvenanceStep, Span, SymbolNode
 
         # 1. Verify end-to-end commutative merging ($A \cup B = B \cup A$) across real `.scm` files
         tags_scm_path = self.temp_dir / "official_tags.scm"
@@ -620,7 +622,7 @@ class TestDialectsAndParsers(ASTTestCase):
         self.assertTrue(any(e.edge_kind == "imports" and e.target_expr == "os" for e in f_graph.outgoing_edges))
         self.assertTrue(any(e.edge_kind == "calls" and e.target_expr == "helper_fn" and e.source_id == deep_method.id for e in f_graph.outgoing_edges))
 
-        # 2b. Verify EC-03: same-scope C# method overloads receive deterministic parameter-suffix IDs in extract_file_graph
+        # 2b. Verify same-scope C# method overloads receive deterministic parameter-suffix IDs in extract_file_graph
         cs_driver = TreeSitterDriver(
             LanguageConfig(id="c_sharp", name="C#", extensions=(".cs",), grammar="tree_sitter_c_sharp", query_file="assets/queries/c_sharp.scm")
         )
@@ -642,7 +644,7 @@ class TestDialectsAndParsers(ASTTestCase):
             ],
         )
 
-        # 2c. Verify EC-02: broken processor runtime isolation logs warning and preserves extracted graph
+        # 2c. Verify broken processor runtime isolation logs warning and preserves extracted graph
         class BrokenRuntimeProcessor(SymbolProcessor):
             provider_id = "test:broken_processor"
 
@@ -659,7 +661,27 @@ class TestDialectsAndParsers(ASTTestCase):
         self.assertEqual(len(res_graph.root_nodes), 1)
         self.assertTrue(res_graph.root_nodes[0].facets.get("processed_by_marker"))
 
-        # 3. Verify `spaces` rule scoping via `core.space`
+        # 2d. Verify _extract_call_arg_count handles escaped quotes with commas and `<` comparison operators
+        call_b1 = b'foo("a, \\"b, c\\"", x < y, z)'
+        self.assertEqual(
+            TreeSitterDriver._extract_call_arg_count(
+                MagicMock(end_byte=len(call_b1)),
+                MagicMock(end_byte=3),
+                call_b1,
+            ),
+            3,
+        )
+        call_b2 = b"bar(a < b, c > d)"
+        self.assertEqual(
+            TreeSitterDriver._extract_call_arg_count(
+                MagicMock(end_byte=len(call_b2)),
+                MagicMock(end_byte=3),
+                call_b2,
+            ),
+            2,
+        )
+
+        # 3. Verify `spaces` rule scoping via injected `space_manager` on ParserRegistry
         scoped_parser_file = self.temp_dir / "scoped_json_parser.py"
         scoped_parser_file.write_text(
             "from ast_engine.parsers.base import BaseParser\n"
@@ -683,14 +705,17 @@ class TestDialectsAndParsers(ASTTestCase):
                 }
             }
         }
-        scoped_reg = ParserRegistry(register_defaults=False, contributes_data=scoped_contributes)
         fake_space_reg = MagicMock()
         fake_space_reg.match_path.side_effect = lambda fp, sp: MagicMock(matched=("contributes/" in str(fp)))
-        with patch("core.space.get_default_registry", return_value=fake_space_reg):
-            matched_g = scoped_reg.extract_file_graph("mod/contributes/ast.json", "{}")
-            self.assertEqual(len(matched_g.root_nodes), 1)
-            self.assertEqual(matched_g.root_nodes[0].name, "ContributeSpec")
+        scoped_reg = ParserRegistry(
+            register_defaults=False,
+            contributes_data=scoped_contributes,
+            space_manager=fake_space_reg,
+        )
+        matched_g = scoped_reg.extract_file_graph("mod/contributes/ast.json", "{}")
+        self.assertEqual(len(matched_g.root_nodes), 1)
+        self.assertEqual(matched_g.root_nodes[0].name, "ContributeSpec")
 
-            unmatched_g = scoped_reg.extract_file_graph("mod/package.json", "{}")
-            self.assertEqual(len(unmatched_g.root_nodes), 0)
+        unmatched_g = scoped_reg.extract_file_graph("mod/package.json", "{}")
+        self.assertEqual(len(unmatched_g.root_nodes), 0)
         self.mark_passed()

@@ -28,6 +28,17 @@ def resolve_project_root(explicit_root: Optional[Union[str, Path]] = None) -> Pa
     return Path(get_virtual_cwd()).resolve()
 
 
+def _format_cross_drive_relpath(p: Path) -> str:
+    """Format a path that cannot be made relative to project_root/fallback_base without collapsing to filename."""
+    norm = str(p).replace("\\", "/").strip()
+    if len(norm) >= 2 and norm[1] == ":":
+        drive_letter = norm[0].upper()
+        rest = norm[2:].lstrip("/")
+        return f"{drive_letter}/{rest}" if rest else drive_letter
+    stripped = norm.lstrip("/")
+    return stripped if stripped else p.name
+
+
 def compute_project_relpath(
     file_path: Path,
     fallback_base: Optional[Path] = None,
@@ -65,7 +76,7 @@ def compute_project_relpath(
         except Exception:
             pass
 
-    return file_path.name
+    return _format_cross_drive_relpath(resolved_file)
 
 
 def atomic_save_gzip_pickle(
@@ -75,7 +86,7 @@ def atomic_save_gzip_pickle(
 ) -> Path:
     """
     Serialize payload via pickle + gzip context manager and atomically write to target_path via core.vfs.write_bytes.
-    Ensures any temporary `.tmp` file in the parent directory is cleaned up in `finally` on write error.
+    Ensures any temporary `.tmp` file in the parent directory is cleaned up on write error.
     """
     p = Path(target_path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -87,7 +98,7 @@ def atomic_save_gzip_pickle(
     tmp_path = p.with_name(f".{p.name}.tmp.{os.getpid()}")
     try:
         write_bytes(str(p), compressed, atomic=True)
-    finally:
+    except BaseException:
         if tmp_path.exists():
             try:
                 tmp_path.unlink()
@@ -98,6 +109,7 @@ def atomic_save_gzip_pickle(
                 leftover.unlink()
             except OSError:
                 pass
+        raise
     return p
 
 
@@ -125,23 +137,25 @@ def normalize_dirty_paths(dirty_file_paths: Iterable[str]) -> Set[str]:
     return {str(p).replace("\\", "/").lower() for p in dirty_file_paths if p}
 
 
+def _is_abs_norm(path_str: str) -> bool:
+    return path_str.startswith("/") or (len(path_str) > 2 and path_str[1] == ":" and path_str[2] == "/")
+
+
 def is_dirty_file_match(doc_file_path: str, dirty_paths_norm: Set[str]) -> bool:
     """Check whether doc_file_path matches any normalized path in dirty_paths_norm."""
     if not dirty_paths_norm:
         return False
-    sym_path_norm = str(doc_file_path).replace("\\", "/").strip("/").lower()
+    sym_raw = str(doc_file_path).replace("\\", "/").lower()
+    sym_is_abs = _is_abs_norm(sym_raw)
+    sym_path_norm = sym_raw.strip("/")
     if not sym_path_norm:
         return False
-    if sym_path_norm in dirty_paths_norm or ("/" + sym_path_norm) in dirty_paths_norm:
+    if sym_raw in dirty_paths_norm or sym_path_norm in dirty_paths_norm or ("/" + sym_path_norm) in dirty_paths_norm:
         return True
-    if "/" not in sym_path_norm:
-        suffix = "/" + sym_path_norm
-        for p in dirty_paths_norm:
-            is_abs_p = p.startswith("/") or (len(p) > 2 and p[1] == ":" and p[2] == "/")
-            if is_abs_p and p.endswith(suffix):
-                return True
-        return False
     for p in dirty_paths_norm:
-        if "/" in p and (p.endswith("/" + sym_path_norm) or sym_path_norm.endswith("/" + p)):
+        p_is_abs = _is_abs_norm(p)
+        if p_is_abs and not sym_is_abs and p.endswith("/" + sym_path_norm):
+            return True
+        if sym_is_abs and not p_is_abs and sym_raw.endswith("/" + p.strip("/")):
             return True
     return False

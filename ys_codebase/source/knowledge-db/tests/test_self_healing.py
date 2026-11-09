@@ -128,14 +128,20 @@ class TestKnowledgeDBSelfHealing(YSCBTestCase):
     @require(Requirement.LOGIC)
     def test_cross_space_same_filename_isolation(self) -> None:
         """
-        Verify that modifying or deleting a top-level file (without '/') in one space
-        (e.g. __init__.py or README.md) does not falsely match or evict same-named files in other spaces.
+        Verify that modifying or deleting a top-level file (without '/') or nested relative path
+        in one space does not falsely match or evict same-named files in other spaces/modules.
         """
         # 1. Direct unit test of is_dirty_file_match without '/' wildcarding subdirectories
         dirty_norm = normalize_dirty_paths(["README.md"])
         self.assertTrue(is_dirty_file_match("README.md", dirty_norm))
         self.assertFalse(is_dirty_file_match("space_a/README.md", dirty_norm))
         self.assertFalse(is_dirty_file_match("space_b/sub/README.md", dirty_norm))
+
+        # 1b. Cross-module relative path with '/' must NOT suffix-match other modules' relative paths
+        dirty_rel_cli = normalize_dirty_paths(["scripts/cli.py"])
+        self.assertTrue(is_dirty_file_match("scripts/cli.py", dirty_rel_cli))
+        self.assertTrue(is_dirty_file_match("/workspace/mod_a/scripts/cli.py", dirty_rel_cli))
+        self.assertFalse(is_dirty_file_match("ys_codebase/source/server/scripts/cli.py", dirty_rel_cli))
 
         # 2. Multi-space integration test with top-level __init__.py in two separate spaces
         mod_a_dir = self.proj_root / "mod_a"
@@ -174,7 +180,6 @@ class TestKnowledgeDBSelfHealing(YSCBTestCase):
         )
 
         engine.build_unified_index(force=True)
-        key_b = str(init_b.resolve()).replace("\\", "/")
         orig_b_sym = next(
             s for s in engine.pipeline.ast_engine._snapshot.symbols.values()
             if s.name == "ModBInitSymbol"

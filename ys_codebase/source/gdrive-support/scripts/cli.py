@@ -433,6 +433,10 @@ def put(cmd_bags: CmdBags) -> int:
                 f"Refusing to upload sensitive credential/token file '{local_path.as_posix()}' to Google Drive."
             )
         _cfg, transport, _sbx, as_json = _prepare_atomic_transport(cmd_bags)
+        if is_sensitive_credential_path(local_path, proj_root, config=_cfg):
+            raise GDriveConfigError(
+                f"Refusing to upload sensitive credential/token file '{local_path.as_posix()}' to Google Drive."
+            )
         entry = transport.upload_file(
             local_path=local_path,
             remote_path=remote_path,

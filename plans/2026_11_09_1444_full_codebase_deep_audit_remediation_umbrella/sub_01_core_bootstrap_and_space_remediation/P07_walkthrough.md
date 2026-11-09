@@ -124,3 +124,10 @@ fix(core): unify RuntimeScope with uri_tls, add BaseServiceWorkerContract, and d
 ### 模擬新環境全 CLI 部署驗收補充紀錄
 
 - **實機驗收結果**：於模擬新環境部署全 CLI 實機測試中，額外收斂 `core/contributes.py` 對 `module://` 暫存目錄（`.staging_*` / `.old_*`）之過濾防護與 `core/pip_manager.py` 離線環境 `--retries=1 --timeout=5` 快速退避，驗證 26 項 Core/Bootstrap 與 13 項 `fs`/`file-space` CLI 指令 100% 通過。
+
+---
+
+### 第二輪九維度深度審計 (`R03`) 增補驗收成果
+
+- **修復範圍**：完成 `R03-A-01` ~ `R03-A-09` 與 `R03-B-01` ~ `R03-B-12`（共 21 項）及 `S1` 執行期 Context 傳遞純化（將 `caller_cwd` 納入 `ExtensionContext`，全面消除 `yscb.py` / `server/worker.py` 對 `os.environ["YSCB_CALLER_CWD"]` 之執行期汙染）。
+- **驗證結果**：`python3 yscb.py dev check core` **PASS**；`python3 -W error::ResourceWarning yscb.py dev test core --no-build` **293/293 PASS (`0 ResourceWarning`)**；模擬新環境全 CLI 指令驗證 **100% PASS**。

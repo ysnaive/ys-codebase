@@ -7,6 +7,7 @@ knowledge-db 呈現層格式化中樞 (formatter.py)
 4. search 檢索命令格式化輸出 (format_search_output)
 """
 
+import os
 from pathlib import Path
 import re
 from typing import Any, List, Optional, Tuple, Union
@@ -286,13 +287,26 @@ class ResultFormatter:
         return Path(get_virtual_cwd()).resolve()
 
     def normalize_workspace_path(self, file_path: Union[str, Path]) -> str:
-        """將路徑正規化為相對於 Workspace/Project 根目錄之標準相對路徑 (forward slash)"""
+        """將路徑正規化為相對於 Workspace/Project 根目錄之標準相對路徑 (forward slash)，支援跨平台 realpath 與 normcase 對齊。"""
         p = Path(file_path)
         ws = self.get_workspace_root()
         try:
             if p.is_absolute():
-                rel = p.resolve().relative_to(ws)
-                return str(rel).replace("\\", "/")
+                real_p = Path(os.path.realpath(str(p)))
+                real_ws = Path(os.path.realpath(str(ws)))
+                try:
+                    rel = real_p.relative_to(real_ws)
+                    return str(rel).replace("\\", "/")
+                except ValueError:
+                    norm_p = Path(os.path.normcase(str(real_p)))
+                    norm_ws = Path(os.path.normcase(str(real_ws)))
+                    norm_rel = norm_p.relative_to(norm_ws)
+                    if not norm_rel.parts:
+                        return "."
+                    preserved_parts = real_p.parts[len(real_ws.parts) :]
+                    if preserved_parts:
+                        return "/".join(preserved_parts).replace("\\", "/")
+                    return str(norm_rel).replace("\\", "/")
         except (ValueError, Exception):
             pass
         return str(file_path).replace("\\", "/")

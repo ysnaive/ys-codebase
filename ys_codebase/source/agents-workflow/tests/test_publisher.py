@@ -524,6 +524,14 @@ class TestReleasePublisherDiff(YSCBTestCase):
 class TestJITReleaseAndHooks(YSCBTestCase):
     """測試 JIT 雜湊偵測、hook.core.py 與 hook.dev.py 生命週期掛鉤。"""
 
+    def setUp(self):
+        super().setUp()
+        try:
+            from core.context import invalidate_epoch_state
+            invalidate_epoch_state("agents_workflow.publisher.jit_clean_bucket")
+        except Exception:
+            pass
+
     def test_ensure_jit_release_clean(self):
         """驗證當來源特徵未改變 (Clean) 時，ensure_jit_release 順暢返回 False。"""
         with patch.object(ReleasePublisher, "release_all", return_value={"success": True, "short_circuited": True, "written_count": 0}):
@@ -656,7 +664,7 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
         self.mark_passed()
 
     def test_local_target_saves_absolute_paths_in_cache(self):
-        """驗證 Local Target 發布至 storage.local://，且全部路徑為本機實體絕對路徑。"""
+        """驗證 Local Target 發布至 storage.local://，且全部路徑統一為 project:// 語意格式以確保跨環境可攜性。"""
         ReleaseTargetManager.save_tier_targets([], is_project=True)
         ReleaseTargetManager.save_tier_targets(["antigravity"], is_project=False)
 
@@ -672,10 +680,10 @@ class TestManifestPlacementAndDualTrack(YSCBTestCase):
 
         for p in published:
             self.assertTrue(
-                os.path.isabs(p),
-                f"Expected path in cache manifest to be an absolute path, got: '{p}'",
+                p.startswith("project://"),
+                f"Expected path in local manifest to start with 'project://', got: '{p}'",
             )
-            self.assertFalse(p.startswith("project://"))
+            self.assertNotIn("\\", p)
         self.mark_passed()
 
     def test_mixed_targets_dual_channel_manifests_and_gitignore_union(self):

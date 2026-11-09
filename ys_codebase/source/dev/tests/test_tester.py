@@ -117,7 +117,7 @@ class TestDevTester(YSCBTestCase):
         mock_stream = MockEncodingStream()
         safe_print("test \ufffd unicode", file=mock_stream)
         self.assertTrue(len(mock_stream.buffer) > 0)
-        self.assertIn("test ? unicode\n", mock_stream.buffer[0])
+        self.assertIn("test ? unicode\n", "".join(mock_stream.buffer))
         self.mark_passed()
 
     @require(Requirement.ENV)
@@ -184,7 +184,7 @@ class TestDevTester(YSCBTestCase):
         """Verify _run_test normalizes -k <pat> into --pattern=<pat> and flags."""
         captured_cmd = []
 
-        def mock_subprocess_run(cmd, **kwargs):
+        def mock_tree_run(cmd, **kwargs):
             nonlocal captured_cmd
             captured_cmd = list(cmd)
             for arg in cmd:
@@ -207,7 +207,7 @@ class TestDevTester(YSCBTestCase):
                             },
                             f,
                         )
-            return MagicMock(returncode=0)
+            return 0, "", ""
 
         sb_dir = self._mkdtemp()
         mock_ctx = MagicMock()
@@ -215,7 +215,7 @@ class TestDevTester(YSCBTestCase):
         mock_ctx.host_dir = sb_dir
         mock_ctx.engine_dir = sb_dir
 
-        with patch("subprocess.run", side_effect=mock_subprocess_run), \
+        with patch("dev.tester.run_subprocess_with_tree_timeout", side_effect=mock_tree_run), \
              patch("dev.testing.sandbox.SandboxProvisioner.create_sandbox", return_value=mock_ctx), \
              patch("dev.testing.sandbox.SandboxProvisioner.cleanup_sandbox"):
             ret = self.tester._run_test(["core", "-k", "test_my_feature", "-q", "-v", "--no-build"])
@@ -380,21 +380,17 @@ class TestDevTester(YSCBTestCase):
             "failures_list": [],
         }
 
-        mock_res = MagicMock()
-        mock_res.returncode = 0
-        mock_res.stdout = "Subprocess stdout noise\n"
-        mock_res.stderr = (
-            "[compiler:warning] Failed to resolve project URI\n"
-            "Warning: something non-critical happened\n"
-        )
-
-        def fake_subprocess_run(cmd, **kwargs):
+        def fake_tree_run(cmd, **kwargs):
             for arg in cmd:
                 if arg.startswith("--report-json="):
                     p = arg.split("=", 1)[1]
                     with open(p, "w", encoding="utf-8") as f:
                         json.dump(dummy_report, f)
-            return mock_res
+            return (
+                0,
+                "Subprocess stdout noise\n",
+                "[compiler:warning] Failed to resolve project URI\nWarning: something non-critical happened\n",
+            )
 
         sb_dir = self._mkdtemp()
         mock_ctx = MagicMock()
@@ -405,7 +401,7 @@ class TestDevTester(YSCBTestCase):
         out_io = StringIO()
         err_io = StringIO()
 
-        with patch("subprocess.run", side_effect=fake_subprocess_run), \
+        with patch("dev.tester.run_subprocess_with_tree_timeout", side_effect=fake_tree_run), \
              patch("dev.testing.sandbox.SandboxProvisioner.create_sandbox", return_value=mock_ctx), \
              patch("dev.testing.sandbox.SandboxProvisioner.cleanup_sandbox"), \
              patch("sys.stdout", out_io), \
@@ -421,9 +417,8 @@ class TestDevTester(YSCBTestCase):
     def test_single_module_json_ipc_pipeline(self):
         """Verify single module test dispatches with --report-json and --quiet-report."""
         captured_cmd = []
-        mock_res = MagicMock(returncode=0, stdout="", stderr="")
 
-        def fake_subprocess_run(cmd, **kwargs):
+        def fake_tree_run(cmd, **kwargs):
             nonlocal captured_cmd
             captured_cmd = list(cmd)
             for arg in cmd:
@@ -446,12 +441,12 @@ class TestDevTester(YSCBTestCase):
                             },
                             f,
                         )
-            return mock_res
+            return 0, "", ""
 
         sb_dir = self._mkdtemp()
         mock_ctx = MagicMock(sandbox_dir=sb_dir, host_dir=sb_dir, engine_dir=sb_dir)
 
-        with patch("subprocess.run", side_effect=fake_subprocess_run), \
+        with patch("dev.tester.run_subprocess_with_tree_timeout", side_effect=fake_tree_run), \
              patch("dev.testing.sandbox.SandboxProvisioner.create_sandbox", return_value=mock_ctx), \
              patch("dev.testing.sandbox.SandboxProvisioner.cleanup_sandbox"):
             ret = self.tester._run_test(["dev", "--no-build"])
@@ -646,7 +641,7 @@ class TestDevTester(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_parse_test_run_config_and_cli_guards(self):
-        """Verify _parse_test_run_config flag parsing and Tester CLI/op-mksb/op-test guardrails."""
+        """Verify _parse_test_run_config flag parsing (including space-separated options) and Tester CLI/op-mksb/op-test guardrails."""
         cfg1 = _parse_test_run_config(["-j4", "--target=core:TestX", "--no-build", "--sequential", "-q"])
         self.assertEqual(cfg1.jobs, 4)
         self.assertEqual(cfg1.target_mod, "core")
@@ -661,6 +656,13 @@ class TestDevTester(YSCBTestCase):
         self.assertIn("--pattern=my_pat", cfg2.clean_argv)
         self.assertTrue(cfg2.verbose)
         self.assertTrue(cfg2.sync_requested)
+
+        # Space-separated two-token options (--type <val>, --target <val>, --report-json <val>)
+        cfg3 = _parse_test_run_config(["--type", "env", "--target", "core:TestSuite.test_x", "--report-json", "/tmp/r.json"])
+        self.assertEqual(cfg3.target_mod, "core")
+        self.assertEqual(cfg3.target_param, "--target=core:TestSuite.test_x")
+        self.assertIn("--type=env", cfg3.clean_argv)
+        self.assertIn("--report-json=/tmp/r.json", cfg3.clean_argv)
 
         buf = StringIO()
         with patch("sys.stdout", buf):
@@ -690,6 +692,7 @@ class TestDevTester(YSCBTestCase):
 
         with patch("sys.stdout", StringIO()):
             self.assertEqual(self.tester._run_op_test(["core", "--type=invalid_xyz"]), 1)
+            self.assertEqual(self.tester._run_op_test(["core", "--type", "invalid_xyz"]), 1)
             self.assertEqual(self.tester._run_op_test(["mock_nonexistent_mod_xyz"]), 1)
         self.mark_passed()
 
@@ -723,10 +726,10 @@ class TestDevTesterSync(YSCBTestCase):
         self.tester = Tester()
 
     def test_handle_post_test_sync_with_sync_flag(self):
-        """Verify sync_requested=True invokes subprocess.run to install <mod>@build."""
+        """Verify sync_requested=True invokes run_subprocess_with_tree_timeout to install <mod>@build."""
         with patch("os.path.isfile", return_value=True), \
              patch("builtins.open", unittest.mock.mock_open(read_data='{"installed_modules": {"dev": {"version": "1.0.0.0"}}}')), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_sub:
+             patch("dev.tester.run_subprocess_with_tree_timeout", return_value=(0, "", "")) as mock_sub:
             output_io = StringIO()
             with patch("sys.stdout", output_io):
                 self.tester._handle_post_test_sync(["dev"], sync_requested=True)
@@ -739,10 +742,10 @@ class TestDevTesterSync(YSCBTestCase):
         self.mark_passed()
 
     def test_handle_post_test_sync_prompt_only(self):
-        """Verify sync_requested=False prints install guidance without invoking subprocess.run."""
+        """Verify sync_requested=False prints install guidance without invoking subprocess runner."""
         with patch("os.path.isfile", return_value=True), \
              patch("builtins.open", unittest.mock.mock_open(read_data='{"installed_modules": {"dev": {"version": "1.0.0.0"}}}')), \
-             patch("subprocess.run") as mock_sub:
+             patch("dev.tester.run_subprocess_with_tree_timeout") as mock_sub:
             output_io = StringIO()
             with patch("sys.stdout", output_io):
                 self.tester._handle_post_test_sync(["dev"], sync_requested=False)

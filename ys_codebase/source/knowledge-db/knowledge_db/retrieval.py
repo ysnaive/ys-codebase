@@ -879,21 +879,26 @@ class InvertedIndex:
         new_symbols: List[UnifiedSymbol],
         tokenizer: Optional[MultilingualTokenizer] = None,
         pre_aggregated: bool = False,
-    ) -> None:
+        removed_doc_ids: Optional[Set[str]] = None,
+    ) -> Set[str]:
         """
         差量修補倒排索引 (Incremental Hot Patching)：
         1. 識別並刪除屬於 dirty_file_paths 的舊符號與 Postings，扣減長度指標並清理 doc_lengths。
         2. 將 new_symbols 注入符號池、倒排表與 doc_lengths。
-        3. 動態重新計算 field_avgdl。
+        3. 動態重新計算 field_avgdl，並回傳實際遭淘汰之舊符號 doc_id 集合。
         """
         tok = tokenizer or MultilingualTokenizer()
-        dirty_paths_norm = normalize_dirty_paths(dirty_file_paths)
-
-        doc_ids_to_remove: List[str] = [
-            doc_id
-            for doc_id, sym in list(self.symbols.items())
-            if is_dirty_file_match(sym.file_path, dirty_paths_norm)
-        ]
+        if removed_doc_ids is not None:
+            doc_ids_to_remove: List[str] = [
+                doc_id for doc_id in removed_doc_ids if doc_id in self.symbols
+            ]
+        else:
+            dirty_paths_norm = normalize_dirty_paths(dirty_file_paths)
+            doc_ids_to_remove = [
+                doc_id
+                for doc_id, sym in list(self.symbols.items())
+                if is_dirty_file_match(sym.file_path, dirty_paths_norm)
+            ]
 
         doc_ids_set = set(doc_ids_to_remove)
 
@@ -987,22 +992,25 @@ class InvertedIndex:
             for f in self.INDEXED_FIELDS:
                 self.field_avgdl[f] = 1.0
 
+        return doc_ids_set
+
     def save_binary(self, path: Union[str, Path], compresslevel: int = 1) -> None:
         """使用 io_utils 原子持久化二進位快取"""
         atomic_save_gzip_pickle(path, self.to_dict(), compresslevel=compresslevel)
 
     @classmethod
-    def load_binary(cls, path: Union[str, Path]) -> "InvertedIndex":
-        """自二進位 Gzip 快取反序列化 InvertedIndex，並於載入後主動歸還過渡反序列化堆疊"""
+    def load_binary(cls, path: Union[str, Path], trim_memory: bool = True) -> "InvertedIndex":
+        """自二進位 Gzip 快取反序列化 InvertedIndex，並於載入後可選歸還過渡反序列化堆疊"""
         data = load_gzip_pickle(path, raise_on_missing=True)
         idx = cls.from_dict(data)
         del data
-        try:
-            from core.platform import trim_process_memory
+        if trim_memory:
+            try:
+                from core.platform import trim_process_memory
 
-            trim_process_memory(min_interval_sec=1.0)
-        except Exception:
-            pass
+                trim_process_memory(min_interval_sec=1.0)
+            except Exception:
+                pass
         return idx
 
 

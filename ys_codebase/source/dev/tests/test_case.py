@@ -94,21 +94,21 @@ class TestCaseSandboxLifecycleTest(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_cleanup_shared_sandbox_safe(self):
-        """Verify cleanup_shared_sandbox resets _shared_sandbox_ctx and deletes directory."""
-        saved_ctx = YSCBTestCase._shared_sandbox_ctx
+        """Verify cleanup_shared_sandbox resets shared sandbox state in RuntimeContext and deletes directory."""
+        saved_ctx = YSCBTestCase._get_shared_sandbox_ctx()
         mock_sb = SandboxProvisioner.create_sandbox()
         sb_dir = mock_sb.sandbox_dir
         self.assertTrue(os.path.isdir(sb_dir))
 
         try:
-            YSCBTestCase._shared_sandbox_ctx = mock_sb
+            YSCBTestCase._set_shared_sandbox_ctx(mock_sb)
             old_harness = os.environ.get("YSCB_TEST_SANDBOX")
             old_keep = os.environ.get("YSCB_TEST_KEEP_SANDBOX")
             try:
                 os.environ["YSCB_TEST_SANDBOX"] = "0"
                 os.environ["YSCB_TEST_KEEP_SANDBOX"] = "0"
                 YSCBTestCase.cleanup_shared_sandbox()
-                self.assertIsNone(YSCBTestCase._shared_sandbox_ctx)
+                self.assertIsNone(YSCBTestCase._get_shared_sandbox_ctx())
                 self.assertFalse(os.path.exists(sb_dir))
             finally:
                 if old_harness is not None:
@@ -120,7 +120,7 @@ class TestCaseSandboxLifecycleTest(YSCBTestCase):
                 else:
                     os.environ.pop("YSCB_TEST_KEEP_SANDBOX", None)
         finally:
-            YSCBTestCase._shared_sandbox_ctx = saved_ctx
+            YSCBTestCase._set_shared_sandbox_ctx(saved_ctx)
             if os.path.exists(sb_dir):
                 SandboxProvisioner.cleanup_sandbox(sb_dir, force=True)
         self.mark_passed()
@@ -236,7 +236,7 @@ class TestCaseSandboxLifecycleTest(YSCBTestCase):
 
         old_val = os.environ.get("YSCB_TEST_SANDBOX")
         old_sb_dir = os.environ.get("YSCB_SANDBOX_DIR")
-        saved_shared_ctx = YSCBTestCase._shared_sandbox_ctx
+        saved_shared_ctx = YSCBTestCase._get_shared_sandbox_ctx()
         orig_cwd = os.getcwd()
         plain_tmp = tempfile.mkdtemp()
         try:
@@ -248,7 +248,7 @@ class TestCaseSandboxLifecycleTest(YSCBTestCase):
 
             os.environ["YSCB_TEST_SANDBOX"] = "1"
             os.environ["YSCB_SANDBOX_DIR"] = os.path.join(plain_tmp, "nonexistent_sb")
-            YSCBTestCase._shared_sandbox_ctx = None
+            YSCBTestCase._set_shared_sandbox_ctx(None)
             os.chdir(plain_tmp)
             dummy_invalid = GuardCheckCase("test_dummy")
             with self.assertRaises(SecurityError) as ctx2:
@@ -256,7 +256,7 @@ class TestCaseSandboxLifecycleTest(YSCBTestCase):
             self.assertIn("Unable to resolve an authentic virtual sandbox directory", str(ctx2.exception))
 
             os.environ.pop("YSCB_SANDBOX_DIR", None)
-            YSCBTestCase._shared_sandbox_ctx = None
+            YSCBTestCase._set_shared_sandbox_ctx(None)
             os.chdir(self.sandbox_host_dir)
             dummy_walk = GuardCheckCase("test_dummy")
             dummy_walk.setUp()
@@ -267,7 +267,7 @@ class TestCaseSandboxLifecycleTest(YSCBTestCase):
                 dummy_walk.tearDown()
         finally:
             os.chdir(orig_cwd)
-            YSCBTestCase._shared_sandbox_ctx = saved_shared_ctx
+            YSCBTestCase._set_shared_sandbox_ctx(saved_shared_ctx)
             if old_val is not None:
                 os.environ["YSCB_TEST_SANDBOX"] = old_val
             else:

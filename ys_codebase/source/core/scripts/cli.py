@@ -6,7 +6,6 @@ import builtins
 import json
 import os
 import re
-import sys
 from typing import Any, List
 
 from core.commands.bags import CmdBags, CmdOption
@@ -18,7 +17,7 @@ from core import uri as core_uri
 
 
 def _render_subcommand_group_help(cmd_name: str) -> int:
-    """Render help message for a core subcommand group (config, uri, event, contributes)."""
+    """Render help message for a core subcommand group (config, uri, event, contributes, gitignore, file-space)."""
     from core.commands.help import HelpRenderer
     from core.commands.dispatcher import _load_registry, _get_yscb_root
     _, yscb_abs = _get_yscb_root()
@@ -654,10 +653,10 @@ def _handle_space_spaces(cmd_bags: CmdBags) -> int:
     owner_filter = cmd_bags.get_option_value("owner") or cmd_bags.get_option_value("o")
     query = cmd_bags.args[0] if cmd_bags.args else None
 
-    from core.space import SpaceError, SpaceRegistry
+    from core.space import SpaceError, get_default_registry
 
     try:
-        reg = SpaceRegistry()
+        reg = get_default_registry()
         if query:
             spaces = reg.resolve_spaces(query)
         else:
@@ -719,10 +718,10 @@ def _handle_space_match(cmd_bags: CmdBags) -> int:
     target_path = cmd_bags.args[0]
     space_query = space_opt or (cmd_bags.args[1] if len(cmd_bags.args) > 1 else None)
 
-    from core.space import SpaceError, SpaceRegistry
+    from core.space import SpaceError, get_default_registry
 
     try:
-        reg = SpaceRegistry()
+        reg = get_default_registry()
         res = reg.match_path(target_path, space_query=space_query)
     except SpaceError as exc:
         return _emit_space_error(exc, json_output)
@@ -755,10 +754,10 @@ def _handle_space_ls(cmd_bags: CmdBags) -> int:
     pattern = cmd_bags.get_option_value("pattern") or cmd_bags.get_option_value("p")
     space_query = space_opt or (cmd_bags.args[0] if cmd_bags.args else None)
 
-    from core.space import SpaceError, SpaceRegistry
+    from core.space import SpaceError, get_default_registry
 
     try:
-        reg = SpaceRegistry()
+        reg = get_default_registry()
         files = reg.iter_space_files(space_query=space_query, pattern=pattern)
     except SpaceError as exc:
         return _emit_space_error(exc, json_output)
@@ -788,10 +787,10 @@ def _handle_space_hash(cmd_bags: CmdBags) -> int:
     policy_opt = cmd_bags.get_option_value("policy") or cmd_bags.get_option_value("p")
     target = cmd_bags.args[0] if cmd_bags.args else None
 
-    from core.space import SpaceError, SpaceRegistry, hash_target
+    from core.space import SpaceError, get_default_registry, hash_target
 
     try:
-        reg = SpaceRegistry()
+        reg = get_default_registry()
         res = hash_target(reg, target=target, policy=policy_opt)
     except SpaceError as exc:
         return _emit_space_error(exc, json_output)
@@ -815,10 +814,10 @@ def _handle_space_status(cmd_bags: CmdBags) -> int:
     space_opt = cmd_bags.get_option_value("space") or cmd_bags.get_option_value("s")
     space_query = space_opt or (cmd_bags.args[0] if cmd_bags.args else None)
 
-    from core.space import SpaceError, SpaceScanner
+    from core.space import SpaceError, get_default_scanner
 
     try:
-        scanner = SpaceScanner()
+        scanner = get_default_scanner()
         payload = scanner.status(space_query=space_query)
     except SpaceError as exc:
         return _emit_space_error(exc, json_output)
@@ -856,10 +855,10 @@ def _handle_space_scan(cmd_bags: CmdBags) -> int:
     space_opt = cmd_bags.get_option_value("space") or cmd_bags.get_option_value("s")
     space_query = space_opt or (cmd_bags.args[0] if cmd_bags.args else None)
 
-    from core.space import SpaceError, SpaceScanner
+    from core.space import SpaceError, get_default_scanner
 
     try:
-        scanner = SpaceScanner()
+        scanner = get_default_scanner()
         res = scanner.scan(space_query=space_query, force=force)
     except SpaceError as exc:
         return _emit_space_error(exc, json_output)
@@ -891,10 +890,10 @@ def _handle_space_diff(cmd_bags: CmdBags) -> int:
     space_opt = cmd_bags.get_option_value("space") or cmd_bags.get_option_value("s")
     space_query = space_opt or (cmd_bags.args[0] if cmd_bags.args else None)
 
-    from core.space import SpaceError, SpaceScanner
+    from core.space import SpaceError, get_default_scanner
 
     try:
-        scanner = SpaceScanner()
+        scanner = get_default_scanner()
         res = scanner.diff(space_query=space_query, consumer_id=consumer_id)
         acked_gen: Optional[int] = None
         if do_ack:
@@ -945,10 +944,10 @@ def _handle_space_clean(cmd_bags: CmdBags) -> int:
     space_opt = cmd_bags.get_option_value("space") or cmd_bags.get_option_value("s")
     space_query = space_opt or (cmd_bags.args[0] if cmd_bags.args else None)
 
-    from core.space import SpaceError, SpaceScanner
+    from core.space import SpaceError, get_default_scanner
 
     try:
-        scanner = SpaceScanner()
+        scanner = get_default_scanner()
         payload = scanner.clean(space_query=space_query, consumer_id=consumer_id)
     except SpaceError as exc:
         return _emit_space_error(exc, json_output)
@@ -998,14 +997,68 @@ def _dispatch_space_group(cmd_bags: CmdBags, group_cmd_name: str) -> int:
     return 1
 
 
-def __getattr__(name: str) -> Any:
-    """PEP 562 dynamic resolution for `file_space_<subcmd>` and `fs_<subcmd>` CLI handlers."""
-    for prefix in ("file_space_", "fs_"):
-        if name.startswith(prefix):
-            sub = name[len(prefix):]
-            if sub in ("spaces", "match", "ls", "hash", "status", "scan", "diff", "clean"):
-                return globals()[f"_handle_space_{sub}"]
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+def file_space_spaces(cmd_bags: CmdBags) -> int:
+    return _handle_space_spaces(cmd_bags)
+
+
+def file_space_match(cmd_bags: CmdBags) -> int:
+    return _handle_space_match(cmd_bags)
+
+
+def file_space_ls(cmd_bags: CmdBags) -> int:
+    return _handle_space_ls(cmd_bags)
+
+
+def file_space_hash(cmd_bags: CmdBags) -> int:
+    return _handle_space_hash(cmd_bags)
+
+
+def file_space_status(cmd_bags: CmdBags) -> int:
+    return _handle_space_status(cmd_bags)
+
+
+def file_space_scan(cmd_bags: CmdBags) -> int:
+    return _handle_space_scan(cmd_bags)
+
+
+def file_space_diff(cmd_bags: CmdBags) -> int:
+    return _handle_space_diff(cmd_bags)
+
+
+def file_space_clean(cmd_bags: CmdBags) -> int:
+    return _handle_space_clean(cmd_bags)
+
+
+def fs_spaces(cmd_bags: CmdBags) -> int:
+    return _handle_space_spaces(cmd_bags)
+
+
+def fs_match(cmd_bags: CmdBags) -> int:
+    return _handle_space_match(cmd_bags)
+
+
+def fs_ls(cmd_bags: CmdBags) -> int:
+    return _handle_space_ls(cmd_bags)
+
+
+def fs_hash(cmd_bags: CmdBags) -> int:
+    return _handle_space_hash(cmd_bags)
+
+
+def fs_status(cmd_bags: CmdBags) -> int:
+    return _handle_space_status(cmd_bags)
+
+
+def fs_scan(cmd_bags: CmdBags) -> int:
+    return _handle_space_scan(cmd_bags)
+
+
+def fs_diff(cmd_bags: CmdBags) -> int:
+    return _handle_space_diff(cmd_bags)
+
+
+def fs_clean(cmd_bags: CmdBags) -> int:
+    return _handle_space_clean(cmd_bags)
 
 
 def file_space(cmd_bags: CmdBags) -> int:
