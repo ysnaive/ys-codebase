@@ -654,26 +654,58 @@ class TreeSitterDriver(BaseParser):
 
     @staticmethod
     def _extract_base_types(def_node: Any) -> List[str]:
-        """Extract base class and implemented interface short names from class/struct/interface AST node."""
-        base_types: List[str] = []
+        """Extract base class and implemented interface expressions from class/struct/interface AST node."""
+        return [expr for expr, _ in TreeSitterDriver._extract_base_type_relations(def_node)]
+
+    @staticmethod
+    def _extract_base_type_relations(def_node: Any) -> List[Tuple[str, str]]:
+        """
+        Extract `(base_type_expr, edge_kind)` pairs (`"inherits"` or `"implements"`) from a type AST node.
+        Preserves qualified expressions (e.g. `pkg.BaseClass`) while stripping generic `<...>` arguments.
+        """
+        relations: List[Tuple[str, str]] = []
+        seen_exprs: Set[str] = set()
         try:
             for child in def_node.children:
                 if child.type in ("base_list", "base_class_clause", "class_heritage", "argument_list"):
                     raw_text = child.text.decode("utf-8", errors="replace")
+                    if child.type == "class_heritage":
+                        # TS/JS: `extends Base implements IFoo, IBar`
+                        no_gen = re.sub(r"<[^>]+>", "", raw_text)
+                        for m_ext in re.finditer(r"\bextends\s+([^\s,{]+)", no_gen):
+                            tok = m_ext.group(1).strip()
+                            if tok and tok not in seen_exprs:
+                                seen_exprs.add(tok)
+                                relations.append((tok, "inherits"))
+                        for m_imp in re.finditer(r"\bimplements\s+([^\{]+)", no_gen):
+                            for part in m_imp.group(1).split(","):
+                                tok = part.strip()
+                                if tok and re.match(r"^[A-Za-z_][A-Za-z0-9_.:]*$", tok) and tok not in seen_exprs:
+                                    seen_exprs.add(tok)
+                                    relations.append((tok, "implements"))
+                        if relations:
+                            continue
+
                     cleaned = re.sub(r"\b(extends|implements|public|protected|private|virtual)\b", " ", raw_text)
                     cleaned = cleaned.strip().lstrip(":(").rstrip(")")
                     cleaned = re.sub(r"<[^>]+>", "", cleaned)
                     for part in cleaned.split(","):
                         token = part.strip()
-                        if not token:
+                        if not token or "=" in token:
                             continue
                         short_base = re.split(r"[.:]+", token)[-1].strip()
                         if short_base and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", short_base):
-                            if short_base not in base_types:
-                                base_types.append(short_base)
+                            edge_k = (
+                                "implements"
+                                if (len(short_base) >= 2 and short_base[0] == "I" and short_base[1].isupper())
+                                else "inherits"
+                            )
+                            if token not in seen_exprs:
+                                seen_exprs.add(token)
+                                relations.append((token, edge_k))
         except Exception:
             pass
-        return base_types
+        return relations
 
     def _extract_raw_definition_items(
         self,
@@ -1426,6 +1458,15 @@ class TreeSitterDriver(BaseParser):
                     facets_dict["modifiers"] = tuple(mods)
                 if "partial" in mods:
                     facets_dict["is_partial"] = True
+                field_types_map: Dict[str, str] = {}
+                for c_it in it["children_items"]:
+                    c_kinds = set(c_it.get("kinds") or {c_it["kind"]})
+                    if (c_kinds & {"field", "property"}) and c_it.get("return_type"):
+                        raw_t = re.sub(r"<[^>]+>", "", str(c_it["return_type"])).strip().rstrip("?[]")
+                        if raw_t:
+                            field_types_map[c_it["short_name"]] = raw_t
+                if field_types_map:
+                    facets_dict["field_types"] = field_types_map
 
             return SymbolNode(
                 id=it["canonical_id"],
@@ -1443,6 +1484,42 @@ class TreeSitterDriver(BaseParser):
         root_nodes = tuple(_to_symbol_node(r) for r in root_items)
         return root_nodes, merged_items
 
+    @staticmethod
+    def _extract_call_arg_count(site_node: Any, target_node: Any, content_bytes: bytes) -> Optional[int]:
+        """Extract call-site argument count from the argument list slice following `target_node`."""
+        try:
+            start_b = int(target_node.end_byte)
+            end_b = int(site_node.end_byte)
+            if end_b <= start_b:
+                return None
+            tail = content_bytes[start_b:end_b].decode("utf-8", errors="replace").strip()
+            lpar = tail.find("(")
+            rpar = tail.rfind(")")
+            if lpar == -1 or rpar == -1 or rpar < lpar:
+                return None
+            inner = tail[lpar + 1 : rpar].strip()
+            if not inner:
+                return 0
+            depth = 0
+            count = 1
+            in_str: Optional[str] = None
+            for ch in inner:
+                if in_str:
+                    if ch == in_str:
+                        in_str = None
+                    continue
+                if ch in ("'", '"'):
+                    in_str = ch
+                elif ch in ("(", "[", "{", "<"):
+                    depth += 1
+                elif ch in (")", "]", "}", ">"):
+                    depth = max(0, depth - 1)
+                elif ch == "," and depth == 0:
+                    count += 1
+            return count
+        except Exception:
+            return None
+
     def _extract_relation_edges(
         self,
         matches: List[Any],
@@ -1451,7 +1528,7 @@ class TreeSitterDriver(BaseParser):
         content: str,
         content_bytes: bytes,
     ) -> Tuple[RelationEdge, ...]:
-        """Extract `RelationEdge` instances (imports, inherits, calls, references, documents) in a single pass."""
+        """Extract `RelationEdge` instances (imports, inherits, implements, calls, references, documents) in a single pass."""
         edges: List[RelationEdge] = []
         seen_edges = set()
         file_root_id = f"{normalized_path}::<module>"
@@ -1469,19 +1546,19 @@ class TreeSitterDriver(BaseParser):
                     return str(cand["canonical_id"])
             return file_root_id
 
-        # 1. Inheritance edges from class/struct/interface items
+        # 1. Inheritance and implementation edges from class/struct/interface items
         for item in merged_items:
             if (set(item.get("kinds") or {item["kind"]}) & {"class", "struct", "interface"}) and item.get("node") is not None:
-                base_types = self._extract_base_types(item["node"])
-                for bt in base_types:
-                    ekey = (item["canonical_id"], bt, "inherits", item["span"].start_byte)
+                base_rels = self._extract_base_type_relations(item["node"])
+                for bt_expr, edge_k in base_rels:
+                    ekey = (item["canonical_id"], bt_expr, edge_k, item["span"].start_byte)
                     if ekey not in seen_edges:
                         seen_edges.add(ekey)
                         edges.append(
                             RelationEdge(
                                 source_id=item["canonical_id"],
-                                target_expr=bt,
-                                edge_kind="inherits",
+                                target_expr=bt_expr,
+                                edge_kind=edge_k,
                                 span=item["span"],
                                 provenance=tuple(item["provenance"]) or default_prov,
                             )
@@ -1490,9 +1567,20 @@ class TreeSitterDriver(BaseParser):
         # 2. Import edges (dialect + query captures)
         dialect_imports = self.dialect.extract_imports(content, file_path=normalized_path)
         for alias, target_mod in dialect_imports.items():
-            expr = str(target_mod or alias)
+            alias_str = str(alias).strip()
+            target_str = str(target_mod or alias).strip()
+            if not target_str:
+                continue
+            if alias_str.startswith("*:") or alias_str == "*":
+                expr = f"*={target_str}"
+            elif alias_str.startswith("export*:"):
+                expr = f"export*={target_str}"
+            elif alias_str and alias_str != target_str:
+                expr = f"{alias_str}={target_str}"
+            else:
+                expr = target_str
             ekey = (file_root_id, expr, "imports", 0)
-            if expr and ekey not in seen_edges:
+            if ekey not in seen_edges:
                 seen_edges.add(ekey)
                 edges.append(
                     RelationEdge(
@@ -1558,6 +1646,12 @@ class TreeSitterDriver(BaseParser):
                 prefix = self.dialect.normalize_call_receiver(raw_prefix)
 
             target_expr = f"{prefix}.{raw_name}" if prefix else raw_name
+            arg_count_val = (
+                self._extract_call_arg_count(site_node, target_node, content_bytes)
+                if edge_kind_matched == "calls"
+                else None
+            )
+            detail_val = f"arg_count={arg_count_val}" if arg_count_val is not None else None
             src_id = _find_enclosing_id(site_node.start_byte)
             edge_span = self._node_to_span(site_node)
             ekey = (src_id, target_expr, edge_kind_matched, edge_span.start_byte, edge_span.end_byte)
@@ -1569,9 +1663,95 @@ class TreeSitterDriver(BaseParser):
                         target_expr=target_expr,
                         edge_kind=edge_kind_matched,
                         span=edge_span,
-                        provenance=(ProvenanceStep(provider_id=prov_id, action="extract", rule_or_hook=rule_tag),),
+                        provenance=(
+                            ProvenanceStep(
+                                provider_id=prov_id,
+                                action="extract",
+                                rule_or_hook=rule_tag,
+                                detail=detail_val,
+                            ),
+                        ),
                     )
                 )
+
+        # 4. Markdown `documents` edges (`[Label](path#Symbol)` and `` `Class.method` ``)
+        if self.language_name == "markdown" and content:
+            from .base import build_line_byte_offsets, span_from_lines
+            from .markdown import _FENCE_RE, _MD_BACKTICK_DOC_RE, _MD_LINK_DOC_RE
+
+            line_offsets = build_line_byte_offsets(content_bytes)
+            total_bytes = len(content_bytes)
+            doc_prov = (
+                ProvenanceStep(
+                    provider_id=f"ast:{self.language_name}/default.scm",
+                    action="extract",
+                    rule_or_hook="@edge.documents",
+                ),
+            )
+            active_fence: Optional[str] = None
+            for idx_ln, line_str in enumerate(content.splitlines(), start=1):
+                stripped_ln = line_str.strip()
+                fm = _FENCE_RE.match(stripped_ln)
+                if fm:
+                    fence_marker = fm.group(1)
+                    if active_fence is None:
+                        active_fence = fence_marker
+                    elif stripped_ln.startswith(active_fence[0] * len(active_fence)):
+                        active_fence = None
+                    continue
+                if active_fence is not None:
+                    continue
+
+                ln_span = span_from_lines(idx_ln, idx_ln, line_offsets, total_bytes)
+                src_id = _find_enclosing_id(ln_span.start_byte)
+                if src_id == file_root_id and merged_items:
+                    preceding_headings = [
+                        it for it in merged_items
+                        if str(it.get("kind", "")).startswith("doc_heading") and it["start_byte"] <= ln_span.start_byte
+                    ]
+                    if preceding_headings:
+                        src_id = str(preceding_headings[-1]["canonical_id"])
+                for m_link in _MD_LINK_DOC_RE.finditer(line_str):
+                    link_label = m_link.group(1).strip().strip("`")
+                    link_target = m_link.group(2).strip()
+                    if link_target.startswith(("http://", "https://", "mailto:")):
+                        continue
+                    if "#" in link_target:
+                        path_part, anchor_part = link_target.split("#", 1)
+                        if re.match(r"^L?\d+(?:-\d+)?$", anchor_part) and re.match(r"^[A-Za-z_][A-Za-z0-9_.]*$", link_label):
+                            doc_expr = f"{path_part}#{link_label}"
+                        else:
+                            doc_expr = link_target
+                    elif re.match(r"^[A-Za-z_][A-Za-z0-9_.]*$", link_label) and "." in link_label:
+                        doc_expr = f"{link_target}#{link_label}"
+                    else:
+                        doc_expr = link_target
+                    dkey = (src_id, doc_expr, "documents", ln_span.start_byte, ln_span.end_byte)
+                    if dkey not in seen_edges:
+                        seen_edges.add(dkey)
+                        edges.append(
+                            RelationEdge(
+                                source_id=src_id,
+                                target_expr=doc_expr,
+                                edge_kind="documents",
+                                span=ln_span,
+                                provenance=doc_prov,
+                            )
+                        )
+                for m_bt in _MD_BACKTICK_DOC_RE.finditer(line_str):
+                    bt_sym = m_bt.group(1).strip()
+                    dkey = (src_id, bt_sym, "documents", ln_span.start_byte, ln_span.end_byte)
+                    if dkey not in seen_edges:
+                        seen_edges.add(dkey)
+                        edges.append(
+                            RelationEdge(
+                                source_id=src_id,
+                                target_expr=bt_sym,
+                                edge_kind="documents",
+                                span=ln_span,
+                                provenance=doc_prov,
+                            )
+                        )
 
         return tuple(edges)
 

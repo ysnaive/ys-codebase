@@ -6,14 +6,31 @@ Cross-File Call Topology Linker (`TopologyLinker`) and Polymorphic Contract Expa
 """
 
 from collections import defaultdict, deque
+import posixpath
 import re
 import threading
-from typing import Any, Deque, Dict, Iterable, List, Optional, Set, Tuple, Union
+from types import MappingProxyType
+from typing import Any, Deque, Dict, FrozenSet, Iterable, List, Mapping, Optional, Set, Tuple, Union
 
 from core.context import get_runtime_context
+from core.log import log_warn
 
 from .graph import CallGraphIndex
-from .schema import SymbolCallSite, SymbolKind, UnifiedSymbol
+from .parsers.base import EdgeRefiner, ModulePathResolver
+from .schema import (
+    FileImportBinding,
+    FileImportTable,
+    FileSymbolGraph,
+    LanguageConfig,
+    ProvenanceStep,
+    RelationEdge,
+    Span,
+    SymbolCallSite,
+    SymbolKind,
+    SymbolNode,
+    UnifiedSymbol,
+    WorkspaceSymbolGraph,
+)
 
 _LINKER_CACHE_LOCK = threading.RLock()
 
@@ -718,15 +735,130 @@ class TopologyLinker:
         )
 
 
+def _expand_contract_from_workspace_graph(
+    ws_graph: WorkspaceSymbolGraph,
+    target_sym: Union[SymbolNode, UnifiedSymbol, str, Iterable[Union[SymbolNode, UnifiedSymbol, str]]],
+) -> List[str]:
+    """Expand polymorphic base/derived method contracts using Pass 3 `type_bases_by_id` and `type_derived_by_id`."""
+    if isinstance(target_sym, (SymbolNode, UnifiedSymbol, str)):
+        raw_targets = [target_sym]
+    else:
+        raw_targets = list(target_sym)
+
+    target_nodes: List[SymbolNode] = []
+    result_ids: List[str] = []
+    seen_ids: Set[str] = set()
+
+    def _add_id(sid: str) -> None:
+        if sid and sid not in seen_ids:
+            seen_ids.add(sid)
+            result_ids.append(sid)
+
+    for rt in raw_targets:
+        if isinstance(rt, SymbolNode):
+            _add_id(rt.id)
+            target_nodes.append(rt)
+        elif isinstance(rt, UnifiedSymbol):
+            _add_id(rt.id)
+            node = ws_graph.nodes_by_id.get(rt.id)
+            if node is None:
+                norm_p = rt.file_path.replace("\\", "/")
+                cand_id = SymbolNode.compute_canonical_id(norm_p, rt.fqn or rt.name)
+                node = ws_graph.nodes_by_id.get(cand_id)
+            if node is not None:
+                _add_id(node.id)
+                target_nodes.append(node)
+        elif isinstance(rt, str):
+            _add_id(rt)
+            node = ws_graph.nodes_by_id.get(rt)
+            if node is not None:
+                target_nodes.append(node)
+
+    # Index enclosing type ID -> {member_name: [member_ids]}
+    members_by_type_id: Dict[str, Dict[str, List[str]]] = defaultdict(lambda: defaultdict(list))
+    type_id_by_file_and_scope: Dict[Tuple[str, Tuple[str, ...]], str] = {}
+    for nid, n in ws_graph.nodes_by_id.items():
+        file_p = nid.split("::", 1)[0]
+        if n.kinds & {"class", "struct", "interface"}:
+            type_id_by_file_and_scope[(file_p, (*n.scope_path, n.name))] = nid
+            for ch in n.children:
+                members_by_type_id[nid][ch.name].append(ch.id)
+
+    for n in target_nodes:
+        if n.kinds & {"class", "struct", "interface"}:
+            seed_cls: Set[str] = {n.id}
+            for grp in ws_graph.folded_symbol_groups.values():
+                if n.id in grp:
+                    seed_cls.update(grp)
+            related_cls: Set[str] = set(seed_cls)
+            up_cls: Deque[str] = deque(seed_cls)
+            while up_cls:
+                curr = up_cls.popleft()
+                for base_id in ws_graph.type_bases_by_id.get(curr, ()):
+                    if base_id not in related_cls:
+                        related_cls.add(base_id)
+                        up_cls.append(base_id)
+            down_cls: Deque[str] = deque(seed_cls)
+            while down_cls:
+                curr = down_cls.popleft()
+                for der_id in ws_graph.type_derived_by_id.get(curr, ()):
+                    if der_id not in related_cls:
+                        related_cls.add(der_id)
+                        down_cls.append(der_id)
+            for r_cid in sorted(related_cls):
+                _add_id(r_cid)
+            continue
+        if not (n.kinds & {"method", "function", "property"}):
+            continue
+        file_p = n.id.split("::", 1)[0]
+        parent_type_id = type_id_by_file_and_scope.get((file_p, n.scope_path))
+        if not parent_type_id:
+            continue
+
+        # Include folded partial/header siblings of parent_type_id
+        seed_types: Set[str] = {parent_type_id}
+        for grp in ws_graph.folded_symbol_groups.values():
+            if parent_type_id in grp:
+                seed_types.update(grp)
+
+        related_type_ids: Set[str] = set(seed_types)
+        up_q: Deque[str] = deque(seed_types)
+        while up_q:
+            curr = up_q.popleft()
+            for base_id in ws_graph.type_bases_by_id.get(curr, ()):
+                if base_id not in related_type_ids:
+                    related_type_ids.add(base_id)
+                    up_q.append(base_id)
+
+        down_q: Deque[str] = deque(seed_types)
+        while down_q:
+            curr = down_q.popleft()
+            for der_id in ws_graph.type_derived_by_id.get(curr, ()):
+                if der_id not in related_type_ids:
+                    related_type_ids.add(der_id)
+                    down_q.append(der_id)
+
+        for r_tid in sorted(related_type_ids):
+            for m_id in members_by_type_id.get(r_tid, {}).get(n.name, ()):
+                _add_id(m_id)
+
+    return result_ids
+
+
 def expand_contract_symbol_ids(
-    symbols_map: Union[Dict[str, UnifiedSymbol], Any],
-    target_sym: Union[UnifiedSymbol, List[UnifiedSymbol]],
+    symbols_map: Union[Dict[str, UnifiedSymbol], WorkspaceSymbolGraph, Any],
+    target_sym: Union[UnifiedSymbol, SymbolNode, str, List[Any]],
 ) -> List[str]:
     """
     Bidirectional interface/base-class and derived-class method contract expansion.
-    Accepts either a `Dict[str, UnifiedSymbol]` (or an object with `.symbols` / `.symbols_map` dict) and
-    either a single `UnifiedSymbol` or a `List[UnifiedSymbol]` (such as an overload group).
+    Accepts either a `WorkspaceSymbolGraph`, a `Dict[str, UnifiedSymbol]` (or an object with `.symbols` / `.symbols_map` dict),
+    and either a single `SymbolNode`/`UnifiedSymbol` or a list of symbols.
     """
+    if isinstance(symbols_map, WorkspaceSymbolGraph):
+        return _expand_contract_from_workspace_graph(symbols_map, target_sym)
+    if hasattr(symbols_map, "workspace_graph") and isinstance(symbols_map.workspace_graph, WorkspaceSymbolGraph):
+        return _expand_contract_from_workspace_graph(symbols_map.workspace_graph, target_sym)
+
     cached_bases: Optional[Dict[str, Set[str]]] = None
     cached_derived: Optional[Dict[str, Set[str]]] = None
     cached_methods: Optional[Dict[Tuple[str, str], List[str]]] = None
@@ -848,7 +980,1183 @@ def expand_contract_symbol_ids(
     return result_ids
 
 
-__all__ = [
+def _match_symbol_ids_in_file(
+    file_nodes: Tuple[SymbolNode, ...],
+    symbol_expr: str,
+) -> Tuple[str, ...]:
+    """Find all `SymbolNode.id` in `file_nodes` matching `symbol_expr` by FQN or short name."""
+    if not symbol_expr or not file_nodes:
+        return ()
+    target = symbol_expr.strip()
+    exact_fqn_ids: List[str] = []
+    short_ids: List[str] = []
+    for n in file_nodes:
+        if n.fqn == target:
+            exact_fqn_ids.append(n.id)
+        if n.name == target:
+            short_ids.append(n.id)
+    if exact_fqn_ids:
+        return tuple(sorted(set(exact_fqn_ids)))
+    return tuple(sorted(set(short_ids)))
+
+
+class DefaultModulePathResolver(ModulePathResolver):
+    """
+    Built-in multi-language `ModulePathResolver` supporting:
+    - Python relative dots (`.utils`, `..pkg.mod`) and package `__init__.py`
+    - TypeScript / JavaScript relative paths (`./utils`, `../lib`) and `index.ts` / `index.js`
+    - C / C++ `#include "dir/header.h"` suffix resolution
+    - C# `using Namespace.Sub` namespace resolution
+    - Markdown relative file links and `#anchor` symbol resolution
+    """
+
+    provider_id: str = "ast:builtin_module_resolver"
+
+    def resolve_import(
+        self,
+        importing_file: str,
+        target_expr: str,
+        workspace_files: FrozenSet[str],
+        nodes_by_file: Mapping[str, Tuple[SymbolNode, ...]],
+    ) -> Tuple[Optional[str], Tuple[str, ...], bool]:
+        if not target_expr:
+            return None, (), True
+        expr = target_expr.strip()
+        if expr.endswith(".*"):
+            expr = expr[:-2].strip()
+
+        norm_importing = importing_file.replace("\\", "/")
+        imp_dir = posixpath.dirname(norm_importing)
+
+        # 1. Markdown or URI link with optional `#anchor` (`../engine.py#ASTEngine`)
+        if "#" in expr or expr.endswith((".md", ".py", ".ts", ".tsx", ".js", ".cs", ".h", ".hpp", ".c", ".cpp")):
+            path_part, anchor = expr.split("#", 1) if "#" in expr else (expr, "")
+            cand_rel = posixpath.normpath(posixpath.join(imp_dir, path_part)) if path_part.startswith(".") else path_part.lstrip("/")
+            matched_file: Optional[str] = None
+            if cand_rel in workspace_files:
+                matched_file = cand_rel
+            else:
+                for wf in sorted(workspace_files):
+                    if wf == path_part or wf.endswith(f"/{path_part}") or wf.endswith(f"/{cand_rel}"):
+                        matched_file = wf
+                        break
+            if matched_file is not None:
+                sids = _match_symbol_ids_in_file(nodes_by_file.get(matched_file, ()), anchor) if anchor else ()
+                return matched_file, sids, False
+            return None, (), True
+
+        # 2. Relative path or Python leading-dot import (`.foo`, `..bar.Baz`, `./foo`, `../bar`)
+        if expr.startswith("."):
+            if expr.startswith(("./", "../")):
+                rel_target = posixpath.normpath(posixpath.join(imp_dir, expr))
+                return self._resolve_rel_path_or_symbol(rel_target, workspace_files, nodes_by_file)
+
+            # Python leading dots: `.` = current dir, `..` = parent dir
+            dot_count = len(expr) - len(expr.lstrip("."))
+            rem = expr[dot_count:].strip()
+            base_dir = imp_dir
+            for _ in range(max(0, dot_count - 1)):
+                base_dir = posixpath.dirname(base_dir)
+            rel_mod_path = rem.replace(".", "/") if rem else ""
+            joined = posixpath.normpath(posixpath.join(base_dir, rel_mod_path)) if rel_mod_path else base_dir
+            return self._resolve_rel_path_or_symbol(joined, workspace_files, nodes_by_file)
+
+        # 3. Dotted module/symbol expression (`pkg.mod.ClassName` or `pkg.mod`)
+        return self._resolve_dotted_expr(expr, norm_importing, workspace_files, nodes_by_file)
+
+    @staticmethod
+    def _probe_module_file(mod_slash: str, workspace_files: FrozenSet[str]) -> Optional[str]:
+        """Match a slash-separated module path against `workspace_files`."""
+        if not mod_slash or mod_slash == ".":
+            return None
+        exts = (".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".cs", ".h", ".hpp", ".cpp", ".c", ".md")
+        candidates: List[str] = [mod_slash]
+        for ext in exts:
+            candidates.append(f"{mod_slash}{ext}")
+        candidates.append(f"{mod_slash}/__init__.py")
+        candidates.append(f"{mod_slash}/index.ts")
+        candidates.append(f"{mod_slash}/index.tsx")
+        candidates.append(f"{mod_slash}/index.js")
+
+        for cand in candidates:
+            if cand in workspace_files:
+                return cand
+        for cand in candidates:
+            suffix = f"/{cand}"
+            matches = [wf for wf in workspace_files if wf.endswith(suffix)]
+            if len(matches) == 1:
+                return matches[0]
+            if matches:
+                return sorted(matches, key=lambda x: (len(x), x))[0]
+        return None
+
+    def _resolve_rel_path_or_symbol(
+        self,
+        rel_slash: str,
+        workspace_files: FrozenSet[str],
+        nodes_by_file: Mapping[str, Tuple[SymbolNode, ...]],
+    ) -> Tuple[Optional[str], Tuple[str, ...], bool]:
+        direct_file = self._probe_module_file(rel_slash, workspace_files)
+        if direct_file is not None:
+            return direct_file, (), False
+        if "/" in rel_slash:
+            parent_slash, sym_name = rel_slash.rsplit("/", 1)
+            mod_file = self._probe_module_file(parent_slash, workspace_files)
+            if mod_file is not None:
+                sids = _match_symbol_ids_in_file(nodes_by_file.get(mod_file, ()), sym_name)
+                return mod_file, sids, False
+        return None, (), False
+
+    def _resolve_dotted_expr(
+        self,
+        expr: str,
+        importing_file: str,
+        workspace_files: FrozenSet[str],
+        nodes_by_file: Mapping[str, Tuple[SymbolNode, ...]],
+    ) -> Tuple[Optional[str], Tuple[str, ...], bool]:
+        norm_expr = expr.replace("::", ".")
+        slash_full = norm_expr.replace(".", "/")
+        imp_dir = posixpath.dirname(importing_file)
+
+        # Try relative to importing file directory first (for same-package imports), then workspace root
+        for prefix_dir in ([imp_dir, ""] if imp_dir else [""]):
+            cand_slash = posixpath.normpath(posixpath.join(prefix_dir, slash_full)) if prefix_dir else slash_full
+            mod_file = self._probe_module_file(cand_slash, workspace_files)
+            if mod_file is not None:
+                return mod_file, (), False
+
+            if "." in norm_expr:
+                mod_part, sym_part = norm_expr.rsplit(".", 1)
+                mod_cand = (
+                    posixpath.normpath(posixpath.join(prefix_dir, mod_part.replace(".", "/")))
+                    if prefix_dir
+                    else mod_part.replace(".", "/")
+                )
+                mod_file = self._probe_module_file(mod_cand, workspace_files)
+                if mod_file is not None:
+                    sids = _match_symbol_ids_in_file(nodes_by_file.get(mod_file, ()), sym_part)
+                    return mod_file, sids, False
+
+        # C# / C++ namespace import fallback: check if any workspace symbol has scope_path matching `norm_expr`
+        ns_parts = tuple(p for p in norm_expr.split(".") if p)
+        ns_matched_ids: List[str] = []
+        ns_files: Set[str] = set()
+        for wf, f_nodes in nodes_by_file.items():
+            for n in f_nodes:
+                if n.scope_path == ns_parts or n.fqn == norm_expr or n.fqn == expr:
+                    ns_matched_ids.append(n.id)
+                    ns_files.add(wf)
+        if ns_matched_ids:
+            single_f = sorted(ns_files)[0] if len(ns_files) == 1 else None
+            return single_f, tuple(sorted(set(ns_matched_ids))), False
+
+        return None, (), True
+
+
+class WorkspaceGraphLinker:
+    """
+    4-Pass Deterministic Cross-File Symbol Linker (`WorkspaceGraphLinker`).
+    Assembles single-file `FileSymbolGraph` instances into an immutable `WorkspaceSymbolGraph`
+    with zero heuristic fuzzy scoring and full provenance tracking.
+    """
+
+    def __init__(
+        self,
+        file_graphs: Iterable[FileSymbolGraph],
+        language_configs: Optional[Mapping[str, LanguageConfig]] = None,
+        module_resolvers: Optional[Mapping[str, ModulePathResolver]] = None,
+        edge_refiners: Optional[Mapping[str, Tuple[EdgeRefiner, ...]]] = None,
+    ) -> None:
+        sorted_fgs = sorted(
+            (fg for fg in file_graphs if isinstance(fg, FileSymbolGraph)),
+            key=lambda g: g.file_path.replace("\\", "/"),
+        )
+        self._file_graphs: Dict[str, FileSymbolGraph] = {
+            fg.file_path.replace("\\", "/"): fg for fg in sorted_fgs
+        }
+        self._language_configs: Dict[str, LanguageConfig] = dict(language_configs or {})
+        self._module_resolvers: Dict[str, ModulePathResolver] = dict(module_resolvers or {})
+        self._edge_refiners: Dict[str, Tuple[EdgeRefiner, ...]] = dict(edge_refiners or {})
+        self._default_resolver = DefaultModulePathResolver()
+
+        # Pass 1 state
+        self._nodes_by_id: Dict[str, SymbolNode] = {}
+        self._nodes_by_file: Dict[str, Tuple[SymbolNode, ...]] = {}
+        self._by_fqn: Dict[str, List[SymbolNode]] = defaultdict(list)
+        self._by_short_name: Dict[str, List[SymbolNode]] = defaultdict(list)
+        self._by_file_and_fqn: Dict[Tuple[str, str], List[SymbolNode]] = defaultdict(list)
+        self._by_file_and_short: Dict[Tuple[str, str], List[SymbolNode]] = defaultdict(list)
+        self._folded_groups: Dict[str, Tuple[str, ...]] = {}
+        self._node_to_fold_group: Dict[str, Tuple[str, ...]] = {}
+        self._synthetic_edges: List[RelationEdge] = []
+
+        # Pass 2 state
+        self._file_import_tables: Dict[str, FileImportTable] = {}
+        self._resolved_import_edges: Dict[Tuple[str, int, str], RelationEdge] = {}
+
+        # Pass 3 state
+        self._type_bases_by_id: Dict[str, Tuple[str, ...]] = {}
+        self._type_derived_by_id: Dict[str, Tuple[str, ...]] = {}
+        self._field_types_by_class_id: Dict[str, Dict[str, str]] = defaultdict(dict)
+        self._resolved_type_edges: Dict[Tuple[str, int, str], RelationEdge] = {}
+
+    def _get_self_aliases(self, lang: str) -> FrozenSet[str]:
+        cfg = self._language_configs.get(lang)
+        if cfg and "self_aliases" in cfg.receiver_aliases:
+            return frozenset(cfg.receiver_aliases["self_aliases"]) | {"self"}
+        defaults = {
+            "python": frozenset({"self", "cls"}),
+            "c_sharp": frozenset({"this", "self"}),
+            "csharp": frozenset({"this", "self"}),
+            "cpp": frozenset({"this", "self"}),
+            "javascript": frozenset({"this", "self"}),
+            "typescript": frozenset({"this", "self"}),
+        }
+        return defaults.get(lang, frozenset({"self", "this", "cls"}))
+
+    def _get_super_aliases(self, lang: str) -> FrozenSet[str]:
+        cfg = self._language_configs.get(lang)
+        if cfg and "super_aliases" in cfg.receiver_aliases:
+            return frozenset(cfg.receiver_aliases["super_aliases"]) | {"base"}
+        defaults = {
+            "python": frozenset({"super", "base"}),
+            "c_sharp": frozenset({"base"}),
+            "csharp": frozenset({"base"}),
+            "cpp": frozenset({"__super", "base"}),
+            "javascript": frozenset({"super", "base"}),
+            "typescript": frozenset({"super", "base"}),
+        }
+        return defaults.get(lang, frozenset({"super", "base"}))
+
+    def _run_pass1_global_indexing_and_folding(self) -> None:
+        """Pass 1: Index all workspace `SymbolNode` instances and build cross-file symbol folding edges."""
+        partial_buckets: Dict[Tuple[str, str], List[SymbolNode]] = defaultdict(list)
+        header_stem_buckets: Dict[Tuple[str, str], List[SymbolNode]] = defaultdict(list)
+        impl_stem_buckets: Dict[Tuple[str, str], List[SymbolNode]] = defaultdict(list)
+
+        for norm_path, fg in self._file_graphs.items():
+            ordered_nodes = tuple(
+                sorted(fg.all_nodes_by_id.values(), key=lambda n: (n.span.start_byte, n.id))
+            )
+            self._nodes_by_file[norm_path] = ordered_nodes
+            ext = posixpath.splitext(norm_path)[1].lower()
+            stem = posixpath.splitext(posixpath.basename(norm_path))[0].lower()
+
+            for node in ordered_nodes:
+                self._nodes_by_id[node.id] = node
+                self._by_fqn[node.fqn].append(node)
+                self._by_short_name[node.name].append(node)
+                self._by_file_and_fqn[(norm_path, node.fqn)].append(node)
+                self._by_file_and_short[(norm_path, node.name)].append(node)
+
+                if node.facets.get("is_partial") or "partial" in (node.facets.get("modifiers") or ()):
+                    partial_buckets[(node.language, node.fqn)].append(node)
+
+                if node.language in ("c", "cpp", "typescript"):
+                    if ext in (".h", ".hpp", ".hxx", ".hh") or norm_path.endswith(".d.ts"):
+                        header_stem_buckets[(stem, node.fqn)].append(node)
+                    elif ext in (".c", ".cpp", ".cxx", ".cc", ".ts", ".tsx"):
+                        impl_stem_buckets[(stem, node.fqn)].append(node)
+
+        pass1_prov = ProvenanceStep(
+            provider_id="ast:WorkspaceGraphLinker",
+            action="link",
+            rule_or_hook="Pass1:SymbolFolding",
+        )
+
+        # 1. Partial class/struct/interface folding (`merges_with`)
+        for (lang, fqn), p_nodes in sorted(partial_buckets.items()):
+            unique_ids = tuple(sorted({n.id for n in p_nodes}))
+            if len(unique_ids) > 1:
+                grp_key = f"{lang}::{fqn}"
+                self._folded_groups[grp_key] = unique_ids
+                for uid in unique_ids:
+                    self._node_to_fold_group[uid] = unique_ids
+                    other_ids = tuple(oid for oid in unique_ids if oid != uid)
+                    src_node = self._nodes_by_id[uid]
+                    self._synthetic_edges.append(
+                        RelationEdge(
+                            source_id=uid,
+                            target_expr=fqn,
+                            edge_kind="merges_with",
+                            span=src_node.span,
+                            resolution_status="resolved",
+                            resolved_target_ids=other_ids,
+                            provenance=(*src_node.provenance, pass1_prov),
+                        )
+                    )
+
+        # 2. Header / Implementation pairing (`declares` / `merges_with`)
+        for (stem, fqn), h_nodes in sorted(header_stem_buckets.items()):
+            i_nodes = impl_stem_buckets.get((stem, fqn), [])
+            if not i_nodes:
+                continue
+            all_ids = tuple(sorted({n.id for n in (*h_nodes, *i_nodes)}))
+            if len(all_ids) > 1:
+                grp_key = f"pair:{stem}::{fqn}"
+                self._folded_groups[grp_key] = all_ids
+                for uid in all_ids:
+                    self._node_to_fold_group[uid] = all_ids
+                i_ids = tuple(sorted({n.id for n in i_nodes}))
+                for hn in h_nodes:
+                    self._synthetic_edges.append(
+                        RelationEdge(
+                            source_id=hn.id,
+                            target_expr=fqn,
+                            edge_kind="declares",
+                            span=hn.span,
+                            resolution_status="resolved",
+                            resolved_target_ids=i_ids,
+                            provenance=(*hn.provenance, pass1_prov),
+                        )
+                    )
+
+    def _run_pass2_import_resolution(self) -> None:
+        """Pass 2: Resolve all `edge_kind == 'imports'` edges and construct per-file `FileImportTable`."""
+        workspace_files = frozenset(self._file_graphs.keys())
+        raw_bindings_by_file: Dict[str, Dict[str, FileImportBinding]] = defaultdict(dict)
+        wildcard_targets_by_file: Dict[str, List[Tuple[str, bool]]] = defaultdict(list)
+        exported_by_file: Dict[str, Set[str]] = {}
+
+        for norm_path, fg in self._file_graphs.items():
+            exports: Set[str] = set()
+            for rn in fg.root_nodes:
+                if rn.facets.get("visibility", "public") != "private":
+                    exports.add(rn.name)
+            exported_by_file[norm_path] = exports
+
+        for norm_path, fg in self._file_graphs.items():
+            custom_res = self._module_resolvers.get(fg.language)
+            resolver = custom_res if custom_res is not None else self._default_resolver
+            res_prov = ProvenanceStep(
+                provider_id=getattr(resolver, "provider_id", "ast:builtin_module_resolver"),
+                action="link",
+                rule_or_hook="Pass2:ImportResolution",
+            )
+
+            for idx, edge in enumerate(fg.outgoing_edges):
+                if edge.edge_kind != "imports":
+                    continue
+                raw_expr = edge.target_expr.strip()
+                is_reexport = False
+                is_wildcard = False
+                if raw_expr.startswith("export*="):
+                    is_reexport = True
+                    is_wildcard = True
+                    local_alias = "*"
+                    lookup_expr = raw_expr.split("=", 1)[1].strip()
+                elif raw_expr.startswith("*="):
+                    is_wildcard = True
+                    local_alias = "*"
+                    lookup_expr = raw_expr.split("=", 1)[1].strip()
+                elif "=" in raw_expr:
+                    local_alias, lookup_expr = (p.strip() for p in raw_expr.split("=", 1))
+                else:
+                    lookup_expr = raw_expr
+                    if "#" in lookup_expr:
+                        local_alias = lookup_expr.split("#", 1)[1].strip() or posixpath.splitext(posixpath.basename(lookup_expr.split("#", 1)[0]))[0]
+                    elif "/" in lookup_expr:
+                        local_alias = posixpath.splitext(posixpath.basename(lookup_expr))[0]
+                    else:
+                        local_alias = re.split(r"[.:]+", lookup_expr.lstrip("."))[-1].strip() or lookup_expr
+
+                try:
+                    res_file, res_sids, is_ext = resolver.resolve_import(
+                        importing_file=norm_path,
+                        target_expr=lookup_expr,
+                        workspace_files=workspace_files,
+                        nodes_by_file=self._nodes_by_file,
+                    )
+                except Exception as exc:
+                    log_warn(
+                        f"WorkspaceGraphLinker: ModulePathResolver failed on '{lookup_expr}' in '{norm_path}': {exc}",
+                        stream="stderr",
+                    )
+                    res_file, res_sids, is_ext = self._default_resolver.resolve_import(
+                        importing_file=norm_path,
+                        target_expr=lookup_expr,
+                        workspace_files=workspace_files,
+                        nodes_by_file=self._nodes_by_file,
+                    )
+
+                # Expand folded group siblings if import resolved to a partial/header symbol
+                expanded_sids: List[str] = []
+                for sid in res_sids:
+                    for g_sid in self._node_to_fold_group.get(sid, (sid,)):
+                        if g_sid not in expanded_sids:
+                            expanded_sids.append(g_sid)
+                final_sids = tuple(expanded_sids)
+
+                if final_sids:
+                    status = "resolved" if len(final_sids) == 1 else "overload_group"
+                    edge_targets = final_sids
+                elif res_file is not None:
+                    status = "resolved"
+                    file_root_nodes = self._file_graphs[res_file].root_nodes
+                    edge_targets = (file_root_nodes[0].id,) if len(file_root_nodes) == 1 else tuple(rn.id for rn in file_root_nodes)
+                elif is_ext:
+                    status = "external"
+                    edge_targets = ()
+                else:
+                    status = "unresolved"
+                    edge_targets = ()
+
+                self._resolved_import_edges[(norm_path, idx, edge.target_expr)] = RelationEdge(
+                    source_id=edge.source_id,
+                    target_expr=edge.target_expr,
+                    edge_kind=edge.edge_kind,
+                    span=edge.span,
+                    resolution_status=status,
+                    resolved_target_ids=edge_targets,
+                    provenance=(*edge.provenance, res_prov),
+                )
+
+                if is_wildcard and res_file is not None:
+                    wildcard_targets_by_file[norm_path].append((res_file, is_reexport))
+                elif local_alias:
+                    binding = FileImportBinding(
+                        local_alias=local_alias,
+                        target_expr=lookup_expr,
+                        resolved_file_path=res_file,
+                        resolved_symbol_ids=final_sids,
+                        is_wildcard=is_wildcard,
+                        is_external=is_ext,
+                        is_reexport=is_reexport,
+                    )
+                    raw_bindings_by_file[norm_path][local_alias] = binding
+                    # If `norm_path` is an `__init__.py` or `index.ts`, treat explicit bindings as re-exports
+                    if posixpath.basename(norm_path) in ("__init__.py", "index.ts", "index.tsx", "index.js"):
+                        exported_by_file[norm_path].add(local_alias)
+
+        # Cycle-safe wildcard (`from X import *` / `export * from`) expansion
+        for norm_path in self._file_graphs:
+            visited_wild: Set[str] = {norm_path}
+            queue: Deque[Tuple[str, bool]] = deque(wildcard_targets_by_file.get(norm_path, ()))
+            while queue:
+                target_f, is_reexp = queue.popleft()
+                if target_f in visited_wild or target_f not in self._file_graphs:
+                    continue
+                visited_wild.add(target_f)
+                for rn in self._file_graphs[target_f].root_nodes:
+                    if rn.facets.get("visibility", "public") == "private":
+                        continue
+                    if rn.name not in raw_bindings_by_file[norm_path]:
+                        fold_sids = self._node_to_fold_group.get(rn.id, (rn.id,))
+                        raw_bindings_by_file[norm_path][rn.name] = FileImportBinding(
+                            local_alias=rn.name,
+                            target_expr=f"{target_f}::{rn.name}",
+                            resolved_file_path=target_f,
+                            resolved_symbol_ids=fold_sids,
+                            is_wildcard=True,
+                            is_external=False,
+                            is_reexport=is_reexp,
+                        )
+                    if is_reexp:
+                        exported_by_file[norm_path].add(rn.name)
+                for next_f, next_reexp in wildcard_targets_by_file.get(target_f, ()):
+                    if next_f not in visited_wild:
+                        queue.append((next_f, is_reexp or next_reexp))
+
+        # Resolve re-exported symbols imported from `__init__.py` / `index.ts` barrel modules
+        for norm_path, b_dict in raw_bindings_by_file.items():
+            for alias_k, b_val in list(b_dict.items()):
+                if not b_val.resolved_symbol_ids and b_val.resolved_file_path:
+                    sym_tail = re.split(r"[.:/]+", b_val.target_expr)[-1].strip()
+                    target_b_dict = raw_bindings_by_file.get(b_val.resolved_file_path, {})
+                    if sym_tail in target_b_dict and target_b_dict[sym_tail].resolved_symbol_ids:
+                        re_b = target_b_dict[sym_tail]
+                        b_dict[alias_k] = FileImportBinding(
+                            local_alias=b_val.local_alias,
+                            target_expr=b_val.target_expr,
+                            resolved_file_path=re_b.resolved_file_path or b_val.resolved_file_path,
+                            resolved_symbol_ids=re_b.resolved_symbol_ids,
+                            is_wildcard=b_val.is_wildcard,
+                            is_external=False,
+                            is_reexport=True,
+                        )
+
+        for norm_path in self._file_graphs:
+            self._file_import_tables[norm_path] = FileImportTable(
+                file_path=norm_path,
+                bindings=raw_bindings_by_file.get(norm_path, {}),
+                exported_symbols=frozenset(exported_by_file.get(norm_path, set())),
+            )
+
+    def _resolve_type_expr_in_file_context(
+        self,
+        norm_path: str,
+        source_node: Optional[SymbolNode],
+        type_expr: str,
+    ) -> Tuple[str, Tuple[str, ...]]:
+        """
+        Deterministically resolve a base type or interface expression (`BaseClass` or `pkg.BaseClass`)
+        using: ① Lexical enclosing scope -> ③ Pass 2 `FileImportTable` -> ④ Unique workspace FQN/type.
+        Returns `(resolution_status, resolved_target_ids)`.
+        """
+        expr = re.sub(r"<[^>]+>", "", type_expr or "").strip()
+        if not expr:
+            return "unresolved", ()
+
+        type_kinds = {"class", "struct", "interface", "enum", "type_alias"}
+        imp_table = self._file_import_tables.get(norm_path)
+
+        # Tier 1: Same-file lexical scope (walking up source_node.scope_path)
+        if source_node is not None and source_node.scope_path:
+            sep = str(source_node.facets.get("scope_separator") or ".")
+            for depth in range(len(source_node.scope_path), 0, -1):
+                cand_fqn = sep.join((*source_node.scope_path[:depth], expr))
+                local_cands = [
+                    n.id for n in self._by_file_and_fqn.get((norm_path, cand_fqn), ())
+                    if (n.kinds & type_kinds) and n.id != source_node.id
+                ]
+                if local_cands:
+                    expanded = self._expand_fold_siblings(local_cands)
+                    return ("resolved" if len(expanded) == 1 else "overload_group"), expanded
+
+        same_file_matches = [
+            n.id for n in (
+                self._by_file_and_fqn.get((norm_path, expr), ())
+                or self._by_file_and_short.get((norm_path, expr), ())
+            )
+            if (n.kinds & type_kinds) and (source_node is None or n.id != source_node.id)
+        ]
+        if same_file_matches:
+            expanded = self._expand_fold_siblings(same_file_matches)
+            return ("resolved" if len(expanded) == 1 else "ambiguous"), expanded
+
+        # Tier 3: FileImportTable lookup (`from pkg import Base` or `import pkg; class Sub(pkg.Base)`)
+        if imp_table is not None:
+            if expr in imp_table.bindings:
+                b = imp_table.bindings[expr]
+                if b.resolved_symbol_ids:
+                    expanded = self._expand_fold_siblings(b.resolved_symbol_ids)
+                    return ("resolved" if len(expanded) == 1 else "overload_group"), expanded
+                if b.resolved_file_path and b.resolved_file_path in self._nodes_by_file:
+                    f_matches = _match_symbol_ids_in_file(self._nodes_by_file[b.resolved_file_path], expr)
+                    if f_matches:
+                        expanded = self._expand_fold_siblings(f_matches)
+                        return ("resolved" if len(expanded) == 1 else "overload_group"), expanded
+                if b.is_external:
+                    return "external", ()
+
+            if "." in expr or "::" in expr:
+                parts = [p for p in re.split(r"[.:]+", expr) if p]
+                if len(parts) >= 2 and parts[0] in imp_table.bindings:
+                    b_mod = imp_table.bindings[parts[0]]
+                    tail_sym = ".".join(parts[1:])
+                    if b_mod.resolved_file_path and b_mod.resolved_file_path in self._nodes_by_file:
+                        f_matches = _match_symbol_ids_in_file(self._nodes_by_file[b_mod.resolved_file_path], tail_sym)
+                        if f_matches:
+                            expanded = self._expand_fold_siblings(f_matches)
+                            return ("resolved" if len(expanded) == 1 else "overload_group"), expanded
+                    if b_mod.is_external:
+                        return "external", ()
+
+            # C# / C++ namespace imports (`using Namespace;`)
+            ns_cands: List[str] = []
+            for b in imp_table.bindings.values():
+                if b.resolved_symbol_ids and not b.is_wildcard:
+                    for sid in b.resolved_symbol_ids:
+                        sn = self._nodes_by_id.get(sid)
+                        if sn and sn.name == expr and (sn.kinds & type_kinds):
+                            ns_cands.append(sid)
+            if ns_cands:
+                expanded = self._expand_fold_siblings(ns_cands)
+                distinct_fqns = {self._nodes_by_id[i].fqn for i in expanded if i in self._nodes_by_id}
+                status = "resolved" if len(distinct_fqns) == 1 else "ambiguous"
+                return status, expanded
+
+        # Tier 4: Workspace-unique FQN or short type name
+        fqn_matches = [
+            n.id for n in self._by_fqn.get(expr, ())
+            if (n.kinds & type_kinds) and (source_node is None or n.id != source_node.id)
+        ]
+        if not fqn_matches and ("." not in expr and "::" not in expr):
+            fqn_matches = [
+                n.id for n in self._by_short_name.get(expr, ())
+                if (n.kinds & type_kinds) and (source_node is None or n.id != source_node.id)
+            ]
+        if fqn_matches:
+            expanded = self._expand_fold_siblings(fqn_matches)
+            # Check if all expanded IDs belong to the same folded group or single symbol
+            first_grp = set(self._node_to_fold_group.get(expanded[0], (expanded[0],)))
+            if set(expanded) <= first_grp:
+                return "resolved", expanded
+            return "ambiguous", expanded
+
+        return "unresolved", ()
+
+    def _expand_fold_siblings(self, symbol_ids: Iterable[str]) -> Tuple[str, ...]:
+        out: List[str] = []
+        for sid in symbol_ids:
+            for g_sid in self._node_to_fold_group.get(sid, (sid,)):
+                if g_sid not in out:
+                    out.append(g_sid)
+        return tuple(sorted(out))
+
+    def _run_pass3_inheritance_and_type_dag(self) -> None:
+        """Pass 3: Resolve `inherits` and `implements` edges using Pass 2 `FileImportTable` and build cycle-free Type DAG."""
+        pass3_prov = ProvenanceStep(
+            provider_id="ast:WorkspaceGraphLinker",
+            action="link",
+            rule_or_hook="Pass3:InheritanceDAG",
+        )
+        raw_bases: Dict[str, List[str]] = defaultdict(list)
+
+        for norm_path, fg in self._file_graphs.items():
+            for idx, edge in enumerate(fg.outgoing_edges):
+                if edge.edge_kind not in ("inherits", "implements"):
+                    continue
+                src_node = self._nodes_by_id.get(edge.source_id)
+                status, target_ids = self._resolve_type_expr_in_file_context(
+                    norm_path=norm_path,
+                    source_node=src_node,
+                    type_expr=edge.target_expr,
+                )
+                self._resolved_type_edges[(norm_path, idx, edge.target_expr)] = RelationEdge(
+                    source_id=edge.source_id,
+                    target_expr=edge.target_expr,
+                    edge_kind=edge.edge_kind,
+                    span=edge.span,
+                    resolution_status=status,
+                    resolved_target_ids=target_ids,
+                    provenance=(*edge.provenance, pass3_prov),
+                )
+                if status == "resolved" and target_ids:
+                    src_group = self._node_to_fold_group.get(edge.source_id, (edge.source_id,))
+                    for s_id in src_group:
+                        for t_id in target_ids:
+                            if t_id != s_id and t_id not in raw_bases[s_id]:
+                                raw_bases[s_id].append(t_id)
+
+        # Cycle-safe DAG pruning: ensure adding `s_id -> b_id` does not create a cycle
+        clean_bases: Dict[str, List[str]] = defaultdict(list)
+        clean_derived: Dict[str, List[str]] = defaultdict(list)
+
+        def _can_reach(start_id: str, goal_id: str) -> bool:
+            if start_id == goal_id:
+                return True
+            visited: Set[str] = {start_id}
+            q: Deque[str] = deque(clean_bases.get(start_id, ()))
+            while q:
+                curr = q.popleft()
+                if curr == goal_id:
+                    return True
+                if curr not in visited:
+                    visited.add(curr)
+                    q.extend(clean_bases.get(curr, ()))
+            return False
+
+        for s_id in sorted(raw_bases.keys()):
+            for b_id in raw_bases[s_id]:
+                if not _can_reach(b_id, s_id):
+                    clean_bases[s_id].append(b_id)
+                    if s_id not in clean_derived[b_id]:
+                        clean_derived[b_id].append(s_id)
+
+        self._type_bases_by_id = {k: tuple(v) for k, v in clean_bases.items() if v}
+        self._type_derived_by_id = {k: tuple(sorted(v)) for k, v in clean_derived.items() if v}
+
+        # Populate `field_types_by_class_id` (resolving field type names to target type SymbolNode.id when possible)
+        for norm_path, fg in self._file_graphs.items():
+            for node in fg.all_nodes_by_id.values():
+                raw_ft = node.facets.get("field_types")
+                if not isinstance(raw_ft, Mapping):
+                    continue
+                cls_group = self._node_to_fold_group.get(node.id, (node.id,))
+                for fn, ft_expr in raw_ft.items():
+                    status, t_ids = self._resolve_type_expr_in_file_context(
+                        norm_path=norm_path,
+                        source_node=node,
+                        type_expr=str(ft_expr),
+                    )
+                    resolved_ft = t_ids[0] if (status == "resolved" and t_ids) else str(ft_expr)
+                    for cid in cls_group:
+                        self._field_types_by_class_id[cid][str(fn)] = resolved_ft
+
+    def _find_enclosing_type_id(self, norm_path: str, source_node: Optional[SymbolNode]) -> Optional[str]:
+        """Return the enclosing `class`/`struct`/`interface` `SymbolNode.id` for `source_node`."""
+        if source_node is None:
+            return None
+        type_kinds = {"class", "struct", "interface"}
+        if source_node.kinds & type_kinds:
+            return source_node.id
+        if not source_node.scope_path:
+            return None
+        sep = str(source_node.facets.get("scope_separator") or ".")
+        for depth in range(len(source_node.scope_path), 0, -1):
+            cand_fqn = sep.join(source_node.scope_path[:depth])
+            for cand in self._by_file_and_fqn.get((norm_path, cand_fqn), ()):
+                if cand.kinds & type_kinds:
+                    return cand.id
+        return None
+
+    def _get_type_ancestors_dag(self, type_id: str, bases_only: bool = False) -> Tuple[str, ...]:
+        """Return cycle-free ordered type group IDs along the Pass 3 inheritance DAG."""
+        seed_group = self._node_to_fold_group.get(type_id, (type_id,))
+        visited: List[str] = [] if bases_only else list(seed_group)
+        seen: Set[str] = set(seed_group)
+        q: Deque[str] = deque()
+        for sid in seed_group:
+            for b_id in self._type_bases_by_id.get(sid, ()):
+                if b_id not in seen:
+                    seen.add(b_id)
+                    visited.append(b_id)
+                    q.append(b_id)
+        while q:
+            curr = q.popleft()
+            for b_id in self._type_bases_by_id.get(curr, ()):
+                if b_id not in seen:
+                    seen.add(b_id)
+                    visited.append(b_id)
+                    q.append(b_id)
+        return tuple(visited)
+
+    def _classify_candidate_nodes(
+        self,
+        candidates: List[SymbolNode],
+        arg_count: Optional[int] = None,
+    ) -> Tuple[str, Tuple[str, ...]]:
+        """
+        Deterministically classify `candidates` into `("resolved" | "overload_group" | "ambiguous", ids)`.
+        Never uses fuzzy substring scoring.
+        """
+        if not candidates:
+            return "unresolved", ()
+        unique_by_id: Dict[str, SymbolNode] = {c.id: c for c in candidates}
+        ordered = [unique_by_id[k] for k in sorted(unique_by_id.keys())]
+        if len(ordered) == 1:
+            return "resolved", (ordered[0].id,)
+
+        # Check if all candidates belong to the same folded symbol group (e.g., partial class or .h/.cpp pair)
+        first_grp = set(self._node_to_fold_group.get(ordered[0].id, (ordered[0].id,)))
+        if set(unique_by_id.keys()) <= first_grp:
+            return "resolved", tuple(sorted(unique_by_id.keys()))
+
+        # Check if all candidates share the same enclosing scope/file FQN (method overload group)
+        parent_keys = {
+            (c.id.split("::", 1)[0], c.scope_path, c.name)
+            for c in ordered
+        }
+        # Also allow folded partial class siblings to count as the same overload container
+        logical_containers = {
+            (c.scope_path, c.name)
+            for c in ordered
+        }
+        if len(parent_keys) == 1 or (
+            len(logical_containers) == 1
+            and all((c.kinds & {"method", "function", "constructor"}) for c in ordered)
+            and len({c.id.split("::", 1)[0] for c in ordered}) == 1
+        ):
+            if arg_count is not None:
+                matched_arity: List[SymbolNode] = []
+                for c in ordered:
+                    sig = str(c.facets.get("signature") or "")
+                    p_cnt = _extract_param_count_from_signature(sig)
+                    if p_cnt is not None:
+                        # Subtract `self`/`cls` if Python method
+                        if c.language == "python" and c.scope_path and ("def " in sig or sig.startswith("(")):
+                            if re.search(r"\(\s*(?:self|cls)\b", sig):
+                                p_cnt = max(0, p_cnt - 1)
+                        if p_cnt == arg_count:
+                            matched_arity.append(c)
+                if len(matched_arity) == 1:
+                    return "resolved", (matched_arity[0].id,)
+                if len(matched_arity) > 1:
+                    return "overload_group", tuple(c.id for c in matched_arity)
+            return "overload_group", tuple(c.id for c in ordered)
+
+        return "ambiguous", tuple(c.id for c in ordered)
+
+    def _lookup_member_in_type_dag(
+        self,
+        type_id: str,
+        member_name: str,
+        bases_only: bool = False,
+        arg_count: Optional[int] = None,
+    ) -> Tuple[str, Tuple[str, ...]]:
+        """Search `member_name` along `type_id` and its Pass 3 base DAG in MRO/BFS order."""
+        dag_type_ids = self._get_type_ancestors_dag(type_id, bases_only=bases_only)
+        for tid in dag_type_ids:
+            # Group all folded siblings of `tid` at the same hierarchy level
+            level_ids = self._node_to_fold_group.get(tid, (tid,))
+            level_matches: List[SymbolNode] = []
+            for lid in level_ids:
+                tnode = self._nodes_by_id.get(lid)
+                if tnode is None:
+                    continue
+                for ch in tnode.children:
+                    if ch.name == member_name:
+                        level_matches.append(ch)
+            if level_matches:
+                return self._classify_candidate_nodes(level_matches, arg_count=arg_count)
+        return "unresolved", ()
+
+    @staticmethod
+    def _extract_edge_arg_count(edge: RelationEdge) -> Optional[int]:
+        for p in edge.provenance:
+            if p.detail and p.detail.startswith("arg_count="):
+                try:
+                    return int(p.detail.split("=", 1)[1])
+                except ValueError:
+                    pass
+        return None
+
+    def _resolve_document_edge(
+        self,
+        norm_path: str,
+        edge: RelationEdge,
+    ) -> Tuple[str, Tuple[str, ...]]:
+        """Deterministically resolve a Markdown `edge_kind == 'documents'` edge (`path#Symbol` or `Class.method`)."""
+        expr = edge.target_expr.strip()
+        if not expr:
+            return "unresolved", ()
+        workspace_files = frozenset(self._file_graphs.keys())
+        if "#" in expr or expr.endswith((".md", ".py", ".ts", ".tsx", ".js", ".cs", ".h", ".hpp", ".c", ".cpp")):
+            res_file, res_sids, is_ext = self._default_resolver.resolve_import(
+                importing_file=norm_path,
+                target_expr=expr,
+                workspace_files=workspace_files,
+                nodes_by_file=self._nodes_by_file,
+            )
+            if res_sids:
+                expanded = self._expand_fold_siblings(res_sids)
+                return ("resolved" if len(expanded) == 1 else "overload_group"), expanded
+            if res_file is not None and "#" not in expr:
+                f_roots = self._file_graphs[res_file].root_nodes
+                if f_roots:
+                    return "resolved", (f_roots[0].id,)
+            if is_ext and "://" in expr:
+                return "external", ()
+            if "#" in expr:
+                return "unresolved", ()
+
+        # Fall through to workspace FQN / short_name lookup
+        fqn_cands = list(self._by_fqn.get(expr, ()))
+        if fqn_cands:
+            return self._classify_candidate_nodes(fqn_cands)
+        short_cands = list(self._by_short_name.get(expr, ()))
+        if short_cands:
+            return self._classify_candidate_nodes(short_cands)
+        return "unresolved", ()
+
+    def _resolve_call_or_reference_edge(
+        self,
+        norm_path: str,
+        fg_lang: str,
+        edge: RelationEdge,
+    ) -> Tuple[str, Tuple[str, ...], str]:
+        """
+        Execute the 4-Tier Deterministic Scope Cascade for `calls`, `references`, and `documents`:
+        Tier 1: Lexical Enclosing Scope
+        Tier 2: Enclosing Class & Pass 3 Inheritance DAG (including `receiver_aliases` & field types)
+        Tier 3: Pass 2 `FileImportTable`
+        Tier 4: Workspace-Unique FQN / Symbol Lookup
+        Returns `(resolution_status, resolved_target_ids, matched_tier_rule)`.
+        """
+        if edge.edge_kind == "documents":
+            st, tids = self._resolve_document_edge(norm_path, edge)
+            return st, tids, "Pass4:DocumentResolution"
+
+        raw_expr = edge.target_expr.strip()
+        if not raw_expr:
+            return "unresolved", (), "Pass4:Unresolved"
+
+        arg_count = self._extract_edge_arg_count(edge)
+        src_node = self._nodes_by_id.get(edge.source_id)
+        enclosing_type_id = self._find_enclosing_type_id(norm_path, src_node)
+        self_aliases = self._get_self_aliases(fg_lang)
+        super_aliases = self._get_super_aliases(fg_lang)
+        imp_table = self._file_import_tables.get(norm_path)
+
+        normalized_expr = raw_expr.replace("::", ".")
+        if "." in normalized_expr:
+            prefix, member_name = normalized_expr.rsplit(".", 1)
+        else:
+            prefix, member_name = "", normalized_expr
+
+        # ------------------------------------------------------------------
+        # Tier 1: Unqualified Lexical Enclosing Scope
+        # ------------------------------------------------------------------
+        if not prefix:
+            if src_node is not None:
+                # 1a. Direct nested children of src_node (e.g. local function inside function)
+                direct_children = [ch for ch in src_node.children if ch.name == member_name]
+                if direct_children:
+                    st, tids = self._classify_candidate_nodes(direct_children, arg_count=arg_count)
+                    return st, tids, "Pass4:Tier1_LexicalScope"
+
+                # 1b. Walk outward through enclosing lexical scopes in the same file
+                sep = str(src_node.facets.get("scope_separator") or ".")
+                for depth in range(len(src_node.scope_path), 0, -1):
+                    scope_prefix = src_node.scope_path[:depth]
+                    cand_fqn = sep.join((*scope_prefix, member_name))
+                    scope_cands = self._by_file_and_fqn.get((norm_path, cand_fqn), [])
+                    if scope_cands:
+                        st, tids = self._classify_candidate_nodes(scope_cands, arg_count=arg_count)
+                        return st, tids, "Pass4:Tier1_LexicalScope"
+
+            # 1c. Top-level module symbols in the same file
+            top_cands = [
+                n for n in self._by_file_and_fqn.get((norm_path, member_name), ())
+                if not n.scope_path
+            ]
+            if top_cands:
+                st, tids = self._classify_candidate_nodes(top_cands, arg_count=arg_count)
+                return st, tids, "Pass4:Tier1_LexicalScope"
+
+        # ------------------------------------------------------------------
+        # Tier 2: Enclosing Class & Pass 3 Inheritance DAG (`self`, `super`, field types, implicit `this`)
+        # ------------------------------------------------------------------
+        if enclosing_type_id is not None:
+            if prefix in self_aliases or prefix in super_aliases:
+                is_super = prefix in super_aliases
+                st, tids = self._lookup_member_in_type_dag(
+                    type_id=enclosing_type_id,
+                    member_name=member_name,
+                    bases_only=is_super,
+                    arg_count=arg_count,
+                )
+                if st != "unresolved":
+                    return st, tids, "Pass4:Tier2_ClassAndBaseDAG"
+                return "unresolved", (), "Pass4:Tier2_ClassAndBaseDAG"
+
+            # Field dispatch: `self.field.method()` or `field.method()`
+            field_lookup_name: Optional[str] = None
+            first_seg = prefix.split(".", 1)[0] if prefix else ""
+            if first_seg in self_aliases and "." in prefix:
+                field_lookup_name = prefix.split(".", 1)[1].split(".", 1)[0]
+            elif prefix and "." not in prefix:
+                field_lookup_name = prefix
+
+            if field_lookup_name:
+                for anc_tid in self._get_type_ancestors_dag(enclosing_type_id, bases_only=False):
+                    ft_target = self._field_types_by_class_id.get(anc_tid, {}).get(field_lookup_name)
+                    if ft_target and ft_target in self._nodes_by_id:
+                        st, tids = self._lookup_member_in_type_dag(
+                            type_id=ft_target,
+                            member_name=member_name,
+                            bases_only=False,
+                            arg_count=arg_count,
+                        )
+                        if st != "unresolved":
+                            return st, tids, "Pass4:Tier2_ClassAndBaseDAG"
+
+            # Implicit `this` call for unqualified method calls in C# / C++ / Java
+            if not prefix and fg_lang in ("c_sharp", "csharp", "cpp"):
+                st, tids = self._lookup_member_in_type_dag(
+                    type_id=enclosing_type_id,
+                    member_name=member_name,
+                    bases_only=False,
+                    arg_count=arg_count,
+                )
+                if st != "unresolved":
+                    return st, tids, "Pass4:Tier2_ClassAndBaseDAG"
+
+        # Same-file explicit `ClassName.method()`
+        if prefix:
+            same_file_types = [
+                n for n in (
+                    self._by_file_and_fqn.get((norm_path, prefix), ())
+                    or self._by_file_and_short.get((norm_path, prefix), ())
+                )
+                if n.kinds & {"class", "struct", "interface", "enum", "namespace", "module"}
+            ]
+            if len(same_file_types) == 1:
+                st, tids = self._lookup_member_in_type_dag(
+                    type_id=same_file_types[0].id,
+                    member_name=member_name,
+                    bases_only=False,
+                    arg_count=arg_count,
+                )
+                if st != "unresolved":
+                    return st, tids, "Pass4:Tier2_ClassAndBaseDAG"
+
+        # ------------------------------------------------------------------
+        # Tier 3: Pass 2 `FileImportTable`
+        # ------------------------------------------------------------------
+        if imp_table is not None:
+            if not prefix and member_name in imp_table.bindings:
+                b = imp_table.bindings[member_name]
+                if b.is_external:
+                    return "external", (), "Pass4:Tier3_FileImportTable"
+                if b.resolved_symbol_ids:
+                    cand_nodes = [self._nodes_by_id[i] for i in b.resolved_symbol_ids if i in self._nodes_by_id]
+                    st, tids = self._classify_candidate_nodes(cand_nodes, arg_count=arg_count)
+                    return st, tids, "Pass4:Tier3_FileImportTable"
+                if b.resolved_file_path and b.resolved_file_path in self._nodes_by_file:
+                    f_sids = _match_symbol_ids_in_file(self._nodes_by_file[b.resolved_file_path], member_name)
+                    if f_sids:
+                        cand_nodes = [self._nodes_by_id[i] for i in f_sids if i in self._nodes_by_id]
+                        st, tids = self._classify_candidate_nodes(cand_nodes, arg_count=arg_count)
+                        return st, tids, "Pass4:Tier3_FileImportTable"
+
+            if prefix:
+                root_prefix = prefix.split(".", 1)[0]
+                if prefix in imp_table.bindings or root_prefix in imp_table.bindings:
+                    b = imp_table.bindings.get(prefix) or imp_table.bindings[root_prefix]
+                    if b.is_external:
+                        return "external", (), "Pass4:Tier3_FileImportTable"
+                    if b.resolved_symbol_ids:
+                        for sid in b.resolved_symbol_ids:
+                            st, tids = self._lookup_member_in_type_dag(
+                                type_id=sid,
+                                member_name=member_name,
+                                bases_only=False,
+                                arg_count=arg_count,
+                            )
+                            if st != "unresolved":
+                                return st, tids, "Pass4:Tier3_FileImportTable"
+                    if b.resolved_file_path and b.resolved_file_path in self._nodes_by_file:
+                        sub_qual = (
+                            f"{prefix.split('.', 1)[1]}.{member_name}"
+                            if (prefix != root_prefix and "." in prefix)
+                            else member_name
+                        )
+                        f_sids = _match_symbol_ids_in_file(self._nodes_by_file[b.resolved_file_path], sub_qual)
+                        if f_sids:
+                            cand_nodes = [self._nodes_by_id[i] for i in f_sids if i in self._nodes_by_id]
+                            st, tids = self._classify_candidate_nodes(cand_nodes, arg_count=arg_count)
+                            return st, tids, "Pass4:Tier3_FileImportTable"
+
+            # C# / C++ namespace imports (`using Namespace;`)
+            for b in imp_table.bindings.values():
+                if b.resolved_symbol_ids and not b.is_wildcard:
+                    for sid in b.resolved_symbol_ids:
+                        sn = self._nodes_by_id.get(sid)
+                        if sn is None:
+                            continue
+                        if not prefix and sn.name == member_name:
+                            return "resolved", self._expand_fold_siblings((sid,)), "Pass4:Tier3_FileImportTable"
+                        if prefix and sn.name == prefix:
+                            st, tids = self._lookup_member_in_type_dag(
+                                type_id=sid,
+                                member_name=member_name,
+                                bases_only=False,
+                                arg_count=arg_count,
+                            )
+                            if st != "unresolved":
+                                return st, tids, "Pass4:Tier3_FileImportTable"
+
+        # ------------------------------------------------------------------
+        # Tier 4: Workspace-Unique FQN or Receiver-Unkown Ambiguity Detection
+        # ------------------------------------------------------------------
+        fqn_matches = list(self._by_fqn.get(raw_expr, ())) or list(self._by_fqn.get(normalized_expr, ()))
+        if fqn_matches:
+            st, tids = self._classify_candidate_nodes(fqn_matches, arg_count=arg_count)
+            return st, tids, "Pass4:Tier4_WorkspaceFQN"
+
+        if prefix:
+            # Qualified receiver of unknown dynamic type (e.g., `obj.run()`):
+            # Check if `prefix` is a known unique type name first
+            type_cands = [
+                n for n in self._by_short_name.get(prefix, ())
+                if n.kinds & {"class", "struct", "interface", "enum"}
+            ]
+            if len(type_cands) == 1:
+                st, tids = self._lookup_member_in_type_dag(
+                    type_id=type_cands[0].id,
+                    member_name=member_name,
+                    bases_only=False,
+                    arg_count=arg_count,
+                )
+                if st != "unresolved":
+                    return st, tids, "Pass4:Tier4_WorkspaceFQN"
+
+            # Otherwise, look up all methods matching `member_name` across workspace types
+            method_cands = [
+                n for n in self._by_short_name.get(member_name, ())
+                if n.kinds & {"method", "function", "property"}
+            ]
+            if len(method_cands) > 1:
+                st, tids = self._classify_candidate_nodes(method_cands, arg_count=arg_count)
+                return st, tids, "Pass4:Tier4_WorkspaceFQN"
+            if len(method_cands) == 1 and prefix in self._by_short_name:
+                return "resolved", (method_cands[0].id,), "Pass4:Tier4_WorkspaceFQN"
+        else:
+            top_global = [
+                n for n in self._by_short_name.get(member_name, ())
+                if not n.scope_path
+            ]
+            if top_global:
+                st, tids = self._classify_candidate_nodes(top_global, arg_count=arg_count)
+                return st, tids, "Pass4:Tier4_WorkspaceFQN"
+
+        return "unresolved", (), "Pass4:Unresolved"
+
+    def link_workspace(self) -> WorkspaceSymbolGraph:
+        """Execute Pass 1 -> Pass 2 -> Pass 3 -> Pass 4 and return an immutable `WorkspaceSymbolGraph`."""
+        self._run_pass1_global_indexing_and_folding()
+        self._run_pass2_import_resolution()
+        self._run_pass3_inheritance_and_type_dag()
+
+        all_resolved_edges: List[RelationEdge] = list(self._synthetic_edges)
+
+        for norm_path, fg in self._file_graphs.items():
+            file_edges: List[RelationEdge] = []
+            for idx, edge in enumerate(fg.outgoing_edges):
+                key = (norm_path, idx, edge.target_expr)
+                if edge.edge_kind == "imports" and key in self._resolved_import_edges:
+                    file_edges.append(self._resolved_import_edges[key])
+                elif edge.edge_kind in ("inherits", "implements") and key in self._resolved_type_edges:
+                    file_edges.append(self._resolved_type_edges[key])
+                else:
+                    status, target_ids, tier_rule = self._resolve_call_or_reference_edge(
+                        norm_path=norm_path,
+                        fg_lang=fg.language,
+                        edge=edge,
+                    )
+                    pass4_prov = ProvenanceStep(
+                        provider_id="ast:WorkspaceGraphLinker",
+                        action="link",
+                        rule_or_hook=tier_rule,
+                    )
+                    file_edges.append(
+                        RelationEdge(
+                            source_id=edge.source_id,
+                            target_expr=edge.target_expr,
+                            edge_kind=edge.edge_kind,
+                            span=edge.span,
+                            resolution_status=status,
+                            resolved_target_ids=target_ids,
+                            provenance=(*edge.provenance, pass4_prov),
+                        )
+                    )
+
+            # Run optional peer EdgeRefiners for this language
+            refiners = self._edge_refiners.get(fg.language, ())
+            refined_tuple = tuple(file_edges)
+            for refiner in refiners:
+                try:
+                    refined_tuple = tuple(
+                        refiner.refine_workspace_edges(
+                            edges=refined_tuple,
+                            nodes_by_id=MappingProxyType(self._nodes_by_id),
+                            file_import_tables=MappingProxyType(self._file_import_tables),
+                        )
+                    )
+                except Exception as exc:
+                    log_warn(
+                        f"WorkspaceGraphLinker: EdgeRefiner '{getattr(refiner, 'provider_id', refiner)}' failed on '{norm_path}': {exc}",
+                        stream="stderr",
+                    )
+            all_resolved_edges.extend(refined_tuple)
+
+        return WorkspaceSymbolGraph(
+            file_graphs=self._file_graphs,
+            nodes_by_id=self._nodes_by_id,
+            resolved_edges=tuple(all_resolved_edges),
+            file_import_tables=self._file_import_tables,
+            folded_symbol_groups=self._folded_groups,
+            type_bases_by_id=self._type_bases_by_id,
+            type_derived_by_id=self._type_derived_by_id,
+            field_types_by_class_id=self._field_types_by_class_id,
+        )
+
+
+__all__ = (
     "TopologyLinker",
+    "DefaultModulePathResolver",
+    "WorkspaceGraphLinker",
     "expand_contract_symbol_ids",
-]
+)

@@ -316,6 +316,11 @@ class RelationEdge:
     provenance: Tuple[ProvenanceStep, ...] = field(default=(), hash=False)
 
     def __post_init__(self) -> None:
+        valid_statuses = ("unresolved", "resolved", "overload_group", "ambiguous", "external")
+        if self.resolution_status not in valid_statuses:
+            raise SchemaValidationError(
+                f"Invalid RelationEdge resolution_status '{self.resolution_status}'. Expected one of {valid_statuses}."
+            )
         object.__setattr__(
             self,
             "resolved_target_ids",
@@ -439,6 +444,229 @@ class FileSymbolGraph:
         )
 
 
+@dataclass(frozen=True)
+class FileImportBinding:
+    """Deterministic single import alias binding resolved in Pass 2."""
+
+    local_alias: str
+    target_expr: str
+    resolved_file_path: Optional[str] = None
+    resolved_symbol_ids: Tuple[str, ...] = ()
+    is_wildcard: bool = False
+    is_external: bool = False
+    is_reexport: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.local_alias or not self.target_expr:
+            raise SchemaValidationError("FileImportBinding requires non-empty 'local_alias' and 'target_expr'.")
+        object.__setattr__(
+            self,
+            "resolved_symbol_ids",
+            tuple(str(sid) for sid in (self.resolved_symbol_ids or ())),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "local_alias": self.local_alias,
+            "target_expr": self.target_expr,
+            "resolved_file_path": self.resolved_file_path,
+            "resolved_symbol_ids": list(self.resolved_symbol_ids),
+            "is_wildcard": self.is_wildcard,
+            "is_external": self.is_external,
+            "is_reexport": self.is_reexport,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FileImportBinding":
+        if not isinstance(data, dict):
+            raise SchemaValidationError("FileImportBinding data must be a dict.")
+        for req in ("local_alias", "target_expr"):
+            if req not in data:
+                raise SchemaValidationError(f"FileImportBinding missing required field '{req}'.")
+        raw_sids = data.get("resolved_symbol_ids") or ()
+        sids_tup = tuple(str(s) for s in raw_sids) if isinstance(raw_sids, (list, tuple)) else ()
+        return cls(
+            local_alias=str(data["local_alias"]),
+            target_expr=str(data["target_expr"]),
+            resolved_file_path=str(data["resolved_file_path"]) if data.get("resolved_file_path") is not None else None,
+            resolved_symbol_ids=sids_tup,
+            is_wildcard=bool(data.get("is_wildcard", False)),
+            is_external=bool(data.get("is_external", False)),
+            is_reexport=bool(data.get("is_reexport", False)),
+        )
+
+
+@dataclass(frozen=True)
+class FileImportTable:
+    """Per-file deterministic import binding table built during Pass 2."""
+
+    file_path: str
+    bindings: Mapping[str, FileImportBinding] = field(default_factory=lambda: MappingProxyType({}), hash=False)
+    exported_symbols: FrozenSet[str] = field(default_factory=frozenset)
+
+    def __post_init__(self) -> None:
+        if not self.file_path:
+            raise SchemaValidationError("FileImportTable requires non-empty 'file_path'.")
+        norm_bindings: Dict[str, FileImportBinding] = {}
+        if isinstance(self.bindings, Mapping):
+            for k, v in self.bindings.items():
+                norm_bindings[str(k)] = v if isinstance(v, FileImportBinding) else FileImportBinding.from_dict(v)
+        object.__setattr__(self, "bindings", MappingProxyType(norm_bindings))
+        object.__setattr__(
+            self,
+            "exported_symbols",
+            frozenset(str(s) for s in (self.exported_symbols or ())),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "file_path": self.file_path,
+            "bindings": {k: v.to_dict() for k, v in self.bindings.items()},
+            "exported_symbols": sorted(self.exported_symbols),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FileImportTable":
+        if not isinstance(data, dict):
+            raise SchemaValidationError("FileImportTable data must be a dict.")
+        if "file_path" not in data:
+            raise SchemaValidationError("FileImportTable missing required field 'file_path'.")
+        raw_bindings = data.get("bindings") or {}
+        b_map: Dict[str, FileImportBinding] = {}
+        if isinstance(raw_bindings, Mapping):
+            for k, v in raw_bindings.items():
+                b_map[str(k)] = v if isinstance(v, FileImportBinding) else FileImportBinding.from_dict(v)
+        raw_exports = data.get("exported_symbols") or ()
+        exports_set = frozenset(str(s) for s in raw_exports) if isinstance(raw_exports, (list, tuple, set, frozenset)) else frozenset()
+        return cls(
+            file_path=str(data["file_path"]),
+            bindings=b_map,
+            exported_symbols=exports_set,
+        )
+
+
+@dataclass(frozen=True)
+class WorkspaceSymbolGraph:
+    """Immutable cross-file semantic symbol graph assembled by the 4-Pass deterministic linker."""
+
+    file_graphs: Mapping[str, FileSymbolGraph] = field(default_factory=lambda: MappingProxyType({}), hash=False)
+    nodes_by_id: Mapping[str, SymbolNode] = field(default_factory=lambda: MappingProxyType({}), hash=False)
+    resolved_edges: Tuple[RelationEdge, ...] = field(default=(), hash=False)
+    outgoing_edges_by_source: Mapping[str, Tuple[RelationEdge, ...]] = field(default_factory=lambda: MappingProxyType({}), hash=False)
+    incoming_edges_by_target: Mapping[str, Tuple[RelationEdge, ...]] = field(default_factory=lambda: MappingProxyType({}), hash=False)
+    file_import_tables: Mapping[str, FileImportTable] = field(default_factory=lambda: MappingProxyType({}), hash=False)
+    folded_symbol_groups: Mapping[str, Tuple[str, ...]] = field(default_factory=lambda: MappingProxyType({}), hash=False)
+    type_bases_by_id: Mapping[str, Tuple[str, ...]] = field(default_factory=lambda: MappingProxyType({}), hash=False)
+    type_derived_by_id: Mapping[str, Tuple[str, ...]] = field(default_factory=lambda: MappingProxyType({}), hash=False)
+    field_types_by_class_id: Mapping[str, Mapping[str, str]] = field(default_factory=lambda: MappingProxyType({}), hash=False)
+
+    def __post_init__(self) -> None:
+        fg_map: Dict[str, FileSymbolGraph] = {}
+        if isinstance(self.file_graphs, Mapping):
+            for k, v in self.file_graphs.items():
+                fg_map[str(k)] = v if isinstance(v, FileSymbolGraph) else FileSymbolGraph.from_dict(v)
+        object.__setattr__(self, "file_graphs", MappingProxyType(fg_map))
+
+        nodes_map: Dict[str, SymbolNode] = {}
+        if isinstance(self.nodes_by_id, Mapping) and self.nodes_by_id:
+            for k, v in self.nodes_by_id.items():
+                nodes_map[str(k)] = v if isinstance(v, SymbolNode) else SymbolNode.from_dict(v)
+        else:
+            for fg in fg_map.values():
+                for nid, n in fg.all_nodes_by_id.items():
+                    nodes_map[nid] = n
+        object.__setattr__(self, "nodes_by_id", MappingProxyType(nodes_map))
+
+        edges_tup = tuple(
+            e if isinstance(e, RelationEdge) else RelationEdge.from_dict(e)
+            for e in (self.resolved_edges or ())
+        )
+        object.__setattr__(self, "resolved_edges", edges_tup)
+
+        out_map: Dict[str, List[RelationEdge]] = {}
+        in_map: Dict[str, List[RelationEdge]] = {}
+        for edge in edges_tup:
+            out_map.setdefault(edge.source_id, []).append(edge)
+            for tid in edge.resolved_target_ids:
+                in_map.setdefault(tid, []).append(edge)
+
+        if isinstance(self.outgoing_edges_by_source, Mapping) and self.outgoing_edges_by_source and not edges_tup:
+            for k, v in self.outgoing_edges_by_source.items():
+                out_map[str(k)] = [e if isinstance(e, RelationEdge) else RelationEdge.from_dict(e) for e in (v or ())]
+        if isinstance(self.incoming_edges_by_target, Mapping) and self.incoming_edges_by_target and not edges_tup:
+            for k, v in self.incoming_edges_by_target.items():
+                in_map[str(k)] = [e if isinstance(e, RelationEdge) else RelationEdge.from_dict(e) for e in (v or ())]
+
+        object.__setattr__(
+            self,
+            "outgoing_edges_by_source",
+            MappingProxyType({k: tuple(v) for k, v in out_map.items()}),
+        )
+        object.__setattr__(
+            self,
+            "incoming_edges_by_target",
+            MappingProxyType({k: tuple(v) for k, v in in_map.items()}),
+        )
+
+        imp_map: Dict[str, FileImportTable] = {}
+        if isinstance(self.file_import_tables, Mapping):
+            for k, v in self.file_import_tables.items():
+                imp_map[str(k)] = v if isinstance(v, FileImportTable) else FileImportTable.from_dict(v)
+        object.__setattr__(self, "file_import_tables", MappingProxyType(imp_map))
+
+        fold_map: Dict[str, Tuple[str, ...]] = {}
+        if isinstance(self.folded_symbol_groups, Mapping):
+            for k, v in self.folded_symbol_groups.items():
+                fold_map[str(k)] = tuple(str(x) for x in (v or ()))
+        object.__setattr__(self, "folded_symbol_groups", MappingProxyType(fold_map))
+
+        bases_map: Dict[str, Tuple[str, ...]] = {}
+        if isinstance(self.type_bases_by_id, Mapping):
+            for k, v in self.type_bases_by_id.items():
+                bases_map[str(k)] = tuple(str(x) for x in (v or ()))
+        object.__setattr__(self, "type_bases_by_id", MappingProxyType(bases_map))
+
+        derived_map: Dict[str, Tuple[str, ...]] = {}
+        if isinstance(self.type_derived_by_id, Mapping):
+            for k, v in self.type_derived_by_id.items():
+                derived_map[str(k)] = tuple(str(x) for x in (v or ()))
+        object.__setattr__(self, "type_derived_by_id", MappingProxyType(derived_map))
+
+        ft_map: Dict[str, Mapping[str, str]] = {}
+        if isinstance(self.field_types_by_class_id, Mapping):
+            for k, v in self.field_types_by_class_id.items():
+                if isinstance(v, Mapping):
+                    ft_map[str(k)] = MappingProxyType({str(fn): str(ft) for fn, ft in v.items()})
+        object.__setattr__(self, "field_types_by_class_id", MappingProxyType(ft_map))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "file_graphs": {k: v.to_dict() for k, v in self.file_graphs.items()},
+            "nodes_by_id": {k: v.to_dict() for k, v in self.nodes_by_id.items()},
+            "resolved_edges": [e.to_dict() for e in self.resolved_edges],
+            "file_import_tables": {k: v.to_dict() for k, v in self.file_import_tables.items()},
+            "folded_symbol_groups": {k: list(v) for k, v in self.folded_symbol_groups.items()},
+            "type_bases_by_id": {k: list(v) for k, v in self.type_bases_by_id.items()},
+            "type_derived_by_id": {k: list(v) for k, v in self.type_derived_by_id.items()},
+            "field_types_by_class_id": {k: dict(v) for k, v in self.field_types_by_class_id.items()},
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "WorkspaceSymbolGraph":
+        if not isinstance(data, dict):
+            raise SchemaValidationError("WorkspaceSymbolGraph data must be a dict.")
+        return cls(
+            file_graphs=data.get("file_graphs") or {},
+            nodes_by_id=data.get("nodes_by_id") or {},
+            resolved_edges=tuple(data.get("resolved_edges") or ()),
+            file_import_tables=data.get("file_import_tables") or {},
+            folded_symbol_groups=data.get("folded_symbol_groups") or {},
+            type_bases_by_id=data.get("type_bases_by_id") or {},
+            type_derived_by_id=data.get("type_derived_by_id") or {},
+            field_types_by_class_id=data.get("field_types_by_class_id") or {},
+        )
+
+
 class SymbolKind(str, Enum):
     # Code symbols
     CLASS = "class"
@@ -554,6 +782,14 @@ class LanguageConfig:
     query_files: Tuple[str, ...] = ()
     spaces: Tuple[str, ...] = ()
     processors: Tuple[str, ...] = ()
+    receiver_aliases: Mapping[str, Tuple[str, ...]] = field(
+        default_factory=lambda: MappingProxyType({}), hash=False
+    )
+    symbol_folding: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}), hash=False
+    )
+    module_resolver: Optional[str] = None
+    edge_refiners: Tuple[str, ...] = ()
     parser_entry: Optional[str] = None
     custom_kinds: Tuple[Dict[str, str], ...] = field(default=(), hash=False)
 
@@ -569,6 +805,23 @@ class LanguageConfig:
         object.__setattr__(self, "query_files", tuple(q_files))
         object.__setattr__(self, "spaces", tuple(str(s) for s in (self.spaces or ()) if str(s).strip()))
         object.__setattr__(self, "processors", tuple(str(p) for p in (self.processors or ()) if str(p).strip()))
+        norm_aliases: Dict[str, Tuple[str, ...]] = {}
+        if isinstance(self.receiver_aliases, Mapping):
+            for k, v in self.receiver_aliases.items():
+                if isinstance(v, (list, tuple, set, frozenset)):
+                    norm_aliases[str(k)] = tuple(str(a).strip() for a in v if str(a).strip())
+        object.__setattr__(self, "receiver_aliases", MappingProxyType(norm_aliases))
+        object.__setattr__(self, "symbol_folding", _freeze_facets_dict(self.symbol_folding))
+        object.__setattr__(
+            self,
+            "module_resolver",
+            str(self.module_resolver).strip() if self.module_resolver and str(self.module_resolver).strip() else None,
+        )
+        object.__setattr__(
+            self,
+            "edge_refiners",
+            tuple(str(r).strip() for r in (self.edge_refiners or ()) if str(r).strip()),
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -581,6 +834,13 @@ class LanguageConfig:
             "query_files": list(self.query_files),
             "spaces": list(self.spaces),
             "processors": list(self.processors),
+            "receiver_aliases": {k: list(v) for k, v in self.receiver_aliases.items()},
+            "symbol_folding": {
+                k: list(v) if isinstance(v, tuple) else v
+                for k, v in self.symbol_folding.items()
+            },
+            "module_resolver": self.module_resolver,
+            "edge_refiners": list(self.edge_refiners),
             "parser_entry": self.parser_entry,
             "custom_kinds": [dict(k) for k in self.custom_kinds],
         }
@@ -596,6 +856,9 @@ class LanguageConfig:
         raw_qfiles = data.get("query_files") or []
         raw_spaces = data.get("spaces") or []
         raw_procs = data.get("processors") or []
+        raw_aliases = data.get("receiver_aliases")
+        raw_folding = data.get("symbol_folding")
+        raw_refiners = data.get("edge_refiners") or []
         return cls(
             id=str(data["id"]),
             name=str(data.get("name") or data["id"]),
@@ -606,6 +869,10 @@ class LanguageConfig:
             query_files=tuple(str(q) for q in raw_qfiles) if isinstance(raw_qfiles, (list, tuple, set)) else (),
             spaces=tuple(str(s) for s in raw_spaces) if isinstance(raw_spaces, (list, tuple, set)) else (),
             processors=tuple(str(p) for p in raw_procs) if isinstance(raw_procs, (list, tuple, set)) else (),
+            receiver_aliases=raw_aliases if isinstance(raw_aliases, Mapping) else {},
+            symbol_folding=raw_folding if isinstance(raw_folding, Mapping) else {},
+            module_resolver=data.get("module_resolver"),
+            edge_refiners=tuple(str(r) for r in raw_refiners) if isinstance(raw_refiners, (list, tuple, set)) else (),
             parser_entry=data.get("parser_entry"),
             custom_kinds=tuple(dict(k) for k in raw_kinds if isinstance(k, dict)) if isinstance(raw_kinds, (list, tuple)) else (),
         )
@@ -1134,6 +1401,9 @@ __all__ = (
     "SymbolNode",
     "RelationEdge",
     "FileSymbolGraph",
+    "FileImportBinding",
+    "FileImportTable",
+    "WorkspaceSymbolGraph",
     "SymbolKind",
     "LanguageType",
     "MemberInfo",

@@ -97,27 +97,33 @@ class PythonDialect(DialectAdapter):
 
         for m in _FROM_PARENS_RE.finditer(source_text):
             base_mod = m.group(1).strip()
+            sep = "" if base_mod.endswith(".") else "."
             cleaned_lines = [ln.split("#", 1)[0].strip() for ln in m.group(2).splitlines()]
             clause = " ".join(cleaned_lines)
             for t in clause.split(","):
                 t = t.strip().strip("()")
-                if " as " in t:
+                if t == "*":
+                    imports[f"*:{base_mod}"] = f"{base_mod}{sep}*"
+                elif " as " in t:
                     orig, alias = t.split(" as ", 1)
-                    imports[alias.strip()] = f"{base_mod}.{orig.strip()}"
+                    imports[alias.strip()] = f"{base_mod}{sep}{orig.strip()}"
                 elif t:
-                    imports[t] = f"{base_mod}.{t}"
+                    imports[t] = f"{base_mod}{sep}{t}"
 
         for m in _FROM_IMPORT_RE.finditer(source_text):
             base_mod = m.group(1).strip()
+            sep = "" if base_mod.endswith(".") else "."
             raw_clause = m.group(2).split("#", 1)[0].strip()
             if raw_clause.startswith("(") and ")" not in raw_clause:
                 continue
             clause = raw_clause.strip("()")
             for t in clause.split(","):
                 t = t.strip().strip("()")
-                if " as " in t:
+                if t == "*":
+                    imports[f"*:{base_mod}"] = f"{base_mod}{sep}*"
+                elif " as " in t:
                     orig, alias = t.split(" as ", 1)
-                    imports[alias.strip()] = f"{base_mod}.{orig.strip()}"
+                    imports[alias.strip()] = f"{base_mod}{sep}{orig.strip()}"
                 elif t:
-                    imports[t] = f"{base_mod}.{t}"
+                    imports[t] = f"{base_mod}{sep}{t}"
         return imports

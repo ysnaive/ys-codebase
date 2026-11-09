@@ -1,5 +1,14 @@
 {
   "_types": {
+    "ReceiverAliasesDef": {
+      "self_aliases": "list[str]? | extend @desc(代表當前外層容器型別之接收者別名清單 (如 self, this, cls))",
+      "super_aliases": "list[str]? | extend @desc(代表跳過自身直接查找父類別鏈之接收者別名清單 (如 super, base))"
+    },
+    "SymbolFoldingDef": {
+      "partial_modifier": "str? @desc(跨檔同體宣告修飾符 (如 partial))",
+      "header_extensions": "list[str]? | extend @desc(標頭宣告檔副檔名清單 (如 .h, .hpp))",
+      "impl_extensions": "list[str]? | extend @desc(對應實作檔副檔名清單 (如 .c, .cpp))"
+    },
     "LanguageDef": {
       "id": "str! @desc(語言或規則唯一識別碼 (如 python, csharp, typescript))",
       "name": "str! @desc(語言或規則顯示名稱)",
@@ -10,6 +19,10 @@
       "query_files": "list[uri]? | extend @desc(多份平權 Tree-sitter S-expression 查詢檔 URI 清單 (含官方 tags.scm 與擴充 .scm))",
       "spaces": "list[str]? | extend @desc(規則適用之 core.space 空間清單 (如 core/contributes)；未指定預設對 project:// 全範圍生效)",
       "processors": "list[str]? | extend @desc(平權注入之 SymbolProcessor 類別入口清單 (module:ClassName 或 uri://...:ClassName))",
+      "receiver_aliases": "$ReceiverAliasesDef? | merge @desc(該語言之接收者語意別名設定 (self_aliases 與 super_aliases))",
+      "symbol_folding": "$SymbolFoldingDef? | merge @desc(跨檔同體宣告折疊設定 (如 C# partial class 或 C/C++ .h/.cpp 配對))",
+      "module_resolver": "str? @desc(平權注入之 ModulePathResolver 類別入口路徑 (module:ClassName 或 uri://...:ClassName))",
+      "edge_refiners": "list[str]? | extend @desc(平權注入之高精度 EdgeRefiner 類別入口清單 (module:ClassName 或 uri://...:ClassName))",
       "parser_entry": "str? @desc(自訂解析器入口類別路徑 (當 mode=custom 時使用))"
     }
   },

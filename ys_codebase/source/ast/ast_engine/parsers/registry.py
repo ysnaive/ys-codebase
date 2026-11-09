@@ -26,7 +26,7 @@ from ..schema import (
     SymbolNode,
     UnifiedSymbol,
 )
-from .base import BaseParser, SymbolProcessor, compute_content_hash
+from .base import BaseParser, EdgeRefiner, ModulePathResolver, SymbolProcessor, compute_content_hash
 from .treesitter import TreeSitterDriver
 
 DEFAULT_LANGUAGES: Mapping[str, Dict[str, Any]] = MappingProxyType({
@@ -37,6 +37,7 @@ DEFAULT_LANGUAGES: Mapping[str, Dict[str, Any]] = MappingProxyType({
         "mode": "tree_sitter",
         "grammar": "tree_sitter_python",
         "query_file": "assets/queries/python.scm",
+        "receiver_aliases": {"self_aliases": ["self", "cls"], "super_aliases": ["super"]},
     },
     "c": {
         "id": "c",
@@ -45,6 +46,7 @@ DEFAULT_LANGUAGES: Mapping[str, Dict[str, Any]] = MappingProxyType({
         "mode": "tree_sitter",
         "grammar": "tree_sitter_c",
         "query_file": "assets/queries/c.scm",
+        "symbol_folding": {"header_extensions": [".h"], "impl_extensions": [".c"]},
     },
     "cpp": {
         "id": "cpp",
@@ -53,6 +55,11 @@ DEFAULT_LANGUAGES: Mapping[str, Dict[str, Any]] = MappingProxyType({
         "mode": "tree_sitter",
         "grammar": "tree_sitter_cpp",
         "query_file": "assets/queries/cpp.scm",
+        "receiver_aliases": {"self_aliases": ["this", "self"], "super_aliases": ["__super", "base"]},
+        "symbol_folding": {
+            "header_extensions": [".h", ".hpp", ".hxx", ".hh"],
+            "impl_extensions": [".cpp", ".cxx", ".cc"],
+        },
     },
     "javascript": {
         "id": "javascript",
@@ -61,6 +68,7 @@ DEFAULT_LANGUAGES: Mapping[str, Dict[str, Any]] = MappingProxyType({
         "mode": "tree_sitter",
         "grammar": "tree_sitter_javascript",
         "query_file": "assets/queries/javascript.scm",
+        "receiver_aliases": {"self_aliases": ["this", "self"], "super_aliases": ["super", "base"]},
     },
     "typescript": {
         "id": "typescript",
@@ -69,6 +77,8 @@ DEFAULT_LANGUAGES: Mapping[str, Dict[str, Any]] = MappingProxyType({
         "mode": "tree_sitter",
         "grammar": "tree_sitter_typescript:language_typescript",
         "query_file": "assets/queries/typescript.scm",
+        "receiver_aliases": {"self_aliases": ["this", "self"], "super_aliases": ["super", "base"]},
+        "symbol_folding": {"header_extensions": [".d.ts"], "impl_extensions": [".ts", ".tsx"]},
     },
     "c_sharp": {
         "id": "c_sharp",
@@ -77,6 +87,8 @@ DEFAULT_LANGUAGES: Mapping[str, Dict[str, Any]] = MappingProxyType({
         "mode": "tree_sitter",
         "grammar": "tree_sitter_c_sharp",
         "query_file": "assets/queries/c_sharp.scm",
+        "receiver_aliases": {"self_aliases": ["this", "self"], "super_aliases": ["base"]},
+        "symbol_folding": {"partial_modifier": "partial"},
     },
     "markdown": {
         "id": "markdown",
@@ -123,6 +135,8 @@ class ParserRegistry:
     ):
         self._parsers: List[Tuple[int, BaseParser]] = []
         self._language_configs: Dict[str, LanguageConfig] = {}
+        self._module_resolvers: Dict[str, ModulePathResolver] = {}
+        self._edge_refiners: Dict[str, Tuple[EdgeRefiner, ...]] = {}
         self.load_errors: Dict[str, str] = {}
 
         if register_defaults or contributes_data is not None:
@@ -289,7 +303,7 @@ class ParserRegistry:
                 continue
             if lang_id in languages_dict and isinstance(languages_dict[lang_id], dict):
                 merged = dict(languages_dict[lang_id])
-                for list_key in ("query_files", "spaces", "processors", "extensions"):
+                for list_key in ("query_files", "spaces", "processors", "edge_refiners", "extensions"):
                     if list_key in merged and list_key in lang_cfg:
                         base_list = list(merged[list_key]) if isinstance(merged[list_key], (list, tuple)) else []
                         add_list = list(lang_cfg[list_key]) if isinstance(lang_cfg[list_key], (list, tuple)) else []
@@ -297,8 +311,13 @@ class ParserRegistry:
                             if elem not in base_list:
                                 base_list.append(elem)
                         merged[list_key] = base_list
+                for dict_key in ("receiver_aliases", "symbol_folding"):
+                    if dict_key in merged and dict_key in lang_cfg and isinstance(merged[dict_key], dict) and isinstance(lang_cfg[dict_key], dict):
+                        sub_merged = dict(merged[dict_key])
+                        sub_merged.update(lang_cfg[dict_key])
+                        merged[dict_key] = sub_merged
                 for k, v in lang_cfg.items():
-                    if k not in ("query_files", "spaces", "processors", "extensions") or k not in merged:
+                    if k not in ("query_files", "spaces", "processors", "edge_refiners", "extensions", "receiver_aliases", "symbol_folding") or k not in merged:
                         merged[k] = v
                 languages_dict[lang_id] = merged
             else:
@@ -314,6 +333,37 @@ class ParserRegistry:
                     cfg_data["id"] = lang_id
                 cfg = LanguageConfig.from_dict(cfg_data)
                 self._language_configs[cfg.id] = cfg
+
+                if cfg.module_resolver:
+                    try:
+                        res_obj = self._instantiate_custom_parser(cfg.module_resolver, provider=provider)
+                        if isinstance(res_obj, ModulePathResolver) or hasattr(res_obj, "resolve_import"):
+                            self._module_resolvers[cfg.id] = res_obj  # type: ignore[assignment]
+                        else:
+                            err_msg = f"Module resolver '{cfg.module_resolver}' does not implement ModulePathResolver"
+                            self.load_errors[f"{cfg.id}:{cfg.module_resolver}"] = err_msg
+                            log_warn(err_msg, stream="stderr")
+                    except Exception as exc:
+                        err_msg = f"Failed to instantiate module_resolver '{cfg.module_resolver}': {exc}"
+                        self.load_errors[f"{cfg.id}:{cfg.module_resolver}"] = err_msg
+                        log_warn(err_msg, stream="stderr")
+
+                refiner_instances: List[EdgeRefiner] = []
+                for ref_entry in cfg.edge_refiners:
+                    try:
+                        ref_obj = self._instantiate_custom_parser(ref_entry, provider=provider)
+                        if isinstance(ref_obj, EdgeRefiner) or hasattr(ref_obj, "refine_workspace_edges"):
+                            refiner_instances.append(ref_obj)  # type: ignore[arg-type]
+                        else:
+                            err_msg = f"Edge refiner '{ref_entry}' does not implement EdgeRefiner"
+                            self.load_errors[f"{cfg.id}:{ref_entry}"] = err_msg
+                            log_warn(err_msg, stream="stderr")
+                    except Exception as exc:
+                        err_msg = f"Failed to instantiate edge_refiner '{ref_entry}': {exc}"
+                        self.load_errors[f"{cfg.id}:{ref_entry}"] = err_msg
+                        log_warn(err_msg, stream="stderr")
+                if refiner_instances:
+                    self._edge_refiners[cfg.id] = tuple(refiner_instances)
 
                 proc_instances: List[SymbolProcessor] = []
                 for proc_entry in cfg.processors:
@@ -363,6 +413,14 @@ class ParserRegistry:
     @property
     def language_configs(self) -> Dict[str, LanguageConfig]:
         return dict(self._language_configs)
+
+    @property
+    def module_resolvers(self) -> Dict[str, ModulePathResolver]:
+        return dict(self._module_resolvers)
+
+    @property
+    def edge_refiners(self) -> Dict[str, Tuple[EdgeRefiner, ...]]:
+        return dict(self._edge_refiners)
 
     def get_supported_extensions(self) -> Set[str]:
         """Return the set of all configured file extensions (lowercase with leading dot)."""

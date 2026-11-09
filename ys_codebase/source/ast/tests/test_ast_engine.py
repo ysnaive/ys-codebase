@@ -193,11 +193,11 @@ class TestASTEngineCore(ASTTestCase):
 
     @require(Requirement.LOGIC)
     def test_ast_engine_all_56_public_symbols_lazy_loading(self) -> None:
-        """Verify all 62 exported symbols in ast_engine.__all__ resolve via PEP 562 __getattr__ and match manifest version."""
+        """Verify all 69 exported symbols in ast_engine.__all__ resolve via PEP 562 __getattr__ and match manifest version."""
         manifest_path = Path(_AST_ROOT) / "manifest.json"
         manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(ast_engine.__version__, manifest_data["version"])
-        self.assertEqual(len(ast_engine.__all__), 62)
+        self.assertEqual(len(ast_engine.__all__), 69)
 
         for sym_name in ast_engine.__all__:
             self.assertIn(sym_name, dir(ast_engine))

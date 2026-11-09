@@ -10,6 +10,9 @@ from .base import DialectAdapter
 _ES_IMPORT_RE = re.compile(
     r"\bimport\s+(?:type\s+)?([^\n;]+?)\s+from\s+['\"]([^'\"]+)['\"]"
 )
+_ES_EXPORT_ALL_RE = re.compile(
+    r"\bexport\s+\*\s+from\s+['\"]([^'\"]+)['\"]"
+)
 _REQ_DESTRUCT_RE = re.compile(
     r"(?:const|let|var)\s+\{\s*([^}]+)\s*\}\s*=\s*require\(['\"]([^'\"]+)['\"]\)"
 )
@@ -88,4 +91,7 @@ class JavaScriptDialect(DialectAdapter):
                     imports[item] = f"{src}.{item}"
         for m in _REQ_SINGLE_RE.finditer(source_text):
             imports[m.group(1).strip()] = m.group(2).strip()
+        for m in _ES_EXPORT_ALL_RE.finditer(source_text):
+            src = m.group(1).strip()
+            imports[f"export*:{src}"] = f"{src}.*"
         return imports

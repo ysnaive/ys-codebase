@@ -2,7 +2,7 @@
 Multi-language AST and domain parsers for module:ast (`ast_engine.parsers`).
 """
 
-from .base import BaseParser, SymbolProcessor
+from .base import BaseParser, EdgeRefiner, ModulePathResolver, SymbolProcessor
 from .css_parser import CssParser
 from .html_parser import HtmlParser
 from .markdown import MarkdownParser
@@ -14,6 +14,8 @@ from .treesitter import BUILTIN_QUERIES, TreeSitterDriver
 __all__ = (
     "BaseParser",
     "SymbolProcessor",
+    "ModulePathResolver",
+    "EdgeRefiner",
     "TreeSitterDriver",
     "PythonASTParser",
     "MarkdownParser",

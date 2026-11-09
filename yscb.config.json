@@ -29,7 +29,7 @@
     },
     "ast": {
       "version": "1.0.1.build",
-      "installed_at": "2026-11-08 18:37:27",
+      "installed_at": "2026-11-09 03:26:53",
       "provider": "./ys_codebase/release"
     },
     "vscode-support": {

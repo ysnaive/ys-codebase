@@ -220,7 +220,10 @@ def _build_python_matches(content_bytes: bytes) -> List[Tuple[int, Dict[str, Lis
                         if isinstance(b, _py_stdlib_ast.Name):
                             base_names.append(b.id)
                         elif isinstance(b, _py_stdlib_ast.Attribute):
-                            base_names.append(b.attr)
+                            if isinstance(b.value, _py_stdlib_ast.Name):
+                                base_names.append(f"{b.value.id}.{b.attr}")
+                            else:
+                                base_names.append(b.attr)
                     if base_names:
                         b_bytes = f"({', '.join(base_names)})".encode("utf-8")
                         children.append(_FallbackNode("argument_list", b_bytes, (s_ln - 1, 0), (s_ln - 1, len(b_bytes)), sb, sb + len(b_bytes)))
@@ -343,7 +346,9 @@ def _build_python_matches(content_bytes: bytes) -> List[Tuple[int, Dict[str, Lis
             if callee:
                 p_bytes = prefix.encode("utf-8")
                 c_bytes = callee.encode("utf-8")
-                site_b = p_bytes + c_bytes + b"()"
+                arg_count = len(getattr(node, "args", [])) + len(getattr(node, "keywords", []))
+                args_b = b"(" + b", ".join(b"x" for _ in range(arg_count)) + b")"
+                site_b = p_bytes + c_bytes + args_b
                 call_node = _FallbackNode("call", site_b, (ln - 1, col), (ln - 1, col + len(site_b)), sb, sb + len(site_b))
                 name_node = _FallbackNode(
                     "identifier",
@@ -681,7 +686,9 @@ def _build_brace_language_matches(
             c_sb = line_sb + len(line_str[:cm.start()].encode("utf-8"))
             n_sb = c_sb + len(prefix_b)
             n_eb = n_sb + len(callee_b)
-            c_eb = len(line_str[:cm.end()].encode("utf-8")) + line_sb
+            close_paren = line_str.find(")", cm.end())
+            call_end_char = (close_paren + 1) if close_paren != -1 else cm.end()
+            c_eb = len(line_str[:call_end_char].encode("utf-8")) + line_sb
             sp = (line_idx, cm.start())
             call_node = _FallbackNode("call_expression", content_bytes[c_sb:c_eb], sp, sp, c_sb, c_eb)
             name_node = _FallbackNode("identifier", callee_b, sp, sp, n_sb, n_eb)

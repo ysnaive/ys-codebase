@@ -13,6 +13,8 @@
 
 | 日期時間 | 類型 | 模型 | 摘要 |
 | :--- | :---: | :--- | :--- |
+| 2026-11-09 03:35 | `PHASE` | Gemini 4 Argon (Low) | 完成子計畫 sub_02 (4-Pass Linker & WorkspaceSymbolGraph) 結案並更新里程碑 2 |
+| 2026-11-09 02:42 | `PHASE` | Gemini 4 Argon (Low) | 啟動子計畫 sub_02_deterministic_linker_and_workspace_graph 並完成 P00_discuss.md 定案 |
 | 2026-11-08 13:56 | `PHASE` | Gemini 4 Argon (Low) | 完成里程碑 1 (sub_01) 結案 |
 | 2026-11-08 12:44 | `PHASE` | Gemini 4 Argon (Low) | 更新 umbrella_overview.md 狀態為 In Progress 並啟動 sub_01_atomic_schema_and_commutative_extractor |
 | 2026-11-08 12:39 | `PHASE` | Gemini 4 Argon (Low) | 將計畫原地升級為 Umbrella 分階段主計畫，建立 umbrella_overview.md 並規劃 sub_01 ~ sub_03 三大子計畫 |

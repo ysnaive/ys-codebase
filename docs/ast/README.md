@@ -11,19 +11,20 @@ source_paths:
   - "yscb://source/ast/ast_engine/resolver.py"
   - "yscb://source/ast/ast_engine/dialects/base.py"
   - "yscb://source/ast/ast_engine/parsers/treesitter.py"
+  - "yscb://source/ast/ast_engine/parsers/base.py"
   - "yscb://source/ast/ast_engine/parsers/registry.py"
   - "yscb://source/ast/scripts/cli.py"
 related_docs:
   - "./DESIGN_NOTES.md"
   - "../core/README.md"
   - "../knowledge-db/README.md"
-last_updated: "2026-11-08"
+last_updated: "2026-11-09"
 ---
 
 # AST 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎手冊 (AST Overview)
 
 > 模組名稱：`ast`  
-> 職責定位：YS-Codebase 三階單向無環圖（`core.space` $\to$ `ast` $\to$ `knowledge-db`）之 Layer 2 靜態語法分析與呼叫拓撲核心引擎，專責多語言 Tree-sitter / AST 結構化解析、官方方言隔離（`dialects/<lang>`）、`contributes` 宣告式語言擴充、C# `partial class` 雙層無損聚合、確定性同名異載（Method Overloads）群組定址、雙向呼叫圖譜（`CallGraph`）與單檔結構大綱（`outline`），並向 Layer 3 `knowledge-db` 提供單次解析符號共享快照（Single-Parse Symbol Sharing）。
+> 職責定位：YS-Codebase 三階單向無環圖（`core.space` $\to$ `ast` $\to$ `knowledge-db`）之 Layer 2 靜態語法分析與呼叫拓撲核心引擎，專責多語言 Tree-sitter / AST 結構化解析、官方方言隔離（`dialects/<lang>`）、`contributes` 宣告式語言擴充、4-Pass 確定性跨檔案符號連結器（`WorkspaceGraphLinker` / `WorkspaceSymbolGraph`）、C# `partial class` 雙層無損聚合、確定性同名異載（Method Overloads）群組定址、雙向呼叫圖譜（`CallGraph`）與單檔結構大綱（`outline`），並向 Layer 3 `knowledge-db` 提供單次解析符號共享快照（Single-Parse Symbol Sharing）。
 
 ---
 
@@ -31,13 +32,18 @@ last_updated: "2026-11-08"
 
 `module:ast` 將「確定性語法結構推理與呼叫拓撲」自上層全文與向量檢索（`knowledge-db`）中徹底正交分離，具備 **100% 零 BM25 與零 ONNX 向量依賴**：
 
-- **四大不可變內核原子結構與平權交換律提取器 (`Span` / `ProvenanceStep` / `SymbolNode` / `RelationEdge` & `FileSymbolGraph`)**：
-  - 於 `ast_engine.schema` 提供四大 `@dataclass(frozen=True)` 原子模型與單檔自包含圖譜 `FileSymbolGraph`，以 `"{canonical_path}::{fqn}[({param_types})]"` 作為與空間及行號解耦之穩定符號 ID。
+- **四大不可變內核原子結構、平權交換律提取器與工作區語意圖譜 (`Span` / `ProvenanceStep` / `SymbolNode` / `RelationEdge` & `FileSymbolGraph` / `WorkspaceSymbolGraph`)**：
+  - 於 `ast_engine.schema` 提供四大 `@dataclass(frozen=True)` 原子模型、單檔自包含圖譜 `FileSymbolGraph`、跨檔案匯入綁定表 `FileImportTable` / `FileImportBinding` 與全域工作區語意圖譜 `WorkspaceSymbolGraph`，以 `"{canonical_path}::{fqn}[({param_types})]"` 作為與空間及行號解耦之穩定符號 ID。
   - `TreeSitterDriver` 原生支援 Tree-sitter 官方 `queries/tags.scm`（`@definition.<kind>`、`@name`、`@doc`、`@reference.<kind>`）與擴充標籤（`@def.<kind>`、`@part.<slot>`、`@facet.<key>`、`@edge.<kind>`）；當多組 `.scm` 在同檔案捕獲相同 `@name` / `@part.name` 物理 `Span(start_byte, end_byte)` 時，自動執行交換律聯集（$A \cup B = B \cup A$）並以包含關係堆疊（Containment Stack）組裝無限層級遞迴 `SymbolNode.children`。
-  - 支援 `SymbolProcessor` 平權精煉管線與 `contributes` 之 `spaces: list[str]?` 規則範圍綁定（透過 `core.space` 自動對目標檔案執行空間匹配過濾）。
+  - 支援 `SymbolProcessor` 單檔精煉、`ModulePathResolver` 模組路徑解析、`EdgeRefiner` 跨檔案邊精煉與 `contributes` 之 `spaces: list[str]?` 規則範圍綁定（透過 `core.space` 自動對目標檔案執行空間匹配過濾）。
+- **4-Pass 確定性跨檔案符號連結器 (`WorkspaceGraphLinker`)**：
+  - **Pass 1（全域索引與跨檔符號摺疊）**：在不修改單檔 `FileSymbolGraph` 之純函數前提下，自動針對 C# `partial class/struct/interface` 與 C/C++ `.h`/`.cpp`（或 TypeScript `.d.ts`/`.ts`）建立 `folded_symbol_groups` 與 `merges_with` / `declares` 雙向關聯邊。
+  - **Pass 2（確定性匯入表 `FileImportTable` 建構）**：透過 `DefaultModulePathResolver` 與語言擴充之 `ModulePathResolver`，精確解算 Python 相對點號匯入、`__init__.py` / `index.ts` Barrel 重匯出、萬用字元 `from X import *` / `export * from` 展開，並將不在工作區內之標準庫/第三方套件標記為 `resolution_status="external"`。
+  - **Pass 3（跨檔案繼承與實作無環圖 Type DAG）**：結合 Pass 2 `FileImportTable` 消除跨模組同名基底型別碰撞，建構無環 `type_bases_by_id`、`type_derived_by_id` 與欄位型別表 `field_types_by_class_id`，支援 `expand_contract_symbol_ids(ws_graph, ...)` 多型契約雙向展開。
+  - **Pass 4（4-Tier 確定性作用域瀑布流與平權 `EdgeRefiner`）**：依序執行「Tier 1 同檔詞法作用域 $\to$ Tier 2 當前類別與 Pass 3 繼承鏈（含 `receiver_aliases` 與欄位型別分派）$\to$ Tier 3 Pass 2 `FileImportTable` $\to$ Tier 4 全域唯一 FQN」消歧，零啟發式模糊加權計分；同型別重載依引數數量（`arg_count`）收斂或標記為 `overload_group`，跨型別同名候選誠實標記為 `ambiguous`，並支援掛載外部 `EdgeRefiner` 進一步收斂動態邊。
 - **內建官方方言隔離 (`ast_engine/dialects/<lang>`) + `contributes` 外部語言擴充**：
   - 內建 `python`、`csharp`、`cpp`、`c`、`javascript`、`typescript`、`markdown` 7 大官方方言適配器（`DialectAdapter`）及 `spice`、`html`、`css` 領域解析器，通用 `TreeSitterDriver` 維持零特定語言條件分支。
-  - 外部模組與宿主專案可透過 `contributes/ast.json` 或 `config/ast/contribute.json` 宣告 `languages`（支援 `tree_sitter` 掛載 `query_file` / `query_files: list[uri]`、`spaces` 範圍約束、`processors` 精煉器，或 `custom` 掛載 Python 解析類別）。
+  - 外部模組與宿主專案可透過 `contributes/ast.json` 或 `config/ast/contribute.json` 宣告 `languages`（支援 `tree_sitter` 掛載 `query_file` / `query_files: list[uri]`、`spaces` 範圍約束、`processors` 單檔精煉器、`receiver_aliases`、`symbol_folding`、`module_resolver` 與 `edge_refiners`，或 `custom` 掛載 Python 解析類別）。
 - **C# `partial class/struct/interface` 雙層無損儲存模型 (Two-Tier Partial Symbol Model)**：
   - **表層邏輯聚合視圖 (`children` / `members`)**：跨檔案合併同空間、同 FQN 分部型別的所有成員、基底型別 (`base_types`)、欄位型別 (`field_types`) 與分部檔案清單 (`partial_files`)，供 `TopologyLinker` 解析跨分部成員呼叫。
   - **底層物理檔案視圖 (`metadata["_own_*"]`)**：完整保留各單一分部檔案自身定義之 `_own_members`、`_own_base_types`、`_own_field_types` 與 `_own_docstring`，供單檔 `outline` 精確顯示及下游 `knowledge-db` 倒排索引去重（消除 $N^2$ Posting 膨脹）。

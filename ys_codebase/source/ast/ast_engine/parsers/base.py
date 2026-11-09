@@ -5,9 +5,10 @@ Base abstract parser (`BaseParser`) and peer `SymbolProcessor` contract for modu
 from abc import ABC, abstractmethod
 import hashlib
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Tuple, Union
 
 from ..schema import (
+    FileImportTable,
     FileSymbolGraph,
     MemberInfo,
     ProvenanceStep,
@@ -86,6 +87,48 @@ class SymbolProcessor:
             root_nodes=new_roots,
             outgoing_edges=new_edges,
         )
+
+
+class ModulePathResolver:
+    """
+    Peer module import path resolver injected via `contributes.ast.languages[*].module_resolver`.
+    Resolves an import `target_expr` from `importing_file` into a target workspace file path,
+    target `SymbolNode.id` tuple, and whether the import refers to an external stdlib/third-party package.
+    """
+
+    provider_id: str = "ast:default_module_resolver"
+
+    def resolve_import(
+        self,
+        importing_file: str,
+        target_expr: str,
+        workspace_files: FrozenSet[str],
+        nodes_by_file: Mapping[str, Tuple[SymbolNode, ...]],
+    ) -> Tuple[Optional[str], Tuple[str, ...], bool]:
+        """
+        Return `(resolved_file_path, resolved_symbol_ids, is_external)`.
+        Default base implementation returns `(None, (), True)`.
+        """
+        return None, (), True
+
+
+class EdgeRefiner:
+    """
+    Peer workspace relation edge refiner injected via `contributes.ast.languages[*].edge_refiners`.
+    Allows external high-precision analyzers (e.g. `symtable`, type checkers, SCIP) to converge
+    `ambiguous` or `unresolved` edges into `resolved` and append a `ProvenanceStep(action="refine")`.
+    """
+
+    provider_id: str = "ast:default_edge_refiner"
+
+    def refine_workspace_edges(
+        self,
+        edges: Tuple[RelationEdge, ...],
+        nodes_by_id: Mapping[str, SymbolNode],
+        file_import_tables: Mapping[str, FileImportTable],
+    ) -> Tuple[RelationEdge, ...]:
+        """Refine a sequence of cross-file `RelationEdge` instances after Pass 4."""
+        return edges
 
 
 def compute_content_hash(content_bytes: bytes) -> str:
@@ -245,10 +288,22 @@ def convert_legacy_symbols_to_file_graph(
     file_root_id = f"{norm_path}::<module>"
     if imports:
         for alias, target_mod in imports.items():
+            alias_str = str(alias).strip()
+            target_str = str(target_mod or alias).strip()
+            if not target_str:
+                continue
+            if alias_str.startswith("*:") or alias_str == "*":
+                expr = f"*={target_str}"
+            elif alias_str.startswith("export*:"):
+                expr = f"export*={target_str}"
+            elif alias_str and alias_str != target_str:
+                expr = f"{alias_str}={target_str}"
+            else:
+                expr = target_str
             edges.append(
                 RelationEdge(
                     source_id=file_root_id,
-                    target_expr=str(target_mod),
+                    target_expr=expr,
                     edge_kind="imports",
                     span=Span(start_byte=0, end_byte=0, start_line=1, start_col=0, end_line=1, end_col=0),
                     provenance=prov,
