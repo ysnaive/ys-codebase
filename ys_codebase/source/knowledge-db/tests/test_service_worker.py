@@ -1185,5 +1185,79 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         self.mark_passed()
 
 
+    @require(Requirement.LOGIC)
+    def test_stage1_foreground_yield_and_zero_redundant_hot_patch(self):
+        """驗證 Stage 1 前景禮讓、Server Worker 輕量預熱與 _collect_all_dirty_files 消除重複 hot_patch_index"""
+        from core.context import bind_runtime_context, get_runtime_context
+        from core.space import ScanDiffDetail
+
+        # 1. Server Worker 環境下 pre_warm 不觸發阻塞式 ast_eng._ensure_loaded_from_disk
+        from ast_engine import ASTEngine
+
+        with bind_runtime_context(env={"YSCB_IN_SERVER_WORKER": "1"}):
+            with patch.object(IndexingPipeline, "_ensure_indices_loaded") as mock_idx_load, patch.object(
+                ASTEngine, "_ensure_loaded_from_disk"
+            ) as mock_ast_load:
+                KnowledgeEngine.pre_warm(workspace_root=self.root_path)
+                self.assertTrue(mock_idx_load.called)
+                self.assertFalse(mock_ast_load.called)
+
+        # 2. KnowledgeDBServiceWorker._run_sync_cycle 在 Stage 1 前檢查 server.worker.foreground_active 禮讓前景
+        src_dir = self.root_path / "src_fg_yield"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        storage_dir = self.root_path / "storage_fg_yield"
+        f_py = src_dir / "mod.py"
+        f_py.write_text("class InitialNode:\n    pass\n", encoding="utf-8")
+
+        sp = SpaceConfig(
+            qualified_name="project/fg_space",
+            owner="project",
+            short_name="fg_space",
+            entries=(str(src_dir),),
+        )
+        engine = KnowledgeEngine(
+            storage_dir=storage_dir,
+            contributes_data={"spaces": {"fg_space": sp}},
+            embedding_mock_mode=True,
+        )
+        worker = KnowledgeDBServiceWorker(engine=engine)
+        indices_dir = engine.pipeline.get_indices_dir()
+
+        ctx = get_runtime_context()
+        ctx.set_module_state("server.worker.foreground_active", True)
+        try:
+            with patch.object(worker, "_sync_stage1_lexical_and_graph") as mock_s1:
+                worker._wake_event.set()
+                worker._run_sync_cycle(engine, indices_dir)
+                self.assertFalse(mock_s1.called)
+        finally:
+            ctx.set_module_state("server.worker.foreground_active", False)
+
+        # 3. 當 ensure_jit_synced 已推進世代且跨越多世代時，_collect_all_dirty_files 不重複執行第二次 hot_patch_index
+        engine.build_unified_index(force=True)
+        write_text_and_advance_mtime(f_py, "class InitialNode:\n    pass\nclass StepTwoNode:\n    pass\n")
+        engine.ast_engine.ensure_jit_synced()
+
+        write_text_and_advance_mtime(
+            f_py,
+            "class InitialNode:\n    pass\nclass StepTwoNode:\n    pass\nclass StepThreeNode:\n    pass\n",
+        )
+        orig_hot_patch = engine.ast_engine.hot_patch_index
+        patch_calls = []
+
+        def spy_hot_patch(*args, **kwargs):
+            patch_calls.append(1)
+            return orig_hot_patch(*args, **kwargs)
+
+        with patch.object(engine.ast_engine, "hot_patch_index", side_effect=spy_hot_patch):
+            detail = ScanDiffDetail(added=set(), modified={"mod.py"}, deleted=set())
+            res = engine.pipeline.hot_patch_unified_index(detail, skip_vectors=True)
+            self.assertTrue(res.success)
+            # ensure_jit_synced() inside _collect_all_dirty_files calls hot_patch_index once;
+            # _collect_all_dirty_files must NOT call hot_patch_index a redundant second time!
+            self.assertEqual(len(patch_calls), 1)
+
+        self.mark_passed()
+
 if __name__ == "__main__":
     unittest.main()

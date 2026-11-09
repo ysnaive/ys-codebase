@@ -915,20 +915,30 @@ class IndexingPipeline:
             else:
                 has_ast_parseable_dirty = False
 
+        gen_before_sync = self.get_current_ast_generation() or 0
         snapshot = self.ast_engine.ensure_jit_synced(allow_parallel=False)
+        ast_did_sync = snapshot.ast_generation > gen_before_sync
         if (
-            snapshot.ast_generation <= current_acked_gen
+            not ast_did_sync
+            and snapshot.ast_generation <= current_acked_gen
             and (detail.dirty_files or detail.deleted)
             and has_ast_parseable_dirty
         ):
             snapshot = self.ast_engine.hot_patch_index(detail)
         elif (
-            current_acked_gen > 0
+            not ast_did_sync
+            and current_acked_gen > 0
             and (snapshot.ast_generation - current_acked_gen) > 1
             and (detail.dirty_files or detail.deleted)
             and has_ast_parseable_dirty
         ):
-            snapshot = self.ast_engine.hot_patch_index(detail)
+            known_snap_files = set(snapshot.file_to_symbol_ids.keys()) | set(snapshot.file_graphs.keys())
+            need_synthetic_patch = bool(
+                (expanded_added_mod - known_snap_files)
+                or (expanded_deleted & known_snap_files)
+            )
+            if need_synthetic_patch:
+                snapshot = self.ast_engine.hot_patch_index(detail)
 
         # If ASTEngine jumped multiple generations ahead of acked_ast_generation, reconcile all symbol diffs
         if (

@@ -1092,8 +1092,10 @@ class SemanticBundler:
         for sp in target_spaces:
             space_name = _space_logical_name(sp)
             for _, f_path, base_dir in self._iter_space_eligible_files(sp):
-                c_key = _safe_resolve_str(f_path)
                 relpath = self._get_project_relpath(f_path, base_dir)
+                if self.parser_registry.get_parser(relpath) is None:
+                    continue
+                c_key = _safe_resolve_str(f_path)
                 if c_key not in unique_files:
                     unique_files[c_key] = (f_path, relpath, {space_name})
                 else:
@@ -1229,6 +1231,8 @@ class SemanticBundler:
                 matched_spaces.add(_space_logical_name(target_spaces[0]))
             if matched_spaces:
                 relpath = self._get_project_relpath(resolved_p, chosen_base)
+                if self.parser_registry.get_parser(relpath) is None:
+                    continue
                 result[c_key] = (resolved_p, relpath, matched_spaces)
 
         if not result and raw_list:

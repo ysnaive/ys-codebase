@@ -1,5 +1,12 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_10_0055_ast_server_warmup_and_lock_contention_fix (Completed)
+
+- **根治大型專案啟動 Server 後執行 `ast status` / `ast outline` 卡死、`WARMING` 預熱阻塞與背景雙執行緒鎖競爭問題 (`FR-01` ~ `FR-06`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`)**：
+  - **`WarmWorker.pre_warm()` `virtual_cwd` 對齊與 `KnowledgeEngine.pre_warm()` 輕量化 (`FR-01`)**：將 `server/server/worker.py:pre_warm()` 之 `virtual_cwd` 對齊為 `self.host_dir or self.yscb_root`，並於 `knowledge-db/knowledge_db/engine.py:pre_warm()` 在 Server Worker 環境下略過阻塞式 `ASTEngine._ensure_loaded_from_disk()` 與向量模型同步加載，使 `worker_ready` 握手毫秒級完成。
+  - **消除 `space-watcher` 與 `knowledge-db-worker` 雙執行緒鎖踩踏與重複 `hot_patch_index` (`FR-02`, `FR-03`)**：當同進程 `KnowledgeDBServiceWorker` 活躍時，`ast/scripts/hook.core.py:on_file_space_changed` 直接喚醒 Worker 單點執行 Single-Parse Symbol Sharing；於 `KnowledgeDBServiceWorker._run_sync_cycle` Stage 1 前加入 `server.worker.foreground_active` 禮讓檢查，並修正 `IndexingPipeline._collect_all_dirty_files` 在 `ensure_jit_synced()` 已推進世代後重複執行第二次 `hot_patch_index(detail)` 的缺陷。
+  - **`ASTEngine.status()` 無鎖 $O(1)$ `unified.meta.json` 快讀、單檔 `outline()` 非阻塞化與 `SemanticBundler` 副檔名預過濾 (`FR-04` ~ `FR-06`)**：擴充 `unified.meta.json` 納入 `total_edges`、`graph_mtime_ns`、`graph_size`、`space_symbol_counts` 與 `space_file_counts` 供 `status()` 無鎖秒級回傳；移除單檔 `outline()` 外層長鎖及 `merged=False` 時對 C# `partial` 檔案之全倉 `ensure_jit_synced()` 阻塞；於 `SemanticBundler._collect_space_files()` 與 `_resolve_dirty_files_only()` 預先過濾 `parser_registry.get_parser(relpath) is not None` 之可解析檔案（`ast` 54/54、`knowledge-db` 118/118、`server` 67/67 PASS，`dev check --all` 9/9 PASS）。
+
 ## 2026_11_09_1444_full_codebase_deep_audit_remediation_umbrella (Completed)
 
 ### 第二輪九維度全量深度審計 (`R03`) 與新環境 78 項全 CLI 實機驗證閉環 (Completed)

@@ -17,13 +17,13 @@ related_docs:
   - "./README.md"
   - "../core/DESIGN_NOTES.md"
   - "../knowledge-db/DESIGN_NOTES.md"
-last_updated: "2026-11-09"
+last_updated: "2026-11-10"
 ---
 
 # ast 設計決策與工程妥協手冊 (Design Notes)
 
 > 模組名稱：`ast`  
-> 職責定位：記錄 `module:ast` 中屬於「維度 ⑤ 工程妥協與防坑」之非直覺設計、標準庫 `ast` 命名空間防遮蔽、雙層分部符號儲存、同名異載群組定址、按需 Grammar 離線圍欄、多 `.scm` 交換律合流與 4-Pass 確定性工作區圖譜連結不變量。
+> 職責定位：記錄 `module:ast` 中屬於「維度 ⑤ 工程妥協與防坑」之非直覺設計、標準庫 `ast` 命名空間防遮蔽、雙層分部符號儲存、同名異載群組定址、按需 Grammar 離線圍欄、多 `.scm` 交換律合流、4-Pass 確定性工作區圖譜連結與無鎖預熱不變量。
 
 ---
 
@@ -38,6 +38,7 @@ last_updated: "2026-11-09"
 | **DN-AST-05** | 多 `.scm` 以 `@name` 物理座標為錨點之交換律合流與 `core.space` 規則範圍綁定 | `schema.py`, `treesitter.py`, `registry.py` | ⚠️ WARNING |
 | **DN-AST-06** | 4-Pass 確定性工作區連結器 (`WorkspaceGraphLinker`) 之單檔純度隔離、無環繼承剪枝與零模糊計分守則 | `schema.py`, `linker.py`, `parsers/base.py` | 🚨 CRITICAL |
 | **DN-AST-07** | L0/L1 圖譜查詢原語、UTF-8 Byte Span 結構化切片與 $O(|\text{Dirty}|)$ 單次解析雙圖譜持久化守則 | `engine.py`, `bundler.py`, `resolver.py`, `graph.py` | ⚠️ WARNING |
+| **DN-AST-08** | `unified.meta.json` 無鎖 $O(1)$ `status` 快讀、單檔 `outline` 非阻塞提取與同進程 Worker 單點讓渡 | `engine.py`, `bundler.py`, `hook.core.py` | 🚨 CRITICAL |
 
 ---
 
@@ -99,7 +100,6 @@ last_updated: "2026-11-09"
 > [!CAUTION]
 > **嚴禁在 `.scm` 合流邏輯中依賴 `query_files` 列表順序決定最終屬性覆蓋結果，亦嚴禁在 `SymbolNode` / `FileSymbolGraph` 中儲存可變 `dict` 或 `list`！** 所有內部映射必須於 `__post_init__` 封裝為 `MappingProxyType` 並將容器欄位標註 `hash=False`，以同時滿足 `dev check` `C9` 不可變規範與 `hash(node)` 雜湊契約。
 
-
 ---
 
 ### [DN-AST-06] 4-Pass 確定性工作區連結器 (`WorkspaceGraphLinker`) 之單檔純度隔離、無環繼承剪枝與零模糊計分守則
@@ -129,3 +129,18 @@ last_updated: "2026-11-09"
 
 > [!CAUTION]
 > **嚴禁在 `ASTEngine.slice_part()` 中以 Python 字元索引 (`str[start:end]`) 替代 UTF-8 位元組切片 (`Span.slice_text(bytes)`)，亦嚴禁在 `parse_file()` 中隱式觸發 `ensure_jit_synced()` 全倉索引建置！** Tree-sitter 座標皆為 UTF-8 byte offsets，混用字元索引將在含非 ASCII 字元之檔案中產生嚴重位移。
+
+---
+
+### [DN-AST-08] `unified.meta.json` 無鎖 $O(1)$ `status` 快讀、單檔 `outline` 非阻塞提取與同進程 Worker 單點讓渡
+
+- **背景與根因**：
+  1. 在大型專案（特別是含數千個 C# `partial class` 與非代碼資產之 Unity 專案）啟動 `yscb server start` 後，若 `ASTEngine.status()` 強制爭搶 `self._lock` 與 `.ast_index.lock` 並解壓反序列化 `unified.symbols.bin.gz` 及 `unified.graph.bin.gz`，或單檔 `ASTEngine.outline(..., merged=False)` 因偵測到 `partial` 符號即無條件呼叫 `ensure_jit_synced()`，會與背景 Stage 1 索引執行緒正面鎖競爭導致前景 CLI 卡死。
+  2. 此外，當 `CoreSpaceWatcherServiceWorker` 廣播 `on_file_space_changed` 時，若 `ast/scripts/hook.core.py` 在 `space-watcher` 執行緒上同步鎖定 `ASTEngine._lock` 執行熱修補，會與同進程 `KnowledgeDBServiceWorker` 產生雙執行緒鎖踩踏。
+- **工程妥協與解法**：
+  1. **無鎖 $O(1)$ `status()` 與 `get_persisted_meta()` 快讀**：於 `_build_meta_payload()` 持久化 `total_edges`、`graph_mtime_ns`、`graph_size`、`space_symbol_counts` 與 `space_file_counts` 至 `unified.meta.json`；`status()` 優先讀取記憶體既有快照引用或比對二進位檔 `(mtime_ns, size)` 後直讀 `unified.meta.json`，無須爭搶 `self._lock` 或解壓 `.bin.gz`。
+  2. **單檔 `outline()` 免鎖解析與非阻塞 `partial_siblings`**：單檔解析不持有 `self._lock`；唯有 `merged=True` 時才呼叫 `ensure_jit_synced()`，而在預設 `merged=False` 下僅讀取記憶體既有 `_snapshot` 或以 `self._lock.acquire(blocking=False)` 非阻塞載入既有 `unified.symbols.bin.gz`。
+  3. **同進程 Worker 單點讓渡與副檔名預過濾**：當 `RuntimeContext` 中存在活躍之 `KnowledgeDBServiceWorker` 時，`ast/scripts/hook.core.py` 直接透過 `notify_space_changed()` 讓渡予背景 Worker 單點推進；同時 `SemanticBundler._collect_space_files()` 預先過濾 `parser_registry.get_parser(relpath) is not None`，杜絕無謂讀取非代碼資產。
+
+> [!CAUTION]
+> **嚴禁在 `ASTEngine.status()` 或 `ASTEngine.outline(..., merged=False)` 中無條件爭搶 `self._lock` 或呼叫阻塞式 `ensure_jit_synced()`！** 單檔大綱與狀態檢視必須保持無鎖或非阻塞快讀，以防止背景 Stage 1 索引期間阻塞前景 CLI。

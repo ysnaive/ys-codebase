@@ -1,7 +1,7 @@
 {
   "id": "ast",
   "name": "ast",
-  "version": "1.1.0.1",
+  "version": "1.1.0.2",
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
@@ -38,8 +38,8 @@
     "請執行 `python yscb.py ast callers <symbol>`、`callees <symbol>` 或 `impact <symbol>` 追蹤跨檔案呼叫拓撲與修改影響半徑。"
   ],
   "release": {
-    "type": "refactor",
+    "type": "bugfix",
     "urgency": "recommended",
-    "summary": "優化單次解析符號與語意圖譜快照共用機制以消除重複讀檔與序列化膨脹，並明確定義 slice 與 traverse 符號定址語法說明"
+    "summary": "實作 status 無鎖元資料快讀、單檔 outline 非阻塞提取與非程式碼副檔名預過濾，並支援同行程背景索引單點讓渡"
   }
 }

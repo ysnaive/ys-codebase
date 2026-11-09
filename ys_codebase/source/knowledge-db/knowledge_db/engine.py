@@ -979,13 +979,20 @@ class KnowledgeEngine:
             log_info("Pre-warming knowledge-db engine...", stream="stderr")
             engine = get_engine()
             enable_vec = bool(getattr(engine.config, "enable_vector_search", True))
-            try:
-                ast_eng = get_ast_engine()
-                ast_eng._ensure_loaded_from_disk()
-            except Exception as ast_exc:
-                log_warn(f"AST engine pre-warm skipped: {ast_exc}", stream="stderr")
-            engine.pipeline._ensure_indices_loaded(load_vectors=enable_vec)
-            if enable_vec and hasattr(engine, "embedding_service") and engine.embedding_service:
+            in_server_worker = str(get_env("YSCB_IN_SERVER_WORKER", "") or "").strip() == "1"
+            if not in_server_worker and not is_worker_running():
+                try:
+                    ast_eng = get_ast_engine()
+                    ast_eng._ensure_loaded_from_disk()
+                except Exception as ast_exc:
+                    log_warn(f"AST engine pre-warm skipped: {ast_exc}", stream="stderr")
+            engine.pipeline._ensure_indices_loaded(load_vectors=enable_vec and not in_server_worker)
+            if (
+                not in_server_worker
+                and enable_vec
+                and hasattr(engine, "embedding_service")
+                and engine.embedding_service
+            ):
                 if not getattr(engine.embedding_service, "mock_mode", False) and engine.embedding_service.is_model_downloaded():
                     engine.embedding_service._ensure_model()
             log_info("Knowledge-db engine pre-warmed successfully.", stream="stderr")

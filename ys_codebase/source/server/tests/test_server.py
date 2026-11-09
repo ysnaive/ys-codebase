@@ -166,7 +166,8 @@ class TestServerModule(YSCBTestCase):
         from unittest.mock import patch
 
         def mock_broadcast(event_name, context=None, emit_module="core", search_roots=None):
-            captured_events.append((event_name, context, emit_module))
+            from core.context import get_virtual_cwd
+            captured_events.append((event_name, context, emit_module, get_virtual_cwd()))
             return {}
 
         with patch.object(events, "broadcast", side_effect=mock_broadcast):
@@ -180,6 +181,7 @@ class TestServerModule(YSCBTestCase):
         event_names = [e[0] for e in captured_events]
         self.assertIn("server_worker_warming", event_names)
         self.assertIn("server_worker_ready", event_names)
+        self.assertTrue(all(e[3] == worker.host_dir for e in captured_events))
         self.mark_passed()
 
     def test_warm_worker_system_exit_interception(self):

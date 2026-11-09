@@ -1,7 +1,7 @@
 # 專案輕量級待辦與技術債帳本 (TODO Ledger)
 
 > 主題：專案輕量級待辦與技術債帳本  
-> 更新日期：2026-11-06  
+> 更新日期：2026-11-10  
 > 狀態：Active  
 > 最後分配編號：25  
 > 模型：Unknown  
@@ -34,8 +34,3 @@
 - **建立日期**：2026-11-04
 - **目標範疇**：`core, ecosystem modules`
 - **備忘與解法要點**：盤點並正規化 core.events 廣播生命週期與既有事件契約，新增 CLI pre-flight 事件掛鉤供各模組執行前置健康度自檢
-
-### [TODO-23] 將 SyncCoordinator._precreate_remote_dirs() 升級為依深度分層 (Level-by-Level BFS) + 同層 ThreadPoolExecutor 平行 mkdir 並為 _folder_cache 加上執行緒鎖
-- **建立日期**：2026-11-04
-- **目標範疇**：`ys_codebase/source/gdrive-support/gdrive_support/{coordinator.py,transport.py}`
-- **備忘與解法要點**：當同步大量子目錄 (如 plans/archived 272 個資料夾) 時，同深度層級的父目錄已由上一層建立完畢，可按 depth 分組後以 ThreadPoolExecutor(max_workers=8) 平行執行 mkdir，並於 GoogleDriveApiTransport 為 _folder_cache / _scanned_prefixes 加入執行緒鎖保護

@@ -134,7 +134,7 @@ class WarmWorker:
         )
 
         with bind_runtime_context(
-            virtual_cwd=self.yscb_root,
+            virtual_cwd=self.host_dir or self.yscb_root,
             env={
                 "YSCB_ROOT_DIR": self.yscb_root,
                 GUARD_ENV_HOST: self.host_dir,

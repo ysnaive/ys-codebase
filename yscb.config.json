@@ -18,18 +18,18 @@
       "provider": "./ys_codebase/release"
     },
     "knowledge-db": {
-      "version": "1.2.2.1",
-      "installed_at": "2026-11-09 14:51:47",
+      "version": "1.2.2.2",
+      "installed_at": "2026-11-09 17:46:13",
       "provider": "./ys_codebase/release"
     },
     "server": {
-      "version": "1.0.5.1",
-      "installed_at": "2026-11-09 14:50:33",
+      "version": "1.0.5.2",
+      "installed_at": "2026-11-09 17:44:50",
       "provider": "./ys_codebase/release"
     },
     "ast": {
-      "version": "1.1.0.1",
-      "installed_at": "2026-11-09 14:51:47",
+      "version": "1.1.0.2",
+      "installed_at": "2026-11-09 17:46:13",
       "provider": "./ys_codebase/release"
     },
     "vscode-support": {

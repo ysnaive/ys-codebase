@@ -604,6 +604,14 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 if cur_sig is not None and cur_sig == self._idle_verified_state:
                     return
 
+            # Yield before Stage 1 if a foreground CLI command is actively executing in WarmWorker
+            try:
+                if bool(get_runtime_context().get_module_state("server.worker.foreground_active", lambda: False)):
+                    self._wake_event.wait(timeout=0.05)
+                    return
+            except Exception:
+                pass
+
             # Stage 1: Check and consume any pending space diffs (AST + BM25 + CallGraph only)
             if self._has_pending_space_work(engine, indices_dir):
                 _mark_busy("stage1_ast_bm25_graph", "同步 AST 符號、BM25 倒排與呼叫圖譜")
@@ -826,8 +834,16 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             for sp in indexed_spaces
             if (getattr(sp, "qualified_name", None) or getattr(sp, "short_name", None))
         ]
+        from core.space import is_watcher_active
+
+        watcher_running = bool(
+            is_watcher_active(
+                project_root=getattr(getattr(engine, "space_manager", None), "project_root", None)
+            )
+        )
         engine.pipeline.sync_incremental_changes(
             target_spaces=target_qnames if target_qnames else None,
+            auto_refresh=False if (watcher_running and target_qnames) else None,
             skip_vectors=True,
             allow_parallel=False,
         )

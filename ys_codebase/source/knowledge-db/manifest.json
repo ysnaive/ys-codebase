@@ -1,6 +1,6 @@
 {
   "name": "knowledge-db",
-  "version": "1.2.2.1",
+  "version": "1.2.2.2",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -26,8 +26,8 @@
     "Search symbols & code snippets: python yscb.py knowledge-db search \"<query>\" -s"
   ],
   "release": {
-    "type": "refactor",
+    "type": "bugfix",
     "urgency": "recommended",
-    "summary": "修復增量同步失敗時之安全退回全量建置機制，強化查詢詞彙分解與資料庫無鎖超時防護，並更新檢索技能手冊之符號定址規範"
+    "summary": "於背景服務預熱略過同步磁碟載入阻塞、加入前景活躍禮讓檢查，並消除增量同步時之重複熱修補呼叫"
   }
 }

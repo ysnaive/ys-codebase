@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "1.0.5.1",
+  "version": "1.0.5.2",
   "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -15,8 +15,8 @@
     "Stop daemon and view session summary: python yscb.py server stop"
   ],
   "release": {
-    "type": "refactor",
+    "type": "bugfix",
     "urgency": "recommended",
-    "summary": "重構背景守護行程通訊管道為單一讀取執行緒多工分派，修復二進位封包標頭溢位與熱重載執行緒競態問題"
+    "summary": "對齊背景工作行程預熱階段之虛擬工作目錄，消除首次啟動預熱阻塞"
   }
 }

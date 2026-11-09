@@ -738,20 +738,44 @@ class ASTEngine:
         fallback.parent.mkdir(parents=True, exist_ok=True)
         return fallback
 
-    def _build_meta_payload(self, snapshot: ASTSnapshot) -> Dict[str, Any]:
+    def _build_meta_payload(
+        self,
+        snapshot: ASTSnapshot,
+        graph: Optional[CallGraphIndex] = None,
+    ) -> Dict[str, Any]:
         sym_mtime_ns = 0
         sym_size = 0
         if self.symbols_index_path.exists():
             st = self.symbols_index_path.stat()
             sym_mtime_ns = int(st.st_mtime_ns)
             sym_size = int(st.st_size)
+        graph_mtime_ns = 0
+        graph_size = 0
+        if self.graph_index_path.exists():
+            gst = self.graph_index_path.stat()
+            graph_mtime_ns = int(gst.st_mtime_ns)
+            graph_size = int(gst.st_size)
+        eff_graph = graph if graph is not None else self._graph
+        total_edges = int(eff_graph.graph.number_of_edges()) if eff_graph is not None else 0
+        space_symbol_counts: Dict[str, int] = {}
+        for sym in snapshot.symbols.values():
+            for sp in (sym.spaces or ()):
+                space_symbol_counts[sp] = space_symbol_counts.get(sp, 0) + 1
+        space_file_counts: Dict[str, int] = {
+            sp: len(files) for sp, files in snapshot.files_map.items()
+        }
         return {
             "ast_generation": int(snapshot.ast_generation),
             "space_generations": dict(snapshot.space_generations),
             "total_symbols": len(snapshot.symbols),
             "total_files": len(snapshot.file_to_symbol_ids),
+            "total_edges": total_edges,
+            "space_symbol_counts": space_symbol_counts,
+            "space_file_counts": space_file_counts,
             "symbols_mtime_ns": sym_mtime_ns,
             "symbols_size": sym_size,
+            "graph_mtime_ns": graph_mtime_ns,
+            "graph_size": graph_size,
         }
 
     def _atomic_write_meta(self, meta_payload: Dict[str, Any]) -> None:
@@ -767,7 +791,7 @@ class ASTEngine:
             atomic_save_gzip_pickle(self.symbols_index_path, snapshot.to_dict(), compresslevel=1)
             graph.save_binary(self.graph_index_path, compresslevel=1)
             try:
-                meta_payload = self._build_meta_payload(snapshot)
+                meta_payload = self._build_meta_payload(snapshot, graph=graph)
                 self._atomic_write_meta(meta_payload)
             except Exception as exc:
                 log_debug(f"Failed writing AST meta index: {exc}")
@@ -838,27 +862,28 @@ class ASTEngine:
             )
 
     def get_persisted_meta(self) -> Optional[Dict[str, Any]]:
-        """Read lightweight AST generation/metadata without mutating disk files."""
-        with self._lock:
-            if not self.symbols_index_path.exists():
-                return None
-            try:
-                sym_st = self.symbols_index_path.stat()
-                if self._snapshot is not None and sym_st.st_mtime <= self._symbols_mtime:
-                    return self._build_meta_payload(self._snapshot)
-                if self.meta_index_path.exists():
-                    meta = json.loads(self.meta_index_path.read_text(encoding="utf-8"))
-                    if (
-                        isinstance(meta, dict)
-                        and meta.get("symbols_mtime_ns") == int(sym_st.st_mtime_ns)
-                        and meta.get("symbols_size") == int(sym_st.st_size)
-                    ):
-                        return meta
-                if self._ensure_symbols_loaded() and self._snapshot is not None:
-                    return self._build_meta_payload(self._snapshot)
-            except Exception as exc:
-                log_debug(f"get_persisted_meta fallback skipped: {exc}")
+        """Read lightweight AST generation/metadata without mutating disk files (lock-free fast path)."""
+        if not self.symbols_index_path.exists():
             return None
+        try:
+            sym_st = self.symbols_index_path.stat()
+            snap_ref = self._snapshot
+            if snap_ref is not None and sym_st.st_mtime <= self._symbols_mtime:
+                return self._build_meta_payload(snap_ref, graph=self._graph)
+            if self.meta_index_path.exists():
+                meta = json.loads(self.meta_index_path.read_text(encoding="utf-8"))
+                if (
+                    isinstance(meta, dict)
+                    and meta.get("symbols_mtime_ns") == int(sym_st.st_mtime_ns)
+                    and meta.get("symbols_size") == int(sym_st.st_size)
+                ):
+                    return meta
+            with self._lock:
+                if self._ensure_symbols_loaded() and self._snapshot is not None:
+                    return self._build_meta_payload(self._snapshot, graph=self._graph)
+        except Exception as exc:
+            log_debug(f"get_persisted_meta fallback skipped: {exc}")
+        return None
 
     def build_index(
         self,
@@ -1773,7 +1798,7 @@ class ASTEngine:
         member_kind: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Extract hierarchical AST symbol outline for `file_or_uri` with optional orthogonal filters."""
-        with cell_span("ast.outline"), self._lock:
+        with cell_span("ast.outline"):
             GrammarProvisioner.get_warnings(clear=True)
             active_filters = {
                 k: str(v).strip().lower()
@@ -1803,10 +1828,24 @@ class ASTEngine:
 
             snapshot: Optional[ASTSnapshot] = None
             if any(_is_partial_symbol(s) for s in file_symbols):
-                try:
-                    snapshot = self.ensure_jit_synced()
-                except Exception as exc:
-                    log_debug(f"Outline JIT sync skipped: {exc}")
+                if merged:
+                    try:
+                        with self._lock:
+                            snapshot = self.ensure_jit_synced()
+                    except Exception as exc:
+                        log_debug(f"Outline JIT sync skipped: {exc}")
+                else:
+                    snapshot = self._snapshot
+                    if snapshot is None and self.symbols_index_path.exists():
+                        acquired = self._lock.acquire(blocking=False)
+                        if acquired:
+                            try:
+                                if self._ensure_symbols_loaded():
+                                    snapshot = self._snapshot
+                            except Exception as exc:
+                                log_debug(f"Outline non-blocking symbols load skipped: {exc}")
+                            finally:
+                                self._lock.release()
 
             outline_nodes, partial_siblings_map = _build_outline_tree(
                 file_symbols=file_symbols, snapshot=snapshot, rel_path=rel_path, merged=merged
@@ -1895,48 +1934,103 @@ class ASTEngine:
             )
 
     def status(self, space: Optional[str] = None, space_name: Optional[str] = None) -> Dict[str, Any]:
-        """Return AST index health, generation numbers, symbol/edge counts, and registered parsers."""
-        with self._lock:
-            target_space = space or space_name
-            has_symbols = self.symbols_index_path.exists()
-            has_graph = self.graph_index_path.exists()
+        """Return AST index health, generation numbers, symbol/edge counts, and registered parsers (lock-free fast path)."""
+        target_space = space or space_name
+        has_symbols = self.symbols_index_path.exists()
+        has_graph = self.graph_index_path.exists()
 
-            ast_gen = 0
-            space_gens: Dict[str, int] = {}
-            total_symbols = 0
-            total_files = 0
-            total_edges = 0
+        ast_gen = 0
+        space_gens: Dict[str, int] = {}
+        total_symbols = 0
+        total_files = 0
+        total_edges = 0
 
-            if has_symbols and has_graph and self._ensure_loaded_from_disk():
-                assert self._snapshot is not None
-                assert self._graph is not None
-                ast_gen = self._snapshot.ast_generation
-                space_gens = dict(self._snapshot.space_generations)
-                if target_space:
-                    space_gens = {k: v for k, v in space_gens.items() if k == target_space}
-                    total_symbols = sum(
-                        1 for s in self._snapshot.symbols.values() if target_space in (s.spaces or [])
-                    )
-                    total_files = len(self._snapshot.files_map.get(target_space, []))
-                else:
-                    total_symbols = len(self._snapshot.symbols)
-                    total_files = len(self._snapshot.file_to_symbol_ids)
-                total_edges = self._graph.graph.number_of_edges()
+        if has_symbols and has_graph:
+            populated = False
+            try:
+                sym_st = self.symbols_index_path.stat()
+                graph_st = self.graph_index_path.stat()
+                snap_ref = self._snapshot
+                graph_ref = self._graph
+                if (
+                    snap_ref is not None
+                    and graph_ref is not None
+                    and sym_st.st_mtime <= self._symbols_mtime
+                    and graph_st.st_mtime <= self._graph_mtime
+                ):
+                    ast_gen = snap_ref.ast_generation
+                    space_gens = dict(snap_ref.space_generations)
+                    if target_space:
+                        space_gens = {k: v for k, v in space_gens.items() if k == target_space}
+                        total_symbols = sum(
+                            1 for s in snap_ref.symbols.values() if target_space in (s.spaces or [])
+                        )
+                        total_files = len(snap_ref.files_map.get(target_space, []))
+                    else:
+                        total_symbols = len(snap_ref.symbols)
+                        total_files = len(snap_ref.file_to_symbol_ids)
+                    total_edges = graph_ref.graph.number_of_edges()
+                    populated = True
+                elif self.meta_index_path.exists():
+                    meta = json.loads(self.meta_index_path.read_text(encoding="utf-8"))
+                    if (
+                        isinstance(meta, dict)
+                        and meta.get("symbols_mtime_ns") == int(sym_st.st_mtime_ns)
+                        and meta.get("symbols_size") == int(sym_st.st_size)
+                        and meta.get("graph_mtime_ns") == int(graph_st.st_mtime_ns)
+                        and meta.get("graph_size") == int(graph_st.st_size)
+                        and "total_edges" in meta
+                    ):
+                        sp_sym_map = meta.get("space_symbol_counts")
+                        sp_file_map = meta.get("space_file_counts")
+                        if not target_space or (isinstance(sp_sym_map, dict) and isinstance(sp_file_map, dict)):
+                            ast_gen = int(meta.get("ast_generation", 0))
+                            raw_sg = meta.get("space_generations", {})
+                            space_gens = dict(raw_sg) if isinstance(raw_sg, dict) else {}
+                            if target_space:
+                                space_gens = {k: v for k, v in space_gens.items() if k == target_space}
+                                total_symbols = int(sp_sym_map.get(target_space, 0))  # type: ignore[union-attr]
+                                total_files = int(sp_file_map.get(target_space, 0))  # type: ignore[union-attr]
+                            else:
+                                total_symbols = int(meta.get("total_symbols", 0))
+                                total_files = int(meta.get("total_files", 0))
+                            total_edges = int(meta.get("total_edges", 0))
+                            populated = True
+            except Exception as exc:
+                log_debug(f"status fast-path fallback: {exc}")
 
-            return {
-                "storage_dir": str(self.storage_dir),
-                "index_exists": bool(has_symbols and has_graph),
-                "snapshot_exists": bool(has_symbols and has_graph),
-                "has_symbols_index": has_symbols,
-                "has_graph_index": has_graph,
-                "ast_generation": ast_gen,
-                "space_generations": space_gens,
-                "total_symbols": total_symbols,
-                "total_files": total_files,
-                "total_edges": total_edges,
-                "registered_languages": sorted(list(self.parser_registry.language_configs.keys())),
-                "parser_load_errors": dict(self.parser_registry.load_errors),
-            }
+            if not populated:
+                with self._lock:
+                    if self._ensure_loaded_from_disk():
+                        assert self._snapshot is not None
+                        assert self._graph is not None
+                        ast_gen = self._snapshot.ast_generation
+                        space_gens = dict(self._snapshot.space_generations)
+                        if target_space:
+                            space_gens = {k: v for k, v in space_gens.items() if k == target_space}
+                            total_symbols = sum(
+                                1 for s in self._snapshot.symbols.values() if target_space in (s.spaces or [])
+                            )
+                            total_files = len(self._snapshot.files_map.get(target_space, []))
+                        else:
+                            total_symbols = len(self._snapshot.symbols)
+                            total_files = len(self._snapshot.file_to_symbol_ids)
+                        total_edges = self._graph.graph.number_of_edges()
+
+        return {
+            "storage_dir": str(self.storage_dir),
+            "index_exists": bool(has_symbols and has_graph),
+            "snapshot_exists": bool(has_symbols and has_graph),
+            "has_symbols_index": has_symbols,
+            "has_graph_index": has_graph,
+            "ast_generation": ast_gen,
+            "space_generations": space_gens,
+            "total_symbols": total_symbols,
+            "total_files": total_files,
+            "total_edges": total_edges,
+            "registered_languages": sorted(list(self.parser_registry.language_configs.keys())),
+            "parser_load_errors": dict(self.parser_registry.load_errors),
+        }
 
     def clean(self, space: Optional[str] = None, space_name: Optional[str] = None) -> Dict[str, Any]:
         """Remove persisted AST snapshot/graph caches and reset `core.space` cursor (`consumer='ast'`)."""

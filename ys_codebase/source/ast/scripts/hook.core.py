@@ -194,6 +194,7 @@ def on_file_space_changed(
 
     if engine is None:
         engine = kwargs.get("engine")
+    has_explicit_engine = engine is not None
     if engine is None:
         p_root = kwargs.get("project_root") or (context.get("project_root") if isinstance(context, dict) else None)
         s_dir = kwargs.get("storage_dir") or (context.get("storage_dir") if isinstance(context, dict) else None)
@@ -223,6 +224,25 @@ def on_file_space_changed(
                 "patched_count": 0,
                 "to_generation": 0,
             }
+
+    if not has_explicit_engine:
+        try:
+            from core.context import get_runtime_context
+
+            ctx_mem = get_runtime_context().get_module_state("knowledge_db.service.mem_state")
+            active_kdb_worker = ctx_mem.get("active_worker") if isinstance(ctx_mem, dict) else None
+            if active_kdb_worker is not None and getattr(active_kdb_worker, "is_alive", lambda: False)():
+                notify_fn = getattr(active_kdb_worker, "notify_space_changed", None)
+                if callable(notify_fn):
+                    notify_fn()
+                    return {
+                        "status": "noop",
+                        "ast_generation": _get_current_ast_generation(engine),
+                        "patched_count": 0,
+                        "to_generation": 0,
+                    }
+        except Exception:
+            pass
 
     eng_lock = getattr(engine, "_lock", None)
     with (eng_lock if eng_lock is not None else nullcontext()):

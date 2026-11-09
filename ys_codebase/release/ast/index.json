@@ -5,7 +5,8 @@
     "1.0.0.5",
     "1.0.1.6",
     "1.1.0.0",
-    "1.1.0.1"
+    "1.1.0.1",
+    "1.1.0.2"
   ],
   "releases": {
     "1.0.0.0": {
@@ -182,6 +183,16 @@
       "type": "refactor",
       "urgency": "recommended",
       "summary": "優化單次解析符號與語意圖譜快照共用機制以消除重複讀檔與序列化膨脹，並明確定義 slice 與 traverse 符號定址語法說明"
+    },
+    "1.1.0.2": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.8.0"
+      },
+      "sha256": "f1be87fc8d523d074286fc0acdd5d0b4a9146667f889446c8c7fbcfa80d70bad",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "實作 status 無鎖元資料快讀、單檔 outline 非阻塞提取與非程式碼副檔名預過濾，並支援同行程背景索引單點讓渡"
     }
   }
 }

@@ -594,3 +594,120 @@ class TestProvisionerAndJit(ASTTestCase):
 
         self.assertEqual(len(install_calls), 1)
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_status_lock_free_meta_fast_path_and_outline_non_blocking_under_contention(self) -> None:
+        """Verify status() O(1) meta fast path, non-blocking partial outline(), bundler extension pre-filtering, and hook worker delegation."""
+        from core.platform.lock import InterProcessLock
+
+        proj_dir = self.temp_dir / "lock_free_proj"
+        ui_dir = proj_dir / "UI"
+        ui_dir.mkdir(parents=True, exist_ok=True)
+
+        core_cs = ui_dir / "Panel.Core.cs"
+        events_cs = ui_dir / "Panel.Events.cs"
+        non_code_json = ui_dir / "settings.json"
+        non_code_uxml = ui_dir / "Panel.uxml"
+
+        core_cs.write_text(
+            "namespace UI {\n"
+            "    public partial class Panel {\n"
+            "        public void Open() { Helper(); }\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        events_cs.write_text(
+            "namespace UI {\n"
+            "    public partial class Panel {\n"
+            "        private void Helper() {}\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        non_code_json.write_text('{"theme": "dark"}\n', encoding="utf-8")
+        non_code_uxml.write_text("<ui:UXML />\n", encoding="utf-8")
+
+        engine = ASTEngine(
+            project_root=proj_dir,
+            storage_dir=self.storage_dir / "lock_free_store",
+            custom_spaces={
+                "default": SpaceConfig(
+                    qualified_name="project/default",
+                    owner="project",
+                    short_name="default",
+                    entries=(str(proj_dir),),
+                )
+            },
+        )
+        snap = engine.build_index(allow_parallel=False)
+        self.assertEqual(len(snap.file_graphs), 2)
+        self.assertNotIn("UI/settings.json", snap.file_graphs)
+        self.assertNotIn("UI/Panel.uxml", snap.file_graphs)
+
+        meta = engine.get_persisted_meta()
+        self.assertIsNotNone(meta)
+        assert meta is not None
+        self.assertIn("total_edges", meta)
+        self.assertIn("space_symbol_counts", meta)
+        self.assertEqual(meta["total_files"], 2)
+
+        # Clear in-memory caches so status() and get_persisted_meta() read from unified.meta.json
+        engine._snapshot = None
+        engine._graph = None
+
+        locked_evt = threading.Event()
+        release_evt = threading.Event()
+
+        def hold_locks() -> None:
+            lock_file = str(engine._resolve_index_lock_path())
+            with engine._lock, InterProcessLock(lock_file, timeout=5.0):
+                locked_evt.set()
+                release_evt.wait(timeout=5.0)
+
+        holder = threading.Thread(target=hold_locks, daemon=True)
+        holder.start()
+        self.assertTrue(locked_evt.wait(timeout=2.0))
+        try:
+            st_all = engine.status()
+            self.assertTrue(st_all["index_exists"])
+            self.assertEqual(st_all["total_files"], 2)
+            self.assertGreaterEqual(st_all["total_symbols"], 2)
+
+            st_sp = engine.status(space="default")
+            self.assertEqual(st_sp["total_files"], 2)
+            self.assertGreaterEqual(st_sp["total_symbols"], 2)
+
+            # Single-file outline with merged=False must not block even when engine._lock is held
+            out_single = engine.outline(str(core_cs), merged=False)
+            self.assertFalse(out_single["merged"])
+            self.assertEqual(len(out_single["symbols"]), 1)
+        finally:
+            release_evt.set()
+            holder.join(timeout=2.0)
+
+        # Verify hook.core.py delegates to active in-process KnowledgeDBServiceWorker when engine is not explicitly passed
+        hook_mod = load_ast_script("scripts/hook.core.py", "ast_hook_core_delegate_test")
+        notified = []
+
+        from core.context import get_runtime_context
+
+        class _DummyWorker:
+            def is_alive(self) -> bool:
+                return True
+
+            def notify_space_changed(self) -> None:
+                notified.append(True)
+
+        ctx = get_runtime_context()
+        prev_mem = ctx.get_module_state("knowledge_db.service.mem_state")
+        ctx.set_module_state("knowledge_db.service.mem_state", {"active_worker": _DummyWorker()})
+        try:
+            with patch("ast_engine.engine.get_engine", return_value=engine):
+                res_delegated = hook_mod.on_file_space_changed(context={"space_name": "default"})
+                self.assertEqual(res_delegated["status"], "noop")
+                self.assertEqual(len(notified), 1)
+        finally:
+            ctx.set_module_state("knowledge_db.service.mem_state", prev_mem)
+
+        self.mark_passed()
