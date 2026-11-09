@@ -1501,6 +1501,12 @@ class ASTEngine:
         symbol_or_id: Union[SymbolNode, UnifiedSymbol, str],
         space: Optional[Union[str, Sequence[str]]] = None,
     ) -> SymbolNode:
+        """
+        Resolve `symbol_or_id` to a `SymbolNode` for `slice_part()` / `traverse_edges()`.
+        Supported string forms:
+        - Structured `SymbolSelector`: `[kind] [scope.]name[(param_types...)]` (e.g. `"ASTEngine.slice_part"`).
+        - Canonical `SymbolNode.id`: `<project_rel_path>::<fqn>` (double-colon `::`; single-colon `<path>:<fqn>` is not valid).
+        """
         if isinstance(symbol_or_id, SymbolNode):
             return symbol_or_id
         if isinstance(symbol_or_id, UnifiedSymbol):
@@ -1559,6 +1565,9 @@ class ASTEngine:
         """
         L0 Primitive: O(1) lossless UTF-8 byte slicing of a symbol's structural part
         (`"outer"`, `"name"`, `"signature"`, `"parameters"`, `"return_type"`, `"doc"`, `"body"`).
+
+        `symbol_or_id` accepts a `SymbolNode`, `UnifiedSymbol`, structured `SymbolSelector`
+        (`"[kind] [scope.]name[(param_types...)]"`), or canonical node ID (`"<rel_path>::<fqn>"`).
         """
         part_norm = str(part or "outer").strip().lower()
         if part_norm not in VALID_SLICE_PARTS:

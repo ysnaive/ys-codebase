@@ -7,11 +7,16 @@ source_paths:
   - "ys_codebase/source/gdrive-support/gdrive_support/reconciler.py"
   - "ys_codebase/source/gdrive-support/gdrive_support/transport.py"
   - "ys_codebase/source/gdrive-support/gdrive_support/coordinator.py"
+  - "ys_codebase/source/gdrive-support/gdrive_support/incremental_cache.py"
+  - "ys_codebase/source/gdrive-support/gdrive_support/ledger.py"
+  - "ys_codebase/source/gdrive-support/gdrive_support/readme_sync.py"
+  - "ys_codebase/source/gdrive-support/gdrive_support/sandbox_transport.py"
+  - "ys_codebase/source/gdrive-support/gdrive_support/auth_flow.py"
   - "ys_codebase/source/gdrive-support/gdrive_support/service.py"
   - "ys_codebase/source/gdrive-support/scripts/cli.py"
 related_docs:
   - "../_project/ARCHITECTURE.md"
-last_updated: "2026-11-07"
+last_updated: "2026-11-09"
 ---
 
 # `module:gdrive-support` 系統架構與開發手冊
@@ -24,7 +29,7 @@ last_updated: "2026-11-07"
 
 ```text
 scripts/cli.py ──┐
-                 ├──► coordinator.py ──► transport.py ──► reconciler.py ──► config.py
+                 ├──► coordinator.py (──► incremental_cache.py / ledger.py / readme_sync.py) ──► transport.py (──► sandbox_transport.py / auth_flow.py) ──► reconciler.py ──► config.py
 service.py ──────┘
 ```
 
@@ -34,6 +39,11 @@ service.py ──────┘
 | **`gdrive_support/reconciler.py`** | **100% 無狀態純函式 (`S2`)**：零磁碟/網路 I/O、零系統時間呼叫；計算三方 8 態 `SyncAction` 與 `.history/` 跨分支引用計數（`compute_history_ref_counts`、`compute_orphan_history_file_ids`）。 |
 | **`gdrive_support/transport.py`** | 100% 保持原檔案類型與原始位元組之原子傳輸介面（`AbstractSyncTransport`），提供 `LocalSandboxTransport` 與純標準庫 `GoogleDriveApiTransport`（含執行緒本地 `HTTPSConnection` Keep-Alive 連線池、`_folder_cache` 目錄路徑快取、`_scanned_prefixes` 遞迴掃描後免重查 `get_entry`、`get_start_page_token()` / `list_changes(page_token)` 增量變更游標追蹤、OAuth 2.0 Loopback / `--no-launch-browser` + `--code` 兩階段授權、`token.json` 零 `client_secret` 落盤與 `0o600` 權限保護），直接以 `<root_folder_id>` 為基準提供單檔原子操作；雲端刪除與同名去重一律直接移入 Google Drive 原生 30 天垃圾桶 (`{"trashed": true}`)。 |
 | **`gdrive_support/coordinator.py`** | 透過 `ensure_repo_sync_enabled()` 守門（當 `repo_sync.enable == false` 時拋出 `GDriveRepoSyncDisabledError`）；將所有同步與分支目錄隔離於 `<root_folder_id>/<repo_sync_root>/`（預設 `repo/`）下，於 `storage.local://gdrive-support/sync_state.json` 維護 `remote_repo_cache` 三級增量快取（Level 0 無變更短路、Level 1 單檔與 Shortcut 目標記憶體增量 Patch、Level 2 結構變動全量重掃），支援前景 CLI 透過 `cache://gdrive-support/cli_yield.signal` 協同搶占背景同步鎖，並將 Stage 3 之 Copy-on-Write (`.history/` 搬移) 與單檔上傳封裝為原子任務，於 `finally` 確保本地帳本與雲端 `.yscb_gdrive.json` 一致落盤。 |
+| **`gdrive_support/incremental_cache.py`** | 封裝 `changes` API Level 0~2 三級增量遠端快照快取修補、父子拓撲序新建/刪除子目錄與跨分支 Shortcut 連帶清理。 |
+| **`gdrive_support/ledger.py`** | 封裝本地同步狀態 (`sync_state.json`)、雲端帳本 (`.yscb_gdrive.json`) 原子寫入與 `.history/` 引用計數垃圾回收。 |
+| **`gdrive_support/readme_sync.py`** | 封裝雲端根目錄 `<root_folder_id>/README.md` 與 `<repo_sync_root>/README.md` 託管區塊軟合併與軟移除。 |
+| **`gdrive_support/sandbox_transport.py`** | 實作 `LocalSandboxTransport` 本地雙向同步與分支模擬沙盒，支援全離線端到端驗證。 |
+| **`gdrive_support/auth_flow.py`** | 實作 OAuth 2.0 Loopback 與 `--no-launch-browser` + `--code` 兩階段授權、PKCE 與 `token.json` `0o600` 原子落盤。 |
 | **`gdrive_support/service.py`** | `GDriveSyncServiceWorker`：當 `repo_sync.enable == false` 或 `repo_sync.auto_sync == false` 時處於零輪詢 `standby` 模式（`health_check() -> True`）；啟用時訂閱 `core.space.subscribe`，以 `background_worker=True` 執行非阻塞背景同步並支援對前景 CLI 即時讓鎖，於 `stop()` 確定性呼叫 `_unsubscribe()`。 |
 
 ---

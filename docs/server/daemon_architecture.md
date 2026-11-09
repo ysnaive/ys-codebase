@@ -15,7 +15,7 @@ related_docs:
   - "./hot_reload_and_services.md"
   - "./realtime_logging.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-09"
+last_updated: "2026-11-03"
 ---
 
 # Server 常駐架構與通訊協定專題 (Daemon Architecture & IPC Protocol)
@@ -66,12 +66,11 @@ stateDiagram-v2
 
 ### 1.2 搶占式重啟與停止 (Preemptive Restart / Stop)
 
-`restart_worker()` 與 `stop()` **不先取 `_dispatch_lock`**：先於 `_worker_lock` 內強殺現役 Worker，使進行中 dispatch 阻塞的 `readline()` 得到 EOF 而回傳 `1`（`error="Worker terminated by restart/stop"`）並釋放 `_dispatch_lock`，之後才取 `_dispatch_lock` spawn 新 Worker。因此 Worker 卡住時 reload 仍可於「kill 逾時 + 5s」內返回。被搶占的任務不會被重試。`restart_worker()` 於殺 Worker 前先載入 `ServerConfig`，spawn 失敗時拋 `WorkerSpawnError`（HTTP 層轉 500）。
+`restart_worker()` 與 `stop()` **不先取 `_dispatch_lock`**：先於 `_worker_lock` 內強殺現役 Worker，使進行中 dispatch 阻塞的 `readline()` 得到 EOF 而回傳 `1`（`error="Worker terminated by restart/stop"`）並釋放 `_dispatch_lock`，之後才取 `_dispatch_lock` spawn 新 Worker。因此 Worker 卡住時 reload 仍可於「kill 逾時 + 5s」內返回。被搶占的任務不會被重試。`restart_worker()` 於殺 Worker 前先載入 `ServerConfig`，並同步呼叫 `ModulesWatcher.refresh_snapshot()` 對齊 `.modules/` 快照基準（防止手動 `reload` 後背景輪詢重複觸發第二次重啟），spawn 失敗時拋 `WorkerSpawnError`（HTTP 層轉 500）。同時 Unix Domain Socket 強制以 `0o600` 原子權限建立並透過 `SO_PEERCRED` 驗證同 UID 呼叫端，Windows Named Pipe 則強制啟用 `FILE_FLAG_FIRST_PIPE_INSTANCE` 防範本地端點劫持。
 
-### 1.3 狀態觀測 (`get_status_dict`) 與演算法化記憶體健康監控 (`WorkerMemoryHealthMonitor`)
+### 1.3 狀態觀測 (`get_status_dict`)
 
-- `get_status_dict()` 不取 `_dispatch_lock`，可於任務執行中即時回應：`state ∈ {warming, ready, restarting}`，warming 時附 `warming_elapsed_sec`；`current_task` 為 `{module, args, started_at, elapsed_sec}` 或 `null`；`worker_memory` 呈現 `current_rss_mb`、`baseline_rss_mb`、`peak_rss_mb`、`expansion_ratio`、`consecutive_growth_windows` 與 `recycle_count`。
-- **`WorkerMemoryHealthMonitor` 演算法化守護**：不採用靜態寫死之 MB 絕對上限，而是於 `worker_ready` 後動態採樣校正該工作區之常駐工作集基準線 $B_{\text{base}} = \max(\text{median}, 256\text{ MB})$。僅當無前台任務且所有背景 `ServiceWorker` 均處於非忙碌狀態（`_is_worker_completely_idle() == True`）時，綜合評估相對膨脹倍率（$E = R_{\text{idle}} / B_{\text{base}}$）、連續單調棘輪視窗與宿主 `MemAvailable` 可用記憶體比例，於確認異常滯留時自動執行 `restart_worker()` 無縫回收（冷卻保護 60 秒）。
+`get_status_dict()` 不取 `_dispatch_lock`，可於任務執行中即時回應：`state ∈ {warming, ready, restarting}`，warming 時附 `warming_elapsed_sec`；`current_task` 為 `{module, args, started_at, elapsed_sec}` 或 `null`。
 
 ---
 
@@ -84,7 +83,7 @@ stateDiagram-v2
    - **任務結束立即 Flush**：當當前派發任務執行結束時，無須等待 500ms 計時器，**立即觸發 `flush()`**，確保最終結果零遺漏送達終端。
 2. **NDJSON 分流封包規格**：
    - **`terminal_stream`**：`{"type": "terminal_stream", "stream": "stdout"|"stderr", "text": "..."}`（即時轉發至客戶端對應之標準輸出/錯誤流）。
-   - **`task_finish`**：`{"type": "task_finish", "exit_code": 0, "duration_ms": 24.5, "error": null, "stages": "pre_hooks=7.4ms, cmd_exec=7.5ms, post_hooks=6.8ms"}`（標記單次任務閉環並回傳退出碼、總耗時與 `CellScope` 階段耗時明細，由 `MasterSupervisor` 寫入 `.cache/server/log`）。
+   - **`task_finish`**：`{"type": "task_finish", "exit_code": 0, "duration_ms": 24.5, "error": null}`（標記單次任務閉環並回傳退出碼與耗時）。
 
 ---
 

@@ -8,31 +8,32 @@ source_paths:
   - "yscb://source/knowledge-db/knowledge_db/topology_query.py"
   - "yscb://source/knowledge-db/knowledge_db/formatter.py"
   - "yscb://source/knowledge-db/knowledge_db/schema.py"
+  - "yscb://source/knowledge-db/scripts/hook.core.py"
 related_docs:
   - "./README.md"
-  - "../core/README.md"
+  - "../file-space/README.md"
   - "./parsers.md"
   - "./retrieval.md"
   - "./incremental_hot_reload.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-05"
+last_updated: "2026-11-09"
 ---
 
 # knowledge-db 全系統整合架構設計 (System Architecture)
 
-> 本文件說明 `knowledge-db` 模組的完整系統架構分層、與 `module:file-space`（Layer 1）及 `module:ast`（Layer 2）之三階單向無環圖（Strict 3-Tier DAG）協同、單次解析符號共享（Single-Parse Symbol Sharing），以及 `YFP2` + `acked_ast_generation` 雙水位線增量比對機制。
+> 本文件說明 `knowledge-db` 模組的完整系統架構分層、與 `core.space`（Layer 1）及 `module:ast`（Layer 2）之三階單向無環圖（Strict 3-Tier DAG）協同、單次解析符號共享（Single-Parse Symbol Sharing），以及 `YFP2` + `acked_ast_generation` 雙水位線增量比對機制。
 
 ---
 
 ## 1. 全系統架構分層 (System Layering Architecture)
 
-`knowledge-db` 位於三階單向 DAG 的第 3 層（`file-space -> ast -> knowledge-db`）：底層檔案空間幾何與 `YFP2` 指紋快照由 `module:file-space` 負責；語法樹解析、7 大官方方言隔離 (`dialects/<lang>`)、雙層 `partial class` 符號聚合與 `CallGraphIndex` 呼叫拓撲由 [`module:ast`](../ast/README.md) (`ASTEngine`) 負責並持久化於 `storage.local://ast/indices/`；`knowledge-db` 之 `IndexingPipeline` 則直接呼叫 `ASTEngine.ensure_jit_synced()` 消費 `ASTSnapshot` 建立多欄位加權 BM25 倒排索引 (`unified.index.bin.gz`) 與 FastEmbed ONNX 向量索引 (`unified.vectors.bin.gz`)，**100% 零重複 AST 解析**。
+`knowledge-db` 位於三階單向 DAG 的第 3 層（`core.space -> ast -> knowledge-db`）：底層檔案空間幾何與 `YFP2` 指紋快照由 `core.space` 負責；語法樹解析、7 大官方方言隔離 (`dialects/<lang>`)、雙層 `partial class` 符號聚合與 `CallGraphIndex` 呼叫拓撲由 [`module:ast`](../ast/README.md) (`ASTEngine`) 負責並持久化於 `storage.local://ast/indices/`；`knowledge-db` 之 `IndexingPipeline` 則直接呼叫 `ASTEngine.ensure_jit_synced()` 消費 `ASTSnapshot` 建立多欄位加權 BM25 倒排索引 (`unified.index.bin.gz`) 與 FastEmbed ONNX 向量索引 (`unified.vectors.bin.gz`)，**100% 零重複 AST 解析**。
 
 ```mermaid
 flowchart TD
     subgraph CLILayer ["1. CLI 與背景事件入口層"]
         CLI["5 大正交 CLI 指令 (scripts/cli.py)<br/>status | index | search | clean | model"]
-        HookSpace["on_file_space_changed 事件訂閱 (scripts/hook.file-space.py)<br/>接收 module:file-space FileSpaceWatcherServiceWorker 500ms 防抖通知"]
+        HookSpace["on_file_space_changed 事件訂閱 (scripts/hook.core.py)<br/>接收 core.space FileSpaceWatcherServiceWorker 500ms 防抖通知"]
     end
 
     subgraph FacadeLayer ["2. 門面與管線編排層 (三向職責分離)"]
@@ -42,14 +43,14 @@ flowchart TD
     end
 
     subgraph CoreSubsystems ["3. 核心領域子系統與 Layer 1/2 底座層"]
-        SpaceMod["Layer 1: module:file-space (FileSpaceManager & FingerprintScanner)<br/>雙軌空間配置聚合 + YFP2 二進位快照 + cursors/knowledge-db.json"]
+        SpaceMod["Layer 1: core.space (FileSpaceManager & FingerprintScanner)<br/>雙軌空間配置聚合 + YFP2 二進位快照 + cursors/knowledge-db.json"]
         ASTMod["Layer 2: module:ast (ASTEngine & ASTSnapshot)<br/>7 大方言隔離 + 雙層 partial class 聚合 + CallGraphIndex 單次解析符號共享"]
         Tokenizer["MultilingualTokenizer & ThesaurusEngine<br/>Unicode 整數區間分詞 / 三階多跳同義詞加權展開"]
         Hybrid["HybridSearchEngine (hybrid.py / retrieval.py / embedding.py)<br/>BM25 預先過濾下推 + FastEmbed ONNX 向量 (預設 512-dim) RRF 融合"]
     end
 
     subgraph StorageLayer ["4. 本機持久儲存層 (storage.local://file-space/, storage.local://ast/, storage.local://knowledge-db/)"]
-        MetaBin["storage.local://file-space/snapshots/unified.yfp2.bin<br/>與 cursors/{ast,knowledge-db}.json (Magic YFP2)"]
+        MetaBin["storage.local://core/space/snapshots/<space>.yfp2.bin<br/>與 cursors/{ast,knowledge-db}.json (Magic YFP2)"]
         ASTBin["storage.local://ast/indices/unified.{symbols,graph}.bin.gz<br/>ASTSnapshot 符號池與 NetworkX DiGraph 調用拓撲"]
         IndexBin["storage.local://knowledge-db/indices/unified.index.bin.gz<br/>Pickle Protocol 5 + Gzip 倒排索引 (含 acked_ast_generation)"]
         VecBin["storage.local://knowledge-db/indices/unified.vectors.bin.gz<br/>FastEmbed 浮點特徵向量矩陣快取 (compresslevel=1)"]
@@ -93,10 +94,10 @@ flowchart TD
 
 ---
 
-## 3. 空間管理與 `module:file-space` 二進位快照游標協同 (`FileSpaceManager` & `YFP2`)
+## 3. 空間管理與 `core.space` 二進位快照游標協同 (`FileSpaceManager` & `YFP2`)
 
 ### 3.1 跨模組空間聚合與檢索權重分離 (Space & Weight Separation)
-1. **空間幾何定義 (`core.space`)**：由 `core.space.SpaceRegistry` 自動搜集所有安裝模組之 `contributes/core.json` 與宿主專案 `config://core/contribute.json`，提供空間路徑與排除規則之記憶化解析（詳見 [`docs/core/README.md`](../core/README.md)）。
+1. **空間幾何定義 (`core.space`)**：由 `file_space.FileSpaceManager` 自動搜集所有安裝模組之 `contributes/file-space.json` 與宿主專案 `config://file-space/contribute.json`，提供空間路徑與排除規則之記憶化解析（詳見 [`docs/file-space/README.md`](../file-space/README.md)）。
 2. **空間檢索加權 (`contributes.knowledge-db.space_weights`)**：`knowledge-db` 專注於語意權重配置，由 `contributes/knowledge-db.json` 與 `config://knowledge-db/contribute.json` 宣告各邏輯空間之檢索加權係數（如 `docs: 1.2`, `plans: 0.85`）。
 
 ### 3.2 全空間聯集處理模型 (Union Scope Model)
@@ -105,7 +106,7 @@ $$\text{Scope} = \bigcup_{i=1}^{N} \text{Space}_i$$
 重疊路徑之實體檔案在掃描階段即完成去重，**100% 僅執行 1 次 AST 解析**，並將命中的多個空間名稱寫入 `symbol.metadata["spaces"]`。
 
 ### 3.3 `YFP2` 單調世代快照與 `knowledge-db` 消費者游標比對機制
-系統透過 `file_space.FingerprintScanner` 與 `file-space.storage://snapshots/unified.yfp2.bin`（Magic `b"YFP2"`）搭配 `file-space.storage://cursors/knowledge-db.json` 獨立水位線游標執行增量比對：
+系統透過 `file_space.FingerprintScanner` 與 `storage.local://core/space/snapshots/<space>.yfp2.bin`（Magic `b"YFP2"`）搭配 `storage.local://core/space/cursors/knowledge-db.json` 獨立水位線游標執行增量比對：
 
 ```mermaid
 flowchart TD

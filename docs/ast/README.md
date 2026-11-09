@@ -77,8 +77,9 @@ python yscb.py ast outline ys_codebase/source/core/core/uri.py --public --method
 python yscb.py ast outline Window.cs --merged --non-private --static --json
 
 # 2. L0 結構化精確切片 (支援 outer / signature / doc / body / parameters / return_type / name)
+#    <symbol> 支援 "[kind] [scope.]name[(params)]" 或雙冒號 "<rel_path>::<fqn>"（不支援單冒號 <file>:<symbol>）
 python yscb.py ast slice ASTEngine.outline --part=signature
-python yscb.py ast slice ASTEngine.outline --part=body --json
+python yscb.py ast slice "ys_codebase/source/ast/ast_engine/engine.py::ASTEngine.outline" --part=body --json
 
 # 3. L1 通用圖譜遍歷 (支援 calls, inherits, implements, imports, references, documents 等邊型別)
 python yscb.py ast traverse ASTEngine --kind=calls,inherits --direction=out --depth=1 --json

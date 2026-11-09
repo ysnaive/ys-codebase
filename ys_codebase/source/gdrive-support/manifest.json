@@ -1,7 +1,7 @@
 {
   "id": "gdrive-support",
   "name": "gdrive-support",
-  "version": "1.0.1.5",
+  "version": "1.0.1.6",
   "description": "YS-Codebase Google Drive 原子雲端操作、Shortcut 差量分支與雙向同步模組",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
@@ -30,6 +30,6 @@
   "release": {
     "type": "refactor",
     "urgency": "recommended",
-    "summary": "遷移同步空間枚舉至 core.space 並收斂執行期快取與狀態至隔離上下文"
+    "summary": "將雲端分支同步協調器模組化拆分為本地狀態帳本、三階段增量快取與根目錄說明檔同步組件，並強化路徑與憑證安全防護"
   }
 }

@@ -1,7 +1,7 @@
 {
   "id": "vscode-support",
   "name": "vscode-support",
-  "version": "1.0.0.6",
+  "version": "1.0.0.7",
   "description": "YS-Codebase VS Code 工作區投影、穩定微環境路徑連結與單檔級 JSON Schema 編譯模組",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
@@ -17,6 +17,6 @@
   "release": {
     "type": "refactor",
     "urgency": "recommended",
-    "summary": "遷移工作區空間解析至 core.space 並對齊執行期隔離與不可變資料結構規範"
+    "summary": "為工作區設定檔與擴充結構描述加入檔案鎖與原子寫入保護，並於安裝與設定變更事件加入防抖節流機制"
   }
 }

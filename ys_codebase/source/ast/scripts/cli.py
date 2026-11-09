@@ -502,7 +502,11 @@ def clean(cmd_bags: Any) -> int:
 
 
 def slice(cmd_bags: Any) -> int:
-    """Losslessly slice a symbol's structural part (`yscb.py ast slice <symbol> [--part=outer|signature|doc|body|...] [--json]`)."""
+    """Losslessly slice a symbol's structural part (`yscb.py ast slice <symbol> [--part=outer|signature|doc|body|...] [--json]`).
+
+    `<symbol>` accepts either a structured `SymbolSelector` (`[kind] [scope.]name[(param_types...)]`, e.g.
+    `'ASTEngine.slice_part'`) or a canonical node ID (`<rel_path>::<fqn>`). Single-colon `<path>:<symbol>` is not supported.
+    """
     guard_dispatch("ast")
     bags = _normalize_bags(cmd_bags, "slice")
     engine = _get_engine()
@@ -512,7 +516,10 @@ def slice(cmd_bags: Any) -> int:
             if bags.has_option("json"):
                 _log_cli(json.dumps({"status": "error", "error": "Missing target symbol"}, ensure_ascii=False))
             else:
-                _log_cli("[ast] 錯誤: 請指定目標符號。例如: python yscb.py ast slice 'ASTEngine.outline' --part=signature", file=sys.stderr)
+                _log_cli(
+                    "[ast] 錯誤: 請指定目標符號（支援 '[kind] [scope.]name[(params)]' 或 '<rel_path>::<fqn>'，如 'ASTEngine.outline'）。",
+                    file=sys.stderr,
+                )
             return 1
         target_sym = " ".join(bags.args) if len(bags.args) > 1 else bags.args[0]
         part = bags.get_option_value("part") or "outer"
@@ -531,7 +538,11 @@ def slice(cmd_bags: Any) -> int:
 
 
 def traverse(cmd_bags: Any) -> int:
-    """Traverse workspace symbol graph (`yscb.py ast traverse <symbol> [--kind=calls,inherits,...] [--direction=out|in|both] [--depth=1] [--json]`)."""
+    """Traverse workspace symbol graph (`yscb.py ast traverse <symbol> [--kind=calls,inherits,...] [--direction=out|in|both] [--depth=1] [--json]`).
+
+    `<symbol>` accepts either a structured `SymbolSelector` (`[kind] [scope.]name[(param_types...)]`, e.g.
+    `'ASTEngine'`) or a canonical node ID (`<rel_path>::<fqn>`).
+    """
     guard_dispatch("ast")
     bags = _normalize_bags(cmd_bags, "traverse")
     engine = _get_engine()
@@ -541,7 +552,10 @@ def traverse(cmd_bags: Any) -> int:
             if bags.has_option("json"):
                 _log_cli(json.dumps({"status": "error", "error": "Missing target symbol"}, ensure_ascii=False))
             else:
-                _log_cli("[ast] 錯誤: 請指定起始符號。例如: python yscb.py ast traverse 'ASTEngine' --kind=inherits,calls --depth=1", file=sys.stderr)
+                _log_cli(
+                    "[ast] 錯誤: 請指定起始符號（支援 '[kind] [scope.]name[(params)]' 或 '<rel_path>::<fqn>'，如 'ASTEngine'）。",
+                    file=sys.stderr,
+                )
             return 1
         target_sym = " ".join(bags.args) if len(bags.args) > 1 else bags.args[0]
         kind_opt = bags.get_option_value("kind")

@@ -17,13 +17,13 @@ related_docs:
   - "./topics/release_governance.md"
   - "./reference/contributes_format.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-08"
+last_updated: "2026-11-09"
 ---
 
 # Dev 開發者工具鏈概覽手冊 (Developer Toolchain Overview)
 
 > 模組名稱：`dev`  
-> 模組版本：`1.1.0.1`（以 `module.source://dev/manifest.json` 為準）  
+> 模組版本：`1.1.5`（以 `module.source://dev/manifest.json` 為準）  
 > 職責定位：YS-Codebase 官方開發者工具箱（模組腳手架、靜態合規檢查、開發與純淨發布套件打包、時序滑動窗口產物治理、端到端沙盒測試引擎與安全版本發布流水線）。
 
 ---
@@ -50,7 +50,7 @@ graph TD
 | 指令群組 | 指令語法 | 核心職責說明 |
 | :--- | :--- | :--- |
 | **模組建立** | `python yscb.py dev create <name> [--desc="..."]` | 一鍵生成標準模組骨架與 Contributes 契約設定（預設版號 `0.1.0.0`） |
-| **合規檢查** | `python yscb.py dev check [name \| --all\|-a] [--json]` | 執行 7 步純靜態合規檢核（`manifest.json`、Contributes、`scripts/cli.py`、13 項 AST 運行期隔離守門 A1~F13、AST Zero-Probing、裸 `except:` 反模式警告等），支援 `--json` 結構化輸出 |
+| **合規檢查** | `python yscb.py dev check [name \| --all\|-a] [--json]` | 執行 7 步純靜態合規檢核（`manifest.json`、Contributes、`scripts/cli.py`、13 項 AST 運行期隔離守門 A1~F13 與 TypeScript/JS H14、AST Zero-Probing、裸 `except:` 反模式警告等），支援 `--json` 結構化輸出 |
 | **開發建置** | `python yscb.py dev build [name \| --all]` | 自動清空目標目錄，採用確定性壓縮（Deterministic Zip）打包 `<ver>.build.zip`（保留 `tests/`） |
 | **版本管理** | `python yscb.py dev bump-[major\|minor\|patch\|revision] <name>` | 對模組 `manifest.json` 版本號進行單向遞增 |
 | **發布預檢** | `python yscb.py dev release-check [name \| --all\|-a] [--force\|-f]` | 獨立執行 3-Gate 發布就緒校驗（合規、不可變、單調性，支援 `--all` 批次預檢與 `--force` 放行同版本） |

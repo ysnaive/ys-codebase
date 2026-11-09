@@ -4,7 +4,8 @@
   "versions": [
     "1.0.0.5",
     "1.0.1.6",
-    "1.1.0.0"
+    "1.1.0.0",
+    "1.1.0.1"
   ],
   "releases": {
     "1.0.0.0": {
@@ -171,6 +172,16 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "重構單檔語法圖快取與跨檔案確定性符號連結器、新增 slice 精準程式碼切片與 traverse 多跳關係拓撲遍歷指令"
+    },
+    "1.1.0.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.8.0"
+      },
+      "sha256": "2784e4702e27c97fcec794b92b4a2c8c15ce93978c13006225cb718a7ebbb01f",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "優化單次解析符號與語意圖譜快照共用機制以消除重複讀檔與序列化膨脹，並明確定義 slice 與 traverse 符號定址語法說明"
     }
   }
 }

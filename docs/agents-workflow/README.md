@@ -7,11 +7,12 @@ source_paths:
   - "yscb://source/agents-workflow/agents_workflow/compiler.py"
   - "yscb://source/agents-workflow/agents_workflow/publisher.py"
   - "yscb://source/agents-workflow/agents_workflow/plans/"
+  - "yscb://source/agents-workflow/agents_workflow/plans/state_machine.py"
 related_docs:
   - "./FACTORY_PIPELINE.md"
   - "./user_guide.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-05"
+last_updated: "2026-11-09"
 ---
 
 # Agents Workflow 模組 (General Agents Workflow Framework)

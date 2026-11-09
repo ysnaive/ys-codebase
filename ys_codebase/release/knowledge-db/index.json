@@ -2,19 +2,14 @@
   "name": "knowledge-db",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "versions": [
-    "1.0.0.0",
-    "1.0.1.22",
-    "1.0.2.6",
-    "1.1.0.6",
-    "1.1.1.2",
-    "1.1.2.3",
     "1.2.0.5",
     "1.2.1.5",
-    "1.2.2.0"
+    "1.2.2.0",
+    "1.2.2.1"
   ],
   "releases": {
     "1.0.0.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.0.1.3, <1.1.0.0"
       },
@@ -25,7 +20,7 @@
       "commit": "4bde8a37c9b9812de9dc4e44167cea62d78d07e6"
     },
     "1.0.1.22": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.0.3.0, <1.1.0.0"
       },
@@ -36,7 +31,7 @@
       "commit": "f4eba9f46a05c293f1f55e46a20f2bfd4e6f98c6"
     },
     "1.0.2.6": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.0.3.5, <1.1.0.0"
       },
@@ -47,7 +42,7 @@
       "commit": "90d692a22446fdb3963e1d77a119e38ea70ac4f2"
     },
     "1.1.0.6": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.1.0.6, <1.2.5.0"
       },
@@ -58,7 +53,7 @@
       "commit": "93489141091807e0d8cae7cff6eeba2d53a6b9c8"
     },
     "1.1.1.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.1.1.2, <1.2.5.0"
       },
@@ -89,7 +84,7 @@
       "commit": "e92ed5e4c50e964ef0525d67de8fde8f7054f99b"
     },
     "1.1.2.3": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.0.2, <1.2.5.0"
       },
@@ -264,6 +259,17 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "優化倒排索引記憶體結構、支援離線向量模型快取預檢、直接複用 ast 語法圖索引加速符號檢索與影響面分析"
+    },
+    "1.2.2.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.8.0",
+        "ast": ">=1.1.0.0"
+      },
+      "sha256": "8abbecd32de29481a918a85d1392fb951fcea2dfc186903ecfc1760d87fede77",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "修復增量同步失敗時之安全退回全量建置機制，強化查詢詞彙分解與資料庫無鎖超時防護，並更新檢索技能手冊之符號定址規範"
     }
   }
 }

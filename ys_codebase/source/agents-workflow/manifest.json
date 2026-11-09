@@ -1,6 +1,6 @@
 {
   "name": "agents-workflow",
-  "version": "1.2.4.6",
+  "version": "1.2.4.7",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -24,6 +24,6 @@
   "release": {
     "type": "refactor",
     "urgency": "recommended",
-    "summary": "遷移檔案空間存取至 core.space、收斂執行期狀態至隔離上下文並同步更新程式碼檢索與語法樹切片技能指引"
+    "summary": "統一開發計畫階段狀態機推導邏輯、強化發布管線目錄原子交換與符號連結越界阻斷，並最佳化編譯快取指紋檢查"
   }
 }

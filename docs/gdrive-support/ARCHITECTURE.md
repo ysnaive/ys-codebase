@@ -7,11 +7,16 @@ source_paths:
   - "ys_codebase/source/gdrive-support/gdrive_support/reconciler.py"
   - "ys_codebase/source/gdrive-support/gdrive_support/transport.py"
   - "ys_codebase/source/gdrive-support/gdrive_support/coordinator.py"
+  - "ys_codebase/source/gdrive-support/gdrive_support/incremental_cache.py"
+  - "ys_codebase/source/gdrive-support/gdrive_support/ledger.py"
+  - "ys_codebase/source/gdrive-support/gdrive_support/readme_sync.py"
+  - "ys_codebase/source/gdrive-support/gdrive_support/sandbox_transport.py"
+  - "ys_codebase/source/gdrive-support/gdrive_support/auth_flow.py"
   - "ys_codebase/source/gdrive-support/gdrive_support/service.py"
 related_docs:
   - "./README.md"
   - "../_project/ARCHITECTURE.md"
-last_updated: "2026-11-05"
+last_updated: "2026-11-09"
 ---
 
 # `module:gdrive-support` 中觀架構與增量同步引擎專題手冊

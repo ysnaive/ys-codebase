@@ -39,6 +39,7 @@ description: 透過 knowledge-db search 與 ast (outline/slice/callers/callees/i
 - **結構化部位無損切片 (`ast slice`) 與通用語意圖譜遍歷 (`ast traverse`)**：
   - `python __${project://yscb.py}__ ast slice "<symbol>" [--part=outer|name|signature|parameters|return_type|doc|body] [--space=<name>] [--json]`：基於 UTF-8 Byte Span 對源碼執行 $O(1)$ 無損切片（0 重複解析）。
   - `python __${project://yscb.py}__ ast traverse "<symbol>" [--kind=calls,inherits,implements,imports,references,documents,merges_with,declares] [--direction=out|in|both] [--depth=1] [--space=<name>] [--json]`：對全倉 `WorkspaceSymbolGraph` 執行通用多跳有向邊 BFS 遍歷。
+  - **符號定址語法（`slice` / `traverse` / `callers` / `callees` / `impact` 通用）**：`<symbol>` 支援結構化選擇器 `[kind] [scope.]name[(param_types...)]`（如 `"ASTEngine.slice_part"`、`"method Window.Open(string, int)"`）或雙冒號規範化 ID `<rel_path>::<fqn>`（如 `"ys_codebase/source/ast/ast_engine/engine.py::ASTEngine.slice_part"`）；**嚴禁傳入單冒號 `<file>:<symbol>`**。
 - **確定性符號定址與同名異載 (`ast callers | callees | impact`)**：
   - 支援 `[kind] [scope.]name[(param_types...)]` 語法（如 `"class Engine"`、`"Window.Open"`、`"Window.Open(string, int)"`）。
   - **同名異載 (Method Overloads)**：查詢 `"Class.Method"`（不含參數）若匹配同一父型別下的多個重載，預設自動將同型別所有重載視為同一群組展開聯集拓撲並標註 `matched_overloads`；跨不同父型別同名符號則返回結構化歧義候選清單。

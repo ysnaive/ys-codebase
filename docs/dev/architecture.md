@@ -15,13 +15,13 @@ related_docs:
   - "./testing_guide.md"
   - "./topics/release_governance.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-08"
+last_updated: "2026-11-09"
 ---
 
 # Dev 模組架構規格說明書 (Architecture Specification)
 
 > 模組名稱：`dev`  
-> 模組版本：`1.1.0.1`（以 `module.source://dev/manifest.json` 為準）  
+> 模組版本：`1.1.5`（以 `module.source://dev/manifest.json` 為準）  
 > 核心定位：YS-Codebase 內部研發工具鏈的核心引擎，提供建置、測試、版本控制與發布治理。
 
 ---
@@ -68,7 +68,7 @@ last_updated: "2026-11-08"
 `dev/checker.py` 中的 `Checker.check_module(name)` 對目標模組執行 7 步封閉式純靜態合規檢核管線（零動態 `importlib` 載入外部模組），並將問題歸類為三階嚴重度 (`CheckSeverity`)：
 - **`PASS`**：完全合規，無任何警告與錯誤。
 - **`WARN`**：存在非阻斷性建議或棄用提醒（如缺少 `contributes/core.json`、遺留暫存檔、測試方法漏寫 `self.mark_passed()`），`CheckReport.passed` 仍為 `True`。
-- **`FAIL`**：違反剛性契約或架構紅線（如語法錯誤、Schema 違規、Zero-Probing 違規、13 項運行期隔離紅線 A1~F13 違規、直接繼承 `unittest.TestCase`），`CheckReport.passed` 為 `False` 並阻斷發布（Gate 1）。
+- **`FAIL`**：違反剛性契約或架構紅線（如語法錯誤、Schema 違規、Zero-Probing 違規、13 項運行期隔離紅線 A1~F13 與 TypeScript/JS H14 違規、直接繼承 `unittest.TestCase`），`CheckReport.passed` 為 `False` 並阻斷發布（Gate 1）。
 
 | 步驟 | 檢核方法 | 分類標籤 (`category`) | 檢核重點與規則 |
 | :---: | :--- | :--- | :--- |

@@ -1,6 +1,6 @@
 {
   "name": "dev",
-  "version": "1.1.5.0",
+  "version": "1.1.5.1",
   "description": "YS-Codebase Developer Tools (Scaffold, Checker, Builder, Tester, Releaser)",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -22,8 +22,8 @@
     "Run isolated sandbox tests: python yscb.py dev test --all --quiet"
   ],
   "release": {
-    "type": "feature",
+    "type": "refactor",
     "urgency": "recommended",
-    "summary": "新增單次語法樹遍歷之執行期隔離與不可變資料結構靜態檢核、沙盒測試相依閉包裁剪及跨平台孤兒測試行程清理"
+    "summary": "拆分靜態合規檢查與打包驗證職責、支援平行沙盒測試調度，並強化發布版號校驗與無鎖逾時診斷輸出"
   }
 }

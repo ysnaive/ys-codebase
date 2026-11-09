@@ -433,7 +433,7 @@
         "server_compatible": true,
         "args": {
           "symbol": {
-            "description": "目標符號選擇器或規範化 ID",
+            "description": "目標符號選擇器 (支援 [kind] [scope.]name[(param_types...)] 如 'ASTEngine.slice_part'，或雙冒號規範化 ID '<rel_path>::<fqn>')",
             "required": true
           }
         },
@@ -468,7 +468,9 @@
           "pros": [
             "基於 SymbolNode.parts 位元組座標執行 O(1) 無損源碼切片，0 重複解析"
           ],
-          "cons": []
+          "cons": [
+            "符號定址請使用 '[kind] [scope.]name[(params)]' 或雙冒號 '<rel_path>::<fqn>'，不支援單冒號 '<file>:<symbol>'"
+          ]
         }
       },
       "traverse": {
@@ -477,7 +479,7 @@
         "server_compatible": true,
         "args": {
           "symbol": {
-            "description": "起始符號選擇器或規範化 ID",
+            "description": "起始符號選擇器 (支援 [kind] [scope.]name[(param_types...)] 如 'ASTEngine'，或雙冒號規範化 ID '<rel_path>::<fqn>')",
             "required": true
           }
         },

@@ -2,22 +2,15 @@
   "name": "agents-workflow",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "versions": [
-    "1.0.0.0",
-    "1.0.1.6",
-    "1.0.2.15",
-    "1.0.3.9",
-    "1.1.0.7",
-    "1.2.0.2",
-    "1.2.1.1",
     "1.2.2.3",
     "1.2.3.5",
-    "1.2.4.4",
     "1.2.4.5",
-    "1.2.4.6"
+    "1.2.4.6",
+    "1.2.4.7"
   ],
   "releases": {
     "1.0.0.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.0.0.0, <1.1.0.0"
       },
@@ -28,7 +21,7 @@
       "commit": "eb54a07f4cdca21bbbcd2760bf09e4b02f26e4f4"
     },
     "1.0.1.6": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.0.1.3, <1.1.0.0"
       },
@@ -39,7 +32,7 @@
       "commit": "a8328a2fd28580182bda3844837ec104ef8e8f1a"
     },
     "1.0.2.15": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.0.2.5, <1.1.0.0"
       },
@@ -50,7 +43,7 @@
       "commit": "68ed589a6c708f02afeeada8389d481868652547"
     },
     "1.0.3.9": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.0.3.5, <1.1.0.0"
       },
@@ -61,7 +54,7 @@
       "commit": "90d692a22446fdb3963e1d77a119e38ea70ac4f2"
     },
     "1.1.0.7": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.1.0.6, <1.2.5.0"
       },
@@ -72,7 +65,7 @@
       "commit": "d3a36235d50e20919c84da257cd7f3ffaab173ba"
     },
     "1.2.0.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.1.1.2, <1.2.5.0"
       },
@@ -83,7 +76,7 @@
       "commit": "fa00a820078b701836b369050f0c94dc678a1a69"
     },
     "1.2.1.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.0.0, <1.2.5.0"
       },
@@ -245,7 +238,7 @@
       "commit": "699fd5c166d49aa90021c9381a13f63863d68d58"
     },
     "1.2.4.4": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.3"
       },
@@ -274,6 +267,16 @@
       "type": "refactor",
       "urgency": "recommended",
       "summary": "遷移檔案空間存取至 core.space、收斂執行期狀態至隔離上下文並同步更新程式碼檢索與語法樹切片技能指引"
+    },
+    "1.2.4.7": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.8.0"
+      },
+      "sha256": "124fad1078ed62cc932d439c0a3a9df95b48c22d3c3aad913a3cb98a28258f09",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "統一開發計畫階段狀態機推導邏輯、強化發布管線目錄原子交換與符號連結越界阻斷，並最佳化編譯快取指紋檢查"
     }
   }
 }

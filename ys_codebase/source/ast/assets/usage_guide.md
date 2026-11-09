@@ -5,8 +5,8 @@
   - 當你需要查閱已知檔案的結構大綱與行號區間 (`outline`)、無損切取符號特定部位 (`slice`)、發現跨分部姊妹檔 (`[Partial Siblings]`)，或追蹤誰呼叫/繼承了目標符號 (`callers`/`callees`/`impact`/`traverse`) 時使用。
 - **② 標準用法速查 (Golden Recipes)**：
   - **單檔結構大綱與三維度正交過濾 (`🟢 [SAFE]`)**：`python __${yscb.host://yscb.py}__ ast outline <file_or_uri> [--public|--private|--static|--non-static|--methods|--fields|--types|--merged]`
-  - **結構化部位無損切片 (`🟢 [SAFE]`)**：`python __${yscb.host://yscb.py}__ ast slice "<symbol>" [--part=outer|signature|doc|body|parameters|return_type|name] [--json]`
-  - **全倉語意圖譜有向遍歷 (`🟢 [SAFE]`)**：`python __${yscb.host://yscb.py}__ ast traverse "<symbol>" [--kind=calls,inherits,implements,imports,documents] [--direction=out|in|both] [--depth=1] [--json]`
+  - **結構化部位無損切片 (`🟢 [SAFE]`)**：`python __${yscb.host://yscb.py}__ ast slice "<symbol>" [--part=outer|signature|doc|body|parameters|return_type|name] [--json]`（`<symbol>` 為 `[kind] [scope.]name[(params)]` 如 `"ASTEngine.slice_part"`，或雙冒號 `<rel_path>::<fqn>`；不支援單冒號 `<file>:<symbol>`）
+  - **全倉語意圖譜有向遍歷 (`🟢 [SAFE]`)**：`python __${yscb.host://yscb.py}__ ast traverse "<symbol>" [--kind=calls,inherits,implements,imports,documents] [--direction=out|in|both] [--depth=1] [--json]`（`<symbol>` 同樣支援 `[kind] [scope.]name[(params)]` 或 `<rel_path>::<fqn>`）
   - **追蹤上游呼叫方與同名重載群組 (`🟢 [SAFE]`)**：`python __${yscb.host://yscb.py}__ ast callers "<symbol>" [-s] [--ftype=<ext>]`
   - **追蹤下游被呼叫方 (`🟢 [SAFE]`)**：`python __${yscb.host://yscb.py}__ ast callees "<symbol>" [-s] [--ftype=<ext>]`
   - **評估多階重構爆炸半徑 (`🟢 [SAFE]`)**：`python __${yscb.host://yscb.py}__ ast impact "<symbol>" [--depth=2] [--ftype=<ext>]`

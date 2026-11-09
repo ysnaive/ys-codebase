@@ -30,10 +30,10 @@
 # 檢視單檔結構化符號大綱（支援可見度/綁定/成員型別三維正交過濾；C# partial 自動提示 [Partial Siblings]，加 --merged 展開合併視圖）
 python yscb.py ast outline <file_or_uri> [--merged] [--public|--protected|--internal|--private|--non-private] [--static|--non-static] [--methods|--fields|--types] [--json]
 
-# 無損切取指定符號之結構化源碼部位（支援 outer | name | signature | parameters | return_type | doc | body）
+# 無損切取指定符號之結構化源碼部位（<symbol> 支援 "[kind] [scope.]name[(params)]" 或 "<rel_path>::<fqn>"；不支援單冒號 <file>:<symbol>）
 python yscb.py ast slice <symbol> [--part <slot>] [--space <name>] [--json]
 
-# 對全倉語意圖譜執行通用有向邊 BFS 遍歷（支援 calls, inherits, implements, imports, references, documents, merges_with, declares）
+# 對全倉語意圖譜執行通用有向邊 BFS 遍歷（<symbol> 支援 "[kind] [scope.]name[(params)]" 或 "<rel_path>::<fqn>"）
 python yscb.py ast traverse <symbol> [--kind <kinds>] [--direction out|in|both] [--depth <N>] [--space <name>] [--json]
 
 # 查詢調用指定符號之上游調用者與調用點切片
