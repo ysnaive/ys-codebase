@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 
 from core import vfs
 from core.log import RollingFileLogger, create_managed_thread, log
+from core.context import get_env
 from core.platform import (
     InterProcessLock,
     build_runtime_pythonpath,
@@ -422,6 +423,7 @@ class MasterSupervisor:
         self._ttl_thread: Optional[threading.Thread] = None
         self._http_thread: Optional[threading.Thread] = None
         self._restarting = False
+        self._pending_worker_reload = False
         self._restart_thread: Optional[threading.Thread] = None
         self._stop_lock = threading.Lock()
         self._httpd: Optional[http.server.HTTPServer] = None
@@ -800,9 +802,22 @@ class MasterSupervisor:
                     pipe.close()
                 except (OSError, ValueError):
                     pass
+        try:
+            setattr(proc, "_yscb_demux_active", False)
+        except Exception:
+            pass
         if isinstance(task_q, queue.Queue):
             try:
                 task_q.put_nowait(None)
+            except queue.Full:
+                try:
+                    task_q.get_nowait()
+                except Exception:
+                    pass
+                try:
+                    task_q.put_nowait(None)
+                except Exception:
+                    pass
             except Exception:
                 pass
         curr_th = threading.current_thread()
@@ -844,6 +859,8 @@ class MasterSupervisor:
         Raises:
             WorkerSpawnError: if the fresh worker fails the alive handshake.
         """
+        if self._is_stopped or self._restarting:
+            return 0
         # Load config before any destructive action so a config error never leaves the daemon worker-less
         cfg = ServerConfig.load()
 
@@ -872,7 +889,12 @@ class MasterSupervisor:
             finally:
                 self._dispatch_lock.release()
 
+        if self._is_stopped or self._restarting:
+            return 0
         with self._worker_lock:
+            if self._is_stopped or self._restarting:
+                return 0
+            self._pending_worker_reload = False
             old_pid = self._worker_proc.pid if self._worker_proc else 0
             self.logger.info(f"Restarting Warm Worker (terminating old PID: {old_pid})...")
             self._kill_worker_locked(timeout_sec=1.5)
@@ -881,6 +903,8 @@ class MasterSupervisor:
 
         with self._dispatch_lock:
             with self._worker_lock:
+                if self._is_stopped or self._restarting:
+                    return 0
                 if self._worker_proc is not None and self._worker_proc.poll() is None:
                     # A queued dispatch already spawned a fresh worker after the kill
                     new_pid = self._worker_proc.pid
@@ -918,12 +942,24 @@ class MasterSupervisor:
             self.logger.info(f"[Server] Detected core/server module update ({affected_modules}). Triggering Master self-restart...")
             self.restart_server()
         else:
+            if self._is_stopped or self._restarting:
+                return
             self.logger.info(f"[Server] Detected domain module update ({affected_modules or 'unknown'}). Reloading Warm Worker...")
-            self._wait_active_dispatch_drain()
-            try:
-                self.restart_worker()
-            except WorkerSpawnError as err:
-                self.logger.error(f"[Server] Warm Worker reload failed; next dispatch will retry spawning: {err}")
+            drained = self._dispatch_lock.acquire(blocking=True, timeout=max(0.0, float(_WATCHER_DRAIN_TIMEOUT_SEC)))
+            if drained:
+                self._dispatch_lock.release()
+                if self._is_stopped or self._restarting:
+                    return
+                try:
+                    self.restart_worker()
+                except WorkerSpawnError as err:
+                    self.logger.error(f"[Server] Warm Worker reload failed; next dispatch will retry spawning: {err}")
+            else:
+                with self._worker_lock:
+                    self._pending_worker_reload = True
+                self.logger.info(
+                    f"[Server] Foreground dispatch still active after {_WATCHER_DRAIN_TIMEOUT_SEC:.1f}s; deferring Warm Worker reload until task completes."
+                )
 
     def _perform_self_restart(self) -> int:
         """
@@ -998,7 +1034,9 @@ class MasterSupervisor:
             WorkerSpawnError: if a required respawn fails the alive handshake.
         """
         with self._worker_lock:
-            if not self._worker_proc or self._worker_proc.poll() is not None:
+            if self._worker_proc is not None and self._worker_proc.poll() is not None:
+                self._kill_worker_locked(timeout_sec=0.5)
+            if not self._worker_proc:
                 self._spawn_worker_locked()
                 self._write_state()
             return self._worker_proc  # type: ignore
@@ -1036,7 +1074,7 @@ class MasterSupervisor:
         task_q = getattr(proc, "_yscb_task_queue", None)
         if isinstance(task_q, queue.Queue):
             return task_q
-        task_q = queue.Queue()
+        task_q = queue.Queue(maxsize=512)
         try:
             setattr(proc, "_yscb_task_queue", task_q)
             setattr(proc, "_yscb_demux_active", True)
@@ -1106,26 +1144,72 @@ class MasterSupervisor:
 
         exit_code = 0
         cancel_sent = False
+        cancel_sent_mono: Optional[float] = None
+        last_emit_mono = time.monotonic()
+        import math as _math
+        try:
+            raw_cg = float(get_env("YSCB_CANCEL_GRACE_SEC", "5.0") or "5.0")
+            cancel_grace_sec = max(0.1, raw_cg) if _math.isfinite(raw_cg) else 5.0
+        except (TypeError, ValueError):
+            cancel_grace_sec = 5.0
+        heartbeat_interval_sec = 15.0
+
         while True:
             try:
+                now_top = time.monotonic()
+                if (
+                    not cancel_sent
+                    and is_client_disconnected is not None
+                    and is_client_disconnected()
+                ):
+                    cancel_sent = True
+                    cancel_sent_mono = now_top
+                    self._send_worker_cancel(proc, target_mod, task_id=task_id)
+                if (
+                    cancel_sent
+                    and cancel_sent_mono is not None
+                    and (now_top - cancel_sent_mono) >= cancel_grace_sec
+                ):
+                    self.logger.warning(
+                        f"Task for module='{target_mod}' (task_id={task_id}) did not exit within {cancel_grace_sec:.1f}s after client disconnect; force-recycling worker."
+                    )
+                    try:
+                        setattr(proc, "_yscb_demux_active", False)
+                    except Exception:
+                        pass
+                    with self._worker_lock:
+                        if self._worker_proc is proc:
+                            self._kill_worker_locked(timeout_sec=1.0)
+                            self._pending_worker_reload = True
+                    return 130
+
                 try:
                     packet = task_q.get(timeout=0.15)
                 except queue.Empty:
-                    if (
-                        not cancel_sent
-                        and is_client_disconnected is not None
-                        and is_client_disconnected()
-                    ):
-                        cancel_sent = True
-                        self._send_worker_cancel(proc, target_mod, task_id=task_id)
+                    now_m = time.monotonic()
+                    if proc.poll() is not None and task_q.empty():
+                        err_text = self._worker_eof_error(proc)
+                        with self._worker_lock:
+                            if self._worker_proc is proc:
+                                self._kill_worker_locked(timeout_sec=0.5)
+                        self.logger.error(f"{err_text} during dispatch for module='{target_mod}'")
+                        return self._emit_task_failure(chunk_emitter, err_text)
+                    if not cancel_sent and (now_m - last_emit_mono) >= heartbeat_interval_sec:
+                        chunk_emitter({"type": "heartbeat", "ts": time.time()})
+                        last_emit_mono = now_m
                     continue
 
                 if packet is None:
                     err_text = self._worker_eof_error(proc)
+                    with self._worker_lock:
+                        if self._worker_proc is proc:
+                            self._kill_worker_locked(timeout_sec=0.5)
                     self.logger.error(f"{err_text} during dispatch for module='{target_mod}'")
                     return self._emit_task_failure(chunk_emitter, err_text)
 
-                chunk_emitter(packet)
+                if not cancel_sent:
+                    chunk_emitter(packet)
+                    last_emit_mono = time.monotonic()
 
                 if packet.get("type") == "task_finish":
                     if "services" in packet and isinstance(packet["services"], list):
@@ -1145,8 +1229,13 @@ class MasterSupervisor:
                     and is_client_disconnected()
                 ):
                     cancel_sent = True
+                    cancel_sent_mono = time.monotonic()
                     self._send_worker_cancel(proc, target_mod, task_id=task_id)
             except Exception as ex:
+                try:
+                    setattr(proc, "_yscb_demux_active", False)
+                except Exception:
+                    pass
                 with self._worker_lock:
                     was_preempted = proc.pid in self._preempted_pids
                     if was_preempted:
@@ -1247,6 +1336,41 @@ class MasterSupervisor:
                     self._current_task = None
                     # Dispatch is serialized; stale preemption markers never outlive their task
                     self._preempted_pids.clear()
+                    should_reload_after = bool(
+                        self._pending_worker_reload and not self._is_stopped and not self._restarting
+                    )
+                    if should_reload_after:
+                        self._pending_worker_reload = False
+                        try:
+                            self._kill_worker_locked(timeout_sec=1.5)
+                        except Exception:
+                            pass
+                        can_respawn = (
+                            self._is_running or os.path.isdir(os.path.join(self.yscb_root, ".modules", "core"))
+                        ) and not self._is_stopped and not self._restarting
+                        if can_respawn:
+                            try:
+                                new_pid = self._spawn_worker_locked()
+                                if self.watcher is not None and hasattr(self.watcher, "refresh_snapshot"):
+                                    try:
+                                        self.watcher.refresh_snapshot()
+                                    except Exception:
+                                        pass
+                                if self._is_running or os.path.exists(self.state_file):
+                                    self._write_state()
+                                self.logger.info(f"Fresh Warm Worker respawned after recycle/reload (PID: {new_pid})")
+                            except Exception as respawn_err:
+                                if self._is_running or os.path.exists(self.state_file):
+                                    try:
+                                        self._write_state()
+                                    except Exception:
+                                        pass
+                                self.logger.warning(f"Deferred Warm Worker respawn skipped/failed: {respawn_err}")
+                        elif self._is_running or os.path.exists(self.state_file):
+                            try:
+                                self._write_state()
+                            except Exception:
+                                pass
 
     def _drain_worker_stderr(self, pipe: Any, pid: int) -> None:
         """Drains worker stderr stream in a background thread and logs non-empty lines."""
@@ -1279,6 +1403,7 @@ class MasterSupervisor:
         even while the worker is idle, and routes foreground task packets to `proc._yscb_task_queue`.
         """
         task_q: Optional[queue.Queue] = getattr(proc, "_yscb_task_queue", None)
+        dup_ready_count = 0
         try:
             while True:
                 line = proc.stdout.readline()  # type: ignore
@@ -1304,7 +1429,10 @@ class MasterSupervisor:
                     continue
                 if pkt_type == "worker_ready":
                     if ready_event.is_set():
-                        break
+                        dup_ready_count += 1
+                        if dup_ready_count >= 3:
+                            break
+                        continue
                     if "services" in data and isinstance(data["services"], list):
                         with self._services_lock:
                             self._worker_services = list(data["services"])
@@ -1319,7 +1447,14 @@ class MasterSupervisor:
                     self.logger.info(f"Warm Worker (PID: {proc.pid}) ready (RSS: {ready_rss:.1f} MB)")
                     continue
                 if isinstance(task_q, queue.Queue):
-                    task_q.put(data)
+                    while getattr(proc, "_yscb_demux_active", True) and not self._is_stopped:
+                        try:
+                            task_q.put(data, timeout=0.2)
+                            break
+                        except queue.Full:
+                            if proc.poll() is not None and self._current_task is None:
+                                break
+                            continue
         except (OSError, ValueError) as err:
             if not ready_event.is_set():
                 self.logger.warning(f"Warm Worker (PID: {proc.pid}) handshake reader stopped: {err}")
@@ -1328,9 +1463,23 @@ class MasterSupervisor:
                 setattr(proc, "_yscb_demux_active", False)
             except Exception:
                 pass
+            if getattr(proc, "stdout", None) is not None:
+                try:
+                    proc.stdout.close()  # type: ignore[union-attr]
+                except Exception:
+                    pass
             if isinstance(task_q, queue.Queue):
                 try:
                     task_q.put_nowait(None)
+                except queue.Full:
+                    try:
+                        task_q.get_nowait()
+                    except Exception:
+                        pass
+                    try:
+                        task_q.put_nowait(None)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 
@@ -1371,7 +1520,9 @@ class MasterSupervisor:
 
         ready_event = threading.Event()
         alive_event = threading.Event()
-        task_q: queue.Queue = queue.Queue()
+        if self._is_stopped:
+            raise WorkerSpawnError("MasterSupervisor is stopped; refusing to spawn worker")
+        task_q: queue.Queue = queue.Queue(maxsize=512)
         self._worker_ready_event = ready_event
         self._active_task_queue = task_q
         proc = subprocess.Popen(
@@ -1467,7 +1618,24 @@ class MasterSupervisor:
         while self._is_running:
             if self._stop_event.wait(2.0) or not self._is_running:
                 break
-            if not self._is_worker_completely_idle():
+            proc = self._worker_proc
+            if proc is not None and proc.poll() is not None:
+                with self._worker_lock:
+                    if self._worker_proc is proc:
+                        self._kill_worker_locked(timeout_sec=0.5)
+                        try:
+                            self._write_state()
+                        except Exception:
+                            pass
+            worker_actively_busy = (
+                self._current_task is not None
+                or (
+                    self._worker_proc is not None
+                    and self._worker_proc.poll() is None
+                    and (not self._worker_ready_event.is_set() or self.is_any_worker_service_busy())
+                )
+            )
+            if worker_actively_busy:
                 self.touch_activity(source="busy_guard")
                 continue
             with self._activity_lock:
@@ -1557,18 +1725,18 @@ def _is_client_socket_closed(sock: Any) -> bool:
             peeked = sock.recv(1, socket.MSG_PEEK | dontwait)
             return peeked == b""
 
-        getblocking_fn = getattr(sock, "getblocking", None)
-        setblocking_fn = getattr(sock, "setblocking", None)
-        was_blocking = bool(getblocking_fn()) if callable(getblocking_fn) else True
-        if was_blocking and callable(setblocking_fn):
-            setblocking_fn(False)
+        gettimeout_fn = getattr(sock, "gettimeout", None)
+        settimeout_fn = getattr(sock, "settimeout", None)
+        prev_timeout = gettimeout_fn() if callable(gettimeout_fn) else None
+        if callable(settimeout_fn):
+            settimeout_fn(0.0)
         try:
             peeked = sock.recv(1, socket.MSG_PEEK)
             return peeked == b""
         finally:
-            if was_blocking and callable(setblocking_fn):
+            if callable(settimeout_fn):
                 try:
-                    setblocking_fn(True)
+                    settimeout_fn(prev_timeout)
                 except OSError:
                     pass
     except BlockingIOError:
@@ -1583,9 +1751,15 @@ def _is_client_socket_closed(sock: Any) -> bool:
         return False
 
 
+class _NonBlockingThreadingHTTPServer(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+    block_on_close = False
+
+
 def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
     class DispatcherHTTPHandler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        timeout = 10.0
 
         def log_message(self, format: str, *args: Any) -> None:
             pass
@@ -1792,7 +1966,7 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                 supervisor.logger.info(
                     f"HTTP POST /api/shutdown -> 200 ({dur_ms:.1f}ms, Uptime: {summary['uptime_seconds']:.1f}s)"
                 )
-                threading.Thread(target=supervisor.stop, daemon=True).start()
+                create_managed_thread(supervisor.stop, daemon=True, name="http-shutdown").start()
             else:
                 self.send_response(404)
                 self.send_header("Connection", "close")
@@ -1800,4 +1974,4 @@ def _create_http_server(supervisor: MasterSupervisor) -> http.server.HTTPServer:
                 self.close_connection = True
                 supervisor.logger.warning(f"HTTP POST {parsed.path} -> 404 Not Found")
 
-    return http.server.ThreadingHTTPServer(("127.0.0.1", 0), DispatcherHTTPHandler)
+    return _NonBlockingThreadingHTTPServer(("127.0.0.1", 0), DispatcherHTTPHandler)

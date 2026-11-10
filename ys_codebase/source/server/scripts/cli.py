@@ -176,10 +176,10 @@ def stop(cmd_bags: CmdBags) -> int:
 
     if not force_flag:
         log(f"[Server] Sending graceful shutdown request to daemon (PID: {state.pid})...")
-        resp = _http_request(state, "/api/shutdown", method="POST", timeout=3.0)
+        resp = _http_request(state, "/api/shutdown", method="POST", timeout=5.0)
         summary = (resp or {}).get("summary")
         if resp:
-            for _ in range(50):
+            for _ in range(150):
                 time.sleep(0.1)
                 if not is_process_alive(state.pid):
                     if summary:
@@ -309,7 +309,7 @@ def reload(cmd_bags: CmdBags) -> int:
         return 1
 
     log(f"[Server] Requesting warm worker hot reload (PID: {state.pid})...")
-    resp = _http_request(state, "/api/reload", method="POST", timeout=3.0)
+    resp = _http_request(state, "/api/reload", method="POST", timeout=15.0)
     if resp and "new_worker_pid" in resp:
         log(f"[Server] Worker reloaded successfully (New Worker PID: {resp['new_worker_pid']}).")
         return 0

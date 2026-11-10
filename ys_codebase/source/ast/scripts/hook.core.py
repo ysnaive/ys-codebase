@@ -227,9 +227,17 @@ def on_file_space_changed(
 
     if not has_explicit_engine and s_dir is None and p_root is None:
         try:
-            from core.context import get_runtime_context
+            from core.context import get_runtime_context, is_foreground_active
 
-            ctx_mem = get_runtime_context().get_module_state("knowledge_db.service.mem_state")
+            rt_ctx = get_runtime_context()
+            if is_foreground_active():
+                return {
+                    "status": "noop",
+                    "ast_generation": _get_current_ast_generation(engine),
+                    "patched_count": 0,
+                    "to_generation": 0,
+                }
+            ctx_mem = rt_ctx.get_module_state("knowledge_db.service.mem_state")
             active_kdb_worker = ctx_mem.get("active_worker") if isinstance(ctx_mem, dict) else None
             if active_kdb_worker is not None and getattr(active_kdb_worker, "is_alive", lambda: False)():
                 notify_fn = getattr(active_kdb_worker, "notify_space_changed", None)

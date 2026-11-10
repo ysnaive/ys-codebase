@@ -157,6 +157,9 @@ class HybridSearchEngine:
         lexical_only: bool = False,
         space_weights: Optional[Dict[str, float]] = None,
         min_score: float = 0.0,
+        inverted_index: Optional[Any] = None,
+        vector_index: Optional[VectorIndex] = None,
+        bm25_engine: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         """
         執行複合檢索：
@@ -167,14 +170,32 @@ class HybridSearchEngine:
             return []
 
         effective_weights = space_weights if space_weights is not None else self.space_weights
+        eff_inv = inverted_index if inverted_index is not None else self.inverted_index
+        eff_vec = vector_index if vector_index is not None else self.vector_index
+        eff_bm25 = bm25_engine if bm25_engine is not None else self.bm25_engine
         norm_ftypes = normalize_ftypes(file_types) or None
+
+        vec_ready = (
+            eff_vec is not None
+            and len(eff_vec.doc_ids) > 0
+            and self.embedding_service is not None
+            and (
+                bool(getattr(self.embedding_service, "mock_mode", False))
+                or (
+                    self.embedding_service.has_local_model()
+                    if hasattr(self.embedding_service, "has_local_model")
+                    else self.embedding_service.is_model_downloaded()
+                )
+            )
+            and bool(self.embedding_service.is_available)
+        )
 
         # 1. 執行 BM25 倒排檢索 (擷取足夠候選集供融合)
         fetch_limit = max(limit * 3, 30)
         bm25_hits: List[Dict[str, Any]] = []
-        symbols_map = getattr(self.inverted_index, "symbols", {}) if self.inverted_index else {}
-        will_use_vectors = (not lexical_only) and self.is_vector_available
-        if self.bm25_engine is not None and self.inverted_index is not None:
+        symbols_map = getattr(eff_inv, "symbols", {}) if eff_inv else {}
+        will_use_vectors = (not lexical_only) and vec_ready
+        if eff_bm25 is not None and eff_inv is not None:
             flt = QueryFilter(
                 spaces=spaces,
                 kinds=kinds,
@@ -184,7 +205,7 @@ class HybridSearchEngine:
                 limit=fetch_limit,
                 space_weights=effective_weights if effective_weights else None,
             )
-            raw_res = self.bm25_engine.search(query=query, index=self.inverted_index, filter_cfg=flt)
+            raw_res = eff_bm25.search(query=query, index=eff_inv, filter_cfg=flt)
             bm25_hits = [
                 {
                     "doc_id": r.symbol.id,
@@ -195,7 +216,7 @@ class HybridSearchEngine:
             ]
 
         # 2. 若指定 lexical_only 或向量管線未就緒，執行 100% 剛性平滑降級
-        if lexical_only or not self.is_vector_available:
+        if lexical_only or not vec_ready or eff_vec is None:
             return self._build_bm25_results(
                 bm25_hits, symbols_map, limit, mode="lexical_bm25", min_score=min_score
             )
@@ -219,7 +240,7 @@ class HybridSearchEngine:
 
         try:
             query_vec = self.embedding_service.embed_query(query)
-            raw_vector_hits = self.vector_index.search(
+            raw_vector_hits = eff_vec.search(
                 query_vec,
                 top_k=fetch_limit,
                 allowed_doc_ids=allowed_doc_ids,

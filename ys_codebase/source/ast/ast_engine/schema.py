@@ -71,7 +71,10 @@ class Span:
         return self.slice_bytes(source_bytes).decode(encoding, errors="replace")
 
     def to_dict(self) -> Dict[str, int]:
-        return {
+        cached = getattr(self, "_cached_dict", None)
+        if cached is not None:
+            return cached
+        res = {
             "start_byte": self.start_byte,
             "end_byte": self.end_byte,
             "start_line": self.start_line,
@@ -79,6 +82,8 @@ class Span:
             "end_line": self.end_line,
             "end_col": self.end_col,
         }
+        object.__setattr__(self, "_cached_dict", res)
+        return res
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Span":
@@ -98,7 +103,7 @@ class Span:
             raise SchemaValidationError(f"Span coordinate fields must be integers: {exc}") from exc
         if sb < 0 or eb < sb or sl < 1 or el < sl or sc < 0 or ec < 0:
             raise SchemaValidationError(f"Invalid Span coordinates: start_byte={sb}, end_byte={eb}, start_line={sl}, end_line={el}.")
-        return cls(
+        inst = cls(
             start_byte=sb,
             end_byte=eb,
             start_line=sl,
@@ -106,6 +111,8 @@ class Span:
             end_line=el,
             end_col=ec,
         )
+        object.__setattr__(inst, "_cached_dict", data)
+        return inst
 
 
 @dataclass(frozen=True)
@@ -122,6 +129,9 @@ class ProvenanceStep:
         return (self.provider_id, self.action, self.rule_or_hook, self.detail or "")
 
     def to_dict(self) -> Dict[str, Any]:
+        cached = getattr(self, "_cached_dict", None)
+        if cached is not None:
+            return cached
         d: Dict[str, Any] = {
             "provider_id": self.provider_id,
             "action": self.action,
@@ -129,6 +139,7 @@ class ProvenanceStep:
         }
         if self.detail is not None:
             d["detail"] = self.detail
+        object.__setattr__(self, "_cached_dict", d)
         return d
 
     @classmethod
@@ -139,12 +150,14 @@ class ProvenanceStep:
             if req not in data:
                 raise SchemaValidationError(f"ProvenanceStep missing required field '{req}'.")
         det = data.get("detail")
-        return cls(
+        inst = cls(
             provider_id=str(data["provider_id"]),
             action=str(data["action"]),
             rule_or_hook=str(data["rule_or_hook"]),
             detail=str(det) if det is not None else None,
         )
+        object.__setattr__(inst, "_cached_dict", data)
+        return inst
 
 
 def _freeze_value(val: Any) -> Any:
@@ -221,10 +234,18 @@ class SymbolNode:
             object.__setattr__(self, "provenance", tuple(dedup_prov))
         else:
             object.__setattr__(self, "provenance", ())
+        sep = str(self.facets.get("scope_separator") or ".")
+        cached_fqn = sep.join((*self.scope_path, self.name)) if self.scope_path else self.name
+        object.__setattr__(self, "_cached_fqn", cached_fqn)
+        cached_fp = self.id.split("::", 1)[0] if "::" in self.id else str(self.facets.get("file_path") or "")
+        object.__setattr__(self, "_cached_file_path", cached_fp)
 
     @property
     def file_path(self) -> str:
         """Extract the normalized workspace file path prefix from canonical `id` (`{file_path}::{fqn}`)."""
+        cached = getattr(self, "_cached_file_path", None)
+        if cached is not None:
+            return cached
         if "::" in self.id:
             return self.id.split("::", 1)[0]
         return str(self.facets.get("file_path") or "") if isinstance(self.facets, Mapping) else ""
@@ -232,6 +253,9 @@ class SymbolNode:
     @property
     def fqn(self) -> str:
         """Render the fully-qualified name using `facets.get('scope_separator', '.')`."""
+        cached = getattr(self, "_cached_fqn", None)
+        if cached is not None:
+            return cached
         sep = str(self.facets.get("scope_separator", ".")) if isinstance(self.facets, Mapping) else "."
         if self.scope_path:
             return sep.join((*self.scope_path, self.name))
@@ -254,8 +278,11 @@ class SymbolNode:
         return base_id
 
     def to_dict(self) -> Dict[str, Any]:
+        cached = getattr(self, "_cached_dict", None)
+        if cached is not None:
+            return cached
         facets_out: Dict[str, Any] = _thaw_value(self.facets)
-        return {
+        d = {
             "id": self.id,
             "name": self.name,
             "scope_path": list(self.scope_path),
@@ -267,6 +294,8 @@ class SymbolNode:
             "children": [c.to_dict() for c in self.children],
             "provenance": [p.to_dict() for p in self.provenance],
         }
+        object.__setattr__(self, "_cached_dict", d)
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SymbolNode":
@@ -298,7 +327,7 @@ class SymbolNode:
             p if isinstance(p, ProvenanceStep) else ProvenanceStep.from_dict(p)
             for p in (raw_prov if isinstance(raw_prov, (list, tuple)) else ())
         )
-        return cls(
+        node_obj = cls(
             id=str(data["id"]),
             name=str(data["name"]),
             scope_path=scope_tup,
@@ -310,6 +339,8 @@ class SymbolNode:
             children=children_tup,
             provenance=prov_tup,
         )
+        object.__setattr__(node_obj, "_cached_dict", data)
+        return node_obj
 
 
 @dataclass(frozen=True)
@@ -336,13 +367,27 @@ class RelationEdge:
             tuple(str(tid) for tid in (self.resolved_target_ids or ())),
         )
         if self.provenance:
-            dedup_prov = sorted(set(self.provenance), key=lambda p: p.sort_key())
-            object.__setattr__(self, "provenance", tuple(dedup_prov))
+            if len(self.provenance) == 1:
+                object.__setattr__(self, "provenance", (self.provenance[0],))
+            elif len(self.provenance) == 2:
+                p0, p1 = self.provenance[0], self.provenance[1]
+                if p0 == p1:
+                    object.__setattr__(self, "provenance", (p0,))
+                elif p0.sort_key() <= p1.sort_key():
+                    object.__setattr__(self, "provenance", (p0, p1))
+                else:
+                    object.__setattr__(self, "provenance", (p1, p0))
+            else:
+                dedup_prov = sorted(set(self.provenance), key=lambda p: p.sort_key())
+                object.__setattr__(self, "provenance", tuple(dedup_prov))
         else:
             object.__setattr__(self, "provenance", ())
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        cached = getattr(self, "_cached_dict", None)
+        if cached is not None:
+            return cached
+        d = {
             "source_id": self.source_id,
             "target_expr": self.target_expr,
             "edge_kind": self.edge_kind,
@@ -351,6 +396,8 @@ class RelationEdge:
             "resolved_target_ids": list(self.resolved_target_ids),
             "provenance": [p.to_dict() for p in self.provenance],
         }
+        object.__setattr__(self, "_cached_dict", d)
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RelationEdge":
@@ -368,7 +415,7 @@ class RelationEdge:
             p if isinstance(p, ProvenanceStep) else ProvenanceStep.from_dict(p)
             for p in (raw_prov if isinstance(raw_prov, (list, tuple)) else ())
         )
-        return cls(
+        edge_obj = cls(
             source_id=str(data["source_id"]),
             target_expr=str(data["target_expr"]),
             edge_kind=str(data["edge_kind"]),
@@ -377,6 +424,8 @@ class RelationEdge:
             resolved_target_ids=targets_tup,
             provenance=prov_tup,
         )
+        object.__setattr__(edge_obj, "_cached_dict", data)
+        return edge_obj
 
 
 @dataclass(frozen=True)
@@ -412,6 +461,9 @@ class FileSymbolGraph:
         object.__setattr__(self, "all_nodes_by_id", MappingProxyType(index_map))
 
     def to_dict(self) -> Dict[str, Any]:
+        cached = getattr(self, "_cached_dict", None)
+        if cached is not None:
+            return cached
         reachable_ids: Set[str] = set()
 
         def _collect_reachable(nodes: Tuple[SymbolNode, ...]) -> None:
@@ -428,7 +480,7 @@ class FileSymbolGraph:
             for nid, n in self.all_nodes_by_id.items()
             if nid not in reachable_ids
         }
-        return {
+        d = {
             "file_path": self.file_path,
             "content_hash": self.content_hash,
             "language": self.language,
@@ -436,6 +488,8 @@ class FileSymbolGraph:
             "all_nodes_by_id": extra_nodes,
             "outgoing_edges": [e.to_dict() for e in self.outgoing_edges],
         }
+        object.__setattr__(self, "_cached_dict", d)
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "FileSymbolGraph":
@@ -473,7 +527,7 @@ class FileSymbolGraph:
             e if isinstance(e, RelationEdge) else RelationEdge.from_dict(e)
             for e in (raw_edges if isinstance(raw_edges, (list, tuple)) else ())
         )
-        return cls(
+        fg_obj = cls(
             file_path=str(data["file_path"]),
             content_hash=str(data["content_hash"]),
             language=str(data["language"]),
@@ -481,6 +535,8 @@ class FileSymbolGraph:
             all_nodes_by_id=all_map,
             outgoing_edges=edges_tup,
         )
+        object.__setattr__(fg_obj, "_cached_dict", data)
+        return fg_obj
 
 
 @dataclass(frozen=True)
@@ -558,11 +614,16 @@ class FileImportTable:
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        cached = getattr(self, "_cached_dict", None)
+        if cached is not None:
+            return cached
+        d = {
             "file_path": self.file_path,
             "bindings": {k: v.to_dict() for k, v in self.bindings.items()},
             "exported_symbols": sorted(self.exported_symbols),
         }
+        object.__setattr__(self, "_cached_dict", d)
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "FileImportTable":
@@ -577,11 +638,13 @@ class FileImportTable:
                 b_map[str(k)] = v if isinstance(v, FileImportBinding) else FileImportBinding.from_dict(v)
         raw_exports = data.get("exported_symbols") or ()
         exports_set = frozenset(str(s) for s in raw_exports) if isinstance(raw_exports, (list, tuple, set, frozenset)) else frozenset()
-        return cls(
+        table_obj = cls(
             file_path=str(data["file_path"]),
             bindings=b_map,
             exported_symbols=exports_set,
         )
+        object.__setattr__(table_obj, "_cached_dict", data)
+        return table_obj
 
 
 @dataclass(frozen=True)
@@ -598,6 +661,7 @@ class WorkspaceSymbolGraph:
     type_bases_by_id: Mapping[str, Tuple[str, ...]] = field(default_factory=lambda: MappingProxyType({}), hash=False)
     type_derived_by_id: Mapping[str, Tuple[str, ...]] = field(default_factory=lambda: MappingProxyType({}), hash=False)
     field_types_by_class_id: Mapping[str, Mapping[str, str]] = field(default_factory=lambda: MappingProxyType({}), hash=False)
+    _cached_dict_no_fgs: Optional[Dict[str, Any]] = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         fg_map: Dict[str, FileSymbolGraph] = {}
@@ -625,30 +689,37 @@ class WorkspaceSymbolGraph:
         )
         object.__setattr__(self, "resolved_edges", edges_tup)
 
-        out_map: Dict[str, List[RelationEdge]] = {}
-        in_map: Dict[str, List[RelationEdge]] = {}
-        for edge in edges_tup:
-            out_map.setdefault(edge.source_id, []).append(edge)
-            for tid in edge.resolved_target_ids:
-                in_map.setdefault(tid, []).append(edge)
+        if (
+            isinstance(self.outgoing_edges_by_source, MappingProxyType)
+            and isinstance(self.incoming_edges_by_target, MappingProxyType)
+            and (self.outgoing_edges_by_source or self.incoming_edges_by_target or not edges_tup)
+        ):
+            pass
+        else:
+            out_map: Dict[str, List[RelationEdge]] = {}
+            in_map: Dict[str, List[RelationEdge]] = {}
+            for edge in edges_tup:
+                out_map.setdefault(edge.source_id, []).append(edge)
+                for tid in edge.resolved_target_ids:
+                    in_map.setdefault(tid, []).append(edge)
 
-        if isinstance(self.outgoing_edges_by_source, Mapping) and self.outgoing_edges_by_source and not edges_tup:
-            for k, v in self.outgoing_edges_by_source.items():
-                out_map[str(k)] = [e if isinstance(e, RelationEdge) else RelationEdge.from_dict(e) for e in (v or ())]
-        if isinstance(self.incoming_edges_by_target, Mapping) and self.incoming_edges_by_target and not edges_tup:
-            for k, v in self.incoming_edges_by_target.items():
-                in_map[str(k)] = [e if isinstance(e, RelationEdge) else RelationEdge.from_dict(e) for e in (v or ())]
+            if isinstance(self.outgoing_edges_by_source, Mapping) and self.outgoing_edges_by_source and not edges_tup:
+                for k, v in self.outgoing_edges_by_source.items():
+                    out_map[str(k)] = [e if isinstance(e, RelationEdge) else RelationEdge.from_dict(e) for e in (v or ())]
+            if isinstance(self.incoming_edges_by_target, Mapping) and self.incoming_edges_by_target and not edges_tup:
+                for k, v in self.incoming_edges_by_target.items():
+                    in_map[str(k)] = [e if isinstance(e, RelationEdge) else RelationEdge.from_dict(e) for e in (v or ())]
 
-        object.__setattr__(
-            self,
-            "outgoing_edges_by_source",
-            MappingProxyType({k: tuple(v) for k, v in out_map.items()}),
-        )
-        object.__setattr__(
-            self,
-            "incoming_edges_by_target",
-            MappingProxyType({k: tuple(v) for k, v in in_map.items()}),
-        )
+            object.__setattr__(
+                self,
+                "outgoing_edges_by_source",
+                MappingProxyType({k: tuple(v) for k, v in out_map.items()}),
+            )
+            object.__setattr__(
+                self,
+                "incoming_edges_by_target",
+                MappingProxyType({k: tuple(v) for k, v in in_map.items()}),
+            )
 
         imp_map: Dict[str, FileImportTable] = {}
         if isinstance(self.file_import_tables, Mapping):
@@ -702,18 +773,25 @@ class WorkspaceSymbolGraph:
         """Return a WorkspaceSymbolGraph hydrated with `file_graphs` if not already populated."""
         if not file_graphs or self.file_graphs:
             return self
-        return WorkspaceSymbolGraph(
+        ws_obj = WorkspaceSymbolGraph(
             file_graphs=file_graphs,
             nodes_by_id=self.nodes_by_id,
             resolved_edges=self.resolved_edges,
+            outgoing_edges_by_source=self.outgoing_edges_by_source,
+            incoming_edges_by_target=self.incoming_edges_by_target,
             file_import_tables=self.file_import_tables,
             folded_symbol_groups=self.folded_symbol_groups,
             type_bases_by_id=self.type_bases_by_id,
             type_derived_by_id=self.type_derived_by_id,
             field_types_by_class_id=self.field_types_by_class_id,
         )
+        if self._cached_dict_no_fgs is not None:
+            object.__setattr__(ws_obj, "_cached_dict_no_fgs", self._cached_dict_no_fgs)
+        return ws_obj
 
     def to_dict(self, include_file_graphs: bool = True) -> Dict[str, Any]:
+        if not include_file_graphs and self._cached_dict_no_fgs is not None:
+            return self._cached_dict_no_fgs
         if include_file_graphs:
             fg_node_ids: Set[str] = {
                 nid for fg in self.file_graphs.values() for nid in fg.all_nodes_by_id
@@ -725,7 +803,7 @@ class WorkspaceSymbolGraph:
         else:
             standalone_nodes = {}
             file_graphs_out = {}
-        return {
+        out = {
             "file_graphs": file_graphs_out,
             "nodes_by_id": standalone_nodes,
             "resolved_edges": [e.to_dict() for e in self.resolved_edges],
@@ -735,6 +813,9 @@ class WorkspaceSymbolGraph:
             "type_derived_by_id": {k: list(v) for k, v in self.type_derived_by_id.items()},
             "field_types_by_class_id": {k: dict(v) for k, v in self.field_types_by_class_id.items()},
         }
+        if not include_file_graphs:
+            object.__setattr__(self, "_cached_dict_no_fgs", out)
+        return out
 
     @classmethod
     def from_dict(
@@ -745,7 +826,7 @@ class WorkspaceSymbolGraph:
         if not isinstance(data, dict):
             raise SchemaValidationError("WorkspaceSymbolGraph data must be a dict.")
         eff_file_graphs = data.get("file_graphs") or file_graphs or {}
-        return cls(
+        ws_obj = cls(
             file_graphs=eff_file_graphs,
             nodes_by_id=data.get("nodes_by_id") or {},
             resolved_edges=tuple(data.get("resolved_edges") or ()),
@@ -757,6 +838,9 @@ class WorkspaceSymbolGraph:
             type_derived_by_id=data.get("type_derived_by_id") or {},
             field_types_by_class_id=data.get("field_types_by_class_id") or {},
         )
+        if not data.get("file_graphs"):
+            object.__setattr__(ws_obj, "_cached_dict_no_fgs", data)
+        return ws_obj
 
 
 class SymbolKind(str, Enum):
@@ -816,6 +900,9 @@ class MemberInfo:
         return self.line_number
 
     def to_dict(self) -> Dict[str, Any]:
+        cached = getattr(self, "_cached_dict", None)
+        if cached is not None:
+            return cached
         d: Dict[str, Any] = {
             "name": self.name,
             "kind": self.kind,
@@ -833,6 +920,7 @@ class MemberInfo:
             d["return_type"] = self.return_type
         if self.parameters:
             d["parameters"] = [dict(p) for p in self.parameters]
+        object.__setattr__(self, "_cached_dict", d)
         return d
 
     @classmethod
@@ -846,7 +934,7 @@ class MemberInfo:
         raw_ln = data.get("line_number")
         if raw_ln is None:
             raw_ln = data.get("line")
-        return cls(
+        obj = cls(
             name=str(data["name"]),
             kind=str(data["kind"]),
             signature=str(data.get("signature") or ""),
@@ -859,6 +947,8 @@ class MemberInfo:
             return_type=str(data.get("return_type") or ""),
             parameters=params,
         )
+        object.__setattr__(obj, "_cached_dict", data)
+        return obj
 
 
 @dataclass(frozen=True)
@@ -1040,26 +1130,31 @@ class UnifiedSymbol:
             single_sp = meta.pop("space")
             if "spaces" not in meta and single_sp:
                 meta["spaces"] = [single_sp]
-        return {
-            "id": self.id,
-            "name": self.name,
-            "kind": self.kind,
-            "file_path": self.file_path,
-            "line_number": self.line_number,
-            "end_line": self.end_line,
-            "language": self.language,
-            "docstring": self.docstring,
-            "signature": self.signature,
-            "fqn": self.fqn,
-            "scope_path": self.scope_path,
-            "parent_id": self.parent_id,
-            "children": [c.to_dict() if hasattr(c, "to_dict") else c for c in self.children],
-            "parameters": [dict(p) for p in self.parameters],
-            "return_type": self.return_type,
-            "search_payload": self.search_payload,
-            "visibility": self.visibility,
-            "metadata": meta,
-        }
+        cached_base = getattr(self, "_cached_base_dict", None)
+        if cached_base is None:
+            cached_base = {
+                "id": self.id,
+                "name": self.name,
+                "kind": self.kind,
+                "file_path": self.file_path,
+                "line_number": self.line_number,
+                "end_line": self.end_line,
+                "language": self.language,
+                "docstring": self.docstring,
+                "signature": self.signature,
+                "fqn": self.fqn,
+                "scope_path": self.scope_path,
+                "parent_id": self.parent_id,
+                "children": [c.to_dict() if hasattr(c, "to_dict") else c for c in self.children],
+                "parameters": [dict(p) for p in self.parameters],
+                "return_type": self.return_type,
+                "search_payload": self.search_payload,
+                "visibility": self.visibility,
+            }
+            object.__setattr__(self, "_cached_base_dict", cached_base)
+        out = dict(cached_base)
+        out["metadata"] = meta
+        return out
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "UnifiedSymbol":
@@ -1146,7 +1241,7 @@ class UnifiedSymbol:
         raw_end = data.get("end_line")
         end_ln = int(raw_end if raw_end is not None else line_num)
 
-        return cls(
+        sym_obj = cls(
             id=str(data["id"]),
             name=str(data["name"]),
             kind=str(data["kind"]),
@@ -1167,6 +1262,11 @@ class UnifiedSymbol:
             members=members_tuple,
             metadata=metadata,
         )
+        base_d = dict(data)
+        base_d.pop("metadata", None)
+        base_d.pop("members", None)
+        object.__setattr__(sym_obj, "_cached_base_dict", base_d)
+        return sym_obj
 
 
 @dataclass(frozen=True)
@@ -1182,7 +1282,10 @@ class SymbolCallSite:
     space: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        cached = getattr(self, "_cached_dict", None)
+        if cached is not None:
+            return cached
+        d = {
             "callee_name": self.callee_name,
             "line_number": self.line_number,
             "caller_symbol_id": self.caller_symbol_id,
@@ -1191,12 +1294,14 @@ class SymbolCallSite:
             "file_path": self.file_path,
             "space": self.space,
         }
+        object.__setattr__(self, "_cached_dict", d)
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SymbolCallSite":
         if not isinstance(data, dict):
             raise SchemaValidationError("SymbolCallSite data must be a dict.")
-        return cls(
+        obj = cls(
             callee_name=str(data.get("callee_name") or ""),
             line_number=int(data.get("line_number") or 0),
             caller_symbol_id=str(data.get("caller_symbol_id") or ""),
@@ -1205,6 +1310,8 @@ class SymbolCallSite:
             file_path=str(data.get("file_path") or ""),
             space=str(data.get("space") or ""),
         )
+        object.__setattr__(obj, "_cached_dict", data)
+        return obj
 
 
 @dataclass(frozen=True)
@@ -1264,6 +1371,8 @@ class ASTSnapshot:
         files_map: Optional[Dict[str, List[str]]] = None,
         created_at: float = 0.0,
         file_graphs: Optional[Dict[str, FileSymbolGraph]] = None,
+        schema_version: int = 2,
+        config_hash: str = "",
     ) -> None:
         self.ast_generation: int = ast_generation
         self.space_generations: Dict[str, int] = dict(space_generations) if space_generations is not None else {}
@@ -1274,6 +1383,8 @@ class ASTSnapshot:
         self.files_map: Dict[str, List[str]] = dict(files_map) if files_map is not None else {}
         self.created_at: float = created_at
         self.file_graphs: Dict[str, FileSymbolGraph] = dict(file_graphs) if file_graphs is not None else {}
+        self.schema_version: int = int(schema_version)
+        self.config_hash: str = str(config_hash or "")
         self.__post_init__()
 
     def __post_init__(self) -> None:
@@ -1308,6 +1419,8 @@ class ASTSnapshot:
             "file_to_symbol_ids": {k: list(v) for k, v in self.file_to_symbol_ids.items()},
             "files_map": {k: list(v) for k, v in self.files_map.items()},
             "created_at": self.created_at,
+            "schema_version": self.schema_version,
+            "config_hash": self.config_hash,
         }
         if self.file_graphs:
             out["file_graphs"] = {
@@ -1372,6 +1485,8 @@ class ASTSnapshot:
             },
             created_at=float(data.get("created_at") or 0.0),
             file_graphs=fgraphs_dict,
+            schema_version=int(data.get("schema_version") or 1),
+            config_hash=str(data.get("config_hash") or ""),
         )
 
 

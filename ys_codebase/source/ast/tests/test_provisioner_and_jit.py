@@ -39,8 +39,18 @@ class TestProvisionerAndJit(ASTTestCase):
         super().setUp()
         self.temp_dir = Path(tempfile.mkdtemp(prefix="yscb_ast_jit_test_"))
         self.storage_dir = self.temp_dir / ".ast_cache"
+        self._neg_cache_patcher = patch.object(
+            GrammarProvisioner,
+            "_neg_cache_path",
+            return_value=str(self.temp_dir / "provision_failed.json"),
+        )
+        self._neg_cache_patcher.start()
+        GrammarProvisioner.reset_cache()
 
     def tearDown(self) -> None:
+        GrammarProvisioner.reset_cache()
+        if hasattr(self, "_neg_cache_patcher"):
+            self._neg_cache_patcher.stop()
         if hasattr(self, "temp_dir") and self.temp_dir.exists():
             shutil.rmtree(self.temp_dir, ignore_errors=True)
         super().tearDown()
@@ -873,4 +883,230 @@ class TestProvisionerAndJit(ASTTestCase):
             self.assertEqual(cleaned_targeted["status"], "cleaned")
         finally:
             engine._custom_storage_dir = True
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_provisioner_cross_process_lock_timeout_and_persisted_negative_cache(self) -> None:
+        """Verify GrammarProvisioner blocks/times out on real cross-process InterProcessLock contention and persists offline failure TTL."""
+        from core import uri
+        import os
+        import time
+
+        GrammarProvisioner.reset_cache()
+        run_calls = []
+
+        def fake_run(cmd, **kwargs):
+            run_calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, returncode=1)
+
+        stderr_buf = io.StringIO()
+        yscb_root = uri.resolve_yscb_root()
+        lock_dir = os.path.join(yscb_root, ".venv")
+        os.makedirs(lock_dir, exist_ok=True)
+        lock_path = os.path.join(lock_dir, ".pip_install.lock")
+        ready_file = self.temp_dir / "lock_held.ready"
+
+        holder_code = (
+            "import sys, time\n"
+            "from pathlib import Path\n"
+            f"sys.path[:0] = {sys.path!r}\n"
+            "from core.platform.lock import InterProcessLock\n"
+            f"lk = InterProcessLock({lock_path!r})\n"
+            "assert lk.acquire(blocking=True, timeout_sec=5.0)\n"
+            f"Path({str(ready_file)!r}).write_text('1', encoding='utf-8')\n"
+            "time.sleep(2.0)\n"
+            "lk.release()\n"
+        )
+        holder_proc = subprocess.Popen([sys.executable, "-c", holder_code])
+        try:
+            deadline = time.monotonic() + 5.0
+            while not ready_file.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(ready_file.exists())
+
+            with patch("ast_engine.provisioner.subprocess.run", side_effect=fake_run), patch.object(
+                sys, "stderr", stderr_buf
+            ):
+                res_locked = GrammarProvisioner._try_pip_install(
+                    "tree-sitter-contended-pkg",
+                    "tree_sitter_contended_pkg",
+                    lock_timeout_sec=0.12,
+                )
+                self.assertFalse(res_locked)
+                self.assertEqual(len(run_calls), 0)
+        finally:
+            holder_proc.terminate()
+            holder_proc.wait(timeout=3.0)
+
+        with patch("ast_engine.provisioner.subprocess.run", side_effect=fake_run), patch.object(
+            sys, "stderr", stderr_buf
+        ):
+            res1 = GrammarProvisioner._try_pip_install("tree-sitter-offline-ttl-pkg", "tree_sitter_offline_ttl_pkg")
+            self.assertFalse(res1)
+            self.assertEqual(len(run_calls), 1)
+            self.assertTrue(GrammarProvisioner._is_persisted_failed("tree-sitter-offline-ttl-pkg"))
+
+            GrammarProvisioner.get_failed_packages().clear()
+            res2 = GrammarProvisioner._try_pip_install("tree-sitter-offline-ttl-pkg", "tree_sitter_offline_ttl_pkg")
+            self.assertFalse(res2)
+            self.assertEqual(len(run_calls), 1)
+
+        GrammarProvisioner.reset_cache()
+        self.assertFalse(GrammarProvisioner._is_persisted_failed("tree-sitter-offline-ttl-pkg"))
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_workspace_graph_hydration_meta_sync_cow_concurrency_and_deleted_callee_safety(self) -> None:
+        """Verify hydrated workspace_graph updates unified.meta.json, concurrent status() during hot_patch_index never hits RuntimeError, deleted callees do not phantom-relink, and nested spaces isolate dirty paths."""
+        import time
+
+        proj_dir = self.temp_dir / "cow_proj"
+        pkg_dir = proj_dir / "pkg"
+        nested_mod_dir = proj_dir / "space_a" / "mod"
+        root_mod_dir = proj_dir / "mod"
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        nested_mod_dir.mkdir(parents=True, exist_ok=True)
+        root_mod_dir.mkdir(parents=True, exist_ok=True)
+
+        helper_py = pkg_dir / "helper.py"
+        unrelated_py = pkg_dir / "unrelated.py"
+        caller_py = pkg_dir / "caller.py"
+        nested_init = nested_mod_dir / "__init__.py"
+        root_init = root_mod_dir / "__init__.py"
+
+        helper_py.write_text(
+            "class Helper:\n"
+            "    def unique_target_fn(self, x: int) -> int:\n"
+            "        return x * 2\n",
+            encoding="utf-8",
+        )
+        unrelated_py.write_text(
+            "class UnrelatedBox:\n"
+            "    def unique_target_fn(self, x: int) -> int:\n"
+            "        return x + 999\n",
+            encoding="utf-8",
+        )
+        caller_py.write_text(
+            "from pkg.helper import Helper\n"
+            "def run_job() -> int:\n"
+            "    h = Helper()\n"
+            "    return h.unique_target_fn(21)\n",
+            encoding="utf-8",
+        )
+        nested_init.write_text("class SpaceANestedMod:\n    pass\n", encoding="utf-8")
+        root_init.write_text("class RootModSurvivor:\n    pass\n", encoding="utf-8")
+
+        sp_root = SpaceConfig(
+            qualified_name="project/cow_space",
+            owner="project",
+            short_name="cow_space",
+            entries=(proj_dir.as_posix(),),
+        )
+        sp_nested = SpaceConfig(
+            qualified_name="project/nested_a",
+            owner="project",
+            short_name="nested_a",
+            entries=((proj_dir / "space_a").as_posix(),),
+        )
+        engine = ASTEngine(
+            project_root=proj_dir,
+            storage_dir=self.storage_dir,
+            contributes_data={"spaces": {"cow_space": sp_root, "nested_a": sp_nested}},
+        )
+        snap0 = engine.build_index()
+        orig_syms_keys = set(snap0.symbols.keys())
+
+        # 1. Concurrent lock-free status(space=...) readers during repeated hot_patch_index must never raise RuntimeError
+        reader_errors = []
+        stop_readers = threading.Event()
+
+        def _status_reader() -> None:
+            while not stop_readers.is_set():
+                try:
+                    st = engine.status(space="cow_space")
+                    assert isinstance(st.get("total_symbols"), int)
+                except Exception as exc:
+                    reader_errors.append(exc)
+
+        r_thread = threading.Thread(target=_status_reader, daemon=True)
+        r_thread.start()
+        try:
+            for step_i in range(4):
+                caller_py.write_text(
+                    "from pkg.helper import Helper\n"
+                    f"def run_job() -> int:\n    h = Helper()\n    return h.unique_target_fn({step_i})\n"
+                    f"def extra_{step_i}() -> int:\n    return {step_i}\n",
+                    encoding="utf-8",
+                )
+                snap_step = engine.hot_patch_index([caller_py.as_posix()])
+                self.assertIsNot(snap0, snap_step)
+        finally:
+            stop_readers.set()
+            r_thread.join(timeout=2.0)
+        self.assertEqual(reader_errors, [])
+        self.assertEqual(set(snap0.symbols.keys()), orig_syms_keys)
+        self.assertIsNone(engine._graph.workspace_graph)
+
+        # 2. First callers() hydrates workspace_graph AND updates unified.meta.json so fresh cold ASTEngine.status() hits O(1) meta fast-path without unpickling
+        res_callers = engine.callers("Helper.unique_target_fn", snippet=False)
+        self.assertGreaterEqual(res_callers["total_callers"], 1)
+
+        engine_cold = ASTEngine(
+            project_root=proj_dir,
+            storage_dir=self.storage_dir,
+            contributes_data={"spaces": {"cow_space": sp_root, "nested_a": sp_nested}},
+        )
+        meta_now = engine_cold.get_persisted_meta()
+        self.assertIsNotNone(meta_now)
+        with patch("ast_engine.engine.load_gzip_pickle", side_effect=AssertionError("status() must not unpickle")):
+            st_fast = engine_cold.status()
+            self.assertTrue(st_fast["index_exists"])
+
+        # 3. Deleting pkg/helper.py (defining unique_target_fn) must NOT phantom-relink run_job -> UnrelatedBox.unique_target_fn
+        helper_py.unlink()
+        from core.space import ScanDiffDetail
+        engine.hot_patch_index(ScanDiffDetail(added=set(), modified=set(), deleted={"pkg/helper.py"}))
+        unrelated_sym = next(s for s in engine._snapshot.symbols.values() if "UnrelatedBox.unique_target_fn" in (s.fqn or s.name))
+        preds = list(engine._graph.graph.predecessors(unrelated_sym.id)) if engine._graph.graph.has_node(unrelated_sym.id) else []
+        self.assertEqual(preds, [])
+
+        # 3b. Querying callers(..., space='cow_space') must NOT treat sibling space 'nested_a' as stale or evict SpaceANestedMod!
+        # Also verify non-parseable dirty file (.txt) does not trigger unnecessary hot_patch_index!
+        non_code_txt = proj_dir / "notes.txt"
+        non_code_txt.write_text("plain text change\n", encoding="utf-8")
+        gen_before_scoped_q = engine._snapshot.ast_generation
+        _ = engine.callers("RootModSurvivor", space="cow_space")
+        self.assertEqual(engine._snapshot.ast_generation, gen_before_scoped_q)
+        self.assertIn("SpaceANestedMod", {s.name for s in engine._snapshot.symbols.values()})
+
+        # 4. Deleting space_a/mod/__init__.py via absolute path must NOT evict root mod/__init__.py (RootModSurvivor)
+        nested_init.unlink()
+        engine.hot_patch_index(ScanDiffDetail(added=set(), modified=set(), deleted={nested_init.as_posix()}))
+        rem_names = {s.name for s in engine._snapshot.symbols.values()}
+        self.assertNotIn("SpaceANestedMod", rem_names)
+        self.assertIn("RootModSurvivor", rem_names)
+
+        # 5. Stale config_hash triggers rebuild on ensure_jit_synced()
+        with engine_cold._lock:
+            engine_cold._ensure_loaded_from_disk()
+            assert engine_cold._snapshot is not None
+            gen_prev = engine_cold._snapshot.ast_generation
+            engine_cold._snapshot.config_hash = "stale_hash_0000"
+        rebuilt = engine_cold.ensure_jit_synced(allow_parallel=False)
+        self.assertGreater(rebuilt.ast_generation, gen_prev)
+        self.assertNotEqual(rebuilt.config_hash, "stale_hash_0000")
+
+        # 6. Verify CallGraphIndex.clone_shallow isolates edge call_sites lists & preserves ast_generation
+        from ast_engine.graph import CallGraphIndex
+        from ast_engine.schema import SymbolCallSite
+
+        g_orig = CallGraphIndex(ast_generation=7)
+        site1 = SymbolCallSite(callee_name="b", line_number=1, caller_symbol_id="a", file_path="x.py")
+        site2 = SymbolCallSite(callee_name="b", line_number=9, caller_symbol_id="a", file_path="x.py")
+        g_orig.add_edge("a", "b", site1)
+        g_clone = g_orig.clone_shallow()
+        g_clone.add_edge("a", "b", site2)
+        self.assertEqual(len(g_orig.get_call_sites("a", "b")), 1)
+        self.assertEqual(len(g_clone.get_call_sites("a", "b")), 2)
+        self.assertEqual(g_clone.ast_generation, 7)
         self.mark_passed()

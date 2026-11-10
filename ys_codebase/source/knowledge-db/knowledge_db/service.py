@@ -628,16 +628,25 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 if cur_sig is not None and cur_sig == self._idle_verified_state:
                     return
 
-            # Yield before Stage 1 if a foreground CLI command is actively executing in WarmWorker
+            # Yield before Stage 1 if a foreground CLI command is actively executing (or just finished) in WarmWorker
             try:
                 if is_foreground_active():
-                    self._wake_event.wait(timeout=0.05)
+                    if self._space_dirty_flag:
+                        self._wake_event.set()
+                    self._stop_event.wait(timeout=0.05)
                     return
             except Exception:
                 pass
 
             # Stage 1: Check and consume any pending space diffs (AST + BM25 + CallGraph only)
             if self._has_pending_space_work(engine, indices_dir):
+                try:
+                    if is_foreground_active():
+                        self._wake_event.set()
+                        self._stop_event.wait(timeout=0.05)
+                        return
+                except Exception:
+                    pass
                 _mark_busy("stage1_ast_bm25_graph", "同步 AST 符號、BM25 倒排與呼叫圖譜")
                 self._sync_stage1_lexical_and_graph(engine, indices_dir)
                 self._space_diffs_processed += 1
@@ -695,14 +704,12 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             last_persist_ts = time.monotonic()
             step_info = deficit_info
             while not self._stop_event.is_set():
-                # Yield immediately to foreground CLI tasks in WarmWorker while persisting partial progress
-                # and marking phase="yielded_to_foreground" so foreground search never overwrites in-memory vectors
+                # Yield immediately to foreground CLI tasks in WarmWorker with deferred disk flush
+                # and mark phase="yielded_to_foreground" so foreground search safely degrades to BM25 while partial
                 try:
                     if is_foreground_active():
-                        if getattr(engine.pipeline, "_vector_index_dirty", False):
-                            engine.pipeline.flush_vector_index()
-                            batches_since_persist = 0
-                            last_persist_ts = time.monotonic()
+                        if self.state != self.STATE_READY:
+                            self.set_state(self.STATE_READY)
                         if busy_start_ts > 0.0:
                             tot_s = int(step_info.get("total_symbols", 0))
                             rem_s = int(step_info.get("missing_count", 0))
@@ -713,7 +720,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                                 progress=f"禮讓前景查詢 ({max(0, tot_s - rem_s)}/{tot_s})",
                             )
                             busy_start_ts = 0.0
-                        self._wake_event.wait(timeout=0.05)
+                        self._stop_event.wait(timeout=0.05)
                         continue
                 except Exception:
                     pass
@@ -782,7 +789,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 final_state = self.STATE_READY
         except TaskCancelledError:
             final_state = None
-            self._wake_event.wait(timeout=0.05)
+            self._stop_event.wait(timeout=0.05)
         except Exception as exc:
             log_warn(f"[knowledge-db-worker] Sync cycle warning: {exc}", stream="stderr")
         finally:

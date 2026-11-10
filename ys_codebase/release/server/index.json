@@ -6,7 +6,8 @@
     "1.0.3.2",
     "1.0.4.5",
     "1.0.5.2",
-    "1.0.6.0"
+    "1.0.6.0",
+    "1.0.7.0"
   ],
   "releases": {
     "1.0.0.4": {
@@ -199,6 +200,16 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "新增 /api/cancel 斷線協作取消機制、背景服務前景讓渡與 CoreSpaceWatcher 單重試鎖讓渡，並修復熱重載預熱執行緒競態"
+    },
+    "1.0.7.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.10.0"
+      },
+      "sha256": "263e7ad063bd261b0ac7251cd4d0d79c582408ae758f90d326c29ac50c08f9f7",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "新增 Worker 派發逾時自癒、移除預熱鎖競爭、加固 Inotify 防崩潰與多空間批次沖刷"
     }
   }
 }

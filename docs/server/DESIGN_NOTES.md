@@ -176,3 +176,14 @@ last_updated: "2026-11-03"
   1. **非阻塞斷線探測與帶外取消通道**：`MasterSupervisor._stream_task_over_worker_pipe` 以 `0.15s` 輪詢客戶端 Socket（含 `BrokenPipeError` / `ConnectionResetError` 與非阻塞 TCP FIN 探測）；一旦偵測斷線立即向 Worker `stdin` 發送 `{"action": "cancel"}`。`worker_main` 透過受管 `create_managed_thread` 啟動 `_stdin_reader` 即時觸發 `core.context.request_task_cancel()`，使下游迴圈於 `check_task_cancelled()` 拋出繼承自 `BaseException` 之 `TaskCancelledError`（確保不被業務層寬泛 `except Exception:` 誤吞，同時完整執行所有 `with`/`finally` 鎖與游標回滾），回傳 `exit_code=130` 並保留預熱 Worker 供下一筆請求無縫復用。
   2. **引用計數前景範疇與背景讓位**：`WarmWorker.execute_task` 以 `core.context.foreground_task_scope()` 包裹前景任務執行；`CoreSpaceWatcherServiceWorker` 與 `KnowledgeDBServiceWorker` 於非強制同步週期內偵測 `is_foreground_active()` 為真時主動延後背景磁碟掃描與索引寫入，優先保障前景 CLI 低延遲回應。
   3. **`stderr` 即時進度串流**：`core.log.ProgressReporter` 與明確 `flush=True` 之 `stderr` 串流立即穿透 `DebouncedIOStreamer`，搭配客戶端逐行 `resp.readline()` 實現零延遲進度回饋，同時維持 `stdout` 小片段防抖合併與 `--json` 輸出 100% 純淨。
+
+---
+
+### [DN-13] 單執行緒熱派發重入旁路、專用不可繼承 IPC 控制管線、兩段式斷線強殺與心跳保活
+- **背景與陷阱**：
+  1. `WarmWorker` 內部或背景服務若透過 `subprocess` 再次呼叫 `yscb.py` CLI，而子 CLI 又嘗試走 HTTP 熱派發回同一個單槽 `_dispatch_lock` Master，將形成 100% 自我等待重入死鎖。
+  2. 若 `worker_main` 直接沿用標準 `fd 0` / `fd 1` 作為控制 IPC 管道且未設為不可繼承，一旦任務期間衍生孫進程繼承管道寫端，即使 Worker 退場管道仍不會送出 `EOF`，導致 `MasterSupervisor` 無限期掛死；同理，若業務執行緒卡死於 C 擴充或阻塞系統呼叫無法響應協作式 `TaskCancelledError`，單純送出 `{"action": "cancel"}` 仍無法釋放 `_dispatch_lock`。
+- **工程決策**：
+  1. **重入環境守門與客戶端牆鐘防線**：Worker 啟動即標記 `YSCB_IN_SERVER_WORKER=1`；`dispatcher.py` 偵測 `YSCB_IN_SERVER_WORKER == "1"` 或 `YSCB_NO_HOT_DISPATCH == "1"` 時一律旁路熱派發並略過背景更新檢查；同時支援 `{"type": "heartbeat"}` 15 秒心跳幀與 `YSCB_DISPATCH_MAX_WALL_SEC` 客戶端總牆鐘上限。
+  2. **專用不可繼承 IPC FD 與請求級 `stdin` 隔離**：實機子進程模式下 `worker_main` 以 `os.dup` 複製專用控制讀寫句柄並設 `os.set_inheritable(..., False)`，隨即將標準 `fd 0/1` 重導向至 `os.devnull`，並於每次 `execute_task` 綁定空 `io.StringIO("")` 作為 `sys.stdin` 及攔截非中斷 `BaseException`。
+  3. **兩段式斷線回收、有界佇列與長任務延遲熱重載**：客戶端斷線先送協作式取消，逾 `YSCB_CANCEL_GRACE_SEC`（預設 `5.0s`）仍未收斂則強制 `_kill_worker_locked` 回收進程樹並回傳 `130`；IPC 佇列有界化（`maxsize=512`）、HTTP Server 採 `block_on_close=False` 與 `timeout=10.0`，且當活躍前景任務已運行逾 5 秒時延後 `.modules/` 熱重載至任務結束後執行。

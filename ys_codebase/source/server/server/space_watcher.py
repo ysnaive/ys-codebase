@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import threading
 import time
-from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple, Union
 
 from core.context import is_foreground_active
 from core.log import log_error, log_warn
@@ -61,6 +61,39 @@ except ImportError:
     FileSystemEvent = Any  # type: ignore[assignment,misc]
     FileSystemEventHandler = object  # type: ignore[assignment,misc]
     Observer = None  # type: ignore[assignment]
+
+
+def _install_inotify_safe_watch_patch() -> None:
+    """
+    Guard `watchdog.observers.inotify_c.Inotify._add_watch` against transient `FileNotFoundError` (`ENOENT`)
+    or `PermissionError` (`EACCES`) on individual subdirectories (e.g., concurrently deleted `.staging_*`/`.old_*`
+    directories or virtiofs ghost dentries) during recursive `Observer.schedule()`, so watching the root
+    directory never aborts as a whole.
+    """
+    try:
+        from watchdog.observers.inotify_c import Inotify
+        import errno as _errno
+
+        orig_add_watch = getattr(Inotify, "_add_watch", None)
+        if orig_add_watch is None or getattr(orig_add_watch, "_yscb_enoent_safe", False):
+            return
+
+        def _safe_add_watch(self: Any, path: bytes, mask: int) -> Any:
+            try:
+                return orig_add_watch(self, path, mask)
+            except OSError as exc:
+                if exc.errno in (_errno.ENOENT, _errno.EACCES, _errno.ENOTDIR):
+                    return -1
+                raise
+
+        setattr(_safe_add_watch, "_yscb_enoent_safe", True)
+        setattr(Inotify, "_add_watch", _safe_add_watch)
+    except Exception:
+        pass
+
+
+if HAS_WATCHDOG:
+    _install_inotify_safe_watch_patch()
 
 
 class _CoreSpaceWatchdogHandler(FileSystemEventHandler):
@@ -196,6 +229,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         registry: Optional[SpaceRegistry] = None,
         scanner: Optional[SpaceScanner] = None,
         debounce_seconds: float = DEFAULT_DEBOUNCE_SECONDS,
+        max_debounce_seconds: float = 5.0,
     ) -> None:
         super().__init__()
         self._name = name
@@ -222,8 +256,12 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         self.debounce_seconds = float(
             self.context.get("debounce_seconds", debounce_seconds)
         )
+        self.max_debounce_seconds = float(
+            self.context.get("max_debounce_seconds", max_debounce_seconds)
+        )
 
         self._lock = threading.RLock()
+        self._flush_lock = threading.RLock()
         self._dirty_spaces: Set[str] = set()
         self._dirty_paths_by_space: Dict[str, Set[Path]] = {}
         self._full_rescan_spaces: Set[str] = set()
@@ -253,6 +291,8 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         self.context.update(context)
         if "debounce_seconds" in context:
             self.debounce_seconds = float(context["debounce_seconds"])
+        if "max_debounce_seconds" in context:
+            self.max_debounce_seconds = float(context["max_debounce_seconds"])
         project_root = self.context.get("project_root") or self.context.get(
             "workspace_root"
         )
@@ -513,11 +553,17 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         for s_cfg in watched_spaces:
             q_name = s_cfg.qualified_name
             try:
-                try:
-                    match_res = self.registry.match_path(abs_p, space=q_name)
-                except TypeError:
-                    match_res = self.registry.match_path(abs_p, space_query=q_name)
-                if match_res.matched:
+                if hasattr(self.registry, "is_path_matched_fast"):
+                    is_matched = self.registry.is_path_matched_fast(
+                        abs_p, q_name, is_dir=False
+                    )
+                else:
+                    try:
+                        match_res = self.registry.match_path(abs_p, space=q_name)
+                    except TypeError:
+                        match_res = self.registry.match_path(abs_p, space_query=q_name)
+                    is_matched = match_res.matched
+                if is_matched:
                     matched.append(q_name)
             except Exception:
                 continue
@@ -608,9 +654,30 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
             self.scanner.mark_watcher_dirty(has_remaining)
 
     def _expand_query_to_dirty_qnames(
-        self, space_query: Optional[str]
+        self, space_query: Optional[Union[str, Iterable[str]]]
     ) -> List[str]:
-        if space_query is None or str(space_query).strip() in ("", "*"):
+        if space_query is None:
+            with self._lock:
+                return sorted(self._dirty_spaces)
+        if not isinstance(space_query, str) and isinstance(space_query, Iterable):
+            combined_cands: List[str] = []
+            for item in space_query:
+                q_item = str(item or "").strip()
+                if not q_item or q_item == "*":
+                    with self._lock:
+                        return sorted(self._dirty_spaces)
+                try:
+                    participating = self.registry._collect_participating_spaces(q_item)
+                    for s in participating:
+                        if s.qualified_name not in combined_cands:
+                            combined_cands.append(s.qualified_name)
+                except Exception:
+                    pass
+                if q_item not in combined_cands:
+                    combined_cands.append(q_item)
+            with self._lock:
+                return [name for name in combined_cands if name in self._dirty_spaces]
+        if str(space_query).strip() in ("", "*"):
             with self._lock:
                 return sorted(self._dirty_spaces)
         q = str(space_query).strip()
@@ -697,54 +764,55 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         return results
 
     def flush_space_now(
-        self, space_query: Optional[str] = None
+        self, space_query: Optional[Union[str, Iterable[str]]] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Synchronously flush pending dirty paths for `space_query` (supports `<owner>/<space>`,
-        `<space>` short-name union, `compose` spaces, or `None` for all dirty spaces)
+        `<space>` short-name union, `compose` spaces, an iterable of queries, or `None` for all dirty spaces)
         without waiting for the debounce window.
         """
-        target_qnames = self._expand_query_to_dirty_qnames(space_query)
-        if not target_qnames:
-            return None
+        with self._flush_lock:
+            target_qnames = self._expand_query_to_dirty_qnames(space_query)
+            if not target_qnames:
+                return None
 
-        if self.is_transaction_locked():
+            if self.is_transaction_locked():
+                with self._lock:
+                    if self._dirty_spaces:
+                        self._deferred_by_lock_count += 1
+                return None
+
+            active_qnames: List[str] = []
+            dirty_batch: Dict[str, Set[Path]] = {}
+            full_rescan_batch: Set[str] = set()
             with self._lock:
-                if self._dirty_spaces:
-                    self._deferred_by_lock_count += 1
-            return None
+                for q_name in target_qnames:
+                    is_dirty = q_name in self._dirty_spaces
+                    dirty_paths = set(self._dirty_paths_by_space.pop(q_name, set()))
+                    full_rescan = q_name in self._full_rescan_spaces
+                    self._full_rescan_spaces.discard(q_name)
+                    self._dirty_spaces.discard(q_name)
+                    if not is_dirty and not dirty_paths and not full_rescan:
+                        continue
+                    active_qnames.append(q_name)
+                    dirty_batch[q_name] = dirty_paths
+                    if full_rescan:
+                        full_rescan_batch.add(q_name)
 
-        active_qnames: List[str] = []
-        dirty_batch: Dict[str, Set[Path]] = {}
-        full_rescan_batch: Set[str] = set()
-        with self._lock:
-            for q_name in target_qnames:
-                is_dirty = q_name in self._dirty_spaces
-                dirty_paths = set(self._dirty_paths_by_space.pop(q_name, set()))
-                full_rescan = q_name in self._full_rescan_spaces
-                self._full_rescan_spaces.discard(q_name)
-                self._dirty_spaces.discard(q_name)
-                if not is_dirty and not dirty_paths and not full_rescan:
-                    continue
-                active_qnames.append(q_name)
-                dirty_batch[q_name] = dirty_paths
-                if full_rescan:
-                    full_rescan_batch.add(q_name)
+            if not active_qnames:
+                return None
 
-        if not active_qnames:
-            return None
-
-        results = self._execute_space_flush_batch(
-            active_qnames,
-            dirty_batch,
-            full_rescan_batch,
-            error_verb="flushing space immediately",
-        )
-        last_dict: Optional[Dict[str, Any]] = None
-        for q_name in active_qnames:
-            if q_name in results:
-                last_dict = results[q_name].to_dict()
-        return last_dict
+            results = self._execute_space_flush_batch(
+                active_qnames,
+                dirty_batch,
+                full_rescan_batch,
+                error_verb="flushing space immediately",
+            )
+            last_dict: Optional[Dict[str, Any]] = None
+            for q_name in active_qnames:
+                if q_name in results:
+                    last_dict = results[q_name].to_dict()
+            return last_dict
 
     def flush_dirty_spaces(self, *, force: bool = False) -> Dict[str, ScanDiffResult]:
         """
@@ -752,12 +820,19 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         refresh all dirty spaces, invoke subscribers, and broadcast `on_file_space_changed`.
         """
         now_mono = time.monotonic()
+        max_debounce_sec = float(getattr(self, "max_debounce_seconds", 5.0))
         with self._lock:
             if not self._dirty_spaces:
                 return {}
+            dirty_age_pre = (
+                (now_mono - self._dirty_since_mono)
+                if self._dirty_since_mono is not None
+                else 0.0
+            )
             if (
                 not force
                 and (now_mono - self._last_event_time) < self.debounce_seconds
+                and dirty_age_pre < max_debounce_sec
             ):
                 return {}
 
@@ -780,30 +855,38 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                     self._deferred_by_lock_count += 1
             return {}
 
-        with self._lock:
-            if not self._dirty_spaces:
-                return {}
-            if (
-                not force
-                and (time.monotonic() - self._last_event_time) < self.debounce_seconds
-            ):
-                return {}
-            target_spaces = sorted(self._dirty_spaces)
-            self._dirty_spaces.clear()
-            self._dirty_since_mono = None
-            dirty_batch: Dict[str, Set[Path]] = {
-                s: set(self._dirty_paths_by_space.pop(s, set()))
-                for s in target_spaces
-            }
-            full_rescan_batch: Set[str] = set(self._full_rescan_spaces)
-            self._full_rescan_spaces.difference_update(target_spaces)
+        with self._flush_lock:
+            with self._lock:
+                if not self._dirty_spaces:
+                    return {}
+                now_recheck = time.monotonic()
+                dirty_age_post = (
+                    (now_recheck - self._dirty_since_mono)
+                    if self._dirty_since_mono is not None
+                    else 0.0
+                )
+                if (
+                    not force
+                    and (now_recheck - self._last_event_time) < self.debounce_seconds
+                    and dirty_age_post < max_debounce_sec
+                ):
+                    return {}
+                target_spaces = sorted(self._dirty_spaces)
+                self._dirty_spaces.clear()
+                self._dirty_since_mono = None
+                dirty_batch: Dict[str, Set[Path]] = {
+                    s: set(self._dirty_paths_by_space.pop(s, set()))
+                    for s in target_spaces
+                }
+                full_rescan_batch: Set[str] = set(self._full_rescan_spaces)
+                self._full_rescan_spaces.difference_update(target_spaces)
 
-        return self._execute_space_flush_batch(
-            target_spaces,
-            dirty_batch,
-            full_rescan_batch,
-            error_verb="refreshing dirty space",
-        )
+            return self._execute_space_flush_batch(
+                target_spaces,
+                dirty_batch,
+                full_rescan_batch,
+                error_verb="refreshing dirty space",
+            )
 
     def _resolve_watcher_state_path(self) -> Path:
         if self._state_file_path is not None:
@@ -885,16 +968,27 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                     for w_dir in desired_dirs:
                         norm_k = os.path.normcase(str(w_dir))
                         if norm_k not in self._scheduled_dirs:
-                            try:
-                                watch_obj = self._observer.schedule(
-                                    handler, str(w_dir), recursive=True
-                                )
-                                self._scheduled_dirs.add(norm_k)
-                                self._scheduled_watches[norm_k] = watch_obj
-                            except Exception as exc:
-                                log_warn(
-                                    f"Failed to schedule watchdog on '{w_dir}': {exc}"
-                                )
+                            scheduled_ok = False
+                            for attempt in range(2):
+                                try:
+                                    watch_obj = self._observer.schedule(
+                                        handler, str(w_dir), recursive=True
+                                    )
+                                    self._scheduled_dirs.add(norm_k)
+                                    self._scheduled_watches[norm_k] = watch_obj
+                                    scheduled_ok = True
+                                    break
+                                except FileNotFoundError as fnf_exc:
+                                    if attempt == 0 and w_dir.is_dir():
+                                        continue
+                                    log_warn(
+                                        f"Failed to schedule watchdog on '{w_dir}': {fnf_exc}"
+                                    )
+                                except Exception as exc:
+                                    log_warn(
+                                        f"Failed to schedule watchdog on '{w_dir}': {exc}"
+                                    )
+                                    break
 
         if self.is_alive() or self._observer is not None:
             self._write_watcher_state_file()
@@ -988,9 +1082,9 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         }
 
 
-__all__ = [
+__all__ = (
     "CoreSpaceWatcherServiceWorker",
     "HAS_WATCHDOG",
     "is_watcher_active",
     "subscribe",
-]
+)

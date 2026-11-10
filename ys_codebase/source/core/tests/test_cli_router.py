@@ -259,8 +259,116 @@ class TestCoreCLITelemetry(YSCBTestCase):
             mock_uc = mock_uc_cls.return_value
             with patch.dict(os.environ, {"YSCB_TESTING": "0", "YSCB_TEST_SANDBOX": "0"}):
                 dispatcher._maybe_check_and_print_updates(["core", "uri", "list", "--json"])
-                mock_uc.check_updates.assert_called_once_with(force=False)
+                mock_uc.check_updates.assert_not_called()
                 mock_uc.print_tips_if_available.assert_not_called()
+
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_hot_dispatch_worker_reentrancy_bypass_and_heartbeat_handling(self):
+        """驗證 Worker 內重入環境變數自動繞過熱派發，且串流正確忽略 heartbeat 封包並執行總時限保護。"""
+        from unittest.mock import patch, MagicMock
+        from core.commands import dispatcher
+        from core.context import bind_runtime_context
+
+        # 1. YSCB_IN_SERVER_WORKER=1 與 YSCB_NO_HOT_DISPATCH=1 繞過 _try_hot_dispatch
+        for bypass_env in ({"YSCB_IN_SERVER_WORKER": "1"}, {"YSCB_NO_HOT_DISPATCH": "1"}):
+            with bind_runtime_context(env=bypass_env), patch.object(
+                dispatcher, "_try_hot_dispatch"
+            ) as mock_hot, patch.object(
+                dispatcher, "dispatch_local", return_value=0
+            ) as mock_local:
+                rc = dispatcher.dispatch(["status"])
+                self.assertEqual(rc, 0)
+                mock_hot.assert_not_called()
+                mock_local.assert_called_once()
+
+        # 2. _hot_dispatch_attempt 忽略 heartbeat 封包並正確處理 terminal_stream + task_finish
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_srv = Path(tmpdir) / ".cache" / "server"
+            cache_srv.mkdir(parents=True, exist_ok=True)
+            (cache_srv / "daemon.json").write_text(
+                json.dumps({"pid": os.getpid(), "port": 54321, "token": "tok", "root": tmpdir}),
+                encoding="utf-8",
+            )
+            ndjson_lines = [
+                b'{"type": "heartbeat", "ts": 1.0}\n',
+                b'{"type": "terminal_stream", "stream": "stdout", "text": "ok_out\\n"}\n',
+                b'{"type": "task_finish", "exit_code": 0}\n',
+                b"",
+            ]
+            fake_resp = MagicMock()
+            fake_resp.__enter__.return_value = fake_resp
+            fake_resp.__exit__.return_value = False
+            fake_resp.readline.side_effect = ndjson_lines
+
+            out_buf = io.StringIO()
+            with patch.object(dispatcher, "_open_localhost_no_proxy", return_value=fake_resp), redirect_stdout(out_buf):
+                res = dispatcher._hot_dispatch_attempt("core", ["status"], [], tmpdir)
+            self.assertTrue(res.accepted)
+            self.assertEqual(res.exit_code, 0)
+            self.assertIn("ok_out", out_buf.getvalue())
+
+            # 3. YSCB_DISPATCH_MAX_WALL_SEC 防止無限心跳掛起
+            def _infinite_heartbeats():
+                import time as _t
+                _t.sleep(0.02)
+                return b'{"type": "heartbeat", "ts": 2.0}\n'
+
+            fake_hang_resp = MagicMock()
+            fake_hang_resp.__enter__.return_value = fake_hang_resp
+            fake_hang_resp.__exit__.return_value = False
+            fake_hang_resp.readline.side_effect = _infinite_heartbeats
+
+            with bind_runtime_context(env={"YSCB_DISPATCH_MAX_WALL_SEC": "0.05"}), patch.object(
+                dispatcher, "_open_localhost_no_proxy", return_value=fake_hang_resp
+            ):
+                res_timeout = dispatcher._hot_dispatch_attempt("core", ["status"], [], tmpdir)
+            self.assertTrue(res_timeout.accepted)
+            self.assertIsNone(res_timeout.exit_code)
+
+            # 4. Silent hang dynamically clamps underlying socket timeout to remaining wall deadline
+            import socket as _sock
+            applied_timeouts = []
+            fake_sock = MagicMock()
+            fake_sock.settimeout.side_effect = lambda val: applied_timeouts.append(val)
+
+            def _silent_socket_timeout():
+                raise _sock.timeout("timed out")
+
+            fake_silent_resp = MagicMock()
+            fake_silent_resp.__enter__.return_value = fake_silent_resp
+            fake_silent_resp.__exit__.return_value = False
+            fake_silent_resp.fp.raw._sock = fake_sock
+            fake_silent_resp.readline.side_effect = _silent_socket_timeout
+
+            with bind_runtime_context(env={"YSCB_DISPATCH_MAX_WALL_SEC": "0.25"}), patch.object(
+                dispatcher, "_open_localhost_no_proxy", return_value=fake_silent_resp
+            ) as mock_open:
+                res_silent = dispatcher._hot_dispatch_attempt("core", ["status"], [], tmpdir)
+            self.assertTrue(res_silent.accepted)
+            self.assertIsNone(res_silent.exit_code)
+            self.assertLessEqual(mock_open.call_args.kwargs.get("timeout", 999.0), 0.25)
+            self.assertGreaterEqual(len(applied_timeouts), 1)
+            self.assertLessEqual(applied_timeouts[0], 0.25)
+
+            # 5. PipManager.install_packages and installer.fetch_and_extract_zip forward explicit timeout
+            from core.installer import fetch_and_extract_zip
+            from core.pip_manager import PipManager
+
+            with patch("urllib.request.urlopen", side_effect=TimeoutError("net timeout")) as mock_uopen:
+                with self.assertRaises(TimeoutError):
+                    fetch_and_extract_zip("https://example.invalid/pkg.zip", str(Path(tmpdir) / "dest"), timeout=3.5)
+                self.assertEqual(mock_uopen.call_args.kwargs.get("timeout"), 3.5)
+
+            pm = PipManager(yscb_dir=tmpdir)
+            with patch.object(pm, "ensure_venv", return_value=tmpdir), patch.object(
+                pm, "get_python_executable", return_value=__import__('sys').executable
+            ), patch("subprocess.run", side_effect=TimeoutError("pip timeout")) as mock_srun:
+                from core.pip_manager import PipInstallError
+                with self.assertRaises(PipInstallError):
+                    pm.install_packages(["dummy-pkg"], timeout=7)
+                self.assertEqual(mock_srun.call_args.kwargs.get("timeout"), 7)
 
         self.mark_passed()
 

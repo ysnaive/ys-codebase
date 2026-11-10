@@ -1003,6 +1003,7 @@ class SyncCoordinator(LocalStateLedgerMixin, IncrementalCacheMixin):
         background_worker: bool = False,
         abort_check: Optional[Callable[[], bool]] = None,
         allow_delete: Optional[bool] = None,
+        on_active_transfer: Optional[Callable[[], None]] = None,
     ) -> SyncReport:
         """
         Execute the 4-stage reconciliation pipeline:
@@ -1024,6 +1025,7 @@ class SyncCoordinator(LocalStateLedgerMixin, IncrementalCacheMixin):
                 background_worker=background_worker,
                 abort_check=abort_check,
                 allow_delete=allow_delete,
+                on_active_transfer=on_active_transfer,
             )
 
     def _run_sync_impl(
@@ -1037,6 +1039,7 @@ class SyncCoordinator(LocalStateLedgerMixin, IncrementalCacheMixin):
         background_worker: bool = False,
         abort_check: Optional[Callable[[], bool]] = None,
         allow_delete: Optional[bool] = None,
+        on_active_transfer: Optional[Callable[[], None]] = None,
     ) -> SyncReport:
         self.ensure_repo_sync_enabled()
         if not self.config.sync_spaces:
@@ -1132,6 +1135,19 @@ class SyncCoordinator(LocalStateLedgerMixin, IncrementalCacheMixin):
             )
             if rem_stage.flushed_external_trash:
                 report.gc_history_to_trash.extend(rem_stage.flushed_external_trash)
+
+            has_mutating_actions = bool(
+                rem_stage.flushed_external_trash
+                or any(
+                    a.action not in (SyncActionType.IN_SYNC, SyncActionType.CONFLICT)
+                    for a in actions
+                )
+            )
+            if has_mutating_actions and on_active_transfer is not None:
+                try:
+                    on_active_transfer()
+                except Exception:
+                    pass
 
             self._execute_stage3_reconciliation(
                 state=state,

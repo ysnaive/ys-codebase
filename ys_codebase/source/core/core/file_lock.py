@@ -30,6 +30,10 @@ _SKIP_DIR_SEGMENTS: frozenset[str] = frozenset({
     ".git",
     ".svn",
     ".hg",
+    ".storage.local",
+    ".cache",
+    ".Build",
+    ".snapshots",
 })
 _SKIP_BASENAME_PREFIXES: Tuple[str, ...] = (
     ".yscb_tmp_",

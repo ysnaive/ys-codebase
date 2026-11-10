@@ -2183,6 +2183,154 @@ class TestServerModule(YSCBTestCase):
             sup.stop()
         self.mark_passed()
 
+    def test_subprocess_ipc_fd_isolation_stdin_eof_and_cancel_grace_recycle(self):
+        """驗證真實 Worker 子進程專用 IPC FD 不受子進程裸輸出或殘留孫進程阻塞，且斷線逾寬限期自動強殺回收。"""
+        from core.context import bind_runtime_context
+        from server.space_watcher import CoreSpaceWatcherServiceWorker
+
+        mod_dir = os.path.join(self.root_dir, ".modules", "dummy_ipc_mod")
+        os.makedirs(os.path.join(mod_dir, "scripts"), exist_ok=True)
+        os.makedirs(os.path.join(mod_dir, "contributes"), exist_ok=True)
+        with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": "dummy_ipc_mod", "version": "1.0.0.0"}, f)
+        with open(os.path.join(mod_dir, "contributes", "core.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "commands": {
+                        "module_alias": ["dipc"],
+                        "cmd": {
+                            "probe": {"entry": "scripts/cli.py:probe", "server_compatible": True},
+                            "hang_ignore_cancel": {"entry": "scripts/cli.py:hang_ignore_cancel", "server_compatible": True},
+                            "leak_child_and_die": {"entry": "scripts/cli.py:leak_child_and_die", "server_compatible": True},
+                        },
+                    }
+                },
+                f,
+            )
+        pid_record_file = os.path.join(self.root_dir, "leaked_grandchild.pid")
+        cli_lines = [
+            "import os, subprocess, sys, time",
+            "from core.log import log",
+            "def probe(cmd_bags):",
+            "    eof_in = sys.stdin.readline()",
+            "    subprocess.run([sys.executable, '-c', 'print(\"RAW_STDOUT_NOISE\", flush=True)'], check=True)",
+            "    log(f'PROBE_OK:{eof_in == \"\"}')",
+            "    return 0",
+            "def hang_ignore_cancel(cmd_bags):",
+            "    for _ in range(200):",
+            "        log('NOISY_RUNAWAY_TICK', flush=True)",
+            "        time.sleep(0.03)",
+            "    return 0",
+            "def leak_child_and_die(cmd_bags):",
+            "    p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(3.0)'])",
+            f"    with open({pid_record_file!r}, 'w', encoding='utf-8') as pf:",
+            "        pf.write(str(p.pid))",
+            "    os._exit(1)",
+        ]
+        with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+            f.write("\n".join(cli_lines) + "\n")
+
+        extra_py_path = os.pathsep.join([p for p in sys.path if p])
+        orig_pypath = os.environ.get("PYTHONPATH")
+        os.environ["PYTHONPATH"] = extra_py_path + (os.pathsep + orig_pypath if orig_pypath else "")
+        def _restore_pypath():
+            if orig_pypath is None:
+                os.environ.pop("PYTHONPATH", None)
+            else:
+                os.environ["PYTHONPATH"] = orig_pypath
+        self.addCleanup(_restore_pypath)
+
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
+        sup.start(foreground=False)
+        leaked_pid = 0
+        try:
+            pkts_probe = []
+            rc_probe = sup.dispatch_task({"module": "dummy_ipc_mod", "args": ["probe"], "cwd": self.root_dir}, pkts_probe.append)
+            self.assertEqual(rc_probe, 0, msg=str(pkts_probe))
+            combined_text = "".join(p.get("text", "") for p in pkts_probe if p.get("type") == "terminal_stream")
+            self.assertIn("PROBE_OK:True", combined_text)
+            self.assertNotIn("RAW_STDOUT_NOISE", combined_text)
+
+            pkts_die = []
+            t0 = time.monotonic()
+            rc_die = sup.dispatch_task(
+                {"module": "dummy_ipc_mod", "args": ["leak_child_and_die"], "cwd": self.root_dir},
+                pkts_die.append,
+            )
+            elapsed_die = time.monotonic() - t0
+            self.assertEqual(rc_die, 1)
+            self.assertLess(elapsed_die, 2.0)
+            self.assertTrue(os.path.isfile(pid_record_file))
+            with open(pid_record_file, "r", encoding="utf-8") as pf:
+                leaked_pid = int(pf.read().strip())
+            self.assertGreater(leaked_pid, 0)
+
+            sup._write_state()
+            pkts_hang = []
+            with bind_runtime_context(env={"YSCB_CANCEL_GRACE_SEC": "0.25"}):
+                t1 = time.monotonic()
+                rc_hang = sup.dispatch_task(
+                    {"module": "dummy_ipc_mod", "args": ["hang_ignore_cancel"], "cwd": self.root_dir},
+                    pkts_hang.append,
+                    is_client_disconnected=lambda: len(pkts_hang) >= 1,
+                )
+                elapsed_hang = time.monotonic() - t1
+            self.assertEqual(rc_hang, 130)
+            self.assertLess(elapsed_hang, 3.0)
+
+            # Immediately after cancel force-recycle, MasterSupervisor must have auto-respawned WarmWorker and updated daemon.json
+            self.assertIsNotNone(sup._worker_proc)
+            self.assertIsNone(sup._worker_proc.poll())
+            with open(sup.state_file, "r", encoding="utf-8") as sf:
+                st_json = json.load(sf)
+            self.assertEqual(st_json.get("worker_pid"), sup._worker_proc.pid)
+
+            pkts_after = []
+            rc_after = sup.dispatch_task({"module": "dummy_ipc_mod", "args": ["probe"], "cwd": self.root_dir}, pkts_after.append)
+            self.assertEqual(rc_after, 0)
+        finally:
+            if leaked_pid > 0:
+                from core.platform import kill_process_tree
+                kill_process_tree(leaked_pid, timeout_sec=0.5)
+            sup.stop()
+            self.assertEqual(sup.restart_worker(), 0)
+            self.assertIsNone(sup._worker_proc)
+            self.assertFalse(os.path.exists(sup.state_file))
+
+        sw = CoreSpaceWatcherServiceWorker(debounce_seconds=10.0, max_debounce_seconds=0.05)
+        sw._dirty_spaces.add("project/docs")
+        sw._last_event_time = time.monotonic()
+        sw._dirty_since_mono = time.monotonic() - 0.2
+        called_spaces = []
+        with unittest.mock.patch.object(sw, "is_transaction_locked", return_value=False), unittest.mock.patch.object(
+            sw, "_execute_space_flush_batch", side_effect=lambda targets, *a, **kw: called_spaces.extend(targets) or {}
+        ):
+            sw.flush_dirty_spaces(force=False)
+        self.assertEqual(called_spaces, ["project/docs"])
+
+        # Verify _idle_ttl_loop does NOT become immortal when _worker_proc is None
+        sup_idle = self._make_supervisor(idle_timeout_sec=0.05, enable_watcher=False)
+        sup_idle._is_running = True
+        sup_idle._worker_proc = None
+        sup_idle._last_active_time = time.time() - 1.0
+        stop_called = threading.Event()
+        with unittest.mock.patch.object(sup_idle._stop_event, "wait", return_value=False), unittest.mock.patch.object(
+            sup_idle, "stop", side_effect=lambda: (stop_called.set(), setattr(sup_idle, "_is_running", False))
+        ):
+            sup_idle._idle_ttl_loop()
+        self.assertTrue(stop_called.wait(timeout=1.0))
+
+        # Verify ModulesWatcher _snapshot_gen prevents stale mid-scan snapshot from overwriting concurrent refresh_snapshot()
+        from server.watcher import ModulesWatcher
+
+        mw = ModulesWatcher(modules_dir=os.path.join(self.root_dir, ".modules"), on_change_callback=lambda _: None)
+        mw.refresh_snapshot()
+        gen_before = mw._snapshot_gen
+        mw.refresh_snapshot()
+        self.assertEqual(mw._snapshot_gen, gen_before + 1)
+
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

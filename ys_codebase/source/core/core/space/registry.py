@@ -348,6 +348,9 @@ class SpaceRegistry:
         self._scandir_memo: Optional[Dict[Tuple[str, bool], List[Tuple[Path, bool, bool, bool, Optional[os.stat_result]]]]] = None
         self._neg_dir_memo: Optional[Dict[Tuple[str, str, str], bool]] = None
         self._neg_file_memo: Optional[Dict[Tuple[str, str, str], bool]] = None
+        self._config_hash_cache: Dict[str, str] = {}
+        self._participating_cache: Dict[str, Tuple[SpaceConfig, ...]] = {}
+        self._entry_paths_cache: Dict[str, Tuple[Path, ...]] = {}
         self._batch_depth: int = 0
 
         self.reload()
@@ -679,6 +682,9 @@ class SpaceRegistry:
             self._neg_dir_memo.clear()
         if self._neg_file_memo is not None:
             self._neg_file_memo.clear()
+        self._config_hash_cache.clear()
+        self._participating_cache.clear()
+        self._entry_paths_cache.clear()
         self._refresh_unresolved_compose()
 
     def _refresh_unresolved_compose(self) -> None:
@@ -1264,6 +1270,10 @@ class SpaceRegistry:
         space_query: Optional[str] = None,
     ) -> List[SpaceConfig]:
         """Collect all spaces participating positively in `space_query` (own + positive `compose`)."""
+        cache_key = str(space_query or "").strip() or "*"
+        cached = self._participating_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
         roots = self.resolve_spaces(space_query)
         collected: List[SpaceConfig] = []
 
@@ -1277,6 +1287,7 @@ class SpaceRegistry:
 
         for r in roots:
             _visit(r, ())
+        self._participating_cache[cache_key] = tuple(collected)
         return collected
 
     def _collect_all_dependency_spaces(
@@ -1322,6 +1333,10 @@ class SpaceRegistry:
         Compute a deterministic 16-byte Blake2b hex digest over all participating spaces,
         their positive/negative `compose` children, and positive/negative `presets` dependencies.
         """
+        cache_key = str(space_query or "").strip() or "*"
+        cached = self._config_hash_cache.get(cache_key)
+        if cached is not None:
+            return cached
         dependencies = self._collect_all_dependency_spaces(space_query)
         hasher = hashlib.blake2b(digest_size=16)
         for s_cfg in sorted(dependencies, key=lambda s: s.qualified_name):
@@ -1345,21 +1360,28 @@ class SpaceRegistry:
                 "watch": s_cfg.watch,
             }
             hasher.update(json.dumps(payload, sort_keys=True).encode("utf-8"))
-        return hasher.hexdigest()
+        digest = hasher.hexdigest()
+        self._config_hash_cache[cache_key] = digest
+        return digest
 
     def collect_all_entry_paths(self, space_query: Optional[str] = None) -> List[Path]:
         """Return all existing or declared resolved `entry_path`s across participating and composed spaces."""
+        cache_key = str(space_query or "").strip() or "*"
+        cached = self._entry_paths_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
         participating = self._collect_participating_spaces(space_query)
         entry_paths: List[Path] = []
         seen: Set[str] = set()
         for s_cfg in participating:
-            for _raw_e, res_p, _exists in s_cfg.resolve_entries(self._project_root):
+            for _raw_e, res_p in s_cfg.resolve_entry_paths(self._project_root):
                 if res_p is None:
                     continue
                 norm_k = os.path.normcase(str(res_p))
                 if norm_k not in seen:
                     seen.add(norm_k)
                     entry_paths.append(res_p)
+        self._entry_paths_cache[cache_key] = tuple(entry_paths)
         return entry_paths
 
     def resolve_file_path(

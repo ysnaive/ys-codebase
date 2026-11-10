@@ -211,3 +211,13 @@ last_updated: "2026-11-05"
 - **工程妥協與解法**：
   1. **`unified.meta.json` 與 `BinarySnapshotManager.load_summary()`**：`IndexingPipeline` 於每次持久化索引與向量微批次落盤時同步原子寫入 `unified.meta.json`（記錄 `symbol_count`、`term_count`、`acked_ast_generation` 與向量覆蓋統計並綁定二進位檔 `(mtime_ns, size)` 指紋）；`KnowledgeEngine.status()` 直接讀取 `unified.meta.json` 與 `scanner.get_snapshot_summary()` 標頭統計，全程零 `.bin.gz` 解壓、零目錄走訪，並透過 `_probe_kdb_lock_busy()` 非阻塞回報 `building_in_progress`。
   2. **離線模型守門與非阻塞推論鎖**：移除背景 `KnowledgeDBServiceWorker` 未授權之隱式 `download_model()` 呼叫；`EmbeddingService._ensure_model(blocking=False)` 於 `_init_lock` 被佔用或正在下載時 `0ms` 立即返回降級，`HybridSearchEngine.is_vector_available` 亦優先以 $O(1)$ 檢查 `len(vector_index.doc_ids) > 0` 與 `has_local_model()` 短路，杜絕前景搜尋阻塞。
+
+---
+
+### [DN-32] `VectorIndex.doc_text_hashes` 內容指紋比對、行號平移 $O(1)$ 向量復用與世代對齊倒排清理
+- **背景與根因**：
+  1. `UnifiedSymbol.compute_id` 以起始行號計算 ID：同行號修改函式內容或 Docstring 時 ID 不變，若僅以集合差集 `sym_ids - vec_ids` 判斷向量缺口，Stage 2 微批次同步將漏更舊向量；反之在檔案頂部插入空行導致下方數十個未改動函式行號平移時，ID 改變若全部重算 ONNX 特徵將產生不必要推論開銷。
+  2. 同進程內若 `ASTEngine._snapshot` 已推進至新世代，而 `_align_index_symbols_with_ast_snapshot` 無條件將舊世代 `InvertedIndex.symbols` 指針覆寫為新符號物件，後續 `InvertedIndex.patch_incremental` 對舊符號斷詞移除時會讀到新文本，導致舊關鍵詞殘留為幽靈倒排紀錄。
+- **工程妥協與解法**：
+  1. **`doc_text_hashes` 與行號平移零推論復用**：`VectorIndex` 持久化 `doc_text_hashes`（Blake2b 8-byte hex），缺口探測同步納入文本雜湊不一致之同 ID 符號；前台熱修補則以 `(norm_file_path, name, kind, text_hash)` 比對被逐出之舊符號向量直接 $O(1)$ 搬移復用。
+  2. **世代相等守衛與混合檢索無鎖快照傳遞**：`_align_index_symbols_with_ast_snapshot` 嚴格限定 `snap.ast_generation == idx.acked_ast_generation` 始共享符號指針；`HybridSearchEngine.search` 改以呼叫端區域參數傳遞索引引用、拔除實例屬性原地突變並將查詢向量推論置於 `_index_lock` 外；當背景 Worker 處於 `yielded_to_foreground` 且存在向量缺口時，前景自動降級 `lexical_bm25` 確保召回完整度。

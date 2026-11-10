@@ -286,12 +286,21 @@ def _hot_dispatch_attempt(module_name: str, cmd_path_or_name: Any, args: List[st
         method="POST",
     )
     captured_err: List[str] = []
+    import math as _math
     try:
-        timeout_sec = float(get_env("YSCB_DISPATCH_TIMEOUT", "120.0") or "120.0")
+        raw_t = float(get_env("YSCB_DISPATCH_TIMEOUT", "120.0") or "120.0")
+        timeout_sec = max(0.1, raw_t) if _math.isfinite(raw_t) and raw_t > 0.0 else 120.0
     except (TypeError, ValueError):
         timeout_sec = 120.0
     try:
-        resp = _open_localhost_no_proxy(req, timeout=timeout_sec)
+        raw_w = float(get_env("YSCB_DISPATCH_MAX_WALL_SEC", "0.0") or "0.0")
+        max_wall_sec = raw_w if _math.isfinite(raw_w) and raw_w > 0.0 else 0.0
+    except (TypeError, ValueError):
+        max_wall_sec = 0.0
+    wall_deadline = (time.monotonic() + max_wall_sec) if max_wall_sec > 0.0 else None
+    conn_timeout = max(0.05, min(timeout_sec, max_wall_sec)) if max_wall_sec > 0.0 else timeout_sec
+    try:
+        resp = _open_localhost_no_proxy(req, timeout=conn_timeout)
     except urllib.error.HTTPError:
         # Server 於串流前即拒絕（鑑權失敗、根目錄不符等），任務未執行
         return _HotDispatchResult(None, False)
@@ -321,7 +330,19 @@ def _hot_dispatch_attempt(module_name: str, cmd_path_or_name: Any, args: List[st
             utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
             readline_fn = getattr(resp, "readline", None)
             use_readline = callable(readline_fn)
+            raw_fp = getattr(resp, "fp", None)
+            raw_io = getattr(raw_fp, "raw", None)
+            raw_sock = getattr(raw_io, "_sock", None)
             while True:
+                if wall_deadline is not None:
+                    rem_wall = wall_deadline - time.monotonic()
+                    if rem_wall <= 0.0:
+                        raise TimeoutError("Hot-dispatch exceeded YSCB_DISPATCH_MAX_WALL_SEC")
+                    if raw_sock is not None and hasattr(raw_sock, "settimeout"):
+                        try:
+                            raw_sock.settimeout(min(timeout_sec, rem_wall))
+                        except Exception:
+                            pass
                 if use_readline:
                     raw_part = readline_fn()
                     if not isinstance(raw_part, (bytes, bytearray, str)):
@@ -343,6 +364,10 @@ def _hot_dispatch_attempt(module_name: str, cmd_path_or_name: Any, args: List[st
                     if not line.strip():
                         continue
                     pkt = json.loads(line)
+                    if pkt.get("type") == "heartbeat":
+                        if wall_deadline is not None and time.monotonic() >= wall_deadline:
+                            raise TimeoutError("Hot-dispatch exceeded YSCB_DISPATCH_MAX_WALL_SEC")
+                        continue
                     if pkt.get("type") == "terminal_stream":
                         text_chunk = pkt.get("text", "")
                         stream_target = "stderr" if pkt.get("stream") == "stderr" else "stdout"
@@ -545,7 +570,12 @@ def _maybe_auto_spawn_server(host_dir: str, yscb_abs: str) -> None:
     僅在 server 模組存在、非 server/dev 指令、非測試環境、且 config/server/config.project.json enable != false 時觸發。
     當偵測到環境無開立背景守護進程權限（含實證回收偵測）時，輸出一次 advisory [BLOCKER] 並照常冷派發（exit code 不變）。
     """
-    if get_env("YSCB_TESTING") == "1" or get_env("YSCB_TEST_SANDBOX") == "1":
+    if (
+        get_env("YSCB_TESTING") == "1"
+        or get_env("YSCB_TEST_SANDBOX") == "1"
+        or get_env("YSCB_IN_SERVER_WORKER") == "1"
+        or get_env("YSCB_NO_HOT_DISPATCH") == "1"
+    ):
         return
 
     if _is_server_daemon_active_or_locked(yscb_abs):
@@ -831,19 +861,24 @@ def dispatch_local(
 
 
 def _maybe_check_and_print_updates(argv: Optional[List[str]] = None) -> None:
-    """於任意 CLI 指令執行完畢後觸發非阻塞 12 小時節流版本檢查與提示（含 yscb.py 入口檔自檢）。"""
-    if get_env("YSCB_TESTING") == "1" or get_env("YSCB_TEST_SANDBOX") == "1":
+    """於任意 CLI 指令執行完畢後觸發 12 小時節流版本檢查與提示（JSON 模式或 Worker 內直接略過避免無謂網路延遲）。"""
+    if (
+        get_env("YSCB_TESTING") == "1"
+        or get_env("YSCB_TEST_SANDBOX") == "1"
+        or get_env("YSCB_IN_SERVER_WORKER") == "1"
+    ):
         return
     eff_argv = argv if argv is not None else sys.argv[1:]
     is_json_mode = any(
         str(a) in ("--json", "-j") or str(a).startswith("--json=") for a in eff_argv
     )
+    if is_json_mode:
+        return
     try:
         from core.update_checker import UpdateChecker
         checker = UpdateChecker()
         checker.check_updates(force=False)
-        if not is_json_mode:
-            checker.print_tips_if_available()
+        checker.print_tips_if_available()
     except Exception:
         pass
 
@@ -1010,8 +1045,12 @@ def _dispatch_inner(argv: List[str], host_dir: str, yscb_abs: str) -> int:
         )
         return 1
 
-    # 9. 指令級 server_compatible 雙管道分流
-    if cmd_spec is not None and cmd_spec.server_compatible:
+    # 9. 指令級 server_compatible 雙管道分流（已在 Server Worker 內或顯式停用熱派發時強制本地執行防重入自死鎖）
+    bypass_hot_dispatch = (
+        get_env("YSCB_IN_SERVER_WORKER") == "1"
+        or get_env("YSCB_NO_HOT_DISPATCH") == "1"
+    )
+    if cmd_spec is not None and cmd_spec.server_compatible and not bypass_hot_dispatch:
         spawn_cfg = _read_server_spawn_config(yscb_abs)
         if spawn_cfg.enabled and spawn_cfg.strict_hot_dispatch:
             # strict_hot_dispatch 啟用（且 server enable=true）時僅允許熱派發，禁止冷派發兜底
@@ -1036,7 +1075,7 @@ def _dispatch_inner(argv: List[str], host_dir: str, yscb_abs: str) -> int:
 
     # 非 server / dev 指令且非 core 生命週期變異指令時，在背景按需喚醒 Server 常駐進程
     primary_cmd_token = cmd_path[0] if cmd_path else ""
-    if module_name not in ("server", "dev") and not (
+    if not bypass_hot_dispatch and module_name not in ("server", "dev") and not (
         module_name == "core" and primary_cmd_token in _LIFECYCLE_MUTATION_COMMANDS
     ):
         _maybe_auto_spawn_server(host_dir, yscb_abs)

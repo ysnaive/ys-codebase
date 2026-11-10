@@ -51,3 +51,5 @@ python yscb.py ast status [--space <name>] [--json]
 # 清除 AST 快照與呼叫圖譜快取並重置 ast 游標水位
 python yscb.py ast clean [--space <name>] [--json]
 ```
+
+- **增量熱修補與快取一致性**：內建跨進程 `.ast_index.lock` 交易保護、`ast_config_hash` 組態漂移偵測與 CoW 快照無鎖併發讀取。

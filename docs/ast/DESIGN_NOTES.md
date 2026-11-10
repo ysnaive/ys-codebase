@@ -40,6 +40,7 @@ last_updated: "2026-11-10"
 | **DN-AST-07** | L0/L1 圖譜查詢原語、UTF-8 Byte Span 結構化切片與 $O(|\text{Dirty}|)$ 單次解析雙圖譜持久化守則 | `engine.py`, `bundler.py`, `resolver.py`, `graph.py` | ⚠️ WARNING |
 | **DN-AST-08** | `unified.meta.json` 無鎖 $O(1)$ `status` 快讀、單檔 `outline` 非阻塞提取與同進程 Worker 單點讓渡 | `engine.py`, `bundler.py`, `hook.core.py` | 🚨 CRITICAL |
 | **DN-AST-09** | 單檔 `slice_part("<rel_path>::<fqn>")` $O(1)$ 免建圖快速路徑、`.ast_build_state.json` 建置探針與 `stderr` 進度回饋 | `engine.py`, `bundler.py`, `linker.py`, `io_utils.py` | ⚠️ WARNING |
+| **DN-AST-10** | `GrammarProvisioner` 跨進程鎖逾時對齊、`ASTSnapshot` 組態指紋、CoW 快照與按需水合圖譜持久化 | `provisioner.py`, `schema.py`, `graph.py`, `bundler.py`, `engine.py` | 🚨 CRITICAL |
 
 ---
 
@@ -159,3 +160,14 @@ last_updated: "2026-11-10"
 
 > [!CAUTION]
 > **嚴禁在 `ASTEngine.slice_part("<rel_path>::<fqn>")` 快速路徑中無條件載入全倉 `WorkspaceSymbolGraph`，亦嚴禁將 `ProgressReporter` 進度輸出導向 `stdout`！** 進度回饋必須 100% 走 `stderr`，以免破壞 `--json` 輸出契約。
+
+---
+
+### [DN-AST-10] `GrammarProvisioner` 跨進程鎖逾時對齊、`ASTSnapshot` 組態指紋、CoW 快照與按需水合圖譜持久化
+
+- **背景與根因**：
+  1. `InterProcessLock.acquire` 參數為 `timeout_sec`；若誤傳名稱或於並發未獲鎖時直接放行 `pip install`，將破壞 `.venv` 套件目錄並於離線環境重複觸發 30 秒逾時。
+  2. `hot_patch_index` 延遲 `workspace_graph` 連結後，首次 `callers`/`callees`/`impact` 按需水合若未將已水合之 `CallGraphIndex` 回寫磁碟，後續獨立冷啟動 CLI 查詢將每次重複耗費全倉 4-pass 建圖成本；此外修改空間 `exclude` 規則或 AST 語言組態時，必須使既有快取決定性失效並將新排除檔案納入 `deleted` 差量。
+- **工程妥協與解法**：
+  1. **`timeout_sec=60.0` 嚴格鎖守門與離線負快取 TTL**：`_provision_lock` 對齊 `InterProcessLock.acquire(blocking=True, timeout_sec=60.0)`，未獲鎖立即中止安裝；離線安裝失敗寫入 `provision_failed.json`（預設 TTL `3600s`），跨進程消除重複重試。
+  2. **`config_hash` 指紋、CoW 快照更新與水合圖譜落盤**：`SpaceScanner.diff()` 於 `config_hash` 變更且 `orig_from_gen > 0` 時比對舊快照列出新排除之 `deleted` 檔案；`ASTSnapshot` 持久化 `schema_version` 與 `config_hash`，`hot_patch_index` 以淺拷貝字典建立新快照保護無鎖讀者，且 `get_workspace_graph()` 首次水合後立即在 `.ast_index.lock` 保護下持久化 `call_graph.pkl.gz` 與 `unified.meta.json`。

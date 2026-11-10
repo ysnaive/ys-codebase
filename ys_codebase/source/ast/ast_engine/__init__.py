@@ -7,7 +7,7 @@ import importlib
 from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Tuple
 
-__version__ = "1.1.0.3"
+__version__ = "1.1.1.0"
 
 _LAZY_EXPORTS: Mapping[str, Tuple[str, str]] = MappingProxyType({
     "SemanticBundler": (".bundler", "SemanticBundler"),

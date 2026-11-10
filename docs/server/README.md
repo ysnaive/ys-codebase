@@ -16,7 +16,7 @@ related_docs:
   - "./hot_reload_and_services.md"
   - "./realtime_logging.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-09"
+last_updated: "2026-11-10"
 ---
 
 # Server 常駐服務與守護中樞模組 (Server Module)
@@ -108,7 +108,7 @@ Server 模組內建高可靠的集中式即時 flush 日誌機制：
 - `enable`: 是否啟用 server 模組能力（預設 `true`）。
 - `enable_console`: `ServerConfig` 預設啟動模式（對接 `core.config.get("server", "enable_console", False)`，預設 `false` 走背景脫鉤常駐；設為 `true` 時無參數 `server start` 預設走前台 Console 模式，仍可被 `--daemon` 覆寫）。
 - `auto_spawn`: 是否在執行非 server 指令時於背景自動喚醒常駐進程（預設 `true`）。若手動關閉 (`false`)，系統將保持純冷派發。
-- `idle_timeout_sec`: 空閒超時自毀時間（秒，預設 `900.0`）。
+- `idle_timeout_sec`: 空閒超時自毀時間（秒，預設 `1800.0`）。背景自動輪詢無變更時不重置空閒計時器；支援環境變數 `YSCB_NO_HOT_DISPATCH=1` 旁路熱派發與 `YSCB_DISPATCH_MAX_WALL_SEC` 單次派發總牆鐘上限。
 - `strict_hot_dispatch`: 嚴格熱派發（預設 `false`）。為 `true` 且 `enable=true` 時，`server_compatible=true` 之指令熱派發失敗不再冷派發兜底，而是（可常駐且 `auto_spawn=true` 時）auto-spawn、等待 daemon 活躍 ≤ 10s 後重試一次，仍失敗則印 strict `[BLOCKER]` 並回傳 `1`。`server_compatible=false` 指令不受影響；重試規則見 [daemon_architecture.md](./daemon_architecture.md) §6。
 - `worker_alive_timeout_sec`: Worker 啟動後送出 `worker_alive` 的等待上限（秒，預設 `5.0`，非正數或非法值回退預設）。僅約束「進程存活」階段，pre-warm 預熱階段不設上限。
 
@@ -128,7 +128,7 @@ Server 模組內建高可靠的集中式即時 flush 日誌機制：
 
 ## 5. 相關架構專題手冊 (Architecture Topics)
 
-- [常駐架構與通訊協定專題](./daemon_architecture.md)：Master-Worker 雙進程模型、`dispatcher._MODULE_CACHE` 預熱廣播、500ms 防抖串流協議與宿主四大耦合邊界。
+- [常駐架構與通訊協定專題](./daemon_architecture.md)：Master-Worker 雙進程模型、專用不可繼承 IPC FD 隔離、雙向心跳保活、兩段式斷線寬限強殺與宿主耦合邊界。
 - [熱重載與背景服務託管專題](./hot_reload_and_services.md)：常駐中樞、Warm Worker 資料平面、`ServiceManager` 宣告式掛載與雙軌自動熱重載協調機制。
 - [即時 Flush 日誌與歷史滾動架構](./realtime_logging.md)：`ServerLogger` 規格、`echo_console` 雙向回顯與異常自癒細節。
 - [Server 設計決策與工程手冊](./DESIGN_NOTES.md)：核心工程妥協與防坑邊界紀錄。

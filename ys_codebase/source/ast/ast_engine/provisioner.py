@@ -5,6 +5,8 @@ Ensures `--json` output on stdout remains 100% pure even when dynamic grammar in
 
 from contextlib import contextmanager
 import importlib
+import json
+import time
 import os
 import subprocess
 import sys
@@ -87,6 +89,12 @@ class GrammarProvisioner:
             for ev in state["inflight_events"].values():
                 ev.set()
             state["inflight_events"].clear()
+        p = cls._neg_cache_path()
+        if p and os.path.isfile(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
 
     @classmethod
     def get_warnings(cls, clear: bool = False) -> List[str]:
@@ -110,9 +118,10 @@ class GrammarProvisioner:
 
     @classmethod
     @contextmanager
-    def _provision_lock(cls) -> Iterator[None]:
+    def _provision_lock(cls, timeout_sec: float = 60.0) -> Iterator[bool]:
         """Acquires a cross-process file lock around JIT grammar installation."""
         lock_obj = None
+        acquired = False
         try:
             from core import uri
             from core.platform.lock import InterProcessLock
@@ -124,42 +133,93 @@ class GrammarProvisioner:
                 lock_dir = tempfile.gettempdir()
             os.makedirs(lock_dir, exist_ok=True)
             lock_path = os.path.join(lock_dir, ".pip_install.lock")
-            try:
-                lock_obj = InterProcessLock(lock_path, timeout=60.0)
-            except TypeError:
-                lock_obj = InterProcessLock(lock_path)
-            try:
-                lock_obj.acquire(blocking=True, timeout=60.0)
-            except TypeError:
-                try:
-                    lock_obj.acquire(timeout=60.0)
-                except TypeError:
-                    lock_obj.acquire()
-        except Exception:
+            lock_obj = InterProcessLock(lock_path)
+            acquired = bool(lock_obj.acquire(blocking=True, timeout_sec=float(timeout_sec)))
+        except Exception as lock_exc:
+            log_debug(f"GrammarProvisioner failed acquiring pip lock: {lock_exc}")
             lock_obj = None
+            acquired = False
         try:
-            yield
+            yield acquired
         finally:
-            if lock_obj is not None:
+            if lock_obj is not None and acquired:
                 try:
                     lock_obj.release()
                 except Exception:
                     pass
 
     @classmethod
-    def _try_pip_install(cls, pkg_name: str, module_name: Optional[str] = None) -> bool:
+    def _neg_cache_path(cls) -> Optional[str]:
+        try:
+            from core import uri
+            yscb_root = uri.resolve_yscb_root()
+            if yscb_root:
+                p = os.path.join(yscb_root, ".cache", "ast", "provision_failed.json")
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                return p
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def _is_persisted_failed(cls, pkg_name: str, ttl_sec: float = 3600.0) -> bool:
+        p = cls._neg_cache_path()
+        if not p or not os.path.isfile(p):
+            return False
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                ts = float(data.get(pkg_name) or 0.0)
+                if ts > 0.0 and (time.time() - ts) < ttl_sec:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    @classmethod
+    def _record_persisted_failed(cls, pkg_name: str) -> None:
+        p = cls._neg_cache_path()
+        if not p:
+            return
+        try:
+            data: Dict[str, float] = {}
+            if os.path.isfile(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                if isinstance(raw, dict):
+                    data = {str(k): float(v) for k, v in raw.items() if isinstance(v, (int, float))}
+            data[pkg_name] = time.time()
+            from core import vfs
+            vfs.write_json(p, data, indent=2, atomic=True)
+        except Exception:
+            pass
+
+    @classmethod
+    def _try_pip_install(cls, pkg_name: str, module_name: Optional[str] = None, lock_timeout_sec: float = 60.0) -> bool:
         """
         Attempt to install a missing grammar package via pip with stdout and stderr strictly redirected to sys.stderr.
-        Synchronizes across processes and maintains strict `_provision_lock -> _LOCK` lock ordering without holding `_LOCK` during subprocess execution.
+        Synchronizes across processes via `InterProcessLock(..., timeout_sec=60.0)` and persists offline failure TTL.
         """
         with cls._LOCK:
             if pkg_name in _get_provisioner_state()["failed_packages"]:
                 return False
+        if cls._is_persisted_failed(pkg_name):
+            with cls._LOCK:
+                _get_provisioner_state()["failed_packages"].add(pkg_name)
+            return False
 
-        with cls._provision_lock():
+        with cls._provision_lock(timeout_sec=lock_timeout_sec) as lock_acquired:
+            if not lock_acquired:
+                log_stream(f"[ast:warn] Timed out acquiring pip lock while provisioning '{pkg_name}'.\n", stream="stderr")
+                return False
             with cls._LOCK:
                 if pkg_name in _get_provisioner_state()["failed_packages"]:
                     return False
+            if cls._is_persisted_failed(pkg_name):
+                with cls._LOCK:
+                    _get_provisioner_state()["failed_packages"].add(pkg_name)
+                return False
 
             if module_name:
                 importlib.invalidate_caches()
@@ -170,6 +230,7 @@ class GrammarProvisioner:
                     pass
 
             try:
+                log_stream(f"[ast] Provisioning missing grammar package '{pkg_name}'...\n", stream="stderr")
                 cmd = [
                     sys.executable,
                     "-m",
@@ -177,10 +238,14 @@ class GrammarProvisioner:
                     "install",
                     "--quiet",
                     "--disable-pip-version-check",
+                    "--no-input",
+                    "--retries=1",
+                    "--timeout=5",
                     pkg_name,
                 ]
                 proc = subprocess.run(
                     cmd,
+                    stdin=subprocess.DEVNULL,
                     stdout=sys.stderr,
                     stderr=sys.stderr,
                     timeout=30,
@@ -194,6 +259,7 @@ class GrammarProvisioner:
 
             with cls._LOCK:
                 _get_provisioner_state()["failed_packages"].add(pkg_name)
+            cls._record_persisted_failed(pkg_name)
             return False
 
     @classmethod

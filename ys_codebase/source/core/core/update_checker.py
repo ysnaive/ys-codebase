@@ -142,6 +142,14 @@ class UpdateChecker:
         if not force and (now - last_checked < self.throttle_seconds):
             return cached.get("updates", {})
 
+        if not force:
+            # Pre-stamp throttle timestamp before network I/O so offline/blackhole environments
+            # or concurrent CLI exits never trigger repeated sequential probe stalls.
+            self._save_cache({
+                "last_checked_at": now,
+                "updates": cached.get("updates", {}) if isinstance(cached, dict) else {},
+            })
+
         cfg = self._load_config()
         installed_modules = cfg.get("installed_modules", {})
         default_provider = cfg.get("default_provider", "")

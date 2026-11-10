@@ -27,6 +27,11 @@ from .io_utils import atomic_save_gzip_pickle, load_gzip_pickle
 MAX_SYMBOL_DOCSTRING_EMBED_CHARS = 400
 
 
+def compute_embedding_text_hash(text: str) -> str:
+    """計算嵌入輸入文本之輕量 8-byte Blake2b 十六進位內容雜湊，用於偵測同行號內容修改與跨行號重用向量。"""
+    return hashlib.blake2b((text or "").encode("utf-8", errors="replace"), digest_size=8).hexdigest()
+
+
 def format_symbol_embedding_text(sym: Any, max_doc_chars: int = MAX_SYMBOL_DOCSTRING_EMBED_CHARS) -> str:
     """組裝符號嵌入文本，並對超長 Docstring 施加字元上限截斷以避免無效分詞開銷。"""
     name = getattr(sym, "name", "") or ""
@@ -222,9 +227,13 @@ class EmbeddingService:
                 self._model = TextEmbedding(
                     model_name=self.model_name,
                     cache_dir=str(self.cache_dir),
-                    threads=threads_count,
+                    **extra_kw,
                 )
             except TypeError:
+                if local_files_only and not self.has_local_model():
+                    raise KnowledgeDBError(
+                        f"Local ONNX model '{self.model_name}' not found in '{self.cache_dir}'."
+                    )
                 self._model = TextEmbedding(
                     model_name=self.model_name,
                     cache_dir=str(self.cache_dir),
@@ -397,11 +406,19 @@ class EmbeddingService:
         max_threads: Any,
         enable_vector_search: bool,
     ) -> None:
-        """Thread-safely apply updated configuration parameters under `_init_lock`."""
+        """Apply updated configuration parameters; skips `_init_lock` when configuration is unchanged."""
+        eff_enable = bool(enable_vector_search)
+        eff_threads = max_threads or "auto"
+        norm_model = self.normalize_model_name(model_name)
+        if (
+            self.model_name == norm_model
+            and self.max_threads == eff_threads
+            and self.enable_vector_search == eff_enable
+        ):
+            return
         with self._init_lock:
-            self.enable_vector_search = bool(enable_vector_search)
-            self.max_threads = max_threads or "auto"
-            norm_model = self.normalize_model_name(model_name)
+            self.enable_vector_search = eff_enable
+            self.max_threads = eff_threads
             if self.model_name != norm_model:
                 self.model_name = norm_model
                 self._dimension = None
@@ -555,6 +572,7 @@ class VectorIndex:
         self.vectors: Optional[np.ndarray] = None
         self.model_name: Optional[str] = model_name
         self.dim: Optional[int] = dim
+        self.doc_text_hashes: Dict[str, str] = {}
 
     def build(
         self,
@@ -562,6 +580,7 @@ class VectorIndex:
         vectors: np.ndarray,
         model_name: Optional[str] = None,
         dim: Optional[int] = None,
+        doc_text_hashes: Optional[Dict[str, str]] = None,
     ) -> None:
         """建置或替換當前向量索引（嚴格校驗 doc_ids 與 vectors 列數一致）"""
         ids_list = list(doc_ids)
@@ -575,6 +594,11 @@ class VectorIndex:
             raise ValueError("VectorIndex.build requires non-None vectors when doc_ids is non-empty")
         self.doc_ids = ids_list
         self.vectors = vecs_arr
+        ids_set = set(ids_list)
+        if doc_text_hashes is not None:
+            self.doc_text_hashes = {str(k): str(v) for k, v in doc_text_hashes.items() if k in ids_set and v}
+        else:
+            self.doc_text_hashes = {k: v for k, v in self.doc_text_hashes.items() if k in ids_set}
         if model_name:
             self.model_name = model_name
         if dim:
@@ -599,6 +623,7 @@ class VectorIndex:
         removed_doc_ids: Set[str],
         new_doc_ids: Optional[List[str]] = None,
         new_vectors: Optional[np.ndarray] = None,
+        new_text_hashes: Optional[Dict[str, str]] = None,
     ) -> None:
         """增量修補向量索引：移除過期 doc_ids，追加新 doc_ids 與向量"""
         import numpy as np
@@ -615,7 +640,13 @@ class VectorIndex:
 
         if self.vectors is None or len(self.doc_ids) == 0:
             if new_doc_ids and new_vectors is not None and len(new_vectors) > 0:
-                self.build(new_doc_ids, new_vectors, model_name=self.model_name, dim=self.dim)
+                self.build(
+                    new_doc_ids,
+                    new_vectors,
+                    model_name=self.model_name,
+                    dim=self.dim,
+                    doc_text_hashes=new_text_hashes,
+                )
             return
 
         dim = self.vectors.shape[1] if (self.vectors is not None and self.vectors.ndim > 1) else (self.dim or 0)
@@ -643,7 +674,38 @@ class VectorIndex:
             merged_vectors = current_vectors
             merged_doc_ids = keep_doc_ids
 
-        self.build(merged_doc_ids, merged_vectors, model_name=self.model_name, dim=self.dim)
+        merged_hashes = {k: v for k, v in self.doc_text_hashes.items() if k not in exclude_ids}
+        if new_text_hashes:
+            for k, v in new_text_hashes.items():
+                if v:
+                    merged_hashes[str(k)] = str(v)
+        self.build(
+            merged_doc_ids,
+            merged_vectors,
+            model_name=self.model_name,
+            dim=self.dim,
+            doc_text_hashes=merged_hashes,
+        )
+
+    def cloned_with_patch(
+        self,
+        removed_doc_ids: Set[str],
+        new_doc_ids: Optional[List[str]] = None,
+        new_vectors: Optional[np.ndarray] = None,
+        new_text_hashes: Optional[Dict[str, str]] = None,
+    ) -> "VectorIndex":
+        """Return a new `VectorIndex` instance with incremental patch applied without mutating `self`."""
+        cloned = VectorIndex(model_name=self.model_name, dim=self.dim)
+        cloned.doc_ids = list(self.doc_ids)
+        cloned.vectors = self.vectors
+        cloned.doc_text_hashes = dict(self.doc_text_hashes)
+        cloned.patch_incremental(
+            removed_doc_ids=removed_doc_ids,
+            new_doc_ids=new_doc_ids,
+            new_vectors=new_vectors,
+            new_text_hashes=new_text_hashes,
+        )
+        return cloned
 
     def search(
         self,
@@ -709,6 +771,7 @@ class VectorIndex:
             "vectors": self.vectors,
             "model_name": self.model_name,
             "dim": dim_val,
+            "doc_text_hashes": dict(self.doc_text_hashes),
         }
         atomic_save_gzip_pickle(cache_file, data, compresslevel=compresslevel)
 
@@ -723,8 +786,10 @@ class VectorIndex:
         vectors = data.get("vectors")
         model_name = data.get("model_name")
         dim = data.get("dim")
+        raw_hashes = data.get("doc_text_hashes")
+        hashes_dict = {str(k): str(v) for k, v in raw_hashes.items() if v} if isinstance(raw_hashes, dict) else None
         if vectors is not None:
-            idx.build(doc_ids, vectors, model_name=model_name, dim=dim)
+            idx.build(doc_ids, vectors, model_name=model_name, dim=dim, doc_text_hashes=hashes_dict)
         else:
             if model_name:
                 idx.model_name = model_name

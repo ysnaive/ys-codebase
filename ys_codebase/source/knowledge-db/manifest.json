@@ -1,15 +1,15 @@
 {
   "name": "knowledge-db",
-  "version": "1.2.2.3",
+  "version": "1.2.3.0",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.9.0",
-    "ast": ">=1.1.0.3"
+    "core": ">=1.2.10.0",
+    "ast": ">=1.1.1.0"
   },
   "optional": {
     "server": {
-      "version": ">=1.0.4",
+      "version": ">=1.0.7",
       "hint": "提供常駐背景檔案監聽熱自癒、極速預熱派發與 touch_activity 保活能力"
     }
   },
@@ -26,8 +26,8 @@
     "Search symbols & code snippets: python yscb.py knowledge-db search \"<query>\" -s"
   ],
   "release": {
-    "type": "feature",
+    "type": "bugfix",
     "urgency": "recommended",
-    "summary": "新增顯式 download_model 離線權重預檢與鎖隔離、複用 AST 快取實現 O(1) status 查詢，並支援分段索引進度回報與任務取消"
+    "summary": "新增向量模型載入冷卻防抖、執行緒安全寫入序列化與檔案級增量修補自癒保護"
   }
 }

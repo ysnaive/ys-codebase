@@ -656,13 +656,37 @@ def _resolve_space_entry_roots(
     sp: SpaceConfig,
     space_manager: Optional[SpaceRegistry] = None,
 ) -> List[Path]:
+    cached = getattr(sp, "_cached_ast_entry_roots", None)
+    if isinstance(cached, list):
+        return cached
     proj_root = getattr(space_manager, "project_root", None) if space_manager else None
     roots: List[Path] = []
+    if space_manager is not None and hasattr(space_manager, "collect_all_entry_paths"):
+        q_name = sp.qualified_name or sp.short_name
+        if q_name:
+            try:
+                for _, abs_p, exists in space_manager.collect_all_entry_paths(q_name):
+                    if abs_p is not None and exists:
+                        roots.append(_safe_resolve_path(abs_p))
+                    elif abs_p is not None:
+                        roots.append(_safe_resolve_path(abs_p))
+                if roots:
+                    try:
+                        object.__setattr__(sp, "_cached_ast_entry_roots", roots)
+                    except Exception:
+                        pass
+                    return roots
+            except Exception:
+                pass
     for _, abs_p, exists in sp.resolve_entries(proj_root):
         if abs_p is not None and exists:
             roots.append(_safe_resolve_path(abs_p))
         elif abs_p is not None:
             roots.append(_safe_resolve_path(abs_p))
+    try:
+        object.__setattr__(sp, "_cached_ast_entry_roots", roots)
+    except Exception:
+        pass
     return roots
 
 
@@ -671,11 +695,22 @@ def _preload_snap_entries(
     target_spaces: Iterable[SpaceConfig],
 ) -> Dict[str, Dict[str, Any]]:
     snap_entries_by_space: Dict[str, Dict[str, Any]] = {}
-    if scanner is not None and hasattr(scanner, "snapshot"):
+    if scanner is not None:
+        has_load_state = hasattr(scanner, "_load_snapshot_state")
+        has_snapshot = hasattr(scanner, "snapshot")
         for sp in target_spaces:
             sp_key = _space_logical_name(sp)
+            q_name = sp.qualified_name or sp_key
             try:
-                entries = scanner.snapshot(sp.qualified_name or sp_key, refresh_first=False)
+                entries = None
+                if has_load_state:
+                    st = scanner._load_snapshot_state(q_name)
+                    if st is not None and int(getattr(st, "head_generation", 0) or 0) > 0:
+                        raw_entries = getattr(st, "entries", None)
+                        if isinstance(raw_entries, dict) and raw_entries:
+                            entries = raw_entries
+                if not entries and has_snapshot:
+                    entries = scanner.snapshot(q_name, refresh_first=False)
                 if entries:
                     snap_entries_by_space[sp_key] = entries
                     if sp.qualified_name:
@@ -683,6 +718,83 @@ def _preload_snap_entries(
             except Exception:
                 pass
     return snap_entries_by_space
+
+
+def _clean_dirty_input_path(raw_val: Any) -> str:
+    s = str(raw_val).strip().replace("\\", "/")
+    if not s:
+        return ""
+    if s.startswith("/"):
+        stripped = s.lstrip("/").rstrip("/")
+        return ("/" + stripped) if stripped else "/"
+    if len(s) >= 3 and s[1] == ":" and s[2] == "/":
+        return s[:3] + s[3:].strip("/")
+    return s.strip("/")
+
+
+def _try_strict_project_relpath(
+    cand_abs: Path,
+    proj_root: Optional[Union[str, Path]] = None,
+) -> Optional[str]:
+    """Return forward-slash path relative to `proj_root` (or `resolve_project_root()`) iff `cand_abs` resides inside it."""
+    from .io_utils import resolve_project_root
+
+    try:
+        resolved_f = _safe_resolve_path(cand_abs)
+    except Exception:
+        resolved_f = cand_abs
+    roots_to_try: List[Path] = []
+    if proj_root is not None:
+        roots_to_try.append(_safe_resolve_path(proj_root))
+    else:
+        try:
+            roots_to_try.append(resolve_project_root())
+        except Exception:
+            pass
+    for r in roots_to_try:
+        try:
+            rel = os.path.relpath(str(resolved_f), str(r)).replace("\\", "/")
+            if rel and rel != "." and rel != ".." and not rel.startswith("../") and not Path(rel).is_absolute():
+                return rel
+        except Exception:
+            continue
+    return None
+
+
+def _resolve_entry_dirty_candidate(
+    entry_root: Path,
+    raw_p: str,
+    proj_root: Optional[Union[str, Path]],
+) -> Path:
+    if proj_root is not None:
+        rel_entry = _try_strict_project_relpath(entry_root, proj_root)
+        if rel_entry and (raw_p == rel_entry or raw_p.startswith(rel_entry + "/")):
+            cand_nested = entry_root / raw_p
+            cand_proj = Path(proj_root) / raw_p
+            if _safe_exists(cand_nested) and not _safe_exists(cand_proj):
+                return cand_nested
+            return cand_proj
+    if entry_root.name == raw_p and _safe_is_file(entry_root):
+        return entry_root
+    return entry_root / raw_p
+
+
+def _add_canonical_dirty_candidate(
+    expanded: Set[str],
+    cand_abs: Path,
+    fallback_root: Path,
+    proj_root: Optional[Union[str, Path]],
+    include_abs_for_in_project: bool,
+) -> None:
+    strict_rel = _try_strict_project_relpath(cand_abs, proj_root)
+    if strict_rel is not None:
+        expanded.add(strict_rel)
+        if include_abs_for_in_project:
+            expanded.add(_safe_resolve_str(cand_abs))
+    else:
+        c_abs = _safe_resolve_str(cand_abs)
+        expanded.add(c_abs)
+        expanded.add(compute_project_relpath(cand_abs, fallback_root, project_root=proj_root))
 
 
 def _normalize_space_dirty_paths(
@@ -694,12 +806,14 @@ def _normalize_space_dirty_paths(
     prefer_missing: bool = False,
     snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
     known_indexed_files: Optional[Set[str]] = None,
+    include_abs_for_in_project: bool = False,
 ) -> Set[str]:
     """
-    Normalize space-relative or absolute dirty paths into `project://`-relative and canonical absolute paths.
+    Normalize space-relative or absolute dirty paths into canonical `project://`-relative paths
+    (falling back to canonical absolute paths only for external files outside `project_root`).
     """
     expanded: Set[str] = set()
-    raw_list = [str(p).replace("\\", "/").strip("/") for p in raw_paths if p]
+    raw_list = [cleaned for p in raw_paths if p for cleaned in (_clean_dirty_input_path(p),) if cleaned]
     if not raw_list:
         return expanded
 
@@ -711,14 +825,13 @@ def _normalize_space_dirty_paths(
 
     for raw_p in raw_list:
         p_obj = Path(raw_p)
-        if p_obj.is_absolute():
-            expanded.add(raw_p)
+        if p_obj.is_absolute() or raw_p.startswith("/"):
             try:
-                c_abs = _safe_resolve_str(p_obj)
-                expanded.add(c_abs)
-                expanded.add(compute_project_relpath(p_obj, p_obj.parent, project_root=proj_root))
+                _add_canonical_dirty_candidate(
+                    expanded, p_obj, p_obj.parent, proj_root, include_abs_for_in_project
+                )
             except Exception:
-                pass
+                expanded.add(raw_p)
             continue
 
         matched_from_snap = False
@@ -743,10 +856,10 @@ def _normalize_space_dirty_paths(
                 chosen_matches = deleted_matches or snap_matches
             for fp_rec in chosen_matches:
                 src_root = Path(fp_rec.entry_path)
-                cand_abs = src_root / raw_p
-                c_abs = _safe_resolve_str(cand_abs)
-                expanded.add(c_abs)
-                expanded.add(compute_project_relpath(cand_abs, src_root, project_root=proj_root))
+                cand_abs = _resolve_entry_dirty_candidate(src_root, raw_p, proj_root)
+                _add_canonical_dirty_candidate(
+                    expanded, cand_abs, src_root, proj_root, include_abs_for_in_project
+                )
                 matched_from_snap = True
 
         if matched_from_snap:
@@ -756,8 +869,12 @@ def _normalize_space_dirty_paths(
         for sp in target_spaces:
             inc_roots = _resolve_space_entry_roots(sp, space_manager)
             for inc_root in inc_roots:
-                cand_abs = Path(inc_root) / raw_p
-                matching_candidates.append((cand_abs, Path(inc_root)))
+                inc_path = Path(inc_root)
+                cand_abs = _resolve_entry_dirty_candidate(inc_path, raw_p, proj_root)
+                matching_candidates.append((cand_abs, inc_path))
+                cand_nested = inc_path / raw_p
+                if cand_nested != cand_abs and _safe_exists(cand_nested):
+                    matching_candidates.append((cand_nested, inc_path))
             if proj_root is not None:
                 cand_proj = Path(proj_root) / raw_p
                 if _safe_exists(cand_proj):
@@ -795,9 +912,9 @@ def _normalize_space_dirty_paths(
             )
         if cands_to_use:
             for cand_abs, inc_root in cands_to_use:
-                c_abs = _safe_resolve_str(cand_abs)
-                expanded.add(c_abs)
-                expanded.add(compute_project_relpath(cand_abs, inc_root, project_root=proj_root))
+                _add_canonical_dirty_candidate(
+                    expanded, cand_abs, inc_root, proj_root, include_abs_for_in_project
+                )
         else:
             expanded.add(raw_p)
 
@@ -825,6 +942,7 @@ class SemanticBundler:
         self._contributes_data = contributes_data
         self._registered_spaces: List[str] = []
         self._target_spaces_initialized: bool = False
+        self._cached_default_target_spaces: Optional[List[SpaceConfig]] = None
         if scanner is not None:
             self.scanner = scanner
         elif getattr(space_manager, "_raw_spaces", None) is None:
@@ -845,6 +963,10 @@ class SemanticBundler:
         self._file_graphs_cache: Dict[str, FileSymbolGraph] = {}
         self._last_bundle_unique_files: Dict[str, Tuple[Path, str, Set[str]]] = {}
         self._last_bundle_spaces: Set[str] = set()
+        self._last_dirty_resolved_key: Optional[Tuple[Tuple[str, ...], Tuple[str, ...]]] = None
+        self._last_dirty_resolved_map: Dict[str, Tuple[Path, str, Set[str]]] = {}
+        self._last_dirty_keys_key: Optional[Tuple[Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]]] = None
+        self._last_dirty_keys_set: Set[str] = set()
 
     @property
     def registry(self) -> ParserRegistry:
@@ -865,6 +987,7 @@ class SemanticBundler:
             name = (sp.qualified_name or sp.short_name) if isinstance(sp, SpaceConfig) else str(sp).strip()
             if name and not name.startswith("_") and name not in self._registered_spaces:
                 self._registered_spaces.append(name)
+                self._cached_default_target_spaces = None
         return list(self._registered_spaces)
 
     def _ensure_declared_spaces_loaded(self) -> None:
@@ -963,6 +1086,10 @@ class SemanticBundler:
         self._file_graphs_cache.clear()
         self._last_bundle_unique_files.clear()
         self._last_bundle_spaces.clear()
+        self._last_dirty_resolved_key = None
+        self._last_dirty_resolved_map.clear()
+        self._last_dirty_keys_key = None
+        self._last_dirty_keys_set.clear()
 
     def _has_valid_space_entries(self, sp: SpaceConfig) -> bool:
         if hasattr(self.space_manager, "collect_all_entry_paths"):
@@ -978,6 +1105,8 @@ class SemanticBundler:
         self, spaces: Optional[Iterable[Union[str, SpaceConfig]]] = None
     ) -> List[SpaceConfig]:
         if spaces is None:
+            if self._cached_default_target_spaces is not None:
+                return list(self._cached_default_target_spaces)
             self._ensure_declared_spaces_loaded()
             all_spaces = [
                 sp
@@ -995,13 +1124,16 @@ class SemanticBundler:
                     or sp.short_name in reg_shorts
                 ]
                 if matched:
+                    self._cached_default_target_spaces = list(matched)
                     return matched
-            return [
+            default_res = [
                 sp
                 for sp in all_spaces
                 if sp.short_name not in ("gitignore", "workspace")
                 and not sp.qualified_name.endswith(("/gitignore", "/workspace"))
             ]
+            self._cached_default_target_spaces = list(default_res)
+            return default_res
         resolved: List[SpaceConfig] = []
         seen_qnames: Set[str] = set()
         for sp in spaces:
@@ -1130,6 +1262,13 @@ class SemanticBundler:
         if not raw_list:
             return {}
 
+        cache_key = (
+            tuple(sorted(set(raw_list))),
+            tuple(sorted(_space_logical_name(sp) for sp in target_spaces)),
+        )
+        if self._last_dirty_resolved_key == cache_key and self._last_dirty_resolved_map:
+            return dict(self._last_dirty_resolved_map)
+
         if snap_entries_by_space is None:
             snap_entries_by_space = _preload_snap_entries(self.scanner, target_spaces)
 
@@ -1245,6 +1384,8 @@ class SemanticBundler:
                 if is_dirty_file_match(c_key, parse_norm) or is_dirty_file_match(relpath, parse_norm):
                     result[c_key] = (f_path, relpath, sp_set)
 
+        self._last_dirty_resolved_key = cache_key
+        self._last_dirty_resolved_map = dict(result)
         return result
 
     def bundle_union(
@@ -1417,6 +1558,7 @@ class SemanticBundler:
         prefer_missing: bool = False,
         snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
         known_indexed_files: Optional[Set[str]] = None,
+        include_abs_for_in_project: bool = False,
     ) -> Set[str]:
         return _normalize_space_dirty_paths(
             raw_paths=raw_paths,
@@ -1427,6 +1569,7 @@ class SemanticBundler:
             prefer_missing=prefer_missing,
             snap_entries_by_space=snap_entries_by_space,
             known_indexed_files=known_indexed_files,
+            include_abs_for_in_project=include_abs_for_in_project,
         )
 
     def bundle_dirty_files(
@@ -1441,29 +1584,35 @@ class SemanticBundler:
         target_spaces = self._resolve_target_spaces(spaces)
         if snap_entries_by_space is None:
             snap_entries_by_space = _preload_snap_entries(self.scanner, target_spaces)
+        raw_df_set = {str(p).replace("\\", "/").strip() for p in dirty_diff.dirty_files if p}
         expanded_added_mod = self._normalize_space_dirty_paths(
-            dirty_diff.dirty_files,
+            raw_df_set,
             target_spaces,
             prefer_missing=False,
             snap_entries_by_space=snap_entries_by_space,
             known_indexed_files=known_indexed_files,
         )
-        expanded_deleted = self._normalize_space_dirty_paths(
-            dirty_diff.deleted,
-            target_spaces,
-            prefer_missing=True,
-            snap_entries_by_space=snap_entries_by_space,
-            known_indexed_files=known_indexed_files,
+        expanded_deleted = (
+            self._normalize_space_dirty_paths(
+                dirty_diff.deleted,
+                target_spaces,
+                prefer_missing=True,
+                snap_entries_by_space=snap_entries_by_space,
+                known_indexed_files=known_indexed_files,
+            )
+            if dirty_diff.deleted
+            else set()
         )
         dirty_keys = set(expanded_added_mod | expanded_deleted)
-        expanded_mod = self._normalize_space_dirty_paths(
-            dirty_diff.modified,
+        parse_targets_set = self._normalize_space_dirty_paths(
+            raw_df_set,
             target_spaces,
             prefer_missing=False,
             snap_entries_by_space=snap_entries_by_space,
             known_indexed_files=known_indexed_files,
+            include_abs_for_in_project=True,
         )
-        evict_norm = normalize_dirty_paths(expanded_deleted | expanded_mod)
+        evict_norm = normalize_dirty_paths(parse_targets_set | expanded_deleted)
 
         if evict_norm:
             all_cached_keys = (
@@ -1479,7 +1628,7 @@ class SemanticBundler:
                 self._file_imports_cache.pop(k, None)
                 self._file_graphs_cache.pop(k, None)
 
-        parse_targets_norm = normalize_dirty_paths(expanded_added_mod)
+        parse_targets_norm = normalize_dirty_paths(parse_targets_set)
         if not parse_targets_norm:
             return {}, dirty_keys
 
@@ -1496,8 +1645,12 @@ class SemanticBundler:
             if progress_callback:
                 progress_callback(relpath, idx_d, total_dirty)
             if is_dirty_file_match(c_key, parse_targets_norm) or is_dirty_file_match(relpath, parse_targets_norm):
-                dirty_keys.add(c_key)
-                dirty_keys.add(relpath)
+                proj_r = getattr(self.space_manager, "project_root", None)
+                if _try_strict_project_relpath(Path(f_path), proj_r) is not None:
+                    dirty_keys.add(relpath)
+                else:
+                    dirty_keys.add(c_key)
+                    dirty_keys.add(relpath)
                 sorted_spaces = sorted(list(sp_set))
                 try:
                     file_symbols, call_sites, imps = self._parse_file_full(f_path, relpath, sorted_spaces)
@@ -1511,6 +1664,12 @@ class SemanticBundler:
                     self._file_call_sites_cache[c_key] = []
                     self._file_imports_cache[c_key] = {}
 
+        self._last_dirty_keys_key = (
+            tuple(sorted(dirty_diff.dirty_files)),
+            tuple(sorted(dirty_diff.deleted)),
+            tuple(sorted(_space_logical_name(sp) for sp in target_spaces)),
+        )
+        self._last_dirty_keys_set = set(dirty_keys)
         return new_symbols_by_file, dirty_keys
 
     def export_bundle(
@@ -1604,8 +1763,33 @@ class SemanticBundler:
         expanded_dirty_paths: Optional[Set[str]] = None,
     ) -> Tuple[List[SymbolCallSite], Dict[str, Dict[str, str]]]:
         target_spaces = self._resolve_target_spaces(spaces)
+        res_cache_sig = (
+            tuple(sorted(str(p).replace("\\", "/").strip() for p in dirty_diff.dirty_files if p)),
+            tuple(sorted(_space_logical_name(sp) for sp in target_spaces)),
+        )
+        if (
+            expanded_dirty_paths is None
+            and self._last_dirty_resolved_key == res_cache_sig
+            and self._file_call_sites_cache
+        ):
+            call_sites: List[SymbolCallSite] = []
+            imports_map: Dict[str, Dict[str, str]] = {}
+            all_cached = True
+            for c_key, (_, relpath, _) in self._last_dirty_resolved_map.items():
+                if c_key not in self._file_call_sites_cache or c_key not in self._file_imports_cache:
+                    all_cached = False
+                    break
+                call_sites.extend(self._file_call_sites_cache[c_key])
+                imps = self._file_imports_cache[c_key]
+                if imps:
+                    imports_map[relpath] = imps
+            if all_cached:
+                return call_sites, imports_map
+
         if snap_entries_by_space is None:
             snap_entries_by_space = _preload_snap_entries(self.scanner, target_spaces)
+        prev_res_key = self._last_dirty_resolved_key
+        prev_res_map = self._last_dirty_resolved_map
         expanded_dirty = (
             expanded_dirty_paths
             if expanded_dirty_paths is not None
@@ -1616,11 +1800,15 @@ class SemanticBundler:
                 snap_entries_by_space=snap_entries_by_space,
             )
         )
-        return self._extract_call_sites_and_imports_core(
+        out_sites, out_imps = self._extract_call_sites_and_imports_core(
             spaces=spaces,
             dirty_file_paths=expanded_dirty,
             snap_entries_by_space=snap_entries_by_space,
         )
+        if prev_res_key is not None and prev_res_map:
+            self._last_dirty_resolved_key = prev_res_key
+            self._last_dirty_resolved_map = prev_res_map
+        return out_sites, out_imps
 
     def extract_all_file_graphs(
         self,
@@ -1660,6 +1848,31 @@ class SemanticBundler:
     ) -> Tuple[Dict[str, FileSymbolGraph], Set[str]]:
         """Return `(new_file_graphs_by_relpath, dirty_keys)` for added/modified files in `dirty_diff`."""
         target_spaces = self._resolve_target_spaces(spaces)
+        keys_cache_sig = (
+            tuple(sorted(dirty_diff.dirty_files)),
+            tuple(sorted(dirty_diff.deleted)),
+            tuple(sorted(_space_logical_name(sp) for sp in target_spaces)),
+        )
+        res_cache_sig = (
+            tuple(sorted(str(p).replace("\\", "/").strip() for p in dirty_diff.dirty_files if p)),
+            tuple(sorted(_space_logical_name(sp) for sp in target_spaces)),
+        )
+        if (
+            self._last_dirty_keys_key == keys_cache_sig
+            and self._last_dirty_resolved_key == res_cache_sig
+            and self._file_graphs_cache
+        ):
+            fast_fgs: Dict[str, FileSymbolGraph] = {}
+            all_cached = True
+            for c_key, (_, relpath, _) in self._last_dirty_resolved_map.items():
+                cached_fg = self._file_graphs_cache.get(relpath) or self._file_graphs_cache.get(c_key)
+                if cached_fg is None:
+                    all_cached = False
+                    break
+                fast_fgs[relpath] = cached_fg
+            if all_cached:
+                return fast_fgs, set(self._last_dirty_keys_set)
+
         if snap_entries_by_space is None:
             snap_entries_by_space = _preload_snap_entries(self.scanner, target_spaces)
         expanded_added_mod = self._normalize_space_dirty_paths(
@@ -1677,7 +1890,15 @@ class SemanticBundler:
             known_indexed_files=known_indexed_files,
         )
         dirty_keys = set(expanded_added_mod | expanded_deleted)
-        parse_targets_norm = normalize_dirty_paths(expanded_added_mod)
+        parse_targets_set = self._normalize_space_dirty_paths(
+            dirty_diff.dirty_files,
+            target_spaces,
+            prefer_missing=False,
+            snap_entries_by_space=snap_entries_by_space,
+            known_indexed_files=known_indexed_files,
+            include_abs_for_in_project=True,
+        )
+        parse_targets_norm = normalize_dirty_paths(parse_targets_set)
         if not parse_targets_norm:
             return {}, dirty_keys
 
@@ -1687,10 +1908,14 @@ class SemanticBundler:
             snap_entries_by_space=snap_entries_by_space,
         )
         new_fgs: Dict[str, FileSymbolGraph] = {}
+        proj_r = getattr(self.space_manager, "project_root", None)
         for c_key, (f_path, relpath, sp_set) in dirty_files_map.items():
             if is_dirty_file_match(c_key, parse_targets_norm) or is_dirty_file_match(relpath, parse_targets_norm):
-                dirty_keys.add(c_key)
-                dirty_keys.add(relpath)
+                if _try_strict_project_relpath(Path(f_path), proj_r) is not None:
+                    dirty_keys.add(relpath)
+                else:
+                    dirty_keys.add(c_key)
+                    dirty_keys.add(relpath)
                 cached_fg = self._file_graphs_cache.get(relpath) or self._file_graphs_cache.get(c_key)
                 if cached_fg is not None:
                     new_fgs[relpath] = cached_fg

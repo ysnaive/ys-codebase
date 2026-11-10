@@ -1143,12 +1143,28 @@ def get_engine() -> KnowledgeEngine:
             inst = KnowledgeEngine()
             ctx.set_module_state("knowledge_db.engine.instance", inst)
             ctx.set_module_state("knowledge_db.engine.override", False)
-        else:
+        elif not is_override:
             try:
                 from .config import KnowledgeDBConfig
                 new_cfg = KnowledgeDBConfig.load()
                 inst.config = new_cfg
                 inst.pipeline.config = new_cfg
+                try:
+                    from core import uri
+                    contrib_res = uri.resolve("config://knowledge-db/contribute.json", interactive=False)
+                    if contrib_res and not str(contrib_res).startswith("!undefined"):
+                        cp = Path(str(contrib_res))
+                        cur_mtime = cp.stat().st_mtime_ns if cp.is_file() else -1
+                        prev_mtime = getattr(inst, "_contrib_weights_mtime_ns", None)
+                        if prev_mtime != cur_mtime:
+                            inst._contrib_weights_mtime_ns = cur_mtime
+                            inst.space_weights = inst._load_and_merge_space_weights()
+                            if inst.space_weights and hasattr(inst, "ast_engine") and hasattr(inst.ast_engine, "register_spaces"):
+                                inst.ast_engine.register_spaces(list(inst.space_weights.keys()))
+                            if hasattr(inst, "hybrid_engine") and inst.hybrid_engine is not None:
+                                inst.hybrid_engine.space_weights = dict(inst.space_weights)
+                except Exception:
+                    pass
                 emb_svc = getattr(inst, "embedding_service", None)
                 if emb_svc is not None:
                     if hasattr(emb_svc, "reconfigure_model"):

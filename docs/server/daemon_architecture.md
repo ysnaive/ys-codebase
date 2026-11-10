@@ -15,7 +15,7 @@ related_docs:
   - "./hot_reload_and_services.md"
   - "./realtime_logging.md"
   - "./DESIGN_NOTES.md"
-last_updated: "2026-11-03"
+last_updated: "2026-11-10"
 ---
 
 # Server 常駐架構與通訊協定專題 (Daemon Architecture & IPC Protocol)
@@ -92,7 +92,7 @@ stateDiagram-v2
 為防止 `yscb.py` 宿主腳本再次膨脹或對 `server` 產生硬依賴，嚴格落實四大解耦原則：
 
 1. **軟依賴探測**：`yscb.py` 零靜態 import `server` 模組；探測到 Server 未安裝或未啟動時，100% 透明降級為本地冷啟動執行。
-2. **自循環旁路**：凡目標模組為 `module == "server"` 之管理指令（如 `server start/stop/status/reload`），強制直接走本地冷啟動，嚴禁進入熱派發循環（詳見 [DESIGN_NOTES.md](./DESIGN_NOTES.md) `DN-01`）。
+2. **自循環與單槽重入旁路**：凡目標模組為 `module == "server"` 之管理指令，或執行環境處於常駐 Worker 內部（`YSCB_IN_SERVER_WORKER == "1"`）及顯式設定 `YSCB_NO_HOT_DISPATCH == "1"` 時，強制直接走本地執行，嚴禁再次對單執行緒 `_dispatch_lock` 發起巢狀 HTTP 熱派發造成重入死鎖（詳見 [DESIGN_NOTES.md](./DESIGN_NOTES.md) `DN-01`、`DN-13`）。
 3. **按需非同步拉起**：當 `auto_spawn` 啟用且 Server 未運行時，於背景脫鉤非同步拉起 Master 進程，而當前命令直接走本地冷啟動執行，確保首發指令零等待感（`strict_hot_dispatch=true` 時例外，見 §6）。
 4. **極簡客戶端**：宿主端僅內嵌極簡標準庫 HTTP 轉發器與串流讀取迴圈，維持微內核輕量純淨。
 

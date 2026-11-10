@@ -1637,11 +1637,11 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
     ) -> None:
         """
         Verify sub_09 remediations:
-        1. [FR-01 / TODO-24] Unidirectional push --delete and pull --delete preserve untracked new files
+        1. Unidirectional push --delete and pull --delete preserve untracked new files
            (base is None) unless --force is explicitly passed; tracked deletions (base is not None) still delete.
-        2. [FR-02 / TODO-25] Restoring a trashed folder (or moving a pre-populated folder into a branch)
+        2. Restoring a trashed folder (or moving a pre-populated folder into a branch)
            when changes.list only reports the folder change record falls back to Level 2 scan and pulls child files.
-        3. [FR-03] Stage 3 writes per-file WAL entries to sync_state.journal.jsonl (only 1 atomic sync_state.json
+        3. Stage 3 writes per-file WAL entries to sync_state.journal.jsonl (only 1 atomic sync_state.json
            write in finally), and _load_local_state() automatically replays uncommitted journal records (ignoring
            any truncated trailing line from simulated power loss) and compacts them into sync_state.json.
         """
@@ -1649,7 +1649,7 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
 
         self.coord.init_repo()
 
-        # --- 1. [FR-01] push --delete & pull --delete guard untracked (base is None) files ---
+        # --- 1. push --delete & pull --delete guard untracked (base is None) files ---
         rem_untracked = self.tmp_root / "cloud_created_untracked.md"
         rem_untracked.write_text("Created directly on Cloud before pull\n", encoding="utf-8")
         self.transport.upload_file(rem_untracked, "repo/main/docs/cloud_new.md")
@@ -1677,7 +1677,7 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
         self.assertIn("docs/local_untracked_2.md", rep_pull_force_del.deleted_local)
         self.assertFalse(loc_untracked_2.exists())
 
-        # --- 2. [FR-02] Folder untrash / move-in with only folder ChangeRecord falls back to Level 2 ---
+        # --- 2. Folder untrash / move-in with only folder ChangeRecord falls back to Level 2 ---
         self.coord.run_sync(mode="sync")
         # Upload a folder with a child file on remote
         restored_child = self.tmp_root / "restored_child.md"
@@ -1716,7 +1716,7 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
         finally:
             self.transport.list_changes = orig_list_changes  # type: ignore[method-assign]
 
-        # --- 3. [FR-03 & EC-01] WAL Journal single final snapshot write & crash recovery replay ---
+        # --- 3. WAL Journal single final snapshot write & crash recovery replay ---
         for i in range(5):
             (self.docs_dir / f"batch_{i}.md").write_text(f"Batch {i}\n", encoding="utf-8")
 
@@ -2035,6 +2035,102 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
             self.assertIs(branch_spec["cmd"][sub_name].get("server_compatible"), True)
         for cold_cmd in ("checkout", "pull", "push", "sync"):
             self.assertIs(cmds[cold_cmd].get("server_compatible"), False)
+        self.mark_passed()
+
+    @require(Requirement.ENV)
+    def test_service_worker_preserves_idle_ttl_yields_to_foreground_and_suppresses_self_pull_wakeup(self) -> None:
+        """驗證 GDriveSyncServiceWorker 無變更輪詢不觸發 touch_activity、前景活躍時自動禮讓，且拉取落地期間抑制空間自我喚醒。"""
+        from core.context import foreground_task_scope
+
+        self.coord.init_repo()
+        f_doc = self.docs_dir / "ttl_doc.md"
+        f_doc.write_text("v1\n", encoding="utf-8")
+        self.coord.run_sync(mode="push")
+
+        active_cfg = GDriveConfig(
+            root_folder_id="sandbox_root",
+            active_branch="main",
+            auto_sync=True,
+            repo_sync_enabled=True,
+            poll_interval_sec=60.0,
+            sandbox_dir=self.sandbox_dir.as_posix(),
+            sync_spaces=(SyncSpaceSpec(space="docs"),),
+        )
+        worker = GDriveSyncServiceWorker(
+            config=active_cfg,
+            coordinator=self.coord,
+            subscribe_fn=lambda cb, spaces=None: (lambda: None),
+        )
+        worker.standby_mode = False
+        worker.set_state(worker.STATE_READY)
+
+        touches = []
+        state_transitions = []
+        orig_set_state = worker.set_state
+        worker.touch_activity = lambda: touches.append(1)  # type: ignore[method-assign]
+        worker.set_state = lambda st: (state_transitions.append(st), orig_set_state(st))  # type: ignore[method-assign]
+
+        # 1. 完全無變更之輪詢：絕不呼叫 touch_activity 亦不切入 STATE_UPDATING
+        rep_noop = worker.run_once()
+        self.assertIsNotNone(rep_noop)
+        self.assertEqual(touches, [])
+        self.assertNotIn(worker.STATE_UPDATING, state_transitions)
+
+        # 2. 前景任務活躍時，yield_to_foreground=True 立即禮讓返回 None
+        with foreground_task_scope():
+            self.assertIsNone(worker.run_once(yield_to_foreground=True))
+
+        # 3. 遠端有新檔案拉取落地時：觸發 touch_activity，且在靜置窗內抑制 _on_file_space_changed 自我喚醒
+        rem_new = self.tmp_root / "remote_pushed.md"
+        rem_new.write_text("from_cloud\n", encoding="utf-8")
+        self.transport.upload_file(rem_new, "repo/main/docs/remote_pushed.md")
+        meta = self.coord._read_remote_repo_meta()
+        assert meta is not None
+        # Force cache refresh by bumping remote meta timestamp
+        meta["updated_at"] = "2099-01-01T00:00:00+00:00"
+        self.coord._write_remote_repo_meta(meta)
+
+        rep_pull = worker.run_once()
+        self.assertIsNotNone(rep_pull)
+        self.assertGreaterEqual(len(touches), 1)
+        self.assertIn(worker.STATE_UPDATING, state_transitions)
+        self.assertEqual(worker.state, worker.STATE_READY)
+
+        from core.space import ScanDiffDetail
+        from gdrive_support.coordinator import SyncReport
+
+        worker._wake_event.clear()
+        worker._on_file_space_changed("docs")
+        self.assertFalse(worker._wake_event.is_set())
+
+        # Pulled file path itself stays suppressed during post-pull grace window
+        worker._on_file_space_changed(
+            "docs", ScanDiffDetail(added={"docs/remote_pushed.md"}, modified=set(), deleted=set())
+        )
+        self.assertFalse(worker._wake_event.is_set())
+
+        # Concurrent edit to a DIFFERENT local file is NOT swallowed even during grace window / _in_sync_run!
+        worker._in_sync_run = True
+        try:
+            worker._on_file_space_changed(
+                "docs", ScanDiffDetail(added=set(), modified={"docs/local_concurrent_edit.md"}, deleted=set())
+            )
+            self.assertTrue(worker._wake_event.is_set())
+        finally:
+            worker._in_sync_run = False
+
+        # Yielding mid-sync preserves _wake_event so pending sync is not delayed by full poll_interval_sec
+        worker._wake_event.clear()
+        with unittest.mock.patch.object(
+            worker._coordinator,
+            "run_sync",
+            return_value=SyncReport(branch="main", mode="sync", yielded=True),
+        ):
+            rep_y = worker.run_once(yield_to_foreground=True)
+            self.assertIsNotNone(rep_y)
+            self.assertTrue(rep_y.get("yielded"))
+            self.assertTrue(worker._wake_event.is_set())
+
         self.mark_passed()
 
 

@@ -1615,5 +1615,54 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         self.mark_passed()
 
 
+    def test_scanner_diff_config_hash_change_emits_excluded_files_as_deleted(self) -> None:
+        """Verify `SpaceScanner.diff()` emits newly excluded files in `deleted` when `config_hash` changes after `from_gen > 0`."""
+        cfg_dir = self.proj_root / "cfg_src"
+        vendor_dir = cfg_dir / "vendor"
+        vendor_dir.mkdir(parents=True, exist_ok=True)
+        keep_f = cfg_dir / "keep.py"
+        drop_f = vendor_dir / "drop.py"
+        keep_f.write_text("KEEP = 1\n", encoding="utf-8")
+        drop_f.write_text("DROP = 2\n", encoding="utf-8")
+
+        self._write_module_core_contrib(
+            "core",
+            {
+                "spaces": {
+                    "cfg_space": {
+                        "entries": ["project://cfg_src"],
+                        "include": ["*.py"],
+                        "exclude": [],
+                    }
+                }
+            },
+        )
+        reg1 = SpaceRegistry(project_root=self.proj_root, yscb_dir=self.yscb_root)
+        sc1 = SpaceScanner(registry=reg1)
+        sc1.scan("core/cfg_space")
+        sc1.ack("core/cfg_space", consumer_id="ast")
+
+        # Update space exclude rules so vendor/drop.py becomes excluded (config_hash changes)
+        self._write_module_core_contrib(
+            "core",
+            {
+                "spaces": {
+                    "cfg_space": {
+                        "entries": ["project://cfg_src"],
+                        "include": ["*.py"],
+                        "exclude": ["vendor"],
+                    }
+                }
+            },
+        )
+        reg2 = SpaceRegistry(project_root=self.proj_root, yscb_dir=self.yscb_root)
+        sc2 = SpaceScanner(registry=reg2)
+        diff_res = sc2.diff("core/cfg_space", consumer_id="ast", auto_refresh=True)
+        self.assertTrue(diff_res.has_changes)
+        self.assertTrue(any(p.endswith("vendor/drop.py") for p in diff_res.deleted), diff_res.deleted)
+        self.assertFalse(any(p.endswith("keep.py") for p in diff_res.deleted), diff_res.deleted)
+        self.mark_passed()
+
+
 if __name__ == "__main__":
     unittest.main()

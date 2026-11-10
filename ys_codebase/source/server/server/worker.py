@@ -9,6 +9,7 @@ intercepts SystemExit, and implements lazy module loading.
 
 import argparse
 from dataclasses import dataclass
+import io
 import json
 import os
 import queue
@@ -234,7 +235,9 @@ class WarmWorker:
     ) -> Tuple[int, Optional[str]]:
         """Resolves command path, dispatches local CLI under captured IO streams, and contains SystemExit."""
         clear_error_hint()
+        prev_stdin = sys.stdin
         with streamer:
+            sys.stdin = io.StringIO("")
             try:
                 from core.commands.dispatcher import (
                     _load_registry,
@@ -269,6 +272,18 @@ class WarmWorker:
                 return code, err_hint
             except Exception as ex:
                 return self._record_task_exception(ex, module, args, streamer, stop_capture=False)
+            except BaseException as base_ex:
+                if isinstance(base_ex, KeyboardInterrupt):
+                    raise
+                return self._record_task_exception(
+                    RuntimeError(f"Unhandled BaseException ({type(base_ex).__name__}): {base_ex}"),
+                    module,
+                    args,
+                    streamer,
+                    stop_capture=False,
+                )
+            finally:
+                sys.stdin = prev_stdin
 
     def execute_task(
         self,
@@ -355,26 +370,116 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
     except Exception:
         pass
 
+    orig_stdin = sys.stdin
     orig_stdout = sys.stdout
-    if out_stream is None:
-        for stream_obj in (orig_stdout, sys.stderr):
-            _reconfigure_utf8_stream(stream_obj)
-    if in_stream is None:
-        _reconfigure_utf8_stream(sys.stdin)
+    owned_ipc_in: Optional[Any] = None
+    owned_ipc_out: Optional[Any] = None
+    owned_devnull_streams: List[Any] = []
+    ipc_out: Any = out_stream
+    in_io: Any = in_stream
+    reader_t: Optional[threading.Thread] = None
 
-    ipc_out = out_stream or orig_stdout
-    in_io = in_stream or sys.stdin
+    if out_stream is None and in_stream is None:
+        dup_in_fd: Optional[int] = None
+        dup_out_fd: Optional[int] = None
+        cand_in_io: Optional[Any] = None
+        cand_ipc_out: Optional[Any] = None
+        devnull_r: Optional[int] = None
+        devnull_w: Optional[int] = None
+        try:
+            in_fd = orig_stdin.fileno()
+            out_fd = orig_stdout.fileno()
+            orig_stdout.flush()
+            dup_in_fd = os.dup(in_fd)
+            dup_out_fd = os.dup(out_fd)
+            os.set_inheritable(dup_in_fd, False)
+            os.set_inheritable(dup_out_fd, False)
+
+            cand_in_io = io.TextIOWrapper(
+                os.fdopen(dup_in_fd, "rb", closefd=True),
+                encoding="utf-8",
+                errors="replace",
+            )
+            dup_in_fd = None
+            cand_ipc_out = io.TextIOWrapper(
+                os.fdopen(dup_out_fd, "wb", closefd=True),
+                encoding="utf-8",
+                errors="replace",
+                write_through=True,
+            )
+            dup_out_fd = None
+
+            devnull_r = os.open(os.devnull, os.O_RDONLY)
+            devnull_w = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull_r, in_fd)
+            os.dup2(devnull_w, out_fd)
+            if devnull_r not in (in_fd, out_fd):
+                os.close(devnull_r)
+                devnull_r = None
+            if devnull_w not in (in_fd, out_fd):
+                os.close(devnull_w)
+                devnull_w = None
+
+            null_stdin = open(in_fd, "r", encoding="utf-8", errors="replace", closefd=False)
+            null_stdout = open(out_fd, "w", encoding="utf-8", errors="replace", closefd=False)
+            owned_devnull_streams.extend([null_stdin, null_stdout])
+            in_io = cand_in_io
+            ipc_out = cand_ipc_out
+            owned_ipc_in = cand_in_io
+            owned_ipc_out = cand_ipc_out
+            sys.stdin = null_stdin
+            sys.stdout = null_stdout
+            _reconfigure_utf8_stream(sys.stderr)
+        except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
+            for s_cand in (cand_in_io, cand_ipc_out):
+                if s_cand is not None:
+                    try:
+                        s_cand.close()
+                    except Exception:
+                        pass
+            for fd_cand in (dup_in_fd, dup_out_fd, devnull_r, devnull_w):
+                if fd_cand is not None:
+                    try:
+                        os.close(fd_cand)
+                    except OSError:
+                        pass
+            sys.stdin = orig_stdin
+            sys.stdout = orig_stdout
+            for stream_obj in (orig_stdout, sys.stderr):
+                _reconfigure_utf8_stream(stream_obj)
+            _reconfigure_utf8_stream(orig_stdin)
+            ipc_out = orig_stdout
+            in_io = orig_stdin
+    else:
+        if out_stream is None:
+            for stream_obj in (orig_stdout, sys.stderr):
+                _reconfigure_utf8_stream(stream_obj)
+        if in_stream is None:
+            _reconfigure_utf8_stream(sys.stdin)
+        ipc_out = out_stream if out_stream is not None else orig_stdout
+        in_io = in_stream if in_stream is not None else sys.stdin
 
     ipc_lock = threading.Lock()
+    ipc_in_close_lock = threading.Lock()
+    ipc_in_handoff_to_reader = False
+    reader_finished = False
+    pipe_broken = threading.Event()
+    cmd_q: queue.Queue = queue.Queue()
 
     def emit_fn(packet: Dict[str, Any]) -> None:
         with ipc_lock:
+            if pipe_broken.is_set():
+                return
             try:
                 line = json.dumps(packet) + "\n"
                 ipc_out.write(line)
                 ipc_out.flush()
-            except OSError:
-                pass
+            except (BrokenPipeError, OSError, ValueError):
+                pipe_broken.set()
+                try:
+                    cmd_q.put_nowait(None)
+                except Exception:
+                    pass
 
     worker: Optional[WarmWorker] = None
     try:
@@ -405,8 +510,6 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
                 "services": worker.service_manager.get_status(),
                 "worker_rss_mb": get_process_rss_mb(),
             })
-
-            cmd_q: queue.Queue = queue.Queue()
 
             def _stdin_reader() -> None:
                 try:
@@ -441,6 +544,18 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
                 except Exception as r_err:
                     cmd_q.put({"_parse_error": str(r_err)})
                     cmd_q.put(None)
+                finally:
+                    nonlocal reader_finished
+                    should_close_in = False
+                    with ipc_in_close_lock:
+                        reader_finished = True
+                        if ipc_in_handoff_to_reader and owned_ipc_in is not None:
+                            should_close_in = True
+                    if should_close_in and owned_ipc_in is not None:
+                        try:
+                            owned_ipc_in.close()
+                        except Exception:
+                            pass
 
             reader_t = create_managed_thread(
                 _stdin_reader,
@@ -499,6 +614,33 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
                     worker.service_manager.stop_all()
             except Exception:
                 pass
+        if owned_devnull_streams:
+            sys.stdin = orig_stdin
+            sys.stdout = orig_stdout
+            for s_obj in owned_devnull_streams:
+                try:
+                    s_obj.close()
+                except Exception:
+                    pass
+        with ipc_lock:
+            pipe_broken.set()
+            if owned_ipc_out is not None:
+                try:
+                    owned_ipc_out.close()
+                except Exception:
+                    pass
+        if owned_ipc_in is not None:
+            close_in_now = False
+            with ipc_in_close_lock:
+                if reader_t is None or reader_finished or not reader_t.is_alive():
+                    close_in_now = True
+                else:
+                    ipc_in_handoff_to_reader = True
+            if close_in_now:
+                try:
+                    owned_ipc_in.close()
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":

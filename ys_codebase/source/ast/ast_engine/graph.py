@@ -86,6 +86,18 @@ class _StdlibDiGraph:
     def number_of_edges(self) -> int:
         return sum(len(nbrs) for nbrs in self._adj.values())
 
+    def copy(self) -> "_StdlibDiGraph":
+        cloned = _StdlibDiGraph()
+        for u, nbrs in self._adj.items():
+            cloned.add_node(u)
+            for v, attrs in nbrs.items():
+                copied_attrs = {
+                    k: (list(val) if isinstance(val, list) else val)
+                    for k, val in attrs.items()
+                }
+                cloned.add_edge(u, v, **copied_attrs)
+        return cloned
+
 
 class CallGraphIndex:
     """
@@ -98,6 +110,7 @@ class CallGraphIndex:
         self,
         graph: Optional[nx.DiGraph] = None,
         workspace_graph: Optional[WorkspaceSymbolGraph] = None,
+        ast_generation: int = 0,
     ):
         if graph is None:
             try:
@@ -108,6 +121,20 @@ class CallGraphIndex:
                 graph = _StdlibDiGraph()
         self._graph: nx.DiGraph = graph
         self._workspace_graph: Optional[WorkspaceSymbolGraph] = workspace_graph
+        self.ast_generation: int = int(ast_generation or 0)
+
+    def clone_shallow(self) -> "CallGraphIndex":
+        """Return a Copy-on-Write clone of `CallGraphIndex` with independent edge `call_sites` lists so lock-free readers never observe mid-patch mutations."""
+        copied_g = self._graph.copy() if hasattr(self._graph, "copy") else None
+        if copied_g is not None and hasattr(copied_g, "edges"):
+            try:
+                for u, v in list(copied_g.edges()):
+                    edge_attrs = copied_g[u][v]
+                    if "call_sites" in edge_attrs and isinstance(edge_attrs["call_sites"], list):
+                        edge_attrs["call_sites"] = list(edge_attrs["call_sites"])
+            except Exception:
+                pass
+        return CallGraphIndex(graph=copied_g, workspace_graph=None, ast_generation=self.ast_generation)
 
     @property
     def graph(self) -> nx.DiGraph:
@@ -310,6 +337,7 @@ class CallGraphIndex:
                     ]
 
         out: Dict[str, Any] = {
+            "ast_generation": int(self.ast_generation),
             "int_to_id": nodes_list,
             "forward_graph": forward_graph,
             "reverse_graph": reverse_graph,
@@ -340,7 +368,7 @@ class CallGraphIndex:
             except Exception:
                 ws_graph = None
 
-        idx = cls(workspace_graph=ws_graph)
+        idx = cls(workspace_graph=ws_graph, ast_generation=int(data.get("ast_generation", 0) or 0))
         raw_ids = data.get("int_to_id") or []
         int_to_id: List[str] = [str(x) for x in raw_ids] if isinstance(raw_ids, (list, tuple)) else []
         raw_fwd = data.get("forward_graph")

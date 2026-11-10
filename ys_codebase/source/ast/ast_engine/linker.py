@@ -42,6 +42,15 @@ def _create_default_linker_cache() -> Dict[str, Any]:
         "class_bases": None,
         "base_derived": None,
         "methods_by_class_and_short": None,
+        "by_file": None,
+        "by_name": None,
+        "by_short_name": None,
+        "by_module_suffix": None,
+        "by_space_name": None,
+        "by_file_name": None,
+        "by_fqn": None,
+        "by_parent_id": None,
+        "class_fields": None,
     }
 
 
@@ -1044,6 +1053,70 @@ class DefaultModulePathResolver(ModulePathResolver):
 
     provider_id: str = "ast:builtin_module_resolver"
 
+    def __init__(self) -> None:
+        self._wf_cache_id: Optional[int] = None
+        self._wf_suffix_map: Dict[str, str] = {}
+        self._probe_cache: Dict[str, Optional[str]] = {}
+        self._nbf_cache_id: Optional[int] = None
+        self._nbf_cache_len: int = -1
+        self._ns_index: Dict[Tuple[str, ...], Tuple[Optional[str], Tuple[str, ...]]] = {}
+        self._fqn_index: Dict[str, Tuple[Optional[str], Tuple[str, ...]]] = {}
+
+    def _get_suffix_map(self, workspace_files: FrozenSet[str]) -> Dict[str, str]:
+        wf_id = id(workspace_files)
+        if self._wf_cache_id == wf_id:
+            return self._wf_suffix_map
+        suffix_map: Dict[str, str] = {}
+        for wf in sorted(workspace_files, key=lambda x: (len(x), x)):
+            parts = wf.split("/")
+            for i in range(1, len(parts)):
+                sfx = "/".join(parts[i:])
+                if sfx not in suffix_map:
+                    suffix_map[sfx] = wf
+        self._wf_cache_id = wf_id
+        self._wf_suffix_map = suffix_map
+        self._probe_cache = {}
+        return suffix_map
+
+    def _get_ns_and_fqn_indices(
+        self, nodes_by_file: Mapping[str, Tuple[SymbolNode, ...]]
+    ) -> Tuple[
+        Dict[Tuple[str, ...], Tuple[Optional[str], Tuple[str, ...]]],
+        Dict[str, Tuple[Optional[str], Tuple[str, ...]]],
+    ]:
+        nbf_id = id(nodes_by_file)
+        nbf_len = len(nodes_by_file)
+        if self._nbf_cache_id == nbf_id and self._nbf_cache_len == nbf_len:
+            return self._ns_index, self._fqn_index
+        ns_ids: Dict[Tuple[str, ...], Set[str]] = defaultdict(set)
+        ns_files: Dict[Tuple[str, ...], Set[str]] = defaultdict(set)
+        fqn_ids: Dict[str, Set[str]] = defaultdict(set)
+        fqn_files: Dict[str, Set[str]] = defaultdict(set)
+        for wf, f_nodes in nodes_by_file.items():
+            for n in f_nodes:
+                if n.scope_path:
+                    ns_ids[n.scope_path].add(n.id)
+                    ns_files[n.scope_path].add(wf)
+                fqn_val = n.fqn
+                if fqn_val:
+                    fqn_ids[fqn_val].add(n.id)
+                    fqn_files[fqn_val].add(wf)
+        ns_idx: Dict[Tuple[str, ...], Tuple[Optional[str], Tuple[str, ...]]] = {}
+        for k, ids in ns_ids.items():
+            files = ns_files[k]
+            single_f = next(iter(files)) if len(files) == 1 else None
+            ns_idx[k] = (single_f, tuple(sorted(ids)))
+        fqn_idx: Dict[str, Tuple[Optional[str], Tuple[str, ...]]] = {}
+        for k, ids in fqn_ids.items():
+            files = fqn_files[k]
+            single_f = next(iter(files)) if len(files) == 1 else None
+            fqn_idx[k] = (single_f, tuple(sorted(ids)))
+        self._nbf_cache_id = nbf_id
+        self._nbf_cache_len = nbf_len
+        self._ns_index = ns_idx
+        self._fqn_index = fqn_idx
+        return ns_idx, fqn_idx
+
     def resolve_import(
         self,
         importing_file: str,
@@ -1067,11 +1140,11 @@ class DefaultModulePathResolver(ModulePathResolver):
             matched_file: Optional[str] = None
             if cand_rel in workspace_files:
                 matched_file = cand_rel
+            elif path_part in workspace_files:
+                matched_file = path_part
             else:
-                for wf in sorted(workspace_files):
-                    if wf == path_part or wf.endswith(f"/{path_part}") or wf.endswith(f"/{cand_rel}"):
-                        matched_file = wf
-                        break
+                suffix_map = self._get_suffix_map(workspace_files)
+                matched_file = suffix_map.get(path_part) or suffix_map.get(cand_rel)
             if matched_file is not None:
                 sids = _match_symbol_ids_in_file(nodes_by_file.get(matched_file, ()), anchor) if anchor else ()
                 return matched_file, sids, False
@@ -1096,11 +1169,13 @@ class DefaultModulePathResolver(ModulePathResolver):
         # 3. Dotted module/symbol expression (`pkg.mod.ClassName` or `pkg.mod`)
         return self._resolve_dotted_expr(expr, norm_importing, workspace_files, nodes_by_file)
 
-    @staticmethod
-    def _probe_module_file(mod_slash: str, workspace_files: FrozenSet[str]) -> Optional[str]:
+    def _probe_module_file(self, mod_slash: str, workspace_files: FrozenSet[str]) -> Optional[str]:
         """Match a slash-separated module path against `workspace_files`."""
         if not mod_slash or mod_slash == ".":
             return None
+        suffix_map = self._get_suffix_map(workspace_files)
+        if mod_slash in self._probe_cache:
+            return self._probe_cache[mod_slash]
         exts = (".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".cs", ".h", ".hpp", ".cpp", ".c", ".md")
         candidates: List[str] = [mod_slash]
         for ext in exts:
@@ -1112,14 +1187,14 @@ class DefaultModulePathResolver(ModulePathResolver):
 
         for cand in candidates:
             if cand in workspace_files:
+                self._probe_cache[mod_slash] = cand
                 return cand
         for cand in candidates:
-            suffix = f"/{cand}"
-            matches = [wf for wf in workspace_files if wf.endswith(suffix)]
-            if len(matches) == 1:
-                return matches[0]
-            if matches:
-                return sorted(matches, key=lambda x: (len(x), x))[0]
+            hit = suffix_map.get(cand)
+            if hit is not None:
+                self._probe_cache[mod_slash] = hit
+                return hit
+        self._probe_cache[mod_slash] = None
         return None
 
     def _resolve_rel_path_or_symbol(
@@ -1171,16 +1246,10 @@ class DefaultModulePathResolver(ModulePathResolver):
 
         # C# / C++ namespace import fallback: check if any workspace symbol has scope_path matching `norm_expr`
         ns_parts = tuple(p for p in norm_expr.split(".") if p)
-        ns_matched_ids: List[str] = []
-        ns_files: Set[str] = set()
-        for wf, f_nodes in nodes_by_file.items():
-            for n in f_nodes:
-                if n.scope_path == ns_parts or n.fqn == norm_expr or n.fqn == expr:
-                    ns_matched_ids.append(n.id)
-                    ns_files.add(wf)
-        if ns_matched_ids:
-            single_f = sorted(ns_files)[0] if len(ns_files) == 1 else None
-            return single_f, tuple(sorted(set(ns_matched_ids))), False
+        ns_idx, fqn_idx = self._get_ns_and_fqn_indices(nodes_by_file)
+        hit = ns_idx.get(ns_parts) or fqn_idx.get(norm_expr) or fqn_idx.get(expr)
+        if hit is not None:
+            return hit[0], hit[1], False
 
         return None, (), True
 
@@ -1198,6 +1267,7 @@ class WorkspaceGraphLinker:
         language_configs: Optional[Mapping[str, LanguageConfig]] = None,
         module_resolvers: Optional[Mapping[str, ModulePathResolver]] = None,
         edge_refiners: Optional[Mapping[str, Tuple[EdgeRefiner, ...]]] = None,
+        prev_workspace_graph: Optional[WorkspaceSymbolGraph] = None,
     ) -> None:
         sorted_fgs = sorted(
             (fg for fg in file_graphs if isinstance(fg, FileSymbolGraph)),
@@ -1206,10 +1276,14 @@ class WorkspaceGraphLinker:
         self._file_graphs: Dict[str, FileSymbolGraph] = {
             fg.file_path.replace("\\", "/"): fg for fg in sorted_fgs
         }
+        self._workspace_files: FrozenSet[str] = frozenset(self._file_graphs.keys())
         self._language_configs: Dict[str, LanguageConfig] = dict(language_configs or {})
-        self._module_resolvers: Dict[str, ModulePathResolver] = dict(module_resolvers or {})
-        self._edge_refiners: Dict[str, Tuple[EdgeRefiner, ...]] = dict(edge_refiners or {})
         self._default_resolver = DefaultModulePathResolver()
+        self._module_resolvers: Dict[str, ModulePathResolver] = {}
+        for k, r in (module_resolvers or {}).items():
+            self._module_resolvers[k] = self._default_resolver if type(r) is DefaultModulePathResolver else r
+        self._edge_refiners: Dict[str, Tuple[EdgeRefiner, ...]] = dict(edge_refiners or {})
+        self._prev_workspace_graph: Optional[WorkspaceSymbolGraph] = prev_workspace_graph
 
         # Pass 1 state
         self._nodes_by_id: Dict[str, SymbolNode] = {}
@@ -1352,7 +1426,7 @@ class WorkspaceGraphLinker:
 
     def _run_pass2_import_resolution(self) -> None:
         """Pass 2: Resolve all `edge_kind == 'imports'` edges and construct per-file `FileImportTable`."""
-        workspace_files = frozenset(self._file_graphs.keys())
+        workspace_files = self._workspace_files
         raw_bindings_by_file: Dict[str, Dict[str, FileImportBinding]] = defaultdict(dict)
         wildcard_targets_by_file: Dict[str, List[Tuple[str, bool]]] = defaultdict(list)
         exported_by_file: Dict[str, Set[str]] = {}
@@ -1872,7 +1946,7 @@ class WorkspaceGraphLinker:
         expr = edge.target_expr.strip()
         if not expr:
             return "unresolved", ()
-        workspace_files = frozenset(self._file_graphs.keys())
+        workspace_files = self._workspace_files
         if "#" in expr or expr.endswith((".md", ".py", ".ts", ".tsx", ".js", ".cs", ".h", ".hpp", ".c", ".cpp")):
             res_file, res_sids, is_ext = self._default_resolver.resolve_import(
                 importing_file=norm_path,
@@ -2145,6 +2219,31 @@ class WorkspaceGraphLinker:
 
         return "unresolved", (), "Pass4:Unresolved"
 
+    @staticmethod
+    def _file_declaration_signature(fg: FileSymbolGraph) -> Tuple[Any, ...]:
+        """Compute a line-number-agnostic structural signature of declarations, imports, and type bases."""
+        nodes_sig = tuple(
+            (
+                nid,
+                n.name,
+                n.scope_path,
+                n.kinds,
+                n.facets.get("visibility"),
+                n.facets.get("is_partial"),
+                n.facets.get("signature"),
+                tuple(sorted(n.facets["field_types"].items()))
+                if isinstance(n.facets.get("field_types"), Mapping)
+                else (),
+            )
+            for nid, n in sorted(fg.all_nodes_by_id.items())
+        )
+        struct_edges_sig = tuple(
+            (e.source_id, e.edge_kind, e.target_expr)
+            for e in fg.outgoing_edges
+            if e.edge_kind in ("imports", "inherits", "implements")
+        )
+        return (fg.language, nodes_sig, struct_edges_sig)
+
     def link_workspace(
         self,
         progress_callback: Optional[Callable[[int, int], None]] = None,
@@ -2153,20 +2252,159 @@ class WorkspaceGraphLinker:
         check_task_cancelled()
         self._run_pass1_global_indexing_and_folding()
         check_task_cancelled()
-        self._run_pass2_import_resolution()
-        check_task_cancelled()
-        self._run_pass3_inheritance_and_type_dag()
-        check_task_cancelled()
+
+        prev_ws = self._prev_workspace_graph
+        can_reuse_unchanged = False
+        dirty_fg_paths: Set[str] = set()
+        prev_edges_by_file: Dict[str, List[RelationEdge]] = defaultdict(list)
+
+        if prev_ws is not None and prev_ws.file_graphs and set(prev_ws.file_graphs.keys()) == self._workspace_files:
+            for norm_path, fg in self._file_graphs.items():
+                old_fg = prev_ws.file_graphs.get(norm_path)
+                if old_fg is not fg and (old_fg is None or old_fg.content_hash != fg.content_hash):
+                    dirty_fg_paths.add(norm_path)
+            if len(dirty_fg_paths) <= max(4, len(self._file_graphs) // 10):
+                sig_unchanged = True
+                for dp in dirty_fg_paths:
+                    old_fg = prev_ws.file_graphs.get(dp)
+                    new_fg = self._file_graphs.get(dp)
+                    if old_fg is None or new_fg is None or (
+                        self._file_declaration_signature(old_fg) != self._file_declaration_signature(new_fg)
+                    ):
+                        sig_unchanged = False
+                        break
+                if sig_unchanged:
+                    can_reuse_unchanged = True
+                    for e in prev_ws.resolved_edges:
+                        if e.edge_kind in ("merges_with", "declares"):
+                            continue
+                        f_key = e.source_id.split("::", 1)[0]
+                        prev_edges_by_file[f_key].append(e)
+
+        if can_reuse_unchanged and prev_ws is not None:
+            workspace_files = self._workspace_files
+            for norm_path, fg in self._file_graphs.items():
+                if norm_path not in dirty_fg_paths and norm_path in prev_ws.file_import_tables:
+                    self._file_import_tables[norm_path] = prev_ws.file_import_tables[norm_path]
+                    continue
+                if norm_path in prev_ws.file_import_tables:
+                    self._file_import_tables[norm_path] = prev_ws.file_import_tables[norm_path]
+                custom_res = self._module_resolvers.get(fg.language)
+                resolver = custom_res if custom_res is not None else self._default_resolver
+                res_prov = ProvenanceStep(
+                    provider_id=getattr(resolver, "provider_id", "ast:builtin_module_resolver"),
+                    action="link",
+                    rule_or_hook="Pass2:ImportResolution",
+                )
+                for idx, edge in enumerate(fg.outgoing_edges):
+                    if edge.edge_kind != "imports":
+                        continue
+                    raw_expr = edge.target_expr.strip()
+                    if raw_expr.startswith("export*="):
+                        lookup_expr = raw_expr.split("=", 1)[1].strip()
+                    elif raw_expr.startswith("*="):
+                        lookup_expr = raw_expr.split("=", 1)[1].strip()
+                    elif "=" in raw_expr:
+                        _, lookup_expr = (p.strip() for p in raw_expr.split("=", 1))
+                    else:
+                        lookup_expr = raw_expr
+                    try:
+                        res_file, res_sids, is_ext = resolver.resolve_import(
+                            importing_file=norm_path,
+                            target_expr=lookup_expr,
+                            workspace_files=workspace_files,
+                            nodes_by_file=self._nodes_by_file,
+                        )
+                    except Exception:
+                        res_file, res_sids, is_ext = self._default_resolver.resolve_import(
+                            importing_file=norm_path,
+                            target_expr=lookup_expr,
+                            workspace_files=workspace_files,
+                            nodes_by_file=self._nodes_by_file,
+                        )
+                    expanded_sids: List[str] = []
+                    for sid in res_sids:
+                        for g_sid in self._node_to_fold_group.get(sid, (sid,)):
+                            if g_sid not in expanded_sids:
+                                expanded_sids.append(g_sid)
+                    final_sids = tuple(expanded_sids)
+                    if final_sids:
+                        status = "resolved" if len(final_sids) == 1 else "overload_group"
+                        edge_targets = final_sids
+                    elif res_file is not None:
+                        status = "resolved"
+                        file_root_nodes = self._file_graphs[res_file].root_nodes
+                        edge_targets = (
+                            (file_root_nodes[0].id,)
+                            if len(file_root_nodes) == 1
+                            else tuple(rn.id for rn in file_root_nodes)
+                        )
+                    elif is_ext:
+                        status = "external"
+                        edge_targets = ()
+                    else:
+                        status = "unresolved"
+                        edge_targets = ()
+                    self._resolved_import_edges[(norm_path, idx, edge.target_expr)] = RelationEdge(
+                        source_id=edge.source_id,
+                        target_expr=edge.target_expr,
+                        edge_kind=edge.edge_kind,
+                        span=edge.span,
+                        resolution_status=status,
+                        resolved_target_ids=edge_targets,
+                        provenance=(*edge.provenance, res_prov),
+                    )
+            self._type_bases_by_id = dict(prev_ws.type_bases_by_id)
+            self._type_derived_by_id = dict(prev_ws.type_derived_by_id)
+            self._field_types_by_class_id = {
+                k: dict(v) for k, v in prev_ws.field_types_by_class_id.items()
+            }
+            for dp in dirty_fg_paths:
+                fg = self._file_graphs[dp]
+                pass3_prov = ProvenanceStep(
+                    provider_id="ast:WorkspaceGraphLinker",
+                    action="link",
+                    rule_or_hook="Pass3:InheritanceDAG",
+                )
+                for idx, edge in enumerate(fg.outgoing_edges):
+                    if edge.edge_kind not in ("inherits", "implements"):
+                        continue
+                    src_node = self._nodes_by_id.get(edge.source_id)
+                    status, target_ids = self._resolve_type_expr_in_file_context(
+                        norm_path=dp,
+                        source_node=src_node,
+                        type_expr=edge.target_expr,
+                    )
+                    self._resolved_type_edges[(dp, idx, edge.target_expr)] = RelationEdge(
+                        source_id=edge.source_id,
+                        target_expr=edge.target_expr,
+                        edge_kind=edge.edge_kind,
+                        span=edge.span,
+                        resolution_status=status,
+                        resolved_target_ids=target_ids,
+                        provenance=(*edge.provenance, pass3_prov),
+                    )
+        else:
+            self._run_pass2_import_resolution()
+            check_task_cancelled()
+            self._run_pass3_inheritance_and_type_dag()
+            check_task_cancelled()
 
         all_resolved_edges: List[RelationEdge] = list(self._synthetic_edges)
         total_fgs = len(self._file_graphs)
+        prov_cache: Dict[str, ProvenanceStep] = {}
 
         for fg_idx, (norm_path, fg) in enumerate(self._file_graphs.items(), start=1):
             if (fg_idx & 15) == 1:
                 check_task_cancelled()
             if progress_callback is not None:
                 progress_callback(fg_idx, total_fgs)
+            if can_reuse_unchanged and norm_path not in dirty_fg_paths and norm_path in prev_edges_by_file:
+                all_resolved_edges.extend(prev_edges_by_file[norm_path])
+                continue
+
             file_edges: List[RelationEdge] = []
+            file_call_cache: Dict[Tuple[str, str, str, Optional[int]], Tuple[str, Tuple[str, ...], str]] = {}
             for idx, edge in enumerate(fg.outgoing_edges):
                 key = (norm_path, idx, edge.target_expr)
                 if edge.edge_kind == "imports" and key in self._resolved_import_edges:
@@ -2174,16 +2412,26 @@ class WorkspaceGraphLinker:
                 elif edge.edge_kind in ("inherits", "implements") and key in self._resolved_type_edges:
                     file_edges.append(self._resolved_type_edges[key])
                 else:
-                    status, target_ids, tier_rule = self._resolve_call_or_reference_edge(
-                        norm_path=norm_path,
-                        fg_lang=fg.language,
-                        edge=edge,
-                    )
-                    pass4_prov = ProvenanceStep(
-                        provider_id="ast:WorkspaceGraphLinker",
-                        action="link",
-                        rule_or_hook=tier_rule,
-                    )
+                    arg_cnt = self._extract_edge_arg_count(edge)
+                    ckey = (edge.source_id, edge.edge_kind, edge.target_expr, arg_cnt)
+                    cached_res = file_call_cache.get(ckey)
+                    if cached_res is not None:
+                        status, target_ids, tier_rule = cached_res
+                    else:
+                        status, target_ids, tier_rule = self._resolve_call_or_reference_edge(
+                            norm_path=norm_path,
+                            fg_lang=fg.language,
+                            edge=edge,
+                        )
+                        file_call_cache[ckey] = (status, target_ids, tier_rule)
+                    pass4_prov = prov_cache.get(tier_rule)
+                    if pass4_prov is None:
+                        pass4_prov = ProvenanceStep(
+                            provider_id="ast:WorkspaceGraphLinker",
+                            action="link",
+                            rule_or_hook=tier_rule,
+                        )
+                        prov_cache[tier_rule] = pass4_prov
                     file_edges.append(
                         RelationEdge(
                             source_id=edge.source_id,

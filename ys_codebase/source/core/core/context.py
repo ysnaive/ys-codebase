@@ -264,6 +264,7 @@ class RuntimeContext:
         # 15. Foreground activity refcount & cooperative task cancellation state
         self.foreground_state_lock = threading.RLock()
         self.foreground_active_count: int = 0
+        self.last_foreground_end_mono: float = 0.0
         self.active_task_id: Optional[str] = None
         self.cancelled_task_ids: deque = deque(maxlen=32)
         self.task_cancel_event = threading.Event()
@@ -363,6 +364,7 @@ class RuntimeContext:
                 self.space_subscribers.clear()
             with self.foreground_state_lock:
                 self.foreground_active_count = 0
+                self.last_foreground_end_mono = 0.0
                 self.active_task_id = None
                 self.cancelled_task_ids.clear()
             self.task_cancel_event.clear()
@@ -746,17 +748,28 @@ def foreground_task_scope() -> Iterator[None]:
     finally:
         with ctx.foreground_state_lock:
             ctx.foreground_active_count = max(0, ctx.foreground_active_count - 1)
+            if ctx.foreground_active_count == 0:
+                ctx.last_foreground_end_mono = time.monotonic()
             ctx.set_module_state(
                 "server.worker.foreground_active", ctx.foreground_active_count > 0
             )
 
 
-def is_foreground_active() -> bool:
-    """Returns True when a foreground CLI dispatch is actively executing inside `WarmWorker`."""
+def is_foreground_active(grace_seconds: float = 0.8) -> bool:
+    """Returns True when a foreground CLI dispatch is actively executing (or within `grace_seconds` of completion inside `WarmWorker`)."""
     ctx = get_runtime_context()
     if ctx.foreground_active_count > 0:
         return True
-    return bool(ctx.get_module_state("server.worker.foreground_active"))
+    if bool(ctx.get_module_state("server.worker.foreground_active")):
+        return True
+    if (
+        grace_seconds > 0.0
+        and ctx.last_foreground_end_mono > 0.0
+        and get_env("YSCB_IN_SERVER_WORKER") == "1"
+    ):
+        if (time.monotonic() - ctx.last_foreground_end_mono) < grace_seconds:
+            return True
+    return False
 
 
 __all__ = (

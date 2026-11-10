@@ -9,6 +9,7 @@ knowledge-db 索引生命週期與流水線引擎 (pipeline.py)
 
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -42,7 +43,7 @@ from core.space import (
     resolve_semantic_or_rel_path,
 )
 
-from .embedding import EmbeddingService, VectorIndex, format_symbol_embedding_text
+from .embedding import EmbeddingService, VectorIndex, compute_embedding_text_hash, format_symbol_embedding_text
 from .exceptions import KnowledgeDBError
 from .hybrid import HybridSearchEngine
 from .io_utils import is_dirty_file_match, normalize_dirty_paths
@@ -218,6 +219,7 @@ class IndexingPipeline:
 
         self._unified_index: Optional[InvertedIndex] = None
         self._index_lock = threading.RLock()
+        self._write_serial_lock = threading.RLock()
 
     @property
     def storage_dir(self) -> Path:
@@ -294,9 +296,18 @@ class IndexingPipeline:
         assert idx is not None
         sym_ids = set(idx.symbols.keys())
         vec_ids = set(vec_idx.doc_ids)
-        missing_ids = sym_ids - vec_ids
-        stale_ids = vec_ids - sym_ids
-        valid_embedded = len(sym_ids & vec_ids)
+        hashes_map = getattr(vec_idx, "doc_text_hashes", None) or {}
+        outdated_ids: Set[str] = set()
+        if hashes_map:
+            for sid in (sym_ids & vec_ids):
+                rec_h = hashes_map.get(sid)
+                if rec_h is not None:
+                    cur_h = compute_embedding_text_hash(format_symbol_embedding_text(idx.symbols[sid]))
+                    if rec_h != cur_h:
+                        outdated_ids.add(sid)
+        missing_ids = (sym_ids - vec_ids) | outdated_ids
+        stale_ids = (vec_ids - sym_ids) | outdated_ids
+        valid_embedded = max(0, len(sym_ids & vec_ids) - len(outdated_ids))
         cov_pct = round((valid_embedded / total_syms) * 100.0, 1) if total_syms > 0 else 100.0
         return {
             "total_symbols": total_syms,
@@ -487,6 +498,10 @@ class IndexingPipeline:
                 ).has_changes:
                     return True
             if self._unified_index is not None:
+                cur_cfg_h = self._compute_kdb_config_hash()
+                idx_cfg_h = str(getattr(self._unified_index, "config_hash", "") or "")
+                if idx_cfg_h and idx_cfg_h != cur_cfg_h:
+                    return True
                 ast_gen = self.get_current_ast_generation()
                 if ast_gen is not None and int(getattr(self._unified_index, "acked_ast_generation", 0) or 0) != ast_gen:
                     return True
@@ -494,10 +509,21 @@ class IndexingPipeline:
             pass
         return False
 
+    def _compute_kdb_config_hash(self) -> str:
+        """計算涵蓋受索引空間與 space_weights 的輕量組態指紋。"""
+        try:
+            weights = self._resolve_space_weights()
+            items = [(str(k), round(float(v), 6)) for k, v in sorted(weights.items())]
+            qnames = sorted(self._get_indexed_space_qnames())
+            raw = json.dumps({"weights": items, "spaces": qnames}, sort_keys=True, separators=(",", ":"))
+            return hashlib.blake2b(raw.encode("utf-8"), digest_size=8).hexdigest()
+        except Exception:
+            return "v1"
+
     def _align_index_symbols_with_ast_snapshot(self, idx: Optional[InvertedIndex]) -> None:
         """
-        將反序列化之 InvertedIndex.symbols 與記憶體中已載入之 ASTEngine._snapshot.symbols 共享 UnifiedSymbol 參照，
-        消除常駐進程中 6,800+ 個重複符號實例之雙份 Heap 佔用（若空間權重過濾後 spaces 不同則保留輕量淺拷貝）。
+        將反序列化之 InvertedIndex.symbols 與記憶體中已載入之 ASTEngine._snapshot.symbols 共享 UnifiedSymbol 參照。
+        僅當雙方世代號一致時才允許共享參照，防止 AST 快照已推進新世代時覆寫舊符號文本造成舊詞無法自倒排表清除。
         """
         if idx is None or not idx.symbols or self.ast_engine is None:
             return
@@ -507,6 +533,10 @@ class IndexingPipeline:
                 self.ast_engine._ensure_symbols_loaded()
                 snap = getattr(self.ast_engine, "_snapshot", None)
             if snap is None or not getattr(snap, "symbols", None):
+                return
+            snap_gen = int(getattr(snap, "ast_generation", -1) or -1)
+            idx_gen = int(getattr(idx, "acked_ast_generation", -2) or -2)
+            if snap_gen <= 0 or snap_gen != idx_gen:
                 return
             indexed_spaces = self._get_indexed_space_names()
             weights = self._resolve_space_weights()
@@ -519,6 +549,26 @@ class IndexingPipeline:
                         idx.symbols[doc_id] = shared_sym
         except Exception as exc:
             log_debug(f"Aligning index symbols with AST snapshot skipped: {exc}")
+
+    def _backfill_legacy_vector_text_hashes(
+        self,
+        idx: Optional[InvertedIndex],
+        vec_idx: Optional[VectorIndex],
+    ) -> bool:
+        """Backfill missing `doc_text_hashes` on legacy `VectorIndex` caches when synchronized with `InvertedIndex`."""
+        if idx is None or vec_idx is None or not idx.symbols or not vec_idx.doc_ids:
+            return False
+        ast_gen_cur = self.get_current_ast_generation()
+        idx_gen = int(getattr(idx, "acked_ast_generation", 0) or 0)
+        if ast_gen_cur is not None and idx_gen > 0 and ast_gen_cur != idx_gen:
+            return False
+        hashes = vec_idx.doc_text_hashes
+        updated_any = False
+        for did in vec_idx.doc_ids:
+            if did not in hashes and did in idx.symbols:
+                hashes[did] = compute_embedding_text_hash(format_symbol_embedding_text(idx.symbols[did]))
+                updated_any = True
+        return updated_any
 
     def _ensure_indices_loaded(
         self,
@@ -552,7 +602,14 @@ class IndexingPipeline:
                         self._align_index_symbols_with_ast_snapshot(loaded_idx)
                         cache["unified_index"] = loaded_idx
                         cache["unified_mtime"] = mtime
-                    self._unified_index = cache["unified_index"]
+                        self._unified_index = loaded_idx
+                    else:
+                        cached_idx = cache["unified_index"]
+                        cur_idx = self._unified_index
+                        if cur_idx is None or int(getattr(cached_idx, "acked_ast_generation", 0) or 0) >= int(
+                            getattr(cur_idx, "acked_ast_generation", 0) or 0
+                        ):
+                            self._unified_index = cached_idx
             except Exception as e:
                 log_warn(f"Failed loading unified index cache: {e}", stream="stderr")
         else:
@@ -582,6 +639,7 @@ class IndexingPipeline:
                             force_reload or cache["vector_index"] is None or mtime > cache["vector_mtime"]
                         ):
                             loaded_vec = VectorIndex.load_binary(vector_file)
+                            self._backfill_legacy_vector_text_hashes(self._unified_index, loaded_vec)
                             if (
                                 force_reload
                                 and cur_mem_vec is not None
@@ -667,7 +725,7 @@ class IndexingPipeline:
         skip_vectors: bool = False,
     ) -> InvertedIndex:
         """建置全專案空間聯集單一倒排索引與向量索引，並原子持久化至磁碟。"""
-        with self._index_lock:
+        with self._write_serial_lock:
             return self._build_unified_index_locked(
                 force=force,
                 interactive=interactive,
@@ -704,7 +762,9 @@ class IndexingPipeline:
                 self._unified_index = idx
                 if vector_file.exists():
                     try:
-                        self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
+                        loaded_vec_init = VectorIndex.load_binary(vector_file)
+                        self._backfill_legacy_vector_text_hashes(idx, loaded_vec_init)
+                        self.hybrid_engine.vector_index = loaded_vec_init
                     except Exception as ve:
                         log_warn(f"Failed loading unified vector index: {ve}", stream="stderr")
 
@@ -728,7 +788,8 @@ class IndexingPipeline:
                     if deficit.get("missing_count", 0) > 0 or not vector_file.exists():
                         vec_ready = False
 
-                if gen_matched and vec_ready:
+                cfg_matched = not idx.config_hash or idx.config_hash == self._compute_kdb_config_hash()
+                if gen_matched and vec_ready and cfg_matched:
                     cache = _get_index_cache()
                     with _CACHE_LOCK:
                         cache["storage_dir"] = self._storage_cache_key()
@@ -775,6 +836,7 @@ class IndexingPipeline:
             pre_aggregated=True,
         )
         idx.acked_ast_generation = snapshot.ast_generation
+        idx.config_hash = self._compute_kdb_config_hash()
         prog.advance(len(filtered_symbols), len(filtered_symbols))
         _report(2, f"BM25 倒排索引建置 ({idx.doc_count} 符號)", (time.time() - t0) * 1000)
 
@@ -783,6 +845,24 @@ class IndexingPipeline:
         enable_vec = getattr(self.config, "enable_vector_search", True)
         built_vec_idx: Optional[VectorIndex] = None
         if skip_vectors:
+            with self._index_lock:
+                existing_vec = getattr(self.hybrid_engine, "vector_index", None)
+                if existing_vec is not None and getattr(existing_vec, "vectors", None) is not None and existing_vec.doc_ids:
+                    hashes_map = getattr(existing_vec, "doc_text_hashes", None) or {}
+                    evict_on_rebuild: Set[str] = set()
+                    for vid in existing_vec.doc_ids:
+                        sym_now = idx.symbols.get(vid)
+                        if sym_now is None:
+                            evict_on_rebuild.add(vid)
+                        elif vid in hashes_map:
+                            cur_h = compute_embedding_text_hash(format_symbol_embedding_text(sym_now))
+                            if hashes_map[vid] != cur_h:
+                                evict_on_rebuild.add(vid)
+                    if evict_on_rebuild:
+                        self.hybrid_engine.vector_index = existing_vec.cloned_with_patch(
+                            removed_doc_ids=evict_on_rebuild, new_doc_ids=[], new_vectors=None
+                        )
+                        self._vector_index_dirty = True
             _report(3, "向量特徵嵌入 (交由背景 Stage 2 微批次同步，略過)", (time.time() - t0) * 1000)
         elif not enable_vec:
             _report(3, "向量特徵嵌入 (已依組態停用，略過)", (time.time() - t0) * 1000)
@@ -824,13 +904,18 @@ class IndexingPipeline:
                     import numpy as np
                     dim = self.embedding_service.dimension
                     vectors = np.zeros((0, dim), dtype=np.float32)
+                text_hashes_map = {
+                    did: compute_embedding_text_hash(txt)
+                    for did, txt in zip(doc_ids, texts)
+                }
                 vec_idx = VectorIndex(model_name=model_name, dim=dim)
-                vec_idx.build(doc_ids, vectors)
-                with self._kdb_index_file_lock():
-                    vec_idx.save_binary(vector_file)
-                self.hybrid_engine.vector_index = vec_idx
-                built_vec_idx = vec_idx
-                self._vector_index_dirty = False
+                vec_idx.build(doc_ids, vectors, doc_text_hashes=text_hashes_map)
+                with self._index_lock:
+                    with self._kdb_index_file_lock():
+                        vec_idx.save_binary(vector_file)
+                    self.hybrid_engine.vector_index = vec_idx
+                    built_vec_idx = vec_idx
+                    self._vector_index_dirty = False
                 _report(3, f"向量特徵嵌入建置 ({len(doc_ids)} 符號向量)", (time.time() - t0) * 1000)
             except Exception as e:
                 log_warn(f"Failed building/saving vector index: {e}", stream="stderr")
@@ -861,9 +946,10 @@ class IndexingPipeline:
             total_elapsed = (time.time() - t_all_start) * 1000
             log(f"[knowledge-db] 全域索引建置完成，總耗時 {total_elapsed:.1f}ms", stream="stderr", flush=True)
 
-        self._unified_index = idx
-        self._vector_degraded = False
-        self._last_degrade_notice = None
+        with self._index_lock:
+            self._unified_index = idx
+            self._vector_degraded = False
+            self._last_degrade_notice = None
         cache = _get_index_cache()
         with _CACHE_LOCK:
             cache["storage_dir"] = self._storage_cache_key()
@@ -961,10 +1047,11 @@ class IndexingPipeline:
         於 `self._index_lock` 與 `ExitStack` 交易保護下，保持所有目標空間之 `consume_ctx` 開啟，
         直到 `hot_patch_unified_index` 或 `build_unified_index` 完成落盤後才一次性 ACK 空間游標。
         """
-        with self._index_lock:
+        with self._write_serial_lock:
             indices_dir = self.get_indices_dir()
             bin_file = indices_dir / "unified.index.bin.gz"
-            self._ensure_indices_loaded(load_vectors=require_vectors)
+            with self._index_lock:
+                self._ensure_indices_loaded(load_vectors=require_vectors)
             consume_ctx = consume_fn or self._consume_space_diff
             spaces_to_consume: List[Optional[str]] = (
                 list(target_spaces) if target_spaces else [space_name]
@@ -984,11 +1071,27 @@ class IndexingPipeline:
                     )
 
             with ExitStack() as stack:
+                if (
+                    self.scanner is not None
+                    and hasattr(self.scanner, "cursor_store")
+                    and hasattr(self.scanner.cursor_store, "batch_cursor_updates")
+                ):
+                    stack.enter_context(
+                        self.scanner.cursor_store.batch_cursor_updates("knowledge-db")
+                    )
                 merged_added: Set[str] = set()
                 merged_modified: Set[str] = set()
                 merged_deleted: Set[str] = set()
                 unchanged_total = 0
                 last_to_gen = 0
+                if (
+                    len(spaces_to_consume) > 1
+                    and self.scanner is not None
+                    and hasattr(self.scanner, "_flush_in_process_watcher")
+                ):
+                    self.scanner._flush_in_process_watcher(
+                        [s for s in spaces_to_consume if s]
+                    )
                 for q_sp in spaces_to_consume:
                     diff_res = stack.enter_context(
                         consume_ctx(
@@ -1021,8 +1124,10 @@ class IndexingPipeline:
                 if not has_diff_changes:
                     self._ensure_indices_loaded(load_vectors=require_vectors)
                     if self._unified_index is not None:
+                        cur_cfg_h = self._compute_kdb_config_hash()
+                        idx_cfg_h = str(getattr(self._unified_index, "config_hash", "") or "")
                         ast_gen_now = self.get_current_ast_generation()
-                        if (
+                        if (idx_cfg_h and idx_cfg_h != cur_cfg_h) or (
                             ast_gen_now is not None
                             and int(getattr(self._unified_index, "acked_ast_generation", 0) or 0) != ast_gen_now
                         ):
@@ -1102,7 +1207,7 @@ class IndexingPipeline:
         timeout_seconds: Optional[float] = None,
         skip_vectors: bool = False,
     ) -> HotPatchResult:
-        with self._index_lock:
+        with self._write_serial_lock:
             return self._hot_patch_unified_index_locked(
                 diff_detail=diff_detail,
                 timeout_seconds=timeout_seconds,
@@ -1147,8 +1252,15 @@ class IndexingPipeline:
         if parser_reg is not None and hasattr(parser_reg, "get_parser"):
             all_dirty_candidates = set(detail.dirty_files) | set(detail.deleted)
             if all_dirty_candidates:
+                known_idx_norm = (
+                    normalize_dirty_paths({sym.file_path for sym in self._unified_index.symbols.values() if sym.file_path})
+                    if self._unified_index is not None and self._unified_index.symbols
+                    else set()
+                )
                 has_ast_parseable_dirty = any(
-                    parser_reg.get_parser(str(p)) is not None for p in all_dirty_candidates
+                    parser_reg.get_parser(str(p)) is not None
+                    or (known_idx_norm and is_dirty_file_match(str(p), known_idx_norm))
+                    for p in all_dirty_candidates
                 )
             else:
                 has_ast_parseable_dirty = False
@@ -1276,6 +1388,7 @@ class IndexingPipeline:
         old_doc_ids: Set[str],
         vector_file: Path,
         timeout_seconds: Optional[float],
+        evicted_old_symbols: Optional[Dict[str, UnifiedSymbol]] = None,
     ) -> Tuple[bool, Optional[str]]:
         """執行向量索引增量修補與 10 符號動態探針熔斷"""
         enable_vec = getattr(self.config, "enable_vector_search", True)
@@ -1287,11 +1400,14 @@ class IndexingPipeline:
             and vector_file.exists()
         ):
             try:
-                self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
+                loaded_vec_probe = VectorIndex.load_binary(vector_file)
+                self._backfill_legacy_vector_text_hashes(self._unified_index, loaded_vec_probe)
+                self.hybrid_engine.vector_index = loaded_vec_probe
             except Exception as ve:
                 log_warn(f"Failed loading vector index for hot patch: {ve}", stream="stderr")
 
-        vec_idx = self.hybrid_engine.vector_index
+        with self._index_lock:
+            vec_idx = self.hybrid_engine.vector_index
         expected_model = getattr(self.config, "embedding_model", "BAAI/bge-small-zh-v1.5")
         expected_dim = getattr(self.embedding_service, "dimension", getattr(vec_idx, "dim", 512))
 
@@ -1311,45 +1427,117 @@ class IndexingPipeline:
             return False, None
 
         new_texts = [format_symbol_embedding_text(sym) for sym in all_new_symbols]
+        new_hashes_list = [compute_embedding_text_hash(t) for t in new_texts]
         num_symbols = len(new_texts)
         if num_symbols == 0:
-            vec_idx.patch_incremental(removed_doc_ids=old_doc_ids, new_doc_ids=[], new_vectors=None)
+            new_vec_zero = vec_idx.cloned_with_patch(removed_doc_ids=old_doc_ids, new_doc_ids=[], new_vectors=None)
             try:
-                with self._kdb_index_file_lock():
-                    vec_idx.save_binary(vector_file)
-                self._vector_index_dirty = False
+                with self._index_lock:
+                    self.hybrid_engine.vector_index = new_vec_zero
+                    with self._kdb_index_file_lock():
+                        new_vec_zero.save_binary(vector_file)
+                    self._vector_index_dirty = False
             except Exception as ve:
                 log_warn(f"Failed saving patched vector index: {ve}", stream="stderr")
             return False, None
 
-        if num_symbols <= 10:
-            try:
-                new_vecs = self.embedding_service.embed_texts(new_texts)
-                new_ids = [sym.id for sym in all_new_symbols]
-                if getattr(new_vecs, "ndim", 0) != 2 or new_vecs.shape[0] != len(new_ids):
-                    raise RuntimeError(f"Embedding returned {getattr(new_vecs, 'shape', None)} for {len(new_ids)} symbols")
-                vec_idx.patch_incremental(removed_doc_ids=old_doc_ids, new_doc_ids=new_ids, new_vectors=new_vecs)
+        # O(1) reuse of existing vectors for symbols whose line_number shifted without text changes
+        reusable_vecs: Dict[Tuple[str, str, str, str], Any] = {}
+        if evicted_old_symbols and vec_idx.vectors is not None and vec_idx.doc_ids:
+            doc_pos_map = {did: pos for pos, did in enumerate(vec_idx.doc_ids)}
+            existing_hashes = getattr(vec_idx, "doc_text_hashes", None) or {}
+            for old_id, old_sym in evicted_old_symbols.items():
+                pos = doc_pos_map.get(old_id)
+                if pos is None:
+                    continue
+                old_h = existing_hashes.get(old_id) or compute_embedding_text_hash(
+                    format_symbol_embedding_text(old_sym)
+                )
+                norm_fp = str(old_sym.file_path).replace("\\", "/").lower()
+                reusable_vecs[(norm_fp, old_sym.name, str(old_sym.kind), old_h)] = vec_idx.vectors[pos]
+
+        reused_by_idx: Dict[int, Any] = {}
+        embed_indices: List[int] = []
+        embed_texts_needed: List[str] = []
+        for i, sym in enumerate(all_new_symbols):
+            norm_fp = str(sym.file_path).replace("\\", "/").lower()
+            r_key = (norm_fp, sym.name, str(sym.kind), new_hashes_list[i])
+            if r_key in reusable_vecs:
+                reused_by_idx[i] = reusable_vecs[r_key]
+            else:
+                embed_indices.append(i)
+                embed_texts_needed.append(new_texts[i])
+
+        new_ids = [sym.id for sym in all_new_symbols]
+        new_hashes_map = {new_ids[i]: new_hashes_list[i] for i in range(num_symbols)}
+        need_count = len(embed_texts_needed)
+
+        if need_count == 0:
+            import numpy as np
+            full_reused = np.vstack([reused_by_idx[i] for i in range(num_symbols)]).astype(np.float32)
+            new_vec_reused = vec_idx.cloned_with_patch(
+                removed_doc_ids=old_doc_ids,
+                new_doc_ids=new_ids,
+                new_vectors=full_reused,
+                new_text_hashes=new_hashes_map,
+            )
+            with self._index_lock:
+                self.hybrid_engine.vector_index = new_vec_reused
                 with self._kdb_index_file_lock():
-                    vec_idx.save_binary(vector_file)
+                    new_vec_reused.save_binary(vector_file)
                 self._vector_index_dirty = False
+            return False, None
+
+        if need_count <= 10:
+            try:
+                import numpy as np
+                computed_vecs = self.embedding_service.embed_texts(embed_texts_needed)
+                if getattr(computed_vecs, "ndim", 0) != 2 or computed_vecs.shape[0] != need_count:
+                    raise RuntimeError(f"Embedding returned {getattr(computed_vecs, 'shape', None)} for {need_count} symbols")
+                if reused_by_idx:
+                    rows = []
+                    c_ptr = 0
+                    for i in range(num_symbols):
+                        if i in reused_by_idx:
+                            rows.append(reused_by_idx[i])
+                        else:
+                            rows.append(computed_vecs[c_ptr])
+                            c_ptr += 1
+                    final_vecs = np.vstack(rows).astype(np.float32)
+                else:
+                    final_vecs = computed_vecs
+                with self._index_lock:
+                    base_v = self.hybrid_engine.vector_index or vec_idx
+                    new_vec_small = base_v.cloned_with_patch(
+                        removed_doc_ids=old_doc_ids,
+                        new_doc_ids=new_ids,
+                        new_vectors=final_vecs,
+                        new_text_hashes=new_hashes_map,
+                    )
+                    self.hybrid_engine.vector_index = new_vec_small
+                    with self._kdb_index_file_lock():
+                        new_vec_small.save_binary(vector_file)
+                    self._vector_index_dirty = False
                 return False, None
             except Exception as ve:
+                self._evict_old_vectors_only(old_doc_ids, vector_file)
                 log_warn(f"Failed patching vector index for <=10 symbols: {ve}", stream="stderr")
                 return True, f"[knowledge-db:notice] 向量更新失敗已降級為純 BM25 模式: {ve}"
 
         try:
-            probe_texts = new_texts[:10]
-            probe_vecs, est_total = self.embedding_service.embed_texts_probe(probe_texts, total_count=num_symbols)
+            probe_texts = embed_texts_needed[:10]
+            probe_vecs, est_total = self.embedding_service.embed_texts_probe(probe_texts, total_count=need_count)
             if getattr(probe_vecs, "ndim", 0) != 2 or probe_vecs.shape[0] != len(probe_texts):
                 raise RuntimeError(f"Probe embedding returned {getattr(probe_vecs, 'shape', None)} for {len(probe_texts)} symbols")
             if timeout_seconds is not None and est_total > timeout_seconds:
+                self._evict_old_vectors_only(old_doc_ids, vector_file)
                 return True, (
-                    f"[knowledge-db:notice] 待向量化符號過多（{num_symbols} 個，預估耗時 {est_total:.1f}s > {timeout_seconds:.1f}s）已熔斷降級（本次使用純 BM25 模式）。"
+                    f"[knowledge-db:notice] 待向量化符號過多（{need_count} 個，預估耗時 {est_total:.1f}s > {timeout_seconds:.1f}s）已熔斷降級（本次使用純 BM25 模式）。"
                     "請執行 `python yscb.py knowledge-db index` 重建/更新向量索引，"
                     "或執行 `python yscb.py config set knowledge-db enable_vector_search false` 關閉向量語意搜尋。"
                 )
 
-            remaining_texts = new_texts[10:]
+            remaining_texts = embed_texts_needed[10:]
             remaining_vecs = self.embedding_service.embed_texts(remaining_texts) if remaining_texts else None
             if remaining_texts and (
                 remaining_vecs is None
@@ -1361,34 +1549,81 @@ class IndexingPipeline:
                 )
             import numpy as np
             if remaining_vecs is not None:
-                full_vecs = np.vstack([probe_vecs, remaining_vecs])
+                computed_all = np.vstack([probe_vecs, remaining_vecs])
             else:
-                full_vecs = probe_vecs
+                computed_all = probe_vecs
 
-            new_ids = [sym.id for sym in all_new_symbols]
-            vec_idx.patch_incremental(removed_doc_ids=old_doc_ids, new_doc_ids=new_ids, new_vectors=full_vecs)
-            with self._kdb_index_file_lock():
-                vec_idx.save_binary(vector_file)
-            self._vector_index_dirty = False
+            if reused_by_idx:
+                rows = []
+                c_ptr = 0
+                for i in range(num_symbols):
+                    if i in reused_by_idx:
+                        rows.append(reused_by_idx[i])
+                    else:
+                        rows.append(computed_all[c_ptr])
+                        c_ptr += 1
+                full_vecs = np.vstack(rows).astype(np.float32)
+            else:
+                full_vecs = computed_all
+
+            with self._index_lock:
+                base_v = self.hybrid_engine.vector_index or vec_idx
+                new_vec_large = base_v.cloned_with_patch(
+                    removed_doc_ids=old_doc_ids,
+                    new_doc_ids=new_ids,
+                    new_vectors=full_vecs,
+                    new_text_hashes=new_hashes_map,
+                )
+                self.hybrid_engine.vector_index = new_vec_large
+                with self._kdb_index_file_lock():
+                    new_vec_large.save_binary(vector_file)
+                self._vector_index_dirty = False
             return False, None
         except Exception as ve:
+            self._evict_old_vectors_only(old_doc_ids, vector_file)
             log_warn(f"Dynamic probe or inference failed: {ve}", stream="stderr")
             return True, f"[knowledge-db:notice] 向量推論異常已降級為純 BM25 模式: {ve}"
+
+    def _evict_old_vectors_only(self, old_doc_ids: Set[str], vector_file: Path) -> None:
+        """於跳過向量推論或探針逾時熔斷降級時，先行自記憶體與磁碟淘汰已變更/刪除之舊符號向量。"""
+        if not old_doc_ids:
+            return
+        try:
+            with self._index_lock:
+                vec_idx = self.hybrid_engine.vector_index
+                if vec_idx is not None and vec_idx.vectors is not None:
+                    new_vec_evicted = vec_idx.cloned_with_patch(
+                        removed_doc_ids=old_doc_ids,
+                        new_doc_ids=[],
+                        new_vectors=None,
+                    )
+                    self.hybrid_engine.vector_index = new_vec_evicted
+                    if vector_file.exists():
+                        with self._kdb_index_file_lock():
+                            new_vec_evicted.save_binary(vector_file)
+                        self._vector_index_dirty = False
+                    else:
+                        self._vector_index_dirty = True
+        except Exception as ve:
+            log_warn(f"Failed evicting stale vectors on degrade path: {ve}", stream="stderr")
 
     def _persist_patched_indices(
         self,
         bin_file: Path,
         vector_file: Path,
+        idx: Optional[InvertedIndex] = None,
     ) -> None:
         """熱修補階段 4：原子持久化更新後之二進位索引與全域快取同步"""
-        if self._unified_index is not None:
+        target_idx = idx if idx is not None else self._unified_index
+        if target_idx is not None:
+            self._unified_index = target_idx
             with self._kdb_index_file_lock():
-                self._unified_index.save_binary(bin_file, compresslevel=1)
-                self._write_unified_meta(idx=self._unified_index)
+                target_idx.save_binary(bin_file, compresslevel=1)
+                self._write_unified_meta(idx=target_idx)
         cache = _get_index_cache()
         with _CACHE_LOCK:
             cache["storage_dir"] = self._storage_cache_key()
-            cache["unified_index"] = self._unified_index
+            cache["unified_index"] = target_idx
             cache["unified_mtime"] = bin_file.stat().st_mtime if bin_file.exists() else time.time()
             if hasattr(self.hybrid_engine, "vector_index") and self.hybrid_engine.vector_index:
                 cache["vector_index"] = self.hybrid_engine.vector_index
@@ -1426,44 +1661,53 @@ class IndexingPipeline:
 
         persisted = False
         try:
-            all_new_symbols, dirty_keys, new_ast_gen = self._collect_all_dirty_files(diff_detail)
-            patched_removed = self._unified_index.patch_incremental(
-                dirty_file_paths=dirty_keys,
-                new_symbols=all_new_symbols,
-                tokenizer=self.tokenizer,
-                pre_aggregated=True,
-            )
-            old_doc_ids = set(patched_removed) if isinstance(patched_removed, (set, list, tuple)) else set()
-            self._unified_index.acked_ast_generation = new_ast_gen
+            with self._index_lock:
+                all_new_symbols, dirty_keys, new_ast_gen = self._collect_all_dirty_files(diff_detail)
+                pre_patch_symbols = dict(self._unified_index.symbols)
+                working_idx = self._unified_index.clone_shallow()
+                patched_removed = working_idx.patch_incremental(
+                    dirty_file_paths=dirty_keys,
+                    new_symbols=all_new_symbols,
+                    tokenizer=self.tokenizer,
+                    pre_aggregated=True,
+                )
+                old_doc_ids = set(patched_removed) if isinstance(patched_removed, (set, list, tuple)) else set()
+                evicted_old_symbols = {
+                    did: pre_patch_symbols[did]
+                    for did in old_doc_ids
+                    if did in pre_patch_symbols
+                }
+                working_idx.acked_ast_generation = new_ast_gen
+                working_idx.config_hash = self._compute_kdb_config_hash()
+
+                if (
+                    (self.hybrid_engine.vector_index is None or self.hybrid_engine.vector_index.vectors is None)
+                    and vector_file.exists()
+                ):
+                    try:
+                        loaded_v = VectorIndex.load_binary(vector_file)
+                        self._backfill_legacy_vector_text_hashes(working_idx, loaded_v)
+                        self.hybrid_engine.vector_index = loaded_v
+                    except Exception as ve:
+                        log_warn(f"Failed loading vector index for hot patch: {ve}", stream="stderr")
+
+                if skip_vectors and old_doc_ids:
+                    self._evict_old_vectors_only(old_doc_ids, vector_file)
 
             if skip_vectors:
-                if old_doc_ids and vector_file.exists():
-                    try:
-                        if (
-                            self.hybrid_engine.vector_index is None
-                            or self.hybrid_engine.vector_index.vectors is None
-                        ):
-                            self.hybrid_engine.vector_index = VectorIndex.load_binary(vector_file)
-                        vec_idx = self.hybrid_engine.vector_index
-                        if vec_idx is not None and vec_idx.vectors is not None:
-                            vec_idx.patch_incremental(
-                                removed_doc_ids=old_doc_ids,
-                                new_doc_ids=[],
-                                new_vectors=None,
-                            )
-                            with self._kdb_index_file_lock():
-                                vec_idx.save_binary(vector_file)
-                            self._vector_index_dirty = False
-                    except Exception as ve:
-                        log_warn(f"Failed evicting old vectors during skip_vectors hot patch: {ve}", stream="stderr")
                 vector_degraded = False
                 degrade_notice = None
             else:
                 vector_degraded, degrade_notice = self._patch_vector_index_with_probe(
-                    all_new_symbols, old_doc_ids, vector_file, timeout_seconds
+                    all_new_symbols,
+                    old_doc_ids,
+                    vector_file,
+                    timeout_seconds,
+                    evicted_old_symbols=evicted_old_symbols,
                 )
-            self._persist_patched_indices(bin_file, vector_file)
-            persisted = True
+            with self._index_lock:
+                self._persist_patched_indices(bin_file, vector_file, idx=working_idx)
+                persisted = True
 
             self._vector_degraded = vector_degraded
             self._last_degrade_notice = degrade_notice
@@ -1581,9 +1825,18 @@ class IndexingPipeline:
             sym_ids_ordered = list(idx.symbols.keys())
             sym_ids_set = set(sym_ids_ordered)
             vec_ids_set = set(vec_idx.doc_ids)
+            hashes_map = getattr(vec_idx, "doc_text_hashes", None) or {}
+            outdated_ids: Set[str] = set()
+            if hashes_map:
+                for sid in (sym_ids_set & vec_ids_set):
+                    rec_h = hashes_map.get(sid)
+                    if rec_h is not None:
+                        cur_h = compute_embedding_text_hash(format_symbol_embedding_text(idx.symbols[sid]))
+                        if rec_h != cur_h:
+                            outdated_ids.add(sid)
 
-            stale_ids = vec_ids_set - sym_ids_set
-            missing_ids = [sid for sid in sym_ids_ordered if sid not in vec_ids_set]
+            stale_ids = (vec_ids_set - sym_ids_set) | outdated_ids
+            missing_ids = [sid for sid in sym_ids_ordered if sid not in vec_ids_set or sid in outdated_ids]
 
             if not stale_ids and not missing_ids:
                 if (getattr(self, "_vector_index_dirty", False) or _get_index_cache().get("vector_dirty", False)) and persist:
@@ -1599,6 +1852,7 @@ class IndexingPipeline:
 
             batch_ids = missing_ids[: max(1, int(batch_size))]
             batch_texts = [format_symbol_embedding_text(idx.symbols[sid]) for sid in batch_ids] if batch_ids else []
+            batch_hashes = [compute_embedding_text_hash(t) for t in batch_texts]
 
         new_vecs = None
         if batch_ids:
@@ -1639,18 +1893,24 @@ class IndexingPipeline:
             current_stale_ids = set(vec_idx.doc_ids) - current_sym_ids
             all_stale_to_remove = stale_ids | current_stale_ids
 
-            vec_idx.model_name = expected_model
-            vec_idx.dim = expected_dim
-            vec_idx.patch_incremental(
+            valid_batch_hashes = {
+                valid_batch_ids[i]: batch_hashes[valid_indices[i]]
+                for i in range(len(valid_batch_ids))
+            }
+            patched_vec = vec_idx.cloned_with_patch(
                 removed_doc_ids=all_stale_to_remove,
                 new_doc_ids=valid_batch_ids,
                 new_vectors=valid_new_vecs,
+                new_text_hashes=valid_batch_hashes,
             )
-            self.hybrid_engine.vector_index = vec_idx
+            patched_vec.model_name = expected_model
+            patched_vec.dim = expected_dim
+            vec_idx = patched_vec
+            self.hybrid_engine.vector_index = patched_vec
             self._vector_index_dirty = True
 
-            updated_vec_ids = set(vec_idx.doc_ids)
-            remaining = len(current_sym_ids - updated_vec_ids)
+            def_after = self._compute_vector_deficit_from_objects(idx, vec_idx)
+            remaining = int(def_after.get("missing_count", 0))
             if remaining == 0:
                 self._vector_degraded = False
                 self._last_degrade_notice = None
@@ -1718,7 +1978,7 @@ class IndexingPipeline:
 
     def clean(self, space: Optional[str] = None) -> None:
         """清理指定空間或全空間之 Bundle 檔案與倒排索引快取。"""
-        with self._index_lock:
+        with self._write_serial_lock, self._index_lock:
             self._clean_locked(space=space)
 
     def _clean_locked(self, space: Optional[str] = None) -> None:
@@ -1827,12 +2087,19 @@ class IndexingPipeline:
                     self._ensure_indices_loaded(load_vectors=load_vecs_fast)
                     if self._unified_index is not None:
                         return self._unified_index
-                acquired = self._index_lock.acquire(blocking=False)
+                acquired = self._write_serial_lock.acquire(blocking=False)
+                if acquired:
+                    idx_probe = self._index_lock.acquire(blocking=False)
+                    if idx_probe:
+                        self._index_lock.release()
+                    else:
+                        self._write_serial_lock.release()
+                        acquired = False
                 if not acquired:
                     self._ensure_indices_loaded(load_vectors=eff_require_vectors)
                     if self._unified_index is not None:
                         return self._unified_index
-                    with self._index_lock:
+                    with self._write_serial_lock:
                         return self._ensure_jit_index_ready_locked(
                             require_vectors=eff_require_vectors,
                             auto_rebuild=auto_rebuild,
@@ -1845,9 +2112,9 @@ class IndexingPipeline:
                         verbose=verbose,
                     )
                 finally:
-                    self._index_lock.release()
+                    self._write_serial_lock.release()
 
-            with self._index_lock:
+            with self._write_serial_lock:
                 return self._ensure_jit_index_ready_locked(
                     require_vectors=eff_require_vectors,
                     auto_rebuild=auto_rebuild,
@@ -2034,6 +2301,16 @@ class IndexingPipeline:
             log("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", stream="stderr", flush=True)
             return False
 
+        eff_phase = str(read_worker_state(indices_dir).get("phase", "") or worker_phase)
+        if eff_phase == "yielded_to_foreground" and self._unified_index is not None:
+            def_check = self._compute_vector_deficit_from_objects(
+                self._unified_index,
+                getattr(self.hybrid_engine, "vector_index", None),
+            )
+            if int(def_check.get("missing_count", 0)) > 0 or not bool(def_check.get("compatible", True)):
+                log("[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", stream="stderr", flush=True)
+                return False
+
         return bool(self.hybrid_engine.is_vector_available)
 
     def _prepare_search_context_and_filters(
@@ -2062,8 +2339,6 @@ class IndexingPipeline:
         target_spaces = [space] if isinstance(space, str) else list(space) if space else None
         target_ftypes = _normalize_ftypes(ftypes)
         space_weights = self._resolve_space_weights()
-        if hasattr(self, "hybrid_engine") and self.hybrid_engine is not None:
-            self.hybrid_engine.space_weights = space_weights
         flt = QueryFilter(
             spaces=target_spaces,
             languages=languages,
@@ -2091,10 +2366,9 @@ class IndexingPipeline:
         can_use_vector: bool,
     ) -> Union[List[AggregatedFileResult], List[SearchResult]]:
         """檢索階段 2：執行混合 RRF 或純 BM25 檢索與檔案聚合"""
+        local_vec_idx = getattr(self.hybrid_engine, "vector_index", None)
         if not aggregate:
             if can_use_vector:
-                self.hybrid_engine.inverted_index = unified_index
-                self.hybrid_engine.bm25_engine = self.bm25_engine
                 hybrid_hits = self.hybrid_engine.search(
                     query=query,
                     limit=limit,
@@ -2103,7 +2377,11 @@ class IndexingPipeline:
                     kinds=kinds,
                     languages=languages,
                     lexical_only=False,
+                    space_weights=flt.space_weights,
                     min_score=flt.min_score,
+                    inverted_index=unified_index,
+                    vector_index=local_vec_idx,
+                    bm25_engine=self.bm25_engine,
                 )
                 raw_results: List[SearchResult] = []
                 for h in hybrid_hits:
@@ -2123,8 +2401,6 @@ class IndexingPipeline:
             return self.bm25_engine.search(query=query, index=unified_index, filter_cfg=flt)
 
         if can_use_vector:
-            self.hybrid_engine.inverted_index = unified_index
-            self.hybrid_engine.bm25_engine = self.bm25_engine
             sym_pool_cap = max(limit * 32, min(len(unified_index.symbols), 1000), 60)
             hybrid_agg_hits = self.hybrid_engine.search(
                 query=query,
@@ -2134,7 +2410,11 @@ class IndexingPipeline:
                 kinds=kinds,
                 languages=languages,
                 lexical_only=False,
+                space_weights=flt.space_weights,
                 min_score=flt.min_score,
+                inverted_index=unified_index,
+                vector_index=local_vec_idx,
+                bm25_engine=self.bm25_engine,
             )
             ranked_tuples = [
                 (

@@ -4,9 +4,8 @@
   "versions": [
     "1.2.0.5",
     "1.2.1.5",
-    "1.2.2.1",
-    "1.2.2.2",
-    "1.2.2.3"
+    "1.2.2.3",
+    "1.2.3.0"
   ],
   "releases": {
     "1.0.0.0": {
@@ -262,7 +261,7 @@
       "summary": "優化倒排索引記憶體結構、支援離線向量模型快取預檢、直接複用 ast 語法圖索引加速符號檢索與影響面分析"
     },
     "1.2.2.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.8.0",
         "ast": ">=1.1.0.0"
@@ -273,7 +272,7 @@
       "summary": "修復增量同步失敗時之安全退回全量建置機制，強化查詢詞彙分解與資料庫無鎖超時防護，並更新檢索技能手冊之符號定址規範"
     },
     "1.2.2.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.8.0",
         "ast": ">=1.1.0.0"
@@ -293,6 +292,17 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "新增顯式 download_model 離線權重預檢與鎖隔離、複用 AST 快取實現 O(1) status 查詢，並支援分段索引進度回報與任務取消"
+    },
+    "1.2.3.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.10.0",
+        "ast": ">=1.1.1.0"
+      },
+      "sha256": "cfe7329535a95a60f5776af51386df1b8eb78e0ba1afd0f3b9accf655029c985",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "新增向量模型載入冷卻防抖、執行緒安全寫入序列化與檔案級增量修補自癒保護"
     }
   }
 }

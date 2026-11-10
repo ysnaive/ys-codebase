@@ -74,7 +74,7 @@ def generate_internal_gitignore(yscb_dir: str) -> None:
             gi_mod.sync(proj_root=abs_dir, yscb_root=abs_dir)
 
 
-def fetch_and_extract_zip(source_url_or_path: str, dest_dir: str) -> None:
+def fetch_and_extract_zip(source_url_or_path: str, dest_dir: str, timeout: float = 30.0) -> None:
     """從本機路徑或遠端 URL 提取 Zip 壓縮檔至同父目錄 .staging 臨時空間，驗證無誤後原子替換至 dest_dir，嚴防 Zip Slip 與非原子撕裂。"""
     import urllib.request
     import tempfile
@@ -99,8 +99,10 @@ def fetch_and_extract_zip(source_url_or_path: str, dest_dir: str) -> None:
             req = urllib.request.Request(source_url_or_path, headers={"User-Agent": "yscb-core/2.0"})
             with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_f:
                 tmp_path = tmp_f.name
+            import math as _math
+            eff_timeout = max(1.0, float(timeout)) if _math.isfinite(float(timeout)) else 30.0
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
+                with urllib.request.urlopen(req, timeout=eff_timeout) as resp:
                     with open(tmp_path, "wb") as out_f:
                         shutil.copyfileobj(resp, out_f)
                 if not zipfile.is_zipfile(tmp_path):
@@ -509,7 +511,15 @@ class Installer:
                     for mod, ver in targets:
                         self.engine.act_register(mod, ver, provider_url)
                         resolved_map[mod] = ver
-                    self.engine.act_reload(clean_stage=True, inject_stage=True, ignore_sha256=ignore_sha256)
+                    unchanged_installed = [
+                        m for m in installed.keys() if m not in resolved_map and vfs.exists(f"module://{m}/manifest.json")
+                    ]
+                    self.engine.act_reload(
+                        clean_stage=True,
+                        inject_stage=True,
+                        ignore_sha256=ignore_sha256,
+                        skip_materialize_modules=unchanged_installed,
+                    )
 
                     for mod, installed_ver in targets:
                         old_ver = old_versions.get(mod, "0.0.0.0")
@@ -634,7 +644,18 @@ class Installer:
                                 updated_mods.append(h_mod)
 
                     if updated_any:
-                        self.engine.act_reload(clean_stage=True, inject_stage=True, ignore_sha256=ignore_sha256)
+                        unchanged_for_update = [
+                            m for m in installed.keys()
+                            if m not in updated_mods
+                            and m not in {d[0] for d in newly_installed_deps}
+                            and vfs.exists(f"module://{m}/manifest.json")
+                        ]
+                        self.engine.act_reload(
+                            clean_stage=True,
+                            inject_stage=True,
+                            ignore_sha256=ignore_sha256,
+                            skip_materialize_modules=unchanged_for_update,
+                        )
                         for mod, old_v, new_v in migrations_to_run:
                             self.engine.act_migrate(mod, old_v, new_v)
                         for dep_mod, dep_ver in newly_installed_deps:

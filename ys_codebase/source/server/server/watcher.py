@@ -78,6 +78,9 @@ class ModulesWatcher:
         self.poll_interval = poll_interval_sec
         self.debounce_sec = debounce_sec
         self._is_running = False
+        self._stop_event = threading.Event()
+        self._snapshot_lock = threading.Lock()
+        self._snapshot_gen: int = 0
         self._thread: Optional[threading.Thread] = None
         self._last_snapshot: Dict[str, float] = {}
 
@@ -88,11 +91,15 @@ class ModulesWatcher:
 
     def refresh_snapshot(self) -> None:
         """Synchronize the baseline snapshot with the current .modules directory state."""
-        self._last_snapshot = _scan_modules_dir(self.modules_dir)
+        snap = _scan_modules_dir(self.modules_dir)
+        with self._snapshot_lock:
+            self._snapshot_gen += 1
+            self._last_snapshot = snap
 
     def start(self) -> None:
         if self._is_running:
             return
+        self._stop_event.clear()
         self._is_running = True
         self.refresh_snapshot()
         self._thread = threading.Thread(target=self._poll_loop, daemon=True, name="modules-watcher")
@@ -100,8 +107,9 @@ class ModulesWatcher:
 
     def stop(self) -> None:
         self._is_running = False
+        self._stop_event.set()
         if self._thread:
-            self._thread.join(timeout=1.0)
+            self._thread.join(timeout=2.0)
             self._thread = None
 
     def _is_core_transaction_locked(self) -> bool:
@@ -126,21 +134,26 @@ class ModulesWatcher:
 
     def _poll_loop(self) -> None:
         while self._is_running:
-            time.sleep(self.poll_interval)
-            if not self._is_running:
+            if self._stop_event.wait(self.poll_interval) or not self._is_running:
                 break
 
+            with self._snapshot_lock:
+                scan_gen = self._snapshot_gen
+                prev_snapshot = dict(self._last_snapshot)
             current_snapshot = _scan_modules_dir(self.modules_dir)
-            if self._last_snapshot == current_snapshot or self._is_core_transaction_locked():
+            if prev_snapshot == current_snapshot or self._is_core_transaction_locked():
                 continue
             if self.debounce_sec > 0:
-                time.sleep(self.debounce_sec)
-                if not self._is_running or self._is_core_transaction_locked():
+                if self._stop_event.wait(self.debounce_sec) or not self._is_running or self._is_core_transaction_locked():
                     continue
                 current_snapshot = _scan_modules_dir(self.modules_dir)
 
-            affected_modules = self._extract_affected_modules(self._last_snapshot, current_snapshot)
-            self._last_snapshot = current_snapshot
+            with self._snapshot_lock:
+                if self._snapshot_gen != scan_gen:
+                    continue
+                prev_snapshot = dict(self._last_snapshot)
+                affected_modules = self._extract_affected_modules(prev_snapshot, current_snapshot)
+                self._last_snapshot = current_snapshot
             if not affected_modules:
                 continue
             try:
@@ -166,8 +179,8 @@ class ModulesWatcher:
         return affected
 
 
-__all__ = [
+__all__ = (
     "ModulesWatcher",
     "_is_lock_file_active",
     "_scan_modules_dir",
-]
+)

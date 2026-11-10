@@ -317,7 +317,7 @@ class PipManager:
         """確保 yscb_dir/.gitignore 存在且包含 /.venv/ 內部忽略規則。"""
         ensure_yscb_gitignore(self.yscb_dir)
 
-    def install_packages(self, specs: List[str], py_tag: Optional[str] = None) -> None:
+    def install_packages(self, specs: List[str], py_tag: Optional[str] = None, timeout: int = 300) -> None:
         """
         調用微環境之 python -m pip 執行 Wheel-Only 靜默安裝。
         強制附加參數: ['install', '--only-binary=:all:', '--no-warn-script-location', '--quiet', *specs]
@@ -350,7 +350,7 @@ class PipManager:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
-                    timeout=300,
+                    timeout=max(1, int(timeout)),
                 )
             except Exception as e:
                 raise PipInstallError(f"Failed to execute pip command: {e}") from e

@@ -18,7 +18,7 @@ related_docs:
   - "./DESIGN_NOTES.md"
   - "../core/README.md"
   - "../knowledge-db/README.md"
-last_updated: "2026-11-09"
+last_updated: "2026-11-10"
 ---
 
 # AST 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎手冊 (AST Overview)
@@ -143,6 +143,13 @@ impact_data = engine.impact("ContributesValidator", depth=2)
   }
 }
 ```
+
+---
+
+### 3.3 增量索引一致性與快取自癒
+
+- **組態指紋自動失效 (`ast_config_hash`)**：當語言解析宣告或空間組態變更時自動觸發快照自癒重建。
+- **CoW 無鎖快照替換與水合圖譜落盤**：增量修補採 Copy-on-Write 不可變映射替換，並將水合後 4-Pass 呼叫圖譜與雙檔世代號 (`unified.meta.json`) 原子持久化。
 
 ---
 

@@ -790,10 +790,12 @@ class OSBackend(VFSBackend):
             yield file_obj
 
             file_obj.flush()
-            try:
-                os.fsync(file_obj.fileno())
-            except (AttributeError, OSError):
-                pass
+            norm_slash = norm_target.replace("\\", "/")
+            if "/.storage.local/" not in norm_slash and "/.cache/" not in norm_slash:
+                try:
+                    os.fsync(file_obj.fileno())
+                except (AttributeError, OSError):
+                    pass
             file_obj.close()
             file_obj = None
 

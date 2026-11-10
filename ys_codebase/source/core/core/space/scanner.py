@@ -78,6 +78,9 @@ class FileFingerprint:
     updated_gen: int = 1
     is_deleted: bool = False
     entry_path: str = ""
+    _cached_packed_bytes: Optional[bytes] = field(default=None, init=False, repr=False, compare=False)
+    _cached_merkle_bytes: Optional[bytes] = field(default=None, init=False, repr=False, compare=False)
+    _cached_norm_rel: Optional[str] = field(default=None, init=False, repr=False, compare=False)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize FileFingerprint into a dictionary."""
@@ -200,18 +203,22 @@ class SnapshotState:
 
 
 def _compute_merkle_from_fingerprints(active_fps: Iterable[FileFingerprint]) -> str:
-    hash_entries = [
-        FileHashEntry(
-            rel_path=fp.rel_path,
-            abs_path="",
-            size=fp.size,
-            mtime_ns=fp.mtime_ns,
-            content_hash=fp.content_hash,
-            matched_spaces=(),
-        )
-        for fp in active_fps
-    ]
-    return compute_space_merkle_root(hash_entries)
+    hasher = hashlib.blake2b(digest_size=BLAKE2B_DIGEST_SIZE)
+    items: List[Tuple[str, bytes]] = []
+    for fp in active_fps:
+        norm_rel = fp._cached_norm_rel
+        if norm_rel is None:
+            norm_rel = fp.rel_path.replace("\\", "/")
+            object.__setattr__(fp, "_cached_norm_rel", norm_rel)
+        m_bytes = fp._cached_merkle_bytes
+        if m_bytes is None:
+            m_bytes = f"{norm_rel}\0{fp.size}\0{fp.content_hash}\n".encode("utf-8")
+            object.__setattr__(fp, "_cached_merkle_bytes", m_bytes)
+        items.append((norm_rel, m_bytes))
+    items.sort(key=lambda pair: pair[0])
+    for _, m_bytes in items:
+        hasher.update(m_bytes)
+    return hasher.hexdigest()
 
 
 class BinarySnapshotManager:
@@ -245,24 +252,25 @@ class BinarySnapshotManager:
 
         chunks: List[bytes] = [header_buf, merkle_bytes, cfg_bytes]
         for fp in sorted_items:
-            rel_b = fp.rel_path.encode("utf-8")
-            hash_b = fp.content_hash.encode("utf-8")
-            ent_b = fp.entry_path.encode("utf-8")
-            rec_head = self._ENTRY_PREFIX.pack(
-                len(rel_b),
-                len(hash_b),
-                len(ent_b),
-                max(0, int(fp.mtime_ns)),
-                max(0, int(fp.ctime_ns)),
-                max(0, int(fp.size)),
-                max(0, int(fp.created_gen)),
-                max(0, int(fp.updated_gen)),
-                1 if fp.is_deleted else 0,
-            )
-            chunks.append(rec_head)
-            chunks.append(rel_b)
-            chunks.append(hash_b)
-            chunks.append(ent_b)
+            packed = fp._cached_packed_bytes
+            if packed is None:
+                rel_b = fp.rel_path.encode("utf-8")
+                hash_b = fp.content_hash.encode("utf-8")
+                ent_b = fp.entry_path.encode("utf-8")
+                rec_head = self._ENTRY_PREFIX.pack(
+                    len(rel_b),
+                    len(hash_b),
+                    len(ent_b),
+                    max(0, int(fp.mtime_ns)),
+                    max(0, int(fp.ctime_ns)),
+                    max(0, int(fp.size)),
+                    max(0, int(fp.created_gen)),
+                    max(0, int(fp.updated_gen)),
+                    1 if fp.is_deleted else 0,
+                )
+                packed = rec_head + rel_b + hash_b + ent_b
+                object.__setattr__(fp, "_cached_packed_bytes", packed)
+            chunks.append(packed)
 
         body = b"".join(chunks)
         checksum = hashlib.blake2b(body, digest_size=BLAKE2B_DIGEST_SIZE).digest()
@@ -376,6 +384,7 @@ class BinarySnapshotManager:
                 offset += self._ENTRY_PREFIX.size
                 if offset + rel_len + hash_len + ent_len > len(body):
                     return SnapshotState()
+                rec_start = offset - self._ENTRY_PREFIX.size
                 rel_path = body[offset : offset + rel_len].decode("utf-8")
                 offset += rel_len
                 content_hash = body[offset : offset + hash_len].decode("utf-8")
@@ -383,7 +392,7 @@ class BinarySnapshotManager:
                 entry_path = body[offset : offset + ent_len].decode("utf-8")
                 offset += ent_len
 
-                entries[rel_path] = FileFingerprint(
+                fp_obj = FileFingerprint(
                     rel_path=rel_path,
                     mtime_ns=int(mtime_ns),
                     ctime_ns=int(ctime_ns),
@@ -394,6 +403,8 @@ class BinarySnapshotManager:
                     is_deleted=bool(del_flag),
                     entry_path=entry_path,
                 )
+                object.__setattr__(fp_obj, "_cached_packed_bytes", body[rec_start:offset])
+                entries[rel_path] = fp_obj
 
             if offset != len(body):
                 return SnapshotState()
@@ -424,26 +435,76 @@ class CursorStore:
         )
         self._rlock = threading.RLock()
         self._mem_cache: Dict[str, Tuple[int, int, Dict[str, Dict[str, Any]]]] = {}
+        self._batch_depth: Dict[str, int] = {}
+        self._batch_dirty: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
     @property
     def cursors_dir(self) -> Path:
         return self._cursors_dir
 
+    @staticmethod
+    def _norm_cid(consumer_id: Any) -> str:
+        if isinstance(consumer_id, dict):
+            return str(consumer_id.get("id") or next(iter(consumer_id.values()), "default") or "default")
+        return str(consumer_id or "default")
+
     def _consumer_path(self, consumer_id: str) -> Path:
-        safe_id = _sanitize_target_key(consumer_id or "default")
+        safe_id = _sanitize_target_key(self._norm_cid(consumer_id))
         return self._cursors_dir / f"{safe_id}.json"
 
     @contextmanager
     def _locked(self, consumer_id: str) -> Iterator[None]:
-        safe_id = _sanitize_target_key(consumer_id or "default")
+        safe_id = _sanitize_target_key(self._norm_cid(consumer_id))
         lock_file = self._lock_dir / f"cursor_{safe_id}.lock"
         with self._rlock:
             with InterProcessLock(str(lock_file), timeout=5.0, reentrant=True):
                 yield
 
+    @contextmanager
+    def batch_cursor_updates(self, consumer_id: str = "default") -> Iterator[None]:
+        """Coalesce multiple `set_cursor` updates for `consumer_id` into a single atomic JSON write on exit."""
+        norm_cid = self._norm_cid(consumer_id)
+        with self._locked(norm_cid):
+            depth = self._batch_depth.get(norm_cid, 0)
+            self._batch_depth[norm_cid] = depth + 1
+            try:
+                yield
+            finally:
+                rem = max(0, self._batch_depth.get(norm_cid, 1) - 1)
+                if rem > 0:
+                    self._batch_depth[norm_cid] = rem
+                else:
+                    self._batch_depth.pop(norm_cid, None)
+                    pending = self._batch_dirty.pop(norm_cid, None)
+                    if pending is not None:
+                        c_path = self._consumer_path(norm_cid)
+                        c_path.parent.mkdir(parents=True, exist_ok=True)
+                        payload = {
+                            "consumer_id": norm_cid,
+                            "spaces": pending,
+                        }
+                        vfs.write_json(str(c_path), payload, atomic=True)
+                        try:
+                            st = c_path.stat()
+                            self._mem_cache[c_path.as_posix()] = (
+                                int(st.st_mtime_ns),
+                                int(st.st_size),
+                                {k: dict(v) for k, v in pending.items() if isinstance(v, dict)},
+                            )
+                        except OSError:
+                            self._mem_cache.pop(c_path.as_posix(), None)
+
     def load_consumer(self, consumer_id: str = "default") -> Dict[str, Dict[str, Any]]:
         """Load all space cursor records for `consumer_id`."""
-        c_path = self._consumer_path(consumer_id)
+        norm_cid = self._norm_cid(consumer_id)
+        with self._rlock:
+            if norm_cid in self._batch_dirty:
+                return {
+                    k: dict(v)
+                    for k, v in self._batch_dirty[norm_cid].items()
+                    if isinstance(v, dict)
+                }
+        c_path = self._consumer_path(norm_cid)
         cache_key = c_path.as_posix()
         try:
             st = c_path.stat()
@@ -538,8 +599,12 @@ class CursorStore:
                 "config_hash": norm_cfg,
                 "updated_at": time.time(),
             }
+            norm_cid = self._norm_cid(consumer_id)
+            if self._batch_depth.get(norm_cid, 0) > 0:
+                self._batch_dirty[norm_cid] = spaces
+                return
             payload = {
-                "consumer_id": consumer_id or "default",
+                "consumer_id": norm_cid,
                 "spaces": spaces,
             }
             vfs.write_json(str(c_path), payload, atomic=True)
@@ -1188,19 +1253,31 @@ class SpaceScanner:
 
                 if is_existing_file:
                     target_key = "*" if space_key == self.UNIFIED_KEY else space_key
-                    match_res = self._registry.match_path(
-                        cand_abs, space=target_key
-                    )
-                    if match_res.matched:
+                    if self._registry.is_path_matched_fast(cand_abs, target_key, is_dir=False):
                         matched_entry_abs = self._find_best_entry_for_file(
                             cand_abs, all_entry_paths
                         )
                         rel_p = compute_canonical_rel_path(
                             cand_abs, matched_entry_abs, self._registry.project_root
                         )
-                        policy, threshold_mb = self._resolve_file_policy(
-                            match_res.matched_spaces, space_map
+                        has_non_default_policy = any(
+                            sp_c.hash_policy != HashPolicy.ADAPTIVE
+                            or sp_c.large_file_threshold_mb != 10
+                            for sp_c in participating_spaces
                         )
+                        if has_non_default_policy:
+                            matched_sp_names = [
+                                sp_c.qualified_name
+                                for sp_c in participating_spaces
+                                if self._registry.is_path_matched_fast(
+                                    cand_abs, sp_c.qualified_name, is_dir=False
+                                )
+                            ]
+                            policy, threshold_mb = self._resolve_file_policy(
+                                matched_sp_names, space_map
+                            )
+                        else:
+                            policy, threshold_mb = HashPolicy.ADAPTIVE, 10
                         try:
                             st = cand_abs.stat()
                             f_size = int(st.st_size)
@@ -1412,18 +1489,28 @@ class SpaceScanner:
             )
         )
 
-    def _flush_in_process_watcher(self, space_query: Optional[str] = None) -> None:
-        """If an active in-process watcher is running, synchronously flush any pending debounce events."""
+    def _flush_in_process_watcher(
+        self, space_query: Optional[Union[str, Iterable[str]]] = None
+    ) -> bool:
+        """
+        If an active in-process watcher is running, synchronously flush any pending debounce events.
+        Returns True if an active in-process watcher handled the flush without a transaction lock block.
+        """
         worker = get_active_watcher()
         if worker is not None:
             is_alive_fn = getattr(worker, "is_alive", None)
             if callable(is_alive_fn) and is_alive_fn():
+                is_locked_fn = getattr(worker, "is_transaction_locked", None)
+                if callable(is_locked_fn) and is_locked_fn():
+                    return False
                 flush_fn = getattr(worker, "flush_space_now", None)
                 if callable(flush_fn):
                     try:
                         flush_fn(space_query)
+                        return True
                     except Exception:
                         pass
+        return False
 
     def _has_existing_snapshot(self, space_key: str) -> bool:
         canon_key = self._canonical_space_key(space_key)
@@ -1671,9 +1758,9 @@ class SpaceScanner:
         Return a dictionary of active `rel_path -> FileFingerprint` for `space_query`.
         Automatically runs an initial scan if no snapshot exists yet or if `refresh_first=True`.
         """
-        self._flush_in_process_watcher(space_query)
+        flushed_in_proc = self._flush_in_process_watcher(space_query)
         space_key = self._canonical_space_key(space_query)
-        if refresh_first or self.has_watcher_dirty_marker():
+        if refresh_first or (not flushed_in_proc and self.has_watcher_dirty_marker()):
             self.scan(space_query)
         state = self._load_snapshot_state(space_key)
         if state.head_generation == 0 and not refresh_first:
@@ -1688,9 +1775,9 @@ class SpaceScanner:
         refresh_first: bool = False,
     ) -> str:
         """Return the 16-byte Blake2b hex `merkle_root` of `space_query` from its snapshot."""
-        self._flush_in_process_watcher(space_query)
+        flushed_in_proc = self._flush_in_process_watcher(space_query)
         space_key = self._canonical_space_key(space_query)
-        if refresh_first or self.has_watcher_dirty_marker():
+        if refresh_first or (not flushed_in_proc and self.has_watcher_dirty_marker()):
             self.scan(space_query)
         state = self._load_snapshot_state(space_key)
         if state.head_generation == 0 and not refresh_first:
@@ -1709,12 +1796,12 @@ class SpaceScanner:
         Compute the delta between `consumer_id`'s acknowledged watermark generation
         and the current head generation of `space_query`.
         """
-        self._flush_in_process_watcher(space_query)
+        flushed_in_proc = self._flush_in_process_watcher(space_query)
         space_key = self._canonical_space_key(space_query)
         eff_auto_refresh = self._resolve_effective_auto_refresh(
             space_query, space_key, auto_refresh
         )
-        if eff_auto_refresh or self.has_watcher_dirty_marker():
+        if eff_auto_refresh or (not flushed_in_proc and self.has_watcher_dirty_marker()):
             scan_res = self.scan(space_query)
             space_gens = scan_res.space_generations
         else:
@@ -1727,18 +1814,22 @@ class SpaceScanner:
             state = self._load_snapshot_state(space_key)
 
         cursor = self._get_cursor_record(space_key, consumer_id)
-        from_gen = int(cursor.get("acked_generation", 0))
+        orig_from_gen = int(cursor.get("acked_generation", 0))
         cursor_cfg_hash = str(cursor.get("config_hash", ""))
+        cfg_changed = bool(cursor_cfg_hash and cursor_cfg_hash != state.config_hash)
 
-        if (cursor_cfg_hash and cursor_cfg_hash != state.config_hash) or (
-            from_gen > state.head_generation
-        ):
+        from_gen = orig_from_gen
+        if cfg_changed or (from_gen > state.head_generation):
             from_gen = 0
 
         detail = ScanDiffDetail()
         for rel_p, fp in state.entries.items():
             if fp.is_deleted:
-                if from_gen > 0 and fp.created_gen <= from_gen < fp.updated_gen:
+                if (from_gen > 0 and fp.created_gen <= from_gen < fp.updated_gen) or (
+                    cfg_changed
+                    and orig_from_gen > 0
+                    and fp.created_gen <= orig_from_gen < fp.updated_gen
+                ):
                     detail.deleted.add(rel_p)
             else:
                 if fp.created_gen > from_gen:
@@ -1773,27 +1864,27 @@ class SpaceScanner:
     ) -> int:
         """Advance `consumer_id`'s watermark cursor to `generation` (or current `head_generation`)."""
         space_key = self._canonical_space_key(space_query)
-        state = self._load_snapshot_state(space_key)
-        target_gen = int(generation) if generation is not None else state.head_generation
+        head_gen, merkle_root, cfg_hash, _active_cnt = self.get_snapshot_summary(space_key)
+        target_gen = int(generation) if generation is not None else head_gen
 
         self._set_cursor_record(
             space_key,
             consumer_id,
             acked_gen=target_gen,
-            merkle_root=state.merkle_root,
-            config_hash=state.config_hash,
+            merkle_root=merkle_root,
+            config_hash=cfg_hash,
         )
         if space_generations:
             for sub_key, sub_gen in space_generations.items():
                 if sub_key == space_key:
                     continue
-                sub_state = self._load_snapshot_state(sub_key)
+                _sub_h, sub_merkle, sub_cfg, _sub_c = self.get_snapshot_summary(sub_key)
                 self._set_cursor_record(
                     sub_key,
                     consumer_id,
                     acked_gen=int(sub_gen),
-                    merkle_root=sub_state.merkle_root,
-                    config_hash=sub_state.config_hash,
+                    merkle_root=sub_merkle,
+                    config_hash=sub_cfg,
                 )
             if target_gen == 0:
                 target_gen = max((int(g) for g in space_generations.values()), default=0)

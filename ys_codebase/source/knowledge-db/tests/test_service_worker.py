@@ -1314,5 +1314,86 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         self.assertGreaterEqual(meta_after_flush["embedded_count"], 1)
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_stage2_foreground_yield_deferred_flush_and_no_busy_spin(self):
+        """Verify Stage 2 yields to foreground without eager disk flush, avoids CPU busy-spin even when _wake_event is set, and flushes dirty vectors on cycle exit."""
+        src_dir = self.root_path / "src_yield_nospin"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        (src_dir / "mod_yield.py").write_text(
+            "def alpha_fn():\n    return 1\n\ndef beta_fn():\n    return 2\n",
+            encoding="utf-8",
+        )
+        storage_dir = self.root_path / "storage_yield_nospin"
+        sp = SpaceConfig(
+            qualified_name="project/yield_sp",
+            owner="project",
+            short_name="yield_sp",
+            entries=(str(src_dir),),
+        )
+        engine = KnowledgeEngine(
+            project_root=self.root_path,
+            storage_dir=storage_dir,
+            contributes_data={"spaces": {"yield_sp": sp}},
+            embedding_mock_mode=True,
+        )
+        engine.config.vector_batch_size = 1
+        engine.pipeline.build_unified_index(force=True, skip_vectors=True)
+        indices_dir = engine.pipeline.get_indices_dir()
+
+        worker = KnowledgeDBServiceWorker()
+        worker._engine = engine
+        fg_flag = {"active": False}
+        fg_probe_count = 0
+        flush_calls = []
+        orig_flush = engine.pipeline.flush_vector_index
+
+        def _spy_flush():
+            flush_calls.append(fg_flag["active"])
+            return orig_flush()
+
+        orig_step = engine.pipeline.sync_vector_deficit_step
+        entered_yield_window = threading.Event()
+
+        def _hooked_step(*args, **kwargs):
+            res = orig_step(*args, **kwargs)
+            # Simulate foreground command starting mid-Stage 2 while a file change sets _wake_event!
+            fg_flag["active"] = True
+            worker.notify_space_changed()
+            entered_yield_window.set()
+            return res
+
+        def _fake_fg_active():
+            nonlocal fg_probe_count
+            if entered_yield_window.is_set():
+                fg_probe_count += 1
+            return fg_flag["active"]
+
+        with patch("knowledge_db.service.is_foreground_active", side_effect=_fake_fg_active), patch.object(
+            engine.pipeline, "flush_vector_index", side_effect=_spy_flush
+        ), patch.object(engine.pipeline, "sync_vector_deficit_step", side_effect=_hooked_step):
+            t_cycle = threading.Thread(target=worker._run_sync_cycle, args=(engine, indices_dir), daemon=True)
+            t_cycle.start()
+            try:
+                self.assertTrue(entered_yield_window.wait(timeout=3.0))
+                # Wait ~0.16s while _wake_event is set AND foreground is active
+                worker._stop_event.wait(0.0)
+                t_wait_end = time.monotonic() + 0.16
+                while time.monotonic() < t_wait_end:
+                    threading.Event().wait(0.04)
+                # Must NOT have eagerly flushed during foreground yield, state must be READY, phase yielded_to_foreground
+                self.assertEqual(flush_calls, [])
+                self.assertEqual(worker.state, worker.STATE_READY)
+                st_now = read_worker_state(indices_dir)
+                self.assertEqual(st_now.get("phase"), "yielded_to_foreground")
+                # Sleeping via _stop_event.wait(0.05) means ~3-6 probes in 0.16s, NEVER thousands of busy-spin iterations!
+                self.assertLess(fg_probe_count, 20)
+            finally:
+                worker._stop_event.set()
+                t_cycle.join(timeout=3.0)
+
+        # Exiting _sync_cycle with _vector_index_dirty=True flushes once in finally
+        self.assertGreaterEqual(len(flush_calls), 1)
+        self.mark_passed()
+
 if __name__ == "__main__":
     unittest.main()

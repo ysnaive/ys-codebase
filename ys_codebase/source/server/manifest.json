@@ -1,10 +1,10 @@
 {
   "name": "server",
-  "version": "1.0.6.0",
+  "version": "1.0.7.0",
   "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.9.0"
+    "core": ">=1.2.10.0"
   },
   "pip_dependencies": {
     "watchdog": ">=4.0.0"
@@ -15,8 +15,8 @@
     "Stop daemon and view session summary: python yscb.py server stop"
   ],
   "release": {
-    "type": "feature",
+    "type": "bugfix",
     "urgency": "recommended",
-    "summary": "新增 /api/cancel 斷線協作取消機制、背景服務前景讓渡與 CoreSpaceWatcher 單重試鎖讓渡，並修復熱重載預熱執行緒競態"
+    "summary": "新增 Worker 派發逾時自癒、移除預熱鎖競爭、加固 Inotify 防崩潰與多空間批次沖刷"
   }
 }

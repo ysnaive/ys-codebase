@@ -1,20 +1,20 @@
 {
   "id": "ast",
   "name": "ast",
-  "version": "1.1.0.3",
+  "version": "1.1.1.0",
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.9.0"
+    "core": ">=1.2.10.0"
   },
   "optional": {
     "server": {
-      "version": ">=1.0.0",
+      "version": ">=1.0.7",
       "hint": "提供背景檔案變更事件觸發之 AST 與呼叫圖譜即時熱修補能力"
     },
     "knowledge-db": {
-      "version": ">=1.2.0",
+      "version": ">=1.2.3",
       "hint": "結合 AST 符號快照提供跨空間 BM25 與本地向量混合語意檢索能力"
     }
   },
@@ -40,6 +40,6 @@
   "release": {
     "type": "feature",
     "urgency": "recommended",
-    "summary": "新增 <rel_path>::<fqn> 單檔零圖譜掃描極速 slice 路徑、持久化空間檔案計數快取、建置階段進度回報與協作式取消檢查"
+    "summary": "重構 4-Pass 全域圖譜與增量連結快取 (42x 加速)、導入 WarmWorker 背景持久化與熱修補游標對齊"
   }
 }

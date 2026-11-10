@@ -9,7 +9,8 @@ Coordinates:
 - Deterministic symbol resolution & overload grouping (`callers`, `callees`, `impact`).
 """
 
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -23,8 +24,10 @@ from core.context import (
     TaskCancelledError,
     cell_span,
     check_task_cancelled,
+    get_env,
     get_runtime_context,
     get_virtual_cwd,
+    is_foreground_active,
 )
 from core.log import ProgressReporter, log_debug, log_warn
 from core.space import (
@@ -529,9 +532,15 @@ class ASTEngine:
 
         self._snapshot: Optional[ASTSnapshot] = None
         self._graph: Optional[CallGraphIndex] = None
+        self._last_workspace_graph: Optional[WorkspaceSymbolGraph] = None
         self._symbols_mtime: float = 0.0
         self._graph_mtime: float = 0.0
         self._lock = threading.RLock()
+        self._bg_persist_lock = threading.Lock()
+        self._bg_persist_pending: Optional[Tuple[ASTSnapshot, CallGraphIndex, int]] = None
+        self._bg_persist_seq: int = 0
+        self._bg_persist_executor: Optional[Any] = None
+        self._bg_persist_running: bool = False
         self._build_state_lock = threading.Lock()
         self._build_state: Dict[str, Any] = {
             "building": False,
@@ -596,16 +605,35 @@ class ASTEngine:
                 if spaces is None:
                     with self._consume_space_diff(space_name=None):
                         pass
+                    if self.scanner is not None and hasattr(self.scanner, "ack"):
+                        for sp in target_cfgs:
+                            for sp_k in {sp.qualified_name, sp.short_name}:
+                                if sp_k:
+                                    self.scanner.ack(sp_k, consumer_id=self.CONSUMER_ID)
                 else:
                     for sp_name in spaces:
                         with self._consume_space_diff(space_name=sp_name):
                             pass
             else:
-                for q_sp in target_qnames:
-                    with self._consume_space_diff(space_name=q_sp, auto_refresh=False):
-                        pass
-                if spaces is None and self.scanner is not None and hasattr(self.scanner, "ack"):
-                    self.scanner.ack(None, consumer_id=self.CONSUMER_ID)
+                batch_ctx = (
+                    self.scanner.cursor_store.batch_cursor_updates(self.CONSUMER_ID)
+                    if (
+                        self.scanner is not None
+                        and hasattr(self.scanner, "cursor_store")
+                        and hasattr(self.scanner.cursor_store, "batch_cursor_updates")
+                    )
+                    else nullcontext()
+                )
+                with batch_ctx:
+                    for q_sp in target_qnames:
+                        with self._consume_space_diff(space_name=q_sp, auto_refresh=False):
+                            pass
+                    if self.scanner is not None and hasattr(self.scanner, "ack"):
+                        for sp in target_cfgs:
+                            if sp.short_name and sp.short_name != sp.qualified_name:
+                                self.scanner.ack(sp.short_name, consumer_id=self.CONSUMER_ID)
+                        if spaces is None:
+                            self.scanner.ack(None, consumer_id=self.CONSUMER_ID)
         except Exception as exc:
             log_debug(f"Cursor alignment skipped: {exc}")
 
@@ -635,6 +663,7 @@ class ASTEngine:
         self,
         spaces: Optional[List[str]] = None,
         incremental_detail: Optional[ScanDiffDetail] = None,
+        target_snap: Optional[ASTSnapshot] = None,
     ) -> Tuple[Dict[str, int], Dict[str, List[str]]]:
         space_gens: Dict[str, int] = {}
         files_map: Dict[str, List[str]] = {}
@@ -642,15 +671,26 @@ class ASTEngine:
             target_cfgs = self.bundler._resolve_target_spaces(spaces)
             cached_unique = getattr(self.bundler, "_last_bundle_unique_files", None)
             cached_spaces = getattr(self.bundler, "_last_bundle_spaces", set())
-            existing_files_map = self._snapshot.files_map if self._snapshot is not None else {}
+            snap_ref = target_snap if target_snap is not None else self._snapshot
+            existing_files_map = snap_ref.files_map if snap_ref is not None else {}
 
             for sp_cfg in target_cfgs:
                 sp_name = _space_logical_name(sp_cfg)
                 q_name = sp_cfg.qualified_name or sp_name
                 snap_entries = None
                 snap_gen = 1
+                need_entries_from_snap = not (
+                    incremental_detail is not None and sp_name in existing_files_map
+                )
                 if self.scanner is not None:
-                    if hasattr(self.scanner, "_load_snapshot_state"):
+                    if not need_entries_from_snap and hasattr(self.scanner, "get_snapshot_summary"):
+                        try:
+                            head_g, _ = self.scanner.get_snapshot_summary(q_name)
+                            if head_g > 0:
+                                snap_gen = int(head_g)
+                        except Exception:
+                            pass
+                    elif hasattr(self.scanner, "_load_snapshot_state"):
                         try:
                             st = self.scanner._load_snapshot_state(q_name)
                             if st is not None:
@@ -662,7 +702,7 @@ class ASTEngine:
                                 )
                         except Exception:
                             snap_entries = None
-                    if not snap_entries and hasattr(self.scanner, "snapshot"):
+                    if need_entries_from_snap and not snap_entries and hasattr(self.scanner, "snapshot"):
                         try:
                             snap_entries = self.scanner.snapshot(q_name, refresh_first=False)
                         except Exception:
@@ -670,7 +710,25 @@ class ASTEngine:
 
                 rel_files: Optional[List[str]] = None
                 if incremental_detail is not None:
-                    if snap_entries:
+                    if sp_name in existing_files_map:
+                        base_set = set(existing_files_map[sp_name])
+                        if incremental_detail.deleted:
+                            expanded_del = self.bundler._normalize_space_dirty_paths(
+                                incremental_detail.deleted,
+                                [sp_cfg],
+                                prefer_missing=True,
+                                known_indexed_files=base_set,
+                            )
+                            del_norm = normalize_dirty_paths(expanded_del | set(incremental_detail.deleted))
+                            if del_norm:
+                                base_set = {p for p in base_set if not is_dirty_file_match(p, del_norm)}
+                        if incremental_detail.added:
+                            added_map = self.bundler._resolve_dirty_files_only(incremental_detail.added, [sp_cfg])
+                            for _, (_, relp, sp_set) in added_map.items():
+                                if sp_name in sp_set:
+                                    base_set.add(relp)
+                        rel_files = sorted(base_set)
+                    elif snap_entries:
                         rel_from_snap: List[str] = []
                         for rel_k, fp_rec in snap_entries.items():
                             if getattr(fp_rec, "is_deleted", False):
@@ -682,23 +740,6 @@ class ASTEngine:
                             else:
                                 rel_from_snap.append(str(rel_k).replace("\\", "/"))
                         rel_files = sorted(set(rel_from_snap))
-                    elif sp_name in existing_files_map:
-                        base_set = set(existing_files_map[sp_name])
-                        expanded_del = self.bundler._normalize_space_dirty_paths(
-                            incremental_detail.deleted,
-                            [sp_cfg],
-                            prefer_missing=True,
-                            known_indexed_files=base_set,
-                        )
-                        del_norm = normalize_dirty_paths(expanded_del | set(incremental_detail.deleted))
-                        if del_norm:
-                            base_set = {p for p in base_set if not is_dirty_file_match(p, del_norm)}
-                        if incremental_detail.added:
-                            added_map = self.bundler._resolve_dirty_files_only(incremental_detail.added, [sp_cfg])
-                            for _, (_, relp, sp_set) in added_map.items():
-                                if sp_name in sp_set:
-                                    base_set.add(relp)
-                        rel_files = sorted(base_set)
 
                 if rel_files is None and cached_unique is not None and sp_name in cached_spaces:
                     from_cache = [
@@ -758,6 +799,22 @@ class ASTEngine:
         fallback.parent.mkdir(parents=True, exist_ok=True)
         return fallback
 
+    def _compute_ast_config_hash(self) -> str:
+        """Compute deterministic fingerprint covering AST schema version and parser language configurations."""
+        try:
+            lang_cfgs = getattr(self.parser_registry, "language_configs", {}) or {}
+            items = []
+            for k in sorted(lang_cfgs.keys()):
+                cfg = lang_cfgs[k]
+                exts = sorted(getattr(cfg, "extensions", ()) or ())
+                sps = sorted(getattr(cfg, "spaces", ()) or ())
+                q_file = str(getattr(cfg, "query_file", "") or "")
+                items.append((str(k), exts, sps, q_file))
+            raw = json.dumps({"schema": 2, "langs": items}, sort_keys=True, separators=(",", ":"))
+            return hashlib.blake2b(raw.encode("utf-8"), digest_size=8).hexdigest()
+        except Exception:
+            return "v2"
+
     def _build_meta_payload(
         self,
         snapshot: ASTSnapshot,
@@ -796,6 +853,8 @@ class ASTEngine:
             "symbols_size": sym_size,
             "graph_mtime_ns": graph_mtime_ns,
             "graph_size": graph_size,
+            "schema_version": int(getattr(snapshot, "schema_version", 2)),
+            "config_hash": str(getattr(snapshot, "config_hash", "") or self._compute_ast_config_hash()),
         }
 
     def _atomic_write_meta(self, meta_payload: Dict[str, Any]) -> None:
@@ -803,11 +862,13 @@ class ASTEngine:
 
         vfs.write_json(str(self.meta_index_path), meta_payload, indent=2, atomic=True)
 
-    def _save_snapshot_and_graph(self, snapshot: ASTSnapshot, graph: CallGraphIndex) -> None:
+    def _persist_snapshot_and_graph_to_disk(self, snapshot: ASTSnapshot, graph: CallGraphIndex, seq: int = 0) -> None:
         from core.platform.lock import InterProcessLock
 
         lock_file = str(self._resolve_index_lock_path())
         with InterProcessLock(lock_file, timeout=15.0):
+            if seq > 0 and seq != self._bg_persist_seq:
+                return
             atomic_save_gzip_pickle(self.symbols_index_path, snapshot.to_dict(), compresslevel=1)
             graph.save_binary(self.graph_index_path, compresslevel=1)
             try:
@@ -815,12 +876,76 @@ class ASTEngine:
                 self._atomic_write_meta(meta_payload)
             except Exception as exc:
                 log_debug(f"Failed writing AST meta index: {exc}")
+        if seq == 0 or seq == self._bg_persist_seq:
+            if self.symbols_index_path.exists():
+                self._symbols_mtime = self.symbols_index_path.stat().st_mtime
+            if self.graph_index_path.exists():
+                self._graph_mtime = self.graph_index_path.stat().st_mtime
+
+    def _run_bg_persist_loop(self) -> None:
+        while True:
+            time.sleep(0.05)
+            try:
+                if is_foreground_active():
+                    continue
+            except Exception:
+                pass
+            with self._bg_persist_lock:
+                pending = self._bg_persist_pending
+                if pending is None:
+                    self._bg_persist_running = False
+                    return
+                self._bg_persist_pending = None
+            snap_p, graph_p, seq_p = pending
+            try:
+                self._persist_snapshot_and_graph_to_disk(snap_p, graph_p, seq=seq_p)
+            except Exception as exc:
+                log_debug(f"Background AST snapshot persist skipped: {exc}")
+
+    def _save_snapshot_and_graph(
+        self,
+        snapshot: ASTSnapshot,
+        graph: CallGraphIndex,
+        allow_async_in_worker: bool = False,
+    ) -> None:
+        if not getattr(snapshot, "config_hash", ""):
+            snapshot.config_hash = self._compute_ast_config_hash()
+        snapshot.schema_version = 2
+        graph.ast_generation = int(snapshot.ast_generation)
         self._snapshot = snapshot
         self._graph = graph
-        if self.symbols_index_path.exists():
-            self._symbols_mtime = self.symbols_index_path.stat().st_mtime
-        if self.graph_index_path.exists():
-            self._graph_mtime = self.graph_index_path.stat().st_mtime
+        if graph.workspace_graph is not None:
+            self._last_workspace_graph = graph.workspace_graph
+
+        if (
+            allow_async_in_worker
+            and not self._custom_storage_dir
+            and get_env("YSCB_IN_SERVER_WORKER") == "1"
+            and self.symbols_index_path.exists()
+            and self.graph_index_path.exists()
+        ):
+            from concurrent.futures import ThreadPoolExecutor
+
+            far_future = time.time() + 3600.0
+            self._symbols_mtime = far_future
+            self._graph_mtime = far_future
+            with self._bg_persist_lock:
+                self._bg_persist_seq += 1
+                self._bg_persist_pending = (snapshot, graph, self._bg_persist_seq)
+                if not self._bg_persist_running:
+                    self._bg_persist_running = True
+                    if self._bg_persist_executor is None:
+                        self._bg_persist_executor = ThreadPoolExecutor(
+                            max_workers=1,
+                            thread_name_prefix="AST-BgPersist",
+                        )
+                    self._bg_persist_executor.submit(self._run_bg_persist_loop)
+            return
+
+        with self._bg_persist_lock:
+            self._bg_persist_seq += 1
+            self._bg_persist_pending = None
+        self._persist_snapshot_and_graph_to_disk(snapshot, graph, seq=0)
 
     def _set_build_progress(self, building: bool, phase: str = "idle", progress: str = "") -> None:
         now = time.time()
@@ -897,7 +1022,7 @@ class ASTEngine:
             pass
         return (False, "idle", "")
 
-    def _ensure_symbols_loaded(self, force_reload: bool = False) -> bool:
+    def _load_symbols_unlocked(self, force_reload: bool = False) -> bool:
         if not self.symbols_index_path.exists():
             self._snapshot = None
             self._symbols_mtime = 0.0
@@ -917,7 +1042,7 @@ class ASTEngine:
             log_warn(f"Failed loading AST snapshot from disk: {exc}", stream="stderr")
             return False
 
-    def _ensure_graph_loaded(self, force_reload: bool = False) -> bool:
+    def _load_graph_unlocked(self, force_reload: bool = False) -> bool:
         if not self.graph_index_path.exists():
             self._graph = None
             self._graph_mtime = 0.0
@@ -930,10 +1055,73 @@ class ASTEngine:
                 self._graph_mtime = g_mtime
             elif self._graph is not None and self._snapshot is not None and self._snapshot.file_graphs:
                 self._graph.attach_file_graphs(self._snapshot.file_graphs)
+            if self._graph is not None and self._graph.workspace_graph is not None:
+                self._last_workspace_graph = self._graph.workspace_graph
             return self._graph is not None
         except Exception as exc:
             log_warn(f"Failed loading AST call graph from disk: {exc}", stream="stderr")
             return False
+
+    def _ensure_symbols_loaded(self, force_reload: bool = False) -> bool:
+        if not self.symbols_index_path.exists():
+            self._snapshot = None
+            self._symbols_mtime = 0.0
+            return False
+        try:
+            s_mtime = self.symbols_index_path.stat().st_mtime
+        except OSError:
+            return False
+        if not (force_reload or self._snapshot is None or s_mtime > self._symbols_mtime):
+            return True
+        from core.platform.lock import InterProcessLock
+
+        lock_file = str(self._resolve_index_lock_path())
+        with InterProcessLock(lock_file, timeout=15.0):
+            return self._load_symbols_unlocked(force_reload=force_reload)
+
+    def _ensure_graph_loaded(self, force_reload: bool = False) -> bool:
+        if not self.graph_index_path.exists():
+            self._graph = None
+            self._graph_mtime = 0.0
+            return False
+        try:
+            g_mtime = self.graph_index_path.stat().st_mtime
+        except OSError:
+            return False
+        need_graph = force_reload or self._graph is None or g_mtime > self._graph_mtime
+        need_gen_sync = (
+            self._snapshot is not None
+            and self._graph is not None
+            and getattr(self._graph, "ast_generation", 0) > 0
+            and int(self._graph.ast_generation) != int(self._snapshot.ast_generation)
+        )
+        if not (need_graph or need_gen_sync):
+            if self._graph is not None and self._snapshot is not None and self._snapshot.file_graphs:
+                self._graph.attach_file_graphs(self._snapshot.file_graphs)
+            return True
+        from core.platform.lock import InterProcessLock
+
+        lock_file = str(self._resolve_index_lock_path())
+        with InterProcessLock(lock_file, timeout=15.0):
+            if not self._load_graph_unlocked(force_reload=force_reload or need_gen_sync):
+                return False
+            if (
+                self._snapshot is not None
+                and self._graph is not None
+                and getattr(self._graph, "ast_generation", 0) > 0
+                and int(self._graph.ast_generation) != int(self._snapshot.ast_generation)
+            ):
+                self._load_symbols_unlocked(force_reload=True)
+                self._load_graph_unlocked(force_reload=True)
+                if (
+                    self._snapshot is not None
+                    and self._graph is not None
+                    and getattr(self._graph, "ast_generation", 0) > 0
+                    and int(self._graph.ast_generation) != int(self._snapshot.ast_generation)
+                ):
+                    self._graph = None
+                    return False
+            return self._graph is not None
 
     def _ensure_loaded_from_disk(self, force_reload: bool = False) -> bool:
         if not self.symbols_index_path.exists() or not self.graph_index_path.exists():
@@ -948,12 +1136,19 @@ class ASTEngine:
             g_mtime = self.graph_index_path.stat().st_mtime
         except OSError:
             return False
+        gen_mismatch = (
+            self._snapshot is not None
+            and self._graph is not None
+            and getattr(self._graph, "ast_generation", 0) > 0
+            and int(self._graph.ast_generation) != int(self._snapshot.ast_generation)
+        )
         need_load = (
             force_reload
             or self._snapshot is None
             or self._graph is None
             or s_mtime > self._symbols_mtime
             or g_mtime > self._graph_mtime
+            or gen_mismatch
         )
         if not need_load:
             return True
@@ -961,9 +1156,19 @@ class ASTEngine:
 
         lock_file = str(self._resolve_index_lock_path())
         with InterProcessLock(lock_file, timeout=15.0):
-            return self._ensure_symbols_loaded(force_reload=force_reload) and self._ensure_graph_loaded(
-                force_reload=force_reload
-            )
+            ok_s = self._load_symbols_unlocked(force_reload=force_reload or gen_mismatch)
+            ok_g = self._load_graph_unlocked(force_reload=force_reload or gen_mismatch)
+            if not (ok_s and ok_g):
+                return False
+            if (
+                self._snapshot is not None
+                and self._graph is not None
+                and getattr(self._graph, "ast_generation", 0) > 0
+                and int(self._graph.ast_generation) != int(self._snapshot.ast_generation)
+            ):
+                self._graph = None
+                return False
+            return True
 
     def get_persisted_meta(self) -> Optional[Dict[str, Any]]:
         """Read lightweight AST generation/metadata without mutating disk files (lock-free fast path)."""
@@ -1135,6 +1340,8 @@ class ASTEngine:
         known_indexed_files: Optional[Set[str]] = None,
         snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        target_snap: Optional[ASTSnapshot] = None,
+        target_graph: Optional[CallGraphIndex] = None,
     ) -> Tuple[
         List[UnifiedSymbol],
         Set[str],
@@ -1145,13 +1352,15 @@ class ASTEngine:
     ]:
         """
         Parse dirty files, capture incoming edges before eviction, restore surviving C# partial siblings,
-        evict old symbols, and re-aggregate partial types into `self._snapshot.symbols`.
+        evict old symbols, and re-aggregate partial types into `target_snap.symbols`.
         """
-        assert self._snapshot is not None
-        assert self._graph is not None
+        snap_obj = target_snap if target_snap is not None else self._snapshot
+        graph_obj = target_graph if target_graph is not None else self._graph
+        assert snap_obj is not None
+        assert graph_obj is not None
 
         if known_indexed_files is None:
-            known_indexed_files = set(self._snapshot.file_to_symbol_ids.keys()) | set(self._snapshot.file_graphs.keys())
+            known_indexed_files = set(snap_obj.file_to_symbol_ids.keys()) | set(snap_obj.file_graphs.keys())
 
         new_symbols_by_file, dirty_keys = self.bundler.bundle_dirty_files(
             detail,
@@ -1168,11 +1377,11 @@ class ASTEngine:
         old_doc_ids: Set[str] = set()
         old_symbol_info: Dict[str, Tuple[str, str, str]] = {}
 
-        if self._snapshot.file_to_symbol_ids:
-            for f_path_key, sids in list(self._snapshot.file_to_symbol_ids.items()):
+        if snap_obj.file_to_symbol_ids:
+            for f_path_key, sids in list(snap_obj.file_to_symbol_ids.items()):
                 if is_dirty_file_match(f_path_key, dirty_paths_norm):
                     for doc_id in sids:
-                        sym = self._snapshot.symbols.get(doc_id)
+                        sym = snap_obj.symbols.get(doc_id)
                         if sym is not None:
                             if is_dirty_file_match(sym.file_path, dirty_paths_norm):
                                 old_doc_ids.add(doc_id)
@@ -1183,9 +1392,9 @@ class ASTEngine:
                                 )
                         else:
                             old_doc_ids.add(doc_id)
-                    self._snapshot.file_to_symbol_ids.pop(f_path_key, None)
+                    snap_obj.file_to_symbol_ids.pop(f_path_key, None)
         else:
-            for doc_id, sym in list(self._snapshot.symbols.items()):
+            for doc_id, sym in list(snap_obj.symbols.items()):
                 if is_dirty_file_match(sym.file_path, dirty_paths_norm):
                     old_doc_ids.add(doc_id)
                     old_symbol_info[doc_id] = (
@@ -1196,7 +1405,7 @@ class ASTEngine:
 
         affected_cs_keys: Set[Tuple[str, str, str]] = set()
         for doc_id in old_doc_ids:
-            sym_old = self._snapshot.symbols.get(doc_id)
+            sym_old = snap_obj.symbols.get(doc_id)
             if sym_old:
                 ck = _cs_partial_type_key(sym_old)
                 if ck:
@@ -1209,7 +1418,7 @@ class ASTEngine:
         surviving_partials: List[UnifiedSymbol] = []
         surviving_sibling_files: Set[str] = set()
         if affected_cs_keys:
-            for doc_id, sym_rem in list(self._snapshot.symbols.items()):
+            for doc_id, sym_rem in list(snap_obj.symbols.items()):
                 if doc_id in old_doc_ids:
                     continue
                 ck = _cs_partial_type_key(sym_rem)
@@ -1221,7 +1430,7 @@ class ASTEngine:
         # Include symbols in surviving partial sibling files so their outgoing call edges are refreshed
         if surviving_sibling_files:
             sib_norm = normalize_dirty_paths(surviving_sibling_files)
-            for doc_id, sym_s in self._snapshot.symbols.items():
+            for doc_id, sym_s in snap_obj.symbols.items():
                 if doc_id not in old_doc_ids and is_dirty_file_match(sym_s.file_path, sib_norm):
                     old_doc_ids.add(doc_id)
                     old_symbol_info[doc_id] = (
@@ -1230,29 +1439,35 @@ class ASTEngine:
                         sym_s.fqn or sym_s.name,
                     )
 
-        incoming_edges = self._graph.get_external_incoming_edges(old_doc_ids)
+        incoming_edges = graph_obj.get_external_incoming_edges(old_doc_ids)
 
         for doc_id in old_doc_ids:
             # Only pop symbols that belong to dirty files (keep surviving_partials & sibling symbols in snapshot)
-            if doc_id in self._snapshot.symbols and is_dirty_file_match(
-                self._snapshot.symbols[doc_id].file_path, dirty_paths_norm
+            if doc_id in snap_obj.symbols and is_dirty_file_match(
+                snap_obj.symbols[doc_id].file_path, dirty_paths_norm
             ):
-                self._snapshot.symbols.pop(doc_id, None)
+                snap_obj.symbols.pop(doc_id, None)
 
         if affected_cs_keys:
             reaggregated = aggregate_partial_symbols(surviving_partials + list(all_new_symbols))
             for sym in reaggregated:
-                self._snapshot.symbols[sym.id] = sym
+                snap_obj.symbols[sym.id] = sym
             all_new_symbols = reaggregated
         else:
             for sym in all_new_symbols:
-                self._snapshot.symbols[sym.id] = sym
+                snap_obj.symbols[sym.id] = sym
+
+        for sym in all_new_symbols:
+            if sym.file_path:
+                f_list = snap_obj.file_to_symbol_ids.setdefault(sym.file_path, [])
+                if sym.id not in f_list:
+                    f_list.append(sym.id)
 
         # Also include surviving sibling symbols in `all_new_symbols` so incoming edges to them reconnect cleanly
         if surviving_sibling_files:
             sib_norm = normalize_dirty_paths(surviving_sibling_files)
             existing_new_ids = {s.id for s in all_new_symbols}
-            for s_id, s_obj in self._snapshot.symbols.items():
+            for s_id, s_obj in snap_obj.symbols.items():
                 if s_id not in existing_new_ids and is_dirty_file_match(s_obj.file_path, sib_norm):
                     all_new_symbols.append(s_obj)
 
@@ -1275,10 +1490,14 @@ class ASTEngine:
         spaces: Optional[List[str]] = None,
         snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
         surviving_sibling_files: Optional[Set[str]] = None,
+        target_snap: Optional[ASTSnapshot] = None,
+        target_graph: Optional[CallGraphIndex] = None,
     ) -> None:
-        """Relink dirty call sites and reconnect preserved external incoming call edges in `self._graph`."""
-        assert self._snapshot is not None
-        assert self._graph is not None
+        """Relink dirty call sites and reconnect preserved external incoming call edges in `target_graph`."""
+        snap_obj = target_snap if target_snap is not None else self._snapshot
+        graph_obj = target_graph if target_graph is not None else self._graph
+        assert snap_obj is not None
+        assert graph_obj is not None
 
         relink_detail = (
             ScanDiffDetail(
@@ -1294,7 +1513,7 @@ class ASTEngine:
             spaces=spaces,
             snap_entries_by_space=snap_entries_by_space,
         )
-        linker = TopologyLinker(symbols_map=self._snapshot.symbols)
+        linker = TopologyLinker(symbols_map=snap_obj.symbols)
         new_edges = linker.link_call_sites(dirty_sites, dirty_imports)
 
         reconnected_incoming_edges: List[Tuple[str, str, Optional[SymbolCallSite]]] = []
@@ -1306,10 +1525,10 @@ class ASTEngine:
                 new_syms_by_identity.setdefault((norm_p, sym.fqn), []).append(sym)
 
         for caller_id, old_callee_id, site in incoming_edges:
-            if caller_id not in self._snapshot.symbols:
+            if caller_id not in snap_obj.symbols:
                 continue
             target_new_id: Optional[str] = None
-            if old_callee_id in self._snapshot.symbols:
+            if old_callee_id in snap_obj.symbols:
                 target_new_id = old_callee_id
             elif old_callee_id in old_symbol_info:
                 old_p, old_name, old_fqn = old_symbol_info[old_callee_id]
@@ -1331,17 +1550,19 @@ class ASTEngine:
                         except Exception:
                             pass
 
-            if not target_new_id and site is not None:
+            if not target_new_id and site is not None and old_callee_id not in old_symbol_info:
+                # Only attempt same-file/import-aware resolution when the old callee was not explicitly deleted
+                # from its defining file (prevents grafting calls to deleted symbols onto unrelated same-name functions).
                 try:
                     resolved_id = linker.resolve_call_site(site)
-                    if resolved_id and resolved_id in self._snapshot.symbols:
+                    if resolved_id and resolved_id in snap_obj.symbols:
                         target_new_id = resolved_id
                 except Exception:
                     pass
 
             if target_new_id:
                 if caller_id == target_new_id:
-                    caller_sym = self._snapshot.symbols.get(caller_id)
+                    caller_sym = snap_obj.symbols.get(caller_id)
                     caller_kind = (
                         caller_sym.kind.value
                         if caller_sym and isinstance(caller_sym.kind, SymbolKind)
@@ -1351,7 +1572,7 @@ class ASTEngine:
                         continue
                 reconnected_incoming_edges.append((caller_id, target_new_id, site))
 
-        self._graph.patch_incremental(
+        graph_obj.patch_incremental(
             new_edges=new_edges + reconnected_incoming_edges,
             old_symbol_ids=old_doc_ids,
         )
@@ -1361,6 +1582,7 @@ class ASTEngine:
         diff_detail: Union[ScanDiffDetail, ScanDiffResult, Dict[str, Any]],
         spaces: Optional[List[str]] = None,
         _cursor_already_consumed: bool = False,
+        _hydrate_workspace_graph: bool = False,
     ) -> ASTSnapshot:
         """
         Incremental Hot-Patching Pipeline:
@@ -1368,108 +1590,159 @@ class ASTEngine:
         2. Relink dirty call sites and reconnect preserved external incoming edges.
         3. Increment `ast_generation`, align cursor, and atomically persist `ASTSnapshot` and `CallGraphIndex`.
         """
+        from core.platform.lock import InterProcessLock
+
         with self._lock:
-            if not self._ensure_loaded_from_disk():
-                return self.build_index(spaces=spaces, allow_parallel=False)
+            lock_file = str(self._resolve_index_lock_path())
+            with InterProcessLock(lock_file, timeout=15.0):
+                if not self._ensure_loaded_from_disk():
+                    return self.build_index(spaces=spaces, allow_parallel=False)
 
-            assert self._snapshot is not None
-            assert self._graph is not None
+                assert self._snapshot is not None
+                assert self._graph is not None
 
-            detail = self._coerce_diff_detail(diff_detail)
-            if not detail.dirty_files and not detail.deleted:
-                return self._snapshot
+                detail = self._coerce_diff_detail(diff_detail)
+                if not detail.dirty_files and not detail.deleted:
+                    return self._snapshot
 
-            prog = ProgressReporter("ast", "正在增量熱修補 AST 圖譜", total_stages=2)
-            dirty_est = len(detail.dirty_files) + len(detail.deleted)
-            self._set_build_progress(True, "hot_patching", f"增量修補 {dirty_est} 個變更檔案")
-            persisted = False
-            try:
-                prog.stage(1, "解析變更檔案", 0, max(1, len(detail.dirty_files)))
-                target_cfgs = self.bundler._resolve_target_spaces(spaces)
-                snap_entries_by_space = _preload_snap_entries(self.scanner, target_cfgs)
-                known_indexed_files = set(self._snapshot.file_to_symbol_ids.keys()) | set(self._snapshot.file_graphs.keys())
-
-                (
-                    all_new_symbols,
-                    old_doc_ids,
-                    old_symbol_info,
-                    incoming_edges,
-                    dirty_keys,
-                    surviving_sibling_files,
-                ) = self._evict_dirty_and_reaggregate_partials(
-                    detail,
-                    spaces=spaces,
-                    known_indexed_files=known_indexed_files,
-                    snap_entries_by_space=snap_entries_by_space,
-                    progress_callback=lambda _rel, cur, tot: prog.advance(cur, tot),
+                # True Copy-on-Write clones: keep self._snapshot and self._graph untouched until atomic publication
+                orig_snap_ref = self._snapshot
+                if self._graph.workspace_graph is not None:
+                    self._last_workspace_graph = self._graph.workspace_graph
+                working_snap = ASTSnapshot(
+                    ast_generation=orig_snap_ref.ast_generation,
+                    space_generations=dict(orig_snap_ref.space_generations),
+                    symbols=dict(orig_snap_ref.symbols),
+                    file_to_symbol_ids={k: list(v) for k, v in orig_snap_ref.file_to_symbol_ids.items()},
+                    files_map={k: list(v) for k, v in orig_snap_ref.files_map.items()},
+                    created_at=orig_snap_ref.created_at,
+                    file_graphs=dict(orig_snap_ref.file_graphs),
+                    schema_version=2,
+                    config_hash=self._compute_ast_config_hash(),
                 )
-                prog.stage(2, "重連呼叫邊與更新工作區圖譜")
-                self._relink_and_reconnect_edges(
-                    detail=detail,
-                    all_new_symbols=all_new_symbols,
-                    old_doc_ids=old_doc_ids,
-                    old_symbol_info=old_symbol_info,
-                    incoming_edges=incoming_edges,
-                    spaces=spaces,
-                    snap_entries_by_space=snap_entries_by_space,
-                    surviving_sibling_files=surviving_sibling_files,
-                )
+                working_graph = self._graph.clone_shallow()
+
+                prog = ProgressReporter("ast", "正在增量熱修補 AST 圖譜", total_stages=2)
+                dirty_est = len(detail.dirty_files) + len(detail.deleted)
+                self._set_build_progress(True, "hot_patching", f"增量修補 {dirty_est} 個變更檔案")
+                persisted = False
                 try:
-                    dirty_fgs, dirty_fg_keys = self.bundler.extract_dirty_file_graphs(
-                        detail,
-                        spaces=spaces,
-                        known_indexed_files=known_indexed_files,
-                        snap_entries_by_space=snap_entries_by_space,
-                    )
-                    dirty_fg_norm = normalize_dirty_paths(dirty_fg_keys | dirty_keys)
-                    for fg_key in list(self._snapshot.file_graphs.keys()):
-                        if is_dirty_file_match(fg_key, dirty_fg_norm):
-                            self._snapshot.file_graphs.pop(fg_key, None)
-                    self._snapshot.file_graphs.update(dirty_fgs)
-                    # Lazily defer full 4-pass WorkspaceGraphLinker rebuild to get_workspace_graph()
-                    self._graph.workspace_graph = None
-                except Exception as ws_exc:
-                    log_debug(f"FileSymbolGraph update in hot_patch_index skipped: {ws_exc}")
+                    prog.stage(1, "解析變更檔案", 0, max(1, len(detail.dirty_files)))
+                    with cell_span("ast.hp_preload"):
+                        target_cfgs = self.bundler._resolve_target_spaces(spaces)
+                        snap_entries_by_space = _preload_snap_entries(self.scanner, target_cfgs)
+                        known_indexed_files = set(working_snap.file_to_symbol_ids.keys()) | set(working_snap.file_graphs.keys())
 
-                space_gens, files_map = self._collect_space_generations_and_files_map(
-                    spaces=spaces, incremental_detail=detail
-                )
-                self.bundler.clear_transient_caches()
-                self._snapshot.ast_generation += 1
-                self._snapshot.space_generations.update(space_gens)
-                self._snapshot.files_map.update(files_map)
-                self._snapshot.file_to_symbol_ids = self._build_file_to_symbol_ids(self._snapshot.symbols)
-                self._snapshot.created_at = time.time()
+                    with cell_span("ast.hp_evict"):
+                        (
+                            all_new_symbols,
+                            old_doc_ids,
+                            old_symbol_info,
+                            incoming_edges,
+                            dirty_keys,
+                            surviving_sibling_files,
+                        ) = self._evict_dirty_and_reaggregate_partials(
+                            detail,
+                            spaces=spaces,
+                            known_indexed_files=known_indexed_files,
+                            snap_entries_by_space=snap_entries_by_space,
+                            progress_callback=lambda _rel, cur, tot: prog.advance(cur, tot),
+                            target_snap=working_snap,
+                            target_graph=working_graph,
+                        )
+                    prog.stage(2, "重連呼叫邊與更新工作區圖譜")
+                    with cell_span("ast.hp_relink"):
+                        self._relink_and_reconnect_edges(
+                            detail=detail,
+                            all_new_symbols=all_new_symbols,
+                            old_doc_ids=old_doc_ids,
+                            old_symbol_info=old_symbol_info,
+                            incoming_edges=incoming_edges,
+                            spaces=spaces,
+                            snap_entries_by_space=snap_entries_by_space,
+                            surviving_sibling_files=surviving_sibling_files,
+                            target_snap=working_snap,
+                            target_graph=working_graph,
+                        )
+                    try:
+                        with cell_span("ast.hp_dirty_fg"):
+                            dirty_fgs, dirty_fg_keys = self.bundler.extract_dirty_file_graphs(
+                                detail,
+                                spaces=spaces,
+                                known_indexed_files=known_indexed_files,
+                                snap_entries_by_space=snap_entries_by_space,
+                            )
+                            dirty_fg_norm = normalize_dirty_paths(dirty_fg_keys | dirty_keys)
+                            for fg_key in list(working_snap.file_graphs.keys()):
+                                if is_dirty_file_match(fg_key, dirty_fg_norm):
+                                    working_snap.file_graphs.pop(fg_key, None)
+                            working_snap.file_graphs.update(dirty_fgs)
+                            working_graph.attach_file_graphs(working_snap.file_graphs)
+                        if _hydrate_workspace_graph and working_snap.file_graphs:
+                            with cell_span("ast.hp_ws_link"):
+                                ws_linker = WorkspaceGraphLinker(
+                                    file_graphs=working_snap.file_graphs.values(),
+                                    language_configs=self.parser_registry.language_configs,
+                                    module_resolvers=self.parser_registry.module_resolvers,
+                                    edge_refiners=self.parser_registry.edge_refiners,
+                                    prev_workspace_graph=self._last_workspace_graph,
+                                )
+                                ws_graph = ws_linker.link_workspace()
+                                working_graph.workspace_graph = ws_graph
+                                self._last_workspace_graph = ws_graph
+                        else:
+                            working_graph.workspace_graph = None
+                    except Exception as ws_exc:
+                        log_debug(f"FileSymbolGraph update in hot_patch_index skipped: {ws_exc}")
 
-                self._save_snapshot_and_graph(self._snapshot, self._graph)
-                persisted = True
-                if not _cursor_already_consumed:
-                    self._align_consumer_cursors(spaces=spaces)
-                prog.finish(f"AST 增量熱修補完成 (變更 {len(dirty_keys)} 項)")
-                return self._snapshot
-            except Exception as exc:
-                self._snapshot = None
-                self._graph = None
-                self._symbols_mtime = 0.0
-                self._graph_mtime = 0.0
-                log_warn(f"Hot-patch failed ({exc}), falling back to full build_index.", stream="stderr")
-                rebuilt = self.build_index(spaces=spaces, allow_parallel=False)
-                persisted = True
-                return rebuilt
-            finally:
-                if not persisted:
+                    with cell_span("ast.hp_space_gens"):
+                        space_gens, files_map = self._collect_space_generations_and_files_map(
+                            spaces=spaces, incremental_detail=detail, target_snap=working_snap
+                        )
+                    self.bundler.clear_transient_caches()
+                    working_snap.ast_generation += 1
+                    working_snap.space_generations.update(space_gens)
+                    working_snap.files_map.update(files_map)
+                    if not working_snap.file_to_symbol_ids:
+                        working_snap.file_to_symbol_ids = self._build_file_to_symbol_ids(working_snap.symbols)
+                    working_snap.created_at = time.time()
+
+                    with cell_span("ast.hp_save"):
+                        self._save_snapshot_and_graph(
+                            working_snap,
+                            working_graph,
+                            allow_async_in_worker=True,
+                        )
+                    persisted = True
+                    if not _cursor_already_consumed:
+                        self._align_consumer_cursors(spaces=spaces)
+                    prog.finish(f"AST 增量熱修補完成 (變更 {len(dirty_keys)} 項)")
+                    return self._snapshot
+                except Exception as exc:
                     self._snapshot = None
                     self._graph = None
                     self._symbols_mtime = 0.0
                     self._graph_mtime = 0.0
-                self.bundler.clear_transient_caches()
-                self._set_build_progress(False)
+                    log_warn(f"Hot-patch failed ({exc}), falling back to full build_index.", stream="stderr")
+                    rebuilt = self.build_index(spaces=spaces, allow_parallel=False)
+                    persisted = True
+                    return rebuilt
+                finally:
+                    if not persisted:
+                        self._snapshot = None
+                        self._graph = None
+                        self._symbols_mtime = 0.0
+                        self._graph_mtime = 0.0
+                    self.bundler.clear_transient_caches()
+                    self._set_build_progress(False)
+
 
     def ensure_jit_synced(
         self,
         spaces: Optional[Union[str, List[str]]] = None,
         force: bool = False,
         allow_parallel: bool = True,
+        _hydrate_workspace_graph: bool = False,
     ) -> ASTSnapshot:
         """
         Ensure the AST snapshot and call graph are JIT synchronized:
@@ -1485,14 +1758,28 @@ class ASTEngine:
             elif isinstance(spaces, (list, tuple)):
                 norm_spaces = [str(s).strip() for s in spaces if str(s).strip()]
 
+            all_configured_cfgs: List[SpaceConfig] = []
+            try:
+                all_configured_cfgs = list(self.bundler._resolve_target_spaces(None) or [])
+            except Exception:
+                all_configured_cfgs = []
+            full_build_spaces = None if all_configured_cfgs else norm_spaces
+
             if force or not (self.symbols_index_path.exists() and self.graph_index_path.exists()) or not self._ensure_symbols_loaded():
-                return self.build_index(spaces=norm_spaces, allow_parallel=allow_parallel)
+                return self.build_index(spaces=full_build_spaces, allow_parallel=allow_parallel)
+
+            expected_cfg_hash = self._compute_ast_config_hash()
+            if self._snapshot is not None and getattr(self._snapshot, "config_hash", "") not in ("", expected_cfg_hash):
+                return self.build_index(spaces=full_build_spaces, allow_parallel=allow_parallel)
 
             try:
-                target_cfgs = self.bundler._resolve_target_spaces(norm_spaces)
-                if self._snapshot is not None and isinstance(self._snapshot.space_generations, dict) and target_cfgs:
+                req_cfgs = self.bundler._resolve_target_spaces(norm_spaces) if norm_spaces else all_configured_cfgs
+                combined_cfgs = list(all_configured_cfgs) + [
+                    sp for sp in (req_cfgs or []) if sp not in all_configured_cfgs
+                ]
+                if self._snapshot is not None and isinstance(self._snapshot.space_generations, dict) and combined_cfgs:
                     expected_keys: Set[str] = set()
-                    for sp in target_cfgs:
+                    for sp in combined_cfgs:
                         if sp.short_name:
                             expected_keys.add(sp.short_name)
                         if sp.qualified_name:
@@ -1500,8 +1787,17 @@ class ASTEngine:
                     stale_space_keys = [
                         k for k in self._snapshot.space_generations.keys() if k not in expected_keys
                     ]
-                    if stale_space_keys:
-                        return self.build_index(spaces=norm_spaces, allow_parallel=allow_parallel)
+                    missing_cfg_space = bool(
+                        norm_spaces is None
+                        and all_configured_cfgs
+                        and any(
+                            (sp.short_name not in self._snapshot.space_generations)
+                            and (sp.qualified_name not in self._snapshot.space_generations)
+                            for sp in all_configured_cfgs
+                        )
+                    )
+                    if stale_space_keys or missing_cfg_space:
+                        return self.build_index(spaces=full_build_spaces, allow_parallel=allow_parallel)
             except Exception:
                 pass
 
@@ -1527,6 +1823,14 @@ class ASTEngine:
                 merged_deleted: Set[str] = set()
 
                 with ExitStack() as diff_stack:
+                    if (
+                        self.scanner is not None
+                        and hasattr(self.scanner, "cursor_store")
+                        and hasattr(self.scanner.cursor_store, "batch_cursor_updates")
+                    ):
+                        diff_stack.enter_context(
+                            self.scanner.cursor_store.batch_cursor_updates(self.CONSUMER_ID)
+                        )
                     if not target_qnames:
                         if norm_spaces is None:
                             diff_res = diff_stack.enter_context(
@@ -1552,22 +1856,39 @@ class ASTEngine:
                                     merged_modified.update(diff_res.detail.modified)
                                     merged_deleted.update(diff_res.detail.deleted)
                     else:
-                        for q_sp in target_qnames:
-                            diff_res = diff_stack.enter_context(
-                                self._consume_space_diff(
-                                    space_name=q_sp,
-                                    auto_refresh=eff_auto_refresh,
+                        with cell_span("ast.diff_loop"):
+                            if self.scanner is not None and hasattr(
+                                self.scanner, "_flush_in_process_watcher"
+                            ):
+                                self.scanner._flush_in_process_watcher(target_qnames)
+                            for q_sp in target_qnames:
+                                diff_res = diff_stack.enter_context(
+                                    self._consume_space_diff(
+                                        space_name=q_sp,
+                                        auto_refresh=eff_auto_refresh,
+                                    )
                                 )
-                            )
-                            if diff_res and getattr(diff_res, "has_changes", False):
-                                merged_added.update(diff_res.detail.added)
-                                merged_modified.update(diff_res.detail.modified)
-                                merged_deleted.update(diff_res.detail.deleted)
+                                if diff_res and getattr(diff_res, "has_changes", False):
+                                    merged_added.update(diff_res.detail.added)
+                                    merged_modified.update(diff_res.detail.modified)
+                                    merged_deleted.update(diff_res.detail.deleted)
 
                     all_dirty = merged_added | merged_modified | merged_deleted
                     if all_dirty:
+                        if self._snapshot is not None:
+                            raw_known_files: Set[str] = (
+                                set(self._snapshot.file_to_symbol_ids.keys())
+                                | set(self._snapshot.file_graphs.keys())
+                            )
+                            for flist in (self._snapshot.files_map or {}).values():
+                                if flist:
+                                    raw_known_files.update(flist)
+                            known_norm = normalize_dirty_paths(raw_known_files)
+                        else:
+                            known_norm = set()
                         has_parseable = any(
                             self.parser_registry.get_parser(str(p)) is not None
+                            or (known_norm and is_dirty_file_match(str(p), known_norm))
                             for p in all_dirty
                         )
                         if has_parseable:
@@ -1576,18 +1897,38 @@ class ASTEngine:
                                 modified=merged_modified,
                                 deleted=merged_deleted,
                             )
-                            return self.hot_patch_index(
-                                combined_detail,
-                                spaces=norm_spaces,
-                                _cursor_already_consumed=True,
-                            )
+                            with cell_span("ast.hot_patch"):
+                                patched_snap = self.hot_patch_index(
+                                    combined_detail,
+                                    spaces=full_build_spaces,
+                                    _cursor_already_consumed=True,
+                                    _hydrate_workspace_graph=_hydrate_workspace_graph,
+                                )
+                            with cell_span("ast.align_cursors"):
+                                if self.scanner is not None and hasattr(self.scanner, "ack"):
+                                    for sp in target_cfgs:
+                                        if sp.short_name and sp.short_name not in target_qnames:
+                                            self.scanner.ack(sp.short_name, consumer_id=self.CONSUMER_ID)
+                                        if sp.qualified_name and sp.qualified_name not in target_qnames:
+                                            self.scanner.ack(sp.qualified_name, consumer_id=self.CONSUMER_ID)
+                                    if full_build_spaces is None:
+                                        self.scanner.ack(None, consumer_id=self.CONSUMER_ID)
+                            return patched_snap
+                    if self.scanner is not None and hasattr(self.scanner, "ack"):
+                        for sp in target_cfgs:
+                            if sp.short_name and sp.short_name not in target_qnames:
+                                self.scanner.ack(sp.short_name, consumer_id=self.CONSUMER_ID)
+                            if sp.qualified_name and sp.qualified_name not in target_qnames:
+                                self.scanner.ack(sp.qualified_name, consumer_id=self.CONSUMER_ID)
+                        if norm_spaces is None:
+                            self.scanner.ack(None, consumer_id=self.CONSUMER_ID)
             except TaskCancelledError:
                 raise
             except Exception as exc:
                 log_debug(f"JIT diff check skipped: {exc}")
 
             if self._snapshot is None:
-                return self.build_index(spaces=norm_spaces, allow_parallel=allow_parallel)
+                return self.build_index(spaces=full_build_spaces, allow_parallel=allow_parallel)
             return self._snapshot
 
     def get_snapshot(self, auto_sync: bool = True) -> ASTSnapshot:
@@ -1614,7 +1955,7 @@ class ASTEngine:
         """L1 Primitive: Return the current immutable `WorkspaceSymbolGraph`."""
         with self._lock:
             if auto_sync:
-                self.ensure_jit_synced()
+                self.ensure_jit_synced(_hydrate_workspace_graph=True)
                 if not self._ensure_graph_loaded():
                     raise ASTIndexNotFoundError(f"AST call graph not found at {self.graph_index_path}")
             else:
@@ -1629,21 +1970,56 @@ class ASTEngine:
                 if self._snapshot.file_graphs and not self._graph.workspace_graph.file_graphs:
                     self._graph.attach_file_graphs(self._snapshot.file_graphs)
                 return self._graph.workspace_graph
+            pre_sym_mtime = self._symbols_mtime
+            pre_graph_mtime = self._graph_mtime
+            extracted_fresh_fgs = False
             file_graphs = self._snapshot.file_graphs
             if not file_graphs and auto_sync:
                 file_graphs = self.bundler.extract_all_file_graphs()
                 self._snapshot.file_graphs = file_graphs
+                extracted_fresh_fgs = True
             ws_linker = WorkspaceGraphLinker(
                 file_graphs=file_graphs.values(),
                 language_configs=self.parser_registry.language_configs,
                 module_resolvers=self.parser_registry.module_resolvers,
                 edge_refiners=self.parser_registry.edge_refiners,
+                prev_workspace_graph=self._last_workspace_graph,
             )
-            ws_graph = ws_linker.link_workspace()
+            prog = ProgressReporter("ast", "正在建立全域語意圖譜 (4-Pass Linking)", total_stages=1)
+            total_fgs = max(1, len(file_graphs))
+            prog.stage(1, "解析跨檔案匯入與呼叫拓撲", 0, total_fgs)
+            try:
+                ws_graph = ws_linker.link_workspace(
+                    progress_callback=lambda cur, tot: prog.advance(cur, tot)
+                )
+                prog.finish(f"全域語意圖譜建立完成 ({len(file_graphs)} 檔案)")
+            except Exception:
+                prog.finish()
+                raise
             self._graph.workspace_graph = ws_graph
-            if auto_sync:
+            self._last_workspace_graph = ws_graph
+            self._graph.ast_generation = int(self._snapshot.ast_generation)
+            if self.symbols_index_path.exists() and self.graph_index_path.exists():
                 try:
-                    self._save_snapshot_and_graph(self._snapshot, self._graph)
+                    from core.platform.lock import InterProcessLock
+
+                    lock_file = str(self._resolve_index_lock_path())
+                    with InterProcessLock(lock_file, timeout=5.0):
+                        cur_sym_mtime = self.symbols_index_path.stat().st_mtime if self.symbols_index_path.exists() else -1.0
+                        cur_graph_mtime = self.graph_index_path.stat().st_mtime if self.graph_index_path.exists() else -1.0
+                        if cur_sym_mtime == pre_sym_mtime and cur_graph_mtime == pre_graph_mtime:
+                            if auto_sync and extracted_fresh_fgs and self._snapshot is not None:
+                                if not getattr(self._snapshot, "config_hash", ""):
+                                    self._snapshot.config_hash = self._compute_ast_config_hash()
+                                self._snapshot.schema_version = 2
+                                atomic_save_gzip_pickle(self.symbols_index_path, self._snapshot.to_dict(), compresslevel=1)
+                                if self.symbols_index_path.exists():
+                                    self._symbols_mtime = self.symbols_index_path.stat().st_mtime
+                            self._graph.save_binary(self.graph_index_path, compresslevel=1)
+                            if self.graph_index_path.exists():
+                                self._graph_mtime = self.graph_index_path.stat().st_mtime
+                            if self._snapshot is not None:
+                                self._atomic_write_meta(self._build_meta_payload(self._snapshot, graph=self._graph))
                 except Exception as save_exc:
                     log_debug(f"Persist upgraded workspace_graph skipped: {save_exc}")
             return ws_graph
@@ -2166,7 +2542,7 @@ class ASTEngine:
         with self._lock:
             eff_space = space if space is not None else spaces
             eff_snippet = include_snippet if include_snippet is not None else snippet
-            snapshot = self.ensure_jit_synced(spaces=eff_space)
+            snapshot = self.ensure_jit_synced(spaces=eff_space, _hydrate_workspace_graph=True)
             graph = self.get_call_graph(auto_sync=False)
             if graph.workspace_graph is None and snapshot.file_graphs:
                 try:
@@ -2196,7 +2572,7 @@ class ASTEngine:
         with self._lock:
             eff_space = space if space is not None else spaces
             eff_snippet = include_snippet if include_snippet is not None else snippet
-            snapshot = self.ensure_jit_synced(spaces=eff_space)
+            snapshot = self.ensure_jit_synced(spaces=eff_space, _hydrate_workspace_graph=True)
             graph = self.get_call_graph(auto_sync=False)
             if graph.workspace_graph is None and snapshot.file_graphs:
                 try:
@@ -2224,7 +2600,7 @@ class ASTEngine:
         """Perform N-hop reverse BFS impact analysis for `target_query` with automatic JIT synchronization."""
         with self._lock:
             eff_space = space if space is not None else spaces
-            snapshot = self.ensure_jit_synced(spaces=eff_space)
+            snapshot = self.ensure_jit_synced(spaces=eff_space, _hydrate_workspace_graph=True)
             graph = self.get_call_graph(auto_sync=False)
             if graph.workspace_graph is None and snapshot.file_graphs:
                 try:
@@ -2253,6 +2629,9 @@ class ASTEngine:
         total_edges = 0
 
         if not (has_symbols and has_graph) and self._symbols_mtime > 0.0:
+            with self._bg_persist_lock:
+                self._bg_persist_seq += 1
+                self._bg_persist_pending = None
             self._snapshot = None
             self._graph = None
             self._symbols_mtime = 0.0
@@ -2394,6 +2773,9 @@ class ASTEngine:
                 except OSError:
                     pass
 
+            with self._bg_persist_lock:
+                self._bg_persist_seq += 1
+                self._bg_persist_pending = None
             self._snapshot = None
             self._graph = None
             self._symbols_mtime = 0.0

@@ -149,6 +149,7 @@ class Posting:
 
     __slots__ = (
         "doc_idx",
+        "_tables_ref",
         "_index_ref",
         "_f_name",
         "_f_sig",
@@ -179,7 +180,8 @@ class Posting:
         f_doc: int = 0,
     ):
         self.doc_idx: int = doc_idx
-        self._index_ref: Optional["InvertedIndex"] = index_ref
+        self._tables_ref: Optional[Any] = getattr(index_ref, "_tables", index_ref) if index_ref is not None else None
+        self._index_ref: Optional["InvertedIndex"] = None
         if field_freqs:
             self._f_name: int = int(field_freqs.get("name", f_name) or 0)
             self._f_sig: int = int(field_freqs.get("signature", f_sig) or 0)
@@ -255,8 +257,9 @@ class Posting:
 
     @property
     def doc_id(self) -> str:
-        if self._index_ref is not None and 0 <= self.doc_idx < len(self._index_ref._doc_id_table):
-            val = self._index_ref._doc_id_table[self.doc_idx]
+        t_ref = getattr(self, "_tables_ref", None) or self._index_ref
+        if t_ref is not None and 0 <= self.doc_idx < len(t_ref._doc_id_table):
+            val = t_ref._doc_id_table[self.doc_idx]
             if val is not None:
                 return val
         return self._doc_id or ""
@@ -264,33 +267,38 @@ class Posting:
     @doc_id.setter
     def doc_id(self, value: str) -> None:
         self._doc_id = value
-        if self._index_ref is not None:
-            self.doc_idx = self._index_ref._intern_doc_id(value)
+        t_ref = self._tables_ref or self._index_ref
+        if t_ref is not None and hasattr(t_ref, "_intern_doc_id"):
+            self.doc_idx = t_ref._intern_doc_id(value)
 
     @property
     def space(self) -> str:
-        if self._index_ref is not None and 0 <= self.space_idx < len(self._index_ref._space_table):
-            return self._index_ref._space_table[self.space_idx]
+        t_ref = getattr(self, "_tables_ref", None) or self._index_ref
+        if t_ref is not None and 0 <= self.space_idx < len(t_ref._space_table):
+            return t_ref._space_table[self.space_idx]
         return self._space or ""
 
     @space.setter
     def space(self, value: str) -> None:
         self._space = value
-        if self._index_ref is not None and value:
-            self.space_idx = self._index_ref._intern_space(value)
+        t_ref = self._tables_ref or self._index_ref
+        if t_ref is not None and value and hasattr(t_ref, "_intern_space"):
+            self.space_idx = t_ref._intern_space(value)
 
     @property
     def spaces(self) -> List[str]:
-        if self._index_ref is not None and self.space_indices:
-            tbl = self._index_ref._space_table
+        t_ref = getattr(self, "_tables_ref", None) or self._index_ref
+        if t_ref is not None and self.space_indices:
+            tbl = t_ref._space_table
             return [tbl[i] for i in self.space_indices if 0 <= i < len(tbl)]
         return list(self._spaces) if self._spaces else ([self._space] if self._space else [])
 
     @spaces.setter
     def spaces(self, value: List[str]) -> None:
         self._spaces = tuple(value) if value else ()
-        if self._index_ref is not None and value:
-            self.space_indices = tuple(self._index_ref._intern_space(s) for s in value)
+        t_ref = self._tables_ref or self._index_ref
+        if t_ref is not None and value and hasattr(t_ref, "_intern_space"):
+            self.space_indices = tuple(t_ref._intern_space(s) for s in value)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -608,6 +616,34 @@ class SearchResult:
         return data
 
 
+class _InternTables:
+    __slots__ = ("_doc_id_table", "_space_table")
+
+    def __init__(
+        self,
+        doc_id_table: Optional[List[Optional[str]]] = None,
+        space_table: Optional[List[str]] = None,
+    ) -> None:
+        self._doc_id_table: List[Optional[str]] = doc_id_table if doc_id_table is not None else []
+        self._space_table: List[str] = space_table if space_table is not None else []
+
+    def _intern_doc_id(self, doc_id: str) -> int:
+        try:
+            return self._doc_id_table.index(doc_id)
+        except ValueError:
+            idx = len(self._doc_id_table)
+            self._doc_id_table.append(doc_id)
+            return idx
+
+    def _intern_space(self, space: str) -> int:
+        try:
+            return self._space_table.index(space)
+        except ValueError:
+            idx = len(self._space_table)
+            self._space_table.append(space)
+            return idx
+
+
 class InvertedIndex:
     """多欄位倒排索引與符號池中心 (管理頂層 doc_lengths 共享池)"""
 
@@ -617,16 +653,51 @@ class InvertedIndex:
         self.space_name = space_name
         self.doc_count: int = 0
         self.acked_ast_generation: int = 0
+        self.config_hash: str = ""
         self.symbols: Dict[str, UnifiedSymbol] = {}
         self.index: Dict[str, List[Posting]] = defaultdict(list)
         self.doc_lengths: Dict[str, Dict[str, int]] = {}
         self.field_avgdl: Dict[str, float] = {f: 1.0 for f in self.INDEXED_FIELDS}
         self.field_total_lengths: Dict[str, int] = {f: 0 for f in self.INDEXED_FIELDS}
-        self._doc_id_table: List[Optional[str]] = []
+        self._tables = _InternTables()
         self._doc_id_to_idx: Dict[str, int] = {}
         self._free_doc_indices: deque[int] = deque()
-        self._space_table: List[str] = []
         self._space_to_idx: Dict[str, int] = {}
+        self._cow_mode: bool = False
+
+    @property
+    def _doc_id_table(self) -> List[Optional[str]]:
+        return self._tables._doc_id_table
+
+    @_doc_id_table.setter
+    def _doc_id_table(self, val: List[Optional[str]]) -> None:
+        self._tables._doc_id_table = val
+
+    @property
+    def _space_table(self) -> List[str]:
+        return self._tables._space_table
+
+    @_space_table.setter
+    def _space_table(self, val: List[str]) -> None:
+        self._tables._space_table = val
+
+    def clone_shallow(self) -> "InvertedIndex":
+        """Return a Copy-on-Write shallow clone so lock-free readers never iterate mutating dictionaries or posting lists."""
+        cloned = InvertedIndex(space_name=self.space_name)
+        cloned.doc_count = self.doc_count
+        cloned.acked_ast_generation = self.acked_ast_generation
+        cloned.config_hash = self.config_hash
+        cloned.symbols = dict(self.symbols)
+        cloned.index = defaultdict(list, self.index)
+        cloned.doc_lengths = dict(self.doc_lengths)
+        cloned.field_avgdl = dict(self.field_avgdl)
+        cloned.field_total_lengths = dict(self.field_total_lengths)
+        cloned._tables = self._tables
+        cloned._doc_id_to_idx = dict(self._doc_id_to_idx)
+        cloned._free_doc_indices = deque()
+        cloned._space_to_idx = dict(self._space_to_idx)
+        cloned._cow_mode = True
+        return cloned
 
     def _intern_doc_id(self, doc_id: str) -> int:
         existing = self._doc_id_to_idx.get(doc_id)
@@ -643,7 +714,7 @@ class InvertedIndex:
 
     def _release_doc_id(self, doc_id: str) -> Optional[int]:
         idx = self._doc_id_to_idx.pop(doc_id, None)
-        if idx is not None and 0 <= idx < len(self._doc_id_table):
+        if not getattr(self, "_cow_mode", False) and idx is not None and 0 <= idx < len(self._doc_id_table):
             self._doc_id_table[idx] = None
             self._free_doc_indices.append(idx)
         return idx
@@ -754,7 +825,11 @@ class InvertedIndex:
                 f_members=field_freqs_map["members"][term],
                 f_doc=field_freqs_map["docstring"][term],
             )
-            self.index[term].append(posting)
+            if getattr(self, "_cow_mode", False):
+                prev_list = self.index.get(term)
+                self.index[term] = [*prev_list, posting] if prev_list else [posting]
+            else:
+                self.index[term].append(posting)
 
     def build(
         self,
@@ -774,9 +849,10 @@ class InvertedIndex:
         self.symbols.clear()
         self.index.clear()
         self.doc_lengths.clear()
-        self._doc_id_table.clear()
+        self._tables = _InternTables()
         self._doc_id_to_idx.clear()
         self._free_doc_indices.clear()
+        self._cow_mode = False
         self._space_table.clear()
         self._space_to_idx.clear()
         self.field_total_lengths = {f: 0 for f in self.INDEXED_FIELDS}
@@ -818,6 +894,7 @@ class InvertedIndex:
             "space_name": self.space_name,
             "doc_count": self.doc_count,
             "acked_ast_generation": self.acked_ast_generation,
+            "config_hash": self.config_hash,
             "field_avgdl": dict(self.field_avgdl),
             "field_total_lengths": dict(self.field_total_lengths),
             "doc_lengths": dict(self.doc_lengths),
@@ -834,6 +911,7 @@ class InvertedIndex:
         idx = cls(space_name=data.get("space_name", ""))
         idx.doc_count = int(data.get("doc_count", 0))
         idx.acked_ast_generation = int(data.get("acked_ast_generation", 0))
+        idx.config_hash = str(data.get("config_hash") or "")
         idx.field_avgdl = data.get("field_avgdl", {f: 1.0 for f in cls.INDEXED_FIELDS})
         idx.field_total_lengths = data.get("field_total_lengths", {f: 0 for f in cls.INDEXED_FIELDS})
         idx.doc_lengths = data.get("doc_lengths", {})
@@ -936,7 +1014,7 @@ class InvertedIndex:
 
         removed_terms: Set[str] = set()
         for doc_id in doc_ids_to_remove:
-            self.doc_lengths.pop(doc_id, None)
+            old_fl = self.doc_lengths.pop(doc_id, None)
             sym = self.symbols.pop(doc_id, None)
             if sym:
                 self.doc_count = max(0, self.doc_count - 1)
@@ -950,8 +1028,9 @@ class InvertedIndex:
                 for f_name, text in field_texts.items():
                     tokens = tok.tokenize(text)
                     removed_terms.update(tokens)
+                    deduct_len = int(old_fl[f_name]) if (isinstance(old_fl, dict) and f_name in old_fl) else len(tokens)
                     self.field_total_lengths[f_name] = max(
-                        0, self.field_total_lengths[f_name] - len(tokens)
+                        0, self.field_total_lengths[f_name] - deduct_len
                     )
 
         if doc_ids_set:

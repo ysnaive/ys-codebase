@@ -12,7 +12,10 @@ from dataclasses import replace
 import threading
 from typing import Any, Callable, Dict, Optional
 
+import time
+
 from core import vfs
+from core.context import is_foreground_active
 from core.log import bind_log_context, log_debug
 from core.platform import ensure_installed_modules_path
 
@@ -132,6 +135,10 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
         self._started: bool = False
         self._sync_runs: int = 0
         self._last_error: str = ""
+        self._in_sync_run: bool = False
+        self._ignore_space_events_until: float = 0.0
+        self._recent_synced_paths: set[str] = set()
+        self._last_run_yielded: bool = False
         self.set_state(self.STATE_STOPPED)
 
     @property
@@ -199,6 +206,26 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
             )
 
     def _on_file_space_changed(self, space_name: str, _diff: Any = None) -> None:
+        now_m = time.monotonic()
+        detail = getattr(_diff, "detail", _diff) if _diff is not None else None
+        changed_paths: set[str] = set()
+        if detail is not None:
+            for attr in ("added", "modified", "deleted"):
+                vals = getattr(detail, attr, None)
+                if vals:
+                    for p in vals:
+                        norm_p = str(p).replace("\\", "/").strip("/")
+                        if norm_p:
+                            changed_paths.add(norm_p)
+                            changed_paths.add(norm_p.rsplit("/", 1)[-1])
+        if changed_paths:
+            if now_m < self._ignore_space_events_until and self._recent_synced_paths:
+                if changed_paths.issubset(self._recent_synced_paths):
+                    return
+            self._wake_event.set()
+            return
+        if self._in_sync_run or now_m < self._ignore_space_events_until:
+            return
         self._wake_event.set()
 
     def _refresh_active_branch(self) -> None:
@@ -245,37 +272,98 @@ class GDriveSyncServiceWorker(BaseServiceWorker):
             self._wake_event.wait(timeout=interval)
             if self._stop_event.is_set():
                 break
+            if is_foreground_active():
+                self._stop_event.wait(timeout=0.1)
+                continue
+            was_woken = self._wake_event.is_set()
             self._wake_event.clear()
-            self.run_once()
+            rep = self.run_once(yield_to_foreground=True)
+            if (was_woken and self._last_run_yielded) or (
+                isinstance(rep, dict) and rep.get("yielded")
+            ):
+                self._wake_event.set()
+                self._stop_event.wait(timeout=0.1)
 
-    def run_once(self) -> Optional[Dict[str, Any]]:
-        """Execute a single non-blocking background sync cycle."""
+    def run_once(self, *, yield_to_foreground: bool = False) -> Optional[Dict[str, Any]]:
+        """Execute a single non-blocking background sync cycle without resetting Idle TTL on no-op polls."""
+        self._last_run_yielded = False
         if self.standby_mode or self._coordinator is None:
             return None
-        self.set_state(self.STATE_UPDATING)
+        if yield_to_foreground and is_foreground_active():
+            self._last_run_yielded = True
+            return None
+
+        entered_updating = False
+
+        def _mark_active_transfer() -> None:
+            nonlocal entered_updating
+            if not entered_updating and not self._stop_event.is_set():
+                entered_updating = True
+                self.set_state(self.STATE_UPDATING)
+                try:
+                    self.touch_activity()
+                except Exception:
+                    pass
+
+        def _abort_check() -> bool:
+            if self._stop_event.is_set():
+                return True
+            return bool(yield_to_foreground and is_foreground_active())
+
+        self._in_sync_run = True
         try:
-            try:
-                self.touch_activity()
-            except Exception:
-                pass
             self._refresh_active_branch()
-            report = self._coordinator.run_sync(
-                mode="sync",
-                non_blocking_lock=True,
-                background_worker=True,
-                abort_check=self._stop_event.is_set,
+            try:
+                report = self._coordinator.run_sync(
+                    mode="sync",
+                    non_blocking_lock=True,
+                    background_worker=True,
+                    abort_check=_abort_check,
+                    on_active_transfer=_mark_active_transfer,
+                )
+            except TypeError:
+                report = self._coordinator.run_sync(
+                    mode="sync",
+                    non_blocking_lock=True,
+                    background_worker=True,
+                    abort_check=_abort_check,
+                )
+            rep_dict = report.to_dict()
+            did_mutate = bool(
+                rep_dict.get("pushed")
+                or rep_dict.get("pulled")
+                or rep_dict.get("deleted_local")
+                or rep_dict.get("deleted_remote")
+                or rep_dict.get("moved_to_history")
+                or rep_dict.get("gc_history_to_trash")
             )
+            if did_mutate and not entered_updating:
+                _mark_active_transfer()
+            if rep_dict.get("yielded"):
+                self._wake_event.set()
+            pulled_or_del = list(rep_dict.get("pulled") or []) + list(rep_dict.get("deleted_local") or [])
+            if pulled_or_del:
+                synced_set: set[str] = set()
+                for sp_path in pulled_or_del:
+                    np_str = str(sp_path).replace("\\", "/").strip("/")
+                    if np_str:
+                        synced_set.add(np_str)
+                        synced_set.add(np_str.rsplit("/", 1)[-1])
+                self._recent_synced_paths = synced_set
+                self._ignore_space_events_until = time.monotonic() + 1.5
             self._sync_runs += 1
             self._last_error = ""
-            if not self._stop_event.is_set():
+            if not self._stop_event.is_set() and (entered_updating or self.state != self.STATE_READY):
                 self.set_state(self.STATE_READY)
-            return report.to_dict()
+            return rep_dict
         except Exception as exc:
             self._last_error = str(exc)
             if not self._stop_event.is_set():
                 self.set_state(self.STATE_DEGRADED_OFFLINE)
             log_debug(f"Background gdrive sync deferred/failed: {exc}")
             return None
+        finally:
+            self._in_sync_run = False
 
     def stop(self) -> None:
         """Gracefully stop background thread, unsubscribe from core.space, and close owned transport."""

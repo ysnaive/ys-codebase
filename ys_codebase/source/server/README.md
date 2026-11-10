@@ -111,7 +111,7 @@ Worker 在啟動時依序初始化各 ServiceWorker，並透過 `worker_ready` �
 ### 4.1 組態設定 (`config://server/config.project.json`)
 
 ```bash
-# 調整無操作空閒超時自毀秒數 (預設 900.0 秒 = 15 分鐘)
+# 調整無操作空閒超時自毀秒數 (預設 1800.0 秒 = 30 分鐘；專用 IPC FD 隔離子進程管道並支援斷線寬限強殺)
 python yscb.py config set server idle_timeout_sec 1800
 
 # 調整預設啟動是否走前台 Console 模式 (預設 false；可被 CLI --console / --daemon 覆寫)

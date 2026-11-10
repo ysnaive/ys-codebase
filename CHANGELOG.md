@@ -1,5 +1,11 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_10_1425_cli_worker_resilience_and_incremental_index_fix (Completed)
+
+- **CLI 觸發鏈、常駐 Server/Worker 協作防卡死韌性加固與 AST / Knowledge-DB 增量索引一致性修復 (`sub_01` & `sub_02`)**：
+  - **`sub_01` CLI 與常駐 Server / 背景 Worker 防卡死韌性加固**：於 `core/commands/dispatcher.py` 實作 `YSCB_IN_SERVER_WORKER=1` / `YSCB_NO_HOT_DISPATCH=1` 重入旁路、`15s` IPC `heartbeat` 保活幀與 `YSCB_DISPATCH_MAX_WALL_SEC` 總牆鐘防線，並於 `UpdateChecker` 前置寫入 `last_checked_at` 消除離線重複逾時；於 `server/worker.py` 建立專用不可繼承控制管道（標準 `fd 0/1` 導向 `os.devnull`）與單任務 `io.StringIO("")` `stdin` 隔離；於 `server/master.py` 實作客戶端斷線兩段式取消強殺（`YSCB_CANCEL_GRACE_SEC=5.0s`）、有界 IPC 佇列、`block_on_close=False` HTTP Server 與長任務熱重載延後；於 `CoreSpaceWatcherServiceWorker` 加入 `max_debounce_seconds=5.0` 防飢餓上限、移除 `KnowledgeDBServiceWorker` 禮讓瞬間同步刷盤，並修正 `GDriveSyncServiceWorker` 空輪詢誤觸 `STATE_UPDATING` / `touch_activity()`（恢復 Server Idle TTL 自動休眠）與本地拉取事件自激迴圈。
+  - **`sub_02` AST 與 Knowledge-DB 增量更新一致性與鎖競爭修復**：修正 `SpaceScanner.diff()` 於空間 `exclude` 組態變更（`config_hash` 不一致且 `from_gen > 0`）時漏報被排除檔案 `deleted` 清單之缺陷；修正 `GrammarProvisioner._provision_lock` 對齊 `InterProcessLock(..., timeout_sec=60.0)` 與離線失敗持久化負快取 `provision_failed.json`；為 `ASTSnapshot` 補齊 `config_hash` 自動失效重建、熱修補 CoW 字典隔離、跨空間相對路徑隔離與首次 `get_workspace_graph()` 水合後原子回寫 `call_graph.pkl.gz`；為 `VectorIndex` 引入 `doc_text_hashes` 修復同行號修改漏更向量並實現行號平移 $O(1)$ 零推論向量復用，為 `_align_index_symbols_with_ast_snapshot` 加入世代相等守衛根除倒排幽靈詞條，消除 `HybridSearchEngine` 共享屬性競態並補齊 `yielded_to_foreground` 殘缺向量自動降級 `lexical_bm25`（全倉 `dev check --all` 9/9 PASS、9 大模組 `894/894` 測試 100% 通過且 `0 ResourceWarning`）。
+
 ## 2026_11_09_2023_server_hot_dispatch_worker_race_and_ux_feedback (Completed)
 
 - **常駐 Server 全量熱派發斷線協作取消、背景 Worker 競態禮讓、即時 `stderr` 進度回饋與 `status`/`slice` $O(1)$ 輕量化架構 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-03`)**：

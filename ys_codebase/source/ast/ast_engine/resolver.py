@@ -464,11 +464,14 @@ class DeterministicSymbolResolver:
         else:
             self.symbols_map = {s.id: s for s in symbols}
         self._by_ident_lower: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
+        self.by_file_index: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
         self._build_ident_index()
 
     def _build_ident_index(self) -> None:
         self._by_ident_lower.clear()
+        self.by_file_index.clear()
         for sym in self.symbols_map.values():
+            self.by_file_index[sym.file_path.replace("\\", "/")].append(sym)
             keys: Set[str] = set()
             if sym.name:
                 keys.add(sym.name.lower())
@@ -1001,9 +1004,7 @@ def query_callers(
                         caller_sites_map[cid].append(s)
 
     if ws_graph is not None:
-        by_file_idx: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
-        for s in symbols_map.values():
-            by_file_idx[s.file_path.replace("\\", "/")].append(s)
+        by_file_idx = resolver.by_file_index
         ws_target_nids: List[str] = []
         for tid in target_ids:
             for wnid in _map_symbol_to_ws_node_ids(ws_graph, symbols_map.get(tid), tid):
@@ -1123,9 +1124,7 @@ def query_callees(
 
     ws_graph = _extract_workspace_graph(graph)
     if ws_graph is not None:
-        by_file_idx: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
-        for s in symbols_map.values():
-            by_file_idx[s.file_path.replace("\\", "/")].append(s)
+        by_file_idx = resolver.by_file_index
         for caller_sym in res.targets:
             for wnid in _map_symbol_to_ws_node_ids(ws_graph, caller_sym, caller_sym.id):
                 for ed in ws_graph.outgoing_edges_by_source.get(wnid, ()):
@@ -1260,9 +1259,7 @@ def query_impact(
                     merged_chains[k] = chain
 
     if ws_graph is not None:
-        by_file_idx: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
-        for s in symbols_map.values():
-            by_file_idx[s.file_path.replace("\\", "/")].append(s)
+        by_file_idx = resolver.by_file_index
         seed_ws_ids: List[str] = []
         for tid in target_ids:
             for wnid in _map_symbol_to_ws_node_ids(ws_graph, symbols_map.get(tid), tid):

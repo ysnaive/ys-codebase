@@ -10,7 +10,8 @@
     "1.2.6.0",
     "1.2.7.4",
     "1.2.8.1",
-    "1.2.9.0"
+    "1.2.9.0",
+    "1.2.10.0"
   ],
   "releases": {
     "1.0.0.0": {
@@ -238,6 +239,14 @@
       "type": "feature",
       "urgency": "recommended",
       "summary": "新增 core.file_lock 宣告式唯讀鎖引擎與 VFS 透明穿隧防護、擴充 /readonly 空間合成、新增協作式任務取消 (TaskCancelledError) 與 ProgressReporter 進度回報器"
+    },
+    "1.2.10.0": {
+      "status": "active",
+      "dependencies": {},
+      "sha256": "bd03ebec581eeb08213c9b6f933339e233fbfff2327aed69fcc847765bfa802d",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "新增 SpaceScanner 記憶體快照快取、批次相依同步與批次游標提交，支援前景寬限期讓渡與增量重載"
     }
   }
 }

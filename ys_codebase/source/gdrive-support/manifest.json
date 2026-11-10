@@ -1,16 +1,16 @@
 {
   "id": "gdrive-support",
   "name": "gdrive-support",
-  "version": "1.0.1.7",
+  "version": "1.0.1.8",
   "description": "YS-Codebase Google Drive 原子雲端操作、Shortcut 差量分支與雙向同步模組",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.9.0"
+    "core": ">=1.2.10.0"
   },
   "optional": {
     "server": {
-      "version": ">=1.0.4",
+      "version": ">=1.0.7",
       "hint": "提供 GDriveSyncServiceWorker 選配常駐背景同步與 touch_activity 保活能力 (預設 auto_sync: false)"
     },
     "agents-workflow": {
@@ -28,8 +28,8 @@
     "背景自動同步預設為關閉 (`auto_sync: false`)，僅於顯式啟用時方啟動常駐監聽與輪詢。"
   ],
   "release": {
-    "type": "feature",
+    "type": "bugfix",
     "urgency": "recommended",
-    "summary": "將全部雲端指令開放熱通道派發、整合虛擬工作目錄對齊與協作式取消，並確保衝突備份與沙盒遠端副本自動剝除唯讀鎖"
+    "summary": "加固 GDriveSyncServiceWorker 前景讓渡、交易鎖退避與雙層重試韌性"
   }
 }
