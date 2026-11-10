@@ -3,9 +3,9 @@
   "description": "YS-Codebase Google Drive 原子雲端操作、Shortcut 差量分支與雙向同步模組",
   "versions": [
     "1.0.0.0",
-    "1.0.1.4",
     "1.0.1.5",
-    "1.0.1.6"
+    "1.0.1.6",
+    "1.0.1.7"
   ],
   "releases": {
     "1.0.0.0": {
@@ -69,7 +69,7 @@
       "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
     },
     "1.0.1.4": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.3",
         "file-space": ">=1.0.1.4"
@@ -99,6 +99,16 @@
       "type": "refactor",
       "urgency": "recommended",
       "summary": "將雲端分支同步協調器模組化拆分為本地狀態帳本、三階段增量快取與根目錄說明檔同步組件，並強化路徑與憑證安全防護"
+    },
+    "1.0.1.7": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.9.0"
+      },
+      "sha256": "92690624e961f051f671009aa71f37a4a72f5eb81d76344d70348402a3406427",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "將全部雲端指令開放熱通道派發、整合虛擬工作目錄對齊與協作式取消，並確保衝突備份與沙盒遠端副本自動剝除唯讀鎖"
     }
   }
 }

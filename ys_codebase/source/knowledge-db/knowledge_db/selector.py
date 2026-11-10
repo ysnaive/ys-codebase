@@ -15,14 +15,17 @@ from .schema import SymbolKind, UnifiedSymbol
 # 類型前綴至 SymbolKind 集合之正規化映射表
 KIND_PREFIX_MAP: Any = MappingProxyType({
     "class": frozenset({SymbolKind.CLASS.value}),
+    "cls": frozenset({SymbolKind.CLASS.value}),
     "struct": frozenset({SymbolKind.STRUCT.value}),
     "interface": frozenset({SymbolKind.INTERFACE.value}),
+    "iface": frozenset({SymbolKind.INTERFACE.value}),
     "enum": frozenset({SymbolKind.ENUM.value}),
     "fn": frozenset({SymbolKind.FUNCTION.value, SymbolKind.METHOD.value}),
     "func": frozenset({SymbolKind.FUNCTION.value, SymbolKind.METHOD.value}),
     "def": frozenset({SymbolKind.FUNCTION.value, SymbolKind.METHOD.value}),
     "function": frozenset({SymbolKind.FUNCTION.value, SymbolKind.METHOD.value}),
     "method": frozenset({SymbolKind.METHOD.value}),
+    "meth": frozenset({SymbolKind.METHOD.value}),
     "type": frozenset({SymbolKind.TYPE_ALIAS.value}),
     "typedef": frozenset({SymbolKind.TYPE_ALIAS.value}),
     "const": frozenset({SymbolKind.CONSTANT.value}),
@@ -140,9 +143,9 @@ class SymbolSelector:
     # 正則表達式：[<kind_prefix>\s+][<scope>.]<identifier>[()]
     _PATTERN = re.compile(
         r"^(?:(?P<kind>[a-zA-Z0-9_-]+)\s+)?"       # 可選類型前綴 (e.g. 'class ', 'fn ')
-        r"(?:(?P<scope>[a-zA-Z0-9_$:./]+)(?:\.|::))?" # 可選範疇 (e.g. 'Foo.', 'Foo::', 'pkg.mod.')
-        r"(?P<name>[a-zA-Z0-9_$]+)"                # 識別符名稱 (e.g. 'bar')
-        r"(?P<callable>\(\))?$",                  # 可選調用符號 '()'
+        r"(?:(?P<scope>[a-zA-Z0-9_$:./~<>]+)(?:\.|::))?" # 可選範疇 (e.g. 'Foo.', 'Foo::', 'pkg.mod.')
+        r"(?P<name>~?[a-zA-Z0-9_$]+)(?:<[^>]*>)?"   # 識別符名稱 (支援 C++ ~dtor 與泛型剝離)
+        r"(?P<callable>\([^)]*\))?$",             # 可選調用符號 '()' 或 '(params)'
         re.IGNORECASE,
     )
 
@@ -150,9 +153,11 @@ class SymbolSelector:
     def _fallback_parse(cls, clean_expr: str) -> ParsedSelector:
         is_call = clean_expr.endswith("()")
         base = clean_expr[:-2].strip() if is_call else clean_expr
+        base = re.sub(r"<[^>]*>", "", base)
         scope = None
-        if "." in base:
-            parts = base.split(".")
+        norm_sep = base.replace("::", ".")
+        if "." in norm_sep:
+            parts = norm_sep.split(".")
             scope = ".".join(parts[:-1])
             name = parts[-1]
         else:

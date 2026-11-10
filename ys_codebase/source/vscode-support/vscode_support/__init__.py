@@ -7,7 +7,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING
 import importlib
 
-__version__ = "1.0.0.7"
+__version__ = "1.0.0.8"
 
 if TYPE_CHECKING:
     from vscode_support.projector import SettingsProjector

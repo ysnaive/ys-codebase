@@ -313,16 +313,23 @@ class ResultFormatter:
 
     def to_file_uri(self, file_path: Union[str, Path], line: Optional[int] = None) -> str:
         """將指定檔案路徑轉譯為標準 RFC 8089 file:/// 協議 URI"""
-        p = Path(file_path)
+        raw = str(file_path).replace("\\", "/")
+        if "://" in raw:
+            scheme, rest = raw.split("://", 1)
+            if scheme.lower() == "file":
+                raw = rest[1:] if (len(rest) >= 3 and rest[0] == "/" and rest[2] == ":") else rest
+            else:
+                raw = rest.lstrip("/")
+        p = Path(raw)
         if not p.is_absolute():
             resolved = None
             try:
                 from core import uri
-                resolved = uri.resolve(f"project://{file_path}", interactive=False)
+                resolved = uri.resolve(f"project://{raw}", interactive=False)
             except Exception:
                 pass
-            if resolved:
-                p = Path(resolved).resolve()
+            if resolved and not str(resolved).startswith("!undefined"):
+                p = Path(str(resolved)).resolve()
             else:
                 ws = self.get_workspace_root()
                 p = (ws / p).resolve()

@@ -3,6 +3,7 @@ Core Commands - CLI Pipeline Dispatcher & Dual-Track Router.
 100% Python Standard Library. Zero Third-Party Dependencies.
 """
 import difflib
+import codecs
 import errno
 import json
 import os
@@ -21,6 +22,7 @@ from core.commands.resolver import (
     OptionResolver,
 )
 from core.context import (
+    TaskCancelledError,
     bind_cell_context,
     bind_runtime_context,
     cell_span,
@@ -316,11 +318,26 @@ def _hot_dispatch_attempt(module_name: str, cmd_path_or_name: Any, args: List[st
     try:
         with resp:
             buf = ""
+            utf8_dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            readline_fn = getattr(resp, "readline", None)
+            use_readline = callable(readline_fn)
             while True:
-                chunk = resp.read(1024)
+                if use_readline:
+                    raw_part = readline_fn()
+                    if not isinstance(raw_part, (bytes, bytearray, str)):
+                        use_readline = False
+                        chunk = resp.read(1024)
+                    else:
+                        chunk = raw_part
+                else:
+                    chunk = resp.read(1024)
                 if not chunk:
+                    buf += utf8_dec.decode(b"", final=True)
                     break
-                buf += chunk.decode("utf-8", errors="replace")
+                if isinstance(chunk, str):
+                    buf += chunk
+                else:
+                    buf += utf8_dec.decode(bytes(chunk), final=False)
                 while "\n" in buf:
                     line, buf = buf.split("\n", 1)
                     if not line.strip():
@@ -370,7 +387,7 @@ def _try_hot_dispatch(module_name: str, cmd_path_or_name: Any, args: List[str], 
         "(timeout / connection reset / worker restarted). Not falling back to cold dispatch to avoid double execution."
     )
     clear_error_hint()
-    record_error_hint(err_msg)
+    log_error(err_msg, stream="stderr")
     return 1
 
 
@@ -858,7 +875,10 @@ def dispatch(argv: Optional[List[str]] = None) -> int:
         env_overrides["YSCB_HOST_DISPATCH_TOKEN"] = "yscb_auth_dispatch"
 
     with bind_runtime_context(env=env_overrides):
-        return _dispatch_inner(argv, host_dir, yscb_abs)
+        try:
+            return _dispatch_inner(argv, host_dir, yscb_abs)
+        except (KeyboardInterrupt, TaskCancelledError):
+            return 130
 
 
 def _dispatch_inner(argv: List[str], host_dir: str, yscb_abs: str) -> int:
@@ -1009,7 +1029,8 @@ def _dispatch_inner(argv: List[str], host_dir: str, yscb_abs: str) -> int:
                 error_hint=get_last_error_hint() if hot_res != 0 else "",
                 yscb_abs=yscb_abs,
             )
-            _maybe_check_and_print_updates(argv)
+            if hot_res != 130:
+                _maybe_check_and_print_updates(argv)
             return hot_res
         # 熱派發通訊失敗或常駐離線，透明降級至本地冷派發
 
@@ -1038,7 +1059,8 @@ def _dispatch_inner(argv: List[str], host_dir: str, yscb_abs: str) -> int:
         error_hint=get_last_error_hint() if ret != 0 else "",
         yscb_abs=yscb_abs,
     )
-    _maybe_check_and_print_updates(argv)
+    if ret != 130:
+        _maybe_check_and_print_updates(argv)
     return ret
 
 

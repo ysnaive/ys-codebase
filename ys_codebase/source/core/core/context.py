@@ -7,6 +7,7 @@ virtual working directory (`virtual_cwd`), and scoped environment overrides (`en
 
 from __future__ import annotations
 
+from collections import deque
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field, replace
@@ -209,8 +210,9 @@ class RuntimeContext:
         # module_key -> (norm_file_path, mtime_ns, size, module_obj)
         self.loaded_modules_cache: Dict[str, Tuple[str, int, int, types.ModuleType]] = {}
 
-        # 6. core.gitignore caches
+        # 6. core.gitignore & core.file_lock caches
         self.gitignore_custom_root_store: Dict[str, Dict[str, List[str]]] = {}
+        self.file_lock_tls = threading.local()
 
         # 7. core.validator cache
         self.validator_signature_cache: Dict[str, Dict[str, Any]] = {}
@@ -259,6 +261,13 @@ class RuntimeContext:
         self.cell_seq_lock = threading.RLock()
         self.cell_seq: int = 0
 
+        # 15. Foreground activity refcount & cooperative task cancellation state
+        self.foreground_state_lock = threading.RLock()
+        self.foreground_active_count: int = 0
+        self.active_task_id: Optional[str] = None
+        self.cancelled_task_ids: deque = deque(maxlen=32)
+        self.task_cancel_event = threading.Event()
+
     def next_cell_id(self) -> int:
         with self.cell_seq_lock:
             self.cell_seq += 1
@@ -275,6 +284,11 @@ class RuntimeContext:
         """Thread-safely sets a domain module state entry by `key`."""
         with self.module_states_lock:
             self.module_states[key] = value
+            if key == "server.worker.cancel_requested":
+                if value:
+                    self.task_cancel_event.set()
+                else:
+                    self.task_cancel_event.clear()
 
     def invalidate_host_caches(self, scope: str = "all") -> None:
         """
@@ -335,6 +349,7 @@ class RuntimeContext:
             self.uri_tls.__dict__.clear()
             self.uri_reentrancy.__dict__.clear()
             self.uri_reconciling_tokens.clear()
+            self.file_lock_tls.__dict__.clear()
             self.invalidate_host_caches("all")
             self.gitignore_custom_root_store.clear()
             self.dispatcher_auto_spawn_warned = False
@@ -346,6 +361,11 @@ class RuntimeContext:
                 self.held_interprocess_locks.clear()
             with self.space_subscriber_lock:
                 self.space_subscribers.clear()
+            with self.foreground_state_lock:
+                self.foreground_active_count = 0
+                self.active_task_id = None
+                self.cancelled_task_ids.clear()
+            self.task_cancel_event.clear()
             with self.space_watcher_lock:
                 self.space_active_watcher_worker = None
             with self.log_error_lock:
@@ -657,11 +677,94 @@ def cell_span(stage_name: str) -> Iterator[None]:
         cell.record_stage_ms(stage_name, elapsed_ms)
 
 
+class TaskCancelledError(BaseException):
+    """Raised cooperatively when an in-flight server worker task is cancelled due to client disconnect."""
+
+
+def bind_active_task_cancel_scope(task_id: Optional[str] = None) -> bool:
+    """Atomically binds `active_task_id` at task start; preserves early-arriving cancel if `task_id` was already cancelled."""
+    ctx = get_runtime_context()
+    with ctx.foreground_state_lock:
+        ctx.active_task_id = task_id
+        already_cancelled = bool(task_id is not None and task_id in ctx.cancelled_task_ids)
+        if already_cancelled:
+            ctx.set_module_state("server.worker.cancel_requested", True)
+        else:
+            ctx.set_module_state("server.worker.cancel_requested", False)
+        return already_cancelled
+
+
+def request_task_cancel(task_id: Optional[str] = None) -> None:
+    """Signals cooperative cancellation for the target `task_id` (or active foreground task when `task_id` is None)."""
+    ctx = get_runtime_context()
+    with ctx.foreground_state_lock:
+        if task_id is not None:
+            if task_id not in ctx.cancelled_task_ids:
+                ctx.cancelled_task_ids.append(task_id)
+            if ctx.active_task_id != task_id:
+                return
+        ctx.set_module_state("server.worker.cancel_requested", True)
+
+
+def reset_task_cancelled(task_id: Optional[str] = None) -> None:
+    """Clears cooperative task cancellation flags before/after a foreground worker task."""
+    ctx = get_runtime_context()
+    with ctx.foreground_state_lock:
+        if task_id is None or ctx.active_task_id == task_id:
+            ctx.active_task_id = None
+            ctx.set_module_state("server.worker.cancel_requested", False)
+
+
+def is_task_cancelled() -> bool:
+    """Returns True if the active foreground task has been cancelled (never triggers inside background_sink workers)."""
+    ctx = get_runtime_context()
+    if not ctx.task_cancel_event.is_set():
+        return False
+    from core.log import get_current_log_scope
+
+    scope = get_current_log_scope()
+    if scope is not None and scope.background_sink is not None:
+        return False
+    return True
+
+
+def check_task_cancelled() -> None:
+    """Raises `TaskCancelledError` if cooperative cancellation has been requested for the foreground task."""
+    if is_task_cancelled():
+        raise TaskCancelledError("Task cancelled by client disconnect")
+
+
+@contextmanager
+def foreground_task_scope() -> Iterator[None]:
+    """Reference-counted scope marking `server.worker.foreground_active` True while >=1 foreground task runs."""
+    ctx = get_runtime_context()
+    with ctx.foreground_state_lock:
+        ctx.foreground_active_count += 1
+        ctx.set_module_state("server.worker.foreground_active", True)
+    try:
+        yield
+    finally:
+        with ctx.foreground_state_lock:
+            ctx.foreground_active_count = max(0, ctx.foreground_active_count - 1)
+            ctx.set_module_state(
+                "server.worker.foreground_active", ctx.foreground_active_count > 0
+            )
+
+
+def is_foreground_active() -> bool:
+    """Returns True when a foreground CLI dispatch is actively executing inside `WarmWorker`."""
+    ctx = get_runtime_context()
+    if ctx.foreground_active_count > 0:
+        return True
+    return bool(ctx.get_module_state("server.worker.foreground_active"))
+
+
 __all__ = (
     "ExecutionContext",
     "RuntimeScope",
     "CellScope",
     "RuntimeContext",
+    "TaskCancelledError",
     "get_runtime_context",
     "reset_runtime_context",
     "invalidate_host_caches",
@@ -678,4 +781,11 @@ __all__ = (
     "get_virtual_cwd",
     "get_env",
     "get_env_snapshot",
+    "bind_active_task_cancel_scope",
+    "request_task_cancel",
+    "reset_task_cancelled",
+    "is_task_cancelled",
+    "check_task_cancelled",
+    "foreground_task_scope",
+    "is_foreground_active",
 )

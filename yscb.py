@@ -18,7 +18,7 @@ import time
 import urllib.request
 import zipfile
 
-__version__: str = "1.2.2.2"
+__version__: str = "1.2.2.3"
 CONFIG_FILENAME: str = "yscb.config.json"
 DEFAULT_PROVIDER_URL: str = "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases"
 LEGACY_PROVIDER_URLS: Tuple[str, ...] = (
@@ -492,9 +492,21 @@ def _is_dir_handle_locked_for_rename(err: OSError, parent_dir: str, target_dir: 
 
 
 def _force_writable(path: str) -> None:
-    """嘗試賦予檔案讀寫權限以解除唯讀屬性限制。"""
+    """嘗試賦予檔案或目錄讀寫（及目錄穿越）權限以解除唯讀屬性限制。"""
     try:
-        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+        st = os.lstat(path)
+        if stat.S_ISLNK(st.st_mode):
+            return
+        mode = stat.S_IMODE(st.st_mode)
+        if stat.S_ISDIR(st.st_mode):
+            req = (
+                (stat.S_IWRITE | stat.S_IREAD)
+                if os.name == "nt"
+                else (stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
+            )
+            os.chmod(path, mode | req)
+        else:
+            os.chmod(path, mode | stat.S_IWRITE | stat.S_IREAD)
     except Exception:
         pass
 

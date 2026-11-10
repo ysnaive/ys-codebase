@@ -112,7 +112,7 @@ def _serialize_search_json(
                     "kind": itm.symbol.kind,
                     "line_number": itm.symbol.line_number,
                     "end_line": itm.symbol.end_line,
-                    "score": round(itm.score, 2),
+                    "score": round(itm.score, 4),
                     "matched_terms": getattr(itm, "matched_terms", []),
                     "signature": itm.symbol.signature,
                     "summary": itm.snippet or (itm.code_snippet.docstring_summary if itm.code_snippet else ""),
@@ -131,7 +131,7 @@ def _serialize_search_json(
                 {
                     "file_path": norm_path,
                     "file_uri": engine.to_file_uri(res.file_path, line=first_line),
-                    "total_score": round(res.total_score, 2),
+                    "total_score": round(res.total_score, 4),
                     "language": res.language,
                     "spaces": getattr(res, "spaces", []),
                     "items": items_payload,
@@ -144,7 +144,7 @@ def _serialize_search_json(
                     "kind": itm.symbol.kind,
                     "line_number": itm.symbol.line_number,
                     "end_line": itm.symbol.end_line,
-                    "score": round(itm.score, 2),
+                    "score": round(itm.score, 4),
                     **({"signature": itm.symbol.signature} if itm.symbol.signature else {}),
                     **(
                         {"summary": itm.snippet or (itm.code_snippet.docstring_summary if itm.code_snippet else "")}
@@ -159,7 +159,7 @@ def _serialize_search_json(
                 {
                     "file_path": norm_path,
                     **({"file_uri": engine.to_file_uri(res.file_path, line=first_line)} if file_uri else {}),
-                    "total_score": round(res.total_score, 2),
+                    "total_score": round(res.total_score, 4),
                     "language": res.language,
                     "items": items_payload,
                 }
@@ -171,7 +171,7 @@ def _serialize_search_json(
                     "kind": itm.symbol.kind,
                     "line_number": itm.symbol.line_number,
                     "end_line": itm.symbol.end_line,
-                    "score": round(itm.score, 2),
+                    "score": round(itm.score, 4),
                     **({"signature": itm.symbol.signature} if itm.symbol.signature else {}),
                 }
                 for itm in res.items
@@ -180,7 +180,7 @@ def _serialize_search_json(
                 {
                     "file_path": norm_path,
                     **({"file_uri": engine.to_file_uri(res.file_path, line=first_line)} if file_uri else {}),
-                    "total_score": round(res.total_score, 2),
+                    "total_score": round(res.total_score, 4),
                     "language": res.language,
                     "items": items_payload,
                 }
@@ -235,6 +235,8 @@ def status(cmd_bags: Any) -> int:
         if w_busy_ms > 0:
             prog_suffix = f" | {w_prog}" if w_prog else ""
             w_busy_str = styler.warn(f"忙碌中 (已運行 {w_busy_ms} ms | 階段: {w_phase}{prog_suffix})")
+        elif st.get("building_in_progress"):
+            w_busy_str = styler.warn("建置進行中 (外部索引鎖佔用)")
         else:
             w_busy_str = styler.symbol("空閒 (0 ms)")
         _log_cli(f"  - 後台常駐服務  : {w_run_str} | 探針狀態: {w_busy_str}")
@@ -288,7 +290,7 @@ def status(cmd_bags: Any) -> int:
         if st.get("model_downloaded"):
             model_str = styler.symbol(f"已下載 ({st.get('embedding_model')})")
         elif w_running and st.get("enable_vector_search"):
-            model_str = styler.warn(f"未下載 ({st.get('embedding_model')} — 後台 Worker 將自動下載)")
+            model_str = styler.warn(f"未下載 ({st.get('embedding_model')} — 已降級純 BM25；請執行 model download 下載)")
         else:
             model_str = styler.warn(f"未下載 ({st.get('embedding_model')} — 離線時自動降級 BM25)")
         _log_cli(f"  - 向量模型權重  : {model_str}")

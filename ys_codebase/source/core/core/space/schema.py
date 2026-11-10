@@ -120,8 +120,26 @@ def resolve_semantic_or_rel_path(
 
         try:
             from core import uri as core_uri
+            from core.context import bind_runtime_context, get_current_scope
 
-            resolved_str = core_uri.resolve(raw, current_module=owner_module, interactive=False)
+            host_cand = eff_proj
+            if not (host_cand / "yscb.config.json").is_file() and (eff_yscb.parent / "yscb.config.json").is_file():
+                host_cand = eff_yscb.parent
+            scope = get_current_scope()
+            need_bind = (
+                scope is None
+                or os.path.normcase(str(scope.active_host_dir or "")) != os.path.normcase(str(host_cand))
+                or os.path.normcase(str(scope.active_yscb_dir or "")) != os.path.normcase(str(eff_yscb))
+            )
+            if need_bind:
+                with bind_runtime_context(
+                    virtual_cwd=eff_proj,
+                    host_dir=host_cand,
+                    yscb_dir=eff_yscb,
+                ):
+                    resolved_str = core_uri.resolve(raw, current_module=owner_module, interactive=False)
+            else:
+                resolved_str = core_uri.resolve(raw, current_module=owner_module, interactive=False)
             if resolved_str and not str(resolved_str).startswith("!undefined"):
                 return Path(os.path.normpath(os.path.abspath(str(resolved_str))))
         except Exception:
@@ -627,6 +645,8 @@ class SpaceConfig:
     _yscb_dir: Optional[Path] = field(default=None, repr=False, compare=False)
     _compiled_include: Optional[CompiledRuleSet] = field(default=None, init=False, repr=False, compare=False)
     _compiled_exclude: Optional[CompiledRuleSet] = field(default=None, init=False, repr=False, compare=False)
+    _resolved_entry_paths: Tuple[Tuple[str, Optional[Path]], ...] = field(default=(), init=False, repr=False, compare=False)
+    _norm_project_root_posix: str = field(default="", init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if isinstance(self.hash_policy, str):
@@ -719,6 +739,46 @@ class SpaceConfig:
                 is_exclude=True,
             ),
         )
+        proj = Path(os.path.abspath(str(self._project_root)))
+        norm_proj_posix = os.path.normcase(proj.as_posix()).replace("\\", "/").rstrip("/")
+        object.__setattr__(self, "_norm_project_root_posix", norm_proj_posix)
+        object.__setattr__(
+            self,
+            "_resolved_entry_paths",
+            tuple(
+                (
+                    raw_entry,
+                    resolve_semantic_or_rel_path(
+                        raw_entry, proj, self._yscb_dir, owner_module=self.owner
+                    ),
+                )
+                for raw_entry in self.entries
+            ),
+        )
+
+    def resolve_entry_paths(
+        self, project_root: Optional[Path] = None
+    ) -> Sequence[Tuple[str, Optional[Path]]]:
+        """
+        Return `(raw_entry, resolved_path)` pairs without performing disk `exists()` stat calls.
+        """
+        if project_root is None:
+            return self._resolved_entry_paths
+        proj = Path(os.path.abspath(str(project_root)))
+        if (
+            self._resolved_entry_paths
+            and os.path.normcase(str(proj)) == os.path.normcase(os.path.abspath(str(self._project_root)))
+        ):
+            return self._resolved_entry_paths
+        return tuple(
+            (
+                raw_entry,
+                resolve_semantic_or_rel_path(
+                    raw_entry, proj, self._yscb_dir, owner_module=self.owner
+                ),
+            )
+            for raw_entry in self.entries
+        )
 
     def resolve_entries(
         self, project_root: Optional[Path] = None
@@ -727,12 +787,9 @@ class SpaceConfig:
         Resolve each declared entry URI/path into `(raw_entry, resolved_path, exists_on_disk)`.
         Never raises FileNotFoundError for missing physical paths.
         """
-        proj = Path(os.path.abspath(str(project_root or self._project_root)))
+        pairs = self.resolve_entry_paths(project_root)
         results: List[Tuple[str, Optional[Path], bool]] = []
-        for raw_entry in self.entries:
-            resolved = resolve_semantic_or_rel_path(
-                raw_entry, proj, self._yscb_dir, owner_module=self.owner
-            )
+        for raw_entry, resolved in pairs:
             if resolved is None:
                 results.append((raw_entry, None, False))
                 continue
@@ -746,26 +803,38 @@ class SpaceConfig:
     def _prepare_candidate_coords(
         self, target_abs: Path, entry_abs: Path, project_root: Path
     ) -> Tuple[str, Optional[str], str, List[str], str]:
-        norm_abs = os.path.normcase(target_abs.as_posix()).replace("\\", "/").rstrip("/")
-        project_rel = _compute_norm_rel(target_abs, project_root)
-        entry_rel_opt = _compute_norm_rel(target_abs, entry_abs)
-        if entry_rel_opt is None or entry_rel_opt == "":
-            entry_rel = os.path.normcase(target_abs.name).replace("\\", "/")
-        else:
-            entry_rel = entry_rel_opt
+        norm_abs = os.path.normcase(str(target_abs)).replace("\\", "/").rstrip("/")
+        norm_proj = self._norm_project_root_posix
+        if not norm_proj or project_root != self._project_root:
+            norm_proj = os.path.normcase(str(project_root)).replace("\\", "/").rstrip("/")
 
-        rel_for_parts = (
-            entry_rel if entry_rel else (project_rel or os.path.normcase(target_abs.name).replace("\\", "/"))
-        )
+        if norm_abs == norm_proj:
+            project_rel: Optional[str] = ""
+        elif norm_abs.startswith(norm_proj + "/"):
+            project_rel = norm_abs[len(norm_proj) + 1 :]
+        else:
+            project_rel = _compute_norm_rel(target_abs, project_root)
+
+        norm_entry = os.path.normcase(str(entry_abs)).replace("\\", "/").rstrip("/")
+        filename = norm_abs.rsplit("/", 1)[-1] if "/" in norm_abs else norm_abs
+        if norm_abs == norm_entry:
+            entry_rel = filename
+        elif norm_abs.startswith(norm_entry + "/"):
+            entry_rel = norm_abs[len(norm_entry) + 1 :]
+        else:
+            entry_rel_opt = _compute_norm_rel(target_abs, entry_abs)
+            entry_rel = filename if not entry_rel_opt else entry_rel_opt
+
+        rel_for_parts = entry_rel if entry_rel else (project_rel or filename)
         parts: List[str] = []
         if project_rel:
             for p in project_rel.split("/"):
                 if p and p != "." and p not in parts:
                     parts.append(p)
-        for p in rel_for_parts.split("/"):
-            if p and p != "." and p not in parts:
-                parts.append(p)
-        filename = os.path.normcase(target_abs.name).replace("\\", "/")
+        if not (project_rel and project_rel.endswith(rel_for_parts)):
+            for p in rel_for_parts.split("/"):
+                if p and p != "." and p not in parts:
+                    parts.append(p)
         if filename and filename not in parts:
             parts.append(filename)
         return norm_abs, project_rel, entry_rel, parts, filename

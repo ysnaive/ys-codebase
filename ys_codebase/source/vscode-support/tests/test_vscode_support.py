@@ -48,7 +48,7 @@ class TestVSCodeSupport(YSCBTestCase):
         self.pip_mgr = self.projector.pip_mgr
 
     def tearDown(self) -> None:
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        vfs.rmtree(self.temp_dir, ignore_errors=True)
         super().tearDown()
 
     def _load_script_module(self, script_name: str, mod_alias: str) -> Any:

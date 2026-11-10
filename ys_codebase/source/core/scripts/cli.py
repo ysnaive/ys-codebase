@@ -1069,3 +1069,138 @@ def file_space(cmd_bags: CmdBags) -> int:
 def fs(cmd_bags: CmdBags) -> int:
     """Shorthand alias for Core L0 Atomic & Composite File-Space Engine (Group Dispatcher)."""
     return _dispatch_space_group(cmd_bags, "fs")
+
+
+def file_lock_status(cmd_bags: CmdBags) -> int:
+    """Inspect /readonly space lock status or diagnose a single path."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    target = cmd_bags.args[0] if cmd_bags.args else None
+    from core import file_lock as fl_mod
+
+    info = fl_mod.status(target=target)
+    if cmd_bags.has_option("json"):
+        log(json.dumps(info, indent=2, ensure_ascii=False))
+        return 0
+    if info.get("mode") == "path":
+        log("=" * 70)
+        log("  YS-Codebase - File Lock Path Diagnostic")
+        log("=" * 70)
+        log(f"  Path           : {info.get('path')}")
+        log(f"  Exists         : {info.get('exists')}")
+        log(f"  Protected      : {info.get('is_protected')}")
+        log(f"  Read-Only      : {info.get('is_readonly')}")
+        log(f"  Mode (Octal)   : {info.get('mode_octal') or 'N/A'}")
+        log(f"  Matched Spaces : {', '.join(info.get('matched_spaces', [])) or '(none)'}")
+        log("=" * 70)
+        return 0
+
+    log("=" * 70)
+    log("  YS-Codebase - Declarative Read-Only File Lock Status")
+    log("=" * 70)
+    log(f"  Target Space   : {info.get('target_space')}")
+    log(f"  Total Spaces   : {info.get('total_spaces')}")
+    log(f"  Total Files    : {info.get('total_files')}")
+    log(f"  Locked Files   : {info.get('locked_files')}")
+    log(f"  Unlocked Files : {info.get('unlocked_files')}")
+    log(f"  In Sync        : {info.get('in_sync')}")
+    spaces = info.get("spaces", [])
+    if spaces:
+        log("\n  Registered Readonly Spaces:")
+        for sp in spaces:
+            log(
+                f"    - {sp.get('space')}: {sp.get('locked_files')}/{sp.get('total_files')} locked "
+                f"(in_sync={sp.get('in_sync')})"
+            )
+    log("=" * 70)
+    return 0
+
+
+def file_lock_sync(cmd_bags: CmdBags) -> int:
+    """Synchronize OS read-only lock bits across /readonly (or a specific <module>/readonly space)."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    target = cmd_bags.args[0] if cmd_bags.args else "/readonly"
+    from core import file_lock as fl_mod
+
+    res = fl_mod.sync(target_space=target)
+    payload = res.to_dict()
+    if cmd_bags.has_option("json"):
+        log(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0 if res.error_count == 0 else 1
+    log_info(
+        f"[core:file-lock] Synced '{res.target_space}': scanned={res.scanned_count}, "
+        f"newly_locked={res.locked_count}, already_locked={res.already_locked_count}, "
+        f"skipped={res.skipped_count}, errors={res.error_count} ({res.elapsed_ms:.1f}ms)."
+    )
+    return 0 if res.error_count == 0 else 1
+
+
+def file_lock_lock(cmd_bags: CmdBags) -> int:
+    """Apply read-only lock bits to a target file, directory, or space."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    target = cmd_bags.args[0] if cmd_bags.args else "/readonly"
+    force = cmd_bags.has_option("force") or cmd_bags.has_option("f")
+    from core import file_lock as fl_mod
+
+    res = fl_mod.lock_path(target, force=force)
+    payload = res.to_dict()
+    if cmd_bags.has_option("json"):
+        log(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0 if res.error_count == 0 else 1
+    log_info(
+        f"[core:file-lock] Locked '{res.target_space}': scanned={res.scanned_count}, "
+        f"newly_locked={res.locked_count}, already_locked={res.already_locked_count}, "
+        f"skipped={res.skipped_count}, errors={res.error_count}."
+    )
+    return 0 if res.error_count == 0 else 1
+
+
+def file_lock_unlock(cmd_bags: CmdBags) -> int:
+    """Temporarily strip read-only lock bits from a target file, directory, or space."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    target = cmd_bags.args[0] if cmd_bags.args else "/readonly"
+    from core import file_lock as fl_mod
+
+    res = fl_mod.unlock_path(target)
+    payload = res.to_dict()
+    if cmd_bags.has_option("json"):
+        log(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0 if res.error_count == 0 else 1
+    log_info(
+        f"[core:file-lock] Unlocked '{res.target_space}': scanned={res.scanned_count}, "
+        f"unlocked={res.unlocked_count}, skipped={res.skipped_count}, errors={res.error_count}."
+    )
+    return 0 if res.error_count == 0 else 1
+
+
+def file_lock(cmd_bags: CmdBags) -> int:
+    """Declarative read-only file lock manager (Group Dispatcher)."""
+    guard_dispatch("core")
+    cmd_bags = _normalize_bags(cmd_bags)
+    args = cmd_bags.args
+    if not args:
+        return _render_subcommand_group_help("file-lock")
+    sub_cmd = args[0]
+    sub_bags = CmdBags(
+        raw_cmd=cmd_bags.raw_cmd,
+        command=sub_cmd,
+        args=args[1:],
+        options=cmd_bags.options,
+    )
+    handlers = {
+        "status": file_lock_status,
+        "sync": file_lock_sync,
+        "lock": file_lock_lock,
+        "unlock": file_lock_unlock,
+    }
+    handler = handlers.get(sub_cmd)
+    if handler is not None:
+        return handler(sub_bags)
+    log_error(
+        f"[core:file-lock] Unknown subcommand '{sub_cmd}'. Available: status, sync, lock, unlock",
+        stream="stderr",
+    )
+    return 1

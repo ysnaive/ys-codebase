@@ -39,6 +39,7 @@ last_updated: "2026-11-10"
 | **DN-AST-06** | 4-Pass 確定性工作區連結器 (`WorkspaceGraphLinker`) 之單檔純度隔離、無環繼承剪枝與零模糊計分守則 | `schema.py`, `linker.py`, `parsers/base.py` | 🚨 CRITICAL |
 | **DN-AST-07** | L0/L1 圖譜查詢原語、UTF-8 Byte Span 結構化切片與 $O(|\text{Dirty}|)$ 單次解析雙圖譜持久化守則 | `engine.py`, `bundler.py`, `resolver.py`, `graph.py` | ⚠️ WARNING |
 | **DN-AST-08** | `unified.meta.json` 無鎖 $O(1)$ `status` 快讀、單檔 `outline` 非阻塞提取與同進程 Worker 單點讓渡 | `engine.py`, `bundler.py`, `hook.core.py` | 🚨 CRITICAL |
+| **DN-AST-09** | 單檔 `slice_part("<rel_path>::<fqn>")` $O(1)$ 免建圖快速路徑、`.ast_build_state.json` 建置探針與 `stderr` 進度回饋 | `engine.py`, `bundler.py`, `linker.py`, `io_utils.py` | ⚠️ WARNING |
 
 ---
 
@@ -144,3 +145,17 @@ last_updated: "2026-11-10"
 
 > [!CAUTION]
 > **嚴禁在 `ASTEngine.status()` 或 `ASTEngine.outline(..., merged=False)` 中無條件爭搶 `self._lock` 或呼叫阻塞式 `ensure_jit_synced()`！** 單檔大綱與狀態檢視必須保持無鎖或非阻塞快讀，以防止背景 Stage 1 索引期間阻塞前景 CLI。
+
+---
+
+### [DN-AST-09] 單檔 `slice_part("<rel_path>::<fqn>")` $O(1)$ 免建圖快速路徑、`.ast_build_state.json` 建置探針與 `stderr` 進度回饋
+
+- **背景與根因**：
+  1. 當呼叫端已明確提供相對檔案路徑限定詞（如 `pkg/foo.py::MyClass.run`）或直接傳入 `UnifiedSymbol` 呼叫 `ASTEngine.slice_part()` 時，若仍無條件呼叫 `get_workspace_graph()` 載入或重建全倉圖譜，會使單檔切片退化為 $O(N)$ 全倉掃描。
+  2. 在大型專案執行 `build_index` 或 `hot_patch_index` 時，若無階段與百分比回饋，使用者與 Agent 難以區分「正常建圖中」與「鎖死卡住」。
+- **工程妥協與解法**：
+  1. **單檔 $O(1)$ 快速路徑與 C++ `::` 安全回退**：`_resolve_symbol_node_and_bytes_for_slice()` 先檢驗 `::` 左側是否對應工作區內實際存在的源碼檔；若是則直接呼叫單檔 `parse_file()` + `extract_file_graph()` 完成切片（零全倉建圖開銷），若否則平滑回退至 `get_workspace_graph()` 跨檔消歧（完美相容 C++ `Namespace::Class::method` 語法）。
+  2. **非阻塞建置探針與即時進度**：建圖期間維護 `.ast_build_state.json` 並結合非阻塞鎖探針於 `status()` 回報 `building_in_progress`；同時於 `SemanticBundler`、`WorkspaceGraphLinker` 與 `ASTEngine` 接入 `core.log.ProgressReporter`（預設超過 `200ms` 自動向 `stderr` 輸出階段與百分比，背景服務自動靜默），確保 `--json` `stdout` 零污染。
+
+> [!CAUTION]
+> **嚴禁在 `ASTEngine.slice_part("<rel_path>::<fqn>")` 快速路徑中無條件載入全倉 `WorkspaceSymbolGraph`，亦嚴禁將 `ProgressReporter` 進度輸出導向 `stdout`！** 進度回饋必須 100% 走 `stderr`，以免破壞 `--json` 輸出契約。

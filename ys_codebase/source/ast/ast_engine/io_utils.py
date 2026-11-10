@@ -7,7 +7,7 @@ import io
 import os
 from pathlib import Path
 import pickle
-from typing import Any, Iterable, Optional, Set, Union
+from typing import Any, Iterable, Optional, Set, Tuple, Union
 
 from core.context import get_virtual_cwd
 from core.vfs import write_bytes
@@ -130,6 +130,25 @@ def load_gzip_pickle(target_path: Union[str, Path], raise_on_missing: bool = Fal
         if raise_on_missing:
             raise
         return None
+
+
+def normalize_source_bytes(content: Union[bytes, bytearray, str]) -> Tuple[str, bytes]:
+    """
+    Decode raw source bytes without folding `\r\n` newlines, returning `(decoded_text, canonical_utf8_bytes)`
+    so `Span` byte coordinates, `content_hash`, and `slice_part` stay 100% aligned across CRLF and non-UTF8 inputs.
+    """
+    if isinstance(content, (bytes, bytearray)):
+        text = bytes(content).decode("utf-8", errors="replace")
+    else:
+        text = str(content)
+    return text, text.encode("utf-8", errors="replace")
+
+
+def read_normalized_source_file(file_path: Union[str, Path]) -> Tuple[str, bytes]:
+    """Read `file_path` in binary mode (preserving `\r\n`) and return `(decoded_text, canonical_utf8_bytes)`."""
+    with open(file_path, "rb") as f:
+        raw = f.read()
+    return normalize_source_bytes(raw)
 
 
 def normalize_dirty_paths(dirty_file_paths: Iterable[str]) -> Set[str]:

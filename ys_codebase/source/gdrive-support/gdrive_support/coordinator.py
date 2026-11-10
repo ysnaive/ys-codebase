@@ -19,6 +19,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import uuid
 
+from core.context import TaskCancelledError, check_task_cancelled
 from core import config as core_config
 from core import uri
 from core import vfs
@@ -89,7 +90,14 @@ def _create_conflict_backup(local_path: Path) -> Path:
     """Create a timestamped local `.conflict.<UTC>.bak` backup copy before overwriting or deleting."""
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     bak_path = local_path.with_name(f"{local_path.name}.conflict.{ts}.bak")
+    if bak_path.exists():
+        vfs.remove(str(bak_path), missing_ok=True)
     shutil.copy2(local_path, bak_path)
+    try:
+        from core import file_lock
+        file_lock.strip_lock_bits(bak_path)
+    except Exception:
+        pass
     return bak_path
 
 
@@ -397,7 +405,7 @@ class SyncCoordinator(LocalStateLedgerMixin, IncrementalCacheMixin):
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             if self.log_path.is_file() and self.log_path.stat().st_size >= MAX_LOG_BYTES:
                 rotated = self.log_path.with_suffix(".log.1")
-                os.replace(self.log_path, rotated)
+                vfs.robust_replace(str(self.log_path), str(rotated))
             record = {
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "event": event,
@@ -645,44 +653,50 @@ class SyncCoordinator(LocalStateLedgerMixin, IncrementalCacheMixin):
 
             dst_branch_prefix = self._repo_rel(norm_branch)
             src_branch_prefix = self._repo_rel(source_branch)
+            check_task_cancelled()
             branch_root_ent = self.transport.mkdir(dst_branch_prefix)
-            src_entries = self.transport.list_files(src_branch_prefix, recursive=True)
-            branch_files_map = meta.setdefault("branch_files", {})
-            new_branch_map: Dict[str, str] = {}
-            created_dir_entries: List[RemoteEntry] = [branch_root_ent]
+            pool: Optional[ThreadPoolExecutor] = None
+            try:
+                src_entries = self.transport.list_files(src_branch_prefix, recursive=True)
+                branch_files_map = meta.setdefault("branch_files", {})
+                new_branch_map: Dict[str, str] = {}
+                created_dir_entries: List[RemoteEntry] = [branch_root_ent]
 
-            shortcut_tasks: List[Tuple[str, str, str]] = []
-            dir_count = 0
-            for entry in src_entries:
-                if entry.skipped_reason:
-                    continue
-                sub_rel = entry.rel_path[len(src_branch_prefix) + 1 :]
-                dst_rel = f"{dst_branch_prefix}/{sub_rel}"
-                if entry.is_dir:
-                    d_ent = self.transport.mkdir(dst_rel)
-                    created_dir_entries.append(d_ent)
-                    dir_count += 1
-                else:
-                    target_fid = (
-                        entry.target_file_id if entry.is_shortcut else entry.file_id
-                    )
-                    shortcut_tasks.append((sub_rel, dst_rel, target_fid))
+                shortcut_tasks: List[Tuple[str, str, str]] = []
+                dir_count = 0
+                for entry in src_entries:
+                    check_task_cancelled()
+                    if entry.skipped_reason:
+                        continue
+                    sub_rel = entry.rel_path[len(src_branch_prefix) + 1 :]
+                    dst_rel = f"{dst_branch_prefix}/{sub_rel}"
+                    if entry.is_dir:
+                        d_ent = self.transport.mkdir(dst_rel)
+                        created_dir_entries.append(d_ent)
+                        dir_count += 1
+                    else:
+                        target_fid = (
+                            entry.target_file_id if entry.is_shortcut else entry.file_id
+                        )
+                        shortcut_tasks.append((sub_rel, dst_rel, target_fid))
 
-            precreated = self._precreate_remote_dirs(
-                [dst_rel for _, dst_rel, _ in shortcut_tasks]
-            )
-            created_dir_entries.extend(precreated)
+                check_task_cancelled()
+                precreated = self._precreate_remote_dirs(
+                    [dst_rel for _, dst_rel, _ in shortcut_tasks]
+                )
+                created_dir_entries.extend(precreated)
 
-            def _shortcut_worker(t_fid: str, d_rel: str) -> RemoteEntry:
-                try:
-                    return self.transport.create_shortcut(t_fid, d_rel)
-                finally:
-                    self.transport.release_thread_resources()
+                def _shortcut_worker(t_fid: str, d_rel: str) -> RemoteEntry:
+                    check_task_cancelled()
+                    try:
+                        return self.transport.create_shortcut(t_fid, d_rel)
+                    finally:
+                        self.transport.release_thread_resources()
 
-            shortcut_count = 0
-            created_shortcut_entries: Dict[str, RemoteEntry] = {}
-            if shortcut_tasks:
-                with ThreadPoolExecutor(max_workers=PARALLEL_TRANSFER_WORKERS) as pool:
+                shortcut_count = 0
+                created_shortcut_entries: Dict[str, RemoteEntry] = {}
+                if shortcut_tasks:
+                    pool = ThreadPoolExecutor(max_workers=PARALLEL_TRANSFER_WORKERS)
                     fut_map = {
                         pool.submit(
                             contextvars.copy_context().run,
@@ -693,20 +707,35 @@ class SyncCoordinator(LocalStateLedgerMixin, IncrementalCacheMixin):
                         for sub_rel, dst_rel, target_fid in shortcut_tasks
                     }
                     for fut in as_completed(fut_map):
+                        check_task_cancelled()
                         sc_ent = fut.result()
                         sub_rel, target_fid = fut_map[fut]
                         new_branch_map[sub_rel] = target_fid
                         created_shortcut_entries[sub_rel] = sc_ent
                         shortcut_count += 1
-                new_branch_map = dict(sorted(new_branch_map.items()))
+                    pool.shutdown(wait=True)
+                    pool = None
+                    new_branch_map = dict(sorted(new_branch_map.items()))
 
-            now_iso = datetime.now(timezone.utc).isoformat()
-            branches[norm_branch] = {
-                "created_at": now_iso,
-                "base_branch": source_branch,
-            }
-            branch_files_map[norm_branch] = new_branch_map
-            meta_ent = self._write_remote_repo_meta(meta)
+                check_task_cancelled()
+                now_iso = datetime.now(timezone.utc).isoformat()
+                branches[norm_branch] = {
+                    "created_at": now_iso,
+                    "base_branch": source_branch,
+                }
+                branch_files_map[norm_branch] = new_branch_map
+                meta_ent = self._write_remote_repo_meta(meta)
+            except BaseException:
+                if pool is not None:
+                    pool.shutdown(wait=True, cancel_futures=True)
+                    pool = None
+                branches.pop(norm_branch, None)
+                meta.get("branch_files", {}).pop(norm_branch, None)
+                try:
+                    self.transport.trash_file(dst_branch_prefix)
+                except Exception:
+                    pass
+                raise
 
             state = self._load_local_state()
             cache = state.get("remote_repo_cache")
@@ -906,7 +935,7 @@ class SyncCoordinator(LocalStateLedgerMixin, IncrementalCacheMixin):
                 if abs_local and abs_local.is_file():
                     if backup:
                         _create_conflict_backup(abs_local)
-                    abs_local.unlink()
+                    vfs.remove(str(abs_local), missing_ok=True)
                     removed_orphans.append(rel_p)
 
             # Phase 3: Atomically commit clean target baseline, active_branch, and incremental cache
@@ -1500,7 +1529,7 @@ class SyncCoordinator(LocalStateLedgerMixin, IncrementalCacheMixin):
                 if abs_local and abs_local.is_file():
                     if backup:
                         _create_conflict_backup(abs_local)
-                    abs_local.unlink()
+                    vfs.remove(str(abs_local), missing_ok=True)
                 self._record_branch_file_delete(
                     state, branch, rel_p, remove_from_cache=False
                 )
@@ -1571,6 +1600,11 @@ class SyncCoordinator(LocalStateLedgerMixin, IncrementalCacheMixin):
                 self.transport.download_file(
                     task.remote_branch_rel, rem_bak, entry_hint=existing_rem
                 )
+                try:
+                    from core import file_lock
+                    file_lock.strip_lock_bits(rem_bak)
+                except Exception:
+                    pass
 
             in_place_fid: Optional[str] = None
             cow_moved = False

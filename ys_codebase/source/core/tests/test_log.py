@@ -382,7 +382,8 @@ class TestCoreLogPipeline(YSCBTestCase):
         with open(src2, "w", encoding="utf-8") as f:
             f.write("fallback payload")
 
-        with patch("core.log.os.replace", side_effect=OSError("EXDEV")):
+        import errno as _errno
+        with patch("core.log.os.replace", side_effect=OSError(_errno.EXDEV, "Cross-device link")):
             _safe_replace_file(src2, dst2)
 
         self.assertFalse(os.path.exists(src2))
@@ -507,6 +508,100 @@ class TestCoreLogPipeline(YSCBTestCase):
         self.assertEqual(len(rows), 3)
         self.assertEqual([r["idx"] for r in rows], [2, 3, 4])
         self.assertEqual(rows[-1]["msg"], "line\u2028sep\u2029val_4")
+
+        self.mark_passed()
+
+    def test_progress_reporter_and_stderr_immediate_streamer_flush(self) -> None:
+        """
+        Verify:
+        1. `ProgressReporter` suppresses fast tasks (< initial_delay_ms) unless `YSCB_FORCE_PROGRESS=1`.
+        2. With `YSCB_FORCE_PROGRESS=1`, `ProgressReporter` emits stage & percentage lines strictly to `stderr`
+           without polluting `stdout` or `get_last_error_hint()`, and immediately flushes `DebouncedIOStreamer`.
+        3. `ProgressReporter` stays silent inside `bind_log_context(background_sink=...)` and `YSCB_QUIET_PROGRESS=1`.
+        4. `_stderr_proxy.write` with `\r` flushes `DebouncedIOStreamer` immediately, while `stdout` small chunks stay buffered.
+        5. `ProgressReporter` cooperates with `request_task_cancel()` and raises `TaskCancelledError`.
+        """
+        from core.context import (
+            TaskCancelledError,
+            bind_runtime_context,
+            request_task_cancel,
+            reset_task_cancelled,
+        )
+        from core.log import ProgressReporter
+
+        # (a) Ultra-fast operation under default 200ms threshold emits nothing
+        out_fast, err_fast = io.StringIO(), io.StringIO()
+        with redirect_stdout(out_fast), redirect_stderr(err_fast):
+            pr_fast = ProgressReporter("ast", "建置索引", total_stages=2, initial_delay_ms=5000.0)
+            pr_fast.stage(1, "解析檔案", 1, 4)
+            pr_fast.advance(2, 4)
+            pr_fast.finish("索引完成")
+        self.assertEqual(out_fast.getvalue(), "")
+        self.assertEqual(err_fast.getvalue(), "")
+
+        # (b) Forced progress inside DebouncedIOStreamer flushes immediately to stderr, 0 stdout, 0 error_hint
+        clear_error_hint()
+        emitted = []
+        streamer = DebouncedIOStreamer(
+            emit_chunk=emitted.append,
+            debounce_ms=60000,
+            max_buffer_bytes=4096,
+        )
+        with bind_runtime_context(env={"YSCB_FORCE_PROGRESS": "1"}):
+            with streamer:
+                pr = ProgressReporter("ast", "建置工作區索引", total_stages=2, interval_ms=20.0)
+                pr.stage(1, "解析檔案", 0, 4)
+                # Must have flushed immediately without waiting for debounce timer or stop_capture
+                self.assertGreaterEqual(len(emitted), 1)
+                self.assertEqual(emitted[-1]["stream"], "stderr")
+                self.assertIn("[ast] 建置工作區索引 (1/2: 解析檔案 0/4 [0%]...)", emitted[-1]["text"])
+
+                pr.advance(4, 4, detail="done")
+                pr.finish("工作區索引完成")
+                self.assertEqual(get_last_error_hint(), "")
+                # Also verify carriage-return on stderr proxy flushes immediately
+                prev_cnt = len(emitted)
+                sys.stderr.write("tick\r")
+                self.assertEqual(len(emitted), prev_cnt + 1)
+                self.assertEqual(emitted[-1]["text"], "tick\r")
+
+        stdout_pkts = [p for p in emitted if p.get("stream") == "stdout"]
+        self.assertEqual(stdout_pkts, [])
+
+        # (c) Background sink & YSCB_QUIET_PROGRESS=1 auto-silence ProgressReporter
+        bg_dir = os.path.join(self.tmp_dir, "pr_bg_logs")
+        bg_logger = RollingFileLogger(bg_dir, echo_console=False)
+        try:
+            with bind_runtime_context(env={"YSCB_FORCE_PROGRESS": "1"}), bind_log_context(
+                background_sink=bg_logger, component="bg-worker"
+            ):
+                pr_bg = ProgressReporter("knowledge-db", "背景同步", total_stages=1)
+                pr_bg.stage(1, "向量嵌入", 1, 2)
+                pr_bg.finish()
+            if os.path.exists(bg_logger.log_file):
+                with open(bg_logger.log_file, "r", encoding="utf-8") as f:
+                    self.assertNotIn("背景同步", f.read())
+        finally:
+            bg_logger.close()
+
+        err_quiet = io.StringIO()
+        with bind_runtime_context(env={"YSCB_FORCE_PROGRESS": "1", "YSCB_QUIET_PROGRESS": "1"}), redirect_stderr(
+            err_quiet
+        ):
+            pr_q = ProgressReporter("ast", "靜默測試", total_stages=1)
+            pr_q.stage(1, "解析", 1, 1, force=True)
+            pr_q.finish()
+        self.assertEqual(err_quiet.getvalue(), "")
+
+        # (d) Cooperative cancellation raises TaskCancelledError
+        reset_task_cancelled()
+        request_task_cancel()
+        try:
+            pr_cancel = ProgressReporter("ast", "取消測試", enabled=False)
+            with self.assertRaises(TaskCancelledError):
+                pr_cancel.stage(1, "解析")
+        finally:
+            reset_task_cancelled()
 
         self.mark_passed()
 

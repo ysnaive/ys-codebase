@@ -1,10 +1,10 @@
 {
   "name": "dev",
-  "version": "1.1.5.1",
+  "version": "1.1.5.2",
   "description": "YS-Codebase Developer Tools (Scaffold, Checker, Builder, Tester, Releaser)",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.8.0"
+    "core": ">=1.2.9.0"
   },
   "optional": {
     "vscode-support": {
@@ -24,6 +24,6 @@
   "release": {
     "type": "refactor",
     "urgency": "recommended",
-    "summary": "拆分靜態合規檢查與打包驗證職責、支援平行沙盒測試調度，並強化發布版號校驗與無鎖逾時診斷輸出"
+    "summary": "將模組打包與沙盒部署清理收斂至 VFS，並於沙盒退避拷貝自動解除宿主唯讀鎖"
   }
 }

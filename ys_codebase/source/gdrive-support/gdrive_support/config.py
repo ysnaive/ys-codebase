@@ -4,7 +4,7 @@ Configuration parsing, core.space integration, and path mapping validation for g
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from core import config as core_config
 from core import contributes as core_contributes
@@ -74,6 +74,27 @@ def normalize_remote_rel_path(remote_path: str) -> str:
 def _realpath_no_stat(p: Path) -> Path:
     """Resolve symlinks and relative segments via os.path.realpath without invoking Path.stat()."""
     return Path(os.path.realpath(os.fspath(p)))
+
+
+def resolve_local_path_with_vcwd(raw_path: Union[str, Path]) -> Path:
+    """
+    Resolve a local path or `core.uri` string against `core.context.get_virtual_cwd()` when relative,
+    ensuring identical path semantics between local cold execution and `WarmWorker` hot dispatch.
+    """
+    raw_str = os.fspath(raw_path)
+    if "://" in raw_str:
+        from core import uri
+
+        return _realpath_no_stat(Path(os.path.normpath(os.fspath(uri.resolve(raw_str)))))
+    expanded = os.path.expanduser(raw_str)
+    p = Path(expanded)
+    if not p.is_absolute() and not os.path.isabs(expanded):
+        from core.context import get_virtual_cwd
+
+        vcwd = get_virtual_cwd()
+        if vcwd:
+            p = Path(vcwd) / p
+    return _realpath_no_stat(Path(os.path.normpath(os.fspath(p))))
 
 
 @dataclass(frozen=True)

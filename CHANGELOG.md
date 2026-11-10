@@ -1,5 +1,16 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_09_2023_server_hot_dispatch_worker_race_and_ux_feedback (Completed)
+
+- **常駐 Server 全量熱派發斷線協作取消、背景 Worker 競態禮讓、即時 `stderr` 進度回饋與 `status`/`slice` $O(1)$ 輕量化架構 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-05`, `NFR-01` ~ `NFR-03`)**：
+  - **全量熱派發覆蓋與任務級協作取消 (`FR-01`)**：補齊 `gdrive-support branch <list|create|delete>` 熱派發與 `resolve_local_path_with_vcwd()` 路徑正規化；於 `MasterSupervisor` 實作跨平台 `select.poll`/`MSG_DONTWAIT` 非阻塞斷線探針，配發唯一 `task_id` 傳遞 `{"action": "cancel", "task_id": ...}` 至 `WarmWorker`（`bind_active_task_cancel_scope` + `TaskCancelledError` 對稱退出碼 `130`），並強化 `create_branch` 取消時等待執行緒池收斂後之原子回滾與失步 Worker 強制回收。
+  - **前景絕對優先、背景 Worker 有界禮讓與離線模型非阻塞守門 (`FR-02`)**：整併 `kdb_vector_model_offline_guard_and_nonblocking_worker`；以引用計數 `foreground_task_scope` 協調 `CoreSpaceWatcherServiceWorker`（鎖內原子 `.watcher_dirty` + `MAX_FOREGROUND_DEFER_SECONDS = 5.0` 防飢餓上限）與 `KnowledgeDBServiceWorker` 禮讓；拔除未授權背景自動下載模型邏輯（缺模型時零阻塞進入 `STATE_DEGRADED_OFFLINE`），將 `EmbeddingService._ensure_model(blocking=False)` 改為非阻塞鎖探測與損毀權重負快取，並使 `HybridSearchEngine.is_vector_available` 以 `len(vector_index.doc_ids) > 0` $O(1)$ 短路。
+  - **即時 `stderr` 階段/百分比進度串流與 $O(1)$ `status` / 單檔 `slice` 快速路徑 (`FR-03`, `FR-04`, `FR-05`)**：新增 `core.log.ProgressReporter`（`759 ns/step` 位元遮罩節流）與 `DebouncedIOStreamer` `stderr` 即時沖刷，確保 `--json` `stdout` 100% 純淨；建立 `knowledge-db` `unified.meta.json` 與 `BinarySnapshotManager.load_summary()` + `_summary_mem_cache`（冷啟動 `ast status` `0.95ms` 加速 `661x`、`kdb status` `2.02ms` 加速 `262x`、`get_snapshot_summary` 暖快取 `0.15ms` 加速 `492x`）；延遲 `hot_patch_index` 之 4-pass 工作區圖譜連結至按需水合（`245ms` 加速 `6.27x`），並實作 CRLF 無損對齊之 `ast slice <rel_path>::<fqn>` 單檔 $O(1)$ 快速路徑（`1.23ms` 加速 `246x~971x`）；通過 P06 三輪三軌雙盲子代理深度審計、全倉 `dev check --all`（9/9 PASS）與 9 模組 `--all-types` + `-W error::ResourceWarning` 全量測試（902/902 Passed）。
+
+## 2026_11_10_0025_declarative_readonly_file_lock_sdk (Completed)
+
+- **`core.file_lock` 宣告式唯讀檔案鎖定 SDK 與 VFS 透明穿隧**：於 `core.file_lock` 實作跨平台底層屬性鎖定（POSIX `0o444` 與 Windows `FILE_ATTRIBUTE_READONLY`）、`SpaceRegistry` `/readonly` 不收斂多源聯合空間與高速路徑快取匹配（`0.03~0.05ms`）、`OSBackend` / `VFS` 寫前解鎖與寫後自動重鎖穿隧、`yscb core file-lock <status|sync|lock|unlock> [--json]` CLI（`server_compatible: true`），並全面收斂 `core`、`dev`、`vscode-support`、`agents-workflow`、`gdrive-support` 共 18 處旁路 `os`/`shutil` 寫入點與通過三輪 P06 雙盲靶向深度審計。
+
 ## 2026_11_10_0055_ast_server_warmup_and_lock_contention_fix (Completed)
 
 - **根治大型專案啟動 Server 後執行 `ast status` / `ast outline` 卡死、`WARMING` 預熱阻塞與背景雙執行緒鎖競爭問題 (`FR-01` ~ `FR-06`, `EC-01` ~ `EC-04`, `NFR-01` ~ `NFR-02`)**：

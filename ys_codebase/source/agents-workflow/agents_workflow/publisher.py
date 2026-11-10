@@ -16,7 +16,9 @@ import os
 import re
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 try:
@@ -84,12 +86,71 @@ class ReleasePublisher:
     """發布引擎：負責 Target 拓撲映射、Header 巨集插值、雙軌 Diff 檢測與 4 步原子交易。"""
 
     def __init__(self, compiler: Optional[ArtifactCompiler] = None, host_dir: Optional[str] = None):
+        self._explicit_host_dir: Optional[str] = (
+            os.path.normpath(os.path.abspath(host_dir)) if host_dir else None
+        )
         default_host = str(get_virtual_cwd()) if get_virtual_cwd is not None else "."
-        self.host_dir = host_dir or default_host
+        self.host_dir = self._explicit_host_dir or default_host
         self.compiler = compiler or ArtifactCompiler(host_dir=self.host_dir)
         self._sha1_cache_dirty = False
-        self._sha1_cache: Dict[str, List[Any]] = self._load_sha1_cache()
+        with self._bind_publisher_scope(self._explicit_host_dir):
+            self._sha1_cache: Dict[str, List[Any]] = self._load_sha1_cache()
         self._sources_digest_cache: Optional[bytes] = None
+
+    def _resolve_effective_proj_root(self, proj_root: Optional[str] = None) -> str:
+        if proj_root:
+            return os.path.normpath(os.path.abspath(proj_root))
+        if self._explicit_host_dir:
+            return self._explicit_host_dir
+        if uri:
+            try:
+                return uri.resolve("project://", interactive=False)
+            except Exception:
+                pass
+        return os.path.normpath(os.path.abspath(self.host_dir))
+
+    @contextmanager
+    def _bind_publisher_scope(self, proj_root: Optional[str] = None):
+        target_root = proj_root or self._explicit_host_dir
+        if not target_root:
+            yield
+            return
+        try:
+            from core.context import bind_runtime_context, get_current_scope
+            from core.space.registry import SpaceRegistry
+
+            eff_proj, eff_yscb = SpaceRegistry._resolve_roots(target_root, None)
+            scope = get_current_scope()
+            if not eff_yscb.is_dir():
+                active_yscb = getattr(scope, "active_yscb_dir", None) if scope is not None else None
+                if active_yscb and Path(active_yscb).is_dir():
+                    eff_yscb = Path(active_yscb)
+                else:
+                    yield
+                    return
+            host_cand = eff_proj
+            if not (host_cand / "yscb.config.json").is_file() and (
+                eff_yscb.parent / "yscb.config.json"
+            ).is_file():
+                host_cand = eff_yscb.parent
+            same_scope = (
+                scope is not None
+                and os.path.normcase(str(scope.active_host_dir or "")) == os.path.normcase(str(host_cand))
+                and os.path.normcase(str(scope.active_yscb_dir or "")) == os.path.normcase(str(eff_yscb))
+            )
+            if same_scope:
+                yield
+                return
+            ctx_mgr = bind_runtime_context(
+                virtual_cwd=eff_proj,
+                host_dir=host_cand,
+                yscb_dir=eff_yscb,
+            )
+        except Exception:
+            yield
+            return
+        with ctx_mgr:
+            yield
 
     @staticmethod
     def _write_text_atomic(file_path: str, content: str) -> None:
@@ -390,13 +451,7 @@ class ReleasePublisher:
         target_items: List[Dict[str, Any]] = []
 
         explicit_proj_root = proj_root is not None
-        if proj_root is None:
-            proj_root = self.host_dir
-            if uri:
-                try:
-                    proj_root = uri.resolve("project://", interactive=False)
-                except Exception:
-                    pass
+        proj_root = self._resolve_effective_proj_root(proj_root)
 
         for it in resolved_items:
             exp = it.get("export", {})
@@ -919,7 +974,10 @@ class ReleasePublisher:
                         if remaining:
                             self._write_text_atomic(f_rem, remaining + "\n")
                             continue
-                    os.remove(f_rem)
+                    if vfs:
+                        vfs.remove(f_rem, missing_ok=True)
+                    else:
+                        os.remove(f_rem)
                     parent_d = os.path.dirname(f_rem)
                     while parent_d and parent_d != proj_root and os.path.isdir(parent_d) and not os.listdir(parent_d):
                         os.rmdir(parent_d)
@@ -1059,16 +1117,18 @@ class ReleasePublisher:
         with cell_span("aw.release"):
             return self._release_all_impl(force=force)
 
+    def release_all_scoped(self, force: bool = False) -> Dict[str, Any]:
+        with self._bind_publisher_scope(self._explicit_host_dir):
+            return self._release_all_impl_inner(force=force)
+
     def _release_all_impl(self, force: bool = False) -> Dict[str, Any]:
+        with self._bind_publisher_scope(self._explicit_host_dir):
+            return self._release_all_impl_inner(force=force)
+
+    def _release_all_impl_inner(self, force: bool = False) -> Dict[str, Any]:
+        proj_root = self._resolve_effective_proj_root()
         cfg = self._get_project_config()
         active_target_names: List[str] = cfg.get("release_targets", ["antigravity"])
-
-        proj_root = self.host_dir
-        if uri:
-            try:
-                proj_root = uri.resolve("project://", interactive=False)
-            except Exception:
-                pass
 
         try:
             from agents_workflow.targets import ReleaseTargetManager
@@ -1120,6 +1180,11 @@ class ReleasePublisher:
 
             def _sync_gi_on_epoch_change() -> str:
                 self.sync_gitignore(
+                    active_targets=active_target_names,
+                    published_files=short_circuited_files,
+                    proj_root=proj_root,
+                )
+                self.sync_file_lock(
                     active_targets=active_target_names,
                     published_files=short_circuited_files,
                     proj_root=proj_root,
@@ -1198,6 +1263,11 @@ class ReleasePublisher:
             published_files=current_published_set,
             proj_root=proj_root,
         )
+        self.sync_file_lock(
+            active_targets=active_target_names,
+            published_files=current_published_set,
+            proj_root=proj_root,
+        )
         try:
             from core.context import get_or_compute_epoch_state, invalidate_epoch_state
 
@@ -1232,19 +1302,30 @@ class ReleasePublisher:
         proj_root: Optional[str] = None,
     ) -> List[str]:
         """收集當前活躍發布目標與雙軌清冊對應之受管 gitignore 相對路徑清單。"""
-        if proj_root is None:
-            proj_root = self.host_dir
-            if uri:
-                try:
-                    proj_root = uri.resolve("project://", interactive=False)
-                except Exception:
-                    pass
+        eff_proj_root = self._resolve_effective_proj_root(proj_root)
+        fallback_targets = self.compiler.get_release_targets()
+        with self._bind_publisher_scope(eff_proj_root):
+            return self._collect_gitignore_patterns_inner(
+                active_targets=active_targets,
+                published_files=published_files,
+                proj_root=eff_proj_root,
+                fallback_targets=fallback_targets,
+            )
+
+    def _collect_gitignore_patterns_inner(
+        self,
+        active_targets: Optional[List[str]],
+        published_files: Optional[Any],
+        proj_root: str,
+        fallback_targets: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[str]:
 
         if active_targets is None:
             cfg = self._get_project_config()
             active_targets = list(cfg.get("release_targets", []))
 
-        all_registered = {t["name"]: t for t in self.compiler.get_release_targets() if "name" in t}
+        raw_targets = self.compiler.get_release_targets() or (fallback_targets or [])
+        all_registered = {t["name"]: t for t in raw_targets if "name" in t}
         ignore_patterns: Set[str] = set()
 
         file_list: List[str] = []
@@ -1289,10 +1370,16 @@ class ReleasePublisher:
         for t_name in active_targets:
             t_cfg = all_registered.get(t_name, {})
             for pat in t_cfg.get("ignore_patterns", []):
-                p_clean = pat.strip()
-                if not p_clean.startswith("/") and not p_clean.startswith("*"):
-                    p_clean = f"/{p_clean}"
-                ignore_patterns.add(p_clean)
+                p_raw = str(pat or "").strip()
+                if not p_raw:
+                    continue
+                is_neg = p_raw.startswith("!")
+                body = p_raw[1:].strip() if is_neg else p_raw
+                if not body:
+                    continue
+                if not body.startswith(("/", "*")) and "://" not in body:
+                    body = f"/{body}"
+                ignore_patterns.add(f"!{body}" if is_neg else body)
 
         return sorted(list(ignore_patterns))
 
@@ -1307,13 +1394,7 @@ class ReleasePublisher:
         精準針對 agents-workflow 發布之個別檔案與 .yscb 私有目錄進行忽略，
         避免整目錄忽略 (.agents/) 干擾使用者存放於該目錄下的自訂 skills/rules/檔案。
         """
-        if proj_root is None:
-            proj_root = self.host_dir
-            if uri:
-                try:
-                    proj_root = uri.resolve("project://", interactive=False)
-                except Exception:
-                    pass
+        proj_root = self._resolve_effective_proj_root(proj_root)
 
         sorted_patterns = self.collect_gitignore_patterns(
             active_targets=active_targets,
@@ -1334,6 +1415,133 @@ class ReleasePublisher:
         except Exception as e:
             _warn_pub(f"[publisher:warning] Failed to sync .gitignore: {e}")
             return {"updated": False, "created": False, "error": str(e), "patterns": sorted_patterns}
+
+    def collect_readonly_patterns(
+        self,
+        active_targets: Optional[List[str]] = None,
+        published_files: Optional[Any] = None,
+        proj_root: Optional[str] = None,
+    ) -> List[str]:
+        """收集當前活躍發布目標對應之唯讀保護相對路徑清單（排除軟合併之 AGENTS.md / CLAUDE.md 與 mode=inject 規則檔）。"""
+        return self.collect_gitignore_patterns(
+            active_targets=active_targets,
+            published_files=published_files,
+            proj_root=proj_root,
+        )
+
+    def collect_readonly_space_config(
+        self,
+        active_targets: Optional[List[str]] = None,
+        published_files: Optional[Any] = None,
+        proj_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """建構供 SpaceRegistry 動態註冊之 agents-workflow/readonly 空間定義字典。"""
+        rel_patterns = self.collect_readonly_patterns(
+            active_targets=active_targets,
+            published_files=published_files,
+            proj_root=proj_root,
+        )
+        entry_uris: List[str] = [
+            "workflow.plans://",
+            "workflow.archived://",
+            "workflow.roadmap://",
+        ]
+        inc_uris: List[str] = [
+            "workflow.plans://**/changelog.md",
+            "workflow.archived://**",
+            "workflow.roadmap://TODO.md",
+        ]
+        exc_uris: List[str] = []
+        for pat in rel_patterns:
+            s_pat = str(pat or "").strip()
+            if not s_pat:
+                continue
+            is_neg = s_pat.startswith("!")
+            body = s_pat[1:].strip() if is_neg else s_pat
+            if not body:
+                continue
+            if body.startswith("/"):
+                clean_rel = body.lstrip("/")
+                uri_rule = f"project://{clean_rel}" if clean_rel else "project://"
+            elif "://" in body:
+                clean_rel = ""
+                uri_rule = body
+            else:
+                clean_rel = body
+                uri_rule = body
+            if is_neg:
+                if uri_rule not in exc_uris:
+                    exc_uris.append(uri_rule)
+                continue
+            if uri_rule not in inc_uris:
+                inc_uris.append(uri_rule)
+            if clean_rel:
+                top_seg = clean_rel.split("/", 1)[0]
+                if top_seg and not any(ch in top_seg for ch in ("*", "?", "[")):
+                    cand_uri = f"project://{top_seg}"
+                    if cand_uri not in entry_uris:
+                        entry_uris.append(cand_uri)
+        return {
+            "description": "agents-workflow 活躍發布目標物化檔案與私有目錄唯讀保護空間",
+            "entries": entry_uris,
+            "include": inc_uris,
+            "exclude": exc_uris,
+            "watch": False,
+        }
+
+    def sync_file_lock(
+        self,
+        active_targets: Optional[List[str]] = None,
+        published_files: Optional[Any] = None,
+        proj_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """將活躍發布目標之受管物化檔案與靜態唯讀空間同步施加 OS 唯讀鎖。"""
+        proj_root = self._resolve_effective_proj_root(proj_root)
+        res_dict: Dict[str, Any] = {}
+        ro_cfg = self.collect_readonly_space_config(
+            active_targets=active_targets,
+            published_files=published_files,
+            proj_root=proj_root,
+        )
+        synced_via_space = False
+        try:
+            from core import file_lock as fl_mod
+            from core.context import get_runtime_context
+            from core.space.registry import get_default_registry
+
+            was_reentrant = bool(getattr(get_runtime_context().file_lock_tls, "in_lock_op", False))
+            with self._bind_publisher_scope(proj_root):
+                reg = get_default_registry(project_root=proj_root)
+                reg.register_space("agents-workflow/readonly", ro_cfg, replace=True)
+                res = fl_mod.sync("agents-workflow/readonly", root_dir=proj_root, emit_event=False)
+            res_dict.update(res.to_dict())
+            synced_via_space = (
+                (not was_reentrant)
+                and res.error_count == 0
+                and reg.has_space("agents-workflow/readonly")
+            )
+        except Exception as e:
+            res_dict["error"] = str(e)
+
+        if not synced_via_space:
+            try:
+                from core import file_lock as fl_mod
+
+                for pat in ro_cfg.get("include", []):
+                    if pat.startswith("project://"):
+                        clean_rel = pat[len("project://") :].lstrip("/").strip()
+                    elif "://" in pat:
+                        continue
+                    else:
+                        clean_rel = pat.lstrip("/").strip()
+                    if not clean_rel or any(ch in clean_rel for ch in ("*", "?", "[")):
+                        continue
+                    abs_cand = os.path.normpath(os.path.join(proj_root, clean_rel.rstrip("/")))
+                    if os.path.exists(abs_cand):
+                        fl_mod.lock_path(abs_cand, force=True, root_dir=proj_root)
+            except Exception as e:
+                res_dict["error"] = str(e)
+        return res_dict
 
 
 def ensure_jit_release(force: bool = False) -> bool:

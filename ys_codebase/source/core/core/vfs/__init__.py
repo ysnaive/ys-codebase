@@ -35,6 +35,7 @@ copy = vfs.copy
 move = vfs.move
 atomic_write = vfs.atomic_write
 open_file = vfs.open
+open = vfs.open
 assert_safe_path = vfs.assert_safe_path
 path = vfs.path
 
@@ -61,6 +62,7 @@ __all__ = (
     "move",
     "atomic_write",
     "open_file",
+    "open",
     "assert_safe_path",
     "path",
     "robust_rmtree",

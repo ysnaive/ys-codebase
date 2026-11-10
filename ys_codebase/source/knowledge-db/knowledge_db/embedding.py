@@ -17,6 +17,7 @@ import warnings
 if TYPE_CHECKING:
     import numpy as np
 
+from core.context import check_task_cancelled
 from core.log import log, log_debug, log_info, log_warn
 
 from .config import DEFAULT_EMBEDDING_MODEL, MODEL_SPECS, KnowledgeDBConfig, is_agents_workflow_installed, resolve_threads
@@ -71,7 +72,9 @@ class EmbeddingService:
         self._model: Optional[Any] = None
         self._is_available: bool = False
         self._verified_onnx_path: Optional[Path] = None
+        self._neg_probe_mtime_ns: Optional[Tuple[int, int]] = None
         self._init_attempted: bool = False
+        self._downloading: bool = False
         self._init_lock = threading.RLock()
         self._dimension: Optional[int] = None
         self.last_error: Optional[Dict[str, Any]] = None
@@ -140,23 +143,29 @@ class EmbeddingService:
             return False
 
         try:
-            matching_dirs = [
-                d for d in self.cache_dir.iterdir()
-                if d.is_dir() and (model_short in d.name.lower() or model_clean in d.name.lower())
-            ]
-            if matching_dirs:
-                for d in matching_dirs:
-                    onnx_files = [f for f in d.rglob("*.onnx") if f.is_file() and f.stat().st_size > 0]
-                    if onnx_files:
-                        self._verified_onnx_path = onnx_files[0]
-                        return True
+            checked_dirs: Set[Path] = set()
+            for d in self.cache_dir.iterdir():
+                if d.is_dir() and (model_short in d.name.lower() or model_clean in d.name.lower()):
+                    checked_dirs.add(d)
+                    for f in d.rglob("*.onnx"):
+                        if f.is_file() and f.stat().st_size > 0:
+                            self._verified_onnx_path = f
+                            return True
 
-            all_onnx = [f for f in self.cache_dir.rglob("*.onnx") if f.is_file() and f.stat().st_size > 0]
-            for f in all_onnx:
-                path_str = str(f).lower()
-                if model_short in path_str or model_clean in path_str:
-                    self._verified_onnx_path = f
-                    return True
+            for entry in self.cache_dir.iterdir():
+                if entry in checked_dirs:
+                    continue
+                if entry.is_file():
+                    e_str = entry.name.lower()
+                    if e_str.endswith(".onnx") and (model_short in e_str or model_clean in e_str) and entry.stat().st_size > 0:
+                        self._verified_onnx_path = entry
+                        return True
+                elif entry.is_dir():
+                    for f in entry.rglob("*.onnx"):
+                        path_str = str(f).lower()
+                        if (model_short in path_str or model_clean in path_str) and f.is_file() and f.stat().st_size > 0:
+                            self._verified_onnx_path = f
+                            return True
         except Exception as e:
             log_debug(f"Error while probing local model weights: {e}")
 
@@ -166,7 +175,7 @@ class EmbeddingService:
         """檢查本地快取目錄中特定模型權重目錄與檔案是否存在 (委派至 has_local_model)。"""
         return self.has_local_model()
 
-    def _load_fastembed_instance(self, validate_supported: bool = False) -> int:
+    def _load_fastembed_instance(self, validate_supported: bool = False, local_files_only: bool = False) -> int:
         """在鎖保護下實例化 FastEmbed TextEmbedding 並解析模型維度 (SSOT)。"""
         from fastembed import TextEmbedding
 
@@ -188,23 +197,38 @@ class EmbeddingService:
                             stream="stderr",
                         )
                         self.model_name = DEFAULT_EMBEDDING_MODEL
+                        self._verified_onnx_path = None
+                        self._neg_probe_mtime_ns = None
+                        if local_files_only and not self.has_local_model():
+                            raise RuntimeError(f"Fallback model '{self.model_name}' not found locally in '{self.cache_dir}'")
+            except RuntimeError:
+                raise
             except Exception as e:
                 log_debug(f"Failed to check supported models list: {e}")
 
         threads_count = resolve_threads(self.max_threads)
         os.makedirs(self.cache_dir, exist_ok=True)
 
+        extra_kw: Dict[str, Any] = {"local_files_only": True} if local_files_only else {}
         try:
             self._model = TextEmbedding(
                 model_name=self.model_name,
                 cache_dir=str(self.cache_dir),
                 threads=threads_count,
+                **extra_kw,
             )
         except TypeError:
-            self._model = TextEmbedding(
-                model_name=self.model_name,
-                cache_dir=str(self.cache_dir),
-            )
+            try:
+                self._model = TextEmbedding(
+                    model_name=self.model_name,
+                    cache_dir=str(self.cache_dir),
+                    threads=threads_count,
+                )
+            except TypeError:
+                self._model = TextEmbedding(
+                    model_name=self.model_name,
+                    cache_dir=str(self.cache_dir),
+                )
 
         dim = getattr(self._model, "embedding_size", None)
         if dim is None or not isinstance(dim, int) or dim <= 0:
@@ -216,20 +240,32 @@ class EmbeddingService:
         self._dimension = int(dim)
         self._is_available = True
         self._init_attempted = True
+        self._neg_probe_mtime_ns = None
         self._guard_prompt_emitted = False
         self.last_error = None
         return threads_count
 
     def download_model(self, force: bool = False) -> bool:
         """
-        顯式下載 FastEmbed 模型權重至本地快取，具備執行緒鎖保護與異常封裝。
+        顯式下載 FastEmbed 模型權重至本地快取，具備執行緒鎖保護、第三方進度條靜默與異常封裝。
         """
         self._suppress_hf_warnings()
         with self._init_lock:
             if not force and self.is_model_downloaded():
-                self._ensure_model()
+                self._ensure_model(blocking=True)
                 return True
 
+            was_hf_disabled: Optional[bool] = None
+            try:
+                from huggingface_hub.utils import are_progress_bars_disabled, disable_progress_bars
+
+                was_hf_disabled = bool(are_progress_bars_disabled())
+                if not was_hf_disabled:
+                    disable_progress_bars()
+            except Exception:
+                was_hf_disabled = None
+
+            self._downloading = True
             try:
                 self._load_fastembed_instance(validate_supported=False)
                 log_info(
@@ -246,6 +282,15 @@ class EmbeddingService:
                     "timestamp": time.time(),
                 }
                 raise KnowledgeDBError(f"Failed to download FastEmbed model '{self.model_name}': {e}") from e
+            finally:
+                self._downloading = False
+                if was_hf_disabled is False:
+                    try:
+                        from huggingface_hub.utils import enable_progress_bars
+
+                        enable_progress_bars()
+                    except Exception:
+                        pass
 
     def _init_model(self) -> None:
         """嘗試加載 FastEmbed ONNX 模型；本地探針先行，若未下載則平滑降級為 BM25 模式（純無終端 GUARD 阻斷副作用）。"""
@@ -266,11 +311,17 @@ class EmbeddingService:
             return
 
         try:
-            threads_count = self._load_fastembed_instance(validate_supported=True)
+            threads_count = self._load_fastembed_instance(validate_supported=True, local_files_only=True)
             log_debug(f"EmbeddingService initialized with model '{self.model_name}' (dim={self._dimension}, threads={threads_count})")
         except Exception as e:
             self._is_available = False
             self._model = None
+            if self._verified_onnx_path is not None:
+                try:
+                    st_bad = self._verified_onnx_path.stat()
+                    self._neg_probe_mtime_ns = (int(st_bad.st_mtime_ns), int(st_bad.st_size))
+                except OSError:
+                    self._neg_probe_mtime_ns = None
             self.last_error = {
                 "error_type": type(e).__name__,
                 "message": str(e),
@@ -307,21 +358,60 @@ class EmbeddingService:
             return self._dimension
         return self._resolve_dimension_mock()
 
-    def _ensure_model(self) -> None:
-        """嘗試按需加載 FastEmbed ONNX 模型 (Lazy Loading)"""
+    def _ensure_model(self, blocking: bool = False) -> None:
+        """嘗試按需加載 FastEmbed ONNX 模型 (預設非阻塞鎖探測，防止前景查詢被下載/載入鎖卡死)"""
         if self.mock_mode or self._model is not None:
             return
+        if self._downloading and not blocking:
+            return
         if self._init_attempted:
-            if self.last_error and self.last_error.get("error_type") == "ModelNotFoundLocally" and self.is_model_downloaded():
-                with self._init_lock:
+            if not self._is_available and self.is_model_downloaded():
+                if self._neg_probe_mtime_ns is not None and self._verified_onnx_path is not None:
+                    try:
+                        st_cur = self._verified_onnx_path.stat()
+                        if (int(st_cur.st_mtime_ns), int(st_cur.st_size)) == self._neg_probe_mtime_ns:
+                            return
+                    except OSError:
+                        pass
+                if not self._init_lock.acquire(blocking=blocking):
+                    return
+                try:
                     if self._model is None and self.is_model_downloaded():
                         self._init_model()
+                finally:
+                    self._init_lock.release()
             return
-        with self._init_lock:
+        if not self._init_lock.acquire(blocking=blocking):
+            return
+        try:
             if self.mock_mode or self._model is not None or self._init_attempted:
                 return
             self._init_attempted = True
             self._init_model()
+        finally:
+            self._init_lock.release()
+
+    def reconfigure_model(
+        self,
+        model_name: str,
+        max_threads: Any,
+        enable_vector_search: bool,
+    ) -> None:
+        """Thread-safely apply updated configuration parameters under `_init_lock`."""
+        with self._init_lock:
+            self.enable_vector_search = bool(enable_vector_search)
+            self.max_threads = max_threads or "auto"
+            norm_model = self.normalize_model_name(model_name)
+            if self.model_name != norm_model:
+                self.model_name = norm_model
+                self._dimension = None
+                self._verified_onnx_path = None
+                self._neg_probe_mtime_ns = None
+                self._guard_prompt_emitted = False
+                if not self.mock_mode:
+                    self._model = None
+                    self._is_available = False
+                    self._init_attempted = False
 
     def check_availability(self, interactive: bool = True) -> bool:
         """Explicitly check model availability and emit missing-model guard prompt once when interactive=True."""
@@ -404,6 +494,7 @@ class EmbeddingService:
             embeddings_list: List[np.ndarray] = []
             total_items = len(preprocessed)
             for i in range(0, total_items, eff_batch_size):
+                check_task_cancelled()
                 chunk = preprocessed[i : i + eff_batch_size]
                 chunk_gen = self._model.embed(chunk, batch_size=eff_batch_size)
                 embeddings_list.extend(list(chunk_gen))
@@ -472,9 +563,18 @@ class VectorIndex:
         model_name: Optional[str] = None,
         dim: Optional[int] = None,
     ) -> None:
-        """建置或替換當前向量索引"""
-        self.doc_ids = list(doc_ids)
-        self.vectors = vectors.astype("float32") if hasattr(vectors, "astype") else vectors
+        """建置或替換當前向量索引（嚴格校驗 doc_ids 與 vectors 列數一致）"""
+        ids_list = list(doc_ids)
+        vecs_arr = vectors.astype("float32") if hasattr(vectors, "astype") else vectors
+        if vecs_arr is not None:
+            if getattr(vecs_arr, "ndim", 0) != 2 or vecs_arr.shape[0] != len(ids_list):
+                raise ValueError(
+                    f"VectorIndex row mismatch: len(doc_ids)={len(ids_list)} vs vectors.shape={getattr(vecs_arr, 'shape', None)}"
+                )
+        elif ids_list:
+            raise ValueError("VectorIndex.build requires non-None vectors when doc_ids is non-empty")
+        self.doc_ids = ids_list
+        self.vectors = vecs_arr
         if model_name:
             self.model_name = model_name
         if dim:
@@ -502,6 +602,16 @@ class VectorIndex:
     ) -> None:
         """增量修補向量索引：移除過期 doc_ids，追加新 doc_ids 與向量"""
         import numpy as np
+
+        if new_doc_ids:
+            if (
+                new_vectors is None
+                or getattr(new_vectors, "ndim", 0) != 2
+                or new_vectors.shape[0] != len(new_doc_ids)
+            ):
+                raise ValueError(
+                    f"VectorIndex.patch_incremental mismatch: len(new_doc_ids)={len(new_doc_ids)} vs new_vectors={getattr(new_vectors, 'shape', None)}"
+                )
 
         if self.vectors is None or len(self.doc_ids) == 0:
             if new_doc_ids and new_vectors is not None and len(new_vectors) > 0:

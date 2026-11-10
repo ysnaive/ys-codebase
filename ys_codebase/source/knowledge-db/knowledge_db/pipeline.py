@@ -9,6 +9,7 @@ knowledge-db 索引生命週期與流水線引擎 (pipeline.py)
 
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
+import json
 import os
 from pathlib import Path
 import threading
@@ -16,8 +17,14 @@ import time
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 from ast_engine import ASTEngine, SemanticBundler, get_engine as get_ast_engine
-from core.context import cell_span, get_runtime_context, get_virtual_cwd
-from core.log import log, log_debug, log_warn
+from core.context import (
+    TaskCancelledError,
+    cell_span,
+    check_task_cancelled,
+    get_runtime_context,
+    get_virtual_cwd,
+)
+from core.log import ProgressReporter, log, log_debug, log_warn
 from core.space import (
     ScanDiffDetail,
     ScanDiffResult,
@@ -165,6 +172,7 @@ class IndexingPipeline:
         config: Optional[Any] = None,
         storage_dir: Optional[Union[str, Path]] = None,
         space_weights_provider: Optional[Callable[[], Dict[str, float]]] = None,
+        custom_storage_dir: Optional[bool] = None,
     ):
         self.space_manager = space_manager
         self.bundler = bundler
@@ -176,7 +184,7 @@ class IndexingPipeline:
         self.snippet_extractor = snippet_extractor or SnippetExtractor(space_manager=space_manager)
         self._space_weights_provider = space_weights_provider
 
-        self._custom_storage_dir = storage_dir is not None
+        self._custom_storage_dir = (storage_dir is not None) if custom_storage_dir is None else bool(custom_storage_dir)
         if storage_dir is not None:
             self._storage_dir = Path(storage_dir).resolve()
         elif hasattr(bundler, "storage_dir") and bundler.storage_dir is not None:
@@ -234,6 +242,193 @@ class IndexingPipeline:
         p.mkdir(parents=True, exist_ok=True)
         return p
 
+    def get_meta_index_path(self) -> Path:
+        return self.get_indices_dir() / "unified.meta.json"
+
+    def _compute_vector_deficit_from_objects(
+        self,
+        idx: Optional[InvertedIndex],
+        vec_idx: Optional[VectorIndex],
+    ) -> Dict[str, Any]:
+        total_syms = len(idx.symbols) if (idx is not None and idx.symbols) else 0
+        expected_model = getattr(self.config, "embedding_model", "BAAI/bge-small-zh-v1.5")
+        if getattr(vec_idx, "dim", None):
+            expected_dim = int(vec_idx.dim)  # type: ignore[arg-type]
+        elif getattr(self.embedding_service, "_dimension", None) is not None:
+            expected_dim = int(self.embedding_service._dimension)  # type: ignore[arg-type]
+        else:
+            expected_dim = int(self.embedding_service._resolve_dimension_mock())
+        if total_syms == 0:
+            return {
+                "total_symbols": 0,
+                "embedded_count": 0,
+                "missing_count": 0,
+                "stale_count": 0,
+                "coverage_pct": 100.0,
+                "compatible": True,
+                "dimension": expected_dim,
+                "model_name": getattr(vec_idx, "model_name", None) or expected_model,
+            }
+        if vec_idx is None or vec_idx.vectors is None or len(vec_idx.doc_ids) == 0:
+            return {
+                "total_symbols": total_syms,
+                "embedded_count": 0,
+                "missing_count": total_syms,
+                "stale_count": 0,
+                "coverage_pct": 0.0,
+                "compatible": False,
+                "dimension": expected_dim,
+                "model_name": getattr(vec_idx, "model_name", None) or expected_model,
+            }
+        if hasattr(vec_idx, "is_compatible_with") and not vec_idx.is_compatible_with(expected_model, expected_dim):
+            return {
+                "total_symbols": total_syms,
+                "embedded_count": 0,
+                "missing_count": total_syms,
+                "stale_count": len(vec_idx.doc_ids),
+                "coverage_pct": 0.0,
+                "compatible": False,
+                "dimension": expected_dim,
+                "model_name": getattr(vec_idx, "model_name", None) or expected_model,
+            }
+        assert idx is not None
+        sym_ids = set(idx.symbols.keys())
+        vec_ids = set(vec_idx.doc_ids)
+        missing_ids = sym_ids - vec_ids
+        stale_ids = vec_ids - sym_ids
+        valid_embedded = len(sym_ids & vec_ids)
+        cov_pct = round((valid_embedded / total_syms) * 100.0, 1) if total_syms > 0 else 100.0
+        return {
+            "total_symbols": total_syms,
+            "embedded_count": valid_embedded,
+            "missing_count": len(missing_ids),
+            "stale_count": len(stale_ids),
+            "coverage_pct": cov_pct,
+            "compatible": True,
+            "dimension": expected_dim,
+            "model_name": getattr(vec_idx, "model_name", None) or expected_model,
+        }
+
+    def _write_unified_meta(
+        self,
+        idx: Optional[InvertedIndex] = None,
+        vec_idx: Optional[VectorIndex] = None,
+    ) -> None:
+        """Atomically persist lightweight `unified.meta.json` for O(1) `KnowledgeEngine.status()`."""
+        eff_idx = idx if idx is not None else self._unified_index
+        if eff_idx is None:
+            return
+        try:
+            from core import vfs
+
+            indices_dir = self.get_indices_dir()
+            bin_file = indices_dir / "unified.index.bin.gz"
+            vector_file = indices_dir / "unified.vectors.bin.gz"
+            if not bin_file.exists():
+                return
+            b_st = bin_file.stat()
+            v_mtime_ns = 0
+            v_size = 0
+            if vector_file.exists():
+                v_st = vector_file.stat()
+                v_mtime_ns = int(v_st.st_mtime_ns)
+                v_size = int(v_st.st_size)
+
+            eff_vec = vec_idx if vec_idx is not None else getattr(self.hybrid_engine, "vector_index", None)
+            if (eff_vec is None or getattr(eff_vec, "vectors", None) is None) and vector_file.exists():
+                # Preserve existing vector meta if vectors were not loaded into memory during skip_vectors patch
+                prev_meta = None
+                meta_p = self.get_meta_index_path()
+                if meta_p.exists():
+                    try:
+                        prev_meta = json.loads(meta_p.read_text(encoding="utf-8"))
+                    except Exception:
+                        prev_meta = None
+                if (
+                    isinstance(prev_meta, dict)
+                    and prev_meta.get("vectors_mtime_ns") == v_mtime_ns
+                    and prev_meta.get("vectors_size") == v_size
+                    and int(prev_meta.get("embedded_count", 0)) > 0
+                ):
+                    total_s = int(getattr(eff_idx, "doc_count", 0) or len(eff_idx.symbols))
+                    emb_c = min(total_s, int(prev_meta.get("embedded_count", 0)))
+                    miss_c = max(0, total_s - emb_c)
+                    cov_p = round((emb_c / total_s) * 100.0, 1) if total_s > 0 else 100.0
+                    vec_info = {
+                        "embedded_count": emb_c,
+                        "missing_count": miss_c,
+                        "stale_count": int(prev_meta.get("stale_count", 0)),
+                        "coverage_pct": cov_p,
+                        "compatible": bool(prev_meta.get("vector_compatible", True)),
+                        "dimension": int(prev_meta.get("vector_dim", 512)),
+                        "model_name": str(prev_meta.get("vector_model_name", getattr(self.config, "embedding_model", "BAAI/bge-small-zh-v1.5"))),
+                    }
+                else:
+                    vec_info = self._compute_vector_deficit_from_objects(eff_idx, eff_vec)
+            else:
+                vec_info = self._compute_vector_deficit_from_objects(eff_idx, eff_vec)
+
+            space_sym_counts: Dict[str, int] = {}
+            for s_obj in eff_idx.symbols.values():
+                for sp_tag in (getattr(s_obj, "spaces", None) or ()):
+                    space_sym_counts[sp_tag] = space_sym_counts.get(sp_tag, 0) + 1
+
+            symbol_count = int(getattr(eff_idx, "doc_count", 0) or len(eff_idx.symbols))
+            term_count = len(eff_idx.index) if hasattr(eff_idx, "index") else 0
+            acked_ast_gen = int(getattr(eff_idx, "acked_ast_generation", 0) or 0)
+
+            payload = {
+                "symbol_count": symbol_count,
+                "term_count": term_count,
+                "acked_ast_generation": acked_ast_gen,
+                "space_symbol_counts": space_sym_counts,
+                "unified_mtime_ns": int(b_st.st_mtime_ns),
+                "unified_size": int(b_st.st_size),
+                "vectors_mtime_ns": v_mtime_ns,
+                "vectors_size": v_size,
+                "embedded_count": int(vec_info["embedded_count"]),
+                "missing_count": int(vec_info["missing_count"]),
+                "stale_count": int(vec_info["stale_count"]),
+                "coverage_pct": float(vec_info["coverage_pct"]),
+                "vector_compatible": bool(vec_info["compatible"]),
+                "vector_dim": int(vec_info["dimension"]),
+                "vector_model_name": str(vec_info["model_name"]),
+            }
+            vfs.write_json(str(self.get_meta_index_path()), payload, indent=2, atomic=True)
+        except Exception as exc:
+            log_debug(f"Failed writing knowledge-db unified.meta.json: {exc}")
+
+    def get_persisted_meta(self) -> Optional[Dict[str, Any]]:
+        """Read lightweight `unified.meta.json` if fresh against binary index mtimes/sizes (zero unpickle)."""
+        indices_dir = self.get_indices_dir()
+        bin_file = indices_dir / "unified.index.bin.gz"
+        vector_file = indices_dir / "unified.vectors.bin.gz"
+        meta_file = indices_dir / "unified.meta.json"
+        if not bin_file.exists() or not meta_file.exists():
+            return None
+        try:
+            b_st = bin_file.stat()
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            if not isinstance(meta, dict):
+                return None
+            if (
+                meta.get("unified_mtime_ns") != int(b_st.st_mtime_ns)
+                or meta.get("unified_size") != int(b_st.st_size)
+            ):
+                return None
+            if vector_file.exists():
+                v_st = vector_file.stat()
+                if (
+                    meta.get("vectors_mtime_ns") != int(v_st.st_mtime_ns)
+                    or meta.get("vectors_size") != int(v_st.st_size)
+                ):
+                    return None
+            elif int(meta.get("vectors_size", 0) or 0) != 0:
+                return None
+            return meta
+        except Exception:
+            return None
+
     def _reset_consumer_cursor(self, space_name: Optional[str] = None, consumer_id: str = "knowledge-db") -> None:
         """重置消費者增量游標"""
         if self.scanner is not None and hasattr(self.scanner, "reset_cursor"):
@@ -273,6 +468,7 @@ class IndexingPipeline:
                     auto_refresh is False
                     or (
                         not self._custom_storage_dir
+                        and getattr(self.space_manager, "_raw_spaces", None) is None
                         and is_watcher_active(project_root=getattr(self.space_manager, "project_root", None))
                     )
                 )
@@ -546,9 +742,16 @@ class IndexingPipeline:
                 log_warn(f"Failed loading unified binary index, rebuilding: {e}", stream="stderr")
 
         t_all_start = time.time()
+        prog = ProgressReporter(
+            "knowledge-db",
+            "正在建置知識庫索引",
+            total_stages=4,
+            enabled=False if interactive else None,
+        )
 
         # Stage 1: Single-Parse Symbol Sharing via ASTEngine
         t0 = time.time()
+        prog.stage(1, "同步 AST 符號快照")
         snapshot = self._sync_ast_snapshot(force=force, allow_parallel=allow_parallel)
         _report(1, f"AST 快照同步與符號共享 (gen={snapshot.ast_generation})", (time.time() - t0) * 1000)
 
@@ -563,6 +766,7 @@ class IndexingPipeline:
             )
             if fs is not None
         ]
+        prog.stage(2, "建置 BM25 倒排索引", 0, len(filtered_symbols))
         idx = InvertedIndex(space_name="unified")
         idx.build(
             filtered_symbols,
@@ -571,11 +775,13 @@ class IndexingPipeline:
             pre_aggregated=True,
         )
         idx.acked_ast_generation = snapshot.ast_generation
+        prog.advance(len(filtered_symbols), len(filtered_symbols))
         _report(2, f"BM25 倒排索引建置 ({idx.doc_count} 符號)", (time.time() - t0) * 1000)
 
         # Stage 3: Build VectorIndex
         t0 = time.time()
         enable_vec = getattr(self.config, "enable_vector_search", True)
+        built_vec_idx: Optional[VectorIndex] = None
         if skip_vectors:
             _report(3, "向量特徵嵌入 (交由背景 Stage 2 微批次同步，略過)", (time.time() - t0) * 1000)
         elif not enable_vec:
@@ -589,8 +795,30 @@ class IndexingPipeline:
                     for _, sym in sym_items
                 ]
                 model_name = getattr(self.config, "embedding_model", "BAAI/bge-small-zh-v1.5")
+                prog.stage(3, "計算向量特徵嵌入", 0, len(texts))
                 if texts:
-                    vectors = self.embedding_service.embed_texts(texts)
+                    if len(texts) > 128:
+                        import numpy as np
+
+                        vec_chunks = []
+                        step_sz = 64
+                        for v_off in range(0, len(texts), step_sz):
+                            sub_t = texts[v_off : v_off + step_sz]
+                            chunk_v = self.embedding_service.embed_texts(sub_t, batch_size=step_sz)
+                            if getattr(chunk_v, "ndim", 0) != 2 or chunk_v.shape[0] != len(sub_t):
+                                raise RuntimeError(
+                                    f"Embedding batch returned {getattr(chunk_v, 'shape', None)} for {len(sub_t)} texts"
+                                )
+                            vec_chunks.append(chunk_v)
+                            prog.advance(min(len(texts), v_off + len(sub_t)), len(texts))
+                        vectors = np.vstack(vec_chunks).astype(np.float32)
+                    else:
+                        vectors = self.embedding_service.embed_texts(texts)
+                        if getattr(vectors, "ndim", 0) != 2 or vectors.shape[0] != len(texts):
+                            raise RuntimeError(
+                                f"Embedding returned {getattr(vectors, 'shape', None)} for {len(texts)} texts"
+                            )
+                        prog.advance(len(texts), len(texts))
                     dim = vectors.shape[1] if hasattr(vectors, "shape") and len(vectors.shape) > 1 else None
                 else:
                     import numpy as np
@@ -601,6 +829,7 @@ class IndexingPipeline:
                 with self._kdb_index_file_lock():
                     vec_idx.save_binary(vector_file)
                 self.hybrid_engine.vector_index = vec_idx
+                built_vec_idx = vec_idx
                 self._vector_index_dirty = False
                 _report(3, f"向量特徵嵌入建置 ({len(doc_ids)} 符號向量)", (time.time() - t0) * 1000)
             except Exception as e:
@@ -615,15 +844,18 @@ class IndexingPipeline:
 
         # Stage 4: Atomic binary persistence & cursor alignment
         t0 = time.time()
+        prog.stage(4, "持久化索引快照與同步游標")
         try:
             with self._kdb_index_file_lock():
                 idx.save_binary(bin_file, compresslevel=1)
+                self._write_unified_meta(idx=idx, vec_idx=built_vec_idx)
         except Exception as e:
             raise KnowledgeDBError(f"Failed saving unified binary index: {e}") from e
 
         self._align_space_watermarks()
 
         _report(4, "二進位索引原子持久化與游標同步", (time.time() - t0) * 1000)
+        prog.finish(f"知識庫索引建置完成 (共 {idx.doc_count} 符號)")
 
         if interactive:
             total_elapsed = (time.time() - t_all_start) * 1000
@@ -649,6 +881,7 @@ class IndexingPipeline:
         try:
             if fast_ack_only or (
                 not self._custom_storage_dir
+                and getattr(self.space_manager, "_raw_spaces", None) is None
                 and is_watcher_active(project_root=getattr(self.space_manager, "project_root", None))
             ):
                 indexed_qnames = self._get_indexed_space_qnames()
@@ -688,12 +921,17 @@ class IndexingPipeline:
                     return lock_path
             except Exception:
                 pass
-        proj_root = getattr(self.space_manager, "project_root", None)
-        base = Path(proj_root).resolve() if proj_root else Path(get_virtual_cwd()).resolve()
-        if (base / "ys_codebase").is_dir():
-            fallback = base / "ys_codebase" / ".cache" / "knowledge-db" / ".kdb_index.lock"
-        else:
-            fallback = base / ".cache" / "knowledge-db" / ".kdb_index.lock"
+        try:
+            from core import uri
+
+            yscb_root = uri.resolve_yscb_root()
+            if yscb_root:
+                fallback = Path(yscb_root).resolve() / ".cache" / "knowledge-db" / ".kdb_index.lock"
+                fallback.parent.mkdir(parents=True, exist_ok=True)
+                return fallback
+        except Exception:
+            pass
+        fallback = self.get_indices_dir() / ".kdb_index.lock"
         fallback.parent.mkdir(parents=True, exist_ok=True)
         return fallback
 
@@ -1088,6 +1326,8 @@ class IndexingPipeline:
             try:
                 new_vecs = self.embedding_service.embed_texts(new_texts)
                 new_ids = [sym.id for sym in all_new_symbols]
+                if getattr(new_vecs, "ndim", 0) != 2 or new_vecs.shape[0] != len(new_ids):
+                    raise RuntimeError(f"Embedding returned {getattr(new_vecs, 'shape', None)} for {len(new_ids)} symbols")
                 vec_idx.patch_incremental(removed_doc_ids=old_doc_ids, new_doc_ids=new_ids, new_vectors=new_vecs)
                 with self._kdb_index_file_lock():
                     vec_idx.save_binary(vector_file)
@@ -1100,6 +1340,8 @@ class IndexingPipeline:
         try:
             probe_texts = new_texts[:10]
             probe_vecs, est_total = self.embedding_service.embed_texts_probe(probe_texts, total_count=num_symbols)
+            if getattr(probe_vecs, "ndim", 0) != 2 or probe_vecs.shape[0] != len(probe_texts):
+                raise RuntimeError(f"Probe embedding returned {getattr(probe_vecs, 'shape', None)} for {len(probe_texts)} symbols")
             if timeout_seconds is not None and est_total > timeout_seconds:
                 return True, (
                     f"[knowledge-db:notice] 待向量化符號過多（{num_symbols} 個，預估耗時 {est_total:.1f}s > {timeout_seconds:.1f}s）已熔斷降級（本次使用純 BM25 模式）。"
@@ -1109,13 +1351,19 @@ class IndexingPipeline:
 
             remaining_texts = new_texts[10:]
             remaining_vecs = self.embedding_service.embed_texts(remaining_texts) if remaining_texts else None
+            if remaining_texts and (
+                remaining_vecs is None
+                or getattr(remaining_vecs, "ndim", 0) != 2
+                or remaining_vecs.shape[0] != len(remaining_texts)
+            ):
+                raise RuntimeError(
+                    f"Remaining embedding returned {getattr(remaining_vecs, 'shape', None)} for {len(remaining_texts)} symbols"
+                )
             import numpy as np
-            if probe_vecs is not None and remaining_vecs is not None:
+            if remaining_vecs is not None:
                 full_vecs = np.vstack([probe_vecs, remaining_vecs])
-            elif probe_vecs is not None:
-                full_vecs = probe_vecs
             else:
-                full_vecs = remaining_vecs
+                full_vecs = probe_vecs
 
             new_ids = [sym.id for sym in all_new_symbols]
             vec_idx.patch_incremental(removed_doc_ids=old_doc_ids, new_doc_ids=new_ids, new_vectors=full_vecs)
@@ -1136,6 +1384,7 @@ class IndexingPipeline:
         if self._unified_index is not None:
             with self._kdb_index_file_lock():
                 self._unified_index.save_binary(bin_file, compresslevel=1)
+                self._write_unified_meta(idx=self._unified_index)
         cache = _get_index_cache()
         with _CACHE_LOCK:
             cache["storage_dir"] = self._storage_cache_key()
@@ -1175,6 +1424,7 @@ class IndexingPipeline:
             else:
                 timeout_seconds = getattr(self.config, "jit_vector_timeout_seconds", 3.0)
 
+        persisted = False
         try:
             all_new_symbols, dirty_keys, new_ast_gen = self._collect_all_dirty_files(diff_detail)
             patched_removed = self._unified_index.patch_incremental(
@@ -1213,6 +1463,7 @@ class IndexingPipeline:
                     all_new_symbols, old_doc_ids, vector_file, timeout_seconds
                 )
             self._persist_patched_indices(bin_file, vector_file)
+            persisted = True
 
             self._vector_degraded = vector_degraded
             self._last_degrade_notice = degrade_notice
@@ -1222,71 +1473,41 @@ class IndexingPipeline:
                 vector_degraded=vector_degraded,
                 degrade_notice=degrade_notice,
             )
+        except TaskCancelledError:
+            raise
         except Exception as e:
             log_warn(f"Incremental hot patch failed: {e}, falling back to full rebuild.", stream="stderr")
             self._vector_degraded = False
             self._last_degrade_notice = None
             return HotPatchResult(success=False, patched_count=0)
+        finally:
+            if not persisted:
+                self._unified_index = None
+                self.hybrid_engine.vector_index = VectorIndex()
+                self._vector_index_dirty = False
+                with _CACHE_LOCK:
+                    c = _get_index_cache()
+                    c["unified_index"] = None
+                    c["unified_mtime"] = 0.0
+                    c["vector_index"] = None
+                    c["vector_mtime"] = 0.0
+                    c["vector_dirty"] = False
 
     def get_vector_deficit_info(self) -> Dict[str, Any]:
         """比對 unified_index.symbols 與 vector_index.doc_ids，回傳向量差集與覆蓋率統計（零模型載入開銷）。"""
         with self._index_lock:
             self._ensure_indices_loaded(load_vectors=True, trim_memory=False)
-            idx = self._unified_index
-            vec_idx = getattr(self.hybrid_engine, "vector_index", None)
-            total_syms = len(idx.symbols) if (idx is not None and idx.symbols) else 0
-            if total_syms == 0:
-                return {
-                    "total_symbols": 0,
-                    "embedded_count": 0,
-                    "missing_count": 0,
-                    "stale_count": 0,
-                    "coverage_pct": 100.0,
-                    "compatible": True,
-                }
-
-            expected_model = getattr(self.config, "embedding_model", "BAAI/bge-small-zh-v1.5")
-            if getattr(vec_idx, "dim", None):
-                expected_dim = int(vec_idx.dim)
-            elif getattr(self.embedding_service, "_dimension", None) is not None:
-                expected_dim = int(self.embedding_service._dimension)  # type: ignore[arg-type]
-            else:
-                expected_dim = int(self.embedding_service._resolve_dimension_mock())
-            if vec_idx is None or vec_idx.vectors is None or len(vec_idx.doc_ids) == 0:
-                return {
-                    "total_symbols": total_syms,
-                    "embedded_count": 0,
-                    "missing_count": total_syms,
-                    "stale_count": 0,
-                    "coverage_pct": 0.0,
-                    "compatible": False,
-                }
-
-            compatible = True
-            if hasattr(vec_idx, "is_compatible_with") and not vec_idx.is_compatible_with(expected_model, expected_dim):
-                compatible = False
-                return {
-                    "total_symbols": total_syms,
-                    "embedded_count": 0,
-                    "missing_count": total_syms,
-                    "stale_count": len(vec_idx.doc_ids),
-                    "coverage_pct": 0.0,
-                    "compatible": False,
-                }
-
-            sym_ids = set(idx.symbols.keys())
-            vec_ids = set(vec_idx.doc_ids)
-            missing_ids = sym_ids - vec_ids
-            stale_ids = vec_ids - sym_ids
-            valid_embedded = len(sym_ids & vec_ids)
-            cov_pct = round((valid_embedded / total_syms) * 100.0, 1) if total_syms > 0 else 100.0
+            info = self._compute_vector_deficit_from_objects(
+                self._unified_index,
+                getattr(self.hybrid_engine, "vector_index", None),
+            )
             return {
-                "total_symbols": total_syms,
-                "embedded_count": valid_embedded,
-                "missing_count": len(missing_ids),
-                "stale_count": len(stale_ids),
-                "coverage_pct": cov_pct,
-                "compatible": compatible,
+                "total_symbols": info["total_symbols"],
+                "embedded_count": info["embedded_count"],
+                "missing_count": info["missing_count"],
+                "stale_count": info["stale_count"],
+                "coverage_pct": info["coverage_pct"],
+                "compatible": info["compatible"],
             }
 
     def flush_vector_index(self) -> bool:
@@ -1302,6 +1523,15 @@ class IndexingPipeline:
             vector_file = indices_dir / "unified.vectors.bin.gz"
             with self._kdb_index_file_lock():
                 vec_idx.save_binary(vector_file)
+                eff_idx = self._unified_index or _get_index_cache().get("unified_index")
+                if eff_idx is None and (indices_dir / "unified.index.bin.gz").exists():
+                    try:
+                        self._ensure_indices_loaded(load_vectors=False, trim_memory=False)
+                        eff_idx = self._unified_index
+                    except Exception:
+                        eff_idx = None
+                if eff_idx is not None:
+                    self._write_unified_meta(idx=eff_idx, vec_idx=vec_idx)
             self._vector_index_dirty = False
             with _CACHE_LOCK:
                 cache = _get_index_cache()
@@ -1520,6 +1750,7 @@ class IndexingPipeline:
             for fn in [
                 "unified.index.bin.gz",
                 "unified.vectors.bin.gz",
+                "unified.meta.json",
             ]:
                 f_path = indices_dir / fn
                 if f_path.exists():
@@ -1580,7 +1811,7 @@ class IndexingPipeline:
                 if worker_busy or (
                     worker_active
                     and (
-                        worker_phase in ("degraded_offline", "yielded_to_foreground")
+                        worker_phase == "yielded_to_foreground"
                         or not auto_rebuild
                         or not self._has_pending_space_changes()
                     )
@@ -1589,7 +1820,11 @@ class IndexingPipeline:
                         active_w = get_active_worker()
                         if active_w is not None:
                             active_w.notify_space_changed()
-                    self._ensure_indices_loaded(load_vectors=eff_require_vectors)
+                    load_vecs_fast = bool(
+                        eff_require_vectors
+                        and (not worker_busy or _get_index_cache().get("vector_index") is not None)
+                    )
+                    self._ensure_indices_loaded(load_vectors=load_vecs_fast)
                     if self._unified_index is not None:
                         return self._unified_index
                 acquired = self._index_lock.acquire(blocking=False)
@@ -1645,6 +1880,7 @@ class IndexingPipeline:
         if auto_rebuild:
             use_non_blocking_diff = bool(
                 not self._custom_storage_dir
+                and getattr(self.space_manager, "_raw_spaces", None) is None
                 and is_watcher_active(project_root=getattr(self.space_manager, "project_root", None))
             )
             indexed_qnames = self._get_indexed_space_qnames() if use_non_blocking_diff else []
@@ -1889,9 +2125,10 @@ class IndexingPipeline:
         if can_use_vector:
             self.hybrid_engine.inverted_index = unified_index
             self.hybrid_engine.bm25_engine = self.bm25_engine
+            sym_pool_cap = max(limit * 32, min(len(unified_index.symbols), 1000), 60)
             hybrid_agg_hits = self.hybrid_engine.search(
                 query=query,
-                limit=max(limit * 3, 30),
+                limit=sym_pool_cap,
                 file_types=target_ftypes,
                 spaces=target_spaces,
                 kinds=kinds,

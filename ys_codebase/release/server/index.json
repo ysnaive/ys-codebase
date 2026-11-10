@@ -5,9 +5,8 @@
     "1.0.2.0",
     "1.0.3.2",
     "1.0.4.5",
-    "1.0.5.0",
-    "1.0.5.1",
-    "1.0.5.2"
+    "1.0.5.2",
+    "1.0.6.0"
   ],
   "releases": {
     "1.0.0.4": {
@@ -162,7 +161,7 @@
       "summary": "WarmWorker 初始化預先固化 YSCB_ROOT_DIR 與 YSCB_HOST_DIR 環境變數"
     },
     "1.0.5.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.8.0"
       },
@@ -172,7 +171,7 @@
       "summary": "解耦控制、派發與背景服務執行平面、新增 Worker 記憶體水位健康監控與自動回收、整合檔案空間背景監聽服務"
     },
     "1.0.5.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.8.0"
       },
@@ -190,6 +189,16 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "對齊背景工作行程預熱階段之虛擬工作目錄，消除首次啟動預熱阻塞"
+    },
+    "1.0.6.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.9.0"
+      },
+      "sha256": "a1a04b35d03acba331205295e5e3b35fb0de062453aa1cf0d58bfb5afba9d292",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 /api/cancel 斷線協作取消機制、背景服務前景讓渡與 CoreSpaceWatcher 單重試鎖讓渡，並修復熱重載預熱執行緒競態"
     }
   }
 }

@@ -684,16 +684,29 @@ def _sync_runtime_gitignore_space(
 
         reg_fn = getattr(reg, "register_space", None) or getattr(reg, "define_ephemeral_space", None)
         if callable(reg_fn):
-            reg_fn(
-                q_name,
-                {
-                    "entries": ["project://"],
-                    "include": inc_list,
-                    "exclude": exc_list,
-                    "watch": False,
-                },
-                watch=False,
-            )
+            try:
+                reg_fn(
+                    q_name,
+                    {
+                        "entries": ["project://"],
+                        "include": inc_list,
+                        "exclude": exc_list,
+                        "watch": False,
+                    },
+                    watch=False,
+                    replace=True,
+                )
+            except TypeError:
+                reg_fn(
+                    q_name,
+                    {
+                        "entries": ["project://"],
+                        "include": inc_list,
+                        "exclude": exc_list,
+                        "watch": False,
+                    },
+                    watch=False,
+                )
     except Exception:
         pass
 

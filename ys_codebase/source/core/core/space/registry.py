@@ -15,7 +15,7 @@ from pathlib import Path
 import threading
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
-from core.context import get_runtime_context, get_virtual_cwd
+from core.context import bind_runtime_context, get_current_scope, get_runtime_context, get_virtual_cwd
 from .exceptions import SpaceCycleError, SpaceError, SpaceNotFoundError
 from .schema import (
     HashPolicy,
@@ -154,6 +154,68 @@ def _has_intervening_symlink(child: Path, parent: Path) -> bool:
         except OSError:
             return True
     return False
+
+
+def _rebase_ancestor_symlink_target(
+    target_abs: Path,
+    entry_path: Path,
+    *,
+    follow_symlinks: bool,
+    project_root: Optional[Path] = None,
+) -> Optional[Path]:
+    """
+    Handle OS-level ancestor directory symlinks above `entry_path` (such as macOS
+    `/var -> /private/var` or `/tmp -> /private/tmp`) when a caller passes `Path.resolve()`
+    while `entry_path` uses lexical `os.path.abspath` (or vice versa), strictly preserving
+    `follow_symlinks=False` protection against workspace-internal or external directory symlinks.
+    """
+    try:
+        if not follow_symlinks and target_abs.is_symlink():
+            return None
+        entry_real = Path(os.path.normpath(os.path.realpath(str(entry_path))))
+        if not follow_symlinks:
+            if os.path.normcase(str(target_abs)) == os.path.normcase(str(entry_real)):
+                return entry_path
+            try:
+                rel_direct = target_abs.relative_to(entry_real)
+                if str(rel_direct) != "." and not str(rel_direct).startswith(".."):
+                    if _has_intervening_symlink(target_abs, entry_real):
+                        return None
+                    return Path(os.path.normpath(str(entry_path / rel_direct)))
+            except ValueError:
+                pass
+
+            boundary = project_root if project_root is not None else entry_path
+            boundary_norm = os.path.normcase(os.path.normpath(str(boundary)))
+            boundary_real = Path(os.path.normpath(os.path.realpath(str(boundary))))
+            cur = Path(target_abs.anchor) if target_abs.anchor else Path()
+            start_idx = 1 if target_abs.anchor else 0
+            for part in target_abs.parts[start_idx:]:
+                cur = cur / part
+                if cur.is_symlink():
+                    if os.path.normcase(os.path.normpath(str(cur))) == boundary_norm:
+                        continue
+                    sym_real = Path(os.path.normpath(os.path.realpath(str(cur))))
+                    if os.path.normcase(str(sym_real)) == os.path.normcase(str(boundary_real)):
+                        return None
+                    try:
+                        rel_b = boundary_real.relative_to(sym_real)
+                        if str(rel_b) == "." or str(rel_b).startswith(".."):
+                            return None
+                    except ValueError:
+                        return None
+
+        target_real = Path(os.path.normpath(os.path.realpath(str(target_abs))))
+        if os.path.normcase(str(target_real)) == os.path.normcase(str(entry_real)):
+            return entry_path
+        rel = target_real.relative_to(entry_real)
+        if str(rel) == "." or str(rel).startswith(".."):
+            return None
+        if not follow_symlinks and _has_intervening_symlink(target_real, entry_real):
+            return None
+        return Path(os.path.normpath(str(entry_path / rel)))
+    except (OSError, ValueError):
+        return None
 
 
 def compute_canonical_rel_path(
@@ -389,6 +451,29 @@ class SpaceRegistry:
         """Return normalized YSCB root directory Path."""
         return self._yscb_dir
 
+    @contextmanager
+    def _bind_registry_scope(self) -> Iterator[None]:
+        host_cand = self._project_root
+        if not (host_cand / "yscb.config.json").is_file() and (
+            self._yscb_dir.parent / "yscb.config.json"
+        ).is_file():
+            host_cand = self._yscb_dir.parent
+        scope = get_current_scope()
+        same_scope = (
+            scope is not None
+            and os.path.normcase(str(scope.active_host_dir or "")) == os.path.normcase(str(host_cand))
+            and os.path.normcase(str(scope.active_yscb_dir or "")) == os.path.normcase(str(self._yscb_dir))
+        )
+        if same_scope:
+            yield
+            return
+        with bind_runtime_context(
+            virtual_cwd=self._project_root,
+            host_dir=host_cand,
+            yscb_dir=self._yscb_dir,
+        ):
+            yield
+
     def reload(self) -> None:
         """
         Reload all space definitions using the four-stage, two-pass compilation pipeline:
@@ -396,7 +481,7 @@ class SpaceRegistry:
                 Stage 3 (`on_register_file_spaces` Event) -> Stage 4 (Runtime Injection).
         Pass 2: Synthesize `/<short-name>` spaces -> DFS expand `presets`/`!presets` -> Compile `SpaceConfig`.
         """
-        with self._lock:
+        with self._lock, self._bind_registry_scope():
             base_spaces_by_owner = self._discover_raw_definitions()
             self._raw_spaces_by_owner = base_spaces_by_owner
 
@@ -448,7 +533,7 @@ class SpaceRegistry:
             owner_bucket[short] = _merge_raw_space_dict(
                 owner_bucket.get(short, {}),
                 rt_raw,
-                collapse_wildcard=(short != "gitignore"),
+                collapse_wildcard=(short not in ("gitignore", "readonly")),
             )
 
         # Group owners by short_name in deterministic order
@@ -489,19 +574,27 @@ class SpaceRegistry:
             synth_qname = f"/{short_name}"
             owner_list = owners_by_short[short_name]
             compose_members = [f"{o}/{short_name}" for o in owner_list]
+            default_watch_short = False if short_name in ("gitignore", "readonly") else True
             any_watch = any(
-                bool(merged_by_owner[o][short_name].get("watch", True))
+                bool(merged_by_owner[o][short_name].get("watch", default_watch_short))
                 for o in owner_list
             )
             synth_exclude: List[str] = []
             if short_name == "workspace" and ws_owners:
                 synth_exclude = list(unified_ws_exclude)
+            synth_inc: List[str] = ["*"]
+            if (
+                synth_qname in all_raw_by_qname
+                and short_name in ("gitignore", "readonly")
+                and all_raw_by_qname[synth_qname][2].get("include")
+            ):
+                synth_inc = []
             synth_base: Dict[str, Any] = {
                 "description": f"Synthesized union space for '{short_name}' across {', '.join(owner_list)}",
                 "entries": [],
                 "compose": compose_members,
                 "presets": [],
-                "include": ["*"],
+                "include": synth_inc,
                 "exclude": synth_exclude,
                 "watch": any_watch,
             }
@@ -510,7 +603,7 @@ class SpaceRegistry:
                 synth_base = _merge_raw_space_dict(
                     synth_base,
                     existing_synth,
-                    collapse_wildcard=(short_name != "gitignore"),
+                    collapse_wildcard=(short_name not in ("gitignore", "readonly")),
                 )
             all_raw_by_qname[synth_qname] = ("", short_name, synth_base)
 
@@ -619,7 +712,7 @@ class SpaceRegistry:
                 owner_bucket[short] = _merge_raw_space_dict(
                     owner_bucket.get(short, {}),
                     p_dict,
-                    collapse_wildcard=(short != "gitignore"),
+                    collapse_wildcard=(short not in ("gitignore", "readonly")),
                 )
 
             for k, v in (self._explicit_spaces or {}).items():
@@ -632,7 +725,7 @@ class SpaceRegistry:
                 owner_bucket[short] = _merge_raw_space_dict(
                     owner_bucket.get(short, {}),
                     dict(v),
-                    collapse_wildcard=(short != "gitignore"),
+                    collapse_wildcard=(short not in ("gitignore", "readonly")),
                 )
             return spaces_by_owner
 
@@ -707,7 +800,7 @@ class SpaceRegistry:
                 owner_bucket[short] = _merge_raw_space_dict(
                     owner_bucket.get(short, {}),
                     p_dict,
-                    collapse_wildcard=(short != "gitignore"),
+                    collapse_wildcard=(short not in ("gitignore", "readonly")),
                 )
 
         # Backward compatibility: legacy top-level `gitignore` list converted into `<owner>/gitignore` space
@@ -750,7 +843,7 @@ class SpaceRegistry:
                 owner_bucket[short] = _merge_raw_space_dict(
                     owner_bucket.get(short, {}),
                     dict(s_val),
-                    collapse_wildcard=(short != "gitignore"),
+                    collapse_wildcard=(short not in ("gitignore", "readonly")),
                 )
 
     def _build_space_config_pass2(
@@ -858,7 +951,7 @@ class SpaceRegistry:
                 effective_inc.append(item)
 
         # Rule-level absolute union for include: if any rule is `*`/`**`/`**/*` (except for gitignore spaces), collapse to `*`
-        if short_name != "gitignore" and any(
+        if short_name not in ("gitignore", "readonly") and any(
             r.raw_pattern in ("*", "**", "**/*") for r in effective_inc
         ):
             first_wildcard_src = next(
@@ -891,7 +984,7 @@ class SpaceRegistry:
                 if res is None:
                     uri_warnings.append(f"Unresolvable entry URI: '{entry_str}'")
 
-        default_watch = False if short_name == "gitignore" else True
+        default_watch = False if short_name in ("gitignore", "readonly") else True
         eff_watch = bool(raw_data.get("watch", default_watch))
 
         return SpaceConfig(
@@ -1000,7 +1093,7 @@ class SpaceRegistry:
                     s
                     for s in self._spaces.values()
                     if s.owner != ""
-                    and s.short_name != "gitignore"
+                    and s.short_name not in ("gitignore", "readonly")
                     and (s.entries or s.compose)
                 ]
 
@@ -1010,7 +1103,7 @@ class SpaceRegistry:
                     for s in self._spaces.values()
                     if s.owner != ""
                     and s.watch
-                    and s.short_name != "gitignore"
+                    and s.short_name not in ("gitignore", "readonly")
                     and (s.entries or s.compose)
                 ]
 
@@ -1050,12 +1143,18 @@ class SpaceRegistry:
         """Alias for `resolve_spaces(query)`."""
         return self.resolve_spaces(query)
 
+    def has_space(self, query: str) -> bool:
+        """Return True if `query` resolves to at least one registered space without raising SpaceNotFoundError."""
+        with self._lock:
+            return bool(self._lookup_spaces_non_throwing(str(query or "").strip()))
+
     def register_space(
         self,
         name: str,
         config: Union[SpaceConfig, Mapping[str, Any]],
         *,
         watch: Optional[bool] = None,
+        replace: bool = False,
     ) -> SpaceConfig:
         """
         Register or merge a runtime space definition (Stage 4 / Stage 3 hook injection).
@@ -1088,14 +1187,25 @@ class SpaceRegistry:
                 )
 
             existing = self._runtime_spaces.get(q_name, {})
-            self._runtime_spaces[q_name] = _merge_raw_space_dict(
-                existing,
+            if replace:
+                base_rt: Dict[str, Any] = (
+                    {"description": existing["description"]}
+                    if "description" in existing and not raw_dict.get("description")
+                    else {}
+                )
+            else:
+                base_rt = existing
+            new_rt_dict = _merge_raw_space_dict(
+                base_rt,
                 raw_dict,
-                collapse_wildcard=(short_name != "gitignore"),
+                collapse_wildcard=(short_name not in ("gitignore", "readonly")),
             )
+            if not self._in_reload_broadcast and new_rt_dict == existing and q_name in self._spaces:
+                return self._spaces[q_name]
+            self._runtime_spaces[q_name] = new_rt_dict
 
             if self._in_reload_broadcast:
-                default_w = False if short_name == "gitignore" else True
+                default_w = False if short_name in ("gitignore", "readonly") else True
                 eff_w = bool(self._runtime_spaces[q_name].get("watch", default_w))
                 return SpaceConfig(
                     qualified_name=q_name,
@@ -1112,7 +1222,8 @@ class SpaceRegistry:
                     _yscb_dir=self._yscb_dir,
                 )
 
-            self._compile_pass_two()
+            with self._bind_registry_scope():
+                self._compile_pass_two()
             space_cfg = self._spaces[q_name]
 
         if space_cfg.watch:
@@ -1134,7 +1245,8 @@ class SpaceRegistry:
                 del self._runtime_spaces[name]
                 removed = True
             if removed and not self._in_reload_broadcast:
-                self._compile_pass_two()
+                with self._bind_registry_scope():
+                    self._compile_pass_two()
             return removed
 
     def define_ephemeral_space(
@@ -1305,6 +1417,112 @@ class SpaceRegistry:
 
         return None
 
+    def is_path_matched_fast(
+        self,
+        file_path: Union[str, Path],
+        space_query: Optional[str] = None,
+        *,
+        is_dir: bool = False,
+    ) -> bool:
+        """
+        Zero-stat fast boolean check evaluating whether `file_path` matches `space_query`.
+        Short-circuits on the first matching space without building provenance details.
+        """
+        raw_str = str(file_path or "").strip()
+        if not raw_str:
+            return False
+        if "://" in raw_str:
+            resolved_opt = resolve_semantic_or_rel_path(
+                raw_str, self._project_root, self._yscb_dir
+            )
+            if resolved_opt is None:
+                return False
+            resolved_target = resolved_opt
+        elif os.path.isabs(raw_str):
+            resolved_target = Path(os.path.normpath(raw_str))
+        else:
+            resolved_target = Path(os.path.normpath(str(self._project_root / raw_str)))
+
+        norm_target_posix = os.path.normcase(str(resolved_target)).replace("\\", "/").rstrip("/")
+        target_spaces = self.resolve_spaces(space_query)
+        for space_cfg in target_spaces:
+            if self._is_single_space_matched_fast(
+                space_cfg,
+                resolved_target,
+                norm_target_posix,
+                is_dir=is_dir,
+                visiting=(),
+            ):
+                return True
+        return False
+
+    def _is_single_space_matched_fast(
+        self,
+        space_cfg: SpaceConfig,
+        target_abs: Path,
+        norm_target_posix: str,
+        *,
+        is_dir: bool,
+        visiting: Tuple[str, ...],
+    ) -> bool:
+        pos_children, neg_children = self._split_compose_children(space_cfg, visiting)
+        next_visiting = (*visiting, space_cfg.qualified_name)
+
+        for neg_child in neg_children:
+            if self._is_single_space_matched_fast(
+                neg_child,
+                target_abs,
+                norm_target_posix,
+                is_dir=is_dir,
+                visiting=next_visiting,
+            ):
+                return False
+
+        resolved_entries = space_cfg.resolve_entry_paths(self._project_root)
+        for _raw_entry, entry_path in resolved_entries:
+            if entry_path is None:
+                continue
+            norm_entry = os.path.normcase(str(entry_path)).replace("\\", "/").rstrip("/")
+            eff_target: Optional[Path] = None
+            if norm_target_posix == norm_entry or norm_target_posix.startswith(norm_entry + "/"):
+                if not space_cfg.follow_symlinks and _has_intervening_symlink(
+                    target_abs, entry_path
+                ):
+                    continue
+                eff_target = target_abs
+            else:
+                eff_target = _rebase_ancestor_symlink_target(
+                    target_abs,
+                    entry_path,
+                    follow_symlinks=space_cfg.follow_symlinks,
+                    project_root=self._project_root,
+                )
+            if eff_target is None:
+                continue
+            if is_dir:
+                if not space_cfg.is_dir_excluded_fast(
+                    eff_target, entry_path, self._project_root
+                ):
+                    return True
+            else:
+                if not space_cfg.is_dir_excluded_fast(
+                    eff_target.parent, entry_path, self._project_root
+                ) and space_cfg.is_file_matched_fast(
+                    eff_target, entry_path, self._project_root
+                ):
+                    return True
+
+        for child_cfg in pos_children:
+            if self._is_single_space_matched_fast(
+                child_cfg,
+                target_abs,
+                norm_target_posix,
+                is_dir=is_dir,
+                visiting=next_visiting,
+            ):
+                return True
+        return False
+
     def match_path(
         self,
         file_path: Union[str, Path],
@@ -1440,14 +1658,14 @@ class SpaceRegistry:
         except OSError:
             pass
 
-        resolved_entries = space_cfg.resolve_entries(self._project_root)
-        candidate_entries: List[Tuple[str, Path]] = []
+        resolved_entries = space_cfg.resolve_entry_paths(self._project_root)
+        candidate_entries: List[Tuple[str, Path, Path]] = []
 
-        for raw_entry, entry_path, _exists in resolved_entries:
+        for raw_entry, entry_path in resolved_entries:
             if entry_path is None:
                 continue
             if os.path.normcase(str(target_abs)) == os.path.normcase(str(entry_path)):
-                candidate_entries.append((raw_entry, entry_path))
+                candidate_entries.append((raw_entry, entry_path, target_abs))
                 continue
             try:
                 rel = target_abs.relative_to(entry_path)
@@ -1456,10 +1674,20 @@ class SpaceRegistry:
                         target_abs, entry_path
                     ):
                         continue
-                    candidate_entries.append((raw_entry, entry_path))
+                    candidate_entries.append((raw_entry, entry_path, target_abs))
                     continue
             except ValueError:
                 pass
+
+            rebased = _rebase_ancestor_symlink_target(
+                target_abs,
+                entry_path,
+                follow_symlinks=space_cfg.follow_symlinks,
+                project_root=self._project_root,
+            )
+            if rebased is not None:
+                candidate_entries.append((raw_entry, entry_path, rebased))
+                continue
 
             if space_cfg.follow_symlinks:
                 try:
@@ -1468,7 +1696,7 @@ class SpaceRegistry:
                     if t_real == e_real or not str(
                         t_real.relative_to(e_real)
                     ).startswith(".."):
-                        candidate_entries.append((raw_entry, e_real))
+                        candidate_entries.append((raw_entry, e_real, t_real))
                 except (OSError, ValueError):
                     pass
 
@@ -1476,9 +1704,9 @@ class SpaceRegistry:
         candidate_entries.sort(key=lambda item: len(item[1].parts), reverse=True)
 
         last_detail: Optional[SpaceMatchDetail] = None
-        for raw_entry, entry_path in candidate_entries:
+        for raw_entry, entry_path, eff_target in candidate_entries:
             matched, inc_rule, exc_rule = space_cfg.match_file(
-                target_abs, entry_path, self._project_root, is_dir=is_dir
+                eff_target, entry_path, self._project_root, is_dir=is_dir
             )
             if matched:
                 return (
@@ -1792,7 +2020,12 @@ class SpaceRegistry:
         visited_dirs_norm: Set[str],
         dedup_map: Dict[str, List[Any]],
     ) -> None:
-        if space_cfg.follow_symlinks:
+        norm_curr_key = os.path.normcase(str(current_dir))
+        if not space_cfg.follow_symlinks:
+            if norm_curr_key in visited_dirs_norm:
+                return
+            visited_dirs_norm.add(norm_curr_key)
+        else:
             try:
                 dir_st = current_dir.stat()
                 if dir_st.st_ino != 0:
@@ -1948,17 +2181,40 @@ def get_default_registry(
     Ensures runtime ephemeral spaces (`define_ephemeral_space`) registered via top-level
     SDK calls are visible to subsequent queries and the in-process Watcher.
     """
+    ctx = get_runtime_context()
+    scope = get_current_scope()
+    fast_key: Any = (
+        "__fast__",
+        os.path.normcase(os.path.abspath(str(project_root))) if project_root is not None else "",
+        os.path.normcase(os.path.abspath(str(yscb_dir))) if yscb_dir is not None else "",
+        os.path.normcase(get_virtual_cwd()),
+        str(
+            scope.active_host_dir
+            if scope and scope.active_host_dir
+            else getattr(ctx.uri_tls, "active_host_dir", "") or ""
+        ),
+        str(
+            scope.active_yscb_dir
+            if scope and scope.active_yscb_dir
+            else getattr(ctx.uri_tls, "active_yscb_dir", "") or ""
+        ),
+    )
+    with ctx.space_registries_lock:
+        cached = ctx.space_default_registries.get(fast_key)
+        if cached is not None:
+            return cached
+
     eff_proj, eff_yscb = SpaceRegistry._resolve_roots(project_root, yscb_dir)
     key = (
         os.path.normcase(str(eff_proj)),
         os.path.normcase(str(eff_yscb)),
     )
-    ctx = get_runtime_context()
     with ctx.space_registries_lock:
         reg = ctx.space_default_registries.get(key)
         if reg is None:
             reg = SpaceRegistry(project_root=eff_proj, yscb_dir=eff_yscb)
             ctx.space_default_registries[key] = reg
+        ctx.space_default_registries[fast_key] = reg
         return reg
 
 
@@ -2017,13 +2273,14 @@ def register_space(
     config: Union[SpaceConfig, Mapping[str, Any]],
     *,
     watch: Optional[bool] = None,
+    replace: bool = False,
     registry: Optional[SpaceRegistry] = None,
     project_root: Optional[Union[str, Path]] = None,
     yscb_dir: Optional[Union[str, Path]] = None,
 ) -> SpaceConfig:
     """Convenience primitive for registering or merging a runtime space (`watch=True` by default)."""
     reg = registry or get_default_registry(project_root=project_root, yscb_dir=yscb_dir)
-    return reg.register_space(name, config, watch=watch)
+    return reg.register_space(name, config, watch=watch, replace=replace)
 
 
 def unregister_space(

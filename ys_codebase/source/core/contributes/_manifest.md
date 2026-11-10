@@ -20,6 +20,7 @@
   - `event`: 生命週期事件清冊檢索。
   - `contributes`: Contributes 擴充宣告與 Schema 剛性檢驗管理。
   - `gitignore`: 根目錄 `.gitignore` 託管區塊狀態檢視與同步。
+  - `file-lock`: `/readonly` 宣告式唯讀檔案鎖狀態檢視、同步與維護。
 - **生命週期事件**：`pre_cli_dispatch`, `post_cli_dispatch`, `on_reload`, `on_installed`, `on_update`, `on_remove`。
 - **語系與專有名詞擴充點 (`locales`)**：供各模組註冊 `"definition"`（語意解釋與佔位符契約檔相對路徑）與各 `"<lang-id>"`（語系或宿主專有名詞 JSON 檔相對路徑）映射。
 

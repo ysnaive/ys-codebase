@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 
@@ -353,6 +354,7 @@ class TestServerModule(YSCBTestCase):
             req_unauth = urllib.request.Request(url_status)
             with self.assertRaises(urllib.error.HTTPError) as cm:
                 urllib.request.urlopen(req_unauth)
+            cm.exception.close()
             self.assertEqual(cm.exception.code, 403)
 
             # 2. Test authorized GET /api/status
@@ -380,6 +382,7 @@ class TestServerModule(YSCBTestCase):
             req_dispatch_bad = urllib.request.Request(url_dispatch, data=bad_payload, headers=auth_headers, method="POST")
             with self.assertRaises(urllib.error.HTTPError) as cm:
                 urllib.request.urlopen(req_dispatch_bad)
+            cm.exception.close()
             self.assertEqual(cm.exception.code, 400)
 
             # 5. Test POST /api/shutdown
@@ -1618,7 +1621,7 @@ class TestServerModule(YSCBTestCase):
                 self.assertEqual(cm.exception.code, 400)
                 cm.exception.close()
 
-            def _fake_dispatch_task(req_data, chunk_emitter):
+            def _fake_dispatch_task(req_data, chunk_emitter, **_kwargs):
                 chunk_emitter({"type": "terminal_stream", "stream": "stdout", "text": "dispatched ok\n"})
                 chunk_emitter({"type": "task_finish", "exit_code": 0, "duration_ms": 1.0, "error": None})
                 return 0
@@ -1916,13 +1919,14 @@ class TestServerModule(YSCBTestCase):
 
         sleep_calls = 0
 
-        def _fake_sleep(_sec):
+        def _fake_wait(_sec):
             nonlocal sleep_calls
             sleep_calls += 1
             if sleep_calls >= 2:
                 sup._is_running = False
+            return False
 
-        with unittest.mock.patch("server.master.time.sleep", side_effect=_fake_sleep), \
+        with unittest.mock.patch.object(sup._stop_event, "wait", side_effect=_fake_wait), \
              unittest.mock.patch.object(sup, "stop") as mock_stop:
             sup._idle_ttl_loop()
             mock_stop.assert_not_called()
@@ -1999,6 +2003,184 @@ class TestServerModule(YSCBTestCase):
              redirect_stdout(io.StringIO()):
             self.assertEqual(server_cli.stop(force_bags), 0)
         self.assertTrue(os.path.exists(active_log), "Active log must NOT be archived without acquiring daemon.lock")
+        self.mark_passed()
+
+    def test_client_disconnect_sends_cooperative_cancel_and_recovers_worker(self):
+        """Verify out-of-band `{"action": "cancel"}` cancels an active task with exit_code=130 via `TaskCancelledError` while keeping `WarmWorker` healthy for subsequent dispatches, and `foreground_task_scope` ref-counts nested scopes."""
+        from core.context import (
+            check_task_cancelled,
+            foreground_task_scope,
+            is_foreground_active,
+        )
+        from server.worker import worker_main
+
+        # 1. Nested foreground_task_scope ref-counting
+        self.assertFalse(is_foreground_active())
+        with foreground_task_scope():
+            self.assertTrue(is_foreground_active())
+            with foreground_task_scope():
+                self.assertTrue(is_foreground_active())
+            self.assertTrue(is_foreground_active())
+        self.assertFalse(is_foreground_active())
+
+        # 2. Interactive pipe into worker_main: cancel slow task mid-flight, then run normal task cleanly
+        r_fd, w_fd = os.pipe()
+        in_reader = os.fdopen(r_fd, "r", encoding="utf-8")
+        self.addCleanup(in_reader.close)
+        in_writer = os.fdopen(w_fd, "w", encoding="utf-8")
+        self.addCleanup(in_writer.close)
+        emitted_packets = []
+        task_started = threading.Event()
+        first_finished = threading.Event()
+        second_finished = threading.Event()
+
+        class _PacketCaptureStream:
+            def write(self, s):
+                for ln in s.splitlines():
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    pkt = json.loads(ln)
+                    emitted_packets.append(pkt)
+                    if pkt.get("type") == "task_finish":
+                        fin_cnt = sum(1 for p in emitted_packets if p.get("type") == "task_finish")
+                        if fin_cnt == 1:
+                            first_finished.set()
+                        elif fin_cnt >= 2:
+                            second_finished.set()
+                return len(s)
+
+            def flush(self):
+                pass
+
+        def _fake_dispatch_local(module_name, cmd_name, raw_args, cmd_spec, yscb_abs):
+            if module_name == "slow_cancellable":
+                task_started.set()
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline:
+                    check_task_cancelled()
+                    time.sleep(0.01)
+                return 0
+            return 0
+
+        with unittest.mock.patch.object(WarmWorker, "pre_warm", autospec=True), unittest.mock.patch(
+            "core.commands.dispatcher.dispatch_local", side_effect=_fake_dispatch_local
+        ):
+            t_worker = threading.Thread(
+                target=worker_main,
+                kwargs={
+                    "yscb_root": self.root_dir,
+                    "in_stream": in_reader,
+                    "out_stream": _PacketCaptureStream(),
+                },
+                daemon=True,
+            )
+            t_worker.start()
+            try:
+                in_writer.write(
+                    json.dumps({"action": "dispatch", "module": "slow_cancellable", "args": [], "cwd": self.root_dir})
+                    + "\n"
+                )
+                in_writer.flush()
+                self.assertTrue(task_started.wait(timeout=3.0))
+
+                # Send out-of-band cooperative cancel while first dispatch is running
+                in_writer.write(json.dumps({"action": "cancel"}) + "\n")
+                in_writer.flush()
+                self.assertTrue(first_finished.wait(timeout=3.0))
+
+                # Dispatch a second fast task on the SAME warm worker session to verify clean recovery
+                in_writer.write(
+                    json.dumps({"action": "dispatch", "module": "fast_followup", "args": [], "cwd": self.root_dir})
+                    + "\n"
+                )
+                in_writer.write(json.dumps({"action": "exit"}) + "\n")
+                in_writer.flush()
+                self.assertTrue(second_finished.wait(timeout=3.0))
+                t_worker.join(timeout=3.0)
+            finally:
+                try:
+                    in_writer.close()
+                except Exception:
+                    pass
+                try:
+                    in_reader.close()
+                except Exception:
+                    pass
+
+        finishes = [p for p in emitted_packets if p.get("type") == "task_finish"]
+        self.assertEqual(len(finishes), 2)
+        self.assertEqual(finishes[0]["exit_code"], 130)
+        self.assertEqual(finishes[1]["exit_code"], 0)
+
+        # 3. MasterSupervisor pre-dispatch disconnect skips worker execution immediately (exit 130)
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
+        pre_emitted = []
+        rc_pre = sup.dispatch_task(
+            {"module": "core", "args": ["status"]},
+            pre_emitted.append,
+            is_client_disconnected=lambda: True,
+        )
+        self.assertEqual(rc_pre, 130)
+        self.assertEqual(pre_emitted, [])
+
+        # 4. Task-scoped cancel: early cancel for tid_a aborts tid_a immediately, while stale cancel for tid_a never kills tid_b
+        from core.context import bind_active_task_cancel_scope, is_task_cancelled, request_task_cancel, reset_task_cancelled
+
+        request_task_cancel("tid_early")
+        self.assertTrue(bind_active_task_cancel_scope("tid_early"))
+        self.assertTrue(is_task_cancelled())
+        reset_task_cancelled("tid_early")
+
+        self.assertFalse(bind_active_task_cancel_scope("tid_active_b"))
+        request_task_cancel("tid_stale_a")
+        self.assertFalse(is_task_cancelled())
+        reset_task_cancelled("tid_active_b")
+        self.mark_passed()
+
+
+    def test_watcher_reload_drains_inflight_dispatch_and_rejects_new_503(self):
+        """Verify ModulesWatcher reload drains active foreground dispatch cleanly while HTTP /api/dispatch returns 503 when _restarting is True so CLI falls back to cold dispatch."""
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
+        with unittest.mock.patch.object(sup, "_spawn_worker_locked", return_value=0):
+            sup.start(foreground=False)
+        try:
+            sup._restarting = True
+            auth_headers = {"Authorization": f"Bearer {sup.token}", "Content-Type": "application/json"}
+            payload = json.dumps({"module": "core", "args": ["status"]}).encode("utf-8")
+            req = urllib.request.Request(f"http://127.0.0.1:{sup.port}/api/dispatch", data=payload, headers=auth_headers, method="POST")
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                urllib.request.urlopen(req, timeout=3.0)
+            self.assertEqual(cm.exception.code, 503)
+            cm.exception.close()
+
+            # Verify on_modules_changed waits for an active short dispatch holding _dispatch_lock before calling restart_worker
+            sup._restarting = False
+            order = []
+            held_ready = threading.Event()
+            release_gate = threading.Event()
+
+            def _hold_dispatch():
+                with sup._dispatch_lock:
+                    held_ready.set()
+                    release_gate.wait(timeout=2.0)
+                    order.append("dispatch_finished")
+
+            th_disp = threading.Thread(target=_hold_dispatch, daemon=True)
+            th_disp.start()
+            self.assertTrue(held_ready.wait(timeout=2.0))
+
+            with unittest.mock.patch.object(sup, "restart_worker", side_effect=lambda: order.append("worker_restarted") or 7777):
+                th_reload = threading.Thread(target=sup.on_modules_changed, args=({"ast"},), daemon=True)
+                th_reload.start()
+                release_gate.set()
+                th_disp.join(timeout=2.0)
+                th_reload.join(timeout=2.0)
+
+            self.assertEqual(order, ["dispatch_finished", "worker_restarted"])
+        finally:
+            sup._restarting = False
+            sup.stop()
         self.mark_passed()
 
 

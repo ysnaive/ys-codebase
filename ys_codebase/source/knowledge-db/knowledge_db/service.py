@@ -13,9 +13,11 @@ import time
 from typing import Any, Dict, Optional, Tuple, Union
 
 from core.context import (
+    TaskCancelledError,
     get_or_compute_cell_state,
     get_runtime_context,
     invalidate_cell_state,
+    is_foreground_active,
 )
 from core.log import bind_log_context, log_debug, log_warn
 
@@ -171,7 +173,14 @@ def is_worker_running(indices_dir: Optional[Union[str, Path]] = None) -> bool:
         if indices_dir is None:
             return True
         mem_dir = str(_get_worker_mem_state().get("indices_dir") or "")
-        if not mem_dir or mem_dir == _norm_indices_dir(indices_dir):
+        if not mem_dir:
+            w_eng = getattr(w, "_engine", None)
+            if w_eng is not None and hasattr(w_eng, "pipeline"):
+                try:
+                    mem_dir = _norm_indices_dir(w_eng.pipeline.get_indices_dir())
+                except Exception:
+                    mem_dir = ""
+        if mem_dir and _norm_indices_dir(mem_dir) == _norm_indices_dir(indices_dir):
             return True
     if indices_dir is not None:
         st = read_worker_state(indices_dir)
@@ -201,20 +210,33 @@ def write_worker_state(
     norm_dir = _norm_indices_dir(indices_dir)
     mem_st = _get_worker_mem_state()
     with _WORKER_LOCK:
-        mem_st["indices_dir"] = norm_dir
-        if busy:
-            prev_ts = float(mem_st.get("busy_start_ts", 0.0) or 0.0)
-            if start_ts <= 0.0:
-                start_ts = prev_ts if prev_ts > 0.0 else now
-            mem_st["busy_start_ts"] = start_ts
-            mem_st["phase"] = eff_phase
-            mem_st["progress"] = eff_progress
-            _IDLE_EVENT.clear()
-        else:
-            mem_st["busy_start_ts"] = 0.0
-            mem_st["phase"] = eff_phase
-            mem_st["progress"] = eff_progress
-            _IDLE_EVENT.set()
+        w = mem_st.get("active_worker")
+        active = w is not None and w.is_alive()
+        owner_dir = str(mem_st.get("indices_dir") or "")
+        if active and not owner_dir and getattr(w, "_engine", None) is not None:
+            try:
+                owner_dir = _norm_indices_dir(w._engine.pipeline.get_indices_dir())
+                mem_st["indices_dir"] = owner_dir
+            except Exception:
+                owner_dir = ""
+        should_update_mem = (active and (not owner_dir or owner_dir == norm_dir)) or (
+            not active and (worker_running or owner_dir == norm_dir)
+        )
+        if should_update_mem:
+            mem_st["indices_dir"] = norm_dir if (active or worker_running) else ""
+            if busy:
+                prev_ts = float(mem_st.get("busy_start_ts", 0.0) or 0.0)
+                if start_ts <= 0.0:
+                    start_ts = prev_ts if prev_ts > 0.0 else now
+                mem_st["busy_start_ts"] = start_ts
+                mem_st["phase"] = eff_phase
+                mem_st["progress"] = eff_progress
+                _IDLE_EVENT.clear()
+            else:
+                mem_st["busy_start_ts"] = 0.0
+                mem_st["phase"] = eff_phase
+                mem_st["progress"] = eff_progress
+                _IDLE_EVENT.set()
 
     p = get_worker_state_path(indices_dir)
     _invalidate_worker_cell_state()
@@ -447,7 +469,6 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._last_download_attempt_ts: float = 0.0
         self._space_diffs_processed: int = 0
         self._vector_batches_processed: int = 0
         self._last_sync_at: Optional[float] = None
@@ -538,7 +559,10 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
         try:
             while not self._stop_event.is_set():
                 self._wake_event.clear()
-                self._run_sync_cycle(engine, indices_dir)
+                try:
+                    self._run_sync_cycle(engine, indices_dir)
+                except Exception as loop_exc:
+                    log_warn(f"[knowledge-db-worker] Unexpected loop error: {loop_exc}", stream="stderr")
                 if self._stop_event.is_set():
                     break
                 # Wait for next `on_file_space_changed` wakeup or periodic self-check
@@ -553,7 +577,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
     def _run_sync_cycle(self, engine: Any, indices_dir: Path) -> None:
         """Execute a full background synchronization cycle (Stage 1 + Auto Model Download + Stage 2)."""
         busy_start_ts: float = 0.0
-        final_state: str = self.STATE_READY
+        final_state: Optional[str] = None
         final_phase: str = "idle"
         final_progress: str = ""
         did_sync_work: bool = False
@@ -606,7 +630,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
 
             # Yield before Stage 1 if a foreground CLI command is actively executing in WarmWorker
             try:
-                if bool(get_runtime_context().get_module_state("server.worker.foreground_active", lambda: False)):
+                if is_foreground_active():
                     self._wake_event.wait(timeout=0.05)
                     return
             except Exception:
@@ -628,11 +652,13 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
             # Stage 2: Vector model auto-download & micro-batched vector self-healing
             enable_vec = getattr(engine.config, "enable_vector_search", True)
             if not enable_vec:
+                final_state = self.STATE_READY
                 self._idle_verified_state = _current_index_signature()
                 return
 
             emb_svc = getattr(engine, "embedding_service", None)
             if emb_svc is None:
+                final_state = self.STATE_READY
                 self._idle_verified_state = _current_index_signature()
                 return
 
@@ -646,35 +672,21 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
 
             has_model = emb_svc.has_local_model() if hasattr(emb_svc, "has_local_model") else emb_svc.is_model_downloaded()
             if not emb_svc.mock_mode and not has_model:
-                now = time.time()
-                if (now - self._last_download_attempt_ts) >= self.MODEL_DOWNLOAD_RETRY_COOLDOWN_SEC:
-                    self._last_download_attempt_ts = now
-                    _mark_busy("downloading_model", f"背景自動下載向量模型 {emb_svc.model_name}")
-                    try:
-                        dl_ok = emb_svc.download_model(force=False)
-                        if not dl_ok:
-                            raise RuntimeError(f"download_model returned False for {emb_svc.model_name}")
-                        needs_vectors = True
-                        did_sync_work = True
-                    except Exception as dl_err:
-                        final_state = self.STATE_DEGRADED_OFFLINE
-                        final_phase = "degraded_offline"
-                        final_progress = f"向量模型下載失敗或離線降級: {dl_err}"
-                        log_warn(f"[knowledge-db-worker] Background model download failed: {dl_err}", stream="stderr")
-                        return
-                else:
-                    final_state = self.STATE_DEGRADED_OFFLINE
-                    final_phase = "degraded_offline"
-                    final_progress = f"等待向量模型重試冷卻 ({emb_svc.model_name})"
-                    return
+                final_state = self.STATE_DEGRADED_OFFLINE
+                final_phase = "degraded_offline"
+                final_progress = f"本地缺少向量模型權重 ({emb_svc.model_name})，已降級純 BM25"
+                self._idle_verified_state = _current_index_signature()
+                return
 
             if not emb_svc.is_available:
                 final_state = self.STATE_DEGRADED_OFFLINE
                 final_phase = "degraded_offline"
                 final_progress = f"向量模型不可用 ({emb_svc.model_name})"
+                self._idle_verified_state = _current_index_signature()
                 return
 
             if not needs_vectors:
+                final_state = self.STATE_READY
                 self._idle_verified_state = _current_index_signature()
                 return
 
@@ -686,7 +698,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 # Yield immediately to foreground CLI tasks in WarmWorker while persisting partial progress
                 # and marking phase="yielded_to_foreground" so foreground search never overwrites in-memory vectors
                 try:
-                    if bool(get_runtime_context().get_module_state("server.worker.foreground_active", lambda: False)):
+                    if is_foreground_active():
                         if getattr(engine.pipeline, "_vector_index_dirty", False):
                             engine.pipeline.flush_vector_index()
                             batches_since_persist = 0
@@ -766,6 +778,11 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                 }
                 # Brief yield between micro-batches
                 time.sleep(0.005)
+            if not self._stop_event.is_set():
+                final_state = self.STATE_READY
+        except TaskCancelledError:
+            final_state = None
+            self._wake_event.wait(timeout=0.05)
         except Exception as exc:
             log_warn(f"[knowledge-db-worker] Sync cycle warning: {exc}", stream="stderr")
         finally:
@@ -782,7 +799,7 @@ class KnowledgeDBServiceWorker(BaseServiceWorker):
                     trim_process_memory()
                 except Exception:
                     pass
-            if not self._stop_event.is_set():
+            if final_state is not None and not self._stop_event.is_set():
                 self.set_state(final_state)
             if busy_start_ts > 0.0 or final_phase != "idle":
                 clear_worker_state(

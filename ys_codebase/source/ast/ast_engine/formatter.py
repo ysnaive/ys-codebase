@@ -87,14 +87,30 @@ class ASTResultFormatter:
     def normalize_workspace_path(self, file_path: Union[str, Path]) -> str:
         raw = str(file_path).replace("\\", "/")
         if "://" in raw:
-            _, raw = raw.split("://", 1)
-            raw = raw.lstrip("/")
+            scheme, rest = raw.split("://", 1)
+            if scheme.lower() == "file":
+                raw = rest[1:] if (len(rest) >= 3 and rest[0] == "/" and rest[2] == ":") else rest
+            else:
+                raw = rest.lstrip("/")
         p = Path(raw)
         ws = self.get_workspace_root()
         try:
             if p.is_absolute():
-                rel = p.resolve().relative_to(ws)
-                return str(rel).replace("\\", "/")
+                real_p = Path(os.path.realpath(str(p)))
+                real_ws = Path(os.path.realpath(str(ws)))
+                try:
+                    rel = real_p.relative_to(real_ws)
+                    return str(rel).replace("\\", "/")
+                except ValueError:
+                    norm_p = Path(os.path.normcase(str(real_p)))
+                    norm_ws = Path(os.path.normcase(str(real_ws)))
+                    norm_rel = norm_p.relative_to(norm_ws)
+                    if not norm_rel.parts:
+                        return "."
+                    preserved = real_p.parts[len(real_ws.parts) :]
+                    if preserved:
+                        return "/".join(preserved).replace("\\", "/")
+                    return str(norm_rel).replace("\\", "/")
         except Exception:
             pass
         return raw
@@ -102,8 +118,11 @@ class ASTResultFormatter:
     def to_file_uri(self, file_path: Union[str, Path], line: Optional[int] = None) -> str:
         raw = str(file_path).replace("\\", "/")
         if "://" in raw:
-            _, raw = raw.split("://", 1)
-            raw = raw.lstrip("/")
+            scheme, rest = raw.split("://", 1)
+            if scheme.lower() == "file":
+                raw = rest[1:] if (len(rest) >= 3 and rest[0] == "/" and rest[2] == ":") else rest
+            else:
+                raw = rest.lstrip("/")
         p = Path(raw)
         if not p.is_absolute():
             resolved = None
@@ -686,6 +705,9 @@ class ASTResultFormatter:
             f"  - 統一符號快照  : {'已建立' if st.get('has_symbols_index') or st.get('index_exists') else '未建立'} ({st.get('total_symbols', 0)} 個符號)",
             f"  - 雙向呼叫圖譜  : {'已建立' if st.get('has_graph_index') or st.get('index_exists') else '未建立'} ({st.get('total_edges', 0)} 條呼叫邊)",
         ]
+        if st.get("building_in_progress"):
+            b_prog = st.get("build_progress") or st.get("build_phase") or "working"
+            lines.append(f"  - 當前建圖狀態  : 建圖進行中 ({b_prog})")
         langs = st.get("registered_languages") or []
         if langs:
             lines.append(f"  - 已註冊解析器  : {len(langs)} 種語言 ({', '.join(langs)})")

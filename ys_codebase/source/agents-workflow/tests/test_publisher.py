@@ -68,7 +68,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
     def tearDown(self):
         self._snapshot.restore()
         if hasattr(self, "temp_dir") and os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir, ignore_errors=True)
+            vfs.rmtree(self.temp_dir, ignore_errors=True)
         super().tearDown()
 
     def test_initial_release_persists_fingerprint(self):
@@ -111,11 +111,21 @@ class TestReleasePublisherDiff(YSCBTestCase):
         target_files = manifest_data.get("published_files", [])
         self.assertGreater(len(target_files), 1)
 
-        modified_file = target_files[0]
+        modified_file = next((f for f in target_files if "skills" in f), target_files[0])
         if modified_file.startswith("project://"):
             modified_file = uri.resolve(modified_file, interactive=False)
-        with open(modified_file, "w", encoding="utf-8") as f:
-            f.write("MODIFIED CONTENT")
+        from core import file_lock
+        self.assertTrue(file_lock.is_file_readonly(modified_file))
+        agents_md_cand = next((f for f in target_files if f.endswith("AGENTS.md")), None)
+        self.assertIsNotNone(agents_md_cand)
+        real_agents_md = uri.resolve(agents_md_cand, interactive=False) if str(agents_md_cand).startswith("project://") else str(agents_md_cand)
+        self.assertFalse(
+            file_lock.is_file_readonly(real_agents_md),
+            "Soft-merged AGENTS.md must remain writable for user edits",
+        )
+        with file_lock.writable_scope(modified_file):
+            with open(modified_file, "w", encoding="utf-8") as f:
+                f.write("MODIFIED CONTENT")
 
         manifest_data["fingerprint"] = "stale_fake_fingerprint"
         vfs.write_json(PROJECT_MANIFEST_CACHE_URI, manifest_data)
@@ -188,7 +198,7 @@ class TestReleasePublisherDiff(YSCBTestCase):
         if deleted_file.startswith("project://"):
             deleted_file = uri.resolve(deleted_file, interactive=False)
         if os.path.isfile(deleted_file):
-            os.remove(deleted_file)
+            vfs.remove(deleted_file)
 
         res2 = self.publisher.release_all(force=False)
         self.assertTrue(res2["success"])
@@ -608,17 +618,28 @@ class TestJITReleaseAndHooks(YSCBTestCase):
         self.assertIn("Warning: Failed during on_pre_cli_dispatch", err_buf.getvalue())
 
         registered: dict = {}
+        replace_flags: dict = {}
 
         class _DummySpaceReg:
-            def register_space(self, name: str, cfg: dict) -> None:
+            def register_space(self, name: str, cfg: dict, *, replace: bool = False) -> None:
                 registered[name] = cfg
+                replace_flags[name] = replace
 
         self.assertFalse(hook_core.on_register_file_spaces(None))
         with patch.object(ReleasePublisher, "collect_gitignore_patterns", return_value=["/.agents/.yscb/"]):
             self.assertTrue(hook_core.on_register_file_spaces({"registry": _DummySpaceReg()}))
         self.assertIn("agents-workflow/gitignore", registered)
+        self.assertIn("agents-workflow/readonly", registered)
         self.assertEqual(registered["agents-workflow/gitignore"]["include"], ["/.agents/.yscb/"])
         self.assertFalse(registered["agents-workflow/gitignore"]["watch"])
+        self.assertFalse(registered["agents-workflow/readonly"]["watch"])
+        self.assertIn("workflow.plans://**/changelog.md", registered["agents-workflow/readonly"]["include"])
+        self.assertIn("workflow.archived://**", registered["agents-workflow/readonly"]["include"])
+        self.assertIn("workflow.roadmap://TODO.md", registered["agents-workflow/readonly"]["include"])
+        self.assertIn("project://.agents/.yscb/", registered["agents-workflow/readonly"]["include"])
+        self.assertIn("project://.agents", registered["agents-workflow/readonly"]["entries"])
+        self.assertTrue(replace_flags.get("agents-workflow/gitignore"))
+        self.assertTrue(replace_flags.get("agents-workflow/readonly"))
 
         self.assertIsNone(hook_dev.on_test_setup({"sandbox": "mock"}))
         self.assertIsNone(hook_dev.on_test_teardown({"sandbox": "mock"}))
@@ -771,7 +792,7 @@ class TestPublisherCrossPlatform(YSCBTestCase):
     def tearDown(self):
         self._snapshot.restore()
         if hasattr(self, "temp_dir") and os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir, ignore_errors=True)
+            vfs.rmtree(self.temp_dir, ignore_errors=True)
         super().tearDown()
 
     def test_sha1_crlf_normalization(self):

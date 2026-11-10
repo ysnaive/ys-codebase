@@ -982,7 +982,12 @@ def query_callers(
     if early_payload is not None:
         return early_payload
 
+    ws_graph = _extract_workspace_graph(graph)
     target_ids = expand_contract_symbol_ids(symbols_map, res.targets, precomputed_fingerprint=current_fp)
+    if ws_graph is not None:
+        for ws_tid in expand_contract_symbol_ids(ws_graph, res.targets):
+            if ws_tid in symbols_map and ws_tid not in target_ids:
+                target_ids.append(ws_tid)
     caller_sites_map: Dict[str, List[Any]] = defaultdict(list)
     caller_order: List[str] = []
 
@@ -995,8 +1000,7 @@ def query_callers(
                     if s not in caller_sites_map[cid]:
                         caller_sites_map[cid].append(s)
 
-    ws_graph = _extract_workspace_graph(graph)
-    if ws_graph is not None and (isinstance(graph, WorkspaceSymbolGraph) or not caller_order):
+    if ws_graph is not None:
         by_file_idx: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
         for s in symbols_map.values():
             by_file_idx[s.file_path.replace("\\", "/")].append(s)
@@ -1024,7 +1028,10 @@ def query_callers(
                     file_path=caller_sym.file_path,
                     space=caller_sym.spaces[0] if caller_sym.spaces else "project",
                 )
-                if synth_site not in caller_sites_map[caller_uid]:
+                if not any(
+                    getattr(ex_s, "line_number", None) == synth_site.line_number
+                    for ex_s in caller_sites_map[caller_uid]
+                ):
                     caller_sites_map[caller_uid].append(synth_site)
 
     extractor = snippet_extractor or SnippetExtractor()
@@ -1115,7 +1122,7 @@ def query_callees(
                         callee_sites_map[cid].append(s)
 
     ws_graph = _extract_workspace_graph(graph)
-    if ws_graph is not None and (isinstance(graph, WorkspaceSymbolGraph) or not callee_order):
+    if ws_graph is not None:
         by_file_idx: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
         for s in symbols_map.values():
             by_file_idx[s.file_path.replace("\\", "/")].append(s)
@@ -1139,7 +1146,10 @@ def query_callees(
                             file_path=caller_sym.file_path,
                             space=caller_sym.spaces[0] if caller_sym.spaces else "project",
                         )
-                        if synth_site not in callee_sites_map[callee_uid]:
+                        if not any(
+                            getattr(ex_s, "line_number", None) == synth_site.line_number
+                            for ex_s in callee_sites_map[callee_uid]
+                        ):
                             callee_sites_map[callee_uid].append(synth_site)
 
     extractor = snippet_extractor or SnippetExtractor()
@@ -1227,7 +1237,12 @@ def query_impact(
     if early_payload is not None:
         return early_payload
 
+    ws_graph = _extract_workspace_graph(graph)
     target_ids = expand_contract_symbol_ids(symbols_map, res.targets, precomputed_fingerprint=current_fp)
+    if ws_graph is not None:
+        for ws_tid in expand_contract_symbol_ids(ws_graph, res.targets):
+            if ws_tid in symbols_map and ws_tid not in target_ids:
+                target_ids.append(ws_tid)
     merged_layers_ids: Dict[int, List[str]] = defaultdict(list)
     merged_chains: Dict[str, List[Tuple[str, str]]] = {}
     seen_impacted_ids: Set[str] = set(target_ids)
@@ -1244,8 +1259,7 @@ def query_impact(
                 if k not in merged_chains:
                     merged_chains[k] = chain
 
-    ws_graph = _extract_workspace_graph(graph)
-    if ws_graph is not None and (isinstance(graph, WorkspaceSymbolGraph) or not merged_layers_ids):
+    if ws_graph is not None:
         by_file_idx: Dict[str, List[UnifiedSymbol]] = defaultdict(list)
         for s in symbols_map.values():
             by_file_idx[s.file_path.replace("\\", "/")].append(s)

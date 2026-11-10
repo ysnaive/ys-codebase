@@ -348,6 +348,7 @@ class KnowledgeEngine:
             config=self.config,
             storage_dir=self._storage_dir,
             space_weights_provider=self.get_all_space_weights,
+            custom_storage_dir=(storage_dir is not None),
         )
 
     @property
@@ -598,11 +599,35 @@ class KnowledgeEngine:
         b_size = int(batch_size if batch_size is not None else getattr(self.config, "vector_batch_size", 32))
         return self.pipeline.sync_vector_deficit_step(batch_size=b_size, persist=persist)
 
+    def _probe_kdb_lock_busy(self) -> bool:
+        """Non-blockingly probe whether in-process `_index_lock` or cross-process `.kdb_index.lock` is held."""
+        if not self.pipeline._index_lock.acquire(blocking=False):
+            return True
+        try:
+            pass
+        finally:
+            self.pipeline._index_lock.release()
+        try:
+            from core.platform.lock import InterProcessLock
+
+            lock_path = self.pipeline._resolve_index_lock_path()
+            if lock_path.is_file():
+                probe = InterProcessLock(str(lock_path), timeout=0.0)
+                if not probe.acquire(blocking=False):
+                    return True
+                try:
+                    pass
+                finally:
+                    probe.release()
+        except Exception:
+            pass
+        return False
+
     def status(
         self,
         space: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """獲取全系統空間、後台 Worker、核心索引、AST 水位線、檢索模式、組態與空間游標同步詳盡統計摘要（純查詢 CQS）。"""
+        """獲取全系統空間、後台 Worker、核心索引、AST 水位線、檢索模式、組態與空間游標同步詳盡統計摘要（O(1) 純查詢 CQS，零全盤掃描、零阻塞解壓）。"""
         if space is not None:
             resolved_list = self.space_manager.resolve_spaces(space)
             spaces: Dict[str, SpaceConfig] = {
@@ -618,58 +643,143 @@ class KnowledgeEngine:
         bin_vectors = indices_dir / "unified.vectors.bin.gz"
         has_vector_index = bin_vectors.exists()
 
-        if has_unified_index or self.pipeline.unified_index is not None:
-            try:
-                self.pipeline._ensure_indices_loaded(
-                    load_vectors=has_vector_index,
-                    trim_memory=False,
-                )
-            except Exception:
-                pass
-
-        unified_idx = self.pipeline.unified_index
-        vec_idx = getattr(self.hybrid_engine, "vector_index", None)
-
-        symbol_count = int(getattr(unified_idx, "doc_count", 0) or (len(unified_idx.symbols) if unified_idx else 0))
-        term_count = len(unified_idx.index) if (unified_idx and hasattr(unified_idx, "index")) else 0
-        acked_ast_gen = int(getattr(unified_idx, "acked_ast_generation", 0) or 0) if unified_idx else 0
-        unified_size_kb = round(bin_unified.stat().st_size / 1024.0, 1) if has_unified_index else 0.0
-        unified_mtime = round(bin_unified.stat().st_mtime, 2) if has_unified_index else None
-
-        ast_gen = int(self.pipeline.get_current_ast_generation() or 0)
-
         worker_st = read_worker_state(indices_dir)
         worker_running = is_worker_running(indices_dir)
         busy_ms = get_worker_busy_ms(indices_dir)
         worker_phase = str(worker_st.get("phase", "idle") or "idle")
         worker_progress = str(worker_st.get("progress", "") or "")
+        lock_busy = self._probe_kdb_lock_busy()
+        building_in_progress = bool(busy_ms > 0 or lock_busy)
 
-        if has_unified_index or unified_idx is not None:
-            vec_deficit = self.pipeline.get_vector_deficit_info()
-        else:
-            vec_deficit = {
-                "total_symbols": 0,
-                "embedded_count": 0,
-                "missing_count": 0,
-                "stale_count": 0,
-                "coverage_pct": 100.0,
-                "compatible": True,
-            }
-        embedded_count = int(vec_deficit.get("embedded_count", 0))
-        missing_vectors = int(vec_deficit.get("missing_count", 0))
-        stale_vectors = int(vec_deficit.get("stale_count", 0))
-        coverage_pct = float(vec_deficit.get("coverage_pct", 0.0))
-        vec_compatible = bool(vec_deficit.get("compatible", False))
-        vec_size_kb = round(bin_vectors.stat().st_size / 1024.0, 1) if has_vector_index else 0.0
-        vec_mtime = round(bin_vectors.stat().st_mtime, 2) if has_vector_index else None
         model_name = getattr(self.config, "embedding_model", "BAAI/bge-small-zh-v1.5")
         model_downloaded = bool(self.embedding_service.is_model_downloaded())
-        if getattr(vec_idx, "dim", None):
-            vec_dim = int(vec_idx.dim)
-        elif getattr(self.embedding_service, "_dimension", None) is not None:
-            vec_dim = int(self.embedding_service._dimension)  # type: ignore[arg-type]
+        default_dim = (
+            int(self.embedding_service._dimension)
+            if getattr(self.embedding_service, "_dimension", None) is not None
+            else int(self.embedding_service._resolve_dimension_mock())
+        )
+
+        symbol_count = 0
+        term_count = 0
+        acked_ast_gen = 0
+        embedded_count = 0
+        missing_vectors = 0
+        stale_vectors = 0
+        coverage_pct = 100.0 if not has_unified_index else 0.0
+        vec_compatible = not has_unified_index
+        vec_dim = default_dim
+        vec_model_name = model_name
+
+        from .pipeline import get_index_cache
+
+        idx_cache = get_index_cache()
+        same_cache_storage = idx_cache.get("storage_dir") == self.pipeline._storage_cache_key()
+        mem_idx = self.pipeline.unified_index or (
+            idx_cache.get("unified_index") if same_cache_storage else None
+        )
+        mem_vec = getattr(self.hybrid_engine, "vector_index", None)
+        if (mem_vec is None or getattr(mem_vec, "vectors", None) is None) and same_cache_storage:
+            cand_v = idx_cache.get("vector_index")
+            if cand_v is not None and getattr(cand_v, "vectors", None) is not None:
+                mem_vec = cand_v
+
+        persisted_meta = self.pipeline.get_persisted_meta() if has_unified_index else None
+        populated_stats = False
+
+        if not has_unified_index and mem_idx is not None:
+            self.pipeline._unified_index = None
+            if same_cache_storage:
+                idx_cache["unified_index"] = None
+                idx_cache["unified_mtime"] = 0.0
+            mem_idx = None
+
+        if has_unified_index and mem_idx is not None:
+            u_fresh = True
+            if same_cache_storage and idx_cache.get("unified_mtime", 0.0) > 0.0:
+                try:
+                    u_fresh = bin_unified.stat().st_mtime <= float(idx_cache["unified_mtime"])
+                except OSError:
+                    u_fresh = False
+            if u_fresh:
+                symbol_count = int(getattr(mem_idx, "doc_count", 0) or len(mem_idx.symbols))
+                term_count = len(mem_idx.index) if hasattr(mem_idx, "index") else 0
+                acked_ast_gen = int(getattr(mem_idx, "acked_ast_generation", 0) or 0)
+                if (mem_vec is not None and getattr(mem_vec, "vectors", None) is not None) or not has_vector_index:
+                    v_info = self.pipeline._compute_vector_deficit_from_objects(mem_idx, mem_vec)
+                    embedded_count = int(v_info["embedded_count"])
+                    missing_vectors = int(v_info["missing_count"])
+                    stale_vectors = int(v_info["stale_count"])
+                    coverage_pct = float(v_info["coverage_pct"])
+                    vec_compatible = bool(v_info["compatible"])
+                    vec_dim = int(v_info["dimension"])
+                    vec_model_name = str(v_info["model_name"])
+                    populated_stats = True
+                elif isinstance(persisted_meta, dict):
+                    embedded_count = int(persisted_meta.get("embedded_count", 0))
+                    missing_vectors = int(persisted_meta.get("missing_count", 0))
+                    stale_vectors = int(persisted_meta.get("stale_count", 0))
+                    coverage_pct = float(persisted_meta.get("coverage_pct", 0.0))
+                    vec_compatible = bool(persisted_meta.get("vector_compatible", False))
+                    vec_dim = int(persisted_meta.get("vector_dim", default_dim))
+                    vec_model_name = str(persisted_meta.get("vector_model_name", model_name))
+                    populated_stats = True
+
+        if not populated_stats and isinstance(persisted_meta, dict):
+            symbol_count = int(persisted_meta.get("symbol_count", 0))
+            term_count = int(persisted_meta.get("term_count", 0))
+            acked_ast_gen = int(persisted_meta.get("acked_ast_generation", 0))
+            embedded_count = int(persisted_meta.get("embedded_count", 0))
+            missing_vectors = int(persisted_meta.get("missing_count", 0))
+            stale_vectors = int(persisted_meta.get("stale_count", 0))
+            coverage_pct = float(persisted_meta.get("coverage_pct", 0.0))
+            vec_compatible = bool(persisted_meta.get("vector_compatible", False))
+            vec_dim = int(persisted_meta.get("vector_dim", default_dim))
+            vec_model_name = str(persisted_meta.get("vector_model_name", model_name))
+            populated_stats = True
+
+        if not populated_stats and has_unified_index and not building_in_progress:
+            # Legacy cache fallback (only when no `unified.meta.json` exists AND no lock is busy)
+            if self.pipeline._index_lock.acquire(blocking=False):
+                try:
+                    self.pipeline._ensure_indices_loaded(
+                        load_vectors=has_vector_index,
+                        trim_memory=False,
+                    )
+                    u_loaded = self.pipeline.unified_index
+                    v_loaded = getattr(self.hybrid_engine, "vector_index", None)
+                    if u_loaded is not None:
+                        symbol_count = int(getattr(u_loaded, "doc_count", 0) or len(u_loaded.symbols))
+                        term_count = len(u_loaded.index) if hasattr(u_loaded, "index") else 0
+                        acked_ast_gen = int(getattr(u_loaded, "acked_ast_generation", 0) or 0)
+                        v_info = self.pipeline._compute_vector_deficit_from_objects(u_loaded, v_loaded)
+                        embedded_count = int(v_info["embedded_count"])
+                        missing_vectors = int(v_info["missing_count"])
+                        stale_vectors = int(v_info["stale_count"])
+                        coverage_pct = float(v_info["coverage_pct"])
+                        vec_compatible = bool(v_info["compatible"])
+                        vec_dim = int(v_info["dimension"])
+                        vec_model_name = str(v_info["model_name"])
+                except Exception:
+                    pass
+                finally:
+                    self.pipeline._index_lock.release()
+
+        unified_size_kb = round(bin_unified.stat().st_size / 1024.0, 1) if has_unified_index else 0.0
+        unified_mtime = round(bin_unified.stat().st_mtime, 2) if has_unified_index else None
+        vec_size_kb = round(bin_vectors.stat().st_size / 1024.0, 1) if has_vector_index else 0.0
+        vec_mtime = round(bin_vectors.stat().st_mtime, 2) if has_vector_index else None
+
+        ast_meta = (
+            self.ast_engine.get_persisted_meta()
+            if hasattr(self.ast_engine, "get_persisted_meta")
+            else None
+        )
+        if isinstance(ast_meta, dict) and "ast_generation" in ast_meta:
+            ast_gen = int(ast_meta.get("ast_generation", 0) or 0)
+        elif getattr(self.ast_engine, "_snapshot", None) is not None:
+            ast_gen = int(self.ast_engine._snapshot.ast_generation)  # type: ignore[union-attr]
         else:
-            vec_dim = int(self.embedding_service._resolve_dimension_mock())
+            ast_gen = 0
         enable_vec = bool(getattr(self.config, "enable_vector_search", True))
         timeout_ms = int(getattr(self.config, "jit_vector_timeout_ms", 3000))
         batch_size = int(getattr(self.config, "vector_batch_size", 32))
@@ -690,11 +800,7 @@ class KnowledgeEngine:
         elif not model_downloaded and not getattr(self.embedding_service, "mock_mode", False):
             vec_status_label = "missing_model"
             retrieval_mode = "lexical_bm25"
-            retrieval_reason = (
-                "本地缺少向量模型權重 (後台 Worker 將自動下載)"
-                if worker_running
-                else "本地缺少向量模型權重，已降級純 BM25"
-            )
+            retrieval_reason = "本地缺少向量模型權重，已降級純 BM25"
         elif not has_vector_index or embedded_count == 0:
             vec_status_label = "missing"
             retrieval_mode = "lexical_bm25"
@@ -712,25 +818,42 @@ class KnowledgeEngine:
             retrieval_mode = "hybrid_rrf"
             retrieval_reason = "BM25 + 向量 RRF 混合檢索 100% 就緒"
 
+        ast_space_files = (
+            ast_meta.get("space_file_counts", {})
+            if isinstance(ast_meta, dict) and isinstance(ast_meta.get("space_file_counts"), dict)
+            else {}
+        )
         space_details = {}
         for sp_name, sp in spaces.items():
-            file_count: Optional[int] = None
+            file_count = 0
             head_gen = 0
             acked_gen = 0
-            in_sync = False
+            snap_exists = False
             try:
                 snap_key = sp.qualified_name or sp_name
                 snap_path = self.scanner._snapshot_path(snap_key)
+                lookup_key = snap_key
                 if not snap_path.exists() and sp_name != snap_key:
-                    snap_path = self.scanner._snapshot_path(sp_name)
+                    alt_path = self.scanner._snapshot_path(sp_name)
+                    if alt_path.exists():
+                        snap_path = alt_path
+                        lookup_key = sp_name
                 if snap_path.exists():
-                    snap_state = self.scanner._snapshot_mgr.load_state(snap_path)
-                    head_gen = int(snap_state.head_generation)
-                    entries = getattr(snap_state, "entries", None)
-                    if isinstance(entries, dict):
-                        file_count = sum(
-                            1 for fp in entries.values() if not getattr(fp, "is_deleted", False)
-                        )
+                    snap_exists = True
+                    if hasattr(self.scanner, "get_snapshot_summary"):
+                        head_gen, _, _, file_count = self.scanner.get_snapshot_summary(lookup_key)
+                    else:
+                        snap_state = self.scanner._snapshot_mgr.load_state(snap_path)
+                        head_gen = int(snap_state.head_generation)
+                        entries = getattr(snap_state, "entries", None)
+                        if isinstance(entries, dict):
+                            file_count = sum(
+                                1 for fp in entries.values() if not getattr(fp, "is_deleted", False)
+                            )
+                elif sp_name in ast_space_files:
+                    file_count = int(ast_space_files[sp_name])
+                elif sp.short_name in ast_space_files:
+                    file_count = int(ast_space_files[sp.short_name])
                 cur_data = self.scanner.cursor_store.get_cursor(snap_key, "knowledge-db")
                 acked_gen = int(cur_data.get("acked_gen", cur_data.get("acked_generation", 0)) or 0)
                 if acked_gen == 0 and sp_name != snap_key:
@@ -739,13 +862,7 @@ class KnowledgeEngine:
             except Exception:
                 pass
 
-            if file_count is None:
-                try:
-                    file_count = len(self.space_manager.iter_space_files(sp.qualified_name or sp_name))
-                except Exception:
-                    file_count = 0
-
-            in_sync = (head_gen > 0 and acked_gen == head_gen) or (file_count == 0 and head_gen == acked_gen)
+            in_sync = (head_gen > 0 and acked_gen == head_gen) or (snap_exists and file_count == 0 and head_gen == acked_gen)
             has_index = has_unified_index
 
             space_details[sp_name] = {
@@ -771,6 +888,7 @@ class KnowledgeEngine:
             "spaces": space_details,
             "has_unified_index": has_unified_index,
             "has_vector_index": has_vector_index,
+            "building_in_progress": building_in_progress,
             "ast_generation": ast_gen,
             "acked_ast_generation": acked_ast_gen,
             "enable_vector_search": enable_vec,
@@ -810,7 +928,7 @@ class KnowledgeEngine:
                     "stale_count": stale_vectors,
                     "coverage_pct": coverage_pct,
                     "dimension": vec_dim,
-                    "model_name": getattr(vec_idx, "model_name", None) or model_name,
+                    "model_name": vec_model_name,
                     "compatible": vec_compatible,
                     "size_kb": vec_size_kb,
                     "updated_at": vec_mtime,
@@ -945,7 +1063,7 @@ class KnowledgeEngine:
         kinds: Optional[List[str]] = None,
         languages: Optional[List[str]] = None,
         ftypes: Optional[Union[str, List[str]]] = None,
-        min_score: float = 0.01,
+        min_score: float = 0.0,
         limit: int = 10,
         snippet: bool = False,
         context_lines: int = 3,
@@ -1033,16 +1151,12 @@ def get_engine() -> KnowledgeEngine:
                 inst.pipeline.config = new_cfg
                 emb_svc = getattr(inst, "embedding_service", None)
                 if emb_svc is not None:
-                    emb_svc.enable_vector_search = bool(getattr(new_cfg, "enable_vector_search", True))
-                    emb_svc.max_threads = new_cfg.resolve_threads()
-                    norm_model = emb_svc.normalize_model_name(new_cfg.embedding_model)
-                    if emb_svc.model_name != norm_model:
-                        emb_svc.model_name = norm_model
-                        emb_svc._dimension = None
-                        if not emb_svc.mock_mode:
-                            emb_svc._model = None
-                            emb_svc._is_available = False
-                            emb_svc._init_attempted = False
+                    if hasattr(emb_svc, "reconfigure_model"):
+                        emb_svc.reconfigure_model(
+                            model_name=new_cfg.embedding_model,
+                            max_threads=new_cfg.resolve_threads(),
+                            enable_vector_search=bool(getattr(new_cfg, "enable_vector_search", True)),
+                        )
             except Exception:
                 pass
         return inst

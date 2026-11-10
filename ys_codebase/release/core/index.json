@@ -9,8 +9,8 @@
     "1.2.5.1",
     "1.2.6.0",
     "1.2.7.4",
-    "1.2.8.0",
-    "1.2.8.1"
+    "1.2.8.1",
+    "1.2.9.0"
   ],
   "releases": {
     "1.0.0.0": {
@@ -216,7 +216,7 @@
       "summary": "支援 @build 開發包無視版號約束直通與環境基底版本解析"
     },
     "1.2.8.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "sha256": "6b89981703eca1e1a1996cb6e5a54f911d47d4729c7f8de9fc04ffd2bd5e4bb0",
       "type": "feature",
@@ -230,6 +230,14 @@
       "type": "refactor",
       "urgency": "recommended",
       "summary": "強化處理序環境變數白名單與日誌遮罩、收斂執行期快取世代失效機制，並整合空間掃描批次走訪與背景服務合約基底"
+    },
+    "1.2.9.0": {
+      "status": "active",
+      "dependencies": {},
+      "sha256": "b4b38fda9f84fc4aa602e8f25c3a5809df1e59934fa603b45ee6636107275636",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 core.file_lock 宣告式唯讀鎖引擎與 VFS 透明穿隧防護、擴充 /readonly 空間合成、新增協作式任務取消 (TaskCancelledError) 與 ProgressReporter 進度回報器"
     }
   }
 }

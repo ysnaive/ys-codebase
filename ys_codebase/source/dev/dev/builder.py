@@ -133,12 +133,12 @@ def _create_module_archive_atomic(
                         payload = raw_bytes
                 zf.writestr(zinfo, payload)
 
-        os.replace(tmp_zip_path, target_zip_path)
+        vfs.robust_replace(tmp_zip_path, target_zip_path)
         return len(entries)
     finally:
         if os.path.exists(tmp_zip_path):
             try:
-                os.remove(tmp_zip_path)
+                vfs.remove(tmp_zip_path, missing_ok=True)
             except OSError:
                 pass
 
@@ -349,7 +349,7 @@ class Builder:
         for purge_path in purge_paths_to_remove:
             if os.path.isfile(purge_path):
                 try:
-                    os.remove(purge_path)
+                    vfs.remove(purge_path, missing_ok=True)
                 except OSError:
                     pass
 
@@ -406,10 +406,10 @@ class Builder:
                     continue
                 p = os.path.join(real_build_dir, item)
                 if os.path.isdir(p):
-                    shutil.rmtree(p, ignore_errors=True)
+                    vfs.rmtree(p, ignore_errors=True)
                 else:
                     try:
-                        os.remove(p)
+                        vfs.remove(p, missing_ok=True)
                     except OSError:
                         pass
 

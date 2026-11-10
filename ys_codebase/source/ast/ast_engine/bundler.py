@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
-from core.context import get_env, get_runtime_context, get_virtual_cwd
+from core.context import check_task_cancelled, get_env, get_runtime_context, get_virtual_cwd
 from core.log import log_debug, log_warn
 from core.space import (
     ScanDiffDetail,
@@ -27,12 +27,12 @@ from core.space import (
 from core.vfs import write_bytes
 
 from .exceptions import ASTError
-from .io_utils import compute_project_relpath, is_dirty_file_match, normalize_dirty_paths
+from .io_utils import read_normalized_source_file, compute_project_relpath, is_dirty_file_match, normalize_dirty_paths
 from .parsers.base import is_partial_declaration
 from .parsers.registry import ParserRegistry
 from .schema import FileSymbolGraph, MemberInfo, SemanticBundle, SymbolCallSite, SymbolNode, UnifiedSymbol
 
-PARALLEL_BUNDLE_THRESHOLD = 10
+PARALLEL_BUNDLE_THRESHOLD = 250
 
 
 def _get_worker_registry_state() -> Optional[ParserRegistry]:
@@ -602,8 +602,7 @@ def _parse_file_task_worker(
     primary_space = sorted_spaces[0] if sorted_spaces else "unified"
     try:
         registry = _get_worker_registry()
-        with open(f_path_str, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
+        content, _ = read_normalized_source_file(f_path_str)
         fg = registry.extract_file_graph(file_path=relpath, content=content, space=primary_space)
         symbols, call_sites, imports = project_file_artifacts_from_graph(
             fg, default_space=primary_space, spaces=sorted_spaces
@@ -852,6 +851,11 @@ class SemanticBundler:
         """Compatibility alias for `parser_registry`."""
         return self.parser_registry
 
+    @property
+    def space_registry(self) -> SpaceRegistry:
+        """Compatibility alias for `space_manager`."""
+        return self.space_manager
+
     def register_spaces(self, spaces: Iterable[Union[str, SpaceConfig]]) -> List[str]:
         """
         SDK / Hook injection entry point to register one or more target `core.space` names
@@ -1053,8 +1057,7 @@ class SemanticBundler:
     ) -> Tuple[List[UnifiedSymbol], List[SymbolCallSite], Dict[str, str]]:
         """Read `f_path` once and extract `FileSymbolGraph` + projected `(symbols, call_sites, imports)` in a single pass."""
         primary_space = sorted_spaces[0] if sorted_spaces else "unified"
-        with open(f_path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
+        content, _ = read_normalized_source_file(f_path)
         fg = self.parser_registry.extract_file_graph(
             file_path=relpath,
             content=content,
@@ -1312,13 +1315,15 @@ class SemanticBundler:
 
                 workers = min(4, cpu_cnt)
                 chunk_size = max(1, total_files // (workers * 4))
-                with ProcessPoolExecutor(
+                pool = ProcessPoolExecutor(
                     max_workers=workers,
                     initializer=_init_bundle_worker,
                     initargs=(list(sys.path),),
-                ) as pool:
+                )
+                try:
                     results_iter = pool.map(_parse_file_task_worker, tasks, chunksize=chunk_size)
                     for idx, item in enumerate(results_iter, start=1):
+                        check_task_cancelled()
                         fg_dict: Optional[Dict[str, Any]] = None
                         if len(item) == 6:
                             c_key, sym_dicts, site_dicts, imps, fg_dict, err = item
@@ -1351,12 +1356,23 @@ class SemanticBundler:
                                 self._file_graphs_cache[c_key] = fg_obj
                             except Exception:
                                 pass
+                except BaseException:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    raise
+                else:
+                    pool.shutdown(wait=True)
             except Exception as pool_err:
                 log_warn(f"ProcessPoolExecutor error, falling back to serial parsing: {pool_err}", stream="stderr")
+                all_symbols.clear()
+                self._file_symbols_cache.clear()
+                self._file_call_sites_cache.clear()
+                self._file_imports_cache.clear()
+                self._file_graphs_cache.clear()
                 use_parallel = False
 
         if not use_parallel:
             for idx, (c_key, f_path_str, relpath, sorted_spaces) in enumerate(tasks, start=1):
+                check_task_cancelled()
                 if progress_callback:
                     progress_callback(relpath, idx, total_files)
                 try:
@@ -1419,6 +1435,7 @@ class SemanticBundler:
         spaces: Optional[List[Union[str, SpaceConfig]]] = None,
         known_indexed_files: Optional[Set[str]] = None,
         snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
     ) -> Tuple[Dict[str, List[UnifiedSymbol]], Set[str]]:
         """Parse only added/modified files in `dirty_diff` and evict deleted/modified cache entries."""
         target_spaces = self._resolve_target_spaces(spaces)
@@ -1472,8 +1489,12 @@ class SemanticBundler:
             snap_entries_by_space=snap_entries_by_space,
         )
         new_symbols_by_file: Dict[str, List[UnifiedSymbol]] = {}
+        total_dirty = len(dirty_files_map)
 
-        for c_key, (f_path, relpath, sp_set) in dirty_files_map.items():
+        for idx_d, (c_key, (f_path, relpath, sp_set)) in enumerate(dirty_files_map.items(), start=1):
+            check_task_cancelled()
+            if progress_callback:
+                progress_callback(relpath, idx_d, total_dirty)
             if is_dirty_file_match(c_key, parse_targets_norm) or is_dirty_file_match(relpath, parse_targets_norm):
                 dirty_keys.add(c_key)
                 dirty_keys.add(relpath)
@@ -1552,8 +1573,7 @@ class SemanticBundler:
                     file_syms, sites, imps = self._parse_file_full(f_path, relpath, sorted(list(sp_set)))
                     self._file_symbols_cache[c_key] = file_syms
                 else:
-                    with open(f_path, "r", encoding="utf-8", errors="replace") as f:
-                        content = f.read()
+                    content, _ = read_normalized_source_file(f_path)
                     sites = self.parser_registry.extract_call_sites(
                         file_path=relpath, content=content, space=primary_space, symbols=cached_syms
                     )
@@ -1611,14 +1631,14 @@ class SemanticBundler:
         unique_files = self._get_or_collect_space_files(target_spaces)
         out: Dict[str, FileSymbolGraph] = {}
         for c_key, (f_path, relpath, sp_set) in unique_files.items():
+            check_task_cancelled()
             cached_fg = self._file_graphs_cache.get(relpath) or self._file_graphs_cache.get(c_key)
             if cached_fg is not None:
                 out[relpath] = cached_fg
                 continue
             primary_space = sorted(list(sp_set))[0] if sp_set else "unified"
             try:
-                with open(f_path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()
+                content, _ = read_normalized_source_file(f_path)
                 fg = self.parser_registry.extract_file_graph(
                     file_path=relpath,
                     content=content,
@@ -1677,8 +1697,7 @@ class SemanticBundler:
                     continue
                 primary_space = sorted(list(sp_set))[0] if sp_set else "unified"
                 try:
-                    with open(f_path, "r", encoding="utf-8", errors="replace") as f:
-                        content = f.read()
+                    content, _ = read_normalized_source_file(f_path)
                     fg = self.parser_registry.extract_file_graph(
                         file_path=relpath,
                         content=content,

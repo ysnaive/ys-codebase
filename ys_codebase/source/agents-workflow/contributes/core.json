@@ -68,6 +68,20 @@
       "large_file_threshold_mb": 10,
       "follow_symlinks": false,
       "watch": true
+    },
+    "readonly": {
+      "description": "Agent 工作流專責維護之唯讀保護空間（封存計畫、各計畫變更日誌與路線圖索引）",
+      "entries": [
+        "workflow.plans://",
+        "workflow.archived://",
+        "workflow.roadmap://"
+      ],
+      "include": [
+        "workflow.plans://**/changelog.md",
+        "workflow.archived://**",
+        "workflow.roadmap://TODO.md"
+      ],
+      "watch": false
     }
   },
   "commands": {

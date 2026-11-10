@@ -88,7 +88,7 @@ def fetch_and_extract_zip(source_url_or_path: str, dest_dir: str) -> None:
     os.makedirs(parent_dir, exist_ok=True)
     staging_dir = os.path.join(parent_dir, f".staging_{base_name}_{os.getpid()}_{int(time.time() * 1000)}")
     if os.path.exists(staging_dir):
-        shutil.rmtree(staging_dir, ignore_errors=True)
+        vfs.rmtree(staging_dir, ignore_errors=True)
     os.makedirs(staging_dir, exist_ok=True)
 
     try:
@@ -109,7 +109,7 @@ def fetch_and_extract_zip(source_url_or_path: str, dest_dir: str) -> None:
             finally:
                 if os.path.exists(tmp_path):
                     try:
-                        os.remove(tmp_path)
+                        vfs.remove(tmp_path, missing_ok=True)
                     except Exception:
                         pass
         else:
@@ -117,7 +117,7 @@ def fetch_and_extract_zip(source_url_or_path: str, dest_dir: str) -> None:
             if not os.path.exists(file_path):
                 raise FileNotFoundError(f"Source file or directory '{source_url_or_path}' does not exist.")
             if os.path.isdir(file_path):
-                shutil.copytree(file_path, staging_dir, dirs_exist_ok=True)
+                vfs.copy(file_path, staging_dir)
             elif zipfile.is_zipfile(file_path):
                 _extract_zip_safely(file_path, staging_dir, source_label=source_url_or_path)
             else:
@@ -126,7 +126,7 @@ def fetch_and_extract_zip(source_url_or_path: str, dest_dir: str) -> None:
         _atomic_swap_dir(staging_dir, dest_abs)
     finally:
         if os.path.exists(staging_dir):
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            vfs.rmtree(staging_dir, ignore_errors=True)
 
 
 def _discover_available_versions_for_module(
@@ -1061,7 +1061,7 @@ class Installer:
                     if os.path.isfile(found_b) and (found_b.endswith(".zip") or zipfile.is_zipfile(found_b)):
                         os.makedirs(mirror_dir, exist_ok=True)
                         if os.path.abspath(found_b) != os.path.abspath(mirror_zip):
-                            shutil.copy2(found_b, mirror_zip)
+                            vfs.copy(found_b, mirror_zip)
                             copied_to_mirror = True
                         if not _is_build_version_request(version) and found_b.endswith(".zip"):
                             self.engine._verify_zip_sha256(
@@ -1074,7 +1074,7 @@ class Installer:
                 except Exception:
                     if copied_to_mirror and os.path.isfile(mirror_zip):
                         try:
-                            os.remove(mirror_zip)
+                            vfs.remove(mirror_zip, missing_ok=True)
                         except OSError:
                             pass
 
@@ -1106,7 +1106,7 @@ class Installer:
                 try:
                     if os.path.isfile(cand) and (cand.endswith(".zip") or zipfile.is_zipfile(cand)):
                         if os.path.abspath(cand) != os.path.abspath(mirror_zip):
-                            shutil.copy2(cand, mirror_zip)
+                            vfs.copy(cand, mirror_zip)
                             copied_cand_to_mirror = True
                         self.engine._verify_zip_sha256(module_name, version, mirror_zip, p_abs, ignore_sha256=ignore_sha256)
                         fetch_and_extract_zip(mirror_zip, dest_dir)
@@ -1116,7 +1116,7 @@ class Installer:
                 except Exception:
                     if copied_cand_to_mirror and os.path.isfile(mirror_zip):
                         try:
-                            os.remove(mirror_zip)
+                            vfs.remove(mirror_zip, missing_ok=True)
                         except OSError:
                             pass
 

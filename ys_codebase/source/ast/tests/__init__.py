@@ -885,7 +885,7 @@ def _install_offline_treesitter_fallback_if_needed() -> None:
         if manifest_path.is_file():
             m_data = json.loads(manifest_path.read_text(encoding="utf-8"))
             specs = PipManager.parse_pip_dependencies(m_data.get("pip_dependencies"))
-            SandboxProvisioner._ADAPTED_SPECS.update(specs)
+            SandboxProvisioner._get_adapted_specs().update(specs)
     except Exception:
         pass
 

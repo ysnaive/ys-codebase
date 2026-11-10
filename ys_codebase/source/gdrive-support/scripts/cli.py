@@ -15,14 +15,9 @@ from core.log import log
 
 def _resolve_cli_path(raw_path: str) -> Path:
     """Resolve a CLI path argument against core.context.get_virtual_cwd() when relative."""
-    if "://" in raw_path:
-        return Path(uri.resolve(raw_path))
-    p = Path(raw_path)
-    if not p.is_absolute():
-        vcwd = get_virtual_cwd()
-        if vcwd:
-            p = Path(vcwd) / p
-    return p
+    from gdrive_support.config import resolve_local_path_with_vcwd
+
+    return resolve_local_path_with_vcwd(raw_path)
 
 
 def _emit(payload: Dict[str, Any], as_json: bool, summary: str) -> None:
@@ -75,8 +70,11 @@ def _prepare_atomic_transport(
     from gdrive_support.transport import create_transport
 
     as_json = bool(cmd_bags.options.get("json"))
-    sandbox_dir = str(cmd_bags.get_option_value("sandbox-dir", default="") or "")
+    raw_sandbox = str(cmd_bags.get_option_value("sandbox-dir", default="") or "").strip()
+    sandbox_dir = _resolve_cli_path(raw_sandbox).resolve().as_posix() if raw_sandbox else ""
     cfg = load_gdrive_config()
+    if sandbox_dir:
+        cfg = replace(cfg, sandbox_dir=sandbox_dir)
     transport = create_transport(cfg, sandbox_dir=sandbox_dir or None)
     if reconcile_readme:
         _maybe_reconcile_root_readme(cfg, transport, sandbox_override=sandbox_dir)
@@ -96,9 +94,10 @@ def _build_coordinator(sandbox_dir: str = "") -> Any:
     cfg = load_gdrive_config()
     effective_sandbox = str(sandbox_dir or cfg.sandbox_dir or "").strip()
     if effective_sandbox:
-        cfg = replace(cfg, sandbox_dir=effective_sandbox)
         sbx_root = _resolve_cli_path(effective_sandbox).resolve()
-        transport = create_transport(cfg, sandbox_dir=effective_sandbox)
+        sbx_abs = sbx_root.as_posix()
+        cfg = replace(cfg, sandbox_dir=sbx_abs)
+        transport = create_transport(cfg, sandbox_dir=sbx_abs)
         return SyncCoordinator(
             config=cfg,
             transport=transport,
@@ -153,7 +152,8 @@ def status(cmd_bags: CmdBags) -> int:
     except GDriveError as exc:
         return _emit_error("", exc, as_json)
 
-    effective_sandbox = str(sandbox_dir or cfg.sandbox_dir or "")
+    raw_eff_sbx = str(sandbox_dir or cfg.sandbox_dir or "").strip()
+    effective_sandbox = _resolve_cli_path(raw_eff_sbx).as_posix() if raw_eff_sbx else ""
     spaces_info: List[Dict[str, Any]] = [
         {
             "space": sp.space,
@@ -226,7 +226,7 @@ def auth(cmd_bags: CmdBags) -> int:
         return _emit_error("", exc, as_json)
 
     def _resolve_cfg_uri(uri_or_path: str) -> Path:
-        return Path(uri.resolve(uri_or_path)) if "://" in uri_or_path else Path(uri_or_path)
+        return _resolve_cli_path(uri_or_path)
 
     cred_path = _resolve_cfg_uri(cfg.credentials_uri)
     token_path = _resolve_cfg_uri(cfg.token_uri)

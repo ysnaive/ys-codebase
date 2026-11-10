@@ -13,6 +13,7 @@ import threading
 import time
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
+from core.context import is_foreground_active
 from core.log import log_error, log_warn
 from core.space.registry import SpaceConfig, SpaceRegistry, get_default_registry
 from core.space.scanner import ScanDiffResult, SpaceScanner, get_default_scanner
@@ -184,6 +185,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
 
     DEFAULT_DEBOUNCE_SECONDS = 0.5
     MAX_PATCH_PATHS_THRESHOLD = 200
+    MAX_FOREGROUND_DEFER_SECONDS: float = 5.0
     HAS_WATCHDOG = HAS_WATCHDOG
 
     def __init__(
@@ -226,9 +228,11 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         self._dirty_paths_by_space: Dict[str, Set[Path]] = {}
         self._full_rescan_spaces: Set[str] = set()
         self._last_event_time: float = 0.0
+        self._dirty_since_mono: Optional[float] = None
         self._refresh_count: int = 0
         self._events_received: int = 0
         self._deferred_by_lock_count: int = 0
+        self._deferred_by_foreground_count: int = 0
         self._last_refresh_at: Optional[float] = None
         self._observer: Optional[Any] = None
         self._scheduled_dirs: Set[str] = set()
@@ -496,11 +500,14 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                     matched.append(s_cfg.qualified_name)
             if matched:
                 with self._lock:
+                    now_m = time.monotonic()
                     self._events_received += 1
                     self._dirty_spaces.update(matched)
                     self._full_rescan_spaces.update(matched)
-                    self._last_event_time = time.monotonic()
-                self.scanner.mark_watcher_dirty(True)
+                    self._last_event_time = now_m
+                    if self._dirty_since_mono is None:
+                        self._dirty_since_mono = now_m
+                    self.scanner.mark_watcher_dirty(True)
             return matched
 
         for s_cfg in watched_spaces:
@@ -517,12 +524,15 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
 
         if matched:
             with self._lock:
+                now_m = time.monotonic()
                 self._events_received += 1
                 self._dirty_spaces.update(matched)
                 for q_name in matched:
                     self._dirty_paths_by_space.setdefault(q_name, set()).add(abs_p)
-                self._last_event_time = time.monotonic()
-            self.scanner.mark_watcher_dirty(True)
+                self._last_event_time = now_m
+                if self._dirty_since_mono is None:
+                    self._dirty_since_mono = now_m
+                self.scanner.mark_watcher_dirty(True)
 
         return matched
 
@@ -576,6 +586,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         full_rescan: bool,
     ) -> None:
         with self._lock:
+            now_m = time.monotonic()
             self._dirty_spaces.add(q_name)
             if dirty_paths:
                 self._dirty_paths_by_space.setdefault(q_name, set()).update(
@@ -584,13 +595,17 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
             if full_rescan:
                 self._full_rescan_spaces.add(q_name)
             if self._last_event_time == 0.0:
-                self._last_event_time = time.monotonic()
-        self.scanner.mark_watcher_dirty(True)
+                self._last_event_time = now_m
+            if self._dirty_since_mono is None:
+                self._dirty_since_mono = now_m
+            self.scanner.mark_watcher_dirty(True)
 
     def _finalize_dirty_marker(self) -> None:
         with self._lock:
             has_remaining = bool(self._dirty_spaces)
-        self.scanner.mark_watcher_dirty(has_remaining)
+            if not has_remaining:
+                self._dirty_since_mono = None
+            self.scanner.mark_watcher_dirty(has_remaining)
 
     def _expand_query_to_dirty_qnames(
         self, space_query: Optional[str]
@@ -746,6 +761,19 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
             ):
                 return {}
 
+        max_defer_sec = float(getattr(self, "MAX_FOREGROUND_DEFER_SECONDS", 5.0))
+        if not force and is_foreground_active():
+            with self._lock:
+                if self._dirty_spaces:
+                    dirty_age = (
+                        (now_mono - self._dirty_since_mono)
+                        if self._dirty_since_mono is not None
+                        else 0.0
+                    )
+                    if dirty_age < max_defer_sec:
+                        self._deferred_by_foreground_count += 1
+                        return {}
+
         if self.is_transaction_locked():
             with self._lock:
                 if self._dirty_spaces:
@@ -762,6 +790,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                 return {}
             target_spaces = sorted(self._dirty_spaces)
             self._dirty_spaces.clear()
+            self._dirty_since_mono = None
             dirty_batch: Dict[str, Set[Path]] = {
                 s: set(self._dirty_paths_by_space.pop(s, set()))
                 for s in target_spaces
@@ -800,7 +829,9 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         )
 
     def _remove_watcher_state_file(self) -> None:
-        self.scanner.mark_watcher_dirty(False)
+        with self._lock:
+            if not self._dirty_spaces:
+                self.scanner.mark_watcher_dirty(False)
         target = self._resolve_watcher_state_path()
         remove_watcher_state(
             project_root=self.registry.project_root,
@@ -907,6 +938,10 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                     for s_cfg in watched_cfgs:
                         if self._stop_event.is_set():
                             break
+                        if is_foreground_active():
+                            self._stop_event.wait(timeout=0.05)
+                            if self._stop_event.is_set():
+                                break
                         q_name = s_cfg.qualified_name
                         if not self.scanner._has_existing_snapshot(q_name):
                             self.scanner.scan(q_name)
@@ -937,6 +972,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
             events_received = self._events_received
             refresh_count = self._refresh_count
             deferred_count = self._deferred_by_lock_count
+            deferred_fg_count = self._deferred_by_foreground_count
             last_refresh_at = self._last_refresh_at
             scheduled_count = len(self._scheduled_dirs)
         return {
@@ -946,6 +982,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
             "refresh_count": refresh_count,
             "pending_dirty_spaces": pending_count,
             "deferred_by_lock_count": deferred_count,
+            "deferred_by_foreground_count": deferred_fg_count,
             "last_refresh_at": last_refresh_at,
             "watchdog_active": self._observer is not None,
         }

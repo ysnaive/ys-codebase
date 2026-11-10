@@ -27,6 +27,7 @@ import re
 import shutil
 import sys
 import threading
+import time
 import traceback
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
@@ -77,7 +78,7 @@ def bind_log_context(
     background_sink: Optional["RollingFileLogger"] = None,
     component: Optional[str] = None,
     debug_enabled: Optional[bool] = None,
-    isolated_error_scope: bool = False,
+    isolated_error_scope: Optional[bool] = None,
 ) -> Iterator[LogExecutionScope]:
     """
     Context manager binding execution plane routing parameters to `_ACTIVE_LOG_SCOPE`.
@@ -99,14 +100,15 @@ def bind_log_context(
 
         eff_debug = get_env("YSCB_DEBUG", "").strip() == "1"
 
-    if isolated_error_scope or parent is None:
+    req_isolated = (eff_sink is not None) if isolated_error_scope is None else bool(isolated_error_scope)
+    if req_isolated or parent is None:
         err_list: List[str] = []
     else:
         err_list = parent.error_chunks
 
     eff_isolated = (
         True
-        if isolated_error_scope
+        if req_isolated
         else (parent.isolated_error_scope if parent is not None else False)
     )
 
@@ -235,7 +237,7 @@ def _write_to_active_target(
         # If an inner unit test used redirect_stdout/stderr or patch("sys.stdout"),
         # target_stream_obj will differ from expected_proxy -> write to the inner stream!
         if target_stream_obj is expected_proxy or target_stream_obj is None:
-            scope.streamer.write(norm_stream, text)
+            scope.streamer.write(norm_stream, text, flush=bool(flush and norm_stream == "stderr"))
             return
 
     if target_stream_obj is not None:
@@ -272,14 +274,15 @@ def log_stream(
     *,
     stream: str = "stdout",
     flush: bool = True,
-    record_hint: bool = False,
+    record_hint: Optional[bool] = None,
 ) -> None:
     """
     Writes raw pre-formatted text (without appending a newline) to the active stream.
     Replaces `sys.stdout.write(...)` and `sys.stderr.write(...)`.
     """
     s = str(text)
-    if record_hint or stream == "stderr":
+    should_record = (stream == "stderr") if record_hint is None else bool(record_hint)
+    if should_record:
         record_error_hint(s)
     _write_to_active_target(s, stream=stream, level="INFO", flush=flush)
 
@@ -341,13 +344,17 @@ def log_debug(
     Logs a diagnostic debug message line when `YSCB_DEBUG=1` or `scope.debug_enabled` is True,
     or when running inside a background `RollingFileLogger` scope.
     """
-    from core.context import get_env
-
     scope = _ACTIVE_LOG_SCOPE.get()
-    is_debug = (
-        (scope is not None and (scope.debug_enabled or scope.background_sink is not None))
-        or get_env("YSCB_DEBUG", "").strip() == "1"
-    )
+    if scope is not None and (scope.debug_enabled or scope.background_sink is not None):
+        is_debug = True
+    else:
+        from core.context import get_current_scope
+
+        r_scope = get_current_scope()
+        if r_scope is not None and r_scope.env_overrides and "YSCB_DEBUG" in r_scope.env_overrides:
+            is_debug = (r_scope.env_overrides["YSCB_DEBUG"] or "").strip() == "1"
+        else:
+            is_debug = os.environ.get("YSCB_DEBUG", "").strip() == "1" 
     if not is_debug:
         return
     text = f"{msg}\n"
@@ -381,7 +388,8 @@ class _StreamProxy(io.TextIOBase):
             return len(s)
         if self._stream_name == "stderr":
             record_error_hint(s)
-        self._streamer.write(self._stream_name, s)
+        immediate_cr = self._stream_name == "stderr" and "\r" in s
+        self._streamer.write(self._stream_name, s, flush=immediate_cr)
         return len(s)
 
     def flush(self) -> None:
@@ -456,11 +464,11 @@ class DebouncedIOStreamer:
                     except Exception:
                         pass
 
-    def write(self, stream_name: str, text: str) -> None:
+    def write(self, stream_name: str, text: str, *, flush: bool = False) -> None:
         if not text:
             return
 
-        to_emit: List[Tuple[str, List[str]]] = []
+        should_flush = False
         with self._lock:
             if self._is_closed:
                 return
@@ -468,23 +476,19 @@ class DebouncedIOStreamer:
             self._buffer.append({"stream": stream_name, "text": text})
             self._buffer_bytes += len(text.encode("utf-8", errors="replace"))
 
-            if self._buffer_bytes >= self.max_buffer_bytes:
-                to_emit = self._pop_consolidated_locked()
+            if flush or self._buffer_bytes >= self.max_buffer_bytes:
+                should_flush = True
             else:
                 self._ensure_timer_locked()
-        if to_emit:
-            self._emit_consolidated(to_emit)
+        if should_flush:
+            self.flush()
 
     def flush(self) -> None:
-        with self._lock:
-            to_emit = self._pop_consolidated_locked()
-        if to_emit:
-            self._emit_consolidated(to_emit)
-
-    def _flush_locked(self) -> None:
-        to_emit = self._pop_consolidated_locked()
-        if to_emit:
-            self._emit_consolidated(to_emit)
+        with self._emit_lock:
+            with self._lock:
+                to_emit = self._pop_consolidated_locked()
+            if to_emit:
+                self._emit_consolidated(to_emit)
 
     def _ensure_timer_locked(self) -> None:
         if self._timer is None and not self._is_closed:
@@ -502,8 +506,7 @@ class DebouncedIOStreamer:
         error: Optional[str] = None,
         stages: Optional[str] = None,
     ) -> None:
-        """Flushes remaining terminal stream and sends `task_finish` packet."""
-        self.flush()
+        """Atomically flushes remaining terminal stream, seals streamer, and sends `task_finish` packet."""
         packet: Dict[str, Any] = {
             "type": "task_finish",
             "exit_code": exit_code,
@@ -513,6 +516,14 @@ class DebouncedIOStreamer:
         if stages:
             packet["stages"] = stages
         with self._emit_lock:
+            with self._lock:
+                to_emit = self._pop_consolidated_locked()
+                self._is_closed = True
+                if self._timer:
+                    self._timer.cancel()
+                    self._timer = None
+            if to_emit:
+                self._emit_consolidated(to_emit)
             try:
                 self.emit_chunk(packet)
             except Exception:
@@ -534,40 +545,156 @@ class DebouncedIOStreamer:
                 component=parent.component if parent else "worker",
                 debug_enabled=parent.debug_enabled if parent else False,
                 error_chunks=[],
-                isolated_error_scope=False,
+                isolated_error_scope=True,
             )
             self._scope_token = _ACTIVE_LOG_SCOPE.set(new_scope)
         return self
 
     def stop_capture(self) -> None:
-        to_emit: List[Tuple[str, List[str]]] = []
-        with self._lock:
-            if self._is_closed:
-                return
-            to_emit = self._pop_consolidated_locked()
-            self._is_closed = True
-            if self._timer:
-                self._timer.cancel()
-                self._timer = None
-            token = self._scope_token
-            self._scope_token = None
-            if sys.stdout is self._stdout_proxy:
-                sys.stdout = self._orig_stdout
-            if sys.stderr is self._stderr_proxy:
-                sys.stderr = self._orig_stderr
-            if token is not None:
-                try:
-                    _ACTIVE_LOG_SCOPE.reset(token)
-                except ValueError:
-                    pass
-        if to_emit:
-            self._emit_consolidated(to_emit)
+        with self._emit_lock:
+            with self._lock:
+                if self._is_closed and self._scope_token is None:
+                    return
+                to_emit = self._pop_consolidated_locked()
+                self._is_closed = True
+                if self._timer:
+                    self._timer.cancel()
+                    self._timer = None
+                token = self._scope_token
+                self._scope_token = None
+                if sys.stdout is self._stdout_proxy:
+                    sys.stdout = self._orig_stdout
+                if sys.stderr is self._stderr_proxy:
+                    sys.stderr = self._orig_stderr
+                if token is not None:
+                    try:
+                        _ACTIVE_LOG_SCOPE.reset(token)
+                    except ValueError:
+                        pass
+            if to_emit:
+                self._emit_consolidated(to_emit)
 
     def __enter__(self) -> "DebouncedIOStreamer":
         return self.start_capture()
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.stop_capture()
+
+
+
+
+class ProgressReporter:
+    """
+    Throttled human-readable stage & percentage progress reporter strictly routed to `stderr`.
+    - Suppresses output on ultra-fast operations (`< initial_delay_ms`, default 200ms) unless
+      `YSCB_FORCE_PROGRESS=1` is set in `core.context.get_env`.
+    - Automatically stays silent inside background `ServiceWorker` scopes (`background_sink` set)
+      and never pollutes `--json` `stdout` or `error_hint` buffers (`record_hint=False`).
+    - Cooperatively checks `core.context.check_task_cancelled()` on stage/advance ticks.
+    """
+
+    def __init__(
+        self,
+        component: str,
+        title: str,
+        *,
+        total_stages: int = 1,
+        initial_delay_ms: float = 200.0,
+        interval_ms: float = 250.0,
+        enabled: Optional[bool] = None,
+    ) -> None:
+        from core.context import check_task_cancelled, get_env
+
+        self._check_cancel = check_task_cancelled
+        self._in_bg = False
+        self.component = str(component or "yscb")
+        self.title = str(title or "處理中")
+        self.total_stages = max(1, int(total_stages))
+        force_prog = get_env("YSCB_FORCE_PROGRESS", "").strip() == "1"
+        quiet_prog = get_env("YSCB_QUIET_PROGRESS", "").strip() == "1"
+        scope = _ACTIVE_LOG_SCOPE.get()
+        in_bg = scope is not None and scope.background_sink is not None
+        self._in_bg = in_bg
+
+        if enabled is not None:
+            self._enabled = bool(enabled)
+        elif quiet_prog or in_bg:
+            self._enabled = False
+        else:
+            self._enabled = True
+
+        eff_delay_ms = 0.0 if force_prog else max(0.0, float(initial_delay_ms))
+        self._initial_delay_sec = eff_delay_ms / 1000.0
+        self._interval_sec = max(0.02, float(interval_ms) / 1000.0)
+        self._start_mono = time.monotonic()
+        self._last_emit_mono = 0.0
+        self._emitted_any = False
+        self._stage_idx = 1
+        self._stage_label = ""
+
+    def _format_stage_prefix(self) -> str:
+        if self.total_stages > 1:
+            return f"{self._stage_idx}/{self.total_stages}: "
+        return ""
+
+    def stage(
+        self,
+        stage_idx: int,
+        stage_label: str,
+        current: int = 0,
+        total: int = 0,
+        *,
+        force: bool = False,
+    ) -> None:
+        if not self._in_bg:
+            self._check_cancel()
+        self._stage_idx = max(1, min(self.total_stages, int(stage_idx)))
+        self._stage_label = str(stage_label or "")
+        if not self._enabled:
+            return
+        now = time.monotonic()
+        if not force and not self._emitted_any and (now - self._start_mono) < self._initial_delay_sec:
+            return
+        prefix = self._format_stage_prefix()
+        if total > 0:
+            pct = min(100, int((max(0, current) * 100) / total))
+            msg = f"[{self.component}] {self.title} ({prefix}{self._stage_label} {current}/{total} [{pct}%]...)\n"
+        else:
+            msg = f"[{self.component}] {self.title} ({prefix}{self._stage_label}...)\n"
+        log_stream(msg, stream="stderr", flush=True, record_hint=False)
+        self._emitted_any = True
+        self._last_emit_mono = now
+
+    def advance(self, current: int, total: int, detail: str = "") -> None:
+        if not self._in_bg and ((current & 0x1F) == 0 or current <= 1 or current >= total):
+            self._check_cancel()
+        if not self._enabled or total <= 0:
+            return
+        now = time.monotonic()
+        if not self._emitted_any and (now - self._start_mono) < self._initial_delay_sec:
+            return
+        if (
+            self._emitted_any
+            and (now - self._last_emit_mono) < self._interval_sec
+            and current < total
+        ):
+            return
+        prefix = self._format_stage_prefix()
+        pct = min(100, int((max(0, current) * 100) / total))
+        lbl = f"{self._stage_label} " if self._stage_label else ""
+        det = f" - {detail}" if detail else ""
+        msg = f"[{self.component}] {self.title} ({prefix}{lbl}{current}/{total} [{pct}%]{det}...)\n"
+        log_stream(msg, stream="stderr", flush=True, record_hint=False)
+        self._emitted_any = True
+        self._last_emit_mono = now
+
+    def finish(self, summary: str = "") -> None:
+        if not self._enabled or not self._emitted_any:
+            return
+        elapsed_sec = max(0.0, time.monotonic() - self._start_mono)
+        body = summary if summary else f"{self.title}完成"
+        msg = f"[{self.component}] {body} (耗時 {elapsed_sec:.2f}s)\n"
+        log_stream(msg, stream="stderr", flush=True, record_hint=False)
 
 
 # ==============================================================================
@@ -1160,6 +1287,7 @@ __all__ = (
     "log_error",
     "log_debug",
     "DebouncedIOStreamer",
+    "ProgressReporter",
     "RollingFileLogger",
     "log_file",
     "log_file_jsonl",

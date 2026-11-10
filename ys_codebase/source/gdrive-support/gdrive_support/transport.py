@@ -387,9 +387,9 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
             self._token_expiry_epoch = 0.0
 
     def _resolve_uri_path(self, raw_uri: str) -> Path:
-        if "://" in raw_uri:
-            return Path(uri.resolve(raw_uri)).resolve()
-        return Path(raw_uri).resolve()
+        from .config import resolve_local_path_with_vcwd
+
+        return resolve_local_path_with_vcwd(raw_uri)
 
     def _ensure_access_token(self) -> str:
         with self._token_lock:
@@ -863,7 +863,9 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
         remote_path: str,
         in_place_file_id: Optional[str] = None,
     ) -> RemoteEntry:
-        src = Path(local_path).resolve()
+        from .config import resolve_local_path_with_vcwd
+
+        src = resolve_local_path_with_vcwd(local_path)
         if not src.is_file():
             raise GDriveFileNotFoundError(f"Local file not found: '{src.as_posix()}'")
         norm = normalize_remote_rel_path(remote_path)
@@ -957,7 +959,9 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
             f"{self.DRIVE_API_BASE}/files/{urllib.parse.quote(download_fid)}"
             "?alt=media&supportsAllDrives=true"
         )
-        dst = Path(local_path).resolve()
+        from .config import resolve_local_path_with_vcwd
+
+        dst = resolve_local_path_with_vcwd(local_path)
         dst.parent.mkdir(parents=True, exist_ok=True)
         tmp_dst = dst.with_name(f".{dst.name}.{uuid.uuid4().hex[:8]}.tmp")
         backoff = 1.0
@@ -972,7 +976,7 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                     tmp_dst, "wb"
                 ) as out_f:
                     shutil.copyfileobj(resp, out_f)
-                os.replace(tmp_dst, dst)
+                vfs.robust_replace(str(tmp_dst), str(dst))
                 return entry
             except urllib.error.HTTPError as exc:
                 try:
@@ -980,7 +984,7 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 except Exception:
                     pass
                 if tmp_dst.exists():
-                    tmp_dst.unlink(missing_ok=True)
+                    vfs.remove(str(tmp_dst), missing_ok=True)
                 if exc.code == 401 and not refreshed_on_401 and attempt < 3:
                     refreshed_on_401 = True
                     self._clear_cached_token()
@@ -998,7 +1002,7 @@ class GoogleDriveApiTransport(AbstractSyncTransport):
                 ) from exc
             except Exception as exc:
                 if tmp_dst.exists():
-                    tmp_dst.unlink(missing_ok=True)
+                    vfs.remove(str(tmp_dst), missing_ok=True)
                 if attempt < 3:
                     time.sleep(backoff)
                     backoff *= 2
@@ -1214,15 +1218,8 @@ def create_transport(
     """
     effective_sandbox = (sandbox_dir or config.sandbox_dir or "").strip()
     if effective_sandbox:
-        if "://" in effective_sandbox:
-            resolved = Path(uri.resolve(effective_sandbox)).resolve()
-        else:
-            from core.context import get_virtual_cwd
-            p_cand = Path(effective_sandbox)
-            if not p_cand.is_absolute():
-                vcwd = get_virtual_cwd()
-                if vcwd:
-                    p_cand = Path(vcwd) / p_cand
-            resolved = p_cand.resolve()
+        from .config import resolve_local_path_with_vcwd
+
+        resolved = resolve_local_path_with_vcwd(effective_sandbox)
         return LocalSandboxTransport(resolved)
     return GoogleDriveApiTransport(config)

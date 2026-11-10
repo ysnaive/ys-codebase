@@ -252,11 +252,11 @@ def package_local_source_if_exact_match(
                 else:
                     payload = _read_normalized_package_file_bytes(src_f, rel_file)
                     zf.writestr(zi, payload, compress_type=zipfile.ZIP_DEFLATED)
-        os.replace(tmp_zip, dest_zip_path)
+        vfs.robust_replace(tmp_zip, dest_zip_path)
         if release_zip_path and os.path.abspath(release_zip_path) != os.path.abspath(dest_zip_path):
             try:
                 os.makedirs(os.path.dirname(os.path.abspath(release_zip_path)), exist_ok=True)
-                shutil.copy2(dest_zip_path, release_zip_path)
+                vfs.copy(dest_zip_path, release_zip_path)
             except Exception:
                 pass
         return True
@@ -576,7 +576,7 @@ class AtomicEngine:
 
         for b_zip in build_zip_candidates:
             if vfs.exists(b_zip):
-                shutil.copy2(uri.resolve(b_zip), dest_zip_real)
+                vfs.copy(uri.resolve(b_zip), dest_zip_real)
                 return dest_zip_uri
 
         p_abs = resolve_local_provider_path(provider_url)
@@ -586,7 +586,7 @@ class AtomicEngine:
                 os.path.join(p_abs, "build", module_name, f"{version}.build.zip"),
             ):
                 if os.path.isfile(b_path):
-                    shutil.copy2(b_path, dest_zip_real)
+                    vfs.copy(b_path, dest_zip_real)
                     return dest_zip_uri
 
         src_dir = find_matching_local_source_dir(module_name, [p_abs] if p_abs else [])
@@ -661,7 +661,7 @@ class AtomicEngine:
         if not expected_sha256 or not isinstance(expected_sha256, str) or not expected_sha256.strip():
             if os.path.exists(zip_real_path):
                 try:
-                    os.remove(zip_real_path)
+                    vfs.remove(zip_real_path, missing_ok=True)
                 except Exception:
                     pass
             raise RuntimeError(
@@ -673,7 +673,7 @@ class AtomicEngine:
         if actual_sha256.lower() != expected_sha256.strip().lower():
             if os.path.exists(zip_real_path):
                 try:
-                    os.remove(zip_real_path)
+                    vfs.remove(zip_real_path, missing_ok=True)
                 except Exception:
                     pass
             raise RuntimeError(
@@ -693,7 +693,7 @@ class AtomicEngine:
         """Tier 2 download: resolves package from module.release://, local provider directory, or exact-version local source/."""
         rel_zip = f"module.release://{module_name}/{version}.zip"
         if vfs.exists(rel_zip):
-            shutil.copy2(uri.resolve(rel_zip), dest_zip_real)
+            vfs.copy(uri.resolve(rel_zip), dest_zip_real)
             self._verify_zip_sha256(module_name, version, dest_zip_real, provider_url, ignore_sha256=ignore_sha256)
             return dest_zip_uri
 
@@ -705,7 +705,7 @@ class AtomicEngine:
                 os.path.join(p_abs, "release", module_name, f"{version}.zip"),
             ):
                 if os.path.isfile(z_path):
-                    shutil.copy2(z_path, dest_zip_real)
+                    vfs.copy(z_path, dest_zip_real)
                     self._verify_zip_sha256(module_name, version, dest_zip_real, provider_url, ignore_sha256=ignore_sha256)
                     return dest_zip_uri
 
@@ -736,7 +736,7 @@ class AtomicEngine:
                                     zi = _make_deterministic_zip_info(arc)
                                     payload = _read_normalized_package_file_bytes(f_p, arc)
                                     zf.writestr(zi, payload, compress_type=zipfile.ZIP_DEFLATED)
-                        os.replace(tmp_zip, dest_zip_real)
+                        vfs.robust_replace(tmp_zip, dest_zip_real)
                     finally:
                         if os.path.exists(tmp_zip):
                             try:
@@ -1625,12 +1625,12 @@ class AtomicEngine:
                     target_cfg_uri, is_local, proj_pair_uri = _resolve_target_cfg_uris(mod, tmpl_file)
                     self._infill_single_template(mod, tmpl_real, target_cfg_uri, is_local, proj_pair_uri)
                     try:
-                        os.remove(tmpl_real)
+                        vfs.remove(tmpl_real, missing_ok=True)
                     except OSError:
                         pass
                 remaining = [f for f in os.listdir(cfg_tpl_dir) if f != "_format.json"]
                 if not remaining and not os.path.isfile(os.path.join(cfg_tpl_dir, "_format.json")):
-                    shutil.rmtree(cfg_tpl_dir, ignore_errors=True)
+                    vfs.rmtree(cfg_tpl_dir, ignore_errors=True)
             except Exception:
                 pass
 
@@ -1650,7 +1650,7 @@ class AtomicEngine:
                     target_cfg_uri, is_local, proj_pair_uri = f"config://{mod}/config.project.json", False, None
                 self._infill_single_template(mod, tmpl_real, target_cfg_uri, is_local, proj_pair_uri)
                 try:
-                    os.remove(tmpl_real)
+                    vfs.remove(tmpl_real, missing_ok=True)
                 except OSError:
                     pass
         except Exception:
@@ -1670,7 +1670,7 @@ class AtomicEngine:
         ignore_file = os.path.join(mod_dir_real, ".yscbignore")
         if os.path.isfile(ignore_file):
             try:
-                os.remove(ignore_file)
+                vfs.remove(ignore_file, missing_ok=True)
             except OSError:
                 pass
 
@@ -1724,7 +1724,7 @@ class AtomicEngine:
                         p = uri.resolve(target_uri)
                         root_p = uri.resolve(f"{root_scheme}://")
                         if os.path.abspath(p).startswith(os.path.abspath(root_p) + os.sep):
-                            shutil.rmtree(p, ignore_errors=True)
+                            vfs.rmtree(p, ignore_errors=True)
                     except Exception:
                         pass
 
@@ -1738,7 +1738,7 @@ class AtomicEngine:
         if vfs.exists(mirror_zip):
             real_zip = uri.resolve(mirror_zip)
             if os.path.exists(staging_dir):
-                shutil.rmtree(staging_dir, ignore_errors=True)
+                vfs.rmtree(staging_dir, ignore_errors=True)
             os.makedirs(staging_dir, exist_ok=True)
             try:
                 _extract_zip_safely(real_zip, staging_dir, source_label=mirror_zip)
@@ -1747,19 +1747,19 @@ class AtomicEngine:
                 _atomic_swap_dir(staging_dir, real_dst)
             finally:
                 if os.path.exists(staging_dir):
-                    shutil.rmtree(staging_dir, ignore_errors=True)
+                    vfs.rmtree(staging_dir, ignore_errors=True)
         elif vfs.exists(mirror_dir_uri):
             real_mirror_src = uri.resolve(mirror_dir_uri)
             if os.path.exists(staging_dir):
-                shutil.rmtree(staging_dir, ignore_errors=True)
+                vfs.rmtree(staging_dir, ignore_errors=True)
             try:
-                shutil.copytree(real_mirror_src, staging_dir, dirs_exist_ok=True)
+                vfs.copy(real_mirror_src, staging_dir)
                 self._apply_release_index_override_to_staging(mod, ver, staging_dir)
                 self._deploy_and_strip_single_module_config(mod, staging_dir)
                 _atomic_swap_dir(staging_dir, real_dst)
             finally:
                 if os.path.exists(staging_dir):
-                    shutil.rmtree(staging_dir, ignore_errors=True)
+                    vfs.rmtree(staging_dir, ignore_errors=True)
 
     def _invalidate_all_runtime_caches(self) -> None:
         """Invalidates all host, config, locale, symbol, contributes, URI, dispatcher, and space caches."""
@@ -1887,6 +1887,11 @@ class AtomicEngine:
             except Exception:
                 pass
             events.broadcast("on_reload", ExecutionContext("core", "reload", []), emit_module="core")
+            try:
+                from core import file_lock as fl_mod
+                fl_mod.sync(emit_event=False)
+            except Exception:
+                pass
 
     def act_snapshot(self, tag: Optional[str] = None) -> str:
         """
@@ -1995,10 +2000,22 @@ class AtomicEngine:
                     if existing_mod not in snap_mods:
                         vfs.rmtree(f"module://{existing_mod}", ignore_errors=True)
             vfs.makedirs("module://")
-            for mod_entry in snap_mods:
+            for mod_entry in sorted(snap_mods):
                 if mod_entry.startswith("."):
                     continue
-                vfs.copy(f"{snap_mod_dir}/{mod_entry}", f"module://{mod_entry}")
+                real_dst = uri.resolve(f"module://{mod_entry}")
+                staging_dir = os.path.join(
+                    modules_root_real,
+                    f".staging_restore_{mod_entry}_{os.getpid()}_{int(time.time() * 1000)}",
+                )
+                if os.path.exists(staging_dir):
+                    vfs.rmtree(staging_dir, ignore_errors=True)
+                try:
+                    vfs.copy(f"{snap_mod_dir}/{mod_entry}", staging_dir)
+                    _atomic_swap_dir(staging_dir, real_dst)
+                finally:
+                    if os.path.exists(staging_dir):
+                        vfs.rmtree(staging_dir, ignore_errors=True)
 
         self.act_reload(clean_stage=False, inject_stage=True)
 
@@ -2112,6 +2129,11 @@ class AtomicEngine:
             try:
                 from core import gitignore as gi_mod
                 gi_mod.sync(emit_event=False)
+            except Exception:
+                pass
+            try:
+                from core import file_lock as fl_mod
+                fl_mod.sync(emit_event=False)
             except Exception:
                 pass
 

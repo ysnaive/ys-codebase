@@ -85,13 +85,20 @@ class HybridSearchEngine:
 
     @property
     def is_vector_available(self) -> bool:
-        """檢查向量檢索子系統是否完全就緒"""
-        return (
-            self.embedding_service is not None
-            and self.embedding_service.is_available
-            and self.vector_index is not None
-            and len(self.vector_index.doc_ids) > 0
-        )
+        """檢查向量檢索子系統是否完全就緒（O(1) 記憶體向量索引非空與本地模型探針優先短路）"""
+        if self.vector_index is None or len(self.vector_index.doc_ids) == 0:
+            return False
+        if self.embedding_service is None:
+            return False
+        if not getattr(self.embedding_service, "mock_mode", False):
+            has_local = (
+                self.embedding_service.has_local_model()
+                if hasattr(self.embedding_service, "has_local_model")
+                else self.embedding_service.is_model_downloaded()
+            )
+            if not has_local:
+                return False
+        return bool(self.embedding_service.is_available)
 
     def compute_rrf(
         self,
@@ -166,13 +173,14 @@ class HybridSearchEngine:
         fetch_limit = max(limit * 3, 30)
         bm25_hits: List[Dict[str, Any]] = []
         symbols_map = getattr(self.inverted_index, "symbols", {}) if self.inverted_index else {}
+        will_use_vectors = (not lexical_only) and self.is_vector_available
         if self.bm25_engine is not None and self.inverted_index is not None:
             flt = QueryFilter(
                 spaces=spaces,
                 kinds=kinds,
                 languages=languages,
                 ftypes=list(norm_ftypes) if norm_ftypes else None,
-                min_score=min_score,
+                min_score=0.0 if will_use_vectors else min_score,
                 limit=fetch_limit,
                 space_weights=effective_weights if effective_weights else None,
             )

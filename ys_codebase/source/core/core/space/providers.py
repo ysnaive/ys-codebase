@@ -40,13 +40,15 @@ def _resolve_registry_from_context(context: Optional[Any] = None) -> SpaceRegist
     proj_root: Optional[Path] = None
     yscb_dir: Optional[Path] = None
     if isinstance(context, dict):
-        if context.get("project_root"):
-            proj_root = Path(str(context["project_root"])).resolve()
-        if context.get("yscb_root") or context.get("yscb_dir"):
-            yscb_dir = Path(str(context.get("yscb_root") or context.get("yscb_dir"))).resolve()
+        pr = context.get("project_root") or context.get("workspace_root")
+        yr = context.get("yscb_root") or context.get("yscb_dir")
+        if pr:
+            proj_root = Path(str(pr)).resolve()
+        if yr:
+            yscb_dir = Path(str(yr)).resolve()
     elif context is not None:
-        pr = getattr(context, "project_root", None)
-        yr = getattr(context, "yscb_root", getattr(context, "yscb_dir", None))
+        pr = getattr(context, "project_root", None) or getattr(context, "workspace_root", None)
+        yr = getattr(context, "yscb_root", None) or getattr(context, "yscb_dir", None)
         if pr:
             proj_root = Path(str(pr)).resolve()
         if yr:
@@ -54,44 +56,76 @@ def _resolve_registry_from_context(context: Optional[Any] = None) -> SpaceRegist
     return get_default_registry(project_root=proj_root, yscb_dir=yscb_dir)
 
 
-def _resolve_knowledge_db_indexed_space_names() -> Optional[Set[str]]:
+def _resolve_knowledge_db_indexed_space_names(
+    context: Optional[Any] = None,
+) -> Optional[Set[str]]:
     """
     Resolve the set of space names (qualified or short) configured in `knowledge-db` `space_weights`.
+    Honors explicit `context` (`project_root` / `yscb_dir`) via `uri.host_scope` to prevent cross-sandbox leakage.
     Returns `None` if no `knowledge-db` space_weights configuration is available.
     """
+    from contextlib import nullcontext
+
+    proj_root: Optional[str] = None
+    yscb_dir: Optional[str] = None
+    if isinstance(context, dict):
+        pr = context.get("project_root") or context.get("workspace_root")
+        yr = context.get("yscb_dir") or context.get("yscb_root")
+        if pr:
+            proj_root = str(Path(str(pr)).resolve())
+        if yr:
+            yscb_dir = str(Path(str(yr)).resolve())
+    elif context is not None:
+        pr = getattr(context, "project_root", None) or getattr(context, "workspace_root", None)
+        yr = getattr(context, "yscb_dir", None) or getattr(context, "yscb_root", None)
+        if pr:
+            proj_root = str(Path(str(pr)).resolve())
+        if yr:
+            yscb_dir = str(Path(str(yr)).resolve())
+
     weighted_names: Set[str] = set()
     found_cfg = False
     try:
-        from core import contributes as core_contributes
+        from core import contributes as core_contributes, uri
 
-        raw_merged = core_contributes.get("knowledge-db")
-        if isinstance(raw_merged, dict):
-            if _collect_space_weights(raw_merged.get("space_weights"), weighted_names):
-                found_cfg = True
-        elif isinstance(raw_merged, list):
-            for item in raw_merged:
-                data = item.get("data", item) if isinstance(item, dict) else {}
-                if isinstance(data, dict) and _collect_space_weights(
-                    data.get("space_weights"), weighted_names
-                ):
-                    found_cfg = True
-    except Exception:
-        pass
+        scope_cm = (
+            uri.host_scope(
+                host_dir=proj_root or yscb_dir,
+                yscb_dir=yscb_dir,
+            )
+            if (proj_root or yscb_dir)
+            else nullcontext()
+        )
+        with scope_cm:
+            try:
+                raw_merged = core_contributes.get("knowledge-db")
+                if isinstance(raw_merged, dict):
+                    if _collect_space_weights(raw_merged.get("space_weights"), weighted_names):
+                        found_cfg = True
+                elif isinstance(raw_merged, list):
+                    for item in raw_merged:
+                        data = item.get("data", item) if isinstance(item, dict) else {}
+                        if isinstance(data, dict) and _collect_space_weights(
+                            data.get("space_weights"), weighted_names
+                        ):
+                            found_cfg = True
+            except (OSError, ValueError, KeyError):
+                pass
 
-    try:
-        from core import uri
-
-        res = uri.resolve("config://knowledge-db/contribute.json", interactive=False)
-        if res:
-            cfg_path = Path(str(res)).resolve()
-            if cfg_path.is_file():
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    file_data = json.load(f)
-                if isinstance(file_data, dict) and _collect_space_weights(
-                    file_data.get("space_weights"), weighted_names
-                ):
-                    found_cfg = True
-    except Exception:
+            try:
+                res = uri.resolve("config://knowledge-db/contribute.json", interactive=False)
+                if res and not str(res).startswith("!undefined"):
+                    cfg_path = Path(str(res)).resolve()
+                    if cfg_path.is_file():
+                        with open(cfg_path, "r", encoding="utf-8") as f:
+                            file_data = json.load(f)
+                        if isinstance(file_data, dict) and _collect_space_weights(
+                            file_data.get("space_weights"), weighted_names
+                        ):
+                            found_cfg = True
+            except (OSError, ValueError, KeyError):
+                pass
+    except (ImportError, OSError, ValueError):
         pass
 
     return weighted_names if found_cfg else None
@@ -143,7 +177,7 @@ def get_knowledge_db_spaces(context: Optional[Any] = None, **kwargs: Any) -> str
         spaces = []
 
     if spaces:
-        indexed_names = _resolve_knowledge_db_indexed_space_names()
+        indexed_names = _resolve_knowledge_db_indexed_space_names(context=context)
         if indexed_names is not None:
             spaces = [
                 sp

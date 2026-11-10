@@ -134,8 +134,9 @@ class TestCoreEngine(YSCBTestCase):
             lock_p = uri.resolve("cache://.yscb.lock")
             inode_before = os.stat(lock_p).st_ino
 
+            contender = type(self.engine)()
             with self.assertRaises(BlockingIOError):
-                self.engine.act_lock("test_op_2", timeout=10.0)
+                contender.act_lock("test_op_2", timeout=0.05)
 
             self.engine.act_unlock("test_op")
             self.assertTrue(vfs.exists("cache://.yscb.lock"))
@@ -150,7 +151,7 @@ class TestCoreEngine(YSCBTestCase):
             self.engine.act_lock("new_op", timeout=10.0)
             self.engine.act_unlock("new_op")
         finally:
-            for op_name in ("test_op", "stale_op", "new_op"):
+            for op_name in ("test_op", "test_op_2", "stale_op", "new_op"):
                 self.engine.act_unlock(op_name)
         self.mark_passed()
 

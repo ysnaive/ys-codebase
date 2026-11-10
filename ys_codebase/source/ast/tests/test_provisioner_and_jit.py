@@ -205,7 +205,7 @@ class TestProvisionerAndJit(ASTTestCase):
         self.assertEqual(st["ast_generation"], 3)
 
         clean_res = engine.clean()
-        self.assertEqual(len(clean_res["removed"]), 4)
+        self.assertEqual(len(clean_res["removed"]), 3)
         self.assertFalse(engine.status()["snapshot_exists"])
         self.mark_passed()
 
@@ -562,11 +562,13 @@ class TestProvisionerAndJit(ASTTestCase):
 
         # 5. GrammarProvisioner single-flight _INFLIGHT_EVENTS deduplication across concurrent threads
         install_calls = []
-        bar = threading.Barrier(2)
+        start_bar = threading.Barrier(2)
+        entered_install = threading.Event()
 
         def slow_install(pkg_name: str, **kwargs) -> bool:
             install_calls.append(pkg_name)
-            bar.wait(timeout=2.0)
+            entered_install.set()
+            threading.Event().wait(timeout=0.02)
             return False
 
         GrammarProvisioner.reset_cache()
@@ -575,9 +577,11 @@ class TestProvisionerAndJit(ASTTestCase):
 
             def worker(idx: int) -> None:
                 try:
-                    bar.wait(timeout=0.05)
+                    start_bar.wait(timeout=1.0)
                 except Exception:
                     pass
+                if idx == 1:
+                    entered_install.wait(timeout=1.0)
                 results[idx] = GrammarProvisioner.load_language(
                     lang_key="concurrent_lang",
                     module_name="tree_sitter_concurrent_nonexistent",
@@ -710,4 +714,163 @@ class TestProvisionerAndJit(ASTTestCase):
         finally:
             ctx.set_module_state("knowledge_db.service.mem_state", prev_mem)
 
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_slice_part_single_file_o1_fast_path_progress_and_nonblocking_status(self) -> None:
+        """
+        Verify:
+        1. `ASTEngine.slice_part("<rel_path>::<fqn>")` and `slice_part(UnifiedSymbol)` execute in O(1) single-file
+           `parse_file()` mode without calling `get_workspace_graph()`.
+        2. C++ double-colon namespace selectors (`Physics::Solver::step`) gracefully fall back to workspace graph resolution.
+        3. `build_index(force=True)` with `YSCB_FORCE_PROGRESS=1` emits `[ast]` progress to `stderr` while keeping `stdout` empty.
+        4. `ASTEngine.status()` reports `building_in_progress=True` non-blockingly when `_lock` is held, and clears stale
+           in-memory cache when `.bin.gz` is externally deleted.
+        """
+        import contextlib
+        import io
+        import time
+        from core.context import bind_runtime_context
+
+        ws_root = Path(self.temp_dir) / "ws_slice_fast"
+        pkg_dir = ws_root / "pkg"
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        py_file = pkg_dir / "service.py"
+        py_file.write_text(
+            "class OrderProcessor:\n"
+            "    def compute_total(self, qty: int, price: int) -> int:\n"
+            "        return qty * price\n",
+            encoding="utf-8",
+        )
+        cpp_file = pkg_dir / "solver.cpp"
+        cpp_file.write_text(
+            "namespace Physics {\n"
+            "class Solver {\n"
+            "public:\n"
+            "    int step(int dt) { return dt + 1; }\n"
+            "};\n"
+            "}\n",
+            encoding="utf-8",
+        )
+
+        sp = SpaceConfig(
+            qualified_name="project/fast_ast",
+            owner="project",
+            short_name="fast_ast",
+            entries=(str(ws_root),),
+        )
+        storage_dir = Path(self.temp_dir) / "storage_slice_fast"
+        engine = ASTEngine(
+            storage_dir=storage_dir,
+            project_root=ws_root,
+            contributes_data={"spaces": {"fast_ast": sp}},
+        )
+
+        # 1. O(1) single-file fast path for "<rel_path>::<fqn>" without building workspace graph
+        with patch.object(
+            engine,
+            "get_workspace_graph",
+            side_effect=AssertionError("get_workspace_graph must not be invoked for <rel_path>::<fqn>"),
+        ):
+            res_fast = engine.slice_part("pkg/service.py::OrderProcessor.compute_total", part="outer")
+            self.assertIn("return qty * price", res_fast)
+
+            # Also verify UnifiedSymbol direct input takes O(1) single-file fast path
+            from ast_engine import UnifiedSymbol
+
+            usym = UnifiedSymbol(
+                id="pkg/service.py::OrderProcessor.compute_total",
+                name="compute_total",
+                fqn="OrderProcessor.compute_total",
+                kind="method",
+                file_path="pkg/service.py",
+                line_number=2,
+                end_line=3,
+                language="python",
+            )
+            res_usym = engine.slice_part(usym, part="outer")
+            self.assertIn("return qty * price", res_usym)
+
+        # 2. C++ double-colon selector ("Physics::Solver::step") where "Physics" is NOT a file falls back to workspace graph
+        out_buf, err_buf = io.StringIO(), io.StringIO()
+        with bind_runtime_context(env={"YSCB_FORCE_PROGRESS": "1"}), contextlib.redirect_stdout(
+            out_buf
+        ), contextlib.redirect_stderr(err_buf):
+            engine.build_index()
+        self.assertEqual(out_buf.getvalue(), "")
+        self.assertIn("[ast]", err_buf.getvalue())
+
+        from ast_engine.exceptions import ASTError
+
+        res_cpp = engine.slice_part("Physics::Solver::step", part="outer")
+        self.assertIn("return dt + 1;", res_cpp)
+
+        # Non-file "::" selector must fall back to workspace graph (raising ASTError, never FileNotFoundError)
+        with self.assertRaises(ASTError):
+            engine.slice_part("NonExistentNamespace::MissingSymbol", part="outer")
+
+        # 3. Non-blocking status() while engine._lock is held by another thread
+        lock_held = threading.Event()
+        release_evt = threading.Event()
+
+        def _hold_ast_lock() -> None:
+            with engine._lock:
+                lock_held.set()
+                release_evt.wait(timeout=3.0)
+
+        holder = threading.Thread(target=_hold_ast_lock, daemon=True)
+        holder.start()
+        try:
+            self.assertTrue(lock_held.wait(timeout=2.0))
+            t0 = time.perf_counter()
+            st_busy = engine.status()
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            self.assertTrue(st_busy["building_in_progress"])
+            self.assertLess(elapsed_ms, 50.0)
+        finally:
+            release_evt.set()
+            holder.join(timeout=2.0)
+
+        # 4. clean() preserves monotonic ast_generation floor across rebuilds, and hot_patch_index lazily hydrates workspace_graph on callers()
+        gen_before_clean = engine.status()["ast_generation"]
+        engine.clean()
+        st_cleaned = engine.status()
+        self.assertFalse(st_cleaned["index_exists"])
+        self.assertEqual(st_cleaned["total_symbols"], 0)
+        rebuilt_snap = engine.build_index()
+        self.assertGreater(rebuilt_snap.ast_generation, gen_before_clean)
+        engine.hot_patch_index(["pkg/service.py"])
+        self.assertIsNone(engine._graph.workspace_graph)
+        callers_res = engine.callers("OrderProcessor.compute_total", snippet=False)
+        self.assertIsNotNone(engine._graph.workspace_graph)
+        self.assertIn("total_callers", callers_res)
+
+        # 5. CRLF + multi-byte UTF-8 lossless byte coordinate alignment across parse_file, workspace_graph, and slice_part
+        crlf_file = pkg_dir / "crlf_order.py"
+        crlf_file.write_bytes(
+            b"# \xe8\xa8\x82\xe5\x96\xae\xe6\xa8\xa1\xe7\xb5\x84 line 1\r\n"
+            b"# line 2\r\n"
+            b"# line 3\r\n"
+            b"class CrlfHandler:\r\n"
+            b"    def process_order(self, order_id: int) -> bool:\r\n"
+            b"        return order_id > 0\r\n"
+        )
+        engine.build_index()
+        crlf_node = engine.parse_file("pkg/crlf_order.py").all_nodes_by_id["pkg/crlf_order.py::CrlfHandler.process_order"]
+        sliced_crlf = engine.slice_part(crlf_node, part="outer")
+        self.assertTrue(sliced_crlf.strip().startswith("def process_order(self, order_id: int) -> bool:"))
+        self.assertTrue(sliced_crlf.strip().endswith("return order_id > 0"))
+        sliced_fast_crlf = engine.slice_part("pkg/crlf_order.py::CrlfHandler.process_order", part="outer")
+        self.assertEqual(sliced_crlf, sliced_fast_crlf)
+
+        # 6. Default _custom_storage_dir=False ensure_jit_synced() & targeted clean(space=...) never raise AttributeError on space_manager/space_registry
+        self.assertIs(engine.bundler.space_registry, engine.bundler.space_manager)
+        engine._custom_storage_dir = False
+        try:
+            synced_snap = engine.ensure_jit_synced()
+            self.assertIsNotNone(synced_snap)
+            cleaned_targeted = engine.clean(space="project/default")
+            self.assertEqual(cleaned_targeted["status"], "cleaned")
+        finally:
+            engine._custom_storage_dir = True
         self.mark_passed()

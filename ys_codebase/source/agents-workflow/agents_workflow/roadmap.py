@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from core import vfs
 from core.context import get_virtual_cwd
 from .plans._common import parse_markdown_blockquote_headers, resolve_plan_uri
 
@@ -412,10 +413,10 @@ class RoadmapManager:
                 dest_roadmap,
                 f"{existing_text}\n\n---\n\n# Part 合流路線圖：{matched.title}\n\n> 來源路線圖：{matched.filename}\n\n{incoming_text}\n",
             )
-            matched.path.unlink()
+            vfs.remove(str(matched.path), missing_ok=True)
             is_appended = True
         else:
-            shutil.move(str(matched.path), str(dest_roadmap))
+            vfs.move(str(matched.path), str(dest_roadmap))
 
         action_verb = "追加合併至既有" if is_appended else "物理遷入為"
         disp_plan = _append_promoted_changelog(

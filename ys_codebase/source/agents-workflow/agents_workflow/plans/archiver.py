@@ -132,17 +132,25 @@ class PlanArchiver:
             if sub_dir.is_dir() and sub_dir.name.startswith("sub_"):
                 handoff_targets.append(sub_dir / "handoff.md")
 
+        from core import vfs
+
         for h_target in handoff_targets:
             if h_target.exists():
                 try:
-                    h_target.unlink()
+                    vfs.remove(str(h_target), missing_ok=True)
                     cleaned_handoff = True
                 except Exception as e:
                     warnings.append(f"清理暫時交接快照失敗 ({h_target.name})：{e}")
 
-        # 6. 執行安全搬移
+        # 6. 執行安全搬移並對歸檔目錄施加唯讀鎖
         dest_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src_dir), str(dest_dir))
+        vfs.move(str(src_dir), str(dest_dir))
+        try:
+            from core import file_lock as fl_mod
+
+            fl_mod.lock_path(dest_dir, force=True, root_dir=self.project_root)
+        except Exception:
+            pass
 
         return {
             "success": True,

@@ -472,7 +472,10 @@ class TestKnowledgeDBProviders(YSCBTestCase):
             ),
         ]
 
-        with patch("core.space.providers._resolve_registry_from_context") as mock_res:
+        with patch("core.space.providers._resolve_registry_from_context") as mock_res, patch(
+            "core.space.providers._resolve_knowledge_db_indexed_space_names",
+            return_value=None,
+        ):
             mock_res.return_value.list_spaces.return_value = mock_spaces
 
             output = get_knowledge_db_spaces()
@@ -516,7 +519,10 @@ class TestKnowledgeDBProviders(YSCBTestCase):
         try:
             with patch.dict(sys.modules, {"networkx": None, "fastembed": None}):
                 importlib.reload(kdb_prov)
-                with patch("core.space.providers._resolve_registry_from_context") as mock_res:
+                with patch("core.space.providers._resolve_registry_from_context") as mock_res, patch(
+                    "core.space.providers._resolve_knowledge_db_indexed_space_names",
+                    return_value=None,
+                ):
                     mock_res.return_value.list_spaces.return_value = mock_spaces
                     table = kdb_prov.get_knowledge_db_spaces()
                     self.assertIn("`source`", table)

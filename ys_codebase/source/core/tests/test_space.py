@@ -1424,6 +1424,19 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         )
         self.assertIn("`core/source`", tbl_kdb)
 
+        # Positive + negative space_weights filtering under explicit context (verifies host_scope signature & isolation)
+        kdb_cfg_file = self.yscb_root / "config" / "knowledge-db" / "contribute.json"
+        kdb_cfg_file.parent.mkdir(parents=True, exist_ok=True)
+        vfs.write_json(str(kdb_cfg_file), {"space_weights": {"core/source": 1.0}})
+        try:
+            tbl_filtered = get_knowledge_db_spaces(
+                context={"project_root": str(self.proj_root), "yscb_dir": str(self.yscb_root)}
+            )
+            self.assertIn("`core/source`", tbl_filtered)
+            self.assertNotIn("`core/unwatched`", tbl_filtered)
+        finally:
+            vfs.remove(str(kdb_cfg_file), missing_ok=True)
+
         # Test `1.2.7.x.py` migration of `config/file-space/contribute.json` -> `config/core/contribute.json`
         legacy_fs_cfg = self.yscb_root / "config" / "file-space" / "contribute.json"
         legacy_fs_cfg.parent.mkdir(parents=True, exist_ok=True)
@@ -1541,6 +1554,64 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         for rel_d in (".modules/file-space", ".mirror/file-space", ".cache/file-space", ".storage.local/file-space", ".config.local/file-space"):
             self.assertFalse((self.yscb_root / rel_d).exists())
 
+        self.mark_passed()
+
+    def test_binary_snapshot_load_summary_and_get_snapshot_summary(self) -> None:
+        """Verify `BinarySnapshotManager.load_summary` and `SpaceScanner.get_snapshot_summary` match `load_state` active counts and reject corrupted payloads."""
+        sum_dir = self.proj_root / "sum_src"
+        sum_dir.mkdir(parents=True, exist_ok=True)
+        f1 = sum_dir / "one.py"
+        f2 = sum_dir / "two.py"
+        f1.write_text("x = 1\n", encoding="utf-8")
+        f2.write_text("y = 2\n", encoding="utf-8")
+
+        self._write_module_core_contrib(
+            "core",
+            {
+                "spaces": {
+                    "sum_code": {
+                        "entries": ["project://sum_src"],
+                        "include": ["*.py"],
+                        "watch": True,
+                    }
+                }
+            },
+        )
+        reg = SpaceRegistry(project_root=self.proj_root, yscb_dir=self.yscb_root)
+        sc = SpaceScanner(registry=reg)
+        sc.scan("core/sum_code")
+
+        # Delete f2 so snapshot contains 1 active file + 1 tombstone (is_deleted=True)
+        f2.unlink()
+        sc.scan("core/sum_code")
+
+        snap_path = sc._snapshot_path("core/sum_code")
+        full_state = sc._snapshot_mgr.load_state(snap_path)
+        expected_active = sum(1 for e in full_state.entries.values() if not e.is_deleted)
+        self.assertEqual(expected_active, 1)
+        self.assertGreaterEqual(len(full_state.entries), 2)
+
+        # Cold disk summary path (evict in-memory snapshot cache first)
+        sc._snapshot_mem_cache.clear()
+        h_gen, m_root, c_hash, act_cnt = sc.get_snapshot_summary("core/sum_code")
+        self.assertEqual(h_gen, full_state.head_generation)
+        self.assertEqual(m_root, full_state.merkle_root)
+        self.assertEqual(c_hash, full_state.config_hash)
+        self.assertEqual(act_cnt, 1)
+
+        # Warm memory cache path
+        sc._load_snapshot_state("core/sum_code")
+        self.assertEqual(
+            sc.get_snapshot_summary("core/sum_code"),
+            (full_state.head_generation, full_state.merkle_root, full_state.config_hash, 1),
+        )
+
+        # Corrupted checksum falls back cleanly to (0, "", "", 0)
+        corrupt_snap = self.proj_root / "corrupt.snap"
+        raw = bytearray(snap_path.read_bytes())
+        raw[-1] ^= 0xFF
+        corrupt_snap.write_bytes(bytes(raw))
+        self.assertEqual(sc._snapshot_mgr.load_summary(corrupt_snap), (0, "", "", 0))
         self.mark_passed()
 
 

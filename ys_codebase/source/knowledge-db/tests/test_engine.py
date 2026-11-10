@@ -56,11 +56,11 @@ class TestEngine(YSCBTestCase):
                 },
             )
 
-            # 1. status 驗證
+            # 1. status 驗證 (尚未掃描或建置索引前，O(1) status 不全盤走訪目錄，cached_files == 0)
             st = engine.status()
             self.assertEqual(st["total_spaces"], 1)
             self.assertIn("demo_space", st["spaces"])
-            self.assertEqual(st["spaces"]["demo_space"]["cached_files"], 2)
+            self.assertEqual(st["spaces"]["demo_space"]["cached_files"], 0)
 
             # 2. bundle 驗證
             bundles = engine.bundle(space="demo_space")
@@ -74,7 +74,10 @@ class TestEngine(YSCBTestCase):
             unified_idx_file = storage_dir / "indices" / "unified.index.bin.gz"
             orphan_idx_file = storage_dir / "indices" / "demo_space.index.bin.gz"
             self.assertTrue(unified_idx_file.exists())
+            self.assertTrue((storage_dir / "indices" / "unified.meta.json").is_file())
             self.assertFalse(orphan_idx_file.exists())
+            st_built = engine.status()
+            self.assertEqual(st_built["spaces"]["demo_space"]["cached_files"], 2)
 
             # 4. search 驗證
             results = engine.search("PIDController", space="demo_space")
@@ -842,6 +845,88 @@ class TestEngine(YSCBTestCase):
                         diff_non_ast.detail, timeout_seconds=10.0
                     )
                 self.assertTrue(non_ast_patch_res.success)
+
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_status_o1_unified_meta_zero_unpickle_and_lock_probe(self):
+        """驗證 KnowledgeEngine.status() 透過 unified.meta.json 與 load_summary() 實現零 .bin.gz 解壓與零 iter_space_files 掃描，且持鎖時立即回傳 building_in_progress=True"""
+        import threading
+        import time
+        from knowledge_db.pipeline import get_index_cache
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            src_dir = temp_path / "src_meta"
+            src_dir.mkdir(parents=True)
+            storage_dir = temp_path / "storage_meta"
+            (src_dir / "svc.py").write_text(
+                "class MetaQuickService:\n    def ping(self): return 'pong'\n",
+                encoding="utf-8",
+            )
+            space_cfg = SpaceConfig(
+                qualified_name="project/meta_space",
+                owner="project",
+                short_name="meta_space",
+                entries=(str(src_dir),),
+            )
+            builder = KnowledgeEngine(
+                storage_dir=storage_dir,
+                contributes_data={"spaces": {"meta_space": space_cfg}},
+                embedding_mock_mode=True,
+            )
+            builder.build_unified_index(force=True)
+            meta_file = storage_dir / "indices" / "unified.meta.json"
+            self.assertTrue(meta_file.is_file())
+
+            # Clear process-level index cache to simulate a brand-new status query
+            get_index_cache().clear()
+            fresh = KnowledgeEngine(
+                storage_dir=storage_dir,
+                contributes_data={"spaces": {"meta_space": space_cfg}},
+                embedding_mock_mode=True,
+            )
+
+            with patch.object(
+                fresh.pipeline,
+                "_ensure_indices_loaded",
+                side_effect=AssertionError("status() must not load/unpickle .bin.gz when unified.meta.json is valid"),
+            ), patch.object(
+                fresh.space_manager,
+                "iter_space_files",
+                side_effect=AssertionError("status() must not walk space directories"),
+            ):
+                t0 = time.perf_counter()
+                st = fresh.status()
+                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+            self.assertTrue(st["has_unified_index"])
+            self.assertGreaterEqual(st["indices"]["bm25"]["symbol_count"], 1)
+            self.assertEqual(st["spaces"]["meta_space"]["cached_files"], 1)
+            self.assertFalse(st["building_in_progress"])
+            self.assertLess(elapsed_ms, 50.0)
+
+            # Hold _index_lock on another thread -> status() returns building_in_progress=True non-blockingly
+            held_evt = threading.Event()
+            rel_evt = threading.Event()
+
+            def _hold_idx_lock():
+                with fresh.pipeline._index_lock:
+                    held_evt.set()
+                    rel_evt.wait(timeout=3.0)
+
+            t_lock = threading.Thread(target=_hold_idx_lock, daemon=True)
+            t_lock.start()
+            try:
+                self.assertTrue(held_evt.wait(timeout=2.0))
+                t1 = time.perf_counter()
+                st_busy = fresh.status()
+                busy_elapsed_ms = (time.perf_counter() - t1) * 1000.0
+                self.assertTrue(st_busy["building_in_progress"])
+                self.assertLess(busy_elapsed_ms, 50.0)
+            finally:
+                rel_evt.set()
+                t_lock.join(timeout=2.0)
 
         self.mark_passed()
 

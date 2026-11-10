@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from core import telemetry
     from core import locale
     from core import gitignore
+    from core import file_lock
     from core import space
     from core import log
 
@@ -86,6 +87,7 @@ _MODULE_MAP = types.MappingProxyType({
     "telemetry": ("core.telemetry", None),
     "locale": ("core.locale", None),
     "gitignore": ("core.gitignore", None),
+    "file_lock": ("core.file_lock", None),
     "space": ("core.space", None),
     "log": ("core.log", None),
 })
@@ -147,6 +149,7 @@ __all__ = (
     "telemetry",
     "locale",
     "gitignore",
+    "file_lock",
     "space",
     "log",
 )

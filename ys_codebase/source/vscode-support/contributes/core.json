@@ -1,6 +1,8 @@
 {
   "commands": {
-    "module_alias": ["vsc"],
+    "module_alias": [
+      "vsc"
+    ],
     "description": "VS Code 工作區設定投影、穩定微環境路徑連結與單檔級 JSON Schema 編譯指令群",
     "cmd": {
       "status": {
@@ -75,7 +77,16 @@
         "project://.vscode/schemas/"
       ],
       "watch": false
+    },
+    "readonly": {
+      "description": "VS Code 自動編譯之單檔 JSON Schema 唯讀保護空間",
+      "entries": [
+        "project://.vscode/schemas"
+      ],
+      "include": [
+        "*"
+      ],
+      "watch": false
     }
   }
 }
-

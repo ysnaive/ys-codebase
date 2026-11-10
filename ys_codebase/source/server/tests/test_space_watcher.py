@@ -559,6 +559,51 @@ class TestCoreSpaceWatcherService(YSCBTestCase):
         self.assertFalse(worker.is_alive())
         self.mark_passed()
 
+    def test_flush_dirty_spaces_defers_when_foreground_active(self) -> None:
+        """Verify `CoreSpaceWatcherServiceWorker.flush_dirty_spaces(force=False)` yields when `is_foreground_active()` is True and increments `deferred_by_foreground_count`."""
+        from core.context import foreground_task_scope
+
+        src_dir = self.proj_root / "fg_yield_src"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        f_py = src_dir / "item.py"
+        f_py.write_text("v = 1\n", encoding="utf-8")
+
+        self._write_module_contrib(
+            "mod_fg",
+            "core.json",
+            {
+                "spaces": {
+                    "source": {
+                        "entries": ["project://fg_yield_src"],
+                        "include": ["*.py"],
+                    }
+                }
+            },
+        )
+        scan("mod_fg/source", project_root=self.proj_root, yscb_dir=self.yscb_root)
+
+        worker = CoreSpaceWatcherServiceWorker(
+            context={
+                "project_root": str(self.proj_root),
+                "yscb_root": str(self.yscb_root),
+                "debounce_seconds": 0.0,
+            }
+        )
+        f_py.write_text("v = 2\n", encoding="utf-8")
+        matched = worker.notify_file_event(f_py, is_directory=False, event_type="modified")
+        self.assertIn("mod_fg/source", matched)
+
+        with foreground_task_scope():
+            res_deferred = worker.flush_dirty_spaces(force=False)
+            self.assertEqual(res_deferred, {})
+            self.assertEqual(worker.get_custom_metrics()["deferred_by_foreground_count"], 1)
+
+        # Once foreground task completes, background flush proceeds cleanly
+        res_flushed = worker.flush_dirty_spaces(force=False)
+        self.assertIn("mod_fg/source", res_flushed)
+        self.assertEqual(res_flushed["mod_fg/source"].modified, ["fg_yield_src/item.py"])
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

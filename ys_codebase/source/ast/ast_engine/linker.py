@@ -10,9 +10,9 @@ import posixpath
 import re
 import threading
 from types import MappingProxyType
-from typing import Any, Deque, Dict, FrozenSet, Iterable, List, Mapping, Optional, Set, Tuple, Union
+from typing import Any, Callable, Deque, Dict, FrozenSet, Iterable, List, Mapping, Optional, Set, Tuple, Union
 
-from core.context import get_runtime_context
+from core.context import check_task_cancelled, get_runtime_context
 from core.log import log_warn
 
 from .graph import CallGraphIndex
@@ -2145,15 +2145,27 @@ class WorkspaceGraphLinker:
 
         return "unresolved", (), "Pass4:Unresolved"
 
-    def link_workspace(self) -> WorkspaceSymbolGraph:
+    def link_workspace(
+        self,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> WorkspaceSymbolGraph:
         """Execute Pass 1 -> Pass 2 -> Pass 3 -> Pass 4 and return an immutable `WorkspaceSymbolGraph`."""
+        check_task_cancelled()
         self._run_pass1_global_indexing_and_folding()
+        check_task_cancelled()
         self._run_pass2_import_resolution()
+        check_task_cancelled()
         self._run_pass3_inheritance_and_type_dag()
+        check_task_cancelled()
 
         all_resolved_edges: List[RelationEdge] = list(self._synthetic_edges)
+        total_fgs = len(self._file_graphs)
 
-        for norm_path, fg in self._file_graphs.items():
+        for fg_idx, (norm_path, fg) in enumerate(self._file_graphs.items(), start=1):
+            if (fg_idx & 15) == 1:
+                check_task_cancelled()
+            if progress_callback is not None:
+                progress_callback(fg_idx, total_fgs)
             file_edges: List[RelationEdge] = []
             for idx, edge in enumerate(fg.outgoing_edges):
                 key = (norm_path, idx, edge.target_expr)

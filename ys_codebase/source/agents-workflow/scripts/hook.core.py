@@ -67,17 +67,24 @@ def on_register_file_spaces(ctx=None) -> bool:
 
         proj_root_obj = getattr(registry, "project_root", None)
         proj_root = str(proj_root_obj) if proj_root_obj is not None else None
-        publisher = ReleasePublisher()
+        publisher = ReleasePublisher(host_dir=proj_root)
         rel_paths = publisher.collect_gitignore_patterns(proj_root=proj_root)
-        register_fn(
-            "agents-workflow/gitignore",
-            {
-                "description": "agents-workflow 活躍發布目標物化檔案與私有目錄忽略規則",
-                "entries": ["project://"],
-                "include": rel_paths,
-                "watch": False,
-            },
-        )
+        gi_cfg = {
+            "description": "agents-workflow 活躍發布目標物化檔案與私有目錄忽略規則",
+            "entries": ["project://"],
+            "include": rel_paths,
+            "watch": False,
+        }
+        try:
+            register_fn("agents-workflow/gitignore", gi_cfg, replace=True)
+        except TypeError:
+            register_fn("agents-workflow/gitignore", gi_cfg)
+        if hasattr(publisher, "collect_readonly_space_config"):
+            ro_cfg = publisher.collect_readonly_space_config(proj_root=proj_root)
+            try:
+                register_fn("agents-workflow/readonly", ro_cfg, replace=True)
+            except TypeError:
+                register_fn("agents-workflow/readonly", ro_cfg)
         return True
     except Exception as e:
         _log_hook(f"[agents-workflow:hook] Warning: Failed during on_register_file_spaces: {e}", file=sys.stderr)

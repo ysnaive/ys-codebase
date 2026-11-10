@@ -477,10 +477,14 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
             time.sleep(0.08)
             clear_worker_state(indices_dir, worker_running=True)
 
-        threading.Thread(target=_finish_soon, daemon=True).start()
-        err_buf2 = io.StringIO()
-        with contextlib.redirect_stderr(err_buf2):
-            hits2 = engine.search("VectorTargetNode", auto_rebuild=False)
+        t_fin = threading.Thread(target=_finish_soon, daemon=True)
+        t_fin.start()
+        try:
+            err_buf2 = io.StringIO()
+            with contextlib.redirect_stderr(err_buf2):
+                hits2 = engine.search("VectorTargetNode", auto_rebuild=False)
+        finally:
+            t_fin.join(timeout=2.0)
         self.assertEqual(len(hits2), 1)
         self.assertNotIn(
             "[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]", err_buf2.getvalue()
@@ -574,49 +578,26 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
             self.assertEqual(deficit_deleted["embedded_count"], 0)
             self.assertGreater(deficit_deleted["missing_count"], 0)
 
-            # 驗證背景自動模型下載 (當 mock_mode=False 且 has_local_model()=False 時由 Worker 自動呼叫 download_model 且不印 [GUARD])
+            # 驗證離線模型守門：當 mock_mode=False 且 has_local_model()=False 時，背景 Worker 嚴禁私自呼叫 download_model，立即以 busy=False 進入 DEGRADED_OFFLINE
             worker._stop_event.clear()
             engine.embedding_service.mock_mode = False
-            dl_flag = {"downloaded": False}
-
-            def _fake_has_local():
-                return dl_flag["downloaded"]
-
-            def _fake_download(force: bool = False):
-                dl_flag["downloaded"] = True
-                engine.embedding_service.mock_mode = True
-                return True
-
             with patch.object(
                 engine.embedding_service,
                 "has_local_model",
-                side_effect=_fake_has_local,
+                return_value=False,
             ), patch.object(
-                engine.embedding_service, "download_model", side_effect=_fake_download
+                engine.embedding_service, "download_model"
             ) as mock_dl:
                 err_buf = io.StringIO()
                 with contextlib.redirect_stderr(err_buf):
-                    worker._last_download_attempt_ts = 0.0
                     worker._run_sync_cycle(engine, engine.pipeline.get_indices_dir())
-                self.assertTrue(mock_dl.called)
+                mock_dl.assert_not_called()
                 self.assertNotIn("[GUARD]", err_buf.getvalue())
-                self.assertEqual(worker.state, worker.STATE_READY)
-
-            # 驗證離線下載失敗時進入 DEGRADED_OFFLINE 狀態，且前景 search 不阻塞於 _index_lock (< 1ms 純 BM25)
-            engine.embedding_service.mock_mode = False
-            with patch.object(
-                engine.embedding_service, "has_local_model", return_value=False
-            ), patch.object(
-                engine.embedding_service,
-                "download_model",
-                side_effect=RuntimeError("Offline network unreachable"),
-            ):
-                worker._last_download_attempt_ts = 0.0
-                worker._run_sync_cycle(engine, engine.pipeline.get_indices_dir())
                 self.assertEqual(worker.state, worker.STATE_DEGRADED_OFFLINE)
                 self.assertEqual(
                     worker.get_custom_metrics()["phase"], "degraded_offline"
                 )
+                self.assertEqual(get_worker_busy_ms(engine.pipeline.get_indices_dir()), 0)
         finally:
             engine.embedding_service.mock_mode = True
             worker.stop()
@@ -773,7 +754,7 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
 
     @require(Requirement.LOGIC)
     def test_stage2_auto_download_and_degraded_offline_state(self):
-        """驗證 KnowledgeDBServiceWorker Stage 2 自動下載模型保留，且離線失敗時轉為 DEGRADED_OFFLINE 狀態"""
+        """驗證 KnowledgeDBServiceWorker Stage 2 缺少本地模型時不執行未授權自動下載，零阻塞寫入 busy=False 並轉為 DEGRADED_OFFLINE 狀態"""
         src_dir = self.root_path / "src_offline_deg"
         src_dir.mkdir(parents=True, exist_ok=True)
         (src_dir / "mod.py").write_text("class OfflineNode:\n    pass\n", encoding="utf-8")
@@ -798,9 +779,10 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
             engine.embedding_service, "download_model", return_value=False
         ) as mock_dl:
             worker._run_sync_cycle(engine, engine.pipeline.get_indices_dir())
-            mock_dl.assert_called_once_with(force=False)
+            mock_dl.assert_not_called()
             self.assertEqual(worker.state, KnowledgeDBServiceWorker.STATE_DEGRADED_OFFLINE)
             st = read_worker_state(engine.pipeline.get_indices_dir())
+            self.assertIs(st.get("busy"), False)
             self.assertEqual(st.get("phase"), "degraded_offline")
             self.assertEqual(worker.get_custom_metrics().get("state"), KnowledgeDBServiceWorker.STATE_DEGRADED_OFFLINE)
 
@@ -1257,6 +1239,79 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
             # _collect_all_dirty_files must NOT call hot_patch_index a redundant second time!
             self.assertEqual(len(patch_calls), 1)
 
+        self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_embedding_nonblocking_lock_hybrid_o1_shortcircuit_and_progress(self):
+        """Verify non-blocking `EmbeddingService._ensure_model()`, `HybridSearchEngine.is_vector_available` O(1) short-circuit, and `build_unified_index` stderr progress reporting."""
+        from core.context import bind_runtime_context
+
+        # 1. Non-blocking _ensure_model(blocking=False) when _init_lock is held by another thread
+        svc = EmbeddingService(
+            cache_dir=self.root_path / "emb_nonblock",
+            mock_mode=False,
+        )
+        lock_acquired = threading.Event()
+        release_lock = threading.Event()
+
+        def _hold_init_lock():
+            with svc._init_lock:
+                lock_acquired.set()
+                release_lock.wait(timeout=3.0)
+
+        t_hold = threading.Thread(target=_hold_init_lock, daemon=True)
+        t_hold.start()
+        try:
+            self.assertTrue(lock_acquired.wait(timeout=2.0))
+            t0 = time.perf_counter()
+            avail = svc.is_available
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            self.assertFalse(avail)
+            self.assertLess(elapsed_ms, 50.0)
+        finally:
+            release_lock.set()
+            t_hold.join(timeout=2.0)
+
+        # 2. HybridSearchEngine.is_vector_available O(1) short-circuits on empty doc_ids without touching embedding_service.is_available
+        src_dir = self.root_path / "src_hyb_prog"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        (src_dir / "alpha.py").write_text("class AlphaComponent:\n    def execute(self): return 42\n", encoding="utf-8")
+        storage_dir = self.root_path / "storage_hyb_prog"
+        sp = SpaceConfig(
+            qualified_name="project/hp_space",
+            owner="project",
+            short_name="hp_space",
+            entries=(str(src_dir),),
+        )
+        engine = KnowledgeEngine(
+            storage_dir=storage_dir,
+            contributes_data={"spaces": {"hp_space": sp}},
+            embedding_mock_mode=True,
+        )
+        self.assertEqual(len(engine.hybrid_engine.vector_index.doc_ids), 0)
+        with patch.object(
+            EmbeddingService,
+            "is_available",
+            new_callable=unittest.mock.PropertyMock,
+            side_effect=AssertionError("is_available must not be probed when vector_index.doc_ids is empty"),
+        ):
+            self.assertFalse(engine.hybrid_engine.is_vector_available)
+
+        # 3. build_unified_index emits stderr progress under YSCB_FORCE_PROGRESS=1 while keeping stdout pure
+        out_buf, err_buf = io.StringIO(), io.StringIO()
+        with bind_runtime_context(env={"YSCB_FORCE_PROGRESS": "1"}), contextlib.redirect_stdout(
+            out_buf
+        ), contextlib.redirect_stderr(err_buf):
+            engine.build_unified_index(force=True)
+        self.assertEqual(out_buf.getvalue(), "")
+        self.assertIn("[knowledge-db]", err_buf.getvalue())
+
+        # 4. flush_vector_index refreshes unified.meta.json so cold get_persisted_meta() stays valid
+        engine.pipeline._vector_index_dirty = True
+        self.assertTrue(engine.pipeline.flush_vector_index())
+        meta_after_flush = engine.pipeline.get_persisted_meta()
+        self.assertIsInstance(meta_after_flush, dict)
+        self.assertGreaterEqual(meta_after_flush["embedded_count"], 1)
         self.mark_passed()
 
 if __name__ == "__main__":

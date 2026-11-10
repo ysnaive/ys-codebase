@@ -1,10 +1,10 @@
 {
   "name": "agents-workflow",
-  "version": "1.2.4.7",
+  "version": "1.2.4.8",
   "description": "General Agents Workflow Framework with Protocol Artifact Factory and Declarative Injection Engine",
   "entry": "scripts/cli.py",
   "dependencies": {
-    "core": ">=1.2.8.0"
+    "core": ">=1.2.9.0"
   },
   "optional": {
     "knowledge-db": {
@@ -22,8 +22,8 @@
     "Publish AGENTS.md & skills to project workspace: python yscb.py agents-workflow release"
   ],
   "release": {
-    "type": "refactor",
+    "type": "feature",
     "urgency": "recommended",
-    "summary": "統一開發計畫階段狀態機推導邏輯、強化發布管線目錄原子交換與符號連結越界阻斷，並最佳化編譯快取指紋檢查"
+    "summary": "宣告計畫日誌、歸檔區與 .agents/ 產物之 spaces.readonly 唯讀保護，並將計畫歸檔與路線圖搬移全數收斂至 VFS 透明穿隧"
   }
 }

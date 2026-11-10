@@ -195,9 +195,9 @@ def on_file_space_changed(
     if engine is None:
         engine = kwargs.get("engine")
     has_explicit_engine = engine is not None
+    p_root = kwargs.get("project_root") or (context.get("project_root") if isinstance(context, dict) else None)
+    s_dir = kwargs.get("storage_dir") or (context.get("storage_dir") if isinstance(context, dict) else None)
     if engine is None:
-        p_root = kwargs.get("project_root") or (context.get("project_root") if isinstance(context, dict) else None)
-        s_dir = kwargs.get("storage_dir") or (context.get("storage_dir") if isinstance(context, dict) else None)
         engine = get_engine(project_root=p_root, storage_dir=s_dir)
 
     if target_space is None and spaces and len(spaces) == 1:
@@ -225,7 +225,7 @@ def on_file_space_changed(
                 "to_generation": 0,
             }
 
-    if not has_explicit_engine:
+    if not has_explicit_engine and s_dir is None and p_root is None:
         try:
             from core.context import get_runtime_context
 

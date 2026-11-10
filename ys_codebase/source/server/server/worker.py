@@ -11,6 +11,7 @@ import argparse
 from dataclasses import dataclass
 import json
 import os
+import queue
 import sys
 import threading
 import time
@@ -18,17 +19,22 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core import events, uri
 from core.context import (
+    TaskCancelledError,
+    bind_active_task_cancel_scope,
     bind_cell_context,
     bind_runtime_context,
+    foreground_task_scope,
     get_env,
-    get_runtime_context,
     get_virtual_cwd,
+    request_task_cancel,
+    reset_task_cancelled,
 )
 from core.guard import GUARD_ENV_HOST, GUARD_ENV_TOKEN
 from core.log import (
     DebouncedIOStreamer,
     bind_log_context,
     clear_error_hint,
+    create_managed_thread,
     get_last_error_hint,
 )
 from core.platform import (
@@ -57,6 +63,18 @@ class _WorkerIPCLinkSink:
             "component": str(component or "service"),
             "msg": str(msg),
         })
+
+    def error(self, msg: Any, component: str = "service", exc_info: Any = None) -> None:
+        import traceback
+
+        text = str(msg)
+        if exc_info is not None:
+            if isinstance(exc_info, BaseException):
+                tb = "".join(traceback.format_exception(type(exc_info), exc_info, exc_info.__traceback__))
+                text = f"{text}\n{tb.rstrip()}"
+            elif exc_info:
+                text = f"{text}\n{traceback.format_exc().rstrip()}"
+        self.log("ERROR", text, component=component)
 
 
 def _reconfigure_utf8_stream(stream_obj: Any) -> None:
@@ -240,6 +258,11 @@ class WarmWorker:
                 )
                 err_hint = (get_last_error_hint() or f"Command exited with code {rc}") if rc != 0 else None
                 return rc, err_hint
+            except TaskCancelledError as ce:
+                msg = str(ce) or "Task cancelled by client disconnect"
+                streamer.write("stderr", f"[Server Worker] {msg}\n", flush=True)
+                self._emit_log("INFO", f"Task cooperatively cancelled for module='{module}', args={args}")
+                return 130, msg
             except SystemExit as se:
                 code = se.code if isinstance(se.code, int) else (1 if se.code else 0)
                 err_hint = (get_last_error_hint() or f"Command exited with code {code}") if code != 0 else None
@@ -253,6 +276,7 @@ class WarmWorker:
         args: List[str],
         cwd: str,
         env: Optional[Dict[str, str]] = None,
+        task_id: Optional[str] = None,
     ) -> int:
         """
         Executes target module command with lazy loading, `bind_runtime_context` isolation,
@@ -270,9 +294,11 @@ class WarmWorker:
             err_text: Optional[str] = None
             stages_summary: Optional[str] = None
 
+            already_cancelled = bind_active_task_cancel_scope(task_id)
             try:
-                get_runtime_context().set_module_state("server.worker.foreground_active", True)
-                with bind_runtime_context(
+                if already_cancelled:
+                    raise TaskCancelledError("Task cancelled by client disconnect")
+                with foreground_task_scope(), bind_runtime_context(
                     virtual_cwd=eff_cwd,
                     env=task_env,
                     host_dir=host_dir,
@@ -287,11 +313,15 @@ class WarmWorker:
                         exit_code, err_text = self._dispatch_command_with_captured_streams(module, args, streamer)
                     finally:
                         stages_summary = cell.format_stages_summary() or None
+            except TaskCancelledError as ce:
+                exit_code = 130
+                err_text = str(ce) or "Task cancelled by client disconnect"
+                streamer.stop_capture()
             except Exception as ex:
                 exit_code, err_text = self._record_task_exception(ex, module, args, streamer, stop_capture=True)
             finally:
                 try:
-                    get_runtime_context().set_module_state("server.worker.foreground_active", False)
+                    reset_task_cancelled(task_id)
                 except Exception:
                     pass
                 duration_ms = (time.time() - start_time) * 1000.0
@@ -376,35 +406,79 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
                 "worker_rss_mb": get_process_rss_mb(),
             })
 
+            cmd_q: queue.Queue = queue.Queue()
+
+            def _stdin_reader() -> None:
+                try:
+                    while True:
+                        raw_line = in_io.readline()
+                        if not raw_line:
+                            cmd_q.put(None)
+                            break
+                        if isinstance(raw_line, bytes):
+                            raw_line = raw_line.decode("utf-8", errors="replace")
+                        s_line = raw_line.strip()
+                        if not s_line:
+                            continue
+                        try:
+                            parsed = json.loads(s_line)
+                        except Exception as parse_err:
+                            cmd_q.put({"_parse_error": str(parse_err)})
+                            continue
+                        if not isinstance(parsed, dict):
+                            cmd_q.put({"_parse_error": "Expected JSON object command"})
+                            continue
+                        act = parsed.get("action")
+                        if act == "cancel":
+                            raw_tid = parsed.get("task_id")
+                            request_task_cancel(str(raw_tid) if isinstance(raw_tid, str) and raw_tid else None)
+                            continue
+                        cmd_q.put(parsed)
+                        if act == "exit":
+                            break
+                except (KeyboardInterrupt, BrokenPipeError, OSError, ValueError):
+                    cmd_q.put(None)
+                except Exception as r_err:
+                    cmd_q.put({"_parse_error": str(r_err)})
+                    cmd_q.put(None)
+
+            reader_t = create_managed_thread(
+                _stdin_reader,
+                daemon=True,
+                name="worker-stdin-reader",
+            )
+            reader_t.start()
+
             while True:
                 try:
-                    line = in_io.readline()
-                    if not line:
+                    req = cmd_q.get()
+                    if req is None:
                         break
-
-                    if isinstance(line, bytes):
-                        line = line.decode("utf-8", errors="replace")
-                    line = line.strip()
-                    if not line:
+                    if "_parse_error" in req:
+                        emit_fn({
+                            "type": "task_finish",
+                            "exit_code": 1,
+                            "duration_ms": 0.0,
+                            "error": str(req["_parse_error"]),
+                        })
                         continue
-
-                    req = json.loads(line)
                     cmd = req.get("action")
                     if cmd == "exit":
                         break
-
                     if cmd == "dispatch":
+                        raw_tid = req.get("task_id")
                         worker.execute_task(
                             module=req["module"],
                             args=req.get("args", []),
                             cwd=req.get("cwd", yscb_root),
                             env=req.get("env"),
+                            task_id=str(raw_tid) if isinstance(raw_tid, str) and raw_tid else None,
                         )
-
                 except (KeyboardInterrupt, BrokenPipeError):
                     break
                 except Exception as err:
                     emit_fn({"type": "task_finish", "exit_code": 1, "duration_ms": 0.0, "error": str(err)})
+            reader_t.join(timeout=0.2)
     finally:
         if worker is not None:
             try:

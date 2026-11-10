@@ -8,10 +8,11 @@ source_paths:
   - "yscb://source/knowledge-db/knowledge_db/embedding.py"
   - "yscb://source/knowledge-db/knowledge_db/bundler.py"
   - "yscb://source/knowledge-db/knowledge_db/retrieval.py"
+  - "yscb://source/knowledge-db/scripts/hook.file-space.py"
   - "yscb://source/knowledge-db/scripts/cli.py"
 related_docs:
   - "./README.md"
-  - "../core/DESIGN_NOTES.md"
+  - "../file-space/DESIGN_NOTES.md"
   - "./architecture.md"
   - "./retrieval.md"
   - "./incremental_hot_reload.md"
@@ -177,7 +178,7 @@ last_updated: "2026-11-05"
   2. 本地 FastEmbed 模型存放於系統快取，切換環境或清理快取後容易遺失；若每次皆須跳出 `[GUARD]` 警告要求 Agent 反問開發者確認下載，在已有常駐 Server Worker 的環境下會造成不必要的人工中斷。
   3. 當背景 Worker 正在執行長耗時任務（如初次全量向量化或背景下載模型）時，若前台每次搜尋皆固定死等完整超時時間（如 3000ms），將造成連續搜尋每次都被無謂延遲 3 秒。
 - **工程妥協與解法**：
-  1. **職責分離與兩階段背景同步 (`KnowledgeDBServiceWorker`)**：檔案系統 `watchdog` 監聽 100% 維持由 `file-space` 模組 (`file-space-watcher`) 單一負責；`knowledge-db` 註冊專屬 `KnowledgeDBServiceWorker` (`knowledge-db-worker`)。Stage 1 以 `skip_vectors=True` 秒級更新 AST/BM25/圖譜並推進游標；Stage 2 以微批次 (`vector_batch_size=32`，且將 `symbol.docstring` 截斷至 `1000` 字元防止超長 Token 拖慢 ONNX) 自動補齊缺失向量，並在缺少模型權重時自動於背景下載。
+  1. **職責分離與兩階段背景同步 (`KnowledgeDBServiceWorker`)**：檔案系統 `watchdog` 監聽 100% 維持由 `file-space` 模組 (`file-space-watcher`) 單一負責；`knowledge-db` 註冊專屬 `KnowledgeDBServiceWorker` (`knowledge-db-worker`)。Stage 1 以 `skip_vectors=True` 秒級更新 AST/BM25/圖譜並推進游標；Stage 2 以微批次 (`vector_batch_size=32`，且將 `symbol.docstring` 截斷至 `1000` 字元防止超長 Token 拖慢 ONNX) 自動補齊缺失向量；若本地尚未下載模型權重，嚴禁背景私自聯網下載，立即以 `busy=False` 轉入 `DEGRADED_OFFLINE` 純 BM25 模式（模型下載統一由使用者顯式執行冷啟動 `yscb knowledge-db model download`）。
   2. **`is_worker_busy() -> int` 已運行毫秒探針與剩餘容差計算**：`is_worker_busy()` 回傳 `0`（空閒）或已連續忙碌毫秒數 `elapsed_ms > 0`（具備陳舊 PID 存活校驗）。前台 `search()` 根據 `config.jit_vector_timeout_ms`（預設 `3000` ms）：當 `elapsed_ms >= timeout_ms` 時等待 `0ms` 瞬時降級純 BM25；當 `0 < elapsed_ms < timeout_ms` 時最多等待剩餘時間 `timeout_ms - elapsed_ms`，逾時即降級並於 `sys.stderr` 輸出 `[後台向量資料庫更新中，已暫時降級為純 BM25 搜尋]`。
 
 > [!CAUTION]
@@ -200,3 +201,13 @@ last_updated: "2026-11-05"
 
 
 
+
+---
+
+### [DN-31] `unified.meta.json` $O(1)$ 純元數據 `status` 快讀、離線模型守門與非阻塞 `_ensure_model(blocking=False)`
+- **背景與根因**：
+  1. 過去 `KnowledgeEngine.status()` 在記憶體尚未載入索引時會嘗試獲取 `_index_lock` 並解壓 `unified.index.bin.gz` / `unified.vectors.bin.gz`，甚至在缺少空間快照時退回 `iter_space_files()` 全盤走訪目錄，違反唯讀狀態速查之 $O(1)$ 低延遲原則。
+  2. 此外，若 `KnowledgeDBServiceWorker` 在背景自動觸發 `download_model()`，在離線或受限網路環境中會長時間佔用 `EmbeddingService._init_lock` 並寫入忙碌狀態，拖累前景查詢。
+- **工程妥協與解法**：
+  1. **`unified.meta.json` 與 `BinarySnapshotManager.load_summary()`**：`IndexingPipeline` 於每次持久化索引與向量微批次落盤時同步原子寫入 `unified.meta.json`（記錄 `symbol_count`、`term_count`、`acked_ast_generation` 與向量覆蓋統計並綁定二進位檔 `(mtime_ns, size)` 指紋）；`KnowledgeEngine.status()` 直接讀取 `unified.meta.json` 與 `scanner.get_snapshot_summary()` 標頭統計，全程零 `.bin.gz` 解壓、零目錄走訪，並透過 `_probe_kdb_lock_busy()` 非阻塞回報 `building_in_progress`。
+  2. **離線模型守門與非阻塞推論鎖**：移除背景 `KnowledgeDBServiceWorker` 未授權之隱式 `download_model()` 呼叫；`EmbeddingService._ensure_model(blocking=False)` 於 `_init_lock` 被佔用或正在下載時 `0ms` 立即返回降級，`HybridSearchEngine.is_vector_available` 亦優先以 $O(1)$ 檢查 `len(vector_index.doc_ids) > 0` 與 `has_local_model()` 短路，杜絕前景搜尋阻塞。

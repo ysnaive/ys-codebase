@@ -269,6 +269,56 @@ class BinarySnapshotManager:
         vfs.write_bytes(str(target_p), body + checksum, atomic=True)
         return target_p
 
+    def load_summary(self, path: Union[str, Path]) -> Tuple[int, str, str, int]:
+        """
+        Fast O(N-header-stride) binary summary reader returning
+        `(head_generation, merkle_root, config_hash, active_file_count)` without decoding
+        per-file strings or allocating `FileFingerprint` objects.
+        """
+        target_p = Path(str(path))
+        if not target_p.is_file():
+            return (0, "", "", 0)
+        try:
+            raw = vfs.read_bytes(str(target_p))
+        except Exception:
+            return (0, "", "", 0)
+        min_len = self._HEADER_PREFIX.size + BLAKE2B_DIGEST_SIZE
+        if len(raw) < min_len:
+            return (0, "", "", 0)
+        body = memoryview(raw)[:-BLAKE2B_DIGEST_SIZE]
+        expected_sum = raw[-BLAKE2B_DIGEST_SIZE:]
+        if hashlib.blake2b(body, digest_size=BLAKE2B_DIGEST_SIZE).digest() != expected_sum:
+            return (0, "", "", 0)
+        try:
+            magic, ver, count, head_gen, merkle_len, cfg_len = self._HEADER_PREFIX.unpack_from(body, 0)
+            if magic != self.MAGIC or ver != self.VERSION:
+                return (0, "", "", 0)
+            offset = self._HEADER_PREFIX.size
+            body_len = len(body)
+            if offset + merkle_len + cfg_len > body_len:
+                return (0, "", "", 0)
+            merkle_root = bytes(body[offset : offset + merkle_len]).decode("utf-8")
+            offset += merkle_len
+            config_hash = bytes(body[offset : offset + cfg_len]).decode("utf-8")
+            offset += cfg_len
+            rec_size = self._ENTRY_PREFIX.size
+            active_count = 0
+            for _ in range(count):
+                if offset + rec_size > body_len:
+                    return (0, "", "", 0)
+                rel_len, hash_len, ent_len = struct.unpack_from("<HHH", body, offset)
+                is_del = body[offset + rec_size - 1]
+                offset += rec_size + rel_len + hash_len + ent_len
+                if offset > body_len:
+                    return (0, "", "", 0)
+                if not is_del:
+                    active_count += 1
+            if offset != body_len:
+                return (0, "", "", 0)
+            return (int(head_gen), merkle_root, config_hash, active_count)
+        except Exception:
+            return (0, "", "", 0)
+
     def load_state(self, path: Union[str, Path]) -> SnapshotState:
         """
         Load a `YFP2` binary snapshot from `path`.
@@ -592,6 +642,7 @@ class SpaceScanner:
         self._cursor_store = CursorStore(self._storage_root, self._lock_dir)
         self._rlock = threading.RLock()
         self._snapshot_mem_cache: Dict[str, Tuple[int, int, bytes, SnapshotState]] = {}
+        self._summary_mem_cache: Dict[str, Tuple[int, int, bytes, Tuple[int, str, str, int]]] = {}
         self._hash_memo: Optional[Dict[Tuple[str, int, int, str, int], str]] = None
 
     @property
@@ -684,6 +735,7 @@ class SpaceScanner:
         except OSError:
             with self._rlock:
                 self._snapshot_mem_cache.pop(cache_key, None)
+                self._summary_mem_cache.pop(cache_key, None)
             return SnapshotState()
 
         with self._rlock:
@@ -705,6 +757,17 @@ class SpaceScanner:
         loaded = self._snapshot_mgr.load_state(snap_p)
         if loaded.head_generation > 0 or loaded.entries:
             with self._rlock:
+                self._summary_mem_cache[cache_key] = (
+                    mtime_ns,
+                    size,
+                    tail_sig,
+                    (
+                        int(loaded.head_generation),
+                        loaded.merkle_root,
+                        loaded.config_hash,
+                        sum(1 for e in loaded.entries.values() if not e.is_deleted),
+                    ),
+                )
                 self._snapshot_mem_cache[cache_key] = (
                     mtime_ns,
                     size,
@@ -719,6 +782,7 @@ class SpaceScanner:
         else:
             with self._rlock:
                 self._snapshot_mem_cache.pop(cache_key, None)
+                self._summary_mem_cache.pop(cache_key, None)
         return loaded
 
     def _save_snapshot_state(
@@ -731,6 +795,17 @@ class SpaceScanner:
             size = int(st.st_size)
             tail_sig = self._read_tail_checksum(snap_p, size)
             with self._rlock:
+                self._summary_mem_cache[cache_key] = (
+                    int(st.st_mtime_ns),
+                    size,
+                    tail_sig,
+                    (
+                        int(state.head_generation),
+                        state.merkle_root,
+                        state.config_hash,
+                        sum(1 for e in state.entries.values() if not e.is_deleted),
+                    ),
+                )
                 self._snapshot_mem_cache[cache_key] = (
                     int(st.st_mtime_ns),
                     size,
@@ -745,6 +820,7 @@ class SpaceScanner:
         except OSError:
             with self._rlock:
                 self._snapshot_mem_cache.pop(cache_key, None)
+                self._summary_mem_cache.pop(cache_key, None)
 
     def _prune_expired_tombstones(
         self,
@@ -822,21 +898,18 @@ class SpaceScanner:
         with cell_span("space.scan"):
             if space_query is None or str(space_query).strip() in ("", "*"):
                 space_gens: Dict[str, int] = {}
-                self._hash_memo = {}
-                try:
-                    with self._registry.batch_walk_session():
-                        for s_cfg in self._registry.list_spaces(include_synthetic=True):
-                            if (
-                                not s_cfg.watch
-                                or s_cfg.short_name == "gitignore"
-                                or (not s_cfg.entries and not s_cfg.compose)
-                            ):
-                                continue
-                            sub_res = self._scan_single_query(s_cfg.qualified_name, force=force)
-                            space_gens[s_cfg.qualified_name] = sub_res.to_generation
-                        unified_res = self._scan_single_query(None, force=force)
-                finally:
-                    self._hash_memo = None
+                batch_memo: Dict[Tuple[str, int, int, str, int], str] = {}
+                with self._registry.batch_walk_session():
+                    for s_cfg in self._registry.list_spaces(include_synthetic=True):
+                        if (
+                            not s_cfg.watch
+                            or s_cfg.short_name == "gitignore"
+                            or (not s_cfg.entries and not s_cfg.compose)
+                        ):
+                            continue
+                        sub_res = self._scan_single_query(s_cfg.qualified_name, force=force, hash_memo=batch_memo)
+                        space_gens[s_cfg.qualified_name] = sub_res.to_generation
+                    unified_res = self._scan_single_query(None, force=force, hash_memo=batch_memo)
                 object.__setattr__(unified_res, "space_generations", space_gens)
                 if self.has_watcher_dirty_marker():
                     self.mark_watcher_dirty(False)
@@ -870,6 +943,7 @@ class SpaceScanner:
         space_query: Optional[str],
         *,
         force: bool = False,
+        hash_memo: Optional[Dict[Tuple[str, int, int, str, int], str]] = None,
     ) -> ScanDiffResult:
         space_key = self._canonical_space_key(space_query)
         eff_query = "*" if space_key == self.UNIFIED_KEY else space_query
@@ -926,7 +1000,8 @@ class SpaceScanner:
                 # Stage 2: Compute content hash via core.space.hasher (with batch memoization when active)
                 memo_key: Optional[Tuple[str, int, int, str, int]] = None
                 c_hash: Optional[str] = None
-                if self._hash_memo is not None:
+                eff_memo = hash_memo if hash_memo is not None else self._hash_memo
+                if eff_memo is not None:
                     memo_key = (
                         wf.abs_path.as_posix(),
                         wf.size,
@@ -934,7 +1009,7 @@ class SpaceScanner:
                         str(policy.value if hasattr(policy, "value") else policy),
                         int(threshold_mb),
                     )
-                    c_hash = self._hash_memo.get(memo_key)
+                    c_hash = eff_memo.get(memo_key)
                 if c_hash is None:
                     try:
                         c_hash = compute_file_hash(
@@ -946,8 +1021,8 @@ class SpaceScanner:
                         )
                     except OSError:
                         continue
-                    if self._hash_memo is not None and memo_key is not None:
-                        self._hash_memo[memo_key] = c_hash
+                    if eff_memo is not None and memo_key is not None:
+                        eff_memo[memo_key] = c_hash
 
                 if prev_fp is None or prev_fp.is_deleted:
                     detail.added.add(rel_p)
@@ -1763,6 +1838,59 @@ class SpaceScanner:
             space_generations=diff_res.space_generations,
         )
 
+    def get_snapshot_summary(self, target_key: Optional[str] = None) -> Tuple[int, str, str, int]:
+        """Return `(head_generation, merkle_root, config_hash, active_file_count)` using memory cache or `load_summary`."""
+        snap_file = self._snapshot_path(target_key)
+        cache_key = snap_file.as_posix()
+        try:
+            st = snap_file.stat()
+            mtime_ns = int(st.st_mtime_ns)
+            size = int(st.st_size)
+            tail_sig = self._read_tail_checksum(snap_file, size)
+        except OSError:
+            with self._rlock:
+                self._snapshot_mem_cache.pop(cache_key, None)
+                self._summary_mem_cache.pop(cache_key, None)
+            return (0, "", "", 0)
+
+        with self._rlock:
+            sum_cached = self._summary_mem_cache.get(cache_key)
+            if (
+                sum_cached is not None
+                and sum_cached[0] == mtime_ns
+                and sum_cached[1] == size
+                and sum_cached[2] == tail_sig
+            ):
+                return sum_cached[3]
+            if sum_cached is not None:
+                self._summary_mem_cache.pop(cache_key, None)
+
+        with self._rlock:
+            cached = self._snapshot_mem_cache.get(cache_key)
+            if (
+                cached is not None
+                and cached[0] == mtime_ns
+                and cached[1] == size
+                and cached[2] == tail_sig
+            ):
+                mem_st = cached[3]
+                res_tuple = (
+                    int(mem_st.head_generation),
+                    mem_st.merkle_root,
+                    mem_st.config_hash,
+                    sum(1 for e in mem_st.entries.values() if not e.is_deleted),
+                )
+                self._summary_mem_cache[cache_key] = (mtime_ns, size, tail_sig, res_tuple)
+                return res_tuple
+            if cached is not None:
+                self._snapshot_mem_cache.pop(cache_key, None)
+
+        res_tuple = self._snapshot_mgr.load_summary(snap_file)
+        if res_tuple[0] > 0:
+            with self._rlock:
+                self._summary_mem_cache[cache_key] = (mtime_ns, size, tail_sig, res_tuple)
+        return res_tuple
+
     def status(self, space_query: Optional[str] = None) -> Dict[str, Any]:
         """Return comprehensive health, snapshot generation, Merkle root, and consumer cursor status."""
         target_spaces = self._registry.resolve_spaces(space_query)
@@ -1772,12 +1900,11 @@ class SpaceScanner:
         for s_cfg in target_spaces:
             q_name = s_cfg.qualified_name
             is_synth = s_cfg.owner == ""
-            state = self._load_snapshot_state(q_name)
-            if is_synth and state.head_generation == 0 and s_cfg.short_name != q_name:
-                short_state = self._load_snapshot_state(s_cfg.short_name)
-                if short_state.head_generation > 0:
-                    state = short_state
-            active_count = len(state.active_entries())
+            head_gen, merkle_root, cfg_hash, active_count = self.get_snapshot_summary(q_name)
+            if is_synth and head_gen == 0 and s_cfg.short_name != q_name:
+                sh_gen, sh_merkle, sh_cfg, sh_cnt = self.get_snapshot_summary(s_cfg.short_name)
+                if sh_gen > 0:
+                    head_gen, merkle_root, cfg_hash, active_count = sh_gen, sh_merkle, sh_cfg, sh_cnt
             snap_file = self._snapshot_path(q_name)
             short_snap_file = self._snapshot_path(s_cfg.short_name) if is_synth else None
             cursors_info: Dict[str, Any] = {}
@@ -1791,9 +1918,9 @@ class SpaceScanner:
             s_dict = s_cfg.to_dict(self._registry.project_root)
             s_dict.update(
                 {
-                    "head_generation": state.head_generation,
-                    "merkle_root": state.merkle_root,
-                    "config_hash": state.config_hash,
+                    "head_generation": head_gen,
+                    "merkle_root": merkle_root,
+                    "config_hash": cfg_hash,
                     "active_file_count": active_count,
                     "snapshot_exists": (
                         snap_file.is_file()
@@ -1804,7 +1931,7 @@ class SpaceScanner:
             )
             spaces_report.append(s_dict)
 
-        unified_state = self._load_snapshot_state(self.UNIFIED_KEY)
+        u_gen, u_merkle, _, _ = self.get_snapshot_summary(self.UNIFIED_KEY)
         watcher_active = is_watcher_active(space_query, registry=self._registry)
         return {
             "status": "ok",
@@ -1813,8 +1940,8 @@ class SpaceScanner:
             "storage_root": self._storage_root.as_posix(),
             "watcher_active": watcher_active,
             "watcher_dirty": self.has_watcher_dirty_marker(),
-            "unified_generation": unified_state.head_generation,
-            "unified_merkle_root": unified_state.merkle_root,
+            "unified_generation": u_gen,
+            "unified_merkle_root": u_merkle,
             "consumers": consumers,
             "space_count": len(spaces_report),
             "spaces": spaces_report,
@@ -1849,33 +1976,66 @@ class SpaceScanner:
         if space_query is not None and str(space_query).strip() not in ("", "*"):
             resolved_spaces = self._registry.resolve_spaces(space_query)
             space_key = self._canonical_space_key(space_query)
-            snap_p = self._snapshot_path(space_key)
-            with self._rlock:
-                self._snapshot_mem_cache.pop(snap_p.as_posix(), None)
-            if snap_p.is_file():
-                try:
-                    vfs.remove(str(snap_p))
-                    removed_snapshots.append(snap_p.name)
-                except Exception:
-                    pass
+            with self._locked_space(space_key):
+                snap_p = self._snapshot_path(space_key)
+                with self._rlock:
+                    self._snapshot_mem_cache.pop(snap_p.as_posix(), None)
+                    self._summary_mem_cache.pop(snap_p.as_posix(), None)
+                if snap_p.is_file():
+                    try:
+                        vfs.remove(str(snap_p))
+                        removed_snapshots.append(snap_p.name)
+                    except Exception:
+                        pass
             for s_cfg in resolved_spaces:
                 for cand_k in (
                     s_cfg.qualified_name,
                     f"/{s_cfg.short_name}",
                     s_cfg.short_name,
                 ):
-                    sp = self._snapshot_path(cand_k)
+                    with self._locked_space(self._canonical_space_key(cand_k)):
+                        sp = self._snapshot_path(cand_k)
+                        with self._rlock:
+                            self._snapshot_mem_cache.pop(sp.as_posix(), None)
+                            self._summary_mem_cache.pop(sp.as_posix(), None)
+                        if sp.is_file():
+                            try:
+                                vfs.remove(str(sp))
+                                if sp.name not in removed_snapshots:
+                                    removed_snapshots.append(sp.name)
+                            except Exception:
+                                pass
+            # Also invalidate composite parent spaces and unified snapshot that aggregate resolved_spaces
+            resolved_qset = {s.qualified_name for s in resolved_spaces}
+            dep_keys: List[str] = [self.UNIFIED_KEY]
+            for all_cfg in self._registry.list_spaces():
+                if all_cfg.qualified_name in resolved_qset or not all_cfg.compose:
+                    continue
+                try:
+                    deps = self._registry._collect_all_dependency_spaces(all_cfg.qualified_name)
+                except Exception:
+                    continue
+                if any(d.qualified_name in resolved_qset for d in deps):
+                    dep_keys.append(all_cfg.qualified_name)
+                    if all_cfg.short_name and all_cfg.short_name != all_cfg.qualified_name:
+                        dep_keys.append(all_cfg.short_name)
+            for dep_k in dep_keys:
+                canon_dep = self.UNIFIED_KEY if dep_k == self.UNIFIED_KEY else self._canonical_space_key(dep_k)
+                with self._locked_space(canon_dep):
+                    dep_sp = self._snapshot_path(dep_k)
                     with self._rlock:
-                        self._snapshot_mem_cache.pop(sp.as_posix(), None)
-                    if sp.is_file():
+                        self._snapshot_mem_cache.pop(dep_sp.as_posix(), None)
+                        self._summary_mem_cache.pop(dep_sp.as_posix(), None)
+                    if dep_sp.is_file():
                         try:
-                            vfs.remove(str(sp))
-                            if sp.name not in removed_snapshots:
-                                removed_snapshots.append(sp.name)
+                            vfs.remove(str(dep_sp))
+                            if dep_sp.name not in removed_snapshots:
+                                removed_snapshots.append(dep_sp.name)
                         except Exception:
                             pass
             for cid in self._cursor_store.list_consumers():
                 self._cursor_store.reset_cursor(space_key, consumer_id=cid)
+                self._cursor_store.reset_cursor(self.UNIFIED_KEY, consumer_id=cid)
                 for s_cfg in resolved_spaces:
                     self._cursor_store.reset_cursor(s_cfg.qualified_name, consumer_id=cid)
                     self._cursor_store.reset_cursor(f"/{s_cfg.short_name}", consumer_id=cid)
@@ -1889,18 +2049,25 @@ class SpaceScanner:
                 "reset_consumers": reset_consumers,
             }
 
-        # Clean all snapshots and cursors
-        with self._rlock:
-            self._snapshot_mem_cache.clear()
+        # Clean all snapshots and cursors under per-space InterProcessLock protection
         if self._snapshots_dir.is_dir():
             for name in sorted(os.listdir(self._snapshots_dir)):
                 p = self._snapshots_dir / name
                 if p.is_file():
-                    try:
-                        vfs.remove(str(p))
-                        removed_snapshots.append(name)
-                    except Exception:
-                        pass
+                    lock_key = name[:-len(".yfp2.bin")] if name.endswith(".yfp2.bin") else name
+                    with self._locked_space(lock_key):
+                        with self._rlock:
+                            self._snapshot_mem_cache.pop(p.as_posix(), None)
+                            self._summary_mem_cache.pop(p.as_posix(), None)
+                        if p.is_file():
+                            try:
+                                vfs.remove(str(p))
+                                removed_snapshots.append(name)
+                            except Exception:
+                                pass
+        with self._rlock:
+            self._snapshot_mem_cache.clear()
+            self._summary_mem_cache.clear()
         for cid in self._cursor_store.list_consumers():
             self._cursor_store.reset_cursor(None, consumer_id=cid)
             reset_consumers.append(cid)

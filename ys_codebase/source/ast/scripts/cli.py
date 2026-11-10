@@ -40,7 +40,7 @@ def _normalize_bags(cmd_bags: Any, default_cmd: str = "") -> CmdBags:
                     k, val = k.split("=", 1)
                     v = val
                 elif (
-                    k in ("space", "ftype", "depth", "limit")
+                    k in ("space", "ftype", "depth", "limit", "part", "kind", "direction")
                     and idx + 1 < len(args)
                     and not str(args[idx + 1]).startswith("-")
                 ):

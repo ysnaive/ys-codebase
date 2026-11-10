@@ -54,7 +54,9 @@ class LocalSandboxTransport(AbstractSyncTransport):
     """
 
     def __init__(self, sandbox_root: Path) -> None:
-        self.root = Path(sandbox_root).resolve()
+        from .config import resolve_local_path_with_vcwd
+
+        self.root = resolve_local_path_with_vcwd(sandbox_root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._meta_path = self.root / SANDBOX_META_FILENAME
         self._lock = threading.RLock()
@@ -329,6 +331,11 @@ class LocalSandboxTransport(AbstractSyncTransport):
                     dst_phys.parent.mkdir(parents=True, exist_ok=True)
                     if src_phys.is_file() and not dst_phys.exists():
                         shutil.copy2(src_phys, dst_phys)
+                        try:
+                            from core import file_lock
+                            file_lock.strip_lock_bits(dst_phys)
+                        except Exception:
+                            pass
                 dirty = True
 
         if dirty:
@@ -463,7 +470,9 @@ class LocalSandboxTransport(AbstractSyncTransport):
         remote_path: str,
         in_place_file_id: Optional[str] = None,
     ) -> RemoteEntry:
-        src = Path(local_path).resolve()
+        from .config import resolve_local_path_with_vcwd
+
+        src = resolve_local_path_with_vcwd(local_path)
         if not src.is_file():
             raise GDriveFileNotFoundError(f"Local file does not exist: '{src.as_posix()}'")
 
@@ -478,7 +487,18 @@ class LocalSandboxTransport(AbstractSyncTransport):
         with self._lock:
             dst = self._phys_path(norm)
             dst.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                from core import file_lock
+                if dst.exists():
+                    file_lock.strip_lock_bits(dst)
+            except Exception:
+                pass
             shutil.copy2(src, dst)
+            try:
+                from core import file_lock
+                file_lock.strip_lock_bits(dst)
+            except Exception:
+                pass
 
             md5_hex, sz = _compute_md5_and_size(dst)
             mtime_ns = int(dst.stat().st_mtime_ns)
@@ -564,11 +584,23 @@ class LocalSandboxTransport(AbstractSyncTransport):
             if not src_phys.is_file():
                 raise GDriveFileNotFoundError(f"Sandbox backing file missing for '{norm}'.")
 
-            dst = Path(local_path).resolve()
+            from .config import resolve_local_path_with_vcwd
+
+            dst = resolve_local_path_with_vcwd(local_path)
             dst.parent.mkdir(parents=True, exist_ok=True)
             tmp_dst = dst.with_name(f".{dst.name}.{uuid.uuid4().hex[:8]}.tmp")
-            shutil.copy2(src_phys, tmp_dst)
-            os.replace(tmp_dst, dst)
+            try:
+                shutil.copy2(src_phys, tmp_dst)
+                vfs.robust_replace(str(tmp_dst), str(dst))
+                try:
+                    from core import file_lock
+                    if not file_lock.relock_if_protected(dst):
+                        file_lock.strip_lock_bits(dst)
+                except Exception:
+                    pass
+            finally:
+                if tmp_dst.exists():
+                    vfs.remove(str(tmp_dst), missing_ok=True)
             return entry
 
     def trash_file(
@@ -603,7 +635,7 @@ class LocalSandboxTransport(AbstractSyncTransport):
                 dst_phys = self._phys_path(trash_rel)
                 dst_phys.parent.mkdir(parents=True, exist_ok=True)
                 if src_phys.exists():
-                    shutil.move(str(src_phys), str(dst_phys))
+                    vfs.move(str(src_phys), str(dst_phys))
 
             if entry.is_dir:
                 prefix = f"{effective_norm}/"
@@ -661,10 +693,10 @@ class LocalSandboxTransport(AbstractSyncTransport):
                 dst_phys.parent.mkdir(parents=True, exist_ok=True)
                 if src_phys.exists() and src_phys != dst_phys:
                     if dst_phys.is_dir():
-                        shutil.rmtree(dst_phys)
+                        vfs.rmtree(str(dst_phys), ignore_errors=True)
                     elif dst_phys.exists():
-                        dst_phys.unlink()
-                    shutil.move(str(src_phys), str(dst_phys))
+                        vfs.remove(str(dst_phys), missing_ok=True)
+                    vfs.move(str(src_phys), str(dst_phys))
 
             if entry.is_dir:
                 for child_info in items.values():

@@ -8,7 +8,53 @@ from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Union, IO, Generator
 
 from core.vfs.base import VFSBackend
-from core.vfs.os_backend import OSBackend
+from core.vfs.os_backend import OSBackend, _maybe_invalidate_uri_cache
+
+
+class _AutoRelockFileWrapper:
+    """
+    File stream proxy returned by `VFS.open()` in write/append/update modes.
+    Automatically triggers `file_lock.relock_if_protected` and URI cache invalidation when closed.
+    """
+
+    def __init__(self, stream: IO[Any], target_path: str, root_dir: Optional[str] = None) -> None:
+        self._stream = stream
+        self._target_path = target_path
+        self._root_dir = root_dir
+        self._relocked = False
+
+    def close(self) -> None:
+        try:
+            self._stream.close()
+        finally:
+            if not self._relocked:
+                self._relocked = True
+                try:
+                    from core import file_lock
+
+                    file_lock.relock_if_protected(self._target_path, root_dir=self._root_dir)
+                except Exception:
+                    pass
+                _maybe_invalidate_uri_cache(self._target_path)
+
+    def __enter__(self) -> "_AutoRelockFileWrapper":
+        self._stream.__enter__()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
+        try:
+            return self._stream.__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            self.close()
+
+    def __iter__(self) -> Any:
+        return iter(self._stream)
+
+    def __next__(self) -> Any:
+        return next(self._stream)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
 
 
 class VFS:
@@ -228,19 +274,45 @@ class VFS:
     ) -> IO:
         """
         以原生檔案物件模式打開檔案。
-        若開啟寫入模式，自動確保父目錄存在並強制 LF 換行。
+        若開啟寫入模式，自動確保父目錄存在、開啟前自動剝除唯讀鎖位元、強制 LF 換行，
+        並於串流關閉時自動對 `/readonly` 受保護路徑復鎖。
         """
         resolved = self.assert_safe_path(path_or_uri)
+        backend = self.get_backend(path_or_uri)
+        backend_root: Optional[str] = getattr(backend, "root_dir", None)
         is_write = any(m in mode for m in ("w", "a", "x", "+"))
+        stripped_before_open = False
         if is_write:
             parent = os.path.dirname(resolved)
             if parent:
                 os.makedirs(parent, exist_ok=True)
-        if "b" in mode:
-            return open(resolved, mode)
+            if "x" not in mode and os.path.exists(resolved):
+                try:
+                    from core import file_lock
+
+                    stripped_before_open = file_lock.strip_lock_bits(resolved)
+                except Exception:
+                    pass
+        try:
+            if "b" in mode:
+                raw_stream: IO[Any] = open(resolved, mode)
+            elif is_write:
+                raw_stream = open(resolved, mode, encoding=encoding or "utf-8", newline="\n")
+            else:
+                return open(resolved, mode, encoding=encoding or "utf-8")
+        except BaseException:
+            if stripped_before_open:
+                try:
+                    from core import file_lock
+
+                    file_lock.relock_if_protected(resolved, root_dir=backend_root)
+                except Exception:
+                    pass
+            raise
+
         if is_write:
-            return open(resolved, mode, encoding=encoding or "utf-8", newline="\n")
-        return open(resolved, mode, encoding=encoding or "utf-8")
+            return _AutoRelockFileWrapper(raw_stream, resolved, root_dir=backend_root)  # type: ignore[return-value]
+        return raw_stream
 
     def assert_safe_path(self, path_or_uri: Union[str, Any], root: Optional[str] = None) -> str:
         """檢查目標是否在授權安全邊界內。"""

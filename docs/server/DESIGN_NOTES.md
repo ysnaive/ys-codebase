@@ -34,7 +34,6 @@ last_updated: "2026-11-03"
 | **[DN-09]** | 未來擴充 `locales` 在地化字典時之 `core >= 1.2.0` 相依版本連動約束 | `manifest.json`, `contributes/core.json` | Medium |
 | **[DN-10]** | `daemon.lock` 永不刪除（僅刪 `daemon.json`） | `server/master.py`, `scripts/cli.py` | High |
 | **[DN-11]** | 嚴格熱派發於請求已送達後絕不重試 | `core/commands/dispatcher.py` | High |
-| **[DN-12]** | 常駐 Worker 禁用巢狀 `ProcessPoolExecutor(fork)`、雙平面完全閒置守門與演算法化記憶體回收 | `server/worker.py`, `server/master.py`, `ast_engine/bundler.py` | High |
 
 ---
 
@@ -169,10 +168,11 @@ last_updated: "2026-11-03"
 
 ---
 
-### [DN-12] 常駐 Worker 禁用巢狀 `ProcessPoolExecutor(fork)`、雙平面完全閒置守門與演算法化記憶體回收
+### [DN-12] 熱派發客戶端斷線協作式取消 (`{"action": "cancel"}` + `TaskCancelledError`)、逐行串流與前景任務讓位範疇 (`foreground_task_scope`)
 - **背景與陷阱**：
-  1. 在 Linux POSIX 環境下，`WarmWorker` 載入 ONNX Runtime / NumPy / AST 快取並啟動多條背景 `ServiceWorker` 執行緒後，若內部再次透過預設 `multiprocessing` (`fork`) 啟動 `ProcessPoolExecutor`（如 `SemanticBundler.bundle_union`），會觸發多執行緒 `fork` 鎖殘留與數百 MB Dirty Pages Copy-on-Write 滯留。
-  2. 若在背景 `ServiceWorker`（如 `knowledge-db-worker`）正執行 ONNX 向量推論或索引構建中途，前景任務結束即盲目呼叫 `malloc_trim(0)` 或由 Master 觸發記憶體回收重啟，將導致背景 C++ Arena 鎖競爭或索引寫入中斷。
+  1. 當開發者或 AI Agent 在耗時熱派發指令（如大型專案首次建圖或搜尋）執行期間按下 `Ctrl+C` 或超時斷開 HTTP 連線時，若 `MasterSupervisor` 仍死等 `WarmWorker` 完成，不僅浪費 CPU 與 I/O，還會阻塞後續排隊的熱派發請求；反之若直接強殺 `WarmWorker` 子進程，則會摧毀已預熱的模組快取與常駐背景服務。
+  2. 此外，若 `dispatcher._hot_dispatch_attempt` 以 `resp.read(1024)` 固定塊讀取分塊回應，或 `DebouncedIOStreamer` 未對 `stderr` 明確刷新訊號立即送出，會導致建圖進度提示被卡在緩衝區內直到任務結束才一次吐出。
 - **工程決策**：
-  1. `WarmWorker` 啟動時設置 `YSCB_IN_SERVER_WORKER=1`，在常駐 Worker 進程內禁止 `SemanticBundler` 啟動巢狀 `ProcessPoolExecutor` 子進程池，一律走單進程樹狀解析並於索引完成後立即清空暫態快取。
-  2. `trim_process_memory()` 與 `WorkerMemoryHealthMonitor` 自動重啟嚴格受雙平面完全閒置條件（`_current_task is None` 且 `not service_manager.is_any_busy()`）守門，並以相對工作集基準線 $B_{\text{base}}$、單調棘輪漂移與宿主 `MemAvailable` 水位綜合判定，杜絕靜態寫死 MB 閾值誤殺重型常駐模型。
+  1. **非阻塞斷線探測與帶外取消通道**：`MasterSupervisor._stream_task_over_worker_pipe` 以 `0.15s` 輪詢客戶端 Socket（含 `BrokenPipeError` / `ConnectionResetError` 與非阻塞 TCP FIN 探測）；一旦偵測斷線立即向 Worker `stdin` 發送 `{"action": "cancel"}`。`worker_main` 透過受管 `create_managed_thread` 啟動 `_stdin_reader` 即時觸發 `core.context.request_task_cancel()`，使下游迴圈於 `check_task_cancelled()` 拋出繼承自 `BaseException` 之 `TaskCancelledError`（確保不被業務層寬泛 `except Exception:` 誤吞，同時完整執行所有 `with`/`finally` 鎖與游標回滾），回傳 `exit_code=130` 並保留預熱 Worker 供下一筆請求無縫復用。
+  2. **引用計數前景範疇與背景讓位**：`WarmWorker.execute_task` 以 `core.context.foreground_task_scope()` 包裹前景任務執行；`CoreSpaceWatcherServiceWorker` 與 `KnowledgeDBServiceWorker` 於非強制同步週期內偵測 `is_foreground_active()` 為真時主動延後背景磁碟掃描與索引寫入，優先保障前景 CLI 低延遲回應。
+  3. **`stderr` 即時進度串流**：`core.log.ProgressReporter` 與明確 `flush=True` 之 `stderr` 串流立即穿透 `DebouncedIOStreamer`，搭配客戶端逐行 `resp.readline()` 實現零延遲進度回饋，同時維持 `stdout` 小片段防抖合併與 `--json` 輸出 100% 純淨。

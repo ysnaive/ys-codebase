@@ -1,6 +1,6 @@
 {
   "name": "core",
-  "version": "1.2.8.1",
+  "version": "1.2.9.0",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "entry": "scripts/cli.py",
   "dependencies": {},
@@ -24,8 +24,8 @@
     "Explore installed modules: python yscb.py status"
   ],
   "release": {
-    "type": "refactor",
+    "type": "feature",
     "urgency": "recommended",
-    "summary": "強化處理序環境變數白名單與日誌遮罩、收斂執行期快取世代失效機制，並整合空間掃描批次走訪與背景服務合約基底"
+    "summary": "新增 core.file_lock 宣告式唯讀鎖引擎與 VFS 透明穿隧防護、擴充 /readonly 空間合成、新增協作式任務取消 (TaskCancelledError) 與 ProgressReporter 進度回報器"
   }
 }

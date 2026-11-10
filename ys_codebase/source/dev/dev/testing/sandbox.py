@@ -486,7 +486,7 @@ class SandboxProvisioner:
         if os.path.lexists(sandbox_venv_dir):
             SandboxProvisioner._unlink_projected_venv(sandbox_engine_dir)
             if os.path.exists(sandbox_venv_dir):
-                shutil.rmtree(sandbox_venv_dir, ignore_errors=True)
+                vfs.rmtree(sandbox_venv_dir, ignore_errors=True)
 
         abs_host_venv = os.path.abspath(host_venv_dir)
         abs_sb_venv = os.path.abspath(sandbox_venv_dir)
@@ -615,17 +615,17 @@ class SandboxProvisioner:
                     if latest_zip:
                         dest_mod = os.path.join(sandbox_modules_dir, mod_name)
                         if os.path.exists(dest_mod):
-                            shutil.rmtree(dest_mod, ignore_errors=True)
+                            vfs.rmtree(dest_mod, ignore_errors=True)
                         os.makedirs(dest_mod, exist_ok=True)
                         try:
                             with zipfile.ZipFile(latest_zip, "r") as zf:
                                 _safe_extract_zip(zf, dest_mod)
                             deployed_from_build.add(mod_name)
                         except ValueError:
-                            shutil.rmtree(dest_mod, ignore_errors=True)
+                            vfs.rmtree(dest_mod, ignore_errors=True)
                             raise
                         except (zipfile.BadZipFile, OSError):
-                            shutil.rmtree(dest_mod, ignore_errors=True)
+                            vfs.rmtree(dest_mod, ignore_errors=True)
 
         for host_modules_dir in cand_host_modules:
             if os.path.isdir(host_modules_dir):
@@ -639,6 +639,11 @@ class SandboxProvisioner:
                         dest_mod = os.path.join(sandbox_modules_dir, mod_name)
                         if not os.path.exists(dest_mod):
                             shutil.copytree(mod_src_path, dest_mod, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                            try:
+                                from core import file_lock
+                                file_lock.unlock_path(dest_mod, root_dir=ctx.project_dir)
+                            except Exception:
+                                pass
 
         for mod_name in sorted(os.listdir(sandbox_modules_dir)):
             if mod_name.startswith("."):

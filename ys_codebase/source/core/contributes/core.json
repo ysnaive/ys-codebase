@@ -85,7 +85,9 @@
           "install_mode": {
             "force": {
               "description": "Force reinstall module package",
-              "alias": ["f"]
+              "alias": [
+                "f"
+              ]
             }
           },
           "security": {
@@ -97,7 +99,9 @@
           "source": {
             "provider": {
               "description": "Module provider URL or path",
-              "alias": ["p"],
+              "alias": [
+                "p"
+              ],
               "args": {
                 "url": {
                   "description": "Provider URL or path"
@@ -106,7 +110,9 @@
             },
             "version": {
               "description": "Module version specifier",
-              "alias": ["v"],
+              "alias": [
+                "v"
+              ],
               "args": {
                 "ver": {
                   "description": "Version string"
@@ -145,7 +151,9 @@
           "source": {
             "provider": {
               "description": "Module provider URL or path",
-              "alias": ["p"],
+              "alias": [
+                "p"
+              ],
               "args": {
                 "url": {
                   "description": "Provider URL or path"
@@ -187,7 +195,9 @@
           "flags": {
             "force": {
               "description": "Force removal without prompt",
-              "alias": ["f"]
+              "alias": [
+                "f"
+              ]
             }
           }
         },
@@ -208,13 +218,17 @@
           "scope": {
             "remote": {
               "description": "Query remote provider package list",
-              "alias": ["r"]
+              "alias": [
+                "r"
+              ]
             }
           },
           "filter": {
             "provider": {
               "description": "Filter by provider URL or path",
-              "alias": ["p"],
+              "alias": [
+                "p"
+              ],
               "args": {
                 "url": {
                   "description": "Provider URL or path"
@@ -372,7 +386,9 @@
               "filter": {
                 "mod": {
                   "description": "Target module name",
-                  "alias": ["m"],
+                  "alias": [
+                    "m"
+                  ],
                   "args": {
                     "module": {
                       "description": "Module name"
@@ -542,7 +558,9 @@
           "flags": {
             "force": {
               "description": "Force restore/reinstall modules",
-              "alias": ["f"]
+              "alias": [
+                "f"
+              ]
             }
           },
           "security": {
@@ -554,7 +572,9 @@
           "source": {
             "provider": {
               "description": "Custom provider source URL",
-              "alias": ["p"],
+              "alias": [
+                "p"
+              ],
               "args": {
                 "url": {
                   "description": "Provider URL"
@@ -608,7 +628,9 @@
               "filter": {
                 "module": {
                   "description": "Filter by target module name",
-                  "alias": ["m"],
+                  "alias": [
+                    "m"
+                  ],
                   "args": {
                     "mod": {
                       "description": "Target module name"
@@ -638,7 +660,9 @@
               "mode": {
                 "format": {
                   "description": "Validate _format.json schema itself (Meta-Check)",
-                  "alias": ["f"]
+                  "alias": [
+                    "f"
+                  ]
                 }
               }
             },
@@ -710,7 +734,9 @@
       },
       "file-space": {
         "description": "Core L0 atomic & composite file-space engine (spaces, match, ls, hash, status, scan, diff, clean)",
-        "alias": ["fs"],
+        "alias": [
+          "fs"
+        ],
         "tier": "safe",
         "server_compatible": true,
         "cmd": {
@@ -728,7 +754,9 @@
               "filter": {
                 "owner": {
                   "description": "Filter spaces by owner module or 'project'",
-                  "alias": ["o"],
+                  "alias": [
+                    "o"
+                  ],
                   "args": {
                     "owner": {
                       "description": "Owner module name"
@@ -768,7 +796,9 @@
               "scope": {
                 "space": {
                   "description": "Target space query (<owner>/<space> or short name <space>)",
-                  "alias": ["s"],
+                  "alias": [
+                    "s"
+                  ],
                   "args": {
                     "name": {
                       "description": "Space name"
@@ -804,7 +834,9 @@
               "scope": {
                 "space": {
                   "description": "Target space query (<owner>/<space> or short name <space>)",
-                  "alias": ["s"],
+                  "alias": [
+                    "s"
+                  ],
                   "args": {
                     "name": {
                       "description": "Space name"
@@ -815,7 +847,9 @@
               "filter": {
                 "pattern": {
                   "description": "Filter relative path or filename by glob pattern",
-                  "alias": ["p"],
+                  "alias": [
+                    "p"
+                  ],
                   "args": {
                     "glob": {
                       "description": "Glob pattern (e.g. *.py)"
@@ -851,11 +885,18 @@
               "policy": {
                 "policy": {
                   "description": "Override hash policy (adaptive, full_hash, stat_only)",
-                  "alias": ["p"],
+                  "alias": [
+                    "p"
+                  ],
                   "args": {
                     "mode": {
                       "description": "Hash policy mode",
-                      "choice": ["adaptive", "full_hash", "stat_only", "lazy_stabilized"]
+                      "choice": [
+                        "adaptive",
+                        "full_hash",
+                        "stat_only",
+                        "lazy_stabilized"
+                      ]
                     }
                   }
                 }
@@ -888,7 +929,9 @@
               "scope": {
                 "space": {
                   "description": "Target space query (<owner>/<space> or short name <space>)",
-                  "alias": ["s"],
+                  "alias": [
+                    "s"
+                  ],
                   "args": {
                     "name": {
                       "description": "Space name"
@@ -924,7 +967,9 @@
               "scope": {
                 "space": {
                   "description": "Target space query (<owner>/<space> or short name <space>)",
-                  "alias": ["s"],
+                  "alias": [
+                    "s"
+                  ],
                   "args": {
                     "name": {
                       "description": "Space name"
@@ -935,7 +980,9 @@
               "flags": {
                 "force": {
                   "description": "Force full re-hash ignoring cached mtime/size",
-                  "alias": ["f"]
+                  "alias": [
+                    "f"
+                  ]
                 }
               },
               "output_format": {
@@ -966,7 +1013,9 @@
               "scope": {
                 "space": {
                   "description": "Target space query (<owner>/<space> or short name <space>)",
-                  "alias": ["s"],
+                  "alias": [
+                    "s"
+                  ],
                   "args": {
                     "name": {
                       "description": "Space name"
@@ -977,7 +1026,9 @@
               "consumer": {
                 "consumer": {
                   "description": "Consumer watermark identifier (default: 'default')",
-                  "alias": ["c"],
+                  "alias": [
+                    "c"
+                  ],
                   "args": {
                     "id": {
                       "description": "Consumer ID"
@@ -988,7 +1039,9 @@
               "flags": {
                 "ack": {
                   "description": "Acknowledge and advance consumer watermark cursor to current generation",
-                  "alias": ["a"]
+                  "alias": [
+                    "a"
+                  ]
                 }
               },
               "output_format": {
@@ -1019,7 +1072,9 @@
               "scope": {
                 "space": {
                   "description": "Target space query (<owner>/<space> or short name <space>)",
-                  "alias": ["s"],
+                  "alias": [
+                    "s"
+                  ],
                   "args": {
                     "name": {
                       "description": "Space name"
@@ -1030,7 +1085,9 @@
               "consumer": {
                 "consumer": {
                   "description": "Reset only the specified consumer watermark cursor",
-                  "alias": ["c"],
+                  "alias": [
+                    "c"
+                  ],
                   "args": {
                     "id": {
                       "description": "Consumer ID"
@@ -1056,6 +1113,129 @@
         "usage": {
           "pros": [
             "Core 內建 L0 與複合檔案空間引擎: python yscb.py core file-space <spaces|match|ls|hash|status|scan|diff|clean>"
+          ],
+          "cons": []
+        }
+      },
+      "file-lock": {
+        "description": "Declarative read-only file lock manager for /readonly protected spaces",
+        "tier": "safe",
+        "server_compatible": true,
+        "cmd": {
+          "status": {
+            "description": "Inspect /readonly space lock status or diagnose a single path",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "target": {
+                "description": "Optional target space (<owner>/readonly, /readonly) or file path",
+                "required": false
+              }
+            },
+            "options": {
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "檢視 /readonly 受保護檔案鎖定狀態或單檔診斷: python yscb.py core file-lock status [target] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "sync": {
+            "description": "Apply OS read-only lock bits across /readonly (or a specific <module>/readonly space)",
+            "tier": "safe",
+            "server_compatible": true,
+            "args": {
+              "target": {
+                "description": "Optional target space (<owner>/readonly, /readonly, or module name)",
+                "required": false
+              }
+            },
+            "options": {
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "手動強制收斂同步唯讀鎖至 /readonly 受管檔案: python yscb.py core file-lock sync [target] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "lock": {
+            "description": "Apply read-only lock bits to a target file, directory, or space",
+            "tier": "conditional",
+            "server_compatible": true,
+            "args": {
+              "target": {
+                "description": "Target file, directory, or semantic URI (default: /readonly)",
+                "required": false
+              }
+            },
+            "options": {
+              "flags": {
+                "force": {
+                  "description": "Force lock even if target is outside /readonly",
+                  "alias": [
+                    "f"
+                  ]
+                }
+              },
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "對指定受管路徑或空間施加唯讀鎖: python yscb.py core file-lock lock [target] [--force] [--json]"
+              ],
+              "cons": []
+            }
+          },
+          "unlock": {
+            "description": "Temporarily strip read-only lock bits from a target file, directory, or space for emergency maintenance",
+            "tier": "gated",
+            "server_compatible": true,
+            "args": {
+              "target": {
+                "description": "Target file, directory, semantic URI, or space (default: /readonly)",
+                "required": false
+              }
+            },
+            "options": {
+              "output_format": {
+                "json": {
+                  "description": "Format output in JSON",
+                  "alias": []
+                }
+              }
+            },
+            "usage": {
+              "pros": [
+                "緊急維護時暫時解除指定路徑或空間之唯讀鎖: python yscb.py core file-lock unlock [target] [--json]"
+              ],
+              "cons": [
+                "[!] 嚴禁 Agent 為繞過 CLI 驗證而擅自 unlock 受保護資產"
+              ]
+            }
+          }
+        },
+        "usage": {
+          "pros": [
+            "宣告式唯讀鎖管理與診斷: python yscb.py core file-lock <status|sync|lock|unlock> [target] [--json]"
           ],
           "cons": []
         }
@@ -1139,18 +1319,60 @@
       "include": [
         "*"
       ]
+    },
+    "readonly": {
+      "description": "Core 執行期模組、鏡像與歷史快照唯讀保護空間（排除 Python 位元組碼快取）",
+      "entries": [
+        "module://",
+        "module.mirror://",
+        "snapshot://"
+      ],
+      "include": [
+        "*"
+      ],
+      "exclude": [
+        "**/__pycache__/**",
+        "__pycache__",
+        "*.pyc",
+        "*.pyo",
+        "*.pyd"
+      ],
+      "watch": false
     }
   },
   "events": [
-    { "pre_cli_dispatch": "在 CLI 執行各模組指令前觸發，提供自癒與生命週期檢查" },
-    { "post_cli_dispatch": "在 CLI 執行結束後觸發，提供更新檢查提示" },
-    { "on_reload": "當核心模組被重載後觸發" },
-    { "on_installed": "當模組安裝完成後觸發" },
-    { "on_update": "當模組更新完成後觸發" },
-    { "on_remove": "當模組移除前觸發" },
-    { "on_env_synced": "當私有微環境第三方依賴物化同步完成後觸發" },
-    { "on_gitignore_synced": "當根目錄 project://.gitignore 託管區塊完成同步更新後觸發" },
-    { "on_file_space_changed": "當邏輯檔案空間 YFP2 二進位快照世代更新時觸發" },
-    { "on_register_file_spaces": "當 SpaceRegistry 重載時觸發，供各模組依組態動態註冊檔案空間與忽略規則" }
+    {
+      "pre_cli_dispatch": "在 CLI 執行各模組指令前觸發，提供自癒與生命週期檢查"
+    },
+    {
+      "post_cli_dispatch": "在 CLI 執行結束後觸發，提供更新檢查提示"
+    },
+    {
+      "on_reload": "當核心模組被重載後觸發"
+    },
+    {
+      "on_installed": "當模組安裝完成後觸發"
+    },
+    {
+      "on_update": "當模組更新完成後觸發"
+    },
+    {
+      "on_remove": "當模組移除前觸發"
+    },
+    {
+      "on_env_synced": "當私有微環境第三方依賴物化同步完成後觸發"
+    },
+    {
+      "on_gitignore_synced": "當根目錄 project://.gitignore 託管區塊完成同步更新後觸發"
+    },
+    {
+      "on_file_space_changed": "當邏輯檔案空間 YFP2 二進位快照世代更新時觸發"
+    },
+    {
+      "on_register_file_spaces": "當 SpaceRegistry 重載時觸發，供各模組依組態動態註冊檔案空間與忽略規則"
+    },
+    {
+      "on_file_lock_synced": "當 /readonly 宣告式唯讀鎖完成同步收斂後觸發"
+    }
   ]
 }

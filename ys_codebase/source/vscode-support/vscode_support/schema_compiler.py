@@ -741,7 +741,7 @@ class SchemaCompiler:
                         fpath = os.path.join(sub_dir, fname)
                         if os.path.normcase(os.path.abspath(fpath)) not in active_schema_files:
                             try:
-                                os.remove(fpath)
+                                vfs.remove(fpath, missing_ok=True)
                             except OSError:
                                 pass
 
@@ -838,4 +838,10 @@ class SchemaCompiler:
         )
         self._append_contributed_schema_bindings(bindings)
         self._cleanup_orphan_schemas(schemas_root, active_schema_files)
+        try:
+            from core import file_lock as fl_mod
+
+            fl_mod.lock_path(schemas_root, force=True, root_dir=proj_root)
+        except Exception:
+            pass
         return bindings

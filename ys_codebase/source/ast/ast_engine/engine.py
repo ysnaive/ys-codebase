@@ -16,10 +16,17 @@ import re
 import shutil
 import threading
 import time
-from typing import Any, Dict, FrozenSet, Iterator, List, Mapping, Optional, Sequence, Set, Tuple, Union
+import os
+from typing import Any, Callable, Dict, FrozenSet, Iterator, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
-from core.context import cell_span, get_runtime_context, get_virtual_cwd
-from core.log import log_debug, log_warn
+from core.context import (
+    TaskCancelledError,
+    cell_span,
+    check_task_cancelled,
+    get_runtime_context,
+    get_virtual_cwd,
+)
+from core.log import ProgressReporter, log_debug, log_warn
 from core.space import (
     ScanDiffDetail,
     ScanDiffResult,
@@ -48,6 +55,8 @@ from .exceptions import ASTCorruptedError, ASTError, ASTIndexNotFoundError
 from .formatter import ASTResultFormatter
 from .graph import CallGraphIndex
 from .io_utils import (
+    normalize_source_bytes,
+    read_normalized_source_file,
     atomic_save_gzip_pickle,
     is_dirty_file_match,
     load_gzip_pickle,
@@ -55,6 +64,7 @@ from .io_utils import (
     resolve_project_root,
 )
 from .linker import TopologyLinker, WorkspaceGraphLinker
+from .parsers.base import compute_content_hash
 from .parsers.registry import ParserRegistry
 from .provisioner import GrammarProvisioner
 from .resolver import (
@@ -434,6 +444,7 @@ class ASTEngine:
         self.symbols_index_path = self.indices_dir / "unified.symbols.bin.gz"
         self.graph_index_path = self.indices_dir / "unified.graph.bin.gz"
         self.meta_index_path = self.indices_dir / "unified.meta.json"
+        self.build_state_path = self.indices_dir / ".ast_build_state.json"
 
         use_isolated_scanner = False
         if space_manager is not None:
@@ -521,6 +532,13 @@ class ASTEngine:
         self._symbols_mtime: float = 0.0
         self._graph_mtime: float = 0.0
         self._lock = threading.RLock()
+        self._build_state_lock = threading.Lock()
+        self._build_state: Dict[str, Any] = {
+            "building": False,
+            "phase": "idle",
+            "progress": "",
+            "started_at": 0.0,
+        }
 
     def register_spaces(self, spaces: Any) -> List[str]:
         """Register one or more target `core.space` names into this `ASTEngine` instance."""
@@ -564,7 +582,9 @@ class ASTEngine:
         """Align `core.space` consumer cursors for `spaces` (only acknowledging `None` when `spaces is None`)."""
         try:
             use_non_blocking_diff = bool(
-                not self._custom_storage_dir and is_watcher_active(project_root=self.project_root)
+                not self._custom_storage_dir
+                and getattr(self.bundler.space_manager, "_raw_spaces", None) is None
+                and is_watcher_active(project_root=self.project_root)
             )
             target_cfgs = self.bundler._resolve_target_spaces(spaces)
             target_qnames = (
@@ -802,8 +822,85 @@ class ASTEngine:
         if self.graph_index_path.exists():
             self._graph_mtime = self.graph_index_path.stat().st_mtime
 
+    def _set_build_progress(self, building: bool, phase: str = "idle", progress: str = "") -> None:
+        now = time.time()
+        with self._build_state_lock:
+            started = float(self._build_state.get("started_at", 0.0) or 0.0) if building else 0.0
+            if building and started <= 0.0:
+                started = now
+            self._build_state = {
+                "building": bool(building),
+                "phase": str(phase if building else "idle"),
+                "progress": str(progress if building else ""),
+                "started_at": started,
+            }
+        try:
+            from core import vfs
+
+            if building:
+                vfs.write_json(
+                    str(self.build_state_path),
+                    {
+                        "building": True,
+                        "pid": os.getpid(),
+                        "phase": str(phase),
+                        "progress": str(progress),
+                        "started_at": started,
+                        "updated_at": now,
+                    },
+                    indent=None,
+                    atomic=True,
+                )
+            elif self.build_state_path.exists():
+                vfs.remove(str(self.build_state_path), missing_ok=True)
+        except Exception:
+            pass
+
+    def _probe_build_in_progress(self) -> Tuple[bool, str, str]:
+        with self._build_state_lock:
+            if self._build_state.get("building"):
+                return (
+                    True,
+                    str(self._build_state.get("phase") or "building"),
+                    str(self._build_state.get("progress") or ""),
+                )
+        if not self._lock.acquire(blocking=False):
+            return (True, "building", "持有引擎鎖建構中")
+        self._lock.release()
+        if self.build_state_path.is_file():
+            try:
+                from core import vfs
+                from core.platform import is_process_alive
+
+                raw_bs = vfs.read_json(str(self.build_state_path))
+                if isinstance(raw_bs, dict) and raw_bs.get("building"):
+                    pid = int(raw_bs.get("pid", 0) or 0)
+                    if pid > 0 and (pid == os.getpid() or is_process_alive(pid)):
+                        return (
+                            True,
+                            str(raw_bs.get("phase") or "building"),
+                            str(raw_bs.get("progress") or ""),
+                        )
+                    vfs.remove(str(self.build_state_path), missing_ok=True)
+            except Exception:
+                pass
+        try:
+            from core.platform.lock import InterProcessLock
+
+            lock_p = self._resolve_index_lock_path()
+            if lock_p.is_file():
+                probe = InterProcessLock(str(lock_p), timeout=0.0)
+                if not probe.acquire(blocking=False):
+                    return (True, "persisting", "正在原子寫入 AST 索引快照")
+                probe.release()
+        except Exception:
+            pass
+        return (False, "idle", "")
+
     def _ensure_symbols_loaded(self, force_reload: bool = False) -> bool:
         if not self.symbols_index_path.exists():
+            self._snapshot = None
+            self._symbols_mtime = 0.0
             return False
         try:
             s_mtime = self.symbols_index_path.stat().st_mtime
@@ -822,6 +919,8 @@ class ASTEngine:
 
     def _ensure_graph_loaded(self, force_reload: bool = False) -> bool:
         if not self.graph_index_path.exists():
+            self._graph = None
+            self._graph_mtime = 0.0
             return False
         try:
             g_mtime = self.graph_index_path.stat().st_mtime
@@ -838,6 +937,11 @@ class ASTEngine:
 
     def _ensure_loaded_from_disk(self, force_reload: bool = False) -> bool:
         if not self.symbols_index_path.exists() or not self.graph_index_path.exists():
+            if self._symbols_mtime > 0.0 or self._graph_mtime > 0.0:
+                self._snapshot = None
+                self._graph = None
+                self._symbols_mtime = 0.0
+                self._graph_mtime = 0.0
             return False
         try:
             s_mtime = self.symbols_index_path.stat().st_mtime
@@ -878,9 +982,12 @@ class ASTEngine:
                     and meta.get("symbols_size") == int(sym_st.st_size)
                 ):
                     return meta
-            with self._lock:
-                if self._ensure_symbols_loaded() and self._snapshot is not None:
-                    return self._build_meta_payload(self._snapshot, graph=self._graph)
+            if self._lock.acquire(blocking=False):
+                try:
+                    if self._ensure_symbols_loaded() and self._snapshot is not None:
+                        return self._build_meta_payload(self._snapshot, graph=self._graph)
+                finally:
+                    self._lock.release()
         except Exception as exc:
             log_debug(f"get_persisted_meta fallback skipped: {exc}")
         return None
@@ -897,49 +1004,89 @@ class ASTEngine:
         3. Increment `ast_generation`, align `file-space` cursor (`consumer="ast"`), and persist binaries.
         """
         with self._lock:
-            prev_gen = 0
-            if self._snapshot is not None:
-                prev_gen = self._snapshot.ast_generation
-            elif self.symbols_index_path.exists():
-                try:
-                    old_raw = load_gzip_pickle(self.symbols_index_path, raise_on_missing=False)
-                    if isinstance(old_raw, dict):
-                        prev_gen = int(old_raw.get("ast_generation", 0))
-                except Exception:
-                    prev_gen = 0
-
-            bundle = self.bundler.bundle_union(spaces=spaces, allow_parallel=allow_parallel)
-            symbols_map: Dict[str, UnifiedSymbol] = {s.id: s for s in bundle.symbols}
-            file_graphs = self.bundler.extract_all_file_graphs(spaces=spaces)
-
-            call_sites, imports_map = self.bundler.extract_all_call_sites_and_imports(spaces=spaces)
-            linker = TopologyLinker(symbols_map=symbols_map)
-            graph_idx = linker.build_graph(call_sites=call_sites, imports_map=imports_map)
+            prog = ProgressReporter("ast", "正在建構 AST 符號與呼叫圖譜", total_stages=3)
+            self._set_build_progress(True, "parsing", "準備掃描並解析檔案")
             try:
-                ws_linker = WorkspaceGraphLinker(
-                    file_graphs=file_graphs.values(),
-                    language_configs=self.parser_registry.language_configs,
-                    module_resolvers=self.parser_registry.module_resolvers,
-                    edge_refiners=self.parser_registry.edge_refiners,
-                )
-                graph_idx.workspace_graph = ws_linker.link_workspace()
-            except Exception as ws_exc:
-                log_debug(f"WorkspaceGraphLinker in build_index skipped: {ws_exc}")
+                prev_gen = 0
+                if self._snapshot is not None:
+                    prev_gen = self._snapshot.ast_generation
+                elif self.meta_index_path.exists():
+                    try:
+                        prev_gen = int(json.loads(self.meta_index_path.read_text(encoding="utf-8")).get("ast_generation", 0))
+                    except Exception:
+                        prev_gen = 0
+                elif self.symbols_index_path.exists():
+                    try:
+                        old_raw = load_gzip_pickle(self.symbols_index_path, raise_on_missing=False)
+                        if isinstance(old_raw, dict):
+                            prev_gen = int(old_raw.get("ast_generation", 0))
+                    except Exception:
+                        prev_gen = 0
+                gen_floor_file = self.indices_dir / ".ast_generation_floor"
+                if gen_floor_file.exists():
+                    try:
+                        prev_gen = max(prev_gen, int(gen_floor_file.read_text(encoding="utf-8").strip() or "0"))
+                    except Exception:
+                        pass
 
-            space_gens, files_map = self._collect_space_generations_and_files_map(spaces=spaces)
-            self.bundler.clear_transient_caches()
-            snapshot = ASTSnapshot(
-                ast_generation=prev_gen + 1,
-                space_generations=space_gens,
-                symbols=symbols_map,
-                file_to_symbol_ids=self._build_file_to_symbol_ids(symbols_map),
-                files_map=files_map,
-                created_at=time.time(),
-                file_graphs=file_graphs,
-            )
-            self._save_snapshot_and_graph(snapshot, graph_idx)
-            self._align_consumer_cursors(spaces=spaces)
-            return snapshot
+                prog.stage(1, "解析檔案")
+
+                def _on_parse_prog(rel_p: str, cur: int, tot: int) -> None:
+                    prog.advance(cur, tot)
+                    if cur == 1 or cur == tot or (cur & 31) == 0:
+                        self._set_build_progress(True, "parsing", f"解析檔案 {cur}/{tot}")
+
+                bundle = self.bundler.bundle_union(
+                    spaces=spaces,
+                    progress_callback=_on_parse_prog,
+                    allow_parallel=allow_parallel,
+                )
+                symbols_map: Dict[str, UnifiedSymbol] = {s.id: s for s in bundle.symbols}
+                file_graphs = self.bundler.extract_all_file_graphs(spaces=spaces)
+
+                prog.stage(2, "連結呼叫與型別拓撲", 0, len(file_graphs))
+                self._set_build_progress(True, "linking", f"連結跨檔拓撲 (共 {len(symbols_map)} 符號)")
+                call_sites, imports_map = self.bundler.extract_all_call_sites_and_imports(spaces=spaces)
+                linker = TopologyLinker(symbols_map=symbols_map)
+                graph_idx = linker.build_graph(call_sites=call_sites, imports_map=imports_map)
+                try:
+                    ws_linker = WorkspaceGraphLinker(
+                        file_graphs=file_graphs.values(),
+                        language_configs=self.parser_registry.language_configs,
+                        module_resolvers=self.parser_registry.module_resolvers,
+                        edge_refiners=self.parser_registry.edge_refiners,
+                    )
+
+                    def _on_link_prog(cur_fg: int, tot_fg: int) -> None:
+                        prog.advance(cur_fg, tot_fg)
+                        if cur_fg == 1 or cur_fg == tot_fg or (cur_fg & 31) == 0:
+                            self._set_build_progress(True, "linking", f"連結呼叫圖譜 {cur_fg}/{tot_fg}")
+
+                    graph_idx.workspace_graph = ws_linker.link_workspace(progress_callback=_on_link_prog)
+                except Exception as ws_exc:
+                    log_debug(f"WorkspaceGraphLinker in build_index skipped: {ws_exc}")
+
+                prog.stage(3, "持久化索引快照與同步游標")
+                self._set_build_progress(True, "persisting", "寫入索引快照與元數據")
+                space_gens, files_map = self._collect_space_generations_and_files_map(spaces=spaces)
+                self.bundler.clear_transient_caches()
+                file_to_sids = self._build_file_to_symbol_ids(symbols_map)
+                snapshot = ASTSnapshot(
+                    ast_generation=prev_gen + 1,
+                    space_generations=space_gens,
+                    symbols=symbols_map,
+                    file_to_symbol_ids=file_to_sids,
+                    files_map=files_map,
+                    created_at=time.time(),
+                    file_graphs=file_graphs,
+                )
+                self._save_snapshot_and_graph(snapshot, graph_idx)
+                self._align_consumer_cursors(spaces=spaces)
+                prog.finish(f"AST 圖譜建構完成 (共 {len(file_to_sids)} 檔, {len(symbols_map)} 符號)")
+                return snapshot
+            finally:
+                self.bundler.clear_transient_caches()
+                self._set_build_progress(False)
 
     @staticmethod
     def _coerce_diff_detail(diff_input: Any) -> ScanDiffDetail:
@@ -973,6 +1120,8 @@ class ASTEngine:
                     modified_all.update(sub.get("modified") or [])
                     deleted_all.update(sub.get("deleted") or [])
             return ScanDiffDetail(added=added_all, modified=modified_all, deleted=deleted_all)
+        if isinstance(diff_input, (list, tuple, set, frozenset)):
+            return ScanDiffDetail(modified={str(p) for p in diff_input if p})
         return ScanDiffDetail(
             added=set(getattr(diff_input, "added", []) or []),
             modified=set(getattr(diff_input, "modified", []) or []),
@@ -985,6 +1134,7 @@ class ASTEngine:
         spaces: Optional[List[str]] = None,
         known_indexed_files: Optional[Set[str]] = None,
         snap_entries_by_space: Optional[Dict[str, Dict[str, Any]]] = None,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
     ) -> Tuple[
         List[UnifiedSymbol],
         Set[str],
@@ -1008,6 +1158,7 @@ class ASTEngine:
             spaces=spaces,
             known_indexed_files=known_indexed_files,
             snap_entries_by_space=snap_entries_by_space,
+            progress_callback=progress_callback,
         )
         all_new_symbols: List[UnifiedSymbol] = []
         for syms in new_symbols_by_file.values():
@@ -1228,7 +1379,12 @@ class ASTEngine:
             if not detail.dirty_files and not detail.deleted:
                 return self._snapshot
 
+            prog = ProgressReporter("ast", "正在增量熱修補 AST 圖譜", total_stages=2)
+            dirty_est = len(detail.dirty_files) + len(detail.deleted)
+            self._set_build_progress(True, "hot_patching", f"增量修補 {dirty_est} 個變更檔案")
+            persisted = False
             try:
+                prog.stage(1, "解析變更檔案", 0, max(1, len(detail.dirty_files)))
                 target_cfgs = self.bundler._resolve_target_spaces(spaces)
                 snap_entries_by_space = _preload_snap_entries(self.scanner, target_cfgs)
                 known_indexed_files = set(self._snapshot.file_to_symbol_ids.keys()) | set(self._snapshot.file_graphs.keys())
@@ -1245,7 +1401,9 @@ class ASTEngine:
                     spaces=spaces,
                     known_indexed_files=known_indexed_files,
                     snap_entries_by_space=snap_entries_by_space,
+                    progress_callback=lambda _rel, cur, tot: prog.advance(cur, tot),
                 )
+                prog.stage(2, "重連呼叫邊與更新工作區圖譜")
                 self._relink_and_reconnect_edges(
                     detail=detail,
                     all_new_symbols=all_new_symbols,
@@ -1268,15 +1426,10 @@ class ASTEngine:
                         if is_dirty_file_match(fg_key, dirty_fg_norm):
                             self._snapshot.file_graphs.pop(fg_key, None)
                     self._snapshot.file_graphs.update(dirty_fgs)
-                    ws_linker = WorkspaceGraphLinker(
-                        file_graphs=self._snapshot.file_graphs.values(),
-                        language_configs=self.parser_registry.language_configs,
-                        module_resolvers=self.parser_registry.module_resolvers,
-                        edge_refiners=self.parser_registry.edge_refiners,
-                    )
-                    self._graph.workspace_graph = ws_linker.link_workspace()
+                    # Lazily defer full 4-pass WorkspaceGraphLinker rebuild to get_workspace_graph()
+                    self._graph.workspace_graph = None
                 except Exception as ws_exc:
-                    log_debug(f"WorkspaceGraphLinker in hot_patch_index skipped: {ws_exc}")
+                    log_debug(f"FileSymbolGraph update in hot_patch_index skipped: {ws_exc}")
 
                 space_gens, files_map = self._collect_space_generations_and_files_map(
                     spaces=spaces, incremental_detail=detail
@@ -1289,13 +1442,28 @@ class ASTEngine:
                 self._snapshot.created_at = time.time()
 
                 self._save_snapshot_and_graph(self._snapshot, self._graph)
+                persisted = True
                 if not _cursor_already_consumed:
                     self._align_consumer_cursors(spaces=spaces)
+                prog.finish(f"AST 增量熱修補完成 (變更 {len(dirty_keys)} 項)")
                 return self._snapshot
             except Exception as exc:
-                self.bundler.clear_transient_caches()
+                self._snapshot = None
+                self._graph = None
+                self._symbols_mtime = 0.0
+                self._graph_mtime = 0.0
                 log_warn(f"Hot-patch failed ({exc}), falling back to full build_index.", stream="stderr")
-                return self.build_index(spaces=spaces, allow_parallel=False)
+                rebuilt = self.build_index(spaces=spaces, allow_parallel=False)
+                persisted = True
+                return rebuilt
+            finally:
+                if not persisted:
+                    self._snapshot = None
+                    self._graph = None
+                    self._symbols_mtime = 0.0
+                    self._graph_mtime = 0.0
+                self.bundler.clear_transient_caches()
+                self._set_build_progress(False)
 
     def ensure_jit_synced(
         self,
@@ -1338,7 +1506,9 @@ class ASTEngine:
                 pass
 
             use_non_blocking_diff = bool(
-                not self._custom_storage_dir and is_watcher_active(project_root=self.project_root)
+                not self._custom_storage_dir
+                and getattr(self.bundler.space_manager, "_raw_spaces", None) is None
+                and is_watcher_active(project_root=self.project_root)
             )
             try:
                 target_cfgs = self.bundler._resolve_target_spaces(norm_spaces)
@@ -1411,10 +1581,13 @@ class ASTEngine:
                                 spaces=norm_spaces,
                                 _cursor_already_consumed=True,
                             )
+            except TaskCancelledError:
+                raise
             except Exception as exc:
                 log_debug(f"JIT diff check skipped: {exc}")
 
-            assert self._snapshot is not None
+            if self._snapshot is None:
+                return self.build_index(spaces=norm_spaces, allow_parallel=allow_parallel)
             return self._snapshot
 
     def get_snapshot(self, auto_sync: bool = True) -> ASTSnapshot:
@@ -1445,8 +1618,7 @@ class ASTEngine:
                 if not self._ensure_graph_loaded():
                     raise ASTIndexNotFoundError(f"AST call graph not found at {self.graph_index_path}")
             else:
-                if self._snapshot is None or self._graph is None:
-                    self._ensure_loaded_from_disk()
+                self._ensure_loaded_from_disk()
                 if self._snapshot is None:
                     raise ASTIndexNotFoundError(f"AST index not found at {self.graph_index_path}")
                 if self._graph is None:
@@ -1492,11 +1664,7 @@ class ASTEngine:
             if not raw_target:
                 raise FileNotFoundError("Empty file path provided to parse_file().")
             if content is not None:
-                text_str = (
-                    content.decode("utf-8", errors="replace")
-                    if isinstance(content, (bytes, bytearray))
-                    else str(content)
-                )
+                text_str, _ = normalize_source_bytes(content)
                 norm_rel = raw_target.replace("\\", "/")
                 if "://" in norm_rel:
                     _, rest = norm_rel.split("://", 1)
@@ -1514,12 +1682,168 @@ class ASTEngine:
                 )
 
             abs_path, rel_path, resolved_space = self._resolve_target_file(raw_target)
-            text_str = abs_path.read_text(encoding="utf-8", errors="replace")
+            text_str, _ = read_normalized_source_file(abs_path)
             return self.parser_registry.extract_file_graph(
                 file_path=rel_path,
                 content=text_str,
                 space=space or resolved_space,
             )
+
+    @staticmethod
+    def _match_node_in_file_graph(
+        fg: FileSymbolGraph,
+        target_fqn: str,
+        *,
+        raw_query: str = "",
+        line_number: Optional[int] = None,
+        short_name: Optional[str] = None,
+    ) -> Optional[SymbolNode]:
+        if raw_query and raw_query in fg.all_nodes_by_id:
+            return fg.all_nodes_by_id[raw_query]
+        canonical_id = SymbolNode.compute_canonical_id(fg.file_path, target_fqn)
+        if canonical_id in fg.all_nodes_by_id:
+            return fg.all_nodes_by_id[canonical_id]
+        if line_number is not None:
+            for cand in fg.all_nodes_by_id.values():
+                if cand.span.start_line == line_number and (
+                    cand.fqn == target_fqn or (short_name and cand.name == short_name)
+                ):
+                    return cand
+        norm_target = target_fqn.replace("::", ".")
+        exact_fqn = [
+            c for c in fg.all_nodes_by_id.values()
+            if c.fqn == target_fqn or c.fqn.replace("::", ".") == norm_target
+        ]
+        if len(exact_fqn) == 1:
+            return exact_fqn[0]
+        if len(exact_fqn) > 1:
+            exact_fqn.sort(key=lambda n: (n.span.start_byte, n.id))
+            return exact_fqn[0]
+        by_name = [c for c in fg.all_nodes_by_id.values() if c.name == target_fqn]
+        if len(by_name) == 1:
+            return by_name[0]
+        if len(by_name) > 1:
+            raise ASTError(f"Ambiguous symbol selector for slice_part: {raw_query or target_fqn!r}")
+        return None
+
+    def _resolve_symbol_node_and_bytes_for_slice(
+        self,
+        symbol_or_id: Union[SymbolNode, UnifiedSymbol, str],
+        space: Optional[Union[str, Sequence[str]]] = None,
+        file_bytes: Optional[Union[bytes, str]] = None,
+    ) -> Tuple[SymbolNode, Optional[bytes]]:
+        if isinstance(symbol_or_id, SymbolNode):
+            return symbol_or_id, None
+
+        if isinstance(symbol_or_id, UnifiedSymbol):
+            norm_fp = symbol_or_id.file_path.replace("\\", "/")
+            fg: Optional[FileSymbolGraph] = None
+            raw_b: Optional[bytes] = None
+            try:
+                if file_bytes is not None:
+                    _, raw_b = normalize_source_bytes(file_bytes)
+                    fg = self.parse_file(symbol_or_id.file_path, content=raw_b)
+                else:
+                    abs_p, rel_p, sp_n = self._resolve_target_file(symbol_or_id.file_path)
+                    _, raw_b = read_normalized_source_file(abs_p)
+                    ws_mem = (
+                        self._graph.workspace_graph
+                        if (self._graph is not None and self.graph_index_path.exists())
+                        else None
+                    )
+                    if ws_mem is not None:
+                        cand_fg = ws_mem.file_graphs.get(symbol_or_id.file_path) or ws_mem.file_graphs.get(norm_fp)
+                        if cand_fg is not None and cand_fg.content_hash == compute_content_hash(raw_b):
+                            fg = cand_fg
+                    if fg is None:
+                        fg = self.parse_file(rel_p, content=raw_b, space=sp_n)
+            except Exception:
+                fg = None
+            target_fqn = symbol_or_id.fqn or symbol_or_id.name
+            short_name = (symbol_or_id.metadata or {}).get("short_name") or re.split(r"[.:]+", symbol_or_id.name)[-1]
+            if fg is not None:
+                matched = self._match_node_in_file_graph(
+                    fg,
+                    target_fqn,
+                    line_number=symbol_or_id.line_number,
+                    short_name=short_name,
+                )
+                if matched is not None:
+                    return matched, raw_b
+            ws_graph = self.get_workspace_graph(auto_sync=True)
+            canonical_id = SymbolNode.compute_canonical_id(symbol_or_id.file_path, target_fqn)
+            if canonical_id in ws_graph.nodes_by_id:
+                return ws_graph.nodes_by_id[canonical_id], raw_b
+            raise ASTError(f"SymbolNode not found for UnifiedSymbol '{target_fqn}'")
+
+        q_str = str(symbol_or_id or "").strip()
+        if not q_str:
+            raise ASTError("Empty symbol_or_id provided to slice_part().")
+
+        # L0 Fast Path: `<rel_path>::<fqn>` single-file O(1) parse without loading/building workspace graph!
+        if "::" in q_str:
+            cand_file_part, cand_fqn_part = q_str.split("::", 1)
+            cand_file_part = cand_file_part.strip()
+            cand_fqn_part = cand_fqn_part.strip()
+            if cand_file_part and cand_fqn_part:
+                resolved_target: Optional[Tuple[Path, str, str]] = None
+                try:
+                    resolved_target = self._resolve_target_file(cand_file_part)
+                except (FileNotFoundError, OSError):
+                    resolved_target = None
+                if resolved_target is not None:
+                    abs_p, rel_p, sp_n = resolved_target
+                    if file_bytes is not None:
+                        _, eff_b = normalize_source_bytes(file_bytes)
+                    else:
+                        _, eff_b = read_normalized_source_file(abs_p)
+                    fg_single = self.parse_file(rel_p, content=eff_b, space=sp_n)
+                    matched_single = self._match_node_in_file_graph(
+                        fg_single,
+                        cand_fqn_part,
+                        raw_query=q_str,
+                    )
+                    if matched_single is not None:
+                        return matched_single, eff_b
+                    if "/" in cand_file_part or "\\" in cand_file_part or Path(cand_file_part).suffix:
+                        raise ASTError(f"Symbol not found for slice_part: {q_str!r}")
+
+        # Check already-loaded in-memory workspace_graph if available and fresh on disk
+        ws_mem = (
+            self._graph.workspace_graph
+            if (self._graph is not None and self.graph_index_path.exists())
+            else None
+        )
+        if ws_mem is not None and q_str in ws_mem.nodes_by_id:
+            cand_n = ws_mem.nodes_by_id[q_str]
+            fg_mem = ws_mem.file_graphs.get(cand_n.file_path)
+            if fg_mem is not None and file_bytes is None:
+                try:
+                    abs_chk, _, _ = self._resolve_target_file(cand_n.file_path)
+                    _, chk_b = read_normalized_source_file(abs_chk)
+                    if fg_mem.content_hash == compute_content_hash(chk_b):
+                        return cand_n, chk_b
+                except Exception:
+                    pass
+
+        # Resolve selector via symbol table (avoids full 4-pass WorkspaceGraphLinker when unnecessary)
+        res = self.resolve(q_str, spaces=space)
+        if res.status == "ambiguous":
+            raise ASTError(f"Ambiguous symbol selector for slice_part: {q_str!r}")
+        if res.status != "not_found" and res.targets:
+            return self._resolve_symbol_node_and_bytes_for_slice(
+                res.targets[0],
+                space=space,
+                file_bytes=file_bytes,
+            )
+
+        ws_graph = self.get_workspace_graph(auto_sync=True)
+        if q_str in ws_graph.nodes_by_id:
+            return ws_graph.nodes_by_id[q_str], None
+        for cand_node in ws_graph.nodes_by_id.values():
+            if cand_node.fqn == q_str or cand_node.name == q_str:
+                return cand_node, None
+        raise ASTError(f"Symbol not found for slice_part: {q_str!r}")
 
     def _resolve_symbol_node_for_slice(
         self,
@@ -1532,52 +1856,8 @@ class ASTEngine:
         - Structured `SymbolSelector`: `[kind] [scope.]name[(param_types...)]` (e.g. `"ASTEngine.slice_part"`).
         - Canonical `SymbolNode.id`: `<project_rel_path>::<fqn>` (double-colon `::`; single-colon `<path>:<fqn>` is not valid).
         """
-        if isinstance(symbol_or_id, SymbolNode):
-            return symbol_or_id
-        if isinstance(symbol_or_id, UnifiedSymbol):
-            ws_graph = self.get_workspace_graph(auto_sync=True)
-            norm_fp = symbol_or_id.file_path.replace("\\", "/")
-            fg = ws_graph.file_graphs.get(symbol_or_id.file_path) or ws_graph.file_graphs.get(norm_fp)
-            if fg is None:
-                try:
-                    fg = self.parse_file(symbol_or_id.file_path)
-                except Exception:
-                    fg = None
-            target_fqn = symbol_or_id.fqn or symbol_or_id.name
-            short_name = (symbol_or_id.metadata or {}).get("short_name") or symbol_or_id.name.split(".")[-1]
-            if fg is not None:
-                for cand in fg.all_nodes_by_id.values():
-                    if cand.span.start_line == symbol_or_id.line_number and (
-                        cand.fqn == target_fqn or cand.name == short_name
-                    ):
-                        return cand
-            canonical_id = SymbolNode.compute_canonical_id(
-                symbol_or_id.file_path,
-                target_fqn,
-            )
-            if canonical_id in ws_graph.nodes_by_id:
-                return ws_graph.nodes_by_id[canonical_id]
-            if fg is not None:
-                for cand in fg.all_nodes_by_id.values():
-                    if cand.fqn == target_fqn:
-                        return cand
-            raise ASTError(f"SymbolNode not found for UnifiedSymbol '{target_fqn}'")
-
-        q_str = str(symbol_or_id or "").strip()
-        if not q_str:
-            raise ASTError("Empty symbol_or_id provided to slice_part().")
-        ws_graph = self.get_workspace_graph(auto_sync=True)
-        if q_str in ws_graph.nodes_by_id:
-            return ws_graph.nodes_by_id[q_str]
-        res = self.resolve(q_str, spaces=space)
-        if res.status == "not_found" or not res.targets:
-            for cand_node in ws_graph.nodes_by_id.values():
-                if cand_node.fqn == q_str or cand_node.name == q_str:
-                    return cand_node
-            raise ASTError(f"Symbol not found for slice_part: {q_str!r}")
-        if res.status == "ambiguous":
-            raise ASTError(f"Ambiguous symbol selector for slice_part: {q_str!r}")
-        return self._resolve_symbol_node_for_slice(res.targets[0], space=space)
+        node, _ = self._resolve_symbol_node_and_bytes_for_slice(symbol_or_id, space=space)
+        return node
 
     def slice_part(
         self,
@@ -1599,22 +1879,24 @@ class ASTEngine:
             raise ASTError(
                 f"Unsupported slice part: {part!r} (expected one of {sorted(VALID_SLICE_PARTS)})"
             )
-        node = self._resolve_symbol_node_for_slice(symbol_or_id, space=space)
+        node, preloaded_bytes = self._resolve_symbol_node_and_bytes_for_slice(
+            symbol_or_id,
+            space=space,
+            file_bytes=file_bytes,
+        )
         target_span: Optional[Span] = node.span if part_norm == "outer" else node.parts.get(part_norm)
         if target_span is None:
             return ""
 
         if file_bytes is not None:
-            raw_bytes = (
-                file_bytes.encode("utf-8", errors="replace")
-                if isinstance(file_bytes, str)
-                else bytes(file_bytes)
-            )
+            _, raw_bytes = normalize_source_bytes(file_bytes)
+        elif preloaded_bytes is not None:
+            raw_bytes = preloaded_bytes
         else:
             abs_p = self.snippet_extractor._resolve_abs_path(node.file_path)
             if abs_p is None or not abs_p.is_file():
                 abs_p, _, _ = self._resolve_target_file(node.file_path)
-            raw_bytes = abs_p.read_bytes()
+            _, raw_bytes = read_normalized_source_file(abs_p)
 
         return target_span.slice_text(raw_bytes)
 
@@ -1690,9 +1972,10 @@ class ASTEngine:
                 s_str = str(item or "").strip()
                 if not s_str:
                     continue
-                if s_str in ws_graph.nodes_by_id:
-                    if s_str not in resolved_seeds:
-                        resolved_seeds.append(s_str)
+                norm_s = s_str.replace("\\", "/") if "::" in s_str else s_str
+                if norm_s in ws_graph.nodes_by_id:
+                    if norm_s not in resolved_seeds:
+                        resolved_seeds.append(norm_s)
                     continue
                 res = self.resolve(s_str, spaces=spaces)
                 if res.targets:
@@ -1751,7 +2034,8 @@ class ASTEngine:
                 sp = scheme if scheme in loaded_spaces else "project"
                 return cand, rel, sp
 
-        p = Path(raw)
+        norm_raw = raw.replace("\\", "/")
+        p = Path(norm_raw)
         if not p.is_absolute():
             cand = (self.project_root / p).resolve()
             if not cand.is_file():
@@ -1835,10 +2119,18 @@ class ASTEngine:
                     except Exception as exc:
                         log_debug(f"Outline JIT sync skipped: {exc}")
                 else:
-                    snapshot = self._snapshot
-                    if snapshot is None and self.symbols_index_path.exists():
-                        acquired = self._lock.acquire(blocking=False)
-                        if acquired:
+                    sym_exists = self.symbols_index_path.exists()
+                    if not sym_exists:
+                        snapshot = None
+                    else:
+                        snapshot = self._snapshot
+                        needs_reload = snapshot is None
+                        if not needs_reload and self._symbols_mtime > 0.0:
+                            try:
+                                needs_reload = self.symbols_index_path.stat().st_mtime > self._symbols_mtime
+                            except OSError:
+                                needs_reload = True
+                        if needs_reload and self._lock.acquire(blocking=False):
                             try:
                                 if self._ensure_symbols_loaded():
                                     snapshot = self._snapshot
@@ -1876,6 +2168,11 @@ class ASTEngine:
             eff_snippet = include_snippet if include_snippet is not None else snippet
             snapshot = self.ensure_jit_synced(spaces=eff_space)
             graph = self.get_call_graph(auto_sync=False)
+            if graph.workspace_graph is None and snapshot.file_graphs:
+                try:
+                    self.get_workspace_graph(auto_sync=False)
+                except Exception as ws_err:
+                    log_debug(f"Lazy WorkspaceSymbolGraph hydration in callers skipped: {ws_err}")
             return query_callers(
                 target_query=target_query,
                 symbols_map=snapshot.symbols,
@@ -1901,6 +2198,11 @@ class ASTEngine:
             eff_snippet = include_snippet if include_snippet is not None else snippet
             snapshot = self.ensure_jit_synced(spaces=eff_space)
             graph = self.get_call_graph(auto_sync=False)
+            if graph.workspace_graph is None and snapshot.file_graphs:
+                try:
+                    self.get_workspace_graph(auto_sync=False)
+                except Exception as ws_err:
+                    log_debug(f"Lazy WorkspaceSymbolGraph hydration in callees skipped: {ws_err}")
             return query_callees(
                 target_query=target_query,
                 symbols_map=snapshot.symbols,
@@ -1924,6 +2226,11 @@ class ASTEngine:
             eff_space = space if space is not None else spaces
             snapshot = self.ensure_jit_synced(spaces=eff_space)
             graph = self.get_call_graph(auto_sync=False)
+            if graph.workspace_graph is None and snapshot.file_graphs:
+                try:
+                    self.get_workspace_graph(auto_sync=False)
+                except Exception as ws_err:
+                    log_debug(f"Lazy WorkspaceSymbolGraph hydration in impact skipped: {ws_err}")
             return query_impact(
                 target_query=target_query,
                 symbols_map=snapshot.symbols,
@@ -1944,6 +2251,12 @@ class ASTEngine:
         total_symbols = 0
         total_files = 0
         total_edges = 0
+
+        if not (has_symbols and has_graph) and self._symbols_mtime > 0.0:
+            self._snapshot = None
+            self._graph = None
+            self._symbols_mtime = 0.0
+            self._graph_mtime = 0.0
 
         if has_symbols and has_graph:
             populated = False
@@ -2000,22 +2313,28 @@ class ASTEngine:
                 log_debug(f"status fast-path fallback: {exc}")
 
             if not populated:
-                with self._lock:
-                    if self._ensure_loaded_from_disk():
-                        assert self._snapshot is not None
-                        assert self._graph is not None
-                        ast_gen = self._snapshot.ast_generation
-                        space_gens = dict(self._snapshot.space_generations)
-                        if target_space:
-                            space_gens = {k: v for k, v in space_gens.items() if k == target_space}
-                            total_symbols = sum(
-                                1 for s in self._snapshot.symbols.values() if target_space in (s.spaces or [])
-                            )
-                            total_files = len(self._snapshot.files_map.get(target_space, []))
-                        else:
-                            total_symbols = len(self._snapshot.symbols)
-                            total_files = len(self._snapshot.file_to_symbol_ids)
-                        total_edges = self._graph.graph.number_of_edges()
+                is_b_now, _, _ = self._probe_build_in_progress()
+                if not is_b_now and self._lock.acquire(blocking=False):
+                    try:
+                        if self._ensure_loaded_from_disk():
+                            assert self._snapshot is not None
+                            assert self._graph is not None
+                            ast_gen = self._snapshot.ast_generation
+                            space_gens = dict(self._snapshot.space_generations)
+                            if target_space:
+                                space_gens = {k: v for k, v in space_gens.items() if k == target_space}
+                                total_symbols = sum(
+                                    1 for s in self._snapshot.symbols.values() if target_space in (s.spaces or [])
+                                )
+                                total_files = len(self._snapshot.files_map.get(target_space, []))
+                            else:
+                                total_symbols = len(self._snapshot.symbols)
+                                total_files = len(self._snapshot.file_to_symbol_ids)
+                            total_edges = self._graph.graph.number_of_edges()
+                    finally:
+                        self._lock.release()
+
+        building_active, build_phase, build_progress = self._probe_build_in_progress()
 
         return {
             "storage_dir": str(self.storage_dir),
@@ -2023,6 +2342,9 @@ class ASTEngine:
             "snapshot_exists": bool(has_symbols and has_graph),
             "has_symbols_index": has_symbols,
             "has_graph_index": has_graph,
+            "building_in_progress": building_active,
+            "build_phase": build_phase,
+            "build_progress": build_progress,
             "ast_generation": ast_gen,
             "space_generations": space_gens,
             "total_symbols": total_symbols,
@@ -2034,32 +2356,99 @@ class ASTEngine:
 
     def clean(self, space: Optional[str] = None, space_name: Optional[str] = None) -> Dict[str, Any]:
         """Remove persisted AST snapshot/graph caches and reset `core.space` cursor (`consumer='ast'`)."""
+        from core.platform.lock import InterProcessLock
+        from .linker import reset_linker_cache
+
         target_space = space or space_name
         removed: List[str] = []
+        resolved_cfgs = []
+        if target_space:
+            resolved_cfgs = self.bundler.space_manager.resolve_spaces(target_space)
 
-        with self._lock:
+        lock_path = self._resolve_index_lock_path()
+        gen_floor_file = self.indices_dir / ".ast_generation_floor"
+        protected_names = {lock_path.name, ".ast_generation_floor"}
+
+        with self._lock, InterProcessLock(str(lock_path), timeout=15.0):
+            # Preserve monotonic ast_generation watermark floor across clean -> rebuild cycles
+            max_known_gen = 0
+            if self._snapshot is not None:
+                max_known_gen = max(max_known_gen, int(self._snapshot.ast_generation))
+            if self.meta_index_path.exists():
+                try:
+                    max_known_gen = max(
+                        max_known_gen,
+                        int(json.loads(self.meta_index_path.read_text(encoding="utf-8")).get("ast_generation", 0)),
+                    )
+                except Exception:
+                    pass
+            if gen_floor_file.exists():
+                try:
+                    max_known_gen = max(max_known_gen, int(gen_floor_file.read_text(encoding="utf-8").strip() or "0"))
+                except Exception:
+                    pass
+            if max_known_gen > 0:
+                try:
+                    self.indices_dir.mkdir(parents=True, exist_ok=True)
+                    gen_floor_file.write_text(f"{max_known_gen}\n", encoding="utf-8")
+                except OSError:
+                    pass
+
             self._snapshot = None
             self._graph = None
             self._symbols_mtime = 0.0
             self._graph_mtime = 0.0
+            self.bundler.clear_transient_caches()
+            reset_linker_cache()
 
             if target_space:
-                b_file = self.bundles_dir / f"{target_space}.bundle.json"
-                if b_file.exists():
-                    b_file.unlink()
-                    removed.append(str(b_file))
+                bundle_names = {target_space, target_space.replace("/", "_")}
+                for scfg in resolved_cfgs:
+                    if scfg.short_name:
+                        bundle_names.add(scfg.short_name)
+                    if scfg.qualified_name:
+                        bundle_names.add(scfg.qualified_name.replace("/", "_"))
+                for b_name in sorted(bundle_names):
+                    b_file = self.bundles_dir / f"{b_name}.bundle.json"
+                    if b_file.exists():
+                        try:
+                            b_file.unlink()
+                            removed.append(str(b_file))
+                        except OSError:
+                            pass
+                for u_f in (self.symbols_index_path, self.graph_index_path, self.meta_index_path, self.build_state_path):
+                    if u_f.exists():
+                        try:
+                            u_f.unlink()
+                            removed.append(str(u_f))
+                        except OSError:
+                            pass
             else:
                 for d in (self.indices_dir, self.bundles_dir):
                     if d.is_dir():
                         for item in d.iterdir():
+                            if item.name in protected_names:
+                                continue
                             if item.is_file():
-                                item.unlink()
-                                removed.append(str(item))
+                                try:
+                                    item.unlink()
+                                    removed.append(str(item))
+                                except OSError:
+                                    pass
                             elif item.is_dir():
                                 shutil.rmtree(item, ignore_errors=True)
                                 removed.append(str(item))
 
-            self._reset_consumer_cursor(space_name=target_space)
+            if target_space:
+                self._reset_consumer_cursor(space_name=target_space)
+                self._reset_consumer_cursor(space_name=None)
+                for scfg in resolved_cfgs:
+                    if scfg.qualified_name:
+                        self._reset_consumer_cursor(space_name=scfg.qualified_name)
+                    if scfg.short_name:
+                        self._reset_consumer_cursor(space_name=scfg.short_name)
+            else:
+                self._reset_consumer_cursor(space_name=None)
 
         return {
             "status": "cleaned",

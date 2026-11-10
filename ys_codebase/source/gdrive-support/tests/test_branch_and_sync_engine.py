@@ -2023,6 +2023,20 @@ class TestGDriveBranchAndSyncEngine(YSCBTestCase):
         self.assertFalse(self.coord.state_journal_path.exists())
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_branch_contributes_server_compatible_enabled(self) -> None:
+        """Verify `gdrive-support` `contributes/core.json` enables `server_compatible: true` on `branch` (`list`, `create`, `delete`) while keeping workspace-mutating sync commands cold-run."""
+        contrib_path = Path(__file__).resolve().parents[1] / "contributes" / "core.json"
+        data = json.loads(contrib_path.read_text(encoding="utf-8"))
+        cmds = data["commands"]["cmd"]
+        branch_spec = cmds["branch"]
+        self.assertIs(branch_spec.get("server_compatible"), True)
+        for sub_name in ("list", "create", "delete"):
+            self.assertIs(branch_spec["cmd"][sub_name].get("server_compatible"), True)
+        for cold_cmd in ("checkout", "pull", "push", "sync"):
+            self.assertIs(cmds[cold_cmd].get("server_compatible"), False)
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()
