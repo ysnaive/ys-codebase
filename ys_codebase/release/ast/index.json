@@ -215,7 +215,7 @@
       "dependencies": {
         "core": ">=1.2.10.0"
       },
-      "sha256": "63944a3d2690447260ed2304745f6338a0a2b85bf5057fcb216fa0ab705f67e0",
+      "sha256": "b92f5a2e1c573db4fcb3dfa09f22e7495fa7f1396d4b82d2b9f09ceb0c521cf4",
       "type": "hotfix",
       "urgency": "recommended",
       "summary": "收斂 .ast_index.lock 粒度、Windows 停用 ProcessPool 並以 _cache_lock 保護 TreeSitter 走訪"

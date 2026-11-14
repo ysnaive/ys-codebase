@@ -242,7 +242,7 @@
     "1.2.10.1": {
       "status": "active",
       "dependencies": {},
-      "sha256": "4a5c6f0d7e3d2c1bf1c61473b49241b98453ca01956c8e21c624048ff2f37444",
+      "sha256": "9bb64cf7e65d59973bf52df80d88f8b34b4340b9efbb09045de30ed20aefbee6",
       "type": "hotfix",
       "urgency": "recommended",
       "summary": "拆分 CursorStore 消費端鎖並收斂為純葉鎖，消除與墓碑清理並發互鎖"

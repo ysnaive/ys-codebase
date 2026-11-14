@@ -307,7 +307,7 @@
         "core": ">=1.2.10.0",
         "ast": ">=1.1.1.0"
       },
-      "sha256": "2abd0b4d75f33213ca747aec90afc4806c1c7d7318f101bc80c59d62e51b770c",
+      "sha256": "a88222e91016ab2814402380c5ae601e0043e9d964f0aae98b8b0ea880564741",
       "type": "hotfix",
       "urgency": "recommended",
       "summary": "游標批次鎖前先行同步 AST JIT 並防止 Worker 無常駐服務時回落事件執行緒同步索引"

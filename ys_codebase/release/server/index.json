@@ -211,7 +211,7 @@
       "dependencies": {
         "core": ">=1.2.10.0"
       },
-      "sha256": "3a4fc6e2276711f933b7862b0616f082ff5dbce2290f2d6447d8db2fe8151171",
+      "sha256": "b8c6cd04fb4ad8fdd69b2d2d58000e50644ca042bb329c1ee067cb8be99dc25f",
       "type": "hotfix",
       "urgency": "recommended",
       "summary": "移出 SpaceWatcher 鎖內廣播、隔離 Worker stderr 句柄並新增任務靜默斷路回收"

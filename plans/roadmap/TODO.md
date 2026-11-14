@@ -3,7 +3,7 @@
 > 主題：專案輕量級待辦與技術債帳本  
 > 更新日期：2026-11-14  
 > 狀態：Active  
-> 最後分配編號：27  
+> 最後分配編號：28  
 > 模型：Unknown  
 
 ---
@@ -44,3 +44,8 @@
 - **建立日期**：2026-11-14
 - **目標範疇**：`ys_codebase/source/core/tests/test_vfs.py`
 - **備忘與解法要點**：test_vfs_open_boundary_guard_lf_newline_and_symlink_copy 剝除 Windows readlink 回傳之長路徑前綴後再比對 outside_dir
+
+### [TODO-28] 統一鎖定 Deterministic Zip 之 ZipInfo.create_system=3 消除跨平台發布雜湊差異
+- **建立日期**：2026-11-14
+- **目標範疇**：`ys_codebase/source/dev/dev/builder.py, ys_codebase/source/core/core/engine.py, yscb.py, .github/workflows/`
+- **備忘與解法要點**：於 5 處 ZipInfo 建構點顯式設定 create_system = 3，避免 Windows 預設 0 與 Linux 預設 3 造成 dev release 之 index.json sha256 被 ci-sha256-gate 攔截
