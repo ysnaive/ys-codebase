@@ -1,0 +1,124 @@
+{
+  "name": "gdrive-support",
+  "description": "YS-Codebase Google Drive 原子雲端操作、Shortcut 差量分支與雙向同步模組",
+  "versions": [
+    "1.0.0.0",
+    "1.0.1.6",
+    "1.0.1.7",
+    "1.0.1.8"
+  ],
+  "releases": {
+    "1.0.0.0": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.6.0, <1.2.7.0",
+        "file-space": ">=1.0.0.5, <1.0.1.0"
+      },
+      "sha256": "087724f2c99e6b435c71388735deab98c113b77737fde331a544876ec05ec816",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "首發 Google Drive 雲端原子操作、repo_sync 雙層隔離同步倉、Shortcut 零空間分支、CoW 30 天垃圾桶與雙軌內外部 Skills",
+      "commit": "f2805bcad3f625369c59ab35be5a863fa725b295"
+    },
+    "1.0.1.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.0",
+        "file-space": ">=1.0.1.0"
+      },
+      "sha256": "964a1adbd8e9e0cfd4aed74dd525a63598380d8a923ef0e9399375d74aefecd0",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "HTTPS Keep-Alive 與 8 執行緒平行同步加速、憑證與同步帳本對齊 config.local:// 與 storage.local://",
+      "commit": "5cf22b3de285edc7c9dd58f82754db1ed8efed5a"
+    },
+    "1.0.1.1": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.0",
+        "file-space": ">=1.0.1.0"
+      },
+      "sha256": "ca8a82cae8ff80c15e3b07c504747b96c8e34ce995111f8276035aee1be0b699",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "Google Drive changes API 3-level remote cache short-circuit and foreground CLI lock preemption",
+      "commit": "92a3bbc2d1419b1cbb204930717d6aa34cc8d05e"
+    },
+    "1.0.1.2": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.0",
+        "file-space": ">=1.0.1.1"
+      },
+      "sha256": "26eb8e0bb0feddecfe08f1e28d8af77eacd345b012f94ee4cb20988cb20a86c3",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "接入 file-space 單調世代增量游標與 Level 1 changes.list 雙向遠端快取修補",
+      "commit": "3576d7d2f2ee85497bc2da64b76f5203d1f41781"
+    },
+    "1.0.1.3": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.1",
+        "file-space": ">=1.0.1.2"
+      },
+      "sha256": "8012d471c129456a92c9515eb23a08a181ecdbf4c39590a39f5f085f83ffb434",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "完成單向基線保護、空目錄自底向上清理、Level 1 deepcopy 隔離、page_token 延遲提交與 CodeQualityStandards 深度重構",
+      "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
+    },
+    "1.0.1.4": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.3",
+        "file-space": ">=1.0.1.4"
+      },
+      "sha256": "4eb7dc4dcd63a17039ca14e6bbb0d922ad53142597c1fbf078f9d008e236f5cb",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "保護單向 --delete 未追蹤新檔、收斂空目錄清理至當輪刪除祖先鏈、還原資料夾觸發子樹掃描與導入 sync_state.journal.jsonl WAL 持久化",
+      "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
+    },
+    "1.0.1.5": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.8.0"
+      },
+      "sha256": "ba4003ffa6938b9e46e813dd7e4f578dcd5f2393d651045002ec6737aa3835b5",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "遷移同步空間枚舉至 core.space 並收斂執行期快取與狀態至隔離上下文"
+    },
+    "1.0.1.6": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.8.0"
+      },
+      "sha256": "93445f0e8da38be4c11fc7c962ae0bfa4a4b4ff29a51cd80ad6a00b9ecd015b1",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "將雲端分支同步協調器模組化拆分為本地狀態帳本、三階段增量快取與根目錄說明檔同步組件，並強化路徑與憑證安全防護"
+    },
+    "1.0.1.7": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.9.0"
+      },
+      "sha256": "92690624e961f051f671009aa71f37a4a72f5eb81d76344d70348402a3406427",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "將全部雲端指令開放熱通道派發、整合虛擬工作目錄對齊與協作式取消，並確保衝突備份與沙盒遠端副本自動剝除唯讀鎖"
+    },
+    "1.0.1.8": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.10.0"
+      },
+      "sha256": "e4888f8a4103d191d745dcb023220c1faea659edccd1094e7599b536bd9d0161",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "加固 GDriveSyncServiceWorker 前景讓渡、交易鎖退避與雙層重試韌性"
+    }
+  }
+}

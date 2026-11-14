@@ -1,0 +1,224 @@
+{
+  "name": "ast",
+  "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
+  "versions": [
+    "1.1.1.1"
+  ],
+  "releases": {
+    "1.0.0.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.2.0, <1.2.5.0",
+        "file-space": ">=1.0.0.0, <1.0.1.0"
+      },
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "初版 ast 模組發布，提供 10 語言方言隔離、C# partial 雙層分部符號聚合、無 BM25 同名異載群組定址、outline 三維度過濾與呼叫圖譜",
+      "sha256": "fef3d6888da96b73df8c2f057908eaa4ba10a7b39e46b0f56b7a36bdae8f5eb8",
+      "commit": "00571cffa8e7692b11d14d9abc2d2b8a908c6719"
+    },
+    "1.0.0.1": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.3.0, <1.2.5.0",
+        "file-space": ">=1.0.0.1, <1.0.1.0"
+      },
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "修復 SnapshotState.head_generation 讀取、C# 同名重載方法保留與跨檔案邊重連",
+      "sha256": "158cc1bff1f3da0d2a4f25a47a8ef0d5b161adaa2d6895f295fabe986f49f933",
+      "commit": "7710f36813f446bc33f6f42d3ee660b74a599c8d"
+    },
+    "1.0.0.2": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.4.0, <1.2.5.0",
+        "file-space": ">=1.0.0.2, <1.0.1.0"
+      },
+      "sha256": "ce7662729f2bf1f9deaef469d763d78e5d6eea0c01c34284afc33004ea74e12d",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "實作單檔 O(dirty) 免全掃熱修補、單次讀檔提取、MemberInfo 輕量反序列化與 BFS 拓撲優化",
+      "commit": "a208bb2553f1bfbcc6201267a920b9f6533a541b"
+    },
+    "1.0.0.3": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.5.0, <1.2.7.0",
+        "file-space": ">=1.0.0.3, <1.0.1.0"
+      },
+      "sha256": "56dbe0db380b27488f37739cee4adb0994d8551a9e23bd1d15e367c59c45e3b6",
+      "type": "refactor",
+      "urgency": "optional",
+      "summary": "升級 contributes/_format.json 支援 uri 型別與 @desc(...) 欄位說明",
+      "commit": "808d156b1412f464de01a52a3be2bd6343821204"
+    },
+    "1.0.0.4": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.5.1, <1.2.7.0",
+        "file-space": ">=1.0.0.4, <1.0.1.0"
+      },
+      "sha256": "b5e1d24b5deeafd728049fbc513176239c0dbf1688567618bab54c9f8696af5a",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "新增 Tree-sitter JIT 跨進程鎖、刪檔孤兒節點回收、.ast_graph.lock 與二級雜湊索引加速",
+      "commit": "f3f2ad7ed3bb84cd64ff7babfb3588e9268a5c3c"
+    },
+    "1.0.0.5": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.6.0, <1.2.7.0",
+        "file-space": ">=1.0.0.5, <1.0.1.0"
+      },
+      "sha256": "88fea2a39622e209de97d22d51864740db15a2d2f636eac9677f31d82b308eac",
+      "type": "refactor",
+      "urgency": "optional",
+      "summary": "補充 manifest.json optional 建議擴充模組 (knowledge-db)",
+      "commit": "f2805bcad3f625369c59ab35be5a863fa725b295"
+    },
+    "1.0.1.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.0",
+        "file-space": ">=1.0.1.0"
+      },
+      "sha256": "87afb218be378cd35869e6b058fcadce25d7638796149a10c94ca96baff5d179",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "預設 indices 與 bundles 遷移至 storage.local://、跨進程鎖分離至 cache:// 並附帶 1.0.1.x 遷移腳本",
+      "commit": "5cf22b3de285edc7c9dd58f82754db1ed8efed5a"
+    },
+    "1.0.1.1": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.0",
+        "file-space": ">=1.0.1.0"
+      },
+      "sha256": "1a55de3ffe5357a494079b2bef12c42ad09a30d73dcadfaba3052dd72821c7fa",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "CLI 預設去重相對路徑與 --file-uri 旗標、呼叫圖譜惰性載入與 unified.meta.json 快照探針",
+      "commit": "33b896dc1037bd8175b4214b72efa7f8cb358011"
+    },
+    "1.0.1.2": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.0",
+        "file-space": ">=1.0.1.1"
+      },
+      "sha256": "3109c7b926a59e2980037eaee8ef7dd618f7a154c3c84e60a4685ef321b62810",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "hook.file-space.py 空間白名單過濾與 _diff_all_spaces 動態聚合",
+      "commit": "3576d7d2f2ee85497bc2da64b76f5203d1f41781"
+    },
+    "1.0.1.3": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.1",
+        "file-space": ">=1.0.1.2"
+      },
+      "sha256": "e5da6f6253b3aff5b6a0ed4337cb9bcfc8ecf01b9332f2e84c05239d97ffc91b",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "修正根目錄單檔 is_dirty_file_match、多空間 best_mtime_ns 消歧與 bundle_union 平行解析",
+      "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
+    },
+    "1.0.1.4": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.2",
+        "file-space": ">=1.0.1.3"
+      },
+      "sha256": "af57ca1f386c497ee0adb20c218802cf41a0d853cdecbdf71c4bc9c87ada82c2",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "linker line_number 指紋修正與 bundler 孤兒方法清理",
+      "commit": "699fd5c166d49aa90021c9381a13f63863d68d58"
+    },
+    "1.0.1.5": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.3",
+        "file-space": ">=1.0.1.4"
+      },
+      "sha256": "a5f57e09846af45058351c4591d9540dd4ce5cc26b633659274141f2d1c03cdd",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "補齊 ASTEngine 與 GrammarProvisioner 執行緒鎖、修正重載符號子項 parent_id 同步與註解解析",
+      "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
+    },
+    "1.0.1.6": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.3",
+        "file-space": ">=1.0.1.4"
+      },
+      "sha256": "d9234bb2726f0ab0e1f107c8ac6cc9e50f05ad3eaac1df5eecb5ef75f1f350df",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "根治 AST 儲存與鎖檔路徑退避洩漏並收口至 core.vfs.write_json"
+    },
+    "1.1.0.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.8.0"
+      },
+      "sha256": "16ed28d51f31afd4b5c5d7ae1083aecb7bc315c2e6d4384b5e069c5e5032961f",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "重構單檔語法圖快取與跨檔案確定性符號連結器、新增 slice 精準程式碼切片與 traverse 多跳關係拓撲遍歷指令"
+    },
+    "1.1.0.1": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.8.0"
+      },
+      "sha256": "2784e4702e27c97fcec794b92b4a2c8c15ce93978c13006225cb718a7ebbb01f",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "優化單次解析符號與語意圖譜快照共用機制以消除重複讀檔與序列化膨脹，並明確定義 slice 與 traverse 符號定址語法說明"
+    },
+    "1.1.0.2": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.8.0"
+      },
+      "sha256": "f1be87fc8d523d074286fc0acdd5d0b4a9146667f889446c8c7fbcfa80d70bad",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "實作 status 無鎖元資料快讀、單檔 outline 非阻塞提取與非程式碼副檔名預過濾，並支援同行程背景索引單點讓渡"
+    },
+    "1.1.0.3": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.9.0"
+      },
+      "sha256": "70edf2a2b781e03c8ec908a2240dcf7c73403dd446789900e52d0004850b0de5",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 <rel_path>::<fqn> 單檔零圖譜掃描極速 slice 路徑、持久化空間檔案計數快取、建置階段進度回報與協作式取消檢查"
+    },
+    "1.1.1.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.10.0"
+      },
+      "sha256": "525c00866ab958eb07e1deea57944983c233339057f05cf5f91ca89ec91a8c31",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "重構 4-Pass 全域圖譜與增量連結快取 (42x 加速)、導入 WarmWorker 背景持久化與熱修補游標對齊"
+    },
+    "1.1.1.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.10.0"
+      },
+      "sha256": "b92f5a2e1c573db4fcb3dfa09f22e7495fa7f1396d4b82d2b9f09ceb0c521cf4",
+      "type": "hotfix",
+      "urgency": "recommended",
+      "summary": "收斂 .ast_index.lock 粒度、Windows 停用 ProcessPool 並以 _cache_lock 保護 TreeSitter 走訪"
+    }
+  }
+}

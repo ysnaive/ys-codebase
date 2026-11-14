@@ -1,0 +1,220 @@
+{
+  "name": "server",
+  "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
+  "versions": [
+    "1.0.7.1"
+  ],
+  "releases": {
+    "1.0.0.4": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.1.0.6, <1.2.5.0"
+      },
+      "type": "docs",
+      "urgency": "optional",
+      "summary": "增補 server/README.md 常駐守護進程架構、IPC 通訊協議與生命週期管理說明",
+      "sha256": "3c7261e21575bc9e7de647f5986051238a962565326abe275a090a56c8932742",
+      "commit": "93489141091807e0d8cae7cff6eeba2d53a6b9c8"
+    },
+    "1.0.1.1": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.1.1.1, <1.2.5.0"
+      },
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "修復模組熱更新期間常駐 Server 實例洩漏問題，強化 master 與 watcher 自動優雅重啟與孤兒進程防護",
+      "commit": "723954d83b33049c44040357316a641e7ae3f486"
+    },
+    "1.0.1.2": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.0.1, <1.2.5.0"
+      },
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "完成 master、worker、watcher 與 logger 五維度靜態診斷與業務階段聚合重構，消除冗餘狀態分支",
+      "commit": "0916eb2b44ea741908892c659626096715bee52b"
+    },
+    "1.0.1.3": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.0.2, <1.2.5.0"
+      },
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "修復 read_daemon_state 讀取狀態異常、stop 防孤兒鎖保護與跨模式專案路徑掛載 (Issue #8)",
+      "sha256": "9052414a1fcad332c4aa4739e70b48a4fecb4597b22b012e060e1adeb9528928",
+      "commit": "bb329b339e42a3dc551ed69ebc774932b80b9b6b"
+    },
+    "1.0.2.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.3.0, <1.2.5.0"
+      },
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "修復 detached master 路徑單引號注入與 restart_worker 鎖順序死鎖並加固 daemon.json 權限",
+      "sha256": "e741586f68c7ea5dd4844ed234a82b4a5f1ff396580941f24abda92a17012c54",
+      "commit": "7710f36813f446bc33f6f42d3ee660b74a599c8d"
+    },
+    "1.0.3.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.4.0, <1.2.5.0"
+      },
+      "sha256": "e1e3a1ccec79bebfe812671d96d04c6b242919761fe1d64e726cd48579ac7c4f",
+      "type": "bugfix",
+      "urgency": "critical",
+      "summary": "新增搶占式重啟、兩段式 Worker 握手、strict_hot_dispatch、環境變數差量還原與 4KB 防抖緩衝",
+      "commit": "a208bb2553f1bfbcc6201267a920b9f6533a541b"
+    },
+    "1.0.3.1": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.5.0, <1.2.7.0"
+      },
+      "sha256": "dfdb24913da1d1dd79ddd58031006369133c521693391a8ae740c7f6ab72097b",
+      "type": "feature",
+      "urgency": "optional",
+      "summary": "新增同構 configurable/_format.json 組態契約並升級 @desc(...) 欄位說明",
+      "commit": "808d156b1412f464de01a52a3be2bd6343821204"
+    },
+    "1.0.3.2": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.5.1, <1.2.7.0"
+      },
+      "sha256": "ccbc6bcc3e4d9d5fbbe29919a1fae36b46358f17477336fd946cf7dea20a8ba4",
+      "type": "hotfix",
+      "urgency": "critical",
+      "summary": "修復 Master 自我重啟移交序列、Worker close_fds 隔離與日誌輪替偏移量重置",
+      "commit": "f3f2ad7ed3bb84cd64ff7babfb3588e9268a5c3c"
+    },
+    "1.0.4.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.6.0, <1.2.7.0"
+      },
+      "sha256": "2b817501c0e2655a2eb4934b8f30573b46737796d9f128e85db90ff394f63a15",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 server.touch_activity() 與 POST /api/touch 背景服務保活 API 並將預設閒置逾時提高至 1800 秒",
+      "commit": "f2805bcad3f625369c59ab35be5a863fa725b295"
+    },
+    "1.0.4.1": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.0"
+      },
+      "sha256": "b7ffc773cd8c45ee03f63b2fcdd64e7fd938b05ca07c8dadd9aab852f7ad88f6",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "WarmWorker.pre_warm 對齊 core.platform 統一 sys.path 注入與五大語意空間組態指引",
+      "commit": "5cf22b3de285edc7c9dd58f82754db1ed8efed5a"
+    },
+    "1.0.4.2": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.1"
+      },
+      "sha256": "20f3d40671ed74542a8d96c0a070a2243a247b7a16f0dc18267035e039f1ebf4",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "修正 Worker 握手雜訊容錯、WarmWorker 例外串流回傳、UTF-8 編碼注入與 dispatch 路徑校驗",
+      "commit": "a1c77be4daf60cdd0a8b6d61a70d8d01ebfcab0e"
+    },
+    "1.0.4.3": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.2"
+      },
+      "sha256": "cf973bc6fbd1d5463fb1f60051cd352d4bb8301c6f072e64707f015e4b76bae3",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "master Worker PID 區域變數快照讀取、watcher 鎖探測移入差異分支與註解純化",
+      "commit": "699fd5c166d49aa90021c9381a13f63863d68d58"
+    },
+    "1.0.4.4": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.3"
+      },
+      "sha256": "d7fedac3176ae55ba92d5a5da8286ecc4dfacac2f2ff6caeca1ac8f4086ebbc2",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "修正 stop 強殺後立即歸檔日誌、強化 Master/Worker IPC 生命週期與併發防護",
+      "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
+    },
+    "1.0.4.5": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.7.3"
+      },
+      "sha256": "37bf14055ae1926313f3b7187ee6010a08249008a1a7c233626496a4242a4c2e",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "WarmWorker 初始化預先固化 YSCB_ROOT_DIR 與 YSCB_HOST_DIR 環境變數"
+    },
+    "1.0.5.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.8.0"
+      },
+      "sha256": "5936a246fee59816b223cf51d14fb32b84ab277ee92937abe8f23d171877867b",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "解耦控制、派發與背景服務執行平面、新增 Worker 記憶體水位健康監控與自動回收、整合檔案空間背景監聽服務"
+    },
+    "1.0.5.1": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.8.0"
+      },
+      "sha256": "b743beb7fb1e01dd0777a934dcdc08d2cf570a659c6e56df34e0fc38e76dd524",
+      "type": "refactor",
+      "urgency": "recommended",
+      "summary": "重構背景守護行程通訊管道為單一讀取執行緒多工分派，修復二進位封包標頭溢位與熱重載執行緒競態問題"
+    },
+    "1.0.5.2": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.8.0"
+      },
+      "sha256": "0aa955ef17574465dd72a316dea234e4be83ac535529f9fcc6c4f723d1974b6f",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "對齊背景工作行程預熱階段之虛擬工作目錄，消除首次啟動預熱阻塞"
+    },
+    "1.0.6.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.9.0"
+      },
+      "sha256": "a1a04b35d03acba331205295e5e3b35fb0de062453aa1cf0d58bfb5afba9d292",
+      "type": "feature",
+      "urgency": "recommended",
+      "summary": "新增 /api/cancel 斷線協作取消機制、背景服務前景讓渡與 CoreSpaceWatcher 單重試鎖讓渡，並修復熱重載預熱執行緒競態"
+    },
+    "1.0.7.0": {
+      "status": "pruned",
+      "dependencies": {
+        "core": ">=1.2.10.0"
+      },
+      "sha256": "263e7ad063bd261b0ac7251cd4d0d79c582408ae758f90d326c29ac50c08f9f7",
+      "type": "bugfix",
+      "urgency": "recommended",
+      "summary": "新增 Worker 派發逾時自癒、移除預熱鎖競爭、加固 Inotify 防崩潰與多空間批次沖刷"
+    },
+    "1.0.7.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.10.0"
+      },
+      "sha256": "b8c6cd04fb4ad8fdd69b2d2d58000e50644ca042bb329c1ee067cb8be99dc25f",
+      "type": "hotfix",
+      "urgency": "recommended",
+      "summary": "移出 SpaceWatcher 鎖內廣播、隔離 Worker stderr 句柄並新增任務靜默斷路回收"
+    }
+  }
+}
