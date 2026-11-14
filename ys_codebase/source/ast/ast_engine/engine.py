@@ -876,15 +876,20 @@ class ASTEngine:
                 self._atomic_write_meta(meta_payload)
             except Exception as exc:
                 log_debug(f"Failed writing AST meta index: {exc}")
-        if seq == 0 or seq == self._bg_persist_seq:
-            if self.symbols_index_path.exists():
-                self._symbols_mtime = self.symbols_index_path.stat().st_mtime
-            if self.graph_index_path.exists():
-                self._graph_mtime = self.graph_index_path.stat().st_mtime
+        with self._bg_persist_lock:
+            if seq == 0 or seq == self._bg_persist_seq:
+                if self.symbols_index_path.exists():
+                    self._symbols_mtime = self.symbols_index_path.stat().st_mtime
+                if self.graph_index_path.exists():
+                    self._graph_mtime = self.graph_index_path.stat().st_mtime
 
     def _run_bg_persist_loop(self) -> None:
         while True:
             time.sleep(0.05)
+            with self._bg_persist_lock:
+                if self._bg_persist_pending is None:
+                    self._bg_persist_running = False
+                    return
             try:
                 if is_foreground_active():
                     continue
@@ -1590,151 +1595,149 @@ class ASTEngine:
         2. Relink dirty call sites and reconnect preserved external incoming edges.
         3. Increment `ast_generation`, align cursor, and atomically persist `ASTSnapshot` and `CallGraphIndex`.
         """
-        from core.platform.lock import InterProcessLock
-
+        # Disk load and disk persistence acquire .ast_index.lock internally; avoid holding the file lock
+        # across Copy-on-Write parsing or cursor alignment to prevent lock-order inversions.
         with self._lock:
-            lock_file = str(self._resolve_index_lock_path())
-            with InterProcessLock(lock_file, timeout=15.0):
-                if not self._ensure_loaded_from_disk():
-                    return self.build_index(spaces=spaces, allow_parallel=False)
+            if not self._ensure_loaded_from_disk():
+                return self.build_index(spaces=spaces, allow_parallel=False)
 
-                assert self._snapshot is not None
-                assert self._graph is not None
+            assert self._snapshot is not None
+            assert self._graph is not None
 
-                detail = self._coerce_diff_detail(diff_detail)
-                if not detail.dirty_files and not detail.deleted:
-                    return self._snapshot
+            detail = self._coerce_diff_detail(diff_detail)
+            if not detail.dirty_files and not detail.deleted:
+                return self._snapshot
 
-                # True Copy-on-Write clones: keep self._snapshot and self._graph untouched until atomic publication
-                orig_snap_ref = self._snapshot
-                if self._graph.workspace_graph is not None:
-                    self._last_workspace_graph = self._graph.workspace_graph
-                working_snap = ASTSnapshot(
-                    ast_generation=orig_snap_ref.ast_generation,
-                    space_generations=dict(orig_snap_ref.space_generations),
-                    symbols=dict(orig_snap_ref.symbols),
-                    file_to_symbol_ids={k: list(v) for k, v in orig_snap_ref.file_to_symbol_ids.items()},
-                    files_map={k: list(v) for k, v in orig_snap_ref.files_map.items()},
-                    created_at=orig_snap_ref.created_at,
-                    file_graphs=dict(orig_snap_ref.file_graphs),
-                    schema_version=2,
-                    config_hash=self._compute_ast_config_hash(),
-                )
-                working_graph = self._graph.clone_shallow()
+            # True Copy-on-Write clones: keep self._snapshot and self._graph untouched until atomic publication
+            orig_snap_ref = self._snapshot
+            if self._graph.workspace_graph is not None:
+                self._last_workspace_graph = self._graph.workspace_graph
+            working_snap = ASTSnapshot(
+                ast_generation=orig_snap_ref.ast_generation,
+                space_generations=dict(orig_snap_ref.space_generations),
+                symbols=dict(orig_snap_ref.symbols),
+                file_to_symbol_ids={k: list(v) for k, v in orig_snap_ref.file_to_symbol_ids.items()},
+                files_map={k: list(v) for k, v in orig_snap_ref.files_map.items()},
+                created_at=orig_snap_ref.created_at,
+                file_graphs=dict(orig_snap_ref.file_graphs),
+                schema_version=2,
+                config_hash=self._compute_ast_config_hash(),
+            )
+            working_graph = self._graph.clone_shallow()
 
-                prog = ProgressReporter("ast", "正在增量熱修補 AST 圖譜", total_stages=2)
-                dirty_est = len(detail.dirty_files) + len(detail.deleted)
-                self._set_build_progress(True, "hot_patching", f"增量修補 {dirty_est} 個變更檔案")
-                persisted = False
+            prog = ProgressReporter("ast", "正在增量熱修補 AST 圖譜", total_stages=2)
+            dirty_est = len(detail.dirty_files) + len(detail.deleted)
+            self._set_build_progress(True, "hot_patching", f"增量修補 {dirty_est} 個變更檔案")
+            persisted = False
+            try:
+                prog.stage(1, "解析變更檔案", 0, max(1, len(detail.dirty_files)))
+                with cell_span("ast.hp_preload"):
+                    target_cfgs = self.bundler._resolve_target_spaces(spaces)
+                    snap_entries_by_space = _preload_snap_entries(self.scanner, target_cfgs)
+                    known_indexed_files = set(working_snap.file_to_symbol_ids.keys()) | set(working_snap.file_graphs.keys())
+
+                with cell_span("ast.hp_evict"):
+                    (
+                        all_new_symbols,
+                        old_doc_ids,
+                        old_symbol_info,
+                        incoming_edges,
+                        dirty_keys,
+                        surviving_sibling_files,
+                    ) = self._evict_dirty_and_reaggregate_partials(
+                        detail,
+                        spaces=spaces,
+                        known_indexed_files=known_indexed_files,
+                        snap_entries_by_space=snap_entries_by_space,
+                        progress_callback=lambda _rel, cur, tot: prog.advance(cur, tot),
+                        target_snap=working_snap,
+                        target_graph=working_graph,
+                    )
+                prog.stage(2, "重連呼叫邊與更新工作區圖譜")
+                with cell_span("ast.hp_relink"):
+                    self._relink_and_reconnect_edges(
+                        detail=detail,
+                        all_new_symbols=all_new_symbols,
+                        old_doc_ids=old_doc_ids,
+                        old_symbol_info=old_symbol_info,
+                        incoming_edges=incoming_edges,
+                        spaces=spaces,
+                        snap_entries_by_space=snap_entries_by_space,
+                        surviving_sibling_files=surviving_sibling_files,
+                        target_snap=working_snap,
+                        target_graph=working_graph,
+                    )
                 try:
-                    prog.stage(1, "解析變更檔案", 0, max(1, len(detail.dirty_files)))
-                    with cell_span("ast.hp_preload"):
-                        target_cfgs = self.bundler._resolve_target_spaces(spaces)
-                        snap_entries_by_space = _preload_snap_entries(self.scanner, target_cfgs)
-                        known_indexed_files = set(working_snap.file_to_symbol_ids.keys()) | set(working_snap.file_graphs.keys())
-
-                    with cell_span("ast.hp_evict"):
-                        (
-                            all_new_symbols,
-                            old_doc_ids,
-                            old_symbol_info,
-                            incoming_edges,
-                            dirty_keys,
-                            surviving_sibling_files,
-                        ) = self._evict_dirty_and_reaggregate_partials(
+                    with cell_span("ast.hp_dirty_fg"):
+                        dirty_fgs, dirty_fg_keys = self.bundler.extract_dirty_file_graphs(
                             detail,
                             spaces=spaces,
                             known_indexed_files=known_indexed_files,
                             snap_entries_by_space=snap_entries_by_space,
-                            progress_callback=lambda _rel, cur, tot: prog.advance(cur, tot),
-                            target_snap=working_snap,
-                            target_graph=working_graph,
                         )
-                    prog.stage(2, "重連呼叫邊與更新工作區圖譜")
-                    with cell_span("ast.hp_relink"):
-                        self._relink_and_reconnect_edges(
-                            detail=detail,
-                            all_new_symbols=all_new_symbols,
-                            old_doc_ids=old_doc_ids,
-                            old_symbol_info=old_symbol_info,
-                            incoming_edges=incoming_edges,
-                            spaces=spaces,
-                            snap_entries_by_space=snap_entries_by_space,
-                            surviving_sibling_files=surviving_sibling_files,
-                            target_snap=working_snap,
-                            target_graph=working_graph,
-                        )
-                    try:
-                        with cell_span("ast.hp_dirty_fg"):
-                            dirty_fgs, dirty_fg_keys = self.bundler.extract_dirty_file_graphs(
-                                detail,
-                                spaces=spaces,
-                                known_indexed_files=known_indexed_files,
-                                snap_entries_by_space=snap_entries_by_space,
+                        dirty_fg_norm = normalize_dirty_paths(dirty_fg_keys | dirty_keys)
+                        for fg_key in list(working_snap.file_graphs.keys()):
+                            if is_dirty_file_match(fg_key, dirty_fg_norm):
+                                working_snap.file_graphs.pop(fg_key, None)
+                        working_snap.file_graphs.update(dirty_fgs)
+                        working_graph.attach_file_graphs(working_snap.file_graphs)
+                    if _hydrate_workspace_graph and working_snap.file_graphs:
+                        with cell_span("ast.hp_ws_link"):
+                            ws_linker = WorkspaceGraphLinker(
+                                file_graphs=working_snap.file_graphs.values(),
+                                language_configs=self.parser_registry.language_configs,
+                                module_resolvers=self.parser_registry.module_resolvers,
+                                edge_refiners=self.parser_registry.edge_refiners,
+                                prev_workspace_graph=self._last_workspace_graph,
                             )
-                            dirty_fg_norm = normalize_dirty_paths(dirty_fg_keys | dirty_keys)
-                            for fg_key in list(working_snap.file_graphs.keys()):
-                                if is_dirty_file_match(fg_key, dirty_fg_norm):
-                                    working_snap.file_graphs.pop(fg_key, None)
-                            working_snap.file_graphs.update(dirty_fgs)
-                            working_graph.attach_file_graphs(working_snap.file_graphs)
-                        if _hydrate_workspace_graph and working_snap.file_graphs:
-                            with cell_span("ast.hp_ws_link"):
-                                ws_linker = WorkspaceGraphLinker(
-                                    file_graphs=working_snap.file_graphs.values(),
-                                    language_configs=self.parser_registry.language_configs,
-                                    module_resolvers=self.parser_registry.module_resolvers,
-                                    edge_refiners=self.parser_registry.edge_refiners,
-                                    prev_workspace_graph=self._last_workspace_graph,
-                                )
-                                ws_graph = ws_linker.link_workspace()
-                                working_graph.workspace_graph = ws_graph
-                                self._last_workspace_graph = ws_graph
-                        else:
-                            working_graph.workspace_graph = None
-                    except Exception as ws_exc:
-                        log_debug(f"FileSymbolGraph update in hot_patch_index skipped: {ws_exc}")
+                            ws_graph = ws_linker.link_workspace()
+                            working_graph.workspace_graph = ws_graph
+                            self._last_workspace_graph = ws_graph
+                    else:
+                        working_graph.workspace_graph = None
+                except Exception as ws_exc:
+                    log_debug(f"FileSymbolGraph update in hot_patch_index skipped: {ws_exc}")
 
-                    with cell_span("ast.hp_space_gens"):
-                        space_gens, files_map = self._collect_space_generations_and_files_map(
-                            spaces=spaces, incremental_detail=detail, target_snap=working_snap
-                        )
-                    self.bundler.clear_transient_caches()
-                    working_snap.ast_generation += 1
-                    working_snap.space_generations.update(space_gens)
-                    working_snap.files_map.update(files_map)
-                    if not working_snap.file_to_symbol_ids:
-                        working_snap.file_to_symbol_ids = self._build_file_to_symbol_ids(working_snap.symbols)
-                    working_snap.created_at = time.time()
+                with cell_span("ast.hp_space_gens"):
+                    space_gens, files_map = self._collect_space_generations_and_files_map(
+                        spaces=spaces, incremental_detail=detail, target_snap=working_snap
+                    )
+                self.bundler.clear_transient_caches()
+                working_snap.ast_generation += 1
+                working_snap.space_generations.update(space_gens)
+                working_snap.files_map.update(files_map)
+                if not working_snap.file_to_symbol_ids:
+                    working_snap.file_to_symbol_ids = self._build_file_to_symbol_ids(working_snap.symbols)
+                working_snap.created_at = time.time()
 
-                    with cell_span("ast.hp_save"):
-                        self._save_snapshot_and_graph(
-                            working_snap,
-                            working_graph,
-                            allow_async_in_worker=True,
-                        )
-                    persisted = True
-                    if not _cursor_already_consumed:
-                        self._align_consumer_cursors(spaces=spaces)
-                    prog.finish(f"AST 增量熱修補完成 (變更 {len(dirty_keys)} 項)")
-                    return self._snapshot
-                except Exception as exc:
+                with cell_span("ast.hp_save"):
+                    self._save_snapshot_and_graph(
+                        working_snap,
+                        working_graph,
+                        allow_async_in_worker=True,
+                    )
+                persisted = True
+                if not _cursor_already_consumed:
+                    self._align_consumer_cursors(spaces=spaces)
+                prog.finish(f"AST 增量熱修補完成 (變更 {len(dirty_keys)} 項)")
+                return self._snapshot
+            except Exception as exc:
+                self._snapshot = None
+                self._graph = None
+                self._symbols_mtime = 0.0
+                self._graph_mtime = 0.0
+                log_warn(f"Hot-patch failed ({exc}), falling back to full build_index.", stream="stderr")
+                rebuilt = self.build_index(spaces=spaces, allow_parallel=False)
+                persisted = True
+                return rebuilt
+            finally:
+                if not persisted:
                     self._snapshot = None
                     self._graph = None
                     self._symbols_mtime = 0.0
                     self._graph_mtime = 0.0
-                    log_warn(f"Hot-patch failed ({exc}), falling back to full build_index.", stream="stderr")
-                    rebuilt = self.build_index(spaces=spaces, allow_parallel=False)
-                    persisted = True
-                    return rebuilt
-                finally:
-                    if not persisted:
-                        self._snapshot = None
-                        self._graph = None
-                        self._symbols_mtime = 0.0
-                        self._graph_mtime = 0.0
-                    self.bundler.clear_transient_caches()
-                    self._set_build_progress(False)
+                self.bundler.clear_transient_caches()
+                self._set_build_progress(False)
 
 
     def ensure_jit_synced(

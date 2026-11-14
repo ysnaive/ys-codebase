@@ -1047,6 +1047,15 @@ class IndexingPipeline:
         於 `self._index_lock` 與 `ExitStack` 交易保護下，保持所有目標空間之 `consume_ctx` 開啟，
         直到 `hot_patch_unified_index` 或 `build_unified_index` 完成落盤後才一次性 ACK 空間游標。
         """
+        if consume_fn is None and getattr(self, "ast_engine", None) is not None:
+            # Enforce lock ordering: sync ASTEngine before acquiring cursor_knowledge-db.
+            try:
+                self.ast_engine.ensure_jit_synced(allow_parallel=False)
+            except TaskCancelledError:
+                raise
+            except Exception as exc:
+                log_debug(f"Pre-sync ASTEngine before KDB cursor batch skipped: {exc}")
+
         with self._write_serial_lock:
             indices_dir = self.get_indices_dir()
             bin_file = indices_dir / "unified.index.bin.gz"

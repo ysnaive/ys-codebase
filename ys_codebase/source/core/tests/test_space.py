@@ -1663,6 +1663,100 @@ class TestCoreSpaceAtomicEngine(YSCBTestCase):
         self.assertFalse(any(p.endswith("keep.py") for p in diff_res.deleted), diff_res.deleted)
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_cursor_store_isolated_consumer_locks_and_tombstone_prune_concurrency(self) -> None:
+        """Verify distinct consumer batch locks and tombstone pruning execute concurrently without AB-BA deadlock."""
+        import threading
+
+        conc_dir = self.proj_root / "conc_src"
+        conc_dir.mkdir(parents=True, exist_ok=True)
+        keep_f = conc_dir / "keep.py"
+        del_f = conc_dir / "gone.py"
+        keep_f.write_text("VAL = 0\n", encoding="utf-8")
+        del_f.write_text("GONE = 1\n", encoding="utf-8")
+
+        self._write_module_core_contrib(
+            "core",
+            {
+                "spaces": {
+                    "conc_sp": {
+                        "entries": ["project://conc_src"],
+                        "include": ["*.py"],
+                        "exclude": [],
+                    }
+                }
+            },
+        )
+        reg = SpaceRegistry(project_root=self.proj_root, yscb_dir=self.yscb_root)
+        sc = SpaceScanner(registry=reg)
+        sc.scan("core/conc_sp")
+        del_f.unlink()
+        sc.scan("core/conc_sp")
+
+        for i in range(66):
+            keep_f.write_text(f"VAL = {i + 1}\n", encoding="utf-8")
+            sc.patch_files("core/conc_sp", [keep_f])
+
+        kdb_entered = threading.Event()
+        ast_done_while_kdb_held = threading.Event()
+        errors: list = []
+
+        def _kdb_holder() -> None:
+            try:
+                with sc.cursor_store.batch_cursor_updates("knowledge-db"):
+                    kdb_entered.set()
+                    self.assertTrue(ast_done_while_kdb_held.wait(timeout=3.0))
+                    sc.cursor_store.set_cursor("core/conc_sp", "knowledge-db", 10)
+            except Exception as exc:
+                errors.append(exc)
+
+        def _ast_worker() -> None:
+            try:
+                self.assertTrue(kdb_entered.wait(timeout=3.0))
+                with sc.cursor_store.batch_cursor_updates("ast"):
+                    sc.cursor_store.set_cursor("core/conc_sp", "ast", 10)
+                ast_done_while_kdb_held.set()
+            except Exception as exc:
+                errors.append(exc)
+
+        t1 = threading.Thread(target=_kdb_holder, daemon=True)
+        t2 = threading.Thread(target=_ast_worker, daemon=True)
+        t1.start()
+        t2.start()
+        t1.join(timeout=4.0)
+        t2.join(timeout=4.0)
+        self.assertEqual(errors, [])
+        self.assertTrue(ast_done_while_kdb_held.is_set())
+
+        def _scanner_worker() -> None:
+            try:
+                for step in range(15):
+                    keep_f.write_text(f"VAL = {100 + step}\n", encoding="utf-8")
+                    sc.patch_files("core/conc_sp", [keep_f])
+            except Exception as exc:
+                errors.append(exc)
+
+        def _cursor_spammer(cid: str) -> None:
+            try:
+                for step in range(25):
+                    with sc.cursor_store.batch_cursor_updates(cid):
+                        sc.cursor_store.set_cursor("core/conc_sp", cid, 20 + step)
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=_scanner_worker, daemon=True),
+            threading.Thread(target=_cursor_spammer, args=("knowledge-db",), daemon=True),
+            threading.Thread(target=_cursor_spammer, args=("ast",), daemon=True),
+        ]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(timeout=5.0)
+            self.assertFalse(th.is_alive())
+        self.assertEqual(errors, [])
+        self.mark_passed()
+
 
 if __name__ == "__main__":
     unittest.main()

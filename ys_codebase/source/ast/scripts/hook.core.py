@@ -227,7 +227,7 @@ def on_file_space_changed(
 
     if not has_explicit_engine and s_dir is None and p_root is None:
         try:
-            from core.context import get_runtime_context, is_foreground_active
+            from core.context import get_env, get_runtime_context, is_foreground_active
 
             rt_ctx = get_runtime_context()
             if is_foreground_active():
@@ -249,6 +249,15 @@ def on_file_space_changed(
                         "patched_count": 0,
                         "to_generation": 0,
                     }
+            # In WarmWorker broadcasts, defer incremental AST patching to pull-based JIT sync on query
+            # instead of holding engine._lock on the space-watcher callback thread.
+            if get_env("YSCB_IN_SERVER_WORKER") == "1":
+                return {
+                    "status": "noop",
+                    "ast_generation": _get_current_ast_generation(engine),
+                    "patched_count": 0,
+                    "to_generation": 0,
+                }
         except Exception:
             pass
 

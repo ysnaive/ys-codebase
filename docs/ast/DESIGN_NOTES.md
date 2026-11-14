@@ -17,7 +17,7 @@ related_docs:
   - "./README.md"
   - "../core/DESIGN_NOTES.md"
   - "../knowledge-db/DESIGN_NOTES.md"
-last_updated: "2026-11-10"
+last_updated: "2026-11-14"
 ---
 
 # ast 設計決策與工程妥協手冊 (Design Notes)
@@ -41,6 +41,7 @@ last_updated: "2026-11-10"
 | **DN-AST-08** | `unified.meta.json` 無鎖 $O(1)$ `status` 快讀、單檔 `outline` 非阻塞提取與同進程 Worker 單點讓渡 | `engine.py`, `bundler.py`, `hook.core.py` | 🚨 CRITICAL |
 | **DN-AST-09** | 單檔 `slice_part("<rel_path>::<fqn>")` $O(1)$ 免建圖快速路徑、`.ast_build_state.json` 建置探針與 `stderr` 進度回饋 | `engine.py`, `bundler.py`, `linker.py`, `io_utils.py` | ⚠️ WARNING |
 | **DN-AST-10** | `GrammarProvisioner` 跨進程鎖逾時對齊、`ASTSnapshot` 組態指紋、CoW 快照與按需水合圖譜持久化 | `provisioner.py`, `schema.py`, `graph.py`, `bundler.py`, `engine.py` | 🚨 CRITICAL |
+| **DN-AST-11** | Worker 廣播旁路守門、`.ast_index.lock` 純磁碟收斂、Windows `ProcessPool` 停用與 `TreeSitterDriver._cache_lock` 序列化 | `hook.core.py`, `engine.py`, `bundler.py`, `treesitter.py` | 🚨 CRITICAL |
 
 ---
 
@@ -171,3 +172,19 @@ last_updated: "2026-11-10"
 - **工程妥協與解法**：
   1. **`timeout_sec=60.0` 嚴格鎖守門與離線負快取 TTL**：`_provision_lock` 對齊 `InterProcessLock.acquire(blocking=True, timeout_sec=60.0)`，未獲鎖立即中止安裝；離線安裝失敗寫入 `provision_failed.json`（預設 TTL `3600s`），跨進程消除重複重試。
   2. **`config_hash` 指紋、CoW 快照更新與水合圖譜落盤**：`SpaceScanner.diff()` 於 `config_hash` 變更且 `orig_from_gen > 0` 時比對舊快照列出新排除之 `deleted` 檔案；`ASTSnapshot` 持久化 `schema_version` 與 `config_hash`，`hot_patch_index` 以淺拷貝字典建立新快照保護無鎖讀者，且 `get_workspace_graph()` 首次水合後立即在 `.ast_index.lock` 保護下持久化 `call_graph.pkl.gz` 與 `unified.meta.json`。
+
+---
+
+### [DN-AST-11] Worker 廣播旁路守門、`.ast_index.lock` 純磁碟收斂、Windows `ProcessPool` 停用與 `TreeSitterDriver._cache_lock` 序列化
+
+- **背景與根因**：
+  1. 在 `server` Warm Worker（`YSCB_IN_SERVER_WORKER=1`）環境若無常駐 `knowledge-db` Worker 時，事件廣播執行緒（如 `CoreSpaceWatcherService`）呼叫 `on_file_space_changed` 會同步搶佔 `ASTEngine._lock`，與前景熱派發或背景掃描形成鎖競爭甚至死鎖；同時 `hot_patch_index` 若以跨進程 `.ast_index.lock` 全程包裹 `SymbolExtractor` 解析，會在多進程 CLI 併發查詢期間序列化並觸發跨進程阻塞。
+  2. `_run_bg_persist_loop` 若先檢查 `is_foreground_active()` 再判斷 `_bg_persist_pending is None`，於無待持久化工作且前景任務活躍時會陷入 busy-wait 空轉；Windows 下 `ProcessPoolExecutor` 冷啟動易受匯入與句柄複製拖累卡死；且 Tree-sitter `QueryCursor` 與底層 C `Node` 若跨執行緒無鎖共讀同一個 `Tree` 或被 GC 回收，將產生記憶體存取競態。
+- **工程妥協與解法**：
+  1. **Worker 廣播旁路**：[hook.core.py](../../ys_codebase/source/ast/scripts/hook.core.py) 於 `on_file_space_changed` 偵測 `get_env("YSCB_IN_SERVER_WORKER") == "1"` 且無活躍 KDB Worker 時直接回傳 `"noop"`，改由前景/KDB JIT 拉取補齊增量。
+  2. **鎖粒度收斂與空轉根除**：`ASTEngine.hot_patch_index` 移除外層 `InterProcessLock` 包裹，僅於 `_ensure_loaded_from_disk()` 與 `_persist_snapshot_and_graph_to_disk()` 持有 `.ast_index.lock`；`_run_bg_persist_loop` 先檢核 `_bg_persist_pending is None` 再讓位前景任務，並在 `self._bg_persist_lock` 內更新 `_symbols_mtime` / `_graph_mtime`。
+  3. **Windows 執行緒退避與 Tree-sitter 序列化**：`bundle_union` 於 `os.name == "nt"` 停用 `ProcessPoolExecutor` 平行解析；`TreeSitterDriver._get_parsed_unit` 快取保留 `"tree": tree` 防止 C 物件提前釋放，並以 `self._cache_lock` 全程包覆 `parse`、`extract_call_sites` 與 `extract_file_graph`。
+
+> [!CAUTION]
+> 嚴禁在 `_run_bg_persist_loop` 將 `is_foreground_active()` 移至 `_bg_persist_pending is None` 檢查之前，否則背景執行緒將在前景任務期間持續空轉燒毀 CPU；亦嚴禁移除 `TreeSitterDriver` 的 `"tree"` 快取參照與 `self._cache_lock` 包裹，否則多執行緒查詢將因無鎖並發走訪 C `Tree`/`Node` 而引發崩潰或卡死。
+

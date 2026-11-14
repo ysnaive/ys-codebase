@@ -1110,3 +1110,90 @@ class TestProvisionerAndJit(ASTTestCase):
         self.assertEqual(len(g_clone.get_call_sites("a", "b")), 2)
         self.assertEqual(g_clone.ast_generation, 7)
         self.mark_passed()
+
+    @require(Requirement.LOGIC)
+    def test_concurrent_callers_outline_and_worker_hook_no_deadlock(self) -> None:
+        """Verify concurrent callers/outline, TreeSitter driver parsing, and worker-mode hook callbacks never deadlock."""
+        from core.context import bind_runtime_context
+
+        proj_dir = self.temp_dir / "conc_ast_proj"
+        pkg_dir = proj_dir / "pkg"
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        helper_py = pkg_dir / "helper.py"
+        caller_py = pkg_dir / "caller.py"
+        helper_py.write_text("def target_fn(v: int) -> int:\n    return v + 1\n", encoding="utf-8")
+        caller_py.write_text(
+            "from pkg.helper import target_fn\n\ndef entry_fn(x: int) -> int:\n    return target_fn(x)\n",
+            encoding="utf-8",
+        )
+        sp_cfg = SpaceConfig(
+            qualified_name="project/conc_ast",
+            owner="project",
+            short_name="conc_ast",
+            entries=(str(proj_dir),),
+        )
+        engine = ASTEngine(
+            project_root=proj_dir,
+            storage_dir=self.storage_dir,
+            contributes_data={"spaces": {"conc_ast": sp_cfg}},
+        )
+        engine.build_index(allow_parallel=False)
+
+        # In WarmWorker mode, file-space change broadcasts must not block waiting on engine._lock.
+        hook_mod = load_ast_script("scripts/hook.core.py", "ast_hook_core_conc_test")
+        hook_result = {}
+        with engine._lock:
+            with patch("ast_engine.engine.get_engine", return_value=engine), bind_runtime_context(
+                env={"YSCB_IN_SERVER_WORKER": "1"}
+            ):
+                th_hook = threading.Thread(
+                    target=lambda: hook_result.update(hook_mod.on_file_space_changed(spaces=["conc_ast"])),
+                    daemon=True,
+                )
+                th_hook.start()
+                th_hook.join(timeout=2.0)
+                self.assertFalse(th_hook.is_alive())
+        self.assertEqual(hook_result.get("status"), "noop")
+
+        py_driver = engine.parser_registry.get_parser(str(helper_py))
+        errors: list = []
+
+        def _callers_worker() -> None:
+            try:
+                for step in range(8):
+                    caller_py.write_text(
+                        "from pkg.helper import target_fn\n\n"
+                        f"def entry_fn(x: int) -> int:\n    return target_fn(x + {step})\n",
+                        encoding="utf-8",
+                    )
+                    res = engine.callers("target_fn", snippet=False)
+                    self.assertGreaterEqual(res["total_callers"], 1)
+            except Exception as exc:
+                errors.append(exc)
+
+        def _outline_and_parse_worker() -> None:
+            try:
+                src_text = helper_py.read_text(encoding="utf-8")
+                for _ in range(15):
+                    out = engine.outline("pkg/helper.py")
+                    self.assertGreaterEqual(len(out.get("symbols", [])), 1)
+                    if py_driver is not None:
+                        syms = py_driver.parse(str(helper_py), src_text, "conc_ast")
+                        self.assertGreaterEqual(len(syms), 1)
+                        _ = py_driver.extract_call_sites(str(helper_py), src_text, "conc_ast", symbols=syms)
+                        _ = py_driver.extract_file_graph(file_path=str(helper_py), content=src_text, space="conc_ast")
+            except Exception as exc:
+                errors.append(exc)
+
+        workers = [
+            threading.Thread(target=_callers_worker, daemon=True),
+            threading.Thread(target=_outline_and_parse_worker, daemon=True),
+            threading.Thread(target=_outline_and_parse_worker, daemon=True),
+        ]
+        for th in workers:
+            th.start()
+        for th in workers:
+            th.join(timeout=10.0)
+            self.assertFalse(th.is_alive())
+        self.assertEqual(errors, [])
+        self.mark_passed()

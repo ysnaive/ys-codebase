@@ -1,9 +1,9 @@
 # 專案輕量級待辦與技術債帳本 (TODO Ledger)
 
 > 主題：專案輕量級待辦與技術債帳本  
-> 更新日期：2026-11-10  
+> 更新日期：2026-11-14  
 > 狀態：Active  
-> 最後分配編號：25  
+> 最後分配編號：27  
 > 模型：Unknown  
 
 ---
@@ -34,3 +34,13 @@
 - **建立日期**：2026-11-04
 - **目標範疇**：`core, ecosystem modules`
 - **備忘與解法要點**：盤點並正規化 core.events 廣播生命週期與既有事件契約，新增 CLI pre-flight 事件掛鉤供各模組執行前置健康度自檢
+
+### [TODO-26] 修復 Windows 嵌套 ISOLATED_SANDBOX 路徑突破 260 字元 MAX_PATH
+- **建立日期**：2026-11-14
+- **目標範疇**：`ys_codebase/source/dev/dev/testing/sandbox.py`
+- **備忘與解法要點**：當外層已在沙盒內時將 ISOLATED_SANDBOX 分配於外層同級沙盒目錄，消除 shutil.copytree WinError 3
+
+### [TODO-27] 正規化 TestVFS Windows os.readlink 長路徑前綴斷言
+- **建立日期**：2026-11-14
+- **目標範疇**：`ys_codebase/source/core/tests/test_vfs.py`
+- **備忘與解法要點**：test_vfs_open_boundary_guard_lf_newline_and_symlink_copy 剝除 Windows readlink 回傳之長路徑前綴後再比對 outside_dir

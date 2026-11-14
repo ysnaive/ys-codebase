@@ -2,12 +2,7 @@
   "name": "server",
   "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "versions": [
-    "1.0.2.0",
-    "1.0.3.2",
-    "1.0.4.5",
-    "1.0.5.2",
-    "1.0.6.0",
-    "1.0.7.0"
+    "1.0.7.1"
   ],
   "releases": {
     "1.0.0.4": {
@@ -53,7 +48,7 @@
       "commit": "bb329b339e42a3dc551ed69ebc774932b80b9b6b"
     },
     "1.0.2.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.3.0, <1.2.5.0"
       },
@@ -86,7 +81,7 @@
       "commit": "808d156b1412f464de01a52a3be2bd6343821204"
     },
     "1.0.3.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.5.1, <1.2.7.0"
       },
@@ -152,7 +147,7 @@
       "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
     },
     "1.0.4.5": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.3"
       },
@@ -182,7 +177,7 @@
       "summary": "重構背景守護行程通訊管道為單一讀取執行緒多工分派，修復二進位封包標頭溢位與熱重載執行緒競態問題"
     },
     "1.0.5.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.8.0"
       },
@@ -192,7 +187,7 @@
       "summary": "對齊背景工作行程預熱階段之虛擬工作目錄，消除首次啟動預熱阻塞"
     },
     "1.0.6.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.9.0"
       },
@@ -202,7 +197,7 @@
       "summary": "新增 /api/cancel 斷線協作取消機制、背景服務前景讓渡與 CoreSpaceWatcher 單重試鎖讓渡，並修復熱重載預熱執行緒競態"
     },
     "1.0.7.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.10.0"
       },
@@ -210,6 +205,16 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "新增 Worker 派發逾時自癒、移除預熱鎖競爭、加固 Inotify 防崩潰與多空間批次沖刷"
+    },
+    "1.0.7.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.10.0"
+      },
+      "sha256": "3a4fc6e2276711f933b7862b0616f082ff5dbce2290f2d6447d8db2fe8151171",
+      "type": "hotfix",
+      "urgency": "recommended",
+      "summary": "移出 SpaceWatcher 鎖內廣播、隔離 Worker stderr 句柄並新增任務靜默斷路回收"
     }
   }
 }

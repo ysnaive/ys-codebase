@@ -14,7 +14,7 @@ related_docs:
   - "./daemon_architecture.md"
   - "./hot_reload_and_services.md"
   - "./realtime_logging.md"
-last_updated: "2026-11-03"
+last_updated: "2026-11-14"
 ---
 
 # Server 模組工程妥協與防坑邊界 (DESIGN_NOTES.md)
@@ -34,6 +34,7 @@ last_updated: "2026-11-03"
 | **[DN-09]** | 未來擴充 `locales` 在地化字典時之 `core >= 1.2.0` 相依版本連動約束 | `manifest.json`, `contributes/core.json` | Medium |
 | **[DN-10]** | `daemon.lock` 永不刪除（僅刪 `daemon.json`） | `server/master.py`, `scripts/cli.py` | High |
 | **[DN-11]** | 嚴格熱派發於請求已送達後絕不重試 | `core/commands/dispatcher.py` | High |
+| **[DN-14]** | Watcher 鎖外事件廣播、Worker 專用 `stderr` FD 隔離防阻塞與真實輸出靜默斷路器 | `server/space_watcher.py`, `server/worker.py`, `server/master.py` | High |
 
 ---
 
@@ -187,3 +188,19 @@ last_updated: "2026-11-03"
   1. **重入環境守門與客戶端牆鐘防線**：Worker 啟動即標記 `YSCB_IN_SERVER_WORKER=1`；`dispatcher.py` 偵測 `YSCB_IN_SERVER_WORKER == "1"` 或 `YSCB_NO_HOT_DISPATCH == "1"` 時一律旁路熱派發並略過背景更新檢查；同時支援 `{"type": "heartbeat"}` 15 秒心跳幀與 `YSCB_DISPATCH_MAX_WALL_SEC` 客戶端總牆鐘上限。
   2. **專用不可繼承 IPC FD 與請求級 `stdin` 隔離**：實機子進程模式下 `worker_main` 以 `os.dup` 複製專用控制讀寫句柄並設 `os.set_inheritable(..., False)`，隨即將標準 `fd 0/1` 重導向至 `os.devnull`，並於每次 `execute_task` 綁定空 `io.StringIO("")` 作為 `sys.stdin` 及攔截非中斷 `BaseException`。
   3. **兩段式斷線回收、有界佇列與長任務延遲熱重載**：客戶端斷線先送協作式取消，逾 `YSCB_CANCEL_GRACE_SEC`（預設 `5.0s`）仍未收斂則強制 `_kill_worker_locked` 回收進程樹並回傳 `130`；IPC 佇列有界化（`maxsize=512`）、HTTP Server 採 `block_on_close=False` 與 `timeout=10.0`，且當活躍前景任務已運行逾 5 秒時延後 `.modules/` 熱重載至任務結束後執行。
+
+---
+
+### [DN-14] Watcher 鎖外事件廣播、Worker 專用 `stderr` FD 隔離防阻塞與真實輸出靜默斷路器
+- **背景與陷阱**：
+  1. 若 [space_watcher.py](../../ys_codebase/source/server/server/space_watcher.py) 在持有 `self._flush_lock` 期間同步呼叫 `notify_subscribers` 與 `broadcast_file_space_changed`，訂閱端重入查詢或互等（如 AST/KDB 互鎖）將直接凍死 `SpaceWatcher` 沖刷與後續檔案事件派送。
+  2. [worker.py](../../ys_codebase/source/server/server/worker.py) 若僅將標準 `fd 0/1` 導向 `os.devnull` 而未對 `fd 2`（`stderr`）進行不可繼承 `os.dup` 複製與 `devnull` 重導向，在 Windows 下任務期間衍生的背景孫進程會繼承 `proc.stderr` 寫端，導致 Worker 退出後 [master.py](../../ys_codebase/source/server/server/master.py) `_kill_worker_locked` 同步關閉管線時受 `CloseHandle` 阻塞等待孫進程結束。
+  3. 既有的 `15s` 合成 `{"type": "heartbeat"}` 幀若被當作「任務活躍」依據，當 Worker 在背景無聲死鎖時，客戶端與 `MasterSupervisor` 將陷入無限期等待。
+- **工程決策**：
+  1. **Watcher 鎖外廣播**：`_execute_space_flush_batch` 透過 `_changed_out` 收集本次異動 `diffs`，待釋放 `self._flush_lock` 後再執行 `_emit_changed_diffs`（先 `notify_subscribers` 再 `broadcast_file_space_changed`）。
+  2. **`stderr` FD 隔離與 Windows 讀取執行緒收斂順序**：`worker_main` 同步對 `orig_stderr` 執行不可繼承 `os.dup` 包裝供自身 Python `sys.stderr` 寫入，並將底層 `fd 2` 以 `os.dup2(devnull_w, err_fd)` 導向 `os.devnull`；`_kill_worker_locked` 改採先關 `proc.stdin` 並標記 `_yscb_demux_active = False`、入隊 `None` 與 `join(timeout=0.5)` 所有 `_yscb_io_threads`，僅於確認無存活讀取執行緒（或非 Windows）時關閉 `proc.stdout` / `proc.stderr`，杜絕同步 `CloseHandle` 卡死。
+  3. **真實輸出靜默斷路 (`YSCB_WORKER_STALL_TIMEOUT_SEC`)**：`_stream_task_over_worker_pipe` 獨立追蹤僅由真實 Worker 封包推進之 `last_worker_packet_mono`（合成 `heartbeat` 僅更新 `last_emit_mono`）；逾閾值（預設 `120.0s`，可依環境變數/請求覆寫，`<= 0` 停用，否則保底 `max(0.2, val)`）即強殺並標記 `_pending_worker_reload = True` 後回傳失敗訊息。
+
+> [!CAUTION]
+> 嚴禁將 `_emit_changed_diffs` 放回 `SpaceWatcher._flush_lock` 內執行，否則任何事件訂閱者觸及下游服務鎖或重入狀態查詢即會形成 Watcher 全域死鎖；同時嚴禁以合成 `heartbeat` 推進 `last_worker_packet_mono`，否則無聲死鎖將徹底旁路靜默斷路器。
+

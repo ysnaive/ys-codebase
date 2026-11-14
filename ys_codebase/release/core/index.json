@@ -2,16 +2,7 @@
   "name": "core",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "versions": [
-    "1.2.1.2",
-    "1.2.2.0",
-    "1.2.3.0",
-    "1.2.4.0",
-    "1.2.5.1",
-    "1.2.6.0",
-    "1.2.7.4",
-    "1.2.8.1",
-    "1.2.9.0",
-    "1.2.10.0"
+    "1.2.10.1"
   ],
   "releases": {
     "1.0.0.0": {
@@ -110,7 +101,7 @@
       "commit": "e2ce33ed31609036e941850cf6a4bff4777fe570"
     },
     "1.2.1.2": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "type": "feature",
       "urgency": "recommended",
@@ -119,7 +110,7 @@
       "commit": "941ffca8160afd970df19a0630e72ae71c267d8e"
     },
     "1.2.2.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "type": "feature",
       "urgency": "recommended",
@@ -128,7 +119,7 @@
       "commit": "00571cffa8e7692b11d14d9abc2d2b8a908c6719"
     },
     "1.2.3.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "type": "bugfix",
       "urgency": "critical",
@@ -137,7 +128,7 @@
       "commit": "7710f36813f446bc33f6f42d3ee660b74a599c8d"
     },
     "1.2.4.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "sha256": "aaff31c39a8dbc37a3ef8074f15aedb53270c5825d4e3f29262e667e1ce2b4f6",
       "type": "bugfix",
@@ -155,7 +146,7 @@
       "commit": "808d156b1412f464de01a52a3be2bd6343821204"
     },
     "1.2.5.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "sha256": "e1814a624686359b5540b26a9d2bb8380ee6078c24dc42a35c052271575d7336",
       "type": "bugfix",
@@ -164,7 +155,7 @@
       "commit": "f3f2ad7ed3bb84cd64ff7babfb3588e9268a5c3c"
     },
     "1.2.6.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "sha256": "36a6ffdedc95a2a111d4e330b7d47463ae830ef1a7d92d01dd7e04f708e4286c",
       "type": "feature",
@@ -209,7 +200,7 @@
       "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
     },
     "1.2.7.4": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "sha256": "88ffac8d99a232ee2c6330498e520c314d93f744b3f16de0218cf44a770eaee2",
       "type": "bugfix",
@@ -225,7 +216,7 @@
       "summary": "內建 core.space 邏輯檔案空間引擎與 fs 指令、新增執行期上下文隔離與跨請求快取機制、統一結構化日誌管線"
     },
     "1.2.8.1": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "sha256": "b9e0c4f6394c9343445879dc97c368e648ed9ed73da3f218070d9a185c2bc119",
       "type": "refactor",
@@ -233,7 +224,7 @@
       "summary": "強化處理序環境變數白名單與日誌遮罩、收斂執行期快取世代失效機制，並整合空間掃描批次走訪與背景服務合約基底"
     },
     "1.2.9.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "sha256": "b4b38fda9f84fc4aa602e8f25c3a5809df1e59934fa603b45ee6636107275636",
       "type": "feature",
@@ -241,12 +232,20 @@
       "summary": "新增 core.file_lock 宣告式唯讀鎖引擎與 VFS 透明穿隧防護、擴充 /readonly 空間合成、新增協作式任務取消 (TaskCancelledError) 與 ProgressReporter 進度回報器"
     },
     "1.2.10.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {},
       "sha256": "bd03ebec581eeb08213c9b6f933339e233fbfff2327aed69fcc847765bfa802d",
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "新增 SpaceScanner 記憶體快照快取、批次相依同步與批次游標提交，支援前景寬限期讓渡與增量重載"
+    },
+    "1.2.10.1": {
+      "status": "active",
+      "dependencies": {},
+      "sha256": "4a5c6f0d7e3d2c1bf1c61473b49241b98453ca01956c8e21c624048ff2f37444",
+      "type": "hotfix",
+      "urgency": "recommended",
+      "summary": "拆分 CursorStore 消費端鎖並收斂為純葉鎖，消除與墓碑清理並發互鎖"
     }
   }
 }

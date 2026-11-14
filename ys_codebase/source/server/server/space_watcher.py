@@ -691,6 +691,13 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         with self._lock:
             return [name for name in cand_qnames if name in self._dirty_spaces]
 
+    def _emit_changed_diffs(
+        self, changed_diffs: List[Tuple[str, ScanDiffResult]]
+    ) -> None:
+        for q_name, diff_res in changed_diffs:
+            notify_subscribers(q_name, diff_res)
+            broadcast_file_space_changed(q_name, diff_res)
+
     def _execute_space_flush_batch(
         self,
         target_spaces: List[str],
@@ -698,6 +705,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         full_rescan_batch: Set[str],
         *,
         error_verb: str = "refreshing dirty space",
+        _changed_out: Optional[List[Tuple[str, ScanDiffResult]]] = None,
     ) -> Dict[str, ScanDiffResult]:
         """
         Shared batch execution helper for `flush_space_now` and `flush_dirty_spaces`.
@@ -753,9 +761,10 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                     self.touch_activity()
                 except Exception:
                     pass
-                for q_name, diff_res in changed_diffs:
-                    notify_subscribers(q_name, diff_res)
-                    broadcast_file_space_changed(q_name, diff_res)
+                if _changed_out is not None:
+                    _changed_out.extend(changed_diffs)
+                else:
+                    self._emit_changed_diffs(changed_diffs)
         finally:
             if not self._stop_event.is_set():
                 self.set_state(self.STATE_READY)
@@ -771,6 +780,8 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
         `<space>` short-name union, `compose` spaces, an iterable of queries, or `None` for all dirty spaces)
         without waiting for the debounce window.
         """
+        changed_diffs: List[Tuple[str, ScanDiffResult]] = []
+        last_dict: Optional[Dict[str, Any]] = None
         with self._flush_lock:
             target_qnames = self._expand_query_to_dirty_qnames(space_query)
             if not target_qnames:
@@ -807,12 +818,15 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                 dirty_batch,
                 full_rescan_batch,
                 error_verb="flushing space immediately",
+                _changed_out=changed_diffs,
             )
-            last_dict: Optional[Dict[str, Any]] = None
             for q_name in active_qnames:
                 if q_name in results:
                     last_dict = results[q_name].to_dict()
-            return last_dict
+        # Broadcast subscribers outside _flush_lock so downstream hooks never invert locks with _flush_lock.
+        if changed_diffs:
+            self._emit_changed_diffs(changed_diffs)
+        return last_dict
 
     def flush_dirty_spaces(self, *, force: bool = False) -> Dict[str, ScanDiffResult]:
         """
@@ -855,6 +869,7 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                     self._deferred_by_lock_count += 1
             return {}
 
+        changed_diffs: List[Tuple[str, ScanDiffResult]] = []
         with self._flush_lock:
             with self._lock:
                 if not self._dirty_spaces:
@@ -881,12 +896,16 @@ class CoreSpaceWatcherServiceWorker(BaseServiceWorker):
                 full_rescan_batch: Set[str] = set(self._full_rescan_spaces)
                 self._full_rescan_spaces.difference_update(target_spaces)
 
-            return self._execute_space_flush_batch(
+            results = self._execute_space_flush_batch(
                 target_spaces,
                 dirty_batch,
                 full_rescan_batch,
                 error_verb="refreshing dirty space",
+                _changed_out=changed_diffs,
             )
+        if changed_diffs:
+            self._emit_changed_diffs(changed_diffs)
+        return results
 
     def _resolve_watcher_state_path(self) -> Path:
         if self._state_file_path is not None:

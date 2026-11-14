@@ -2,10 +2,7 @@
   "name": "knowledge-db",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "versions": [
-    "1.2.0.5",
-    "1.2.1.5",
-    "1.2.2.3",
-    "1.2.3.0"
+    "1.2.3.1"
   ],
   "releases": {
     "1.0.0.0": {
@@ -160,7 +157,7 @@
       "commit": "f3f2ad7ed3bb84cd64ff7babfb3588e9268a5c3c"
     },
     "1.2.0.5": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.6.0, <1.2.7.0",
         "file-space": ">=1.0.0.5, <1.0.1.0",
@@ -238,7 +235,7 @@
       "commit": "608340498dca23b5b49c9352494b422f8eedd7a9"
     },
     "1.2.1.5": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.7.3",
         "file-space": ">=1.0.1.4",
@@ -283,7 +280,7 @@
       "summary": "於背景服務預熱略過同步磁碟載入阻塞、加入前景活躍禮讓檢查，並消除增量同步時之重複熱修補呼叫"
     },
     "1.2.2.3": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.9.0",
         "ast": ">=1.1.0.3"
@@ -294,7 +291,7 @@
       "summary": "新增顯式 download_model 離線權重預檢與鎖隔離、複用 AST 快取實現 O(1) status 查詢，並支援分段索引進度回報與任務取消"
     },
     "1.2.3.0": {
-      "status": "active",
+      "status": "pruned",
       "dependencies": {
         "core": ">=1.2.10.0",
         "ast": ">=1.1.1.0"
@@ -303,6 +300,17 @@
       "type": "bugfix",
       "urgency": "recommended",
       "summary": "新增向量模型載入冷卻防抖、執行緒安全寫入序列化與檔案級增量修補自癒保護"
+    },
+    "1.2.3.1": {
+      "status": "active",
+      "dependencies": {
+        "core": ">=1.2.10.0",
+        "ast": ">=1.1.1.0"
+      },
+      "sha256": "2abd0b4d75f33213ca747aec90afc4806c1c7d7318f101bc80c59d62e51b770c",
+      "type": "hotfix",
+      "urgency": "recommended",
+      "summary": "游標批次鎖前先行同步 AST JIT 並防止 Worker 無常駐服務時回落事件執行緒同步索引"
     }
   }
 }

@@ -1395,5 +1395,83 @@ class TestSpaceEventHookAndCacheSync(YSCBTestCase):
         self.assertGreaterEqual(len(flush_calls), 1)
         self.mark_passed()
 
+    @require(Requirement.LOGIC)
+    def test_concurrent_kdb_sync_and_ast_jit_sync_no_abba_deadlock(self) -> None:
+        """Verify concurrent KDB sync_incremental_changes and AST ensure_jit_synced do not AB-BA deadlock."""
+        from core.context import bind_runtime_context
+
+        hook_mod = load_script_module("hook.core.py")
+        with patch.object(hook_mod, "get_active_worker", return_value=None), bind_runtime_context(
+            env={"YSCB_IN_SERVER_WORKER": "1"}
+        ):
+            res_hook = hook_mod.on_file_space_changed(spaces=["kdb_conc"])
+        self.assertEqual(res_hook.get("status"), "noop")
+
+        src_dir = self.root_path / "src_conc_abba"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        alpha_py = src_dir / "alpha.py"
+        beta_py = src_dir / "beta.py"
+        alpha_py.write_text("def target_shared(v: int) -> int:\n    return v\n", encoding="utf-8")
+        beta_py.write_text(
+            "from alpha import target_shared\n\ndef call_shared() -> int:\n    return target_shared(1)\n",
+            encoding="utf-8",
+        )
+        sp = SpaceConfig(
+            qualified_name="project/kdb_conc",
+            owner="project",
+            short_name="kdb_conc",
+            entries=(str(src_dir),),
+        )
+        engine = KnowledgeEngine(
+            project_root=self.root_path,
+            storage_dir=self.root_path / "storage_conc_abba",
+            contributes_data={"spaces": {"kdb_conc": sp}},
+            embedding_mock_mode=True,
+        )
+        engine.pipeline.build_unified_index(force=True, skip_vectors=True)
+        errors: list = []
+
+        def _kdb_worker() -> None:
+            try:
+                for step in range(8):
+                    write_text_and_advance_mtime(
+                        alpha_py,
+                        f"def target_shared(v: int) -> int:\n    return v + {step}\n",
+                    )
+                    res = engine.pipeline.sync_incremental_changes(
+                        space_name="kdb_conc",
+                        allow_parallel=False,
+                        skip_vectors=True,
+                    )
+                    self.assertIn(res["status"], ("patched", "rebuilt", "noop"))
+            except Exception as exc:
+                errors.append(exc)
+
+        def _ast_worker() -> None:
+            try:
+                for step in range(8):
+                    write_text_and_advance_mtime(
+                        beta_py,
+                        "from alpha import target_shared\n\n"
+                        f"def call_shared() -> int:\n    return target_shared({step})\n",
+                    )
+                    snap = engine.ast_engine.ensure_jit_synced(allow_parallel=False)
+                    self.assertIsNotNone(snap)
+                    _ = engine.ast_engine.callers("target_shared", snippet=False)
+            except Exception as exc:
+                errors.append(exc)
+
+        t1 = threading.Thread(target=_kdb_worker, daemon=True)
+        t2 = threading.Thread(target=_ast_worker, daemon=True)
+        t1.start()
+        t2.start()
+        t1.join(timeout=10.0)
+        t2.join(timeout=10.0)
+        self.assertFalse(t1.is_alive())
+        self.assertFalse(t2.is_alive())
+        self.assertEqual(errors, [])
+        self.mark_passed()
+
+
 if __name__ == "__main__":
     unittest.main()

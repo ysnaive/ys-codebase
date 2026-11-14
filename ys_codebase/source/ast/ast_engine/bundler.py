@@ -1444,6 +1444,7 @@ class SemanticBundler:
         in_server_worker = get_env("YSCB_IN_SERVER_WORKER") == "1"
         use_parallel = (
             allow_parallel
+            and os.name != "nt"
             and not in_server_worker
             and total_files >= PARALLEL_BUNDLE_THRESHOLD
             and cpu_cnt > 1

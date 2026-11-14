@@ -434,6 +434,7 @@ class CursorStore:
             else (self._storage_root / "locks")
         )
         self._rlock = threading.RLock()
+        self._consumer_locks: Dict[str, threading.RLock] = {}
         self._mem_cache: Dict[str, Tuple[int, int, Dict[str, Dict[str, Any]]]] = {}
         self._batch_depth: Dict[str, int] = {}
         self._batch_dirty: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -448,15 +449,25 @@ class CursorStore:
             return str(consumer_id.get("id") or next(iter(consumer_id.values()), "default") or "default")
         return str(consumer_id or "default")
 
+    def _get_consumer_lock(self, norm_cid: str) -> threading.RLock:
+        # _rlock stays a strict leaf lock for metadata dicts so distinct consumers never block each other.
+        with self._rlock:
+            lock = self._consumer_locks.get(norm_cid)
+            if lock is None:
+                lock = threading.RLock()
+                self._consumer_locks[norm_cid] = lock
+            return lock
+
     def _consumer_path(self, consumer_id: str) -> Path:
         safe_id = _sanitize_target_key(self._norm_cid(consumer_id))
         return self._cursors_dir / f"{safe_id}.json"
 
     @contextmanager
     def _locked(self, consumer_id: str) -> Iterator[None]:
-        safe_id = _sanitize_target_key(self._norm_cid(consumer_id))
+        norm_cid = self._norm_cid(consumer_id)
+        safe_id = _sanitize_target_key(norm_cid)
         lock_file = self._lock_dir / f"cursor_{safe_id}.lock"
-        with self._rlock:
+        with self._get_consumer_lock(norm_cid):
             with InterProcessLock(str(lock_file), timeout=5.0, reentrant=True):
                 yield
 
@@ -465,33 +476,39 @@ class CursorStore:
         """Coalesce multiple `set_cursor` updates for `consumer_id` into a single atomic JSON write on exit."""
         norm_cid = self._norm_cid(consumer_id)
         with self._locked(norm_cid):
-            depth = self._batch_depth.get(norm_cid, 0)
-            self._batch_depth[norm_cid] = depth + 1
+            with self._rlock:
+                depth = self._batch_depth.get(norm_cid, 0)
+                self._batch_depth[norm_cid] = depth + 1
             try:
                 yield
             finally:
-                rem = max(0, self._batch_depth.get(norm_cid, 1) - 1)
-                if rem > 0:
-                    self._batch_depth[norm_cid] = rem
-                else:
-                    self._batch_depth.pop(norm_cid, None)
-                    pending = self._batch_dirty.pop(norm_cid, None)
-                    if pending is not None:
-                        c_path = self._consumer_path(norm_cid)
-                        c_path.parent.mkdir(parents=True, exist_ok=True)
-                        payload = {
-                            "consumer_id": norm_cid,
-                            "spaces": pending,
-                        }
-                        vfs.write_json(str(c_path), payload, atomic=True)
-                        try:
-                            st = c_path.stat()
-                            self._mem_cache[c_path.as_posix()] = (
-                                int(st.st_mtime_ns),
-                                int(st.st_size),
-                                {k: dict(v) for k, v in pending.items() if isinstance(v, dict)},
-                            )
-                        except OSError:
+                with self._rlock:
+                    rem = max(0, self._batch_depth.get(norm_cid, 1) - 1)
+                    if rem > 0:
+                        self._batch_depth[norm_cid] = rem
+                        pending = None
+                    else:
+                        self._batch_depth.pop(norm_cid, None)
+                        pending = self._batch_dirty.pop(norm_cid, None)
+                if pending is not None:
+                    c_path = self._consumer_path(norm_cid)
+                    c_path.parent.mkdir(parents=True, exist_ok=True)
+                    payload = {
+                        "consumer_id": norm_cid,
+                        "spaces": pending,
+                    }
+                    vfs.write_json(str(c_path), payload, atomic=True)
+                    try:
+                        st = c_path.stat()
+                        snap_cache = (
+                            int(st.st_mtime_ns),
+                            int(st.st_size),
+                            {k: dict(v) for k, v in pending.items() if isinstance(v, dict)},
+                        )
+                        with self._rlock:
+                            self._mem_cache[c_path.as_posix()] = snap_cache
+                    except OSError:
+                        with self._rlock:
                             self._mem_cache.pop(c_path.as_posix(), None)
 
     def load_consumer(self, consumer_id: str = "default") -> Dict[str, Dict[str, Any]]:
@@ -600,9 +617,10 @@ class CursorStore:
                 "updated_at": time.time(),
             }
             norm_cid = self._norm_cid(consumer_id)
-            if self._batch_depth.get(norm_cid, 0) > 0:
-                self._batch_dirty[norm_cid] = spaces
-                return
+            with self._rlock:
+                if self._batch_depth.get(norm_cid, 0) > 0:
+                    self._batch_dirty[norm_cid] = spaces
+                    return
             payload = {
                 "consumer_id": norm_cid,
                 "spaces": spaces,
@@ -610,13 +628,16 @@ class CursorStore:
             vfs.write_json(str(c_path), payload, atomic=True)
             try:
                 st = c_path.stat()
-                self._mem_cache[c_path.as_posix()] = (
+                snap_cache = (
                     int(st.st_mtime_ns),
                     int(st.st_size),
                     {k: dict(v) for k, v in spaces.items() if isinstance(v, dict)},
                 )
+                with self._rlock:
+                    self._mem_cache[c_path.as_posix()] = snap_cache
             except OSError:
-                self._mem_cache.pop(c_path.as_posix(), None)
+                with self._rlock:
+                    self._mem_cache.pop(c_path.as_posix(), None)
 
     def reset_cursor(
         self,
@@ -624,18 +645,24 @@ class CursorStore:
         consumer_id: str = "default",
     ) -> None:
         """Reset cursor for a specific `space_key` or remove the entire consumer cursor file when `space_key` is None."""
+        norm_cid = self._norm_cid(consumer_id)
         with self._locked(consumer_id):
             c_path = self._consumer_path(consumer_id)
             cache_key = c_path.as_posix()
             if not c_path.is_file():
-                self._mem_cache.pop(cache_key, None)
+                with self._rlock:
+                    self._mem_cache.pop(cache_key, None)
+                    if space_key is None:
+                        self._batch_dirty.pop(norm_cid, None)
                 return
             if space_key is None:
                 try:
                     vfs.remove(str(c_path))
                 except Exception:
                     pass
-                self._mem_cache.pop(cache_key, None)
+                with self._rlock:
+                    self._mem_cache.pop(cache_key, None)
+                    self._batch_dirty.pop(norm_cid, None)
                 return
             spaces = self.load_consumer(consumer_id)
             if space_key in spaces:
@@ -648,19 +675,23 @@ class CursorStore:
                     )
                     try:
                         st = c_path.stat()
-                        self._mem_cache[cache_key] = (
+                        snap_cache = (
                             int(st.st_mtime_ns),
                             int(st.st_size),
                             {k: dict(v) for k, v in spaces.items() if isinstance(v, dict)},
                         )
+                        with self._rlock:
+                            self._mem_cache[cache_key] = snap_cache
                     except OSError:
-                        self._mem_cache.pop(cache_key, None)
+                        with self._rlock:
+                            self._mem_cache.pop(cache_key, None)
                 else:
                     try:
                         vfs.remove(str(c_path))
                     except Exception:
                         pass
-                    self._mem_cache.pop(cache_key, None)
+                    with self._rlock:
+                        self._mem_cache.pop(cache_key, None)
 
     def list_consumers(self) -> List[str]:
         """List all persisted consumer IDs on disk."""

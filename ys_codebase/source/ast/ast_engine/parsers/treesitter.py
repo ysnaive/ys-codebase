@@ -856,6 +856,7 @@ class TreeSitterDriver(BaseParser):
                 "c_hash": c_hash,
                 "content_bytes": content_bytes,
                 "lines": lines,
+                "tree": tree,
                 "matches": all_matches,
                 "raw_items": raw_items,
                 "merged_items": merged_items,
@@ -1029,26 +1030,25 @@ class TreeSitterDriver(BaseParser):
                 return MarkdownParser().parse(normalized_path, content, space)
             return self.dialect.fallback_symbols(normalized_path, content.splitlines(), space)
 
-        unit = self._get_parsed_unit(normalized_path, content)
-        if unit is None:
-            return []
-
         with self._cache_lock:
+            unit = self._get_parsed_unit(normalized_path, content)
+            if unit is None:
+                return []
+
             cached_syms = unit["symbols_by_space"].get(space)
             if cached_syms is not None:
                 return [dataclasses.replace(s, metadata=dict(s.metadata)) for s in cached_syms]
 
-        if not unit["raw_items"]:
-            return self.dialect.fallback_symbols(normalized_path, unit["lines"], space)
+            if not unit["raw_items"]:
+                return self.dialect.fallback_symbols(normalized_path, unit["lines"], space)
 
-        merged_copy = self._clone_merged_items(unit["merged_items"])
-        dedup_items, scope_sep = self._build_symbol_hierarchy(merged_copy, normalized_path, space)
-        symbols = self._materialize_unified_symbols(
-            dedup_items, normalized_path, scope_sep, source_bytes=unit["content_bytes"]
-        )
-        with self._cache_lock:
+            merged_copy = self._clone_merged_items(unit["merged_items"])
+            dedup_items, scope_sep = self._build_symbol_hierarchy(merged_copy, normalized_path, space)
+            symbols = self._materialize_unified_symbols(
+                dedup_items, normalized_path, scope_sep, source_bytes=unit["content_bytes"]
+            )
             unit["symbols_by_space"][space] = symbols
-        return [dataclasses.replace(s, metadata=dict(s.metadata)) for s in symbols]
+            return [dataclasses.replace(s, metadata=dict(s.metadata)) for s in symbols]
 
     def extract_call_sites(
         self,
@@ -1072,79 +1072,81 @@ class TreeSitterDriver(BaseParser):
                 return PythonASTParser().extract_call_sites(normalized_path, content, space, symbols=symbols)
             return []
 
-        unit = self._get_parsed_unit(normalized_path, content)
-        if unit is None:
-            return []
-        content_bytes, matches = unit["content_bytes"], unit["matches"]
+        # Serialize access to cached Tree-sitter matches and C Node objects against concurrent parsing.
+        with self._cache_lock:
+            unit = self._get_parsed_unit(normalized_path, content)
+            if unit is None:
+                return []
+            content_bytes, matches = unit["content_bytes"], unit["matches"]
 
-        target_symbols = (
-            symbols if symbols is not None else self.parse(file_path=file_path, content=content, space=space)
-        )
-        sorted_target_symbols = sorted(target_symbols, key=lambda s: (s.end_line - s.line_number))
-        call_sites: List[SymbolCallSite] = []
-
-        for match_elem in matches:
-            captures = match_elem[2] if len(match_elem) == 3 else match_elem[1]
-            name_nodes = captures.get("call.name") or captures.get("name") or []
-            has_call_ref = any(k.startswith("reference.call") or k.startswith("edge.calls") for k in captures)
-            if "call.name" not in captures and not has_call_ref:
-                continue
-            if not name_nodes:
-                continue
-
-            name_node = name_nodes[0]
-            callee_name = name_node.text.decode("utf-8", errors="replace").strip()
-            line_no = name_node.start_point[0] + 1
-
-            prefix = ""
-            call_candidates = (
-                captures.get("call.site")
-                or captures.get("reference.call")
-                or captures.get("edge.calls")
-                or [name_node]
+            target_symbols = (
+                symbols if symbols is not None else self.parse(file_path=file_path, content=content, space=space)
             )
-            call_node = call_candidates[0]
-            if call_node.start_byte < name_node.start_byte:
-                raw_prefix = content_bytes[call_node.start_byte : name_node.start_byte].decode(
-                    "utf-8", errors="replace"
-                ).strip()
-                prefix = self.dialect.normalize_call_receiver(raw_prefix)
+            sorted_target_symbols = sorted(target_symbols, key=lambda s: (s.end_line - s.line_number))
+            call_sites: List[SymbolCallSite] = []
 
-            caller_name = "<module>"
-            caller_sym_id: Optional[str] = None
-            enclosing = next(
-                (
-                    s
-                    for s in sorted_target_symbols
-                    if s.line_number <= line_no <= s.end_line
-                    and s.kind in ("method", "function", "constructor", "property", "class", "struct", "interface")
-                ),
-                None,
-            )
-            if enclosing is not None:
-                if enclosing.kind in ("method", "function", "constructor", "property"):
-                    caller_sym_id = enclosing.id
-                    if enclosing.metadata.get("parent_scope"):
-                        caller_name = f"{enclosing.metadata['parent_scope']}.{enclosing.metadata.get('short_name', enclosing.name)}"
-                    else:
-                        caller_name = enclosing.name
-                elif enclosing.kind in ("class", "struct", "interface"):
-                    caller_sym_id = enclosing.id
-                    caller_name = enclosing.metadata.get("short_name") or enclosing.name
+            for match_elem in matches:
+                captures = match_elem[2] if len(match_elem) == 3 else match_elem[1]
+                name_nodes = captures.get("call.name") or captures.get("name") or []
+                has_call_ref = any(k.startswith("reference.call") or k.startswith("edge.calls") for k in captures)
+                if "call.name" not in captures and not has_call_ref:
+                    continue
+                if not name_nodes:
+                    continue
 
-            call_sites.append(
-                SymbolCallSite(
-                    callee_name=callee_name,
-                    line_number=line_no,
-                    caller_symbol_id=caller_sym_id or "",
-                    caller_member_name=caller_name,
-                    context_prefix=prefix,
-                    file_path=normalized_path,
-                    space=space,
+                name_node = name_nodes[0]
+                callee_name = name_node.text.decode("utf-8", errors="replace").strip()
+                line_no = name_node.start_point[0] + 1
+
+                prefix = ""
+                call_candidates = (
+                    captures.get("call.site")
+                    or captures.get("reference.call")
+                    or captures.get("edge.calls")
+                    or [name_node]
                 )
-            )
+                call_node = call_candidates[0]
+                if call_node.start_byte < name_node.start_byte:
+                    raw_prefix = content_bytes[call_node.start_byte : name_node.start_byte].decode(
+                        "utf-8", errors="replace"
+                    ).strip()
+                    prefix = self.dialect.normalize_call_receiver(raw_prefix)
 
-        return call_sites
+                caller_name = "<module>"
+                caller_sym_id: Optional[str] = None
+                enclosing = next(
+                    (
+                        s
+                        for s in sorted_target_symbols
+                        if s.line_number <= line_no <= s.end_line
+                        and s.kind in ("method", "function", "constructor", "property", "class", "struct", "interface")
+                    ),
+                    None,
+                )
+                if enclosing is not None:
+                    if enclosing.kind in ("method", "function", "constructor", "property"):
+                        caller_sym_id = enclosing.id
+                        if enclosing.metadata.get("parent_scope"):
+                            caller_name = f"{enclosing.metadata['parent_scope']}.{enclosing.metadata.get('short_name', enclosing.name)}"
+                        else:
+                            caller_name = enclosing.name
+                    elif enclosing.kind in ("class", "struct", "interface"):
+                        caller_sym_id = enclosing.id
+                        caller_name = enclosing.metadata.get("short_name") or enclosing.name
+
+                call_sites.append(
+                    SymbolCallSite(
+                        callee_name=callee_name,
+                        line_number=line_no,
+                        caller_symbol_id=caller_sym_id or "",
+                        caller_member_name=caller_name,
+                        context_prefix=prefix,
+                        file_path=normalized_path,
+                        space=space,
+                    )
+                )
+
+            return call_sites
 
     def extract_imports(self, file_path: str, content: str) -> Dict[str, str]:
         if not content:
@@ -1605,50 +1607,49 @@ class TreeSitterDriver(BaseParser):
                 return fg
             return super().extract_file_graph(file_path=normalized_path, content=content, space=space)
 
-        unit = self._get_parsed_unit(normalized_path, content)
-        if unit is None:
-            return FileSymbolGraph(
-                file_path=normalized_path,
-                content_hash=c_hash,
-                language=self.language_name,
-            )
-
         with self._cache_lock:
+            unit = self._get_parsed_unit(normalized_path, content)
+            if unit is None:
+                return FileSymbolGraph(
+                    file_path=normalized_path,
+                    content_hash=c_hash,
+                    language=self.language_name,
+                )
+
             cached_fg = unit["file_graph_by_space"].get(space)
             if cached_fg is not None:
                 return cached_fg
 
-        content_bytes = unit["content_bytes"]
-        matches = unit["matches"]
-        merged_copy = self._clone_merged_items(unit["merged_items"])
-        root_nodes, enriched_items = self._build_recursive_symbol_nodes(
-            merged_items=merged_copy,
-            normalized_path=normalized_path,
-            content_bytes=content_bytes,
-        )
-        edges = self._extract_relation_edges(
-            matches=matches,
-            merged_items=enriched_items,
-            normalized_path=normalized_path,
-            content=content,
-            content_bytes=content_bytes,
-            dialect_imports=unit["dialect_imports"],
-        )
-        graph = FileSymbolGraph(
-            file_path=normalized_path,
-            content_hash=unit["c_hash"],
-            language=self.language_name,
-            root_nodes=root_nodes,
-            outgoing_edges=edges,
-        )
-        for proc in self._processors:
-            try:
-                graph = proc.refine_file_graph(graph, content_bytes)
-            except Exception as exc:
-                log_warn(
-                    f"TreeSitterDriver: SymbolProcessor '{getattr(proc, 'provider_id', proc)}' failed on '{normalized_path}': {exc}",
-                    stream="stderr",
-                )
-        with self._cache_lock:
+            content_bytes = unit["content_bytes"]
+            matches = unit["matches"]
+            merged_copy = self._clone_merged_items(unit["merged_items"])
+            root_nodes, enriched_items = self._build_recursive_symbol_nodes(
+                merged_items=merged_copy,
+                normalized_path=normalized_path,
+                content_bytes=content_bytes,
+            )
+            edges = self._extract_relation_edges(
+                matches=matches,
+                merged_items=enriched_items,
+                normalized_path=normalized_path,
+                content=content,
+                content_bytes=content_bytes,
+                dialect_imports=unit["dialect_imports"],
+            )
+            graph = FileSymbolGraph(
+                file_path=normalized_path,
+                content_hash=unit["c_hash"],
+                language=self.language_name,
+                root_nodes=root_nodes,
+                outgoing_edges=edges,
+            )
+            for proc in self._processors:
+                try:
+                    graph = proc.refine_file_graph(graph, content_bytes)
+                except Exception as exc:
+                    log_warn(
+                        f"TreeSitterDriver: SymbolProcessor '{getattr(proc, 'provider_id', proc)}' failed on '{normalized_path}': {exc}",
+                        stream="stderr",
+                    )
             unit["file_graph_by_space"][space] = graph
-        return graph
+            return graph

@@ -796,12 +796,11 @@ class MasterSupervisor:
             if not terminate_popen_tree(proc, timeout_sec=timeout_sec):
                 self.logger.error(f"Failed to terminate worker process tree (PID: {proc.pid})")
 
-        for pipe in (proc.stdin, proc.stdout, proc.stderr):
-            if pipe:
-                try:
-                    pipe.close()
-                except (OSError, ValueError):
-                    pass
+        if proc.stdin:
+            try:
+                proc.stdin.close()
+            except (OSError, ValueError):
+                pass
         try:
             setattr(proc, "_yscb_demux_active", False)
         except Exception:
@@ -821,12 +820,26 @@ class MasterSupervisor:
             except Exception:
                 pass
         curr_th = threading.current_thread()
-        for io_th in getattr(proc, "_yscb_io_threads", ()) or ():
-            if io_th is not None and io_th is not curr_th and io_th.is_alive():
+        io_threads = [
+            io_th
+            for io_th in (getattr(proc, "_yscb_io_threads", ()) or ())
+            if io_th is not None and io_th is not curr_th
+        ]
+        for io_th in io_threads:
+            if io_th.is_alive():
                 try:
                     io_th.join(timeout=0.5)
                 except Exception:
                     pass
+        any_reader_alive = any(io_th.is_alive() for io_th in io_threads)
+        # Skip closing read pipes on Windows if a reader thread is still blocked in ReadFile on an inherited grandchild handle.
+        if not (sys.platform == "win32" and any_reader_alive):
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe:
+                    try:
+                        pipe.close()
+                    except (OSError, ValueError):
+                        pass
         self._worker_proc = None
         self._active_task_queue = None
         self._warming_since = None
@@ -1146,12 +1159,28 @@ class MasterSupervisor:
         cancel_sent = False
         cancel_sent_mono: Optional[float] = None
         last_emit_mono = time.monotonic()
+        last_worker_packet_mono = last_emit_mono
         import math as _math
         try:
             raw_cg = float(get_env("YSCB_CANCEL_GRACE_SEC", "5.0") or "5.0")
             cancel_grace_sec = max(0.1, raw_cg) if _math.isfinite(raw_cg) else 5.0
         except (TypeError, ValueError):
             cancel_grace_sec = 5.0
+        req_env = req_payload.get("env") if isinstance(req_payload, dict) else None
+        raw_stall = (
+            req_env.get("YSCB_WORKER_STALL_TIMEOUT_SEC")
+            if isinstance(req_env, dict) and req_env.get("YSCB_WORKER_STALL_TIMEOUT_SEC") is not None
+            else get_env("YSCB_WORKER_STALL_TIMEOUT_SEC", "120.0")
+        )
+        try:
+            parsed_stall = float(raw_stall if raw_stall is not None else "120.0")
+            worker_stall_timeout_sec = (
+                max(0.2, parsed_stall)
+                if _math.isfinite(parsed_stall) and parsed_stall > 0
+                else 0.0
+            )
+        except (TypeError, ValueError):
+            worker_stall_timeout_sec = 120.0
         heartbeat_interval_sec = 15.0
 
         while True:
@@ -1194,6 +1223,27 @@ class MasterSupervisor:
                                 self._kill_worker_locked(timeout_sec=0.5)
                         self.logger.error(f"{err_text} during dispatch for module='{target_mod}'")
                         return self._emit_task_failure(chunk_emitter, err_text)
+                    # Only real packets from the worker advance last_worker_packet_mono; synthetic heartbeats
+                    # do not suppress stall detection when a worker deadlocks silently.
+                    if (
+                        worker_stall_timeout_sec > 0
+                        and not cancel_sent
+                        and (now_m - last_worker_packet_mono) >= worker_stall_timeout_sec
+                    ):
+                        stall_msg = (
+                            f"Worker task for module='{target_mod}' (task_id={task_id}) stalled without worker output "
+                            f"for {worker_stall_timeout_sec:.1f}s; force-recycling worker."
+                        )
+                        self.logger.warning(stall_msg)
+                        try:
+                            setattr(proc, "_yscb_demux_active", False)
+                        except Exception:
+                            pass
+                        with self._worker_lock:
+                            if self._worker_proc is proc:
+                                self._kill_worker_locked(timeout_sec=1.0)
+                                self._pending_worker_reload = True
+                        return self._emit_task_failure(chunk_emitter, stall_msg)
                     if not cancel_sent and (now_m - last_emit_mono) >= heartbeat_interval_sec:
                         chunk_emitter({"type": "heartbeat", "ts": time.time()})
                         last_emit_mono = now_m
@@ -1207,9 +1257,10 @@ class MasterSupervisor:
                     self.logger.error(f"{err_text} during dispatch for module='{target_mod}'")
                     return self._emit_task_failure(chunk_emitter, err_text)
 
+                last_worker_packet_mono = time.monotonic()
                 if not cancel_sent:
                     chunk_emitter(packet)
-                    last_emit_mono = time.monotonic()
+                    last_emit_mono = last_worker_packet_mono
 
                 if packet.get("type") == "task_finish":
                     if "services" in packet and isinstance(packet["services"], list):

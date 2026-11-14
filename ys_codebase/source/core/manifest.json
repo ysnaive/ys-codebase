@@ -1,6 +1,6 @@
 {
   "name": "core",
-  "version": "1.2.10.0",
+  "version": "1.2.10.1",
   "description": "YS-Codebase Core Infrastructure Module & Package Manager",
   "entry": "scripts/cli.py",
   "dependencies": {},
@@ -24,8 +24,8 @@
     "Explore installed modules: python yscb.py status"
   ],
   "release": {
-    "type": "bugfix",
+    "type": "hotfix",
     "urgency": "recommended",
-    "summary": "新增 SpaceScanner 記憶體快照快取、批次相依同步與批次游標提交，支援前景寬限期讓渡與增量重載"
+    "summary": "拆分 CursorStore 消費端鎖並收斂為純葉鎖，消除與墓碑清理並發互鎖"
   }
 }

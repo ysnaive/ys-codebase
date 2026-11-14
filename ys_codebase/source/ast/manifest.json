@@ -1,7 +1,7 @@
 {
   "id": "ast",
   "name": "ast",
-  "version": "1.1.1.0",
+  "version": "1.1.1.1",
   "description": "YS-Codebase 靜態語法樹、方言隔離、雙層分部符號與呼叫拓撲核心引擎",
   "author": "YSCB Team",
   "entry": "scripts/cli.py",
@@ -38,8 +38,8 @@
     "請執行 `python yscb.py ast callers <symbol>`、`callees <symbol>` 或 `impact <symbol>` 追蹤跨檔案呼叫拓撲與修改影響半徑。"
   ],
   "release": {
-    "type": "feature",
+    "type": "hotfix",
     "urgency": "recommended",
-    "summary": "重構 4-Pass 全域圖譜與增量連結快取 (42x 加速)、導入 WarmWorker 背景持久化與熱修補游標對齊"
+    "summary": "收斂 .ast_index.lock 粒度、Windows 停用 ProcessPool 並以 _cache_lock 保護 TreeSitter 走訪"
   }
 }

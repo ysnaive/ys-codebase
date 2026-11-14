@@ -372,8 +372,10 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
 
     orig_stdin = sys.stdin
     orig_stdout = sys.stdout
+    orig_stderr = sys.stderr
     owned_ipc_in: Optional[Any] = None
     owned_ipc_out: Optional[Any] = None
+    owned_ipc_err: Optional[Any] = None
     owned_devnull_streams: List[Any] = []
     ipc_out: Any = out_stream
     in_io: Any = in_stream
@@ -382,18 +384,24 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
     if out_stream is None and in_stream is None:
         dup_in_fd: Optional[int] = None
         dup_out_fd: Optional[int] = None
+        dup_err_fd: Optional[int] = None
         cand_in_io: Optional[Any] = None
         cand_ipc_out: Optional[Any] = None
+        cand_ipc_err: Optional[Any] = None
         devnull_r: Optional[int] = None
         devnull_w: Optional[int] = None
         try:
             in_fd = orig_stdin.fileno()
             out_fd = orig_stdout.fileno()
+            err_fd = orig_stderr.fileno()
             orig_stdout.flush()
+            orig_stderr.flush()
             dup_in_fd = os.dup(in_fd)
             dup_out_fd = os.dup(out_fd)
+            dup_err_fd = os.dup(err_fd)
             os.set_inheritable(dup_in_fd, False)
             os.set_inheritable(dup_out_fd, False)
+            os.set_inheritable(dup_err_fd, False)
 
             cand_in_io = io.TextIOWrapper(
                 os.fdopen(dup_in_fd, "rb", closefd=True),
@@ -408,15 +416,23 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
                 write_through=True,
             )
             dup_out_fd = None
+            cand_ipc_err = io.TextIOWrapper(
+                os.fdopen(dup_err_fd, "wb", closefd=True),
+                encoding="utf-8",
+                errors="replace",
+                write_through=True,
+            )
+            dup_err_fd = None
 
             devnull_r = os.open(os.devnull, os.O_RDONLY)
             devnull_w = os.open(os.devnull, os.O_WRONLY)
             os.dup2(devnull_r, in_fd)
             os.dup2(devnull_w, out_fd)
-            if devnull_r not in (in_fd, out_fd):
+            os.dup2(devnull_w, err_fd)
+            if devnull_r not in (in_fd, out_fd, err_fd):
                 os.close(devnull_r)
                 devnull_r = None
-            if devnull_w not in (in_fd, out_fd):
+            if devnull_w not in (in_fd, out_fd, err_fd):
                 os.close(devnull_w)
                 devnull_w = None
 
@@ -427,17 +443,18 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
             ipc_out = cand_ipc_out
             owned_ipc_in = cand_in_io
             owned_ipc_out = cand_ipc_out
+            owned_ipc_err = cand_ipc_err
             sys.stdin = null_stdin
             sys.stdout = null_stdout
-            _reconfigure_utf8_stream(sys.stderr)
+            sys.stderr = cand_ipc_err
         except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
-            for s_cand in (cand_in_io, cand_ipc_out):
+            for s_cand in (cand_in_io, cand_ipc_out, cand_ipc_err):
                 if s_cand is not None:
                     try:
                         s_cand.close()
                     except Exception:
                         pass
-            for fd_cand in (dup_in_fd, dup_out_fd, devnull_r, devnull_w):
+            for fd_cand in (dup_in_fd, dup_out_fd, dup_err_fd, devnull_r, devnull_w):
                 if fd_cand is not None:
                     try:
                         os.close(fd_cand)
@@ -445,6 +462,7 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
                         pass
             sys.stdin = orig_stdin
             sys.stdout = orig_stdout
+            sys.stderr = orig_stderr
             for stream_obj in (orig_stdout, sys.stderr):
                 _reconfigure_utf8_stream(stream_obj)
             _reconfigure_utf8_stream(orig_stdin)
@@ -617,11 +635,18 @@ def worker_main(yscb_root: str, in_stream: Any = None, out_stream: Any = None) -
         if owned_devnull_streams:
             sys.stdin = orig_stdin
             sys.stdout = orig_stdout
+            sys.stderr = orig_stderr
             for s_obj in owned_devnull_streams:
                 try:
                     s_obj.close()
                 except Exception:
                     pass
+        if owned_ipc_err is not None:
+            sys.stderr = orig_stderr
+            try:
+                owned_ipc_err.close()
+            except Exception:
+                pass
         with ipc_lock:
             pipe_broken.set()
             if owned_ipc_out is not None:

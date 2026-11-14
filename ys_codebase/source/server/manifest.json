@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "1.0.7.0",
+  "version": "1.0.7.1",
   "description": "YS-Codebase Persistent Server & Warm Worker Subsystem",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -15,8 +15,8 @@
     "Stop daemon and view session summary: python yscb.py server stop"
   ],
   "release": {
-    "type": "bugfix",
+    "type": "hotfix",
     "urgency": "recommended",
-    "summary": "新增 Worker 派發逾時自癒、移除預熱鎖競爭、加固 Inotify 防崩潰與多空間批次沖刷"
+    "summary": "移出 SpaceWatcher 鎖內廣播、隔離 Worker stderr 句柄並新增任務靜默斷路回收"
   }
 }

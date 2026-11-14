@@ -1,5 +1,13 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_14_1030_ast_deadlock_hotfix (Completed)
+
+- **Core 2.0 上線前 AST 跨執行緒與跨消費端防死鎖過渡止血修復及並行壓力測試驗收 (`[FP-02:DR-01]`)**：
+  - **`core` (`core/space/scanner.py`)**：將 `CursorStore._rlock` 降為葉鎖並透過 `_get_consumer_lock(norm_cid)` 按 `consumer_id` 拆分獨立 `RLock`（`knowledge-db` 與 `ast` 互不阻塞），修正 `_prune_expired_tombstones` 不再於 `SpaceScanner._rlock` 內阻塞等待外部消費端鎖；新增並通過 `test_cursor_store_isolated_consumer_locks_and_tombstone_prune_concurrency`。
+  - **`knowledge-db` (`knowledge_db/pipeline.py`, `scripts/hook.core.py`)**：於 `IndexingPipeline.sync_incremental_changes` 進入 `_write_serial_lock` / `batch_cursor_updates("knowledge-db")` 鎖前先呼叫 `ast_engine.ensure_jit_synced(allow_parallel=False)` 消除與 `ast` 的 AB-BA 鎖序逆轉；禁止在 `YSCB_IN_SERVER_WORKER=1` 且無常駐 KDB Worker 時由事件鉤子執行緒同步跑全量寫盤索引；新增並通過 `test_concurrent_kdb_sync_and_ast_jit_sync_no_abba_deadlock`。
+  - **`ast` (`scripts/hook.core.py`, `ast_engine/engine.py`, `ast_engine/bundler.py`, `ast_engine/parsers/treesitter.py`)**：在 `YSCB_IN_SERVER_WORKER=1` 且無 KDB Worker 時讓事件鉤子回傳 `"noop"` 避免搶佔 `ASTEngine._lock`；收斂 `hot_patch_index` 之跨進程 `.ast_index.lock` 至純磁碟讀取與落盤；修正 `_run_bg_persist_loop` 先檢查 `_bg_persist_pending is None` 再判斷 `is_foreground_active()` 根除空轉，並於 `_bg_persist_lock` 內更新 `_symbols_mtime`/`_graph_mtime`；Windows 下 `bundle_union` 停用 `ProcessPoolExecutor`；`TreeSitterDriver` 以 `_cache_lock` 序列化走訪並於快取保留 `"tree"` 參照；新增並通過 `test_concurrent_callers_outline_and_worker_hook_no_deadlock`。
+  - **`server` (`server/space_watcher.py`, `server/worker.py`, `server/master.py`)**：將 `SpaceWatcher._emit_changed_diffs` 移出 `_flush_lock` 外防止訂閱重入死鎖；`worker_main` 補齊 `stderr` FD 不可繼承複製與底層 `fd 2` 導向 `os.devnull`，`_kill_worker_locked` 於 Windows 先 `join` 讀取執行緒再關閉管道杜絕孫進程繼承阻塞；新增 `YSCB_WORKER_STALL_TIMEOUT_SEC`（預設 `120.0s`）真實封包靜默斷路器（合成 `heartbeat` 不再掩蓋無聲死鎖）；通過 `dev check` 4/4、`ast` 58/58、`knowledge-db` 125/125、`server` 靶向套件 64/64（`TestServerModule` 46/46、`TestServerConfig` 9/9、`TestServerLogging` 9/9）、`core` 並發測試與 `TestEventsPipeline` 12/12、`@build` 熱部署與實機 CLI 100 併發請求（Phase 1 64/64 + Phase 2 36/36，零失敗零逾時）壓測驗收（既有 Windows 嵌套沙盒 260 字元 `MAX_PATH` 與 `TestVFS` 問題依方案 A 登錄 `TODO-26`、`TODO-27`）。
+
 ## 2026_11_10_1425_cli_worker_resilience_and_incremental_index_fix (Completed)
 
 - **CLI 觸發鏈、常駐 Server/Worker 協作防卡死韌性加固與 AST / Knowledge-DB 增量索引一致性修復 (`sub_01` & `sub_02`)**：

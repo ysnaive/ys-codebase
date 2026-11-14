@@ -1,6 +1,6 @@
 {
   "name": "knowledge-db",
-  "version": "1.2.3.0",
+  "version": "1.2.3.1",
   "description": "YS-Codebase Knowledge Database & Semantic Retrieval Module",
   "entry": "scripts/cli.py",
   "dependencies": {
@@ -26,8 +26,8 @@
     "Search symbols & code snippets: python yscb.py knowledge-db search \"<query>\" -s"
   ],
   "release": {
-    "type": "bugfix",
+    "type": "hotfix",
     "urgency": "recommended",
-    "summary": "新增向量模型載入冷卻防抖、執行緒安全寫入序列化與檔案級增量修補自癒保護"
+    "summary": "游標批次鎖前先行同步 AST JIT 並防止 Worker 無常駐服務時回落事件執行緒同步索引"
   }
 }

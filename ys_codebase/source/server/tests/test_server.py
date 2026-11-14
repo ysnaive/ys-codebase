@@ -1981,6 +1981,8 @@ class TestServerModule(YSCBTestCase):
         self.assertEqual(sup_default.idle_timeout_sec, 720.0)
 
         # 5. cli.stop() does NOT archive active log when daemon.lock is held by another process
+        for _sup_inst in (sup, sup_hang, sup_explicit, sup_default):
+            _sup_inst.logger.close()
         server_cli = _load_server_cli()
         active_log = os.path.join(self.root_dir, ".cache", "server", "log")
         vfs.write_text(active_log, 'server start at time "2026_11_09_01.00.00"\n', encoding="utf-8", atomic=True)
@@ -2329,6 +2331,108 @@ class TestServerModule(YSCBTestCase):
         mw.refresh_snapshot()
         self.assertEqual(mw._snapshot_gen, gen_before + 1)
 
+        self.mark_passed()
+
+    def test_worker_stall_circuit_breaker_and_watcher_unlock_before_broadcast(self):
+        """驗證 SpaceWatcher 於釋放 _flush_lock 後才廣播訂閱者，且 MasterSupervisor 偵測靜默卡死 Worker 後自動回收重啟。"""
+        from pathlib import Path
+        from core.space import ScanDiffDetail, ScanDiffResult, SpaceRegistry, SpaceScanner, clear_subscribers, subscribe
+        from server.space_watcher import CoreSpaceWatcherServiceWorker
+
+        # Part A: SpaceWatcher releases _flush_lock prior to subscriber notification / broadcast.
+        watch_dir = Path(self.root_dir) / "watch_unlock_src"
+        watch_dir.mkdir(parents=True, exist_ok=True)
+        (watch_dir / "probe.py").write_text("X = 1\n", encoding="utf-8")
+        reg = SpaceRegistry(project_root=Path(self.root_dir), yscb_dir=Path(self.root_dir))
+        scanner = SpaceScanner(registry=reg)
+        sw = CoreSpaceWatcherServiceWorker(registry=reg, scanner=scanner, debounce_seconds=0.05)
+        fake_diff = ScanDiffResult(
+            added_count=1,
+            space_name="project/watch_unlock",
+            from_generation=0,
+            to_generation=1,
+            detail=ScanDiffDetail(added={"probe.py"}, modified=set(), deleted=set()),
+        )
+        reentrant_finished = threading.Event()
+        sub_errors: list = []
+
+        def _on_changed(evt_space, evt_diff):
+            th = threading.Thread(target=lambda: (sw.flush_space_now("project/watch_unlock"), reentrant_finished.set()), daemon=True)
+            th.start()
+            th.join(timeout=2.0)
+            if th.is_alive():
+                sub_errors.append("reentrant flush_space_now deadlocked on _flush_lock")
+
+        subscribe(_on_changed)
+        try:
+            sw._dirty_spaces.add("project/watch_unlock")
+            sw._dirty_since_mono = time.monotonic() - 1.0
+            sw._last_event_time = time.monotonic() - 1.0
+            with unittest.mock.patch.object(
+                sw, "_refresh_or_patch_space", return_value=(fake_diff, True)
+            ), unittest.mock.patch.object(sw, "is_transaction_locked", return_value=False):
+                sw.flush_dirty_spaces(force=True)
+        finally:
+            clear_subscribers()
+        self.assertEqual(sub_errors, [])
+        self.assertTrue(reentrant_finished.is_set())
+
+        # Part B: MasterSupervisor recycles a silently stalled worker and recovers for the next task.
+        mod_dir = os.path.join(self.root_dir, ".modules", "dummy_stall_mod")
+        os.makedirs(os.path.join(mod_dir, "scripts"), exist_ok=True)
+        os.makedirs(os.path.join(mod_dir, "contributes"), exist_ok=True)
+        with open(os.path.join(mod_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump({"name": "dummy_stall_mod", "version": "1.0.0.0"}, f)
+        with open(os.path.join(mod_dir, "contributes", "core.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "commands": {
+                        "module_alias": ["dstall"],
+                        "cmd": {
+                            "probe": {"entry": "scripts/cli.py:probe", "server_compatible": True},
+                            "stall": {"entry": "scripts/cli.py:stall", "server_compatible": True},
+                        },
+                    }
+                },
+                f,
+            )
+        with open(os.path.join(mod_dir, "scripts", "cli.py"), "w", encoding="utf-8") as f:
+            f.write(
+                "import time\nfrom core.log import log\n"
+                "def probe(cmd_bags):\n    log('STALL_MOD_OK')\n    return 0\n"
+                "def stall(cmd_bags):\n    time.sleep(8.0)\n    return 0\n"
+            )
+        extra_py = os.pathsep.join([p for p in sys.path if p])
+        orig_py = os.environ.get("PYTHONPATH")
+        os.environ["PYTHONPATH"] = extra_py + (os.pathsep + orig_py if orig_py else "")
+        self.addCleanup(lambda: os.environ.pop("PYTHONPATH", None) if orig_py is None else os.environ.__setitem__("PYTHONPATH", orig_py))
+
+        sup = self._make_supervisor(idle_timeout_sec=300.0, enable_watcher=False)
+        sup.start(foreground=False)
+        try:
+            pkts_stall = []
+            t0 = time.monotonic()
+            rc_stall = sup.dispatch_task(
+                {
+                    "module": "dummy_stall_mod",
+                    "args": ["stall"],
+                    "cwd": self.root_dir,
+                    "env": {"YSCB_WORKER_STALL_TIMEOUT_SEC": "0.4"},
+                },
+                pkts_stall.append,
+            )
+            elapsed = time.monotonic() - t0
+            self.assertNotEqual(rc_stall, 0)
+            self.assertLess(elapsed, 3.0)
+            self.assertTrue(any("stalled" in str(p.get("error", "")) for p in pkts_stall), pkts_stall)
+            self.assertIsNotNone(sup._worker_proc)
+            self.assertIsNone(sup._worker_proc.poll())
+
+            pkts_ok = []
+            rc_ok = sup.dispatch_task({"module": "dummy_stall_mod", "args": ["probe"], "cwd": self.root_dir}, pkts_ok.append)
+            self.assertEqual(rc_ok, 0, msg=str(pkts_ok))
+        finally:
+            sup.stop()
         self.mark_passed()
 
 

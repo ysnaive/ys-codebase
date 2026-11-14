@@ -8,6 +8,7 @@ and incremental hot-patching of the unified semantic index via `IndexingPipeline
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
+from core.context import get_env
 from core.space import ScanDiffResult, consume_diff
 
 
@@ -101,6 +102,13 @@ def on_file_space_changed(
                 "status": "queued_to_worker",
                 "patched_count": 0,
                 "worker": getattr(active_worker, "name", "knowledge-db-worker"),
+            }
+        # Never fall back to synchronous full-pipeline indexing on the server event-broadcast thread
+        # when the background worker has not started or is tearing down.
+        if get_env("YSCB_IN_SERVER_WORKER") == "1":
+            return {
+                "status": "noop",
+                "patched_count": 0,
             }
 
     engine = explicit_engine_obj or get_engine()
