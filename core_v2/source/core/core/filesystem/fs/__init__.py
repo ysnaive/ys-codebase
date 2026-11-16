@@ -1,0 +1,58 @@
+"""Domain 2.1: Physical filesystem primitives (atomic writes, OS file locks, and directory watchers)."""
+
+from core.filesystem.fs.atomic import (
+    MAX_JSON_FILE_BYTES,
+    BeforeReplaceHook,
+    atomic_write_bytes,
+    atomic_write_json,
+    hash_nofollow_regular_sha256,
+    is_atomic_staging_filename,
+    is_contained_nonsymlink_path,
+    is_symlink_or_reparse,
+    read_json_dict,
+    read_nofollow_regular_bytes,
+    resolve_contained_child_dir,
+    resolve_contained_subpath,
+    silent_unlink,
+    silent_unlink_contained,
+    try_resolve_contained_subpath,
+    walk_nonsymlink_dir_tree,
+)
+from core.filesystem.fs.lock import (
+    CrossProcessLockPaths,
+    FileLock,
+    acquire_verified_cross_proc_pin,
+    read_live_owner_dict,
+    try_acquire_contained_lock,
+    unlink_owner_under_pin,
+    write_cross_proc_owner_json,
+)
+from core.filesystem.fs.watcher import EchoSuppressionHook, PollingDirectoryWatcher
+
+__all__ = (
+    "BeforeReplaceHook",
+    "CrossProcessLockPaths",
+    "EchoSuppressionHook",
+    "FileLock",
+    "MAX_JSON_FILE_BYTES",
+    "PollingDirectoryWatcher",
+    "acquire_verified_cross_proc_pin",
+    "atomic_write_bytes",
+    "atomic_write_json",
+    "hash_nofollow_regular_sha256",
+    "is_atomic_staging_filename",
+    "is_contained_nonsymlink_path",
+    "is_symlink_or_reparse",
+    "read_json_dict",
+    "read_live_owner_dict",
+    "read_nofollow_regular_bytes",
+    "resolve_contained_child_dir",
+    "resolve_contained_subpath",
+    "silent_unlink",
+    "silent_unlink_contained",
+    "try_acquire_contained_lock",
+    "try_resolve_contained_subpath",
+    "unlink_owner_under_pin",
+    "walk_nonsymlink_dir_tree",
+    "write_cross_proc_owner_json",
+)

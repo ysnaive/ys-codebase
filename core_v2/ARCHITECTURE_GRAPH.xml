@@ -1,0 +1,761 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  YS-Codebase Core 2.0 — Architecture Graph & Self-Consistency Audit
+  Scope   : ./core_v2/ (ROADMAP.md, R01, sub_module_design/**, source/core/core/**, verify_execution_live.py)
+  Method  : 5 parallel read-only domain audits + import-graph extraction + manual spot-check of HIGH findings
+  Paths   : attribute file="" is relative to core_v2/source/core/core/ unless prefixed with core_v2/
+  Status  : snapshot of 2026-11-16 (source tree untracked in git; synced from gdrive)
+-->
+<CoreV2ArchitectureGraph schemaVersion="1.0" snapshot="2026-11-16" kernelLoc="27603" testLoc="23381">
+
+  <!-- ============================================================ -->
+  <!-- 0. VERDICT                                                    -->
+  <!-- ============================================================ -->
+  <Verdict overall="PARTIALLY_SELF_CONSISTENT">
+    <Summary>
+      The implemented code (Domain 1, Domain 2.fs, Domain 5) is internally coherent at the static level:
+      the import DAG has zero violations, static Task invariants are enforced at TaskMetadata construction,
+      and the RPC/lifecycle/event contracts match their execution/*.md specs nearly 1:1.
+      It is NOT fully self-consistent at three levels: (1) documentation (ROADMAP names, stale
+      sub_module_design/runtime.md, Wave-1 plan vs reality), (2) architectural seams for the not-yet-built
+      domains (ModuleProviderPort DTO ownership breaks the future DAG; ports satisfied only by test doubles),
+      and (3) a set of behavioural contradictions against stated guarantees (P3 never-rerun, detached spawn,
+      fatal-vs-contention lock errors, cross-process reentrancy deadlock).
+    </Summary>
+    <Dimension name="StaticImportDAG" rating="CONSISTENT" evidence="0 violations across 52 intra-core edge groups"/>
+    <Dimension name="StaticTaskInvariants" rating="CONSISTENT" evidence="contracts.py:225-250 + gates.py:234-402"/>
+    <Dimension name="SpecToCode_execution" rating="MOSTLY_CONSISTENT" evidence="R01 fixes 11/13 implemented, 2 partial"/>
+    <Dimension name="SpecToCode_ROADMAP" rating="INCONSISTENT" evidence="~25 ROADMAP component names absent or renamed"/>
+    <Dimension name="CrossDomainSeams" rating="INCONSISTENT" evidence="ModuleProviderPort returns execution-owned DTOs"/>
+    <Dimension name="RuntimeBehaviour" rating="PARTIALLY_CONSISTENT" evidence="3 HIGH + ~20 MED behavioural findings"/>
+    <Dimension name="ProcessPlan" rating="INCONSISTENT" evidence="Wave 1 'specs first, bottom-up' vs execution-first reality"/>
+    <SeverityCount high="5" medium="27" low="40+"/>
+  </Verdict>
+
+  <!-- ============================================================ -->
+  <!-- 1. DOMAINS & COMPONENTS                                       -->
+  <!-- ============================================================ -->
+  <Domains>
+
+    <Domain id="D1" name="foundation" path="foundation/" layer="1" status="IMPLEMENTED"
+            allowedDeps="stdlib" specFile="(none)" submodulesPlanned="5" submodulesBuilt="5">
+      <Submodule id="D1.primitives" file="foundation/primitives.py" loc="438" status="PARTIAL">
+        <Component name="ModuleId" kind="frozen-vo" lines="52-66" rule="^[a-z0-9][a-z0-9_-]*$"/>
+        <Component name="TaskId" kind="frozen-vo" lines="70-88" rule="module.name"/>
+        <Component name="EventId" kind="frozen-vo" lines="92-110" rule="module.name"/>
+        <Component name="HostPath" kind="frozen-vo" lines="114-187" note="realpath at construction; normcase compare key"/>
+        <Component name="JsonValue/JsonObject" kind="type-alias" lines="27-31"/>
+        <Component name="strict JSON validators" kind="functions" lines="240-438"/>
+        <Missing roadmapNames="SemVer4 VersionConstraint SemanticUri SpaceId SpacePath SnapshotGen EnvHash MountRule SpaceSpec"/>
+      </Submodule>
+      <Submodule id="D1.errors" file="foundation/errors.py" loc="197" status="IMPLEMENTED">
+        <Component name="ErrorCode" kind="enum" lines="10-32" members="20"/>
+        <Component name="ErrorDetail" kind="frozen-vo" lines="57-98"/>
+        <Component name="YscbError" kind="exception" lines="101"/>
+        <Component name="FATAL_TURN_ERROR_CODES" kind="const" lines="121-127"
+                   members="EVENT_CYCLE_DETECTED CALL_CYCLE_DETECTED ILLEGAL_LOCK_REENTRANCY"/>
+        <Component name="EventCycleError CallCycleError TaskCancelledException" kind="exceptions" lines="135-197"/>
+      </Submodule>
+      <Submodule id="D1.codec" file="foundation/codec.py" loc="2981" status="PARTIAL">
+        <Component name="DataclassCodec" kind="class" lines="2429-2593"
+                   note="exact-type encode, strict decode, int64, finite floats, canonical base64, depth 128(+8)"/>
+        <Missing roadmapNames="SchemaExporter DeepInfiller"/>
+      </Submodule>
+      <Submodule id="D1.observability" file="foundation/observability.py" loc="426" status="SCOPE_DRIFT">
+        <Component name="ProgressEvent" kind="frozen-vo" lines="19-31"/>
+        <Component name="CancellationToken" kind="class" lines="34-147"/>
+        <Component name="DeadlineGuard" kind="frozen-vo" lines="225-271"/>
+        <Component name="guard_standard_streams" kind="function" lines="417-426" note="stdout only"/>
+        <Missing roadmapNames="StructuredLogger LogRotator ProgressStream LocaleCatalog SessionTelemetry"/>
+      </Submodule>
+      <Submodule id="D1.proc" file="foundation/proc.py" loc="1216" status="IMPLEMENTED">
+        <Component name="spawn_detached" kind="function" lines="276-323" note="two-hop launcher"/>
+        <Component name="is_process_alive" kind="function" lines="259"/>
+        <Component name="SignalWakeupGuard" kind="class" lines="782-930" note="shared set_wakeup_fd socketpair"/>
+        <Component name="ManagedProcessTree" kind="class" lines="972-1216" roadmapName="ProcessTreeSupervisor"
+                   note="Win32 Job Object / POSIX session+PGID + descendant sweep"/>
+      </Submodule>
+    </Domain>
+
+    <Domain id="D2" name="filesystem" path="filesystem/" layer="2" status="PARTIAL"
+            allowedDeps="D1" specFile="(none)" submodulesPlanned="4" submodulesBuilt="1">
+      <Submodule id="D2.fs" path="filesystem/fs/" status="IMPLEMENTED">
+        <File name="atomic.py" loc="513">
+          <Component name="atomic_write_bytes/atomic_write_json" kind="functions" lines="281-330" roadmapName="AtomicFs"/>
+          <Component name="resolve_contained_subpath" kind="function" lines="85-130"/>
+          <Component name="read_nofollow_regular_bytes" kind="function" lines="383"/>
+          <Component name="read_json_dict" kind="function" lines="499"/>
+        </File>
+        <File name="lock.py" loc="706">
+          <Component name="FileLock" kind="class" lines="169-575" note="shared/exclusive + .xchg gate, upgrade/downgrade"/>
+          <Component name="acquire_verified_cross_proc_pin" kind="function" lines="616"/>
+          <Component name="unlink_owner_under_pin" kind="function" lines="659"/>
+        </File>
+        <File name="watcher.py" loc="339">
+          <Component name="PollingDirectoryWatcher" kind="class" lines="101-339" roadmapName="NativeFsWatcher"
+                     note="50 ms stat polling, NOT OS-native"/>
+        </File>
+      </Submodule>
+      <Submodule id="D2.vfs" status="NOT_STARTED" roadmapComponents="UriMountTable AccessGuard ReadonlyPolicy ScopedVfs"/>
+      <Submodule id="D2.space" status="NOT_STARTED" roadmapComponents="IgnoreRuleEngine SpaceRegistry SpaceScanner SpaceDiffBatch"/>
+      <Submodule id="D2.storage" status="NOT_STARTED" roadmapComponents="ModuleDatabase SnapshotReader WriteTransaction BlobVault"/>
+    </Domain>
+
+    <Domain id="D3" name="metadata" path="metadata/" layer="3" status="NOT_STARTED"
+            allowedDeps="D1 D2.fs" specFile="(none)" submodulesPlanned="2" submodulesBuilt="0">
+      <Submodule id="D3.config" status="NOT_STARTED" roadmapComponents="2x2 config matrix, SnapshotVault"/>
+      <Submodule id="D3.contributes" status="NOT_STARTED" roadmapComponents="ExtensionPointSpec ContributesAggregator ProvenanceGraph"/>
+    </Domain>
+
+    <Domain id="D4" name="packaging" path="packaging/" layer="4" status="NOT_STARTED"
+            allowedDeps="D1 D2 D3" forbiddenDeps="D5" specFile="(none)" submodulesPlanned="2" submodulesBuilt="0">
+      <Submodule id="D4.env" status="NOT_STARTED" roadmapComponents="EnvSpec ImmutableVenvPool EnvHealthProbe EnvGarbageCollector"/>
+      <Submodule id="D4.installer" status="NOT_STARTED" roadmapComponents="ProviderClient DependencySolver MirrorStore AtomicPackageDeployer UpdateChecker"/>
+    </Domain>
+
+    <Domain id="D5" name="execution" path="execution/" layer="5" status="IMPLEMENTED"
+            allowedDeps="D1 D2 D3 D4" internalDag="daemon -> runtime -> {lifecycle -> event, rpc}"
+            specFile="core_v2/sub_module_design/execution/*.md" submodulesPlanned="5" submodulesBuilt="5">
+      <Submodule id="D5.event" file="execution/event/engine.py" loc="464" status="IMPLEMENTED">
+        <Component name="EventMetadata" kind="frozen-vo" lines="59-75"/>
+        <Component name="EventOrdering" kind="enum" lines="32-36" members="UNORDERED ORDERED"/>
+        <Component name="CausalLineage" kind="frozen-vo" lines="111-169" note="advance() raises EventCycleError"/>
+        <Component name="EventBatchEnvelope" kind="frozen-vo" lines="194-243"/>
+        <Component name="EventSubscriptionSpec" kind="class" lines="258-300"/>
+        <Component name="TaskLocalOutbox" kind="class" lines="332-392" note="always branches from base_lineage (R01 #11)"/>
+        <Component name="DoubleBufferedEventQueue" kind="class" lines="395-464" note="single list swapped under lock"/>
+      </Submodule>
+      <Submodule id="D5.lifecycle" file="execution/lifecycle/engine.py" loc="761" status="IMPLEMENTED">
+        <Component name="TurnKind" kind="enum" lines="21-24" members="COLD HOT_FOREGROUND HOT_BACKGROUND"/>
+        <Component name="ContainerState" kind="enum" lines="27-34"
+                   members="UNINITIALIZED BOOTING WARMING READY QUIESCED DRAINING STOPPED"/>
+        <Component name="LifoResourceStack" kind="class" lines="45-129"/>
+        <Component name="TurnEngine" kind="class" lines="238-396" roadmapName="HotTurnLifecycle"/>
+        <Component name="ColdTurnRunner" kind="class" lines="464-531" roadmapName="ColdTurnLifecycle"/>
+        <Component name="WorkerContainerLifecycle" kind="class" lines="548-761"/>
+      </Submodule>
+      <Submodule id="D5.rpc" file="execution/rpc/channel.py" loc="2247" status="IMPLEMENTED">
+        <Component name="RpcFrame" kind="frozen-vo" lines="129-165" wire="u32-BE length + UTF-8 JSON"/>
+        <Component name="FrameKind" kind="enum" lines="59-77" members="16"/>
+        <Component name="MultiplexedChannel" kind="class" lines="491-1363"/>
+        <Component name="PersistentRpcSession" kind="class" lines="1674-1915" roadmapName="PersistentRpcClient (R01)"/>
+        <Component name="RpcServerListener" kind="class" lines="2042-2247"/>
+        <Component name="MAX_FRAME_BYTES" kind="const" lines="48" value="67108864"/>
+      </Submodule>
+      <Submodule id="D5.runtime" path="execution/runtime/" loc="15879" status="IMPLEMENTED">
+        <File name="contracts.py" loc="902">
+          <Component name="Task / BoundTask / YscbModule / TaskContext" kind="ABCs" lines="545-749"/>
+          <Component name="TaskMetadata" kind="frozen-generic" lines="317-369" note="__post_init__ validates route invariants"/>
+          <Component name="InvokeRequest" kind="frozen-vo" lines="484-518"/>
+          <Component name="TaskOutcome" kind="frozen-vo" lines="521-542"/>
+          <Component name="ModuleDescriptor + TaskRouteSpec + PeriodicScheduleSpec + SubscriptionRouteSpec + CliBindingSpec" kind="vo" lines="148-290,752-793"/>
+          <Component name="ModuleProviderPort ConfigViewPort VfsEchoGuardPort DaemonSpawner CoordinatorPort Tier1WorkerPool" kind="protocols" lines="796-862"/>
+          <Component name="sanitize_caller_env" kind="function" lines="48-97"/>
+        </File>
+        <File name="dispatcher.py" loc="2757">
+          <Component name="RuntimeDispatcher" kind="class" lines="459-2757" note="single dispatch authority (DR-01)"/>
+          <Component name="DispatcherHostOptions" kind="frozen-vo" lines="215-242"/>
+        </File>
+        <File name="coordinator.py" loc="2654">
+          <Component name="ResourceCoordinator" kind="class" lines="911-1677" roadmapName="TaskCoordinator"/>
+          <Component name="StepFlight" kind="class" lines="356-673" note="COALESCE single-flight latch"/>
+          <Component name="PriorityHandle / SharedCancelGroup" kind="classes" lines="48-177"/>
+        </File>
+        <File name="gates.py" loc="1952">
+          <Component name="validate_stage1_gates" kind="function" lines="354-402"/>
+          <Component name="LifecycleReloadGate" kind="class" lines="475-1285" note="~60 methods; hotspot"/>
+          <Component name="ColdInstallerLockManager" kind="class" lines="1318-1926"/>
+          <Component name="ConfigFingerprintTracker" kind="class" lines="1928-1952"/>
+        </File>
+        <File name="lineage_join.py" loc="822">
+          <Component name="FlightCascade" kind="class" lines="93-457"/>
+          <Component name="check_cascade_acyclic" kind="function" lines="708-787"/>
+        </File>
+        <File name="module_slot.py" loc="1344">
+          <Component name="ProtectedModuleLoader" kind="class" lines="332-456" note="patches process-global importlib.import_module"/>
+          <Component name="LocalModuleSlotRegistry" kind="class" lines="667-1344" roadmapName="ModuleContainer"/>
+          <Component name="_StepTaskContext" kind="class" lines="459-579" note="concrete TaskContext"/>
+        </File>
+        <File name="worker_pool.py" loc="1728">
+          <Component name="HotWorkerPool" kind="class" lines="728-1557" implements="Tier1WorkerPool"/>
+          <Component name="OneShotVenvHost" kind="class" lines="1573-1727" roadmapName="ColdSubprocessBridge"/>
+        </File>
+        <File name="worker_entry.py" loc="435">
+          <Component name="WorkerSubprocessHandler / worker_main" kind="child-entry" lines="107-431"/>
+        </File>
+        <File name="step_host.py" loc="846"><Component name="StepHostRunner" kind="class" lines="476-846"/></File>
+        <File name="turn_session.py" loc="744"><Component name="TurnSessionRegistry" kind="class" lines="229-744"/></File>
+        <File name="route_index.py" loc="299"><Component name="RouteIndexRegistry" kind="class" lines="48-243"/></File>
+        <File name="wire.py" loc="209"><Component name="Worker*/DaemonRpcInvoke* envelopes" kind="vo" lines="24-209"/></File>
+        <Missing roadmapNames="TaskSandbox"/>
+      </Submodule>
+      <Submodule id="D5.daemon" file="execution/daemon/service.py" loc="2237" status="IMPLEMENTED">
+        <Component name="WorkspaceDaemon" kind="class" lines="806-2237" implements="InboundCallHandler"/>
+        <Component name="SingleFlightDaemonSpawner" kind="class" lines="352-400"/>
+        <Component name="IdleTtlMonitor" kind="class" lines="433-458"/>
+        <Component name="PeriodicTriggerLoop" kind="class" lines="461-688" note="config-gated fixed-delay"/>
+        <Component name="DirtyPathsAccumulator" kind="class" lines="224-349" exported="false"/>
+        <Missing roadmapNames="WorkspaceSpaceWatcher ModulesHotReloadWatcher ConfigAndContributesWatcher(R01)"
+                 actual="3 generic PollingDirectoryWatcher instances (service.py:1959-1992)"/>
+      </Submodule>
+    </Domain>
+
+    <Domain id="D6" name="surface" path="surface/" layer="6" status="NOT_STARTED"
+            allowedDeps="D1-D5" specFile="(none)" submodulesPlanned="2" submodulesBuilt="0">
+      <Submodule id="D6.sdk" status="NOT_STARTED" note="downstream-only import boundary (ROADMAP §3.1)"/>
+      <Submodule id="D6.cli" status="NOT_STARTED" note="tasks.index.json routing; composition root currently lives in verify_execution_live.py"/>
+    </Domain>
+
+    <ExternalArtifact id="LAUNCHER" path="core_v2/yscb.py" status="NOT_STARTED"/>
+    <ExternalArtifact id="DEV2" path="core_v2/source/dev" status="NOT_STARTED" note="Gate 0 in test file is the stand-in for dev check 2.0"/>
+    <ExternalArtifact id="CFG" path="core_v2/config/" status="NOT_STARTED"/>
+  </Domains>
+
+  <!-- ============================================================ -->
+  <!-- 2. DEPENDENCY GRAPH (extracted from source, incl. in-function imports) -->
+  <!-- ============================================================ -->
+  <DependencyGraph violations="0" dynamicImports="module_slot.py only (scoped loader)">
+    <Rule id="DAG-1" text="filesystem must not import metadata; metadata uses only D1 + filesystem.fs" status="VACUOUS" note="metadata not built"/>
+    <Rule id="DAG-2" text="packaging must not import execution" status="VACUOUS" note="packaging not built"/>
+    <Rule id="DAG-3" text="execution must not import surface; base classes live in kernel" status="HOLDS"/>
+    <Rule id="DAG-4" text="daemon must not import execution.event (daemon.md L6)" status="HOLDS"/>
+    <Rule id="DAG-5" text="runtime must not import daemon/surface" status="HOLDS"/>
+    <Rule id="DAG-6" text="rpc may import only read_json_dict from filesystem.fs" status="HOLDS"/>
+    <Rule id="DAG-7" text="foundation siblings codec|observability|proc depend only on primitives|errors" status="DEVIATION"
+          evidence="proc.py:22 -> observability (clamp_wait_sec)"/>
+
+    <Edge from="foundation.codec" to="foundation.errors"/>
+    <Edge from="foundation.codec" to="foundation.primitives"/>
+    <Edge from="foundation.observability" to="foundation.errors"/>
+    <Edge from="foundation.observability" to="foundation.primitives"/>
+    <Edge from="foundation.proc" to="foundation.errors"/>
+    <Edge from="foundation.proc" to="foundation.primitives"/>
+    <Edge from="foundation.proc" to="foundation.observability" flag="intra-domain-deviation"/>
+    <Edge from="filesystem.fs" to="foundation.errors"/>
+    <Edge from="filesystem.fs" to="foundation.primitives"/>
+    <Edge from="filesystem.fs" to="foundation.observability"/>
+    <Edge from="filesystem.fs" to="foundation.proc" note="lock.py -> is_process_alive"/>
+    <Edge from="execution.event" to="foundation.codec"/>
+    <Edge from="execution.event" to="foundation.errors"/>
+    <Edge from="execution.event" to="foundation.primitives"/>
+    <Edge from="execution.lifecycle" to="execution.event"/>
+    <Edge from="execution.lifecycle" to="foundation.errors"/>
+    <Edge from="execution.lifecycle" to="foundation.observability"/>
+    <Edge from="execution.lifecycle" to="foundation.primitives"/>
+    <Edge from="execution.rpc" to="filesystem.fs" note="read_json_dict only"/>
+    <Edge from="execution.rpc" to="foundation.errors"/>
+    <Edge from="execution.rpc" to="foundation.observability"/>
+    <Edge from="execution.rpc" to="foundation.primitives"/>
+    <Edge from="execution.rpc" to="foundation.proc"/>
+    <Edge from="execution.runtime" to="execution.event" count="8"/>
+    <Edge from="execution.runtime" to="execution.lifecycle" count="9"/>
+    <Edge from="execution.runtime" to="execution.rpc" count="6"/>
+    <Edge from="execution.runtime" to="filesystem.fs" count="5"/>
+    <Edge from="execution.runtime" to="foundation.*" count="44"/>
+    <Edge from="execution.daemon" to="execution.runtime" note="package facade only"/>
+    <Edge from="execution.daemon" to="execution.lifecycle" note="ContainerState"/>
+    <Edge from="execution.daemon" to="execution.rpc"/>
+    <Edge from="execution.daemon" to="filesystem.fs"/>
+    <Edge from="execution.daemon" to="foundation.*"/>
+
+    <IntraRuntime acyclic="true">
+      <Edge from="wire" to="contracts"/>
+      <Edge from="coordinator" to="contracts"/>
+      <Edge from="gates" to="contracts coordinator lineage_join worker_pool"/>
+      <Edge from="module_slot" to="contracts wire"/>
+      <Edge from="route_index" to="contracts gates module_slot worker_pool"/>
+      <Edge from="turn_session" to="contracts coordinator gates lineage_join module_slot wire worker_pool"/>
+      <Edge from="step_host" to="contracts coordinator gates module_slot route_index turn_session wire worker_pool"/>
+      <Edge from="dispatcher" to="all runtime submodules"/>
+      <Edge from="__init__" to="contracts dispatcher gates wire" note="worker children import the whole master stack (LOW)"/>
+    </IntraRuntime>
+  </DependencyGraph>
+
+  <!-- ============================================================ -->
+  <!-- 3. PORTS (dependency-inversion seams to unbuilt domains)       -->
+  <!-- ============================================================ -->
+  <Ports definedIn="execution/runtime/contracts.py:796-862" compositionRoot="core_v2/verify_execution_live.py:2114-2216 (test-owned)">
+    <Port name="ConfigViewPort" methods="get_module_value fingerprint reload"
+          currentImpl="FileConfigView (verify:465-503, test double)" futureProvider="D3.config"
+          dagCompatible="true" reason="signature uses only ModuleId/JsonValue"/>
+    <Port name="VfsEchoGuardPort" methods="is_suppressed(path,mtime_ns,size,ino)"
+          currentImpl="FileEchoLedger (verify:506-519, test double)" futureProvider="D2.vfs ScopedVfs"
+          dagCompatible="true" reason="signature uses only HostPath/int"/>
+    <Port name="ModuleProviderPort" methods="list_modules get_module reload"
+          currentImpl="ManifestModuleProvider (verify:582-640, ad-hoc routes.json)"
+          futureProvider="D4.installer + D4.env + dev tasks.index.json + D3.contributes"
+          dagCompatible="false" severity="HIGH"
+          reason="returns ModuleDescriptor/TaskRouteSpec/... owned by execution.runtime.contracts; D3/D4 may not import D5"/>
+    <Port name="DaemonSpawner" methods="try_spawn_background can_spawn_in_environment"
+          currentImpl="SingleFlightDaemonSpawner (real) with argv pointing at the test script" futureProvider="LAUNCHER / D6.cli"
+          dagCompatible="true"/>
+    <Port name="CoordinatorPort" currentImpl="ResourceCoordinator" futureProvider="internal" dagCompatible="true"/>
+    <Port name="Tier1WorkerPool" currentImpl="HotWorkerPool" futureProvider="internal (needs D4.env venv_python)" dagCompatible="true"/>
+    <MissingPort name="ContributesPort" severity="MED" reason="DR-06 typed contributes injection has no runtime seam; folded into ModuleProviderPort.reload()"/>
+    <MissingPort name="SpaceRegistryPort" severity="LOW" reason="DaemonWatcherConfig roots hard-coded by the test (verify:2191-2198)"/>
+  </Ports>
+
+  <!-- ============================================================ -->
+  <!-- 4. CORE CONTRACTS                                              -->
+  <!-- ============================================================ -->
+  <Contracts file="execution/runtime/contracts.py">
+    <Enum name="CallerSurface" members="SDK CLI"/>
+    <Enum name="TaskExposure" members="CLI_AND_SDK SDK_ONLY INTERNAL_TRIGGER" r01Factor="A1"/>
+    <Enum name="DispatchMode" members="HYBRID COLD_ONLY DAEMON_ONLY" r01Factor="A2"/>
+    <Enum name="SelfMutationScope" members="NONE MUTATES_MODULES MUTATES_CORE" r01Factor="A8"
+          note="MODULES vs CORE never distinguished in code paths"/>
+    <Enum name="SecurityTier" members="SAFE CONDITIONAL GATED" r01Factor="A9"/>
+    <Enum name="ConcurrencyMode" members="PARALLEL SERIALIZE COALESCE PREEMPT" r01Factor="A5"/>
+    <Enum name="ExecutionPriority" members="FOREGROUND BACKGROUND" r01Factor="B3"/>
+    <Enum name="ClientRoutingPolicy" members="AUTO_SPAWN AUTO_NO_SPAWN FORCE_COLD STRICT_HOT" r01Factor="B2"/>
+    <Type name="TaskMetadata[TIn,TOut]">
+      <Field name="task_id" required="true"/><Field name="input_type" required="true"/><Field name="output_type" required="true"/>
+      <Field name="exposure" default="CLI_AND_SDK"/><Field name="cli" default="None"/>
+      <Field name="dispatch_mode" default="HYBRID"/><Field name="mutation_scope" default="NONE"/>
+      <Field name="interactive_tty" default="False"/><Field name="security_tier" default="SAFE"/>
+      <Field name="resource_key" default="None"/><Field name="concurrency_mode" default="PARALLEL"/>
+      <Field name="equivalence_fn" default="None"/><Field name="timeout_ms" default="None" note="bounds whole turn incl. deferred subscribers"/>
+      <Field name="subscriptions" default="()"/><Field name="periodic" default="None"/>
+    </Type>
+    <Type name="InvokeRequest" fields="task_id raw_input workspace_root caller_cwd caller_env caller_surface routing_policy priority approval_scope allow_conditional propagation"/>
+    <Type name="CallPropagationContext" fields="turn_id call_tree_id call_stack lineage is_internal_trigger is_nested_call in_event_chain from_hot_container hot_workspaces cold_shared_workspaces coalesce_callers coalesce_flights"/>
+    <Type name="TaskOutcome" fields="ok value error event_diagnostics teardown_diagnostics coalesced executed_hot"/>
+    <Abstract name="TaskContext" members="workspace_root caller_cwd caller_env cancel_token effective_priority emit emit_imm invoke_task invoke_typed report_progress"/>
+    <Abstract name="YscbModule" members="module_id tasks on_init on_start"/>
+  </Contracts>
+
+  <!-- ============================================================ -->
+  <!-- 5. STATE MACHINES                                              -->
+  <!-- ============================================================ -->
+  <StateMachines>
+    <StateMachine id="SM-CONTAINER" owner="WorkerContainerLifecycle" file="execution/lifecycle/engine.py:548-761">
+      <State name="UNINITIALIZED" initial="true"/><State name="BOOTING" note="never assigned by this class"/>
+      <State name="WARMING"/><State name="READY"/>
+      <State name="QUIESCED" virtual="true" note="derived from _quiesced_flag / quiesce_probe, never stored"/>
+      <State name="DRAINING"/><State name="STOPPED" terminal="true"/>
+      <Transition from="UNINITIALIZED|BOOTING" to="WARMING" trigger="warmup()" lines="643-645"/>
+      <Transition from="WARMING" to="READY" trigger="warmup() done (degraded hooks isolated, R01 #10)" lines="657-659"/>
+      <Transition from="WARMING" to="(previous)" trigger="BaseException in warmup" lines="652-656"/>
+      <Transition from="UNINITIALIZED|BOOTING" to="READY" trigger="reload_modules()" lines="720-721" undocumented="true"/>
+      <Transition from="READY" to="QUIESCED" trigger="quiesce() flag" lines="708-715"/>
+      <Transition from="QUIESCED" to="READY" trigger="resume() flag" note="no config reload despite lifecycle.md"/>
+      <Transition from="*" to="DRAINING" trigger="drain_and_stop()" note="spec allows only from QUIESCED"/>
+      <Transition from="DRAINING" to="STOPPED" trigger="close_all_lifo done"/>
+      <Inconsistency ref="F-LC-08">daemon/service.py keeps a parallel _phase ContainerState (two sources of truth)</Inconsistency>
+    </StateMachine>
+
+    <StateMachine id="SM-DAEMON" owner="WorkspaceDaemon._phase" file="execution/daemon/service.py:806-2237">
+      <State name="BOOTING" initial="true"/><State name="WARMING"/><State name="READY"/>
+      <State name="QUIESCED" virtual="true" note="effective state via _effective_state_locked L876-881"/>
+      <State name="DRAINING"/><State name="STOPPED" terminal="true"/>
+      <Transition from="BOOTING" to="WARMING" trigger="watchers start -> listener.start -> daemon.json(0600)" lines="1132-1151"/>
+      <Transition from="WARMING" to="READY" trigger="warmup under shared installer.lock (30s)" lines="1160-1161"/>
+      <Transition from="WARMING" to="WARMING" trigger="installer.lock busy -> _deferred_boot_warmup" lines="1220"/>
+      <Transition from="*" to="DRAINING" trigger="request_shutdown | Idle TTL | core handoff" lines="953-956,1353-1370"/>
+      <Transition from="DRAINING" to="STOPPED" trigger="_execute_full_shutdown -> teardown" lines="1301-1348"/>
+      <CoreHandoff steps="detect core sha256 diff -> handoff_lease.json(10s) -> DRAINING -> stop listener/watchers/periodic -> dispatcher.shutdown -> rm daemon.json -> release daemon.lock -> spawn successor under spawn.lock"/>
+    </StateMachine>
+
+    <StateMachine id="SM-COLDTURN" owner="ColdTurnRunner" file="execution/lifecycle/engine.py:464-531">
+      <Step n="1" name="bootstrap check (installer lock, fingerprint)" impl="on_bootstrap_check hook; caller ignores session_stack (gates.py:1331)"/>
+      <Step n="2" name="primary step" impl="TurnEngine.execute_turn -> run_primary_step"/>
+      <Step n="3-4" name="event drain loop (freeze_and_swap)" impl="TurnEngine.drain_turn_scope"/>
+      <Step n="5" name="finalize turn events / cascade" impl="finalize_turn_events"/>
+      <Step n="6" name="LIFO teardown" impl="scoped_stack then session_stack"/>
+    </StateMachine>
+
+    <StateMachine id="SM-HOTTURN" owner="TurnEngine (kind=HOT_*)" file="execution/lifecycle/engine.py:244-396" steps="2-5" note="no dedicated HotTurn class"/>
+
+    <StateMachine id="SM-SLOT" owner="_ModuleSlot" file="execution/runtime/module_slot.py:582-606">
+      <State name="UNLOADED" initial="true"/><State name="ARTIFACT_LOADED"/><State name="INITIALIZED"/><State name="STARTED"/>
+      <Transition from="UNLOADED" to="ARTIFACT_LOADED" trigger="ProtectedModuleLoader load"/>
+      <Transition from="ARTIFACT_LOADED" to="INITIALIZED" trigger="on_init"/>
+      <Transition from="INITIALIZED" to="STARTED" trigger="on_start"/>
+      <Transition from="*" to="UNLOADED" trigger="unload/retire (epoch-guarded)"/>
+    </StateMachine>
+
+    <StateMachine id="SM-WORKER-HANDLE" owner="_ActiveWorkerHandle" file="execution/runtime/worker_pool.py:64-366">
+      <State name="HEALTHY" initial="true"/><State name="TAINTED"/><State name="RELOAD_DRAINING"/>
+      <State name="RELOAD_CLOSING"/><State name="CLOSING" terminal="true"/>
+      <Transition from="HEALTHY" to="TAINTED" trigger="timeout | transport lost | uncooperative cancel"/>
+      <Transition from="HEALTHY" to="RELOAD_DRAINING" trigger="module reload with in-flight steps"/>
+      <Transition from="RELOAD_DRAINING" to="RELOAD_CLOSING" trigger="drain complete"/>
+      <Transition from="*" to="CLOSING" trigger="shutdown / kill tree"/>
+    </StateMachine>
+
+    <StateMachine id="SM-HOLDER" owner="_ActiveHolder in _ResourceBucket" file="execution/runtime/coordinator.py:711-775,2134-2653">
+      <State name="QUEUED"/><State name="ACTIVE"/><State name="LOCK_LIVE"/><State name="PINNED_LIVE"/>
+      <State name="REENTRANT_RUN"/><State name="LINGERING"/><State name="RELEASED" terminal="true"/><State name="ABORTED" terminal="true"/>
+      <Transition from="(admit)" to="ACTIVE" trigger="empty bucket"/>
+      <Transition from="(admit)" to="QUEUED" trigger="busy (FG-first then FIFO)"/>
+      <Transition from="QUEUED" to="ACTIVE" trigger="promoted"/>
+      <Transition from="QUEUED" to="ABORTED" trigger="cancel | timeout | superseded PREEMPT"/>
+      <Transition from="QUEUED" to="REENTRANT_RUN" trigger="same-stack ancestor live AND both SERIALIZE"/>
+      <Transition from="ACTIVE" to="LOCK_LIVE" trigger="flock res_*.lock + owner.json"/>
+      <Transition from="ACTIVE" to="PINNED_LIVE" trigger="cross-proc ancestor owner + shared .pin"/>
+      <Transition from="LOCK_LIVE|PINNED_LIVE" to="LINGERING" trigger="leader_fn done, reentrant guards pending (≤30s)"/>
+      <Transition from="LOCK_LIVE|PINNED_LIVE|LINGERING" to="RELEASED" trigger="unlink owner under excl pin, unlock, promote next"/>
+      <Inconsistency ref="F-01">cross-process legal reentrant descendant can be queued behind an unrelated holder -> deadlock</Inconsistency>
+    </StateMachine>
+
+    <StateMachine id="SM-FLIGHT" owner="StepFlight" file="execution/runtime/coordinator.py:356-673">
+      <State name="OPEN"/><State name="SEALED"/><State name="FINALIZING"/><State name="FINALIZED"/><State name="DONE" terminal="true"/>
+      <Transition from="OPEN" to="SEALED" trigger="seal | complete | all evicted | common hop"/>
+      <Transition from="SEALED" to="FINALIZING" trigger="seal_and_finalize (aborts buffered)"/>
+      <Transition from="FINALIZING" to="FINALIZED" trigger="abort_hook bound + replay"/>
+      <Transition from="*" to="DONE" trigger="complete(outcome|exc)"/>
+      <SlotStates values="ACTIVE DETACHED EVICTED WOKEN" note="last detach cancels host_token"/>
+    </StateMachine>
+
+    <StateMachine id="SM-INSTALLER-LEASE" owner="_ColdLockLease" file="execution/runtime/gates.py:154-179,1318-1926">
+      <State name="NONE"/><State name="SHARED(n)"/><State name="EXCL"/><State name="EXCL+SHARED"/><State name="CROSS_PROC_EXCL"/>
+      <Transition from="NONE" to="SHARED(n)" trigger="cold turn"/>
+      <Transition from="NONE" to="EXCL" trigger="mutation turn (+owner.json)"/>
+      <Transition from="NONE" to="CROSS_PROC_EXCL" trigger="pin on same-tree owner"/>
+      <Transition from="SHARED(n)" to="EXCL+SHARED" trigger="nested cold mutation upgrade"/>
+      <Transition from="EXCL+SHARED" to="SHARED(n)" trigger="last excl release (downgrade)"/>
+      <Transition from="*" to="NONE" trigger="refs==0"/>
+    </StateMachine>
+
+    <StateMachine id="SM-FILELOCK" owner="FileLock._LockPhase" file="filesystem/fs/lock.py:113-575">
+      <State name="IDLE" initial="true"/><State name="ACQUIRING"/><State name="HELD"/><State name="TRANSITIONING"/><State name="RELEASING"/>
+      <Transition from="IDLE" to="ACQUIRING" trigger="acquire (10ms polling, .xchg shared gate)"/>
+      <Transition from="ACQUIRING" to="HELD" trigger="lock obtained"/>
+      <Transition from="HELD" to="TRANSITIONING" trigger="upgrade_to_exclusive | downgrade_to_shared"/>
+      <Transition from="TRANSITIONING" to="HELD" trigger="transition ok / restored"/>
+      <Transition from="HELD|ACQUIRING|TRANSITIONING" to="RELEASING" trigger="release"/>
+      <Transition from="RELEASING" to="IDLE" trigger="unlock+close"/>
+      <Inconsistency ref="F-FS-06">upgrade timeout raises ILLEGAL_LOCK_REENTRANCY (fatal turn code)</Inconsistency>
+      <Inconsistency ref="F-FS-08">two shared holders upgrading with timeout=None deadlock</Inconsistency>
+    </StateMachine>
+
+    <StateMachine id="SM-WATCHER" owner="PollingDirectoryWatcher" file="filesystem/fs/watcher.py:101-339">
+      <State name="CONSTRUCTED"/><State name="RUNNING"/><State name="STOPPED"/>
+      <Transition from="CONSTRUCTED|STOPPED" to="RUNNING" trigger="start() full snapshot under lock"/>
+      <Transition from="RUNNING" to="STOPPED" trigger="stop() join max(2,2*poll)s"/>
+      <Batching rule="debounce quiet period, or max_defer=max(6*debounce,2s); failed callback requeues forever (no backoff)"/>
+    </StateMachine>
+
+    <StateMachine id="SM-PROCTREE" owner="ManagedProcessTree" file="foundation/proc.py:972-1216">
+      <State name="RUNNING"/><State name="EXITED_UNREAPED"/><State name="CLEANED" terminal="true"/>
+      <Transition from="RUNNING" to="EXITED_UNREAPED" trigger="waitid WNOWAIT"/>
+      <Transition from="EXITED_UNREAPED|RUNNING" to="CLEANED" trigger="terminate_tree: graceful -> grace poll -> force kill + reap + descendant sweep"/>
+    </StateMachine>
+  </StateMachines>
+
+  <!-- ============================================================ -->
+  <!-- 6. PROTOCOLS                                                   -->
+  <!-- ============================================================ -->
+  <Protocols>
+    <Protocol id="RPC" file="execution/rpc/channel.py" version="2">
+      <Framing header="&gt;I (u32 big-endian length)" body="UTF-8 JSON {kind, stream_id, payload[, meta]}" maxFrame="64 MiB" maxHandshakeFrame="64 KiB"/>
+      <Limits concurrentHandshakes="32" inboundCallsPerChannel="512" inboundControlsPerChannel="128" pendingProgress="4096 (drop-oldest)"/>
+      <FrameKinds>HELLO HELLO_ACK CALL_START CALL_ACCEPTED PROGRESS CANCEL CALL_RESULT CONTROL_REQUEST CONTROL_QUIESCE CONTROL_RESUME CONTROL_STATUS CONTROL_RELOAD CONTROL_STOP CONTROL_ACK PING PONG</FrameKinds>
+      <StreamIdRules control="sid=0" data="sid&gt;0; initiator odd from 1, acceptor even from 2, step 2, wrap 2^31, skip pending" violation="close channel"/>
+      <Handshake client="HELLO{protocol, auth_token, boot_id, workspace_root}" server="HELLO_ACK{ok, boot_id, protocol}"
+                 auth="constant-time token+boot_id compare" mutual="false" note="spec claims two-way verification (F-RPC-02)"/>
+      <CallLifecycle>CALL_START -&gt; on_call(ack_accepted, emit_progress, token) -&gt; CALL_ACCEPTED(wait_flushed) -&gt; PROGRESS* -&gt; CALL_RESULT</CallLifecycle>
+      <RetryPolicy owner="PersistentRpcSession" lines="1746-1915"
+                   p0Retry="not was_accepted AND (transport_lost OR rejected_before_accept), attempt&lt;2, not TIMEOUT/CANCELLED/PREEMPTED/PAYLOAD_TOO_LARGE"
+                   p3Retry="never" caveat="was_accepted is client-observed; server may have started side effects (F-RPC-01)"/>
+      <Oversize callStart="PAYLOAD_TOO_LARGE outcome" callResult="ok:false + meta PAYLOAD_TOO_LARGE" controlAck="ok:false"
+                progressAndCancel="silently dropped" inbound="channel closed -&gt; TRANSPORT_LOST"/>
+    </Protocol>
+    <Protocol id="WORKER-WIRE" file="execution/runtime/wire.py">
+      <Commands>WARMUP UNLOAD_MODULES COMPUTE_EQUIV MAP_BATCH RUN_STEP</Commands>
+      <Callbacks>EMIT_IMM INVOKE_TASK</Callbacks>
+      <Note>Tier-1 nested invoke_task always returns to master dispatcher (R01 #13)</Note>
+    </Protocol>
+    <Protocol id="FS-LEASE" files="filesystem/fs/lock.py, execution/runtime/coordinator.py">
+      <Artifacts>.cache/locks/res_&lt;prefix24&gt;_&lt;sha12&gt;.{lock,owner.json,pin}; .cache/daemon/{daemon.lock,daemon.json(0600),spawn.lock,spawn_lease.json,handoff_lease.json}; installer.lock</Artifacts>
+      <Rule>owner.json unlinked only under exclusive .pin; cross-proc reentry takes shared .pin, SERIALIZE-only</Rule>
+    </Protocol>
+  </Protocols>
+
+  <!-- ============================================================ -->
+  <!-- 7. DISPATCH PIPELINES                                          -->
+  <!-- ============================================================ -->
+  <Pipelines file="execution/runtime/dispatcher.py">
+    <Pipeline id="P-COLD" name="CLI cold dispatch">
+      <Stage n="0" fn="invoke -&gt; _invoke_raw" lines="616,738" does="cancel check, wire validation, sanitize env, child-ws delegation, pin flights"/>
+      <Stage n="1" fn="_validate_stage1_gates -&gt; gates.validate_stage1_gates" lines="1654; gates:354" does="container/quiesce/degraded, exposure, security, TTY, mutation, dispatch-mode, call cycle"/>
+      <Stage n="2" fn="_route_external_turn" lines="882" does="COLD_ONLY/FORCE_COLD/no daemon -&gt; local"/>
+      <Stage n="3" fn="_execute_registered_turn -&gt; ColdInstallerLockManager.run_cold_turn -&gt; TurnEngine" lines="1799"/>
+      <Stage n="4" fn="_run_validated_step (Stage 1 again) -&gt; _coordinate_and_dispatch_step -&gt; ResourceCoordinator.execute" lines="1950,2199"/>
+      <Stage n="5" fn="StepHostRunner.dispatch_to_host -&gt; Tier0 thread | OneShotVenvHost" lines="step_host:496-613"/>
+      <Stage n="6" fn="report_to_outcome; background auto_spawn in finally" lines="step_host:358; 950-952"/>
+    </Pipeline>
+    <Pipeline id="P-HOT" name="Hot dispatch via daemon">
+      <Stage n="client" fn="_try_remote_daemon_call -&gt; PersistentRpcSession.call | call_ephemeral_daemon_rpc" lines="1695" fallback="not accepted -&gt; local cold turn"/>
+      <Stage n="daemon" fn="WorkspaceDaemon.on_call -&gt; invoke_daemon_rpc" lines="629-661" does="decode envelope; trusts approval_scope/call_stack/lineage; forces from_hot_container"/>
+      <Stage n="turn" fn="_wait_hot_reload_gate -&gt; Stage 1 -&gt; begin_hot_turn -&gt; TurnEngine -&gt; finalize (FlightCascade)" lines="720,1794,1858"/>
+    </Pipeline>
+    <Pipeline id="P-NESTED" name="Nested invoke_task">
+      <Stage n="entry" fn="Tier0 ctx.invoke_task | Tier1 WorkerCallbackBridge" lines="module_slot:534; step_host:100"/>
+      <Stage n="route" fn="_invoke_nested_within_turn -&gt; _should_route_nested_externally" lines="2408,2510" does="cross-ws or STRICT_HOT -&gt; _invoke_raw; else same-ws step"/>
+      <Stage n="mutation" fn="_run_upgraded_nested_cold_mutation" lines="2542" does="exclusive installer lock upgrade (cold only)"/>
+      <Stage n="cycle" fn="turn_session.record_capture_invoked_task" lines="turn_session:568" does="CallCycleError"/>
+    </Pipeline>
+    <Pipeline id="P-EVENT" name="Event-subscription triggered">
+      <Stage n="deferred" fn="run_event_step -&gt; find_matching_subscribers -&gt; filter_for_subscription -&gt; map_event_batch -&gt; step" lines="1346-1502" does="internal_trigger=True, in_event_chain=True, approval_scope=∅, allow_conditional default True"/>
+      <Stage n="immediate" fn="ctx.emit_imm -&gt; _dispatch_immediate_event" lines="2620-2736"/>
+      <Stage n="background" fn="emit_background_event; daemon periodic/space -&gt; invoke(BACKGROUND)" lines="1178; daemon:2209"/>
+    </Pipeline>
+  </Pipelines>
+
+  <!-- ============================================================ -->
+  <!-- 8. GATES                                                       -->
+  <!-- ============================================================ -->
+  <Gates>
+    <Gate name="ModuleBlock" code="DAEMON_UNAVAILABLE|MODULE_DEGRADED" at="dispatcher:1662-1680"/>
+    <Gate name="TaskLookup" code="TASK_NOT_FOUND" at="gates:366-374"/>
+    <Gate name="Exposure" code="EXPOSURE_DENIED" at="gates:237-248"/>
+    <Gate name="Conditional" code="SECURITY_GATED" at="gates:249-254" gap="not tightened on event chains / cross-ws (F-RT-02)"/>
+    <Gate name="GatedContext" code="SECURITY_GATED" at="gates:255-261" rule="no internal trigger / event chain / BACKGROUND"/>
+    <Gate name="GatedApproval" code="SECURITY_GATED" at="gates:262-267" rule="task_id ∈ approval_scope"/>
+    <Gate name="InteractiveTTY" code="TTY_REQUIRED" at="gates:281-297" gap="caller_surface==CLI not checked"/>
+    <Gate name="HotMutation" code="HOT_MUTATION_FORBIDDEN" at="gates:298-311"/>
+    <Gate name="ColdOnly" code="COLD_DISPATCH_FORBIDDEN" at="gates:330-337"/>
+    <Gate name="DaemonOnlyVsForceCold" code="COLD_DISPATCH_FORBIDDEN" at="gates:339-344"/>
+    <Gate name="DaemonOnlyAvailability" code="DAEMON_UNAVAILABLE" at="gates:345-350"/>
+    <Gate name="CallCycle" code="CALL_CYCLE_DETECTED" at="gates:388-401; coordinator:1940-1956"/>
+    <Gate name="QuiesceDrainReload" code="TASK_TIMEOUT|DAEMON_UNAVAILABLE" at="gates:573-1285"/>
+    <Gate name="ModuleBoundary" code="SECURITY_GATED" at="module_slot:440-453"/>
+    <Gate name="ManifestDrift" code="MODULE_DEGRADED" at="module_slot:653-663"/>
+    <Gate name="LockReentrancy" code="ILLEGAL_LOCK_REENTRANCY" at="coordinator:2039-2098,2404-2448"/>
+    <Gate name="InstallerUpgrade" code="ILLEGAL_LOCK_REENTRANCY" at="gates:1520-1561,1697-1700,1921-1926"/>
+    <Gate name="FrameSize" code="PAYLOAD_TOO_LARGE" at="channel:664-671,1344-1353,2001-2014"/>
+  </Gates>
+
+  <!-- ============================================================ -->
+  <!-- 9. INVARIANTS: claimed vs enforced                             -->
+  <!-- ============================================================ -->
+  <Invariants>
+    <Invariant id="INV-01" source="R01 §2.6" text="mutation_scope≠NONE ⇒ COLD_ONLY, no triggers, no hot callers" enforced="YES" at="contracts:230-236; gates:298-311"/>
+    <Invariant id="INV-02" source="R01 §2.6" text="GATED never bound to INTERNAL_TRIGGER/subscriptions/periodic" enforced="YES" at="contracts:244-246"/>
+    <Invariant id="INV-03" source="R01 §2.6" text="INTERACTIVE_TTY ⇒ COLD_ONLY + CLI_ONESHOT + FOREGROUND" enforced="PARTIAL" at="contracts:228; gates:281-297" gap="CLI surface unchecked; SDK_ONLY+TTY constructible"/>
+    <Invariant id="INV-04" source="R01 §2.6" text="DAEMON_ONLY + FORCE_COLD / sandbox ⇒ deterministic reject" enforced="YES" at="gates:339-350"/>
+    <Invariant id="INV-05" source="DR-01" text="all dispatch goes through execution.runtime" enforced="YES (kernel)" gap="no import allowlist for downstream modules at runtime"/>
+    <Invariant id="INV-06" source="R01 RC-05" text="accepted (P3) non-idempotent calls are never re-run" enforced="PARTIAL" gap="F-RPC-01"/>
+    <Invariant id="INV-07" source="DR-05" text="zero global singletons" enforced="NO" evidence="SignalWakeupGuard._MUX, DataclassCodec._CACHE, importlib.import_module patch, atexit"/>
+    <Invariant id="INV-08" source="DR-05" text="zero Any / print / reflection in kernel" enforced="YES" at="verify Gate 0 (verify:2420-2477)"/>
+    <Invariant id="INV-09" source="DR-05" text="downstream modules: no open()/os.path/threading.Lock/pickle/private subprocess" enforced="NO" gap="dev check 2.0 not built; Gate 0 does not audit templates"/>
+    <Invariant id="INV-10" source="ROADMAP §3.1" text="downstream imports only surface.sdk + foundation.primitives/errors" enforced="NO" gap="surface.sdk absent; all test modules import kernel internals"/>
+    <Invariant id="INV-11" source="ROADMAP DR-04" text="non-cooperative work can be force-killed to release locks" enforced="PARTIAL" gap="Tier 0 threads unkillable; hot lock held until thread exits"/>
+    <Invariant id="INV-12" source="atomic.py docstring" text="symlink targets/parents rejected" enforced="PARTIAL" gap="HostPath realpaths at construction; check-then-act races"/>
+    <Invariant id="INV-13" source="spawn_detached" text="detached process survives parent tree teardown" enforced="PLATFORM_DEPENDENT" gap="F-PROC-01"/>
+    <Invariant id="INV-14" source="lifecycle.md" text="WorkerContainerLifecycle is the single source of truth" enforced="NO" gap="daemon _phase duplicates it"/>
+  </Invariants>
+
+  <!-- ============================================================ -->
+  <!-- 10. R01 §4 SPEC FIXES                                          -->
+  <!-- ============================================================ -->
+  <SpecFixes source="core_v2/R01_execution_orthogonal_research.md §4">
+    <Fix n="1" topic="caller_cwd / caller_env allowlist" status="IMPLEMENTED" at="contracts:48-97,491-492"/>
+    <Fix n="2" topic="ConfigAndContributesWatcher + cold Step-1 fingerprint" status="PARTIAL" at="daemon:1971-1981 (generic watcher); lifecycle hook only"/>
+    <Fix n="3" topic="idle sessions don't hold TTL; P0 reconnect" status="IMPLEMENTED" at="channel:1640-1671,1809-1904"/>
+    <Fix n="4" topic="COALESCE equivalence_key" status="IMPLEMENTED" note="different key queues as separate flight, cold turns disable COALESCE"/>
+    <Fix n="5" topic="HELD_BY_SAME_CALLSTACK reentrancy" status="IMPLEMENTED" at="coordinator:1581,2076-2098"/>
+    <Fix n="6" topic="approval_scope on nested calls" status="IMPLEMENTED" at="gates:255-267; dispatcher:2482,2505"/>
+    <Fix n="7" topic="SelfMutationScope split" status="PARTIAL" note="MODULES vs CORE never differentiated"/>
+    <Fix n="8" topic="micro-batch cancel + force kill" status="PARTIAL" note="Tier 1 only; Tier 0 grace fixed 0.20s"/>
+    <Fix n="9" topic="64 MiB frame guard both ends" status="PARTIAL" note="PROGRESS/CANCEL dropped silently; inbound -&gt; TRANSPORT_LOST"/>
+    <Fix n="10" topic="warmup failure isolation" status="IMPLEMENTED" at="lifecycle:647-684"/>
+    <Fix n="11" topic="outbox base_lineage" status="IMPLEMENTED" at="event:355-382"/>
+    <Fix n="12" topic="periodic config gate + fixed-delay" status="IMPLEMENTED" at="daemon:461-688"/>
+    <Fix n="13" topic="venv_group calls via master" status="IMPLEMENTED" at="worker_entry:320; route_index:246-259"/>
+  </SpecFixes>
+
+  <!-- ============================================================ -->
+  <!-- 11. NAMING MAP (ROADMAP/R01 name -> code)                      -->
+  <!-- ============================================================ -->
+  <NamingMap>
+    <Map doc="ProcessTreeSupervisor" code="ManagedProcessTree" status="RENAMED"/>
+    <Map doc="AtomicFs" code="atomic_* free functions" status="RESHAPED"/>
+    <Map doc="NativeFsWatcher" code="PollingDirectoryWatcher" status="RESHAPED (not native)"/>
+    <Map doc="ColdTurnLifecycle" code="ColdTurnRunner" status="RENAMED"/>
+    <Map doc="HotTurnLifecycle" code="TurnEngine" status="RENAMED"/>
+    <Map doc="PersistentRpcClient" code="PersistentRpcSession" status="RENAMED"/>
+    <Map doc="TaskCoordinator" code="ResourceCoordinator" status="RENAMED"/>
+    <Map doc="Tier1WorkerPool" code="Tier1WorkerPool(Protocol) + HotWorkerPool" status="SPLIT"/>
+    <Map doc="ColdSubprocessBridge" code="OneShotVenvHost" status="RENAMED"/>
+    <Map doc="ModuleContainer" code="LocalModuleSlotRegistry" status="RENAMED"/>
+    <Map doc="TaskSandbox" code="(guard_standard_streams only)" status="MISSING"/>
+    <Map doc="WorkspaceSpaceWatcher / ModulesHotReloadWatcher / ConfigAndContributesWatcher" code="3× PollingDirectoryWatcher" status="MISSING"/>
+    <Map doc="SelfMutationScope.MUTATES_MODULES_OR_VENV / MUTATES_CORE_KERNEL" code="MUTATES_MODULES / MUTATES_CORE" status="RENAMED"/>
+    <Map doc="'常駐五態'" code="ContainerState (7 members)" status="DIVERGED"/>
+  </NamingMap>
+
+  <!-- ============================================================ -->
+  <!-- 12. VERIFICATION ASSET                                         -->
+  <!-- ============================================================ -->
+  <Verification file="core_v2/verify_execution_live.py" loc="23381" mocks="none" resourceWarning="error" orphanCheck="per stage">
+    <Gate0 fn="verify_gate0_ast_architecture" lines="3577-3600"
+           rules="denylist DAG, no Any/print/getattr/eval/exec, ≤6 params, ≤75 LOC, depth ≤3, get_type_hints all modules, spec↔code __all__ parity for execution/*.md"
+           gaps="denylist not allowlist; runtime.md (stale) unguarded; templates not audited for DR-05; test itself mutates sys.path"/>
+    <Fixtures modules="space vsc dev (Tier 0); ast kdb (Tier 1 idx_group); gdrive (Tier 1 dedicated); broken_opt (warmup fault)" venvs="shared_venv dedicated_gdrive_venv"/>
+    <EndToEnd cases="RC-01 RC-02 RC-03 RC-04 RC-05 RC-06 RC-07 RC-08" coverage="23 factors / 77 levels (per R01)"/>
+    <DomainSuites zeroArg="28" wsOnly="88" runtimeDaemon="127" total="243"/>
+    <Gap>No per-domain unplug tests (ROADMAP Wave 1 exit gate)</Gap>
+    <Gap>Suite is the de-facto composition root; behaviour of real surface.cli/yscb.py wiring is untested</Gap>
+    <Gap>Orphan adoption / backup failover named in suite function names but not present as kernel concepts (coordinator audit)</Gap>
+  </Verification>
+
+  <!-- ============================================================ -->
+  <!-- 13. CONSOLIDATED FINDINGS                                      -->
+  <!--   verified="spot" = re-checked against source by coordinator   -->
+  <!-- ============================================================ -->
+  <Findings>
+    <!-- ===== HIGH ===== -->
+    <Finding id="F-01" severity="HIGH" category="Deadlock" domain="D5.runtime" verified="audit"
+             evidence="coordinator.py:1590,2055-2073,2390-2417,1453-1466">
+      Cross-process SERIALIZE reentrancy can deadlock: A holds res_K and calls daemon B; in B an unrelated holder C
+      already polls A's lock without deadline; A's legal reentrant descendant W is queued behind C (C→A→W→C).
+      Cross-proc check validates legality but never lets W bypass the queue.
+    </Finding>
+    <Finding id="F-02" severity="HIGH" category="SeamDesign" domain="D5↔D3/D4" verified="spot"
+             evidence="contracts.py:752-822; ROADMAP §3 rules 2,3.1">
+      ModuleProviderPort returns execution-owned DTOs (ModuleDescriptor, TaskRouteSpec, ...). The future providers
+      (packaging, metadata) are forbidden to import execution, so the port cannot be implemented without an
+      unspecified adapter in execution/surface. Today only the test performs this translation.
+    </Finding>
+    <Finding id="F-03" severity="HIGH" category="PlatformInconsistency" domain="D1.proc" verified="spot"
+             evidence="proc.py:286-312 (env=dict(os.environ); BREAKAWAY fallback), 552-576, 138-160">
+      spawn_detached is not uniformly detached: inherits _YSCB_TREE_ID (Linux env-token sweep kills it); on Windows
+      Job lacks BREAKAWAY_OK so fallback stays in job; macOS survives. A daemon spawned from a managed child dies
+      on Linux/Windows but not macOS.
+    </Finding>
+    <Finding id="F-04" severity="HIGH" category="DocDrift" domain="docs" verified="spot"
+             evidence="core_v2/sub_module_design/runtime.md L1-21 vs execution/runtime.md">
+      Stale sub_module_design/runtime.md (L0-L5 model, core/runtime/, forbids rpc/lifecycle, entities InvocationEnvelope/
+      ExecutionOutcome/RuntimeEngine) directly contradicts execution/runtime.md and code; unguarded by Gate 0 parity.
+    </Finding>
+    <Finding id="F-05" severity="HIGH" category="ProcessPlan" domain="ROADMAP" verified="spot"
+             evidence="ROADMAP.md:126; file inventory">
+      Wave-1 plan (all specs + blind review first, Domain 1→6 bottom-up, per-domain unplug tests) contradicts reality:
+      D5 fully built, D1/D2 built without specs, D3/D4/D6 absent, only monolithic live suite.
+    </Finding>
+
+    <!-- ===== MEDIUM: correctness / guarantees ===== -->
+    <Finding id="F-RPC-01" severity="MED" category="Guarantee" domain="D5.rpc" verified="spot"
+             evidence="channel.py:1262-1275 (wait_flushed), 1302-1303, 1811-1817">
+      P3 never-rerun is only client-observed: CALL_ACCEPTED flushed but unread, or handler side-effects before
+      ack then raise, yields was_accepted=False → transparent retry. Requires an 'ack before side effects' rule
+      that is not specified.
+    </Finding>
+    <Finding id="F-RPC-02" severity="MED" category="Security" domain="D5.rpc" evidence="channel.py:1366-1571">
+      Handshake is not mutual (server proves nothing beyond echoing boot_id); spec claims two-way verification.
+    </Finding>
+    <Finding id="F-RT-01" severity="MED" category="TrustBoundary" domain="D5.runtime" verified="spot"
+             evidence="dispatcher.py:636-661">
+      Daemon trusts client-supplied approval_scope/call_stack/lineage/hot_workspaces; any token holder can assert
+      GATED approval. Acceptable only if approval_scope is declared a UX gate, not a security boundary — undocumented.
+    </Finding>
+    <Finding id="F-RT-02" severity="MED" category="Gate" domain="D5.runtime" evidence="dispatcher.py:1481-1502,2506; runtime.md:359">
+      CONDITIONAL not tightened on event chains / cross-ws (allow_conditional defaults True); only GATED is.
+    </Finding>
+    <Finding id="F-RT-03" severity="MED" category="Gate" domain="D5.runtime" evidence="gates.py:298-305; dispatcher.py:2532-2540">
+      A HYBRID parent may nested-call a mutation task when running cold but is rejected when hot — outcome depends on daemon state.
+    </Finding>
+    <Finding id="F-RT-04" severity="MED" category="Race" domain="D5.runtime" evidence="dispatcher.py:521-527,854">
+      Child dispatcher re-binds shared coordinators on every delegation without a lock.
+    </Finding>
+    <Finding id="F-RT-05" severity="MED" category="Liveness" domain="D5.runtime" evidence="step_host.py:424-456,695,786-791; coordinator.py:1471-1474">
+      Tier-0 work (steps, equivalence_fn, mappers) cannot be killed; hot resource lock held until thread exits;
+      Tier-0 equivalence/mapper have no timeout.
+    </Finding>
+    <Finding id="F-RT-06" severity="MED" category="Semantics" domain="D5.runtime" evidence="dispatcher.py:713-717,1425-1428">
+      Primary timeout_ms bounds the whole turn including deferred subscribers; undocumented.
+    </Finding>
+    <Finding id="F-RT-07" severity="MED" category="Isolation" domain="D5.runtime" verified="spot" evidence="worker_pool.py:1580-1590,1651-1679">
+      OneShotVenvHost keys handles by group only ('per-Turn' docstring); concurrent cold turns share a worker and one turn's teardown kills it.
+    </Finding>
+    <Finding id="F-RT-08" severity="MED" category="Priority" domain="D5.runtime" evidence="coordinator.py:2151-2176,2187,2209,2211">
+      Late-elevated followers never speed the shared flight; leader's external priority handle leaks elevation; PREEMPT cancels all COALESCE participants.
+    </Finding>
+    <Finding id="F-RT-09" severity="MED" category="GlobalState" domain="D5.runtime" verified="spot" evidence="module_slot.py:343-374">
+      ProtectedModuleLoader monkey-patches process-global importlib.import_module (contradicts DR-05 'zero global singletons').
+    </Finding>
+    <Finding id="F-RT-10" severity="MED" category="FailOpen" domain="D5.runtime" evidence="coordinator.py:1204-1209">
+      Cross-workspace join cycle check fails open when remote daemon is unreachable (blocks ≤1.5s per ancestor).
+    </Finding>
+    <Finding id="F-FS-06" severity="MED" category="ErrorSemantics" domain="D2.fs" verified="spot" evidence="lock.py:79,94,467,491,500,509; errors.py:121-127">
+      Lock upgrade timeout/displacement raises ILLEGAL_LOCK_REENTRANCY (fatal turn code) — contention aborts turns;
+      lock I/O faults mapped to DAEMON_UNAVAILABLE (masked as transient quiesce).
+    </Finding>
+    <Finding id="F-FS-07" severity="MED" category="ErrorSemantics" domain="D2.fs" evidence="lock.py:275,302,360,391,436,458">
+      FileLock cancellation raises YscbError(TASK_CANCELLED) not TaskCancelledException.
+    </Finding>
+    <Finding id="F-FS-08" severity="MED" category="Deadlock" domain="D2.fs" evidence="lock.py:421-475,533">
+      Two shared holders upgrading with timeout=None deadlock; no fairness (pure polling).
+    </Finding>
+    <Finding id="F-FS-03" severity="MED" category="Security" domain="D2.fs" evidence="primitives.py:190-212; atomic.py:91,291-301">
+      Symlink rejection largely defeated by HostPath realpath at construction; path-based check-then-act races (no dirfd/openat).
+    </Finding>
+    <Finding id="F-FS-05" severity="MED" category="Durability" domain="D2.fs" evidence="atomic.py:249,261-264">
+      fsync errors swallowed, parent dir never fsynced after replace, file mode lost when file_mode=None.
+    </Finding>
+    <Finding id="F-FS-09" severity="MED" category="Staleness" domain="D2.fs" evidence="lock.py:596-605; proc.py:185">
+      read_live_owner_dict checks pid liveness without start-time fingerprint (PID reuse keeps dead owner live).
+    </Finding>
+    <Finding id="F-EV-03" severity="MED" category="SpecContradiction" domain="D5.event" evidence="event/engine.py:440-452; event.md §2.1">
+      UNORDERED fold anchors at first occurrence across intervening ORDERED envelopes; event.md contradicts itself (preserve boundaries vs anchor-first).
+    </Finding>
+    <Finding id="F-EV-04" severity="MED" category="SpecGap" domain="D5.event" evidence="event/engine.py:78-83,140,340">
+      Empty workspace_scope acts as undocumented wildcard; omitted scope makes cross-workspace same-EventId emissions conflict.
+    </Finding>
+    <Finding id="F-LC-05" severity="MED" category="APIConsistency" domain="D5.lifecycle" evidence="lifecycle/engine.py:274-279 vs 321-322">
+      execute_turn vs execute_event_turn report fatal errors differently.
+    </Finding>
+    <Finding id="F-LC-06" severity="MED" category="Leak" domain="D5.lifecycle" evidence="lifecycle/engine.py:52-68,640-659,755">
+      warmup/drain race: resources pushed after close_all_lifo never closed (no closed flag); concurrent warmup() can mark READY early.
+    </Finding>
+    <Finding id="F-LC-08" severity="MED" category="DualTruth" domain="D5.lifecycle+daemon" evidence="lifecycle:549; daemon:826,873-878">
+      Container state has two sources of truth (lifecycle _state + daemon _phase).
+    </Finding>
+    <Finding id="F-DM-01" severity="MED" category="SwallowedErrors" domain="D5.daemon" evidence="service.py:577-579,656,685-686,2220">
+      Periodic/background/bg-invoke failures silently dropped (no logger yet) — AGENTS anti-pattern #1.
+    </Finding>
+    <Finding id="F-DM-02" severity="MED" category="Default" domain="D5.daemon" evidence="service.py:896">
+      No default Idle TTL; daemon never idles out unless overridden.
+    </Finding>
+    <Finding id="F-VER-01" severity="MED" category="Enforcement" domain="verification" evidence="verify:2420-2477,3577-3600">
+      Gate 0 is a denylist, does not audit module templates for DR-05 bans / sdk-only imports; dev check 2.0 absent.
+    </Finding>
+    <Finding id="F-VER-02" severity="MED" category="Traceability" domain="verification" verified="spot" evidence="verify:5576,7595-11558">
+      ~15 suites named 'orphan / backup / failover / adoption' test emergent behaviour of symmetric COALESCE flights;
+      no such concepts exist in kernel vocabulary or specs — test naming diverged from design vocabulary.
+    </Finding>
+
+    <!-- ===== LOW (grouped) ===== -->
+    <FindingGroup severity="LOW" count="40+" note="details in audit transcripts">
+      <Item>ROADMAP/R01 naming drift (see NamingMap); '常駐五態' vs 7-member enum</Item>
+      <Item>foundation.observability scope drift (cancellation/deadline/stdout guard); proc→observability sibling edge</Item>
+      <Item>Oversize PROGRESS/CANCEL silently dropped; timeout CANCEL carries no reason; progress drop-oldest at 4096</Item>
+      <Item>DoubleBufferedEventQueue is a single swapped list; CausalLineage __post_init__ O(V²) vs O(V) claim; ValueError instead of EventCycleError for decoded conflicting lineage</Item>
+      <Item>begin_hot_turn performs no gating; execute_turn ignores kind/turn_id/token when scope passed</Item>
+      <Item>DaemonRpcInvokeEnvelope lacks routing_policy; DAEMON_ONLY nested-from-cold asymmetry</Item>
+      <Item>Tier-1 modules without declared_tasks silently have no routes; Tier-0 introspection imports code on cold rebuild (conflicts with 'zero module load')</Item>
+      <Item>Unbounded retry loops (_coordinate_and_dispatch_step, watcher callback requeue); widespread 10–20 ms polling</Item>
+      <Item>LifecycleReloadGate ~60 methods; coordinator 2654 LOC; 5 near-duplicate identity matchers</Item>
+      <Item>Windows suspended-child risk if NtResumeProcess fails; spawn_detached puts extra_env on argv</Item>
+      <Item>Daemon config injected twice (daemon + dispatcher) can diverge; periodic skipped tick counts as completion</Item>
+      <Item>MUTATES_MODULES vs MUTATES_CORE never differentiated</Item>
+    </FindingGroup>
+  </Findings>
+
+  <!-- ============================================================ -->
+  <!-- 14. RECOMMENDED RESOLUTION ORDER                               -->
+  <!-- ============================================================ -->
+  <Recommendations>
+    <Step order="1" type="doc" refs="F-04">Archive or delete sub_module_design/runtime.md; extend Gate 0 parity to fail on orphan spec files.</Step>
+    <Step order="2" type="process" refs="F-05">Amend ROADMAP Wave 1: declare execution a provisional spike, require port re-review once D2.vfs/space, D3, D4, D6 specs exist; reconcile NamingMap.</Step>
+    <Step order="3" type="design" refs="F-02 MissingPort:ContributesPort">Decide ModuleProviderPort DTO ownership (move route/descriptor VOs down to foundation/metadata, or spec an execution/surface adapter) before writing D3/D4 specs.</Step>
+    <Step order="4" type="design" refs="F-RPC-01 F-RT-01 F-RPC-02">Write the RPC trust model: ack-before-side-effects rule for NON_IDEMPOTENT tasks, whether approval_scope is a security boundary, mutual auth.</Step>
+    <Step order="5" type="fix" refs="F-01 F-FS-08 F-FS-06 F-FS-07">Fix lock layer: cross-proc reentrant descendant bypass, upgrade deadlock, non-fatal error code for contention, TaskCancelledException.</Step>
+    <Step order="6" type="fix" refs="F-03">Make spawn_detached uniform: strip _YSCB_TREE_ID, set JOB_OBJECT_LIMIT_BREAKAWAY_OK or fail loudly.</Step>
+    <Step order="7" type="fix" refs="F-LC-08 F-LC-06 F-DM-01 F-DM-02">Single source of truth for container state; closed-flag on LifoResourceStack; diagnostics for background failures; default Idle TTL.</Step>
+    <Step order="8" type="spec" refs="F-RT-02 F-RT-03 F-RT-06 F-EV-03 F-EV-04">Clarify gate/timeout/event-ordering semantics in specs, then align code.</Step>
+    <Step order="9" type="tooling" refs="F-VER-01 F-VER-02">Turn Gate 0 DAG into an allowlist, add downstream-module audit, rename suites to kernel vocabulary, add per-domain unplug tests.</Step>
+  </Recommendations>
+</CoreV2ArchitectureGraph>

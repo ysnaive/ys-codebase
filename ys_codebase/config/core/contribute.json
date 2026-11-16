@@ -11,14 +11,34 @@
         "dist",
         "target",
         "env",
-        "ys_codebase/release"
+        "ys_codebase/release",
+        "core_v2/.build",
+        "core_v2/.cache",
+        "core_v2/.config.local",
+        "core_v2/.mirror",
+        "core_v2/.modules",
+        "core_v2/.snapshots",
+        "core_v2/.storage.local",
+        "core_v2/.temp",
+        "core_v2/.venv"
       ],
       "watch": true
     },
     "gitignore": {
       "description": "母倉發布產物與建置壓縮包忽略規則",
-      "entries": ["project://"],
+      "entries": [
+        "project://"
+      ],
       "include": [
+        "core_v2/.build/",
+        "core_v2/.cache/",
+        "core_v2/.config.local/",
+        "core_v2/.mirror/",
+        "core_v2/.modules/",
+        "core_v2/.snapshots/",
+        "core_v2/.storage.local/",
+        "core_v2/.temp/",
+        "core_v2/.venv/",
         "ys_codebase/release/**/*.zip",
         "ys_codebase/release/yscb.py",
         "ys_codebase/release/yscb.py.sha256"
@@ -27,8 +47,13 @@
     },
     "source": {
       "description": "專案業務源碼空間",
-      "entries": ["module.source://"],
-      "presets": ["workspace", "!gitignore"],
+      "entries": [
+        "module.source://"
+      ],
+      "presets": [
+        "workspace",
+        "!gitignore"
+      ],
       "exclude": [
         "tests"
       ],
@@ -58,8 +83,13 @@
     },
     "cloud": {
       "description": "母倉核心研發資產雲端 1:1 鏡像同步空間",
-      "entries": ["project://"],
-      "presets": ["workspace", "!gitignore"],
+      "entries": [
+        "project://"
+      ],
+      "presets": [
+        "workspace",
+        "!gitignore"
+      ],
       "exclude": [
         "*.so",
         "*.dll",
@@ -67,7 +97,9 @@
         "*.class",
         "*.zip"
       ],
-      "include": ["*"],
+      "include": [
+        "*"
+      ],
       "hash_policy": "adaptive",
       "large_file_threshold_mb": 10,
       "follow_symlinks": false,

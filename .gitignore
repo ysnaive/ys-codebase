@@ -103,6 +103,15 @@ ys_codebase/.config.local/gdrive-support/**
 # [vscode-support]
 /.vscode/schemas/
 # [project]
+core_v2/.build/
+core_v2/.cache/
+core_v2/.config.local/
+core_v2/.mirror/
+core_v2/.modules/
+core_v2/.snapshots/
+core_v2/.storage.local/
+core_v2/.temp/
+core_v2/.venv/
 ys_codebase/release/**/*.zip
 ys_codebase/release/yscb.py
 ys_codebase/release/yscb.py.sha256
