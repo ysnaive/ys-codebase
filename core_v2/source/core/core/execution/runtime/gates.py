@@ -13,18 +13,22 @@ import weakref
 
 from core.execution.lifecycle import ColdTurnRunner, StepExecutionResult, TurnEngine, TurnExecutionReport, TurnScope
 from core.execution.runtime.contracts import (
+    LOCKS_SUBDIR,
     CallPropagationContext,
     CallerSurface,
     ClientRoutingPolicy,
+    CORE_MODULE_ID,
     ConfigViewPort,
     DispatchMode,
     ExecutionPriority,
+    INSTALLER_LOCK_STEM,
     InvokeRequest,
     ModuleDescriptor,
     SecurityTier,
     SelfMutationScope,
     TaskExposure,
     TaskRouteSpec,
+    WATCHER_TASK_ID,
     sanitize_caller_env,
 )
 from core.execution.runtime.coordinator import ResourceCoordinator
@@ -101,19 +105,7 @@ class ResumeConsumePlan:
         object.__setattr__(self, "touched_all", require_typed_frozenset(self.touched_all, ModuleId, "ResumeConsumePlan.touched_all"))
 
 
-@dataclass(frozen=True, slots=True)
-class _ResumePlanInternal:
-    re_warm: frozenset[ModuleId]
-    touched: frozenset[ModuleId]
-    remaining: frozenset[ModuleId]
-    was_all: bool
 
-
-@dataclass(frozen=True, slots=True)
-class _IdleColdLeaseHandles:
-    lock: Optional[FileLock] = None
-    pin_lock: Optional[FileLock] = None
-    unlink_owner: bool = False
 
 
 def normalize_drain_deadline(drain_deadline: Optional[float]) -> Optional[float]:
@@ -246,12 +238,17 @@ def check_exposure_and_security_gates(request: InvokeRequest, spec: TaskRouteSpe
             message=f"Task '{request.task_id}' is SDK_ONLY and cannot be called from CLI.",
             source_task=str(request.task_id),
         )
-    if spec.security_tier == SecurityTier.CONDITIONAL and not request.allow_conditional:
-        return ErrorDetail(
-            code=ErrorCode.SECURITY_GATED,
-            message=f"CONDITIONAL Task '{request.task_id}' blocked by caller policy.",
-            source_task=str(request.task_id),
+    if spec.security_tier == SecurityTier.CONDITIONAL:
+        in_ev_or_coal = prop.in_event_chain or any(v.in_event_chain for v in prop.coalesce_callers)
+        cross_ws_call = any(ws != request.workspace_root for ws, _ in prop.call_stack) or any(
+            ws != request.workspace_root for v in prop.coalesce_callers for ws, _ in v.call_stack
         )
+        if not request.allow_conditional or in_ev_or_coal or cross_ws_call:
+            return ErrorDetail(
+                code=ErrorCode.SECURITY_GATED,
+                message=f"CONDITIONAL Task '{request.task_id}' blocked by caller policy, event chain, or cross-workspace boundary.",
+                source_task=str(request.task_id),
+            )
     if spec.security_tier == SecurityTier.GATED:
         if prop.is_internal_trigger or prop.in_event_chain or request.priority == ExecutionPriority.BACKGROUND:
             return ErrorDetail(
@@ -565,7 +562,7 @@ class LifecycleReloadGate:
             return frozenset(self._q.modules.keys())
 
     def is_module_quiesced(self, target_mod: ModuleId) -> bool:
-        if target_mod == ModuleId("core"):
+        if target_mod == CORE_MODULE_ID:
             return False
         with self._cond:
             return self._q.quiesced_all or (target_mod in self._q.modules)
@@ -574,7 +571,7 @@ class LifecycleReloadGate:
         with self._cond:
             if target_mod is None:
                 return False
-            if target_mod == ModuleId("core"):
+            if target_mod == CORE_MODULE_ID:
                 return False
             if self._q.draining_all or self._q.quiesced_all or self._is_global_resuming_locked():
                 return True
@@ -613,7 +610,7 @@ class LifecycleReloadGate:
         target_mod: ModuleId,
         prop: Optional[CallPropagationContext],
     ) -> bool:
-        if target_mod == ModuleId("core"):
+        if target_mod == CORE_MODULE_ID:
             return False
         if self._is_mod_resuming_locked(target_mod):
             return True
@@ -630,7 +627,7 @@ class LifecycleReloadGate:
         target_mod: Optional[ModuleId],
         prop: Optional[CallPropagationContext] = None,
     ) -> bool:
-        if target_mod is None or target_mod == ModuleId("core"):
+        if target_mod is None or target_mod == CORE_MODULE_ID:
             return False
         with self._cond:
             return self._is_rpc_mod_blocked_locked(target_mod, prop)
@@ -786,7 +783,7 @@ class LifecycleReloadGate:
         )
 
     def _should_wait_on_gate_locked(self, request: InvokeRequest, target_mod: ModuleId) -> bool:
-        if target_mod == ModuleId("core"):
+        if target_mod == CORE_MODULE_ID:
             return False
         if (self._q.draining_all or target_mod in self._q.draining_mods) and not self._is_prop_reentrant_draining_locked(
             request.propagation
@@ -872,13 +869,13 @@ class LifecycleReloadGate:
         preserve_modules: frozenset[ModuleId],
     ) -> frozenset[ModuleId]:
         base_keep = (
-            (expand_colocated_tier1_siblings(preserve_modules, fresh_descs) - frozenset({ModuleId("core")}))
+            (expand_colocated_tier1_siblings(preserve_modules, fresh_descs) - frozenset({CORE_MODULE_ID}))
             if preserve_modules
             else frozenset()
         )
         if selective_mods is None:
             return base_keep & all_now
-        resumed_exp = expand_colocated_tier1_siblings(selective_mods, fresh_descs) - frozenset({ModuleId("core")})
+        resumed_exp = expand_colocated_tier1_siblings(selective_mods, fresh_descs) - frozenset({CORE_MODULE_ID})
         now = time.monotonic()
         if self._q.global_deadline is not None and now < self._q.global_deadline:
             leased_active = all_now - resumed_exp
@@ -923,8 +920,8 @@ class LifecycleReloadGate:
 
     def _has_active_quiesce_conflict_locked(self, q_all: bool, target_mods: frozenset[ModuleId]) -> bool:
         if q_all:
-            return any(m != ModuleId("core") and cnt > 0 for m, cnt in self._in_flight_mods.items()) or any(
-                m != ModuleId("core") and cnt > 0 for (_cid, m), cnt in self._admitted_rpc_turns.items()
+            return any(m != CORE_MODULE_ID and cnt > 0 for m, cnt in self._in_flight_mods.items()) or any(
+                m != CORE_MODULE_ID and cnt > 0 for (_cid, m), cnt in self._admitted_rpc_turns.items()
             )
         return any(self._in_flight_mods.get(m, 0) > 0 for m in target_mods) or any(
             m in target_mods and cnt > 0 for (_cid, m), cnt in self._admitted_rpc_turns.items()
@@ -962,6 +959,52 @@ class LifecycleReloadGate:
                 for lid in live_ids:
                     self._q.pre_quiesce_mods.setdefault(lid, set()).update(target_mods)
 
+    def sync_colocated_quiesce_siblings(
+        self,
+        fresh_descs: Sequence[ModuleDescriptor],
+    ) -> frozenset[ModuleId]:
+        with self._cond:
+            if self._q.quiesced_all or not self._q.modules:
+                return frozenset()
+            cur_q = frozenset(self._q.modules.keys())
+            group_by_mod = {
+                d.module_id: tier1_group_key_for(d)
+                for d in fresh_descs
+                if d.module_id != CORE_MODULE_ID and d.venv_python is not None
+            }
+            quiesced_groups: dict[str, list[ModuleId]] = {}
+            for m in cur_q:
+                g_key = group_by_mod.get(m)
+                if g_key is not None:
+                    quiesced_groups.setdefault(g_key, []).append(m)
+            if not quiesced_groups:
+                return frozenset()
+            added: set[ModuleId] = set()
+            for mod_id, g_key in group_by_mod.items():
+                if mod_id in cur_q or g_key not in quiesced_groups:
+                    continue
+                sibs = quiesced_groups[g_key]
+                sib_ents = [self._q.modules[s] for s in sibs if s in self._q.modules]
+                inh_leased = any(e.leased for e in sib_ents)
+                sib_dls = [e.deadline for e in sib_ents if e.deadline is not None]
+                inh_dl = max(sib_dls) if sib_dls else None
+                inh_def = any(e.deferred_resume for e in sib_ents)
+                self._q.modules[mod_id] = _ModuleQuiesceEntry(
+                    leased=inh_leased,
+                    deadline=inh_dl,
+                    deferred_resume=inh_def,
+                )
+                sib_set = frozenset(sibs)
+                for allowed_set in self._q.pre_quiesce_mods.values():
+                    if allowed_set & sib_set:
+                        allowed_set.add(mod_id)
+                added.add(mod_id)
+            if not added:
+                return frozenset()
+            self._cond.notify_all()
+        self._fire_gate_change()
+        return frozenset(added)
+
     def try_begin_quiesce(
         self,
         modules: frozenset[ModuleId],
@@ -972,12 +1015,12 @@ class LifecycleReloadGate:
         pre_accepted_ids: frozenset[str] = frozenset(),
     ) -> Optional[frozenset[ModuleId]]:
         safe_dl = normalize_drain_deadline(drain_deadline)
-        known_now = frozenset(d.module_id for d in all_descs if d.module_id != ModuleId("core"))
-        q_all = (not bool(modules)) or (ModuleId("core") in modules)
+        known_now = frozenset(d.module_id for d in all_descs if d.module_id != CORE_MODULE_ID)
+        q_all = (not bool(modules)) or (CORE_MODULE_ID in modules)
         target_mods = (
             known_now
             if q_all
-            else (expand_colocated_tier1_siblings(modules, all_descs) - frozenset({ModuleId("core")}))
+            else (expand_colocated_tier1_siblings(modules, all_descs) - frozenset({CORE_MODULE_ID}))
         )
         with self._cond:
             newly_draining = target_mods - self._q.draining_mods
@@ -1001,83 +1044,6 @@ class LifecycleReloadGate:
         self._fire_gate_change()
         return None if aborted_busy else target_mods
 
-    def _compute_resume_plan_locked(
-        self,
-        fresh_descs: Sequence[ModuleDescriptor],
-        all_now: frozenset[ModuleId],
-        selective_req: bool,
-        target_modules: Optional[frozenset[ModuleId]],
-        keep_mods: frozenset[ModuleId],
-    ) -> _ResumePlanInternal:
-        cur_mods = frozenset(self._q.modules.keys())
-        universe = all_now | cur_mods
-        if not selective_req and keep_mods:
-            remaining = all_now & keep_mods
-            raw_seed = universe - remaining
-            re_warm = ((expand_colocated_tier1_siblings(raw_seed, fresh_descs) | raw_seed) & all_now) - remaining
-            return _ResumePlanInternal(re_warm, raw_seed | re_warm, remaining, False)
-        if selective_req and target_modules is not None:
-            exp_targets = expand_colocated_tier1_siblings(target_modules, fresh_descs) - frozenset({ModuleId("core")})
-            raw_seed = (cur_mods & exp_targets) | exp_targets
-            re_warm = (expand_colocated_tier1_siblings(raw_seed, fresh_descs) | raw_seed) & all_now
-            touched = raw_seed | re_warm
-            rem = ((universe - touched) if self._q.quiesced_all else (cur_mods - touched)) & all_now
-            return _ResumePlanInternal(re_warm, touched, rem, False)
-        known_prev = self._q.known_at_quiesce
-        newly_added = (all_now - known_prev) if known_prev is not None else frozenset()
-        was_all = self._q.quiesced_all
-        raw_seed = cur_mods | newly_added
-        re_warm = all_now if was_all else ((expand_colocated_tier1_siblings(raw_seed, fresh_descs) | raw_seed) & all_now)
-        touched = all_now if was_all else (raw_seed | re_warm)
-        return _ResumePlanInternal(re_warm, touched, frozenset(), was_all)
-
-    def _apply_remaining_quiesce_entries_locked(
-        self,
-        all_now: frozenset[ModuleId],
-        remaining: frozenset[ModuleId],
-        touched_all: frozenset[ModuleId],
-        full_global: bool,
-    ) -> None:
-        if full_global or not remaining:
-            self._q.modules.clear()
-            self._q.leased_all = False
-            self._q.quiesced_all = False
-            self._q.known_at_quiesce = None
-            self._q.global_deadline = None
-            self._q.deferred_all = False
-            self._q.pre_quiesce_mods.clear()
-            self._q.pre_quiesce_all_ids.clear()
-            return
-        prev_g = self._q.global_deadline
-        prev_leased_all = self._q.leased_all
-        fallback_dl = prev_g if prev_g is not None else (time.monotonic() + 10.0)
-        self._q.global_deadline = None
-        self._q.quiesced_all = False
-        self._q.leased_all = False
-        self._q.known_at_quiesce = all_now
-        for lid in self._q.pre_quiesce_all_ids:
-            self._q.pre_quiesce_mods.setdefault(lid, set()).update(remaining)
-        self._q.pre_quiesce_all_ids.clear()
-        for lid in list(self._q.pre_quiesce_mods.keys()):
-            s = self._q.pre_quiesce_mods[lid]
-            s.difference_update(touched_all)
-            s.intersection_update(remaining)
-            if not s:
-                self._q.pre_quiesce_mods.pop(lid, None)
-        next_mods: dict[ModuleId, _ModuleQuiesceEntry] = {}
-        for m in remaining:
-            old_e = self._q.modules.get(m)
-            was_leased = prev_leased_all or (old_e.leased if old_e is not None else False)
-            old_dl = old_e.deadline if old_e is not None else None
-            new_dl = (
-                (max(old_dl or 0.0, prev_g) if prev_g is not None else (old_dl or fallback_dl))
-                if was_leased
-                else None
-            )
-            def_r = (old_e.deferred_resume if old_e is not None else False) and m not in touched_all
-            next_mods[m] = _ModuleQuiesceEntry(leased=was_leased, deadline=new_dl, deferred_resume=def_r)
-        self._q.modules = next_mods
-
     def _consume_for_resume(
         self,
         fresh_descs: Sequence[ModuleDescriptor],
@@ -1086,8 +1052,8 @@ class LifecycleReloadGate:
         preserve_modules: frozenset[ModuleId] = frozenset(),
         deferred_boot: bool = False,
     ) -> ResumeConsumePlan:
-        all_now = frozenset(d.module_id for d in fresh_descs if d.module_id != ModuleId("core"))
-        raw_sel = target_modules if (target_modules and ModuleId("core") not in target_modules) else None
+        all_now = frozenset(d.module_id for d in fresh_descs if d.module_id != CORE_MODULE_ID)
+        raw_sel = target_modules if (target_modules and CORE_MODULE_ID not in target_modules) else None
         with self._cond:
             if deferred_boot:
                 keep_mods = self._compute_deferred_boot_keep_locked(fresh_descs, all_now, raw_sel, preserve_modules)
@@ -1098,26 +1064,90 @@ class LifecycleReloadGate:
                 selective_req = raw_sel is not None
                 eff_target = raw_sel
                 keep_mods = (
-                    (expand_colocated_tier1_siblings(preserve_modules, fresh_descs) - frozenset({ModuleId("core")}))
+                    (expand_colocated_tier1_siblings(preserve_modules, fresh_descs) - frozenset({CORE_MODULE_ID}))
                     if (not selective_req and preserve_modules)
                     else frozenset()
                 )
                 was_boot_all = False
-            plan = self._compute_resume_plan_locked(
-                fresh_descs, all_now, selective_req, eff_target, keep_mods
-            )
-            was_all = plan.was_all or was_boot_all
+
+            cur_mods = frozenset(self._q.modules.keys())
+            universe = all_now | cur_mods
+            if not selective_req and keep_mods:
+                remaining = all_now & keep_mods
+                raw_seed = universe - remaining
+                re_warm = ((expand_colocated_tier1_siblings(raw_seed, fresh_descs) | raw_seed) & all_now) - remaining
+                touched = raw_seed | re_warm
+                plan_was_all = False
+            elif selective_req and eff_target is not None:
+                exp_targets = expand_colocated_tier1_siblings(eff_target, fresh_descs) - frozenset({CORE_MODULE_ID})
+                raw_seed = (cur_mods & exp_targets) | exp_targets
+                re_warm = (expand_colocated_tier1_siblings(raw_seed, fresh_descs) | raw_seed) & all_now
+                touched = raw_seed | re_warm
+                remaining = ((universe - touched) if self._q.quiesced_all else (cur_mods - touched)) & all_now
+                plan_was_all = False
+            else:
+                known_prev = self._q.known_at_quiesce
+                newly_added = (all_now - known_prev) if known_prev is not None else frozenset()
+                plan_was_all = self._q.quiesced_all
+                raw_seed = cur_mods | newly_added
+                re_warm = (
+                    all_now
+                    if plan_was_all
+                    else ((expand_colocated_tier1_siblings(raw_seed, fresh_descs) | raw_seed) & all_now)
+                )
+                touched = all_now if plan_was_all else (raw_seed | re_warm)
+                remaining = frozenset()
+
+            was_all = plan_was_all or was_boot_all
             if was_all:
                 self._reloading_all_count += 1
-            for m in plan.touched:
+            for m in touched:
                 self._reloading_mod_counts[m] = self._reloading_mod_counts.get(m, 0) + 1
                 self._module_reload_epochs[m] = self._module_reload_epochs.get(m, 0) + 1
-            self._apply_remaining_quiesce_entries_locked(
-                all_now, plan.remaining, plan.touched, eff_target is None and not keep_mods
-            )
+
+            full_global = eff_target is None and not keep_mods
+            if full_global or not remaining:
+                self._q.modules.clear()
+                self._q.leased_all = False
+                self._q.quiesced_all = False
+                self._q.known_at_quiesce = None
+                self._q.global_deadline = None
+                self._q.deferred_all = False
+                self._q.pre_quiesce_mods.clear()
+                self._q.pre_quiesce_all_ids.clear()
+            else:
+                prev_g = self._q.global_deadline
+                prev_leased_all = self._q.leased_all
+                fallback_dl = prev_g if prev_g is not None else (time.monotonic() + 10.0)
+                self._q.global_deadline = None
+                self._q.quiesced_all = False
+                self._q.leased_all = False
+                self._q.known_at_quiesce = all_now
+                for lid in self._q.pre_quiesce_all_ids:
+                    self._q.pre_quiesce_mods.setdefault(lid, set()).update(remaining)
+                self._q.pre_quiesce_all_ids.clear()
+                for lid in list(self._q.pre_quiesce_mods.keys()):
+                    s = self._q.pre_quiesce_mods[lid]
+                    s.difference_update(touched)
+                    s.intersection_update(remaining)
+                    if not s:
+                        self._q.pre_quiesce_mods.pop(lid, None)
+                next_mods: dict[ModuleId, _ModuleQuiesceEntry] = {}
+                for m in remaining:
+                    old_e = self._q.modules.get(m)
+                    was_leased = prev_leased_all or (old_e.leased if old_e is not None else False)
+                    old_dl = old_e.deadline if old_e is not None else None
+                    new_dl = (
+                        (max(old_dl or 0.0, prev_g) if prev_g is not None else (old_dl or fallback_dl))
+                        if was_leased
+                        else None
+                    )
+                    def_r = (old_e.deferred_resume if old_e is not None else False) and m not in touched
+                    next_mods[m] = _ModuleQuiesceEntry(leased=was_leased, deadline=new_dl, deferred_resume=def_r)
+                self._q.modules = next_mods
             self._cond.notify_all()
         self._fire_gate_change()
-        return ResumeConsumePlan(plan.re_warm, plan.touched, was_all)
+        return ResumeConsumePlan(re_warm, touched, was_all)
 
     def _begin_quiesce_resume(
         self,
@@ -1167,7 +1197,7 @@ class LifecycleReloadGate:
         return still_active
 
     def is_quiesced_blocked(self, request: InvokeRequest, target_mod: ModuleId, is_daemon_host: bool) -> bool:
-        if not is_daemon_host or target_mod == ModuleId("core"):
+        if not is_daemon_host or target_mod == CORE_MODULE_ID:
             return False
         with self._cond:
             if self._can_wait_leased_quiesce_locked(request, target_mod):
@@ -1289,7 +1319,10 @@ def _is_same_tree_installer_owner(owner_path: HostPath, call_tree_id: str) -> bo
     if not call_tree_id:
         return False
     doc = read_live_owner_dict(owner_path)
-    return doc is not None and doc.get("call_tree_id") == call_tree_id
+    if doc is None:
+        return False
+    raw_tree = doc.get("call_tree_id")
+    return type(raw_tree) is str and bool(raw_tree) and raw_tree == call_tree_id
 
 
 def _abort_cold_turn_scope(
@@ -1347,23 +1380,23 @@ class ColdInstallerLockManager:
                 self._evict_broken_lease(lock_key, lease)
                 raise
 
-        paths = CrossProcessLockPaths.for_stem(resolve_contained_subpath(self._cache_dir, "locks"), "installer")
+        paths = CrossProcessLockPaths.for_stem(resolve_contained_subpath(self._cache_dir, LOCKS_SUBDIR), INSTALLER_LOCK_STEM)
         unlink_owner_under_pin(paths.owner_path, paths.pin_path, _do_downgrade)
 
     def _take_idle_lease_handles_locked(
         self,
         lock_key: tuple[str, str],
         lease: _ColdLockLease,
-    ) -> _IdleColdLeaseHandles:
+    ) -> tuple[Optional[FileLock], Optional[FileLock], bool]:
         if lease.excl_refs > 0 or lease.shared_refs > 0:
-            return _IdleColdLeaseHandles()
+            return (None, None, False)
         if self.leases.get(lock_key) is lease:
             self.leases.pop(lock_key, None)
         pin = lease.pin_lock
         lease.pin_lock = None
         unlink_ow = lease.has_owner_file
         lease.has_owner_file = False
-        return _IdleColdLeaseHandles(lease.lock, pin, unlink_ow)
+        return (lease.lock, pin, unlink_ow)
 
     def _release_lease_slot(self, lock_key: tuple[str, str], lease: _ColdLockLease, *, was_excl: bool) -> None:
         with lease.op_lock:
@@ -1372,18 +1405,18 @@ class ColdInstallerLockManager:
             if need_downgrade:
                 self._downgrade_lease_os_lock(lock_key, lease, rem_shared)
             with self.reentry_lock:
-                idle_h = self._take_idle_lease_handles_locked(lock_key, lease)
-        if idle_h.pin_lock is not None:
-            idle_h.pin_lock.release()
-        if idle_h.unlink_owner:
-            paths = CrossProcessLockPaths.for_stem(resolve_contained_subpath(self._cache_dir, "locks"), "installer")
+                idle_lock, idle_pin, unlink_ow = self._take_idle_lease_handles_locked(lock_key, lease)
+        if idle_pin is not None:
+            idle_pin.release()
+        if unlink_ow:
+            paths = CrossProcessLockPaths.for_stem(resolve_contained_subpath(self._cache_dir, LOCKS_SUBDIR), INSTALLER_LOCK_STEM)
             unlink_owner_under_pin(
                 paths.owner_path,
                 paths.pin_path,
-                lambda: idle_h.lock.release() if idle_h.lock is not None else None,
+                lambda: idle_lock.release() if idle_lock is not None else None,
             )
-        elif idle_h.lock is not None:
-            idle_h.lock.release()
+        elif idle_lock is not None:
+            idle_lock.release()
 
     def bind_shared(
         self,
@@ -1410,10 +1443,10 @@ class ColdInstallerLockManager:
         turn_id = turn_scope.turn_id
         lock_key = self._lock_scope_key(turn_id)
         try:
-            lock = CrossProcessLockPaths.for_stem(resolve_contained_subpath(self._cache_dir, "locks"), "installer").lock_file
+            lock = CrossProcessLockPaths.for_stem(resolve_contained_subpath(self._cache_dir, LOCKS_SUBDIR), INSTALLER_LOCK_STEM).lock_file
             lock.acquire(shared=True, blocking=True, timeout_sec=30.0, cancel_token=turn_scope.cancel_token)
         except (TaskCancelledException, YscbError) as exc:
-            det = exc.detail.with_fallback_task("core.watcher")
+            det = exc.detail.with_fallback_task(str(WATCHER_TASK_ID))
             td_errs = turn_scope.close_scoped_stack_recorded()
             return TurnExecutionReport(
                 turn_id=turn_id,
@@ -1441,12 +1474,12 @@ class ColdInstallerLockManager:
         try:
             self._bootstrap_hook()
         except (TaskCancelledException, YscbError) as exc:
-            return _abort_cold_turn_scope(turn_scope, exc.detail.with_fallback_task("core.watcher"))
+            return _abort_cold_turn_scope(turn_scope, exc.detail.with_fallback_task(str(WATCHER_TASK_ID)))
         except KeyboardInterrupt:
-            det_k = ErrorDetail(ErrorCode.TASK_CANCELLED, "Interrupted during cold bootstrap.", source_task="core.watcher")
+            det_k = ErrorDetail(ErrorCode.TASK_CANCELLED, "Interrupted during cold bootstrap.", source_task=str(WATCHER_TASK_ID))
             return _abort_cold_turn_scope(turn_scope, det_k)
         except (Exception, SystemExit, GeneratorExit) as exc:
-            det_e = ErrorDetail(ErrorCode.BUSINESS_FAILURE, safe_exception_summary(exc), source_task="core.watcher")
+            det_e = ErrorDetail(ErrorCode.BUSINESS_FAILURE, safe_exception_summary(exc), source_task=str(WATCHER_TASK_ID))
             return _abort_cold_turn_scope(turn_scope, det_e)
         except BaseException:
             _ = turn_scope.close_scoped_stack_recorded()
@@ -1475,7 +1508,7 @@ class ColdInstallerLockManager:
         if in_mem_held:
             return self._invoke_bootstrap_safely()
         try:
-            paths = CrossProcessLockPaths.for_stem(resolve_contained_subpath(self._cache_dir, "locks"), "installer")
+            paths = CrossProcessLockPaths.for_stem(resolve_contained_subpath(self._cache_dir, LOCKS_SUBDIR), INSTALLER_LOCK_STEM)
             pin_lk = (
                 acquire_verified_cross_proc_pin(
                     paths.owner_path,
@@ -1505,62 +1538,6 @@ class ColdInstallerLockManager:
         finally:
             lock.release()
 
-    def _claim_cand_lease_reentry(
-        self,
-        lock_key: tuple[str, str],
-        cand: _ColdLockLease,
-        need_excl: bool,
-        task_id: TaskId,
-        tid: str,
-    ) -> tuple[Optional[_ColdLockLease], Optional[TurnExecutionReport]]:
-        with cand.op_lock:
-            with self.reentry_lock:
-                if self.leases.get(lock_key) is not cand:
-                    return (None, None)
-                if need_excl and not cand.is_exclusive:
-                    err = ErrorDetail(
-                        code=ErrorCode.ILLEGAL_LOCK_REENTRANCY,
-                        message=f"Cannot upgrade shared installer.lock to exclusive in '{task_id}'.",
-                        source_task=str(task_id),
-                    )
-                    rep = TurnExecutionReport(
-                        turn_id=tid,
-                        primary_result=StepExecutionResult(ok=False, error=err, fatal_abort_turn=True),
-                    )
-                    return (None, rep)
-                cand.excl_refs += 1 if need_excl else 0
-                cand.shared_refs += 0 if need_excl else 1
-                return (cand, None)
-
-    def _try_reenter_existing_lease(
-        self,
-        lock_key: tuple[str, str],
-        need_excl: bool,
-        in_cold_shared_ws: bool,
-        task_id: TaskId,
-        tid: str,
-    ) -> tuple[Optional[_ColdLockLease], Optional[TurnExecutionReport]]:
-        with self.reentry_lock:
-            cand = self.leases.get(lock_key)
-        if cand is not None:
-            got_pair = self._claim_cand_lease_reentry(lock_key, cand, need_excl, task_id, tid)
-            if got_pair[0] is not None or got_pair[1] is not None:
-                return got_pair
-        if in_cold_shared_ws and need_excl:
-            err = ErrorDetail(
-                code=ErrorCode.ILLEGAL_LOCK_REENTRANCY,
-                message=f"Cannot upgrade shared installer.lock to exclusive in '{task_id}'.",
-                source_task=str(task_id),
-            )
-            return (
-                None,
-                TurnExecutionReport(
-                    turn_id=tid,
-                    primary_result=StepExecutionResult(ok=False, error=err, fatal_abort_turn=True),
-                ),
-            )
-        return (None, None)
-
     def run_cold_turn(
         self,
         tagged_req: InvokeRequest,
@@ -1573,6 +1550,7 @@ class ColdInstallerLockManager:
         prop = tagged_req.propagation
         eff_ctree = prop.call_tree_id or tid
         need_excl = spec.mutation_scope != SelfMutationScope.NONE
+        in_cold_shared_ws = self._workspace_root in prop.cold_shared_workspaces
         next_req = (
             replace(
                 tagged_req,
@@ -1585,12 +1563,11 @@ class ColdInstallerLockManager:
             else tagged_req
         )
         lock_key = self._lock_scope_key(eff_ctree)
-        reentered, err_rep = self._try_reenter_existing_lease(
-            lock_key, need_excl, self._workspace_root in prop.cold_shared_workspaces, tagged_req.task_id, tid
+        reentered, reenter_err = self._try_reenter_in_memory_cold_lease(
+            lock_key, tagged_req.task_id, need_excl=need_excl, in_cold_shared_ws=in_cold_shared_ws
         )
-        if err_rep is not None:
-            td_errs = turn_scope.close_scoped_stack_recorded()
-            return replace(err_rep, teardown_diagnostics=(*err_rep.teardown_diagnostics, *td_errs))
+        if reenter_err is not None:
+            return _abort_cold_turn_scope(turn_scope, reenter_err, fatal_abort=True)
         if reentered is not None:
             try:
                 return self._cold_runner.execute_leased_turn(
@@ -1598,59 +1575,40 @@ class ColdInstallerLockManager:
                 )
             finally:
                 self._release_lease_slot(lock_key, reentered, was_excl=need_excl)
-        return self._acquire_and_run_cold(next_req, eff_ctree, lock_key, need_excl, turn_scope, deadline)
 
-    def _acquire_os_or_pinned_cold(
-        self,
-        next_req: InvokeRequest,
-        eff_ctree: str,
-        lock_key: tuple[str, str],
-        need_excl: bool,
-        turn_scope: TurnScope,
-        deadline: Optional[float],
-    ) -> tuple[Optional[FileLock], Optional[TurnExecutionReport]]:
         host_token = turn_scope.cancel_token
+        lock: Optional[FileLock] = None
+        pin_lk: Optional[FileLock] = None
         try:
-            paths = CrossProcessLockPaths.for_stem(resolve_contained_subpath(self._cache_dir, "locks"), "installer")
-            lock = paths.lock_file
-            if lock.acquire(shared=not need_excl, blocking=False):
-                return (lock, None)
-            pin_lk = acquire_verified_cross_proc_pin(
-                paths.owner_path,
-                paths.pin_path,
-                lambda ow: _is_same_tree_installer_owner(ow, eff_ctree),
-                timeout_sec=_rem_lock_sec(deadline, 10.0, paths.pin_path),
-                cancel_token=host_token,
-            )
-        except (TaskCancelledException, YscbError) as exc:
-            return (None, _abort_cold_turn_scope(turn_scope, exc.detail.with_fallback_task(str(next_req.task_id))))
-        if pin_lk is not None:
-            return (None, self._run_pinned_cross_proc_cold(next_req, lock_key, pin_lk, turn_scope))
-        try:
-            tmo = _rem_lock_sec(deadline, 30.0, lock.lock_path)
-            lock.acquire(shared=not need_excl, blocking=True, timeout_sec=tmo, cancel_token=host_token)
-            return (lock, None)
-        except (TaskCancelledException, YscbError) as exc:
-            return (None, _abort_cold_turn_scope(turn_scope, exc.detail.with_fallback_task(str(next_req.task_id))))
-
-    def _acquire_and_run_cold(
-        self,
-        next_req: InvokeRequest,
-        eff_ctree: str,
-        lock_key: tuple[str, str],
-        need_excl: bool,
-        turn_scope: TurnScope,
-        deadline: Optional[float],
-    ) -> TurnExecutionReport:
-        try:
-            lock, early_rep = self._acquire_os_or_pinned_cold(
-                next_req, eff_ctree, lock_key, need_excl, turn_scope, deadline
-            )
+            try:
+                paths = CrossProcessLockPaths.for_stem(resolve_contained_subpath(self._cache_dir, LOCKS_SUBDIR), INSTALLER_LOCK_STEM)
+                if paths.lock_file.acquire(shared=not need_excl, blocking=False):
+                    lock = paths.lock_file
+                else:
+                    pin_lk = acquire_verified_cross_proc_pin(
+                        paths.owner_path,
+                        paths.pin_path,
+                        lambda ow: _is_same_tree_installer_owner(ow, eff_ctree),
+                        timeout_sec=_rem_lock_sec(deadline, 10.0, paths.pin_path),
+                        cancel_token=host_token,
+                    )
+                    if pin_lk is None:
+                        tmo = _rem_lock_sec(deadline, 30.0, paths.lock_file.lock_path)
+                        paths.lock_file.acquire(
+                            shared=not need_excl, blocking=True, timeout_sec=tmo, cancel_token=host_token
+                        )
+                        lock = paths.lock_file
+            except (TaskCancelledException, YscbError) as exc:
+                return _abort_cold_turn_scope(turn_scope, exc.detail.with_fallback_task(str(next_req.task_id)))
+            if pin_lk is not None:
+                return self._run_pinned_cross_proc_cold(next_req, lock_key, pin_lk, turn_scope)
         except BaseException:
+            if lock is not None:
+                lock.release()
             turn_scope.close_scoped_stack_recorded()
             raise
-        if early_rep is not None or lock is None:
-            return require_non_none(early_rep)
+
+        lock = require_non_none(lock)
         cand_lease = _ColdLockLease(
             lock=lock,
             shared_refs=0 if need_excl else 1,
@@ -1677,6 +1635,42 @@ class ColdInstallerLockManager:
             return self._cold_runner.execute_leased_turn(next_req, scope=turn_scope, fallback_task=str(next_req.task_id))
         finally:
             self._release_lease_slot(lock_key, lease, was_excl=need_excl)
+
+    def _try_reenter_in_memory_cold_lease(
+        self,
+        lock_key: tuple[str, str],
+        task_id: TaskId,
+        *,
+        need_excl: bool,
+        in_cold_shared_ws: bool,
+    ) -> tuple[Optional[_ColdLockLease], Optional[ErrorDetail]]:
+        with self.reentry_lock:
+            cand = self.leases.get(lock_key)
+        if cand is not None:
+            with cand.op_lock, self.reentry_lock:
+                if self.leases.get(lock_key) is cand:
+                    if need_excl and not cand.is_exclusive:
+                        return (
+                            None,
+                            ErrorDetail(
+                                code=ErrorCode.ILLEGAL_LOCK_REENTRANCY,
+                                message=f"Cannot upgrade shared installer.lock to exclusive in '{task_id}'.",
+                                source_task=str(task_id),
+                            ),
+                        )
+                    cand.excl_refs += 1 if need_excl else 0
+                    cand.shared_refs += 0 if need_excl else 1
+                    return (cand, None)
+        if in_cold_shared_ws and need_excl:
+            return (
+                None,
+                ErrorDetail(
+                    code=ErrorCode.ILLEGAL_LOCK_REENTRANCY,
+                    message=f"Cannot upgrade shared installer.lock to exclusive in '{task_id}'.",
+                    source_task=str(task_id),
+                ),
+            )
+        return (None, None)
 
     def _try_commit_cold_lease_under_cur(
         self,
@@ -1705,7 +1699,7 @@ class ColdInstallerLockManager:
         new_lease: _ColdLockLease,
         eff_ctree: str,
     ) -> None:
-        owner_p = CrossProcessLockPaths.for_stem(resolve_contained_subpath(self._cache_dir, "locks"), "installer").owner_path
+        owner_p = CrossProcessLockPaths.for_stem(resolve_contained_subpath(self._cache_dir, LOCKS_SUBDIR), INSTALLER_LOCK_STEM).owner_path
         try:
             write_cross_proc_owner_json(owner_p, {"pid": os.getpid(), "call_tree_id": eff_ctree})
             new_lease.has_owner_file = True
@@ -1790,7 +1784,7 @@ class ColdInstallerLockManager:
     ) -> Optional[StepExecutionResult[JsonValue]]:
         lk_ref = require_non_none(lease.lock)
         try:
-            paths = CrossProcessLockPaths.for_stem(resolve_contained_subpath(self._cache_dir, "locks"), "installer")
+            paths = CrossProcessLockPaths.for_stem(resolve_contained_subpath(self._cache_dir, LOCKS_SUBDIR), INSTALLER_LOCK_STEM)
             tmo = _rem_lock_sec(deadline, 10.0, lk_ref.lock_path)
             lk_ref.upgrade_to_exclusive(timeout_sec=tmo, cancel_token=cancel_token)
             lease.os_exclusive = True
@@ -1800,6 +1794,10 @@ class ColdInstallerLockManager:
             det = exc.detail.with_fallback_task(str(task_id))
             is_fatal = det.code == ErrorCode.ILLEGAL_LOCK_REENTRANCY or not lk_ref.is_acquired
             return StepExecutionResult(ok=False, error=det, fatal_abort_turn=is_fatal)
+        except BaseException:
+            if not lk_ref.is_acquired:
+                self._evict_broken_lease(lock_key, lease)
+            raise
         try:
             write_cross_proc_owner_json(paths.owner_path, {"pid": os.getpid(), "call_tree_id": eff_ctree})
         except YscbError as exc:
@@ -1903,7 +1901,7 @@ class ColdInstallerLockManager:
                 finally:
                     self._release_lease_slot(lock_key, lease, was_excl=True)
         try:
-            paths = CrossProcessLockPaths.for_stem(resolve_contained_subpath(self._cache_dir, "locks"), "installer")
+            paths = CrossProcessLockPaths.for_stem(resolve_contained_subpath(self._cache_dir, LOCKS_SUBDIR), INSTALLER_LOCK_STEM)
             pin_lk = acquire_verified_cross_proc_pin(
                 paths.owner_path,
                 paths.pin_path,

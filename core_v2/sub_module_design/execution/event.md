@@ -22,7 +22,7 @@
 | `EventOrdering` | 語意定位 | 雙緩衝凍結（`freeze_and_swap`）處置行為 | 典型場景 |
 | :--- | :--- | :--- | :--- |
 | **`UNORDERED`**<br>（預設：無序狀態通知） | 訂閱者僅關心「狀態已變更」或「變更範圍聯集」，不關心單輪重複觸發次數。 | **純資料打包折疊，單輪僅觸發訂閱者 1 次**：同一暫存批次內若出現 $N$ 顆同 `EventId` 事件，主控端以該 `EventId` 於批次中**首次出現之槽位**為錨點，將其 `raw_payload` 與逐筆 `record_lineages` 保序打包折疊為單一 `EventBatchEnvelope(payloads=(p_1, ..., p_N))`，**對每個匹配的訂閱 `Task` 僅派發唯一一次**（經 `filter_for_subscription` 僅合併實際命中靜態過濾之因果鏈），交由訂閱端 Worker 內的 `BoundEventSubscription.decode_and_map()` 執行 `batch_mapper` 轉型。 | `core.space_updated`<br>`ast.graph_updated`<br>`core.workspace_reloaded`<br>`core.config_changed` |
-| **`ORDERED`**<br>（有序操作序列） | 每次發生的先後次序與獨立次數皆具業務意義，不可去重或合併。 | **嚴格 FIFO 逐顆派發**：每顆事件各自封裝為單元素 `EventBatchEnvelope(payloads=(p_i,))` 嚴格保持 `emit` 時間順序（且同批次若混有 `ORDERED` 與 `UNORDERED`，嚴格維持跨事件之相對時序邊界），$N$ 顆事件即依序產出 $N$ 次訂閱 `Task` 調用。 | 嚴格時序狀態遷移、模組移除前置清理序列 |
+| **`ORDERED`**<br>（有序操作序列） | 每次發生的先後次序與獨立次數皆具業務意義，不可去重或合併。 | **嚴格 FIFO 逐顆派發**：每顆事件各自封裝為單元素 `EventBatchEnvelope(payloads=(p_i,))` 嚴格保持 `emit` 時間順序（與同批其他 `ORDERED` 事件及各 `UNORDERED` 事件首次出現之錨點槽位維持相對順序；後續同 `EventId` 之 `UNORDERED` 事件仍依前項規則折疊回首次出現槽位，以維持單輪僅觸發 1 次之不變量），$N$ 顆事件即依序產出 $N$ 次訂閱 `Task` 調用。 | 嚴格時序狀態遷移、模組移除前置清理序列 |
 
 ### 2.2 `emit` vs. `emit_imm` 雙發射原語與同單步多發基準因果鏈（禁止全域 `flush`）
 
@@ -44,7 +44,7 @@
 
 ### 2.4 工作區範圍因果環路偵測（`ScopedHop` & `CausalLineage`）與致命異常傳播
 
-1. **單點推進精確閉環攔截**：每顆事件封套及跨任務 `CallPropagationContext` 全程傳遞 `CausalLineage`（`UNORDERED` 批次折疊與菱形匯流 `FANOUT_DIAMOND_DAG` 時透過 `CausalLineage.merge()` 取保序去重聯集）。一旦 `hop_conflicts()` 發現目標 `(workspace_scope, EventId)` 已存在於當前祖先鏈中，**第 1 次閉環瞬間立即拋出致命 `EventCycleError` 並中止整個 Turn**。
+1. **單點推進精確閉環攔截與空範圍全域萬用語意**：每顆事件封套及跨任務 `CallPropagationContext` 全程傳遞 `CausalLineage`（`UNORDERED` 批次折疊與菱形匯流 `FANOUT_DIAMOND_DAG` 時透過 `CausalLineage.merge()` 取保序去重聯集）。一旦 `hop_conflicts()` 發現目標 `(workspace_scope, EventId)` 已存在於當前祖先鏈中，**第 1 次閉環瞬間立即拋出致命 `EventCycleError` 並中止整個 Turn**。其中 `workspace_scope=""`（空字串）為顯式**全域萬用範圍（Wildcard Scope）**，於 `hop_conflicts()` 與任何具名工作區範圍皆視為衝突，且在 `CausalLineage.merge()` 合併同 `EventId` 跳點時自動將具名範圍收斂升級為全域萬用跳點；跨子工作區隔離派發時由 `runtime` 一律傳入正規化 `workspace_root.comparison_key`。
 2. **一般訂閱者故障隔離**：非環路之一般業務異常僅作廢該失敗訂閱者自身的局部事件並記錄於 `TurnScope.record_event_diagnostic()`（對稱 `StepFlight` / `FlightCascade` 等待者亦同步收到對應診斷），不中斷同輪其他獨立訂閱者。
 
 ## 3. 核心 OOP 類別與強型別契約規格 (`core/execution/event/engine.py`)
@@ -170,6 +170,7 @@ class TaskLocalOutbox:
 
 class DoubleBufferedEventQueue:
     """執行緒安全雙緩衝佇列：append_committed 入列已校驗紀錄；freeze_and_swap 原子交換並折疊 UNORDERED 批次。"""
+    def __init__(self) -> None: ...
     @property
     def has_pending(self) -> bool: ...
     def append_committed(self, records: Sequence[RawEventRecord]) -> None: ...

@@ -4,23 +4,35 @@ from __future__ import annotations
 
 import atexit
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 import errno
+import functools
 import json
 import os
 from pathlib import Path
+import selectors
 import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
-from typing import Callable, ClassVar, Mapping, Optional, Sequence
+from typing import Callable, ClassVar, Final, Iterator, Mapping, Optional, Sequence
 import uuid
 
 from core.foundation.errors import safe_exception_summary
-from core.foundation.observability import clamp_wait_sec
-from core.foundation.primitives import invoke_observer_safely, IS_WINDOWS, HostPath, require_non_none, require_pure_bool, require_typed_tuple
+from core.foundation.primitives import (
+    IS_WINDOWS,
+    PYTHON_LAUNCHER_HIJACK_ENV_KEYS,
+    TREE_ID_ENV_KEY,
+    HostPath,
+    clamp_wait_sec,
+    invoke_observer_safely,
+    require_non_none,
+    require_pure_bool,
+    require_typed_tuple,
+)
 
 if IS_WINDOWS:
     import ctypes
@@ -75,6 +87,16 @@ if IS_WINDOWS:
     _WIN_GET_EXIT = _WIN_K32.GetExitCodeProcess
     _WIN_GET_EXIT.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
     _WIN_GET_EXIT.restype = wintypes.BOOL
+
+    _WIN_GET_TIMES = _WIN_K32.GetProcessTimes
+    _WIN_GET_TIMES.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+    ]
+    _WIN_GET_TIMES.restype = wintypes.BOOL
 
     _WIN_CREATE_JOB = _WIN_K32.CreateJobObjectW
     _WIN_CREATE_JOB.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
@@ -142,7 +164,8 @@ def _create_win32_kill_on_close_job(pid: int) -> Optional[int]:
     if not job:
         return None
     info = _JobObjectExtendedLimitInfo()
-    info.BasicLimitInformation.LimitFlags = 0x00002000
+    # Allow explicit CREATE_BREAKAWAY_FROM_JOB (spawn_detached) while killing normal child trees on job close.
+    info.BasicLimitInformation.LimitFlags = 0x00002000 | 0x00000800
     if not _WIN_SET_JOB_INFO(job, 9, ctypes.byref(info), ctypes.sizeof(info)):
         _WIN_CLOSE_HANDLE(job)
         return None
@@ -154,17 +177,13 @@ def _create_win32_kill_on_close_job(pid: int) -> Optional[int]:
         if not _WIN_ASSIGN_JOB(job, proc_handle):
             _WIN_CLOSE_HANDLE(job)
             return None
-        _WIN_RESUME_PROC(proc_handle)
+        if int(_WIN_RESUME_PROC(proc_handle)) < 0:
+            _WIN_TERM_JOB(job, 1)
+            _WIN_CLOSE_HANDLE(job)
+            return None
         return int(job)
     finally:
         _WIN_CLOSE_HANDLE(proc_handle)
-
-
-def _close_win32_job(job_handle: Optional[int]) -> None:
-    if not IS_WINDOWS or job_handle is None:
-        return
-    _WIN_TERM_JOB(wintypes.HANDLE(job_handle), 1)
-    _WIN_CLOSE_HANDLE(wintypes.HANDLE(job_handle))
 
 
 def _is_process_alive_windows(pid: int) -> bool:
@@ -200,16 +219,17 @@ class _DarwinBsdStat:
     start_us: int
 
 
-def _darwin_query_bsdinfo(pid: int) -> Optional[_DarwinBsdStat]:
+def _darwin_query_bsdinfo(pid: int) -> tuple[Optional[_DarwinBsdStat], int]:
     if sys.platform != "darwin" or pid <= 0:
-        return None
+        return (None, 0)
     info = _DarwinProcBsdInfo()
     sz = ctypes.sizeof(info)
+    ctypes.set_errno(0)
     ret = int(_DARWIN_PROC_PIDINFO(pid, 3, 0, ctypes.byref(info), sz))
     if ret != sz:
-        return None
+        return (None, int(ctypes.get_errno()))
     start_us = int(info.pbi_start_tvsec) * 1_000_000 + int(info.pbi_start_tvusec)
-    return _DarwinBsdStat(int(info.pbi_status), int(info.pbi_ppid), int(info.pbi_pgid), start_us)
+    return (_DarwinBsdStat(int(info.pbi_status), int(info.pbi_ppid), int(info.pbi_pgid), start_us), 0)
 
 
 def _check_proc_zombie_stat(pid: int) -> bool:
@@ -222,10 +242,10 @@ def _check_proc_zombie_stat(pid: int) -> bool:
         rparen = raw.rfind(b")")
         return rparen != -1 and len(raw) > rparen + 2 and raw[rparen + 2 : rparen + 3] == b"Z"
     if sys.platform == "darwin":
-        bsd_st = _darwin_query_bsdinfo(pid)
+        bsd_st, err_no = _darwin_query_bsdinfo(pid)
         if bsd_st is not None:
             return bsd_st.status == 5
-        if ctypes.get_errno() == errno.ESRCH:
+        if err_no == errno.ESRCH:
             return True
     if sys.platform == "darwin" or "bsd" in sys.platform:
         try:
@@ -264,6 +284,32 @@ def is_process_alive(pid: int) -> bool:
     return _is_process_alive_windows(pid) if IS_WINDOWS else _is_process_alive_posix(pid)
 
 
+def _read_windows_proc_starttime(pid: int) -> Optional[int]:
+    if not IS_WINDOWS or pid <= 0:
+        return None
+    handle = _WIN_OPEN_PROC(0x1000, False, pid)
+    if not handle:
+        return None
+    try:
+        ct = wintypes.FILETIME()
+        et = wintypes.FILETIME()
+        kt = wintypes.FILETIME()
+        ut = wintypes.FILETIME()
+        if not _WIN_GET_TIMES(handle, ctypes.byref(ct), ctypes.byref(et), ctypes.byref(kt), ctypes.byref(ut)):
+            return None
+        return (int(ct.dwHighDateTime) << 32) | int(ct.dwLowDateTime)
+    finally:
+        _WIN_CLOSE_HANDLE(handle)
+
+
+def get_process_start_tag(pid: int) -> Optional[str]:
+    """Return an OS process creation-time fingerprint string for PID-reuse detection when supported."""
+    if not is_process_alive(pid):
+        return None
+    st = _read_windows_proc_starttime(pid) if IS_WINDOWS else _read_posix_proc_starttime(pid)
+    return str(st) if st is not None else None
+
+
 def _validate_proc_argv_and_cwd(argv: Sequence[str], cwd: HostPath, label: str) -> list[str]:
     if not isinstance(cwd, HostPath):
         raise ValueError(f"{label} cwd must be HostPath, got {cwd!r}")
@@ -273,21 +319,59 @@ def _validate_proc_argv_and_cwd(argv: Sequence[str], cwd: HostPath, label: str) 
     return list(tup)
 
 
+_STRIPPED_LAUNCHER_ENV_KEYS: Final[tuple[str, ...]] = (
+    TREE_ID_ENV_KEY,
+    *PYTHON_LAUNCHER_HIJACK_ENV_KEYS,
+)
+_STRIPPED_LAUNCHER_ENV_UPPER: Final[frozenset[str]] = frozenset(k.upper() for k in _STRIPPED_LAUNCHER_ENV_KEYS)
+
+
+def _validate_process_env_map(env: Mapping[str, str], label: str) -> dict[str, str]:
+    if not isinstance(env, Mapping):
+        raise ValueError(f"{label} must be Mapping[str, str], got {type(env).__name__}")
+    cleaned: dict[str, str] = {}
+    for k, v in env.items():
+        if type(k) is not str or type(v) is not str:
+            raise ValueError(f"{label} entries must be plain str->str")
+        if not k or "=" in k or "\x00" in k or "\x00" in v:
+            raise ValueError(f"{label} contains invalid NUL or '=' in key/value: {k!r}")
+        try:
+            k.encode("utf-8", errors="strict")
+            v.encode("utf-8", errors="strict")
+        except UnicodeEncodeError as exc:
+            raise ValueError(f"{label} contains non-UTF-8 surrogates") from exc
+        cleaned[k] = v
+    return cleaned
+
+
+def _strip_launcher_env_keys(env_map: dict[str, str]) -> None:
+    for k in [key for key in env_map if key.upper() in _STRIPPED_LAUNCHER_ENV_UPPER]:
+        env_map.pop(k, None)
+
+
+_DETACHED_LAUNCHER_TAG: Final[str] = "_yscb_detached_launcher_v2"
+
+
 def spawn_detached(
     argv: Sequence[str],
     *,
     cwd: HostPath,
     extra_env: Optional[Mapping[str, str]] = None,
 ) -> int:
-    """Spawn a fully detached background process via an intermediate launcher (0 ResourceWarning)."""
+    """Spawn a fully detached background process surviving parent ManagedProcessTree teardown (0 ResourceWarning)."""
     clean_argv = _validate_proc_argv_and_cwd(argv, cwd, "spawn_detached")
+    merged_extra = _validate_process_env_map(extra_env, "spawn_detached extra_env") if extra_env is not None else {}
+    _strip_launcher_env_keys(merged_extra)
     launcher_code = "\n".join(
         (
+            f"# {_DETACHED_LAUNCHER_TAG}",
             "import json, os, subprocess, sys, warnings",
             "warnings.simplefilter('ignore', ResourceWarning)",
-            "cfg = json.loads(sys.argv[1])",
+            "cfg = json.loads(sys.stdin.read())",
             "env = dict(os.environ)",
             "env.update(cfg.get('extra_env') or {})",
+            f"stripped = {sorted(_STRIPPED_LAUNCHER_ENV_UPPER)!r}",
+            "for k in [x for x in env if x.upper() in stripped]: env.pop(k, None)",
             "kw = {'cwd': cfg['cwd'], 'env': env, 'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL, 'close_fds': True}",
             "if os.name == 'nt':",
             "    try:",
@@ -301,24 +385,61 @@ def spawn_detached(
             "os._exit(0)",
         )
     )
-    merged_extra = dict(extra_env) if extra_env else {}
+    outer_env = dict(os.environ)
+    _strip_launcher_env_keys(outer_env)
     if sys.dont_write_bytecode:
+        outer_env["PYTHONDONTWRITEBYTECODE"] = "1"
         merged_extra.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     if sys.flags.optimize > 0:
+        outer_env["PYTHONOPTIMIZE"] = str(sys.flags.optimize)
         merged_extra.setdefault("PYTHONOPTIMIZE", str(sys.flags.optimize))
     opt_flags = [f"-{'O' * min(2, sys.flags.optimize)}"] if sys.flags.optimize > 0 else []
     payload = json.dumps({"argv": clean_argv, "cwd": str(cwd), "extra_env": merged_extra})
-    launcher_argv = [sys.executable, *(["-B"] if sys.dont_write_bytecode else []), *opt_flags, "-c", launcher_code, payload]
+    launcher_argv = [sys.executable, *(["-B"] if sys.dont_write_bytecode else []), *opt_flags, "-c", launcher_code]
     try:
-        completed = subprocess.run(
-            launcher_argv,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=10.0,
-            check=True,
-        )
+        if IS_WINDOWS:
+            try:
+                completed = subprocess.run(
+                    launcher_argv,
+                    input=payload,
+                    cwd=str(cwd),
+                    env=outer_env,
+                    creationflags=0x00000200 | 0x01000000,
+                    capture_output=True,
+                    text=True,
+                    timeout=10.0,
+                    check=True,
+                )
+            except OSError:
+                completed = subprocess.run(
+                    launcher_argv,
+                    input=payload,
+                    cwd=str(cwd),
+                    env=outer_env,
+                    creationflags=0x00000200,
+                    capture_output=True,
+                    text=True,
+                    timeout=10.0,
+                    check=True,
+                )
+        else:
+            completed = subprocess.run(
+                launcher_argv,
+                input=payload,
+                cwd=str(cwd),
+                env=outer_env,
+                start_new_session=True,
+                capture_output=True,
+                text=True,
+                timeout=10.0,
+                check=True,
+            )
         return int(completed.stdout.strip())
+    except subprocess.CalledProcessError as exc:
+        err_tail = (exc.stderr or "").strip()[:200]
+        raise OSError(f"Failed to spawn detached process (rc={exc.returncode}): {err_tail}") from None
+    except subprocess.TimeoutExpired as exc:
+        raise OSError(f"Timed out spawning detached process after {exc.timeout}s") from None
     except (subprocess.SubprocessError, ValueError) as exc:
         raise OSError(f"Failed to spawn detached process: {safe_exception_summary(exc)}") from exc
 
@@ -337,14 +458,20 @@ def _snapshot_darwin_tree_maps() -> Optional[_PosixPsSnapshot]:
         return None
     cap_cnt = max(256, (est_bytes // 4) + 128)
     buf = (ctypes.c_int * cap_cnt)()
-    used_bytes = int(_DARWIN_PROC_LISTPIDS(1, 0, ctypes.byref(buf), cap_cnt * 4))
-    if used_bytes <= 0:
-        return None
+    used_bytes = 0
+    for _ in range(4):
+        buf = (ctypes.c_int * cap_cnt)()
+        used_bytes = int(_DARWIN_PROC_LISTPIDS(1, 0, ctypes.byref(buf), cap_cnt * 4))
+        if used_bytes <= 0:
+            return None
+        if used_bytes < cap_cnt * 4:
+            break
+        cap_cnt *= 2
     by_ppid: dict[int, list[int]] = {}
     by_pgid: dict[int, list[int]] = {}
     for idx in range(min(cap_cnt, used_bytes // 4)):
         pid_v = int(buf[idx])
-        bsd_st = _darwin_query_bsdinfo(pid_v) if pid_v > 0 else None
+        bsd_st = _darwin_query_bsdinfo(pid_v)[0] if pid_v > 0 else None
         if bsd_st is not None and bsd_st.status != 5:
             by_ppid.setdefault(bsd_st.ppid, []).append(pid_v)
             by_pgid.setdefault(bsd_st.pgid, []).append(pid_v)
@@ -401,7 +528,7 @@ def _read_posix_proc_starttime(pid: int) -> Optional[int]:
     if IS_WINDOWS or pid <= 0:
         return None
     if sys.platform == "darwin":
-        bsd_st = _darwin_query_bsdinfo(pid)
+        bsd_st, _err = _darwin_query_bsdinfo(pid)
         return bsd_st.start_us if bsd_st is not None else None
     try:
         raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="ignore")
@@ -414,41 +541,125 @@ def _read_posix_proc_starttime(pid: int) -> Optional[int]:
     return int(fields[19]) if len(fields) > 19 and fields[19].isdigit() else None
 
 
+def _ps_command_contains_tree_token(cmd_text: str, token_str: str) -> bool:
+    marker = f"{TREE_ID_ENV_KEY}="
+    if marker not in cmd_text or not token_str:
+        return False
+    for tok in cmd_text.split():
+        if tok.startswith(marker) and token_str in tok[len(marker) :].split(","):
+            return True
+    return False
+
+
+def _is_detached_untagged_session_child(
+    cpid: int,
+    root_sid: Optional[int],
+    tree_token_bytes: bytes,
+) -> bool:
+    if IS_WINDOWS or root_sid is None or not tree_token_bytes:
+        return False
+    try:
+        child_sid = os.getsid(cpid)
+    except OSError:
+        return False
+    if child_sid == root_sid:
+        return False
+    if _has_posix_proc_stat():
+        try:
+            env_raw = Path(f"/proc/{cpid}/environ").read_bytes()
+        except OSError:
+            return False
+        return not _environ_contains_tree_token(env_raw, tree_token_bytes)
+    token_str = tree_token_bytes.decode("ascii", errors="ignore")
+    if not token_str:
+        return False
+    try:
+        cp = subprocess.run(
+            ["ps", "eww", "-p", str(cpid), "-o", "command="],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=1.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if cp.returncode != 0 or not cp.stdout.strip():
+        return False
+    if _ps_command_contains_tree_token(cp.stdout, token_str):
+        return False
+    if _DETACHED_LAUNCHER_TAG in cp.stdout:
+        return True
+    return sys.platform != "darwin"
+
+
 def _collect_posix_descendants_walk(
     root_pid: int,
     seen: set[int],
     ps_map: Optional[dict[int, list[int]]],
+    *,
+    root_sid: Optional[int] = None,
+    tree_token_bytes: bytes = b"",
 ) -> list[int]:
     if root_pid <= 0 or root_pid in seen:
         return []
     seen.add(root_pid)
     ordered: list[int] = []
     for cpid in _read_direct_proc_children(root_pid, ps_map):
-        ordered.extend(_collect_posix_descendants_walk(cpid, seen, ps_map))
+        if _is_detached_untagged_session_child(cpid, root_sid, tree_token_bytes):
+            continue
+        ordered.extend(
+            _collect_posix_descendants_walk(
+                cpid,
+                seen,
+                ps_map,
+                root_sid=root_sid,
+                tree_token_bytes=tree_token_bytes,
+            )
+        )
         ordered.append(cpid)
     return ordered
 
 
-_HAS_POSIX_PROC_STAT: bool = (not IS_WINDOWS) and Path("/proc/self/stat").is_file()
-_HAS_POSIX_PROC_STARTTIME: bool = _HAS_POSIX_PROC_STAT or sys.platform == "darwin"
+@functools.lru_cache(maxsize=1)
+def _has_posix_proc_stat() -> bool:
+    return (not IS_WINDOWS) and Path("/proc/self/stat").is_file()
+
+
+def _has_posix_proc_starttime() -> bool:
+    return _has_posix_proc_stat() or sys.platform == "darwin"
 
 
 def _collect_posix_descendants(
     root_pid: int,
     seen: set[int],
     ps_map: Optional[dict[int, list[int]]] = None,
+    *,
+    tree_token_bytes: bytes = b"",
 ) -> list[int]:
     if IS_WINDOWS or root_pid <= 0:
         return []
-    if not _HAS_POSIX_PROC_STAT and ps_map is None:
+    if not _has_posix_proc_stat() and ps_map is None:
         ps_map = _snapshot_ps_tree_maps().by_ppid
-    return _collect_posix_descendants_walk(root_pid, seen, ps_map)
+    root_sid: Optional[int] = None
+    if tree_token_bytes:
+        try:
+            root_sid = os.getsid(root_pid)
+        except OSError:
+            root_sid = None
+    return _collect_posix_descendants_walk(
+        root_pid,
+        seen,
+        ps_map,
+        root_sid=root_sid,
+        tree_token_bytes=tree_token_bytes,
+    )
 
 
 def _is_targeted_descendant_alive(dpid: int, exp_st: Optional[int]) -> bool:
     if dpid <= 1 or not is_process_alive(dpid):
         return False
-    if _HAS_POSIX_PROC_STARTTIME and (exp_st is None or _read_posix_proc_starttime(dpid) != exp_st):
+    if _has_posix_proc_starttime() and (exp_st is None or _read_posix_proc_starttime(dpid) != exp_st):
         return False
     return True
 
@@ -477,15 +688,7 @@ def _await_posix_descendants_dead(targets: dict[int, Optional[int]], max_wait_se
         time.sleep(0.002)
 
 
-@dataclass(frozen=True, slots=True)
-class _ProcStatRow:
-    pid: int
-    state: str
-    ppid: int
-    pgid: int
-
-
-def _parse_procfs_stat_entry(entry_name: str) -> Optional[_ProcStatRow]:
+def _parse_procfs_live_stat_entry(entry_name: str) -> Optional[tuple[int, int, int]]:
     if not entry_name.isdigit():
         return None
     pid_v = int(entry_name)
@@ -497,9 +700,9 @@ def _parse_procfs_stat_entry(entry_name: str) -> Optional[_ProcStatRow]:
     if rparen < 0:
         return None
     fields = raw[rparen + 2 :].split()
-    if len(fields) < 3 or not fields[1].lstrip("-").isdigit() or not fields[2].lstrip("-").isdigit():
+    if len(fields) < 3 or fields[0] == "Z" or not fields[1].lstrip("-").isdigit() or not fields[2].lstrip("-").isdigit():
         return None
-    return _ProcStatRow(pid_v, fields[0], int(fields[1]), int(fields[2]))
+    return (pid_v, int(fields[1]), int(fields[2]))
 
 
 def _snapshot_procfs_tree_maps() -> _PosixPsSnapshot:
@@ -510,11 +713,12 @@ def _snapshot_procfs_tree_maps() -> _PosixPsSnapshot:
     except OSError:
         return _PosixPsSnapshot({}, {})
     for name in entries:
-        parsed = _parse_procfs_stat_entry(name)
+        parsed = _parse_procfs_live_stat_entry(name)
         if parsed is None:
             continue
-        by_ppid.setdefault(parsed.ppid, []).append(parsed.pid)
-        by_pgid.setdefault(parsed.pgid, []).append(parsed.pid)
+        pid_v, ppid_v, pgid_v = parsed
+        by_ppid.setdefault(ppid_v, []).append(pid_v)
+        by_pgid.setdefault(pgid_v, []).append(pid_v)
     return _PosixPsSnapshot(by_ppid, by_pgid)
 
 
@@ -522,10 +726,12 @@ def _collect_orphan_pgid_members_posix(
     root_pid: int,
     seen: set[int],
     ps_snap: Optional[_PosixPsSnapshot] = None,
+    *,
+    tree_token_bytes: bytes = b"",
 ) -> list[int]:
     if IS_WINDOWS or root_pid <= 0 or is_process_alive(root_pid):
         return []
-    snap = ps_snap or (_snapshot_procfs_tree_maps() if _HAS_POSIX_PROC_STAT else _snapshot_ps_tree_maps())
+    snap = ps_snap or (_snapshot_procfs_tree_maps() if _has_posix_proc_stat() else _snapshot_ps_tree_maps())
     out: list[int] = []
     for p in snap.by_pgid.get(root_pid, ()):
         if p != root_pid and p not in seen:
@@ -535,28 +741,73 @@ def _collect_orphan_pgid_members_posix(
     while idx < len(out):
         cur = out[idx]
         idx += 1
+        cur_sid: Optional[int] = None
+        if tree_token_bytes:
+            try:
+                cur_sid = os.getsid(cur)
+            except OSError:
+                cur_sid = root_pid
         for ch in snap.by_ppid.get(cur, ()):
             if ch != root_pid and ch not in seen:
+                if _is_detached_untagged_session_child(ch, cur_sid, tree_token_bytes):
+                    continue
                 seen.add(ch)
                 out.append(ch)
     return out
 
 
 def _environ_contains_tree_token(env_raw: bytes, token_bytes: bytes) -> bool:
+    prefix_b = f"{TREE_ID_ENV_KEY}=".encode("ascii")
     for entry in env_raw.split(b"\x00"):
-        if entry.startswith(b"_YSCB_TREE_ID="):
-            return token_bytes in entry[14:].split(b",")
+        if entry.startswith(prefix_b):
+            return token_bytes in entry[len(prefix_b) :].split(b",")
     return False
 
 
-def _collect_procfs_env_token_pids(
+def _collect_ps_env_token_roots_fallback(
+    token_bytes: bytes,
+    root_pid: int,
+    seen: set[int],
+) -> list[int]:
+    token_str = token_bytes.decode("ascii", errors="ignore")
+    if not token_str:
+        return []
+    me = os.getpid()
+    try:
+        cp = subprocess.run(
+            ["ps", "eww", "-ax", "-o", "pid=,command="],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+            check=False,
+        )
+    except OSError:
+        return []
+    roots: list[int] = []
+    for line in cp.stdout.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) < 2 or not parts[0].isdigit():
+            continue
+        pid_v = int(parts[0])
+        if pid_v in (me, root_pid) or pid_v in seen:
+            continue
+        if _ps_command_contains_tree_token(parts[1], token_str):
+            roots.append(pid_v)
+    return roots
+
+
+def _collect_posix_env_token_pids(
     token_bytes: bytes,
     root_pid: int,
     seen: set[int],
     ps_map: Optional[dict[int, list[int]]] = None,
 ) -> list[int]:
-    if IS_WINDOWS or not _HAS_POSIX_PROC_STAT or not token_bytes:
+    if IS_WINDOWS or not token_bytes:
         return []
+    if not _has_posix_proc_stat():
+        fb_roots = _collect_ps_env_token_roots_fallback(token_bytes, root_pid, seen)
+        return [dpid for tpid in fb_roots for dpid in (*_collect_posix_descendants(tpid, seen, ps_map, tree_token_bytes=token_bytes), tpid)]
     me = os.getpid()
     roots: list[int] = []
     try:
@@ -573,7 +824,7 @@ def _collect_procfs_env_token_pids(
             continue
         if _environ_contains_tree_token(env_raw, token_bytes):
             roots.append(pid_v)
-    return [dpid for tpid in roots for dpid in (*_collect_posix_descendants(tpid, seen, ps_map), tpid)]
+    return [dpid for tpid in roots for dpid in (*_collect_posix_descendants(tpid, seen, ps_map, tree_token_bytes=token_bytes), tpid)]
 
 
 def _validate_signal_numbers(sig_nums: Sequence[int]) -> frozenset[int]:
@@ -595,22 +846,68 @@ def _close_sock_quietly(s: Optional[socket.socket]) -> None:
         pass
 
 
+@dataclass(frozen=True, slots=True)
+class _MuxWorkItem:
+    targets: tuple[SignalWakeupGuard, ...]
+    sig_byte: int
+    barrier: Optional[tuple[SignalWakeupGuard, threading.Event]] = None
+
+
 @dataclass(slots=True)
 class _SignalMuxState:
+    _INSTANCE: ClassVar[Optional[_SignalMuxState]] = None
+    _INIT_LOCK: ClassVar[threading.Lock] = threading.Lock()
+
     lock: threading.Lock = field(default_factory=threading.Lock)
     active_guards: list[SignalWakeupGuard] = field(default_factory=list)
     retiring_barriers: deque[tuple[SignalWakeupGuard, threading.Event]] = field(default_factory=deque)
+    dispatch_queue: deque[_MuxWorkItem] = field(default_factory=deque)
+    in_flight_guards: tuple[SignalWakeupGuard, ...] = ()
+    dispatch_wake: threading.Event = field(default_factory=threading.Event)
+    absorbed_credits: dict[int, int] = field(default_factory=dict)
     orig_handlers: dict[int, object] = field(default_factory=dict)
-    handled_sigs: frozenset[int] = field(default_factory=frozenset)
-    orig_handlers_snap: Mapping[int, object] = field(default_factory=dict)
+    deferred_main_signals: deque[tuple[int, object]] = field(default_factory=deque)
+    main_active_tokens: list[int] = field(default_factory=list)
+    rsock: Optional[socket.socket] = None
     wsock: Optional[socket.socket] = None
     prev_wakeup_fd: int = -1
     watcher_thread: Optional[threading.Thread] = None
+    pipe_eof: bool = False
+
+    @classmethod
+    def instance(cls) -> _SignalMuxState:
+        inst = cls._INSTANCE
+        if inst is not None:
+            return inst
+        with cls._INIT_LOCK:
+            if cls._INSTANCE is None:
+                cls._INSTANCE = cls()
+                atexit.register(SignalWakeupGuard.drain_retired_on_main)
+            return cls._INSTANCE
 
 
-def _refresh_mux_snapshots_locked(mux: _SignalMuxState) -> None:
-    mux.handled_sigs = frozenset(s for g in mux.active_guards for s in g._sig_nums)
-    mux.orig_handlers_snap = dict(mux.orig_handlers)
+def _guarded_mux_sigs_locked(mux: _SignalMuxState) -> set[int]:
+    sigs = {s for g in mux.active_guards for s in g.sig_nums}
+    for rg, _ev in mux.retiring_barriers:
+        sigs.update(rg.sig_nums)
+    for ig in mux.in_flight_guards:
+        if ig.is_installed:
+            sigs.update(ig.sig_nums)
+    for item in mux.dispatch_queue:
+        for tg in item.targets:
+            if tg.is_installed:
+                sigs.update(tg.sig_nums)
+        if item.barrier is not None:
+            sigs.update(item.barrier[0].sig_nums)
+    return sigs
+
+
+def _needed_mux_sigs_locked(mux: _SignalMuxState) -> set[int]:
+    sigs = _guarded_mux_sigs_locked(mux)
+    for sig_num, cnt in mux.absorbed_credits.items():
+        if cnt > 0:
+            sigs.add(sig_num)
+    return sigs
 
 
 @dataclass(frozen=True, slots=True)
@@ -641,18 +938,55 @@ def _forward_wakeup_bytes(prev_fd: int, data: bytes) -> None:
         pass
 
 
+def _pump_pipe_bytes_into_queue_locked(mux: _SignalMuxState) -> None:
+    rs = mux.rsock
+    if rs is None:
+        return
+    while True:
+        try:
+            data = rs.recv(128)
+        except BlockingIOError:
+            break
+        except OSError:
+            mux.pipe_eof = True
+            break
+        if not data:
+            mux.pipe_eof = True
+            break
+        for b_val in data:
+            if b_val == 0:
+                if mux.retiring_barriers:
+                    bar = mux.retiring_barriers.popleft()
+                    mux.dispatch_queue.append(_MuxWorkItem((), 0, bar))
+                    mux.dispatch_wake.set()
+            else:
+                _forward_wakeup_bytes(mux.prev_wakeup_fd, bytes((b_val,)))
+                candidates: list[SignalWakeupGuard] = []
+                for g in (*mux.active_guards, *(rg for rg, _ev in mux.retiring_barriers), *mux.in_flight_guards):
+                    if g not in candidates and g.is_installed and b_val in g.sig_nums:
+                        candidates.append(g)
+                targets = tuple(candidates)
+                if targets:
+                    mux.absorbed_credits[b_val] = mux.absorbed_credits.get(b_val, 0) + 1
+                    mux.dispatch_queue.append(_MuxWorkItem(targets, b_val, None))
+                    mux.dispatch_wake.set()
+
+
 def _restore_unused_mux_handlers_locked(mux: _SignalMuxState, needed: set[int]) -> None:
     for sig_num in [s for s in mux.orig_handlers if s not in needed]:
         old_h = mux.orig_handlers.pop(sig_num)
         try:
-            if signal.getsignal(sig_num) is _mux_signal_handler:
+            if signal.getsignal(sig_num) is _handle_signal_on_main:
                 signal.signal(sig_num, old_h)
         except (OSError, ValueError):
             continue
-    _refresh_mux_snapshots_locked(mux)
 
 
 def _detach_mux_on_main_locked(mux: _SignalMuxState) -> _MainDrainHandles:
+    _pump_pipe_bytes_into_queue_locked(mux)
+    while mux.retiring_barriers:
+        mux.dispatch_queue.append(_MuxWorkItem((), 0, mux.retiring_barriers.popleft()))
+    mux.dispatch_wake.set()
     _restore_unused_mux_handlers_locked(mux, set())
     ws, wt, prev_fd = mux.wsock, mux.watcher_thread, mux.prev_wakeup_fd
     if ws is not None:
@@ -665,30 +999,35 @@ def _detach_mux_on_main_locked(mux: _SignalMuxState) -> _MainDrainHandles:
         except (OSError, ValueError):
             pass
     mux.prev_wakeup_fd = -1
+    mux.rsock = None
     mux.wsock = None
     mux.watcher_thread = None
+    mux.pipe_eof = True
     return _MainDrainHandles(ws, wt)
 
 
 def _finish_main_drain(handles: _MainDrainHandles, *, join_watcher: bool = True) -> None:
     ws = handles.wsock
-    if ws is not None:
-        try:
-            ws.shutdown(socket.SHUT_WR)
-        except OSError:
-            pass
-    wt = handles.watcher
-    if join_watcher and wt is not None and wt is not threading.current_thread() and wt.is_alive():
-        wt.join(timeout=1.0)
-    if ws is not None:
-        _close_sock_quietly(ws)
+    try:
+        if ws is not None:
+            try:
+                ws.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+        wt = handles.watcher
+        if join_watcher and wt is not None and wt is not threading.current_thread() and wt.is_alive():
+            wt.join(timeout=1.0)
+    finally:
+        if ws is not None:
+            _close_sock_quietly(ws)
 
 
 def _ensure_mux_pipe_locked(mux: _SignalMuxState) -> tuple[bool, _MainDrainHandles]:
-    if mux.wsock is not None and mux.watcher_thread is not None and mux.watcher_thread.is_alive():
+    if mux.wsock is not None and mux.rsock is not None and mux.watcher_thread is not None and mux.watcher_thread.is_alive():
         return (True, _MainDrainHandles())
     stale = _detach_mux_on_main_locked(mux)
     rsock, wsock = socket.socketpair()
+    rsock.setblocking(False)
     wsock.setblocking(False)
     try:
         prev_fd = signal.set_wakeup_fd(wsock.fileno(), warn_on_full_buffer=False)
@@ -696,16 +1035,20 @@ def _ensure_mux_pipe_locked(mux: _SignalMuxState) -> tuple[bool, _MainDrainHandl
         _close_sock_quietly(wsock)
         _close_sock_quietly(rsock)
         return (False, stale)
-    wt = threading.Thread(target=_mux_watch_loop, args=(mux, rsock, prev_fd), name="yscb-sig-wakeup", daemon=True)
+    mux.pipe_eof = False
+    mux.rsock = rsock
     mux.wsock = wsock
     mux.prev_wakeup_fd = prev_fd
+    wt = threading.Thread(target=_mux_watch_loop, args=(mux, rsock), name="yscb-sig-wakeup", daemon=True)
     mux.watcher_thread = wt
     try:
         wt.start()
     except BaseException:
+        mux.rsock = None
         mux.wsock = None
         mux.prev_wakeup_fd = -1
         mux.watcher_thread = None
+        mux.pipe_eof = True
         try:
             signal.set_wakeup_fd(prev_fd if prev_fd >= 0 else -1)
         except (OSError, ValueError):
@@ -721,97 +1064,180 @@ def _register_mux_signals_locked(mux: _SignalMuxState, sig_nums: frozenset[int])
     for sig_num in sig_nums:
         try:
             cur_h = signal.getsignal(sig_num)
-            if cur_h is _mux_signal_handler:
+            if cur_h is _handle_signal_on_main:
                 mux.orig_handlers.setdefault(sig_num, signal.SIG_DFL)
-                _refresh_mux_snapshots_locked(mux)
                 any_ok = True
                 continue
             mux.orig_handlers[sig_num] = cur_h
-            _refresh_mux_snapshots_locked(mux)
-            signal.signal(sig_num, _mux_signal_handler)
+            signal.signal(sig_num, _handle_signal_on_main)
             any_ok = True
         except (OSError, ValueError):
             mux.orig_handlers.pop(sig_num, None)
-            _refresh_mux_snapshots_locked(mux)
     return any_ok
 
 
-def _process_single_mux_byte(mux: _SignalMuxState, sig_byte: int, prev_fd: int) -> None:
-    if sig_byte == 0:
-        popped: Optional[tuple[SignalWakeupGuard, threading.Event]] = None
-        with mux.lock:
-            if mux.retiring_barriers:
-                popped = mux.retiring_barriers.popleft()
-        if popped is not None:
-            popped[0]._mark_inactive()
-            popped[1].set()
-        return
-    b_seq = bytes((sig_byte,))
-    _forward_wakeup_bytes(prev_fd, b_seq)
-    with mux.lock:
-        targets = (*mux.active_guards, *(rg for rg, _ev in mux.retiring_barriers))
-    for guard in targets:
-        guard._dispatch_signal(sig_byte)
-
-
-def _retire_all_pending_barriers(mux: _SignalMuxState) -> None:
-    with mux.lock:
-        pending = list(mux.retiring_barriers)
-        mux.retiring_barriers.clear()
-    for guard, ev in pending:
-        guard._mark_inactive()
-        ev.set()
-
-
-def _mux_watch_loop(mux: _SignalMuxState, rs: socket.socket, prev_fd: int) -> None:
+def _mux_watch_loop(mux: _SignalMuxState, my_rsock: socket.socket) -> None:
     try:
-        while True:
+        with selectors.DefaultSelector() as sel:
             try:
-                data = rs.recv(64)
-            except OSError:
+                sel.register(my_rsock, selectors.EVENT_READ)
+            except (OSError, ValueError):
                 return
-            if not data:
-                return
-            for b_val in data:
-                _process_single_mux_byte(mux, b_val, prev_fd)
+            try:
+                while True:
+                    item: Optional[_MuxWorkItem] = None
+                    exit_loop = False
+                    with _locked_mux(mux):
+                        if mux.rsock is my_rsock:
+                            _pump_pipe_bytes_into_queue_locked(mux)
+                        if mux.dispatch_queue:
+                            item = mux.dispatch_queue.popleft()
+                            if item.barrier is None:
+                                mux.in_flight_guards = item.targets
+                        else:
+                            mux.dispatch_wake.clear()
+                            exit_loop = (mux.rsock is not my_rsock) or mux.pipe_eof
+                    if item is not None:
+                        if item.barrier is not None:
+                            item.barrier[0].mark_inactive()
+                            item.barrier[1].set()
+                        else:
+                            try:
+                                for guard in item.targets:
+                                    guard.dispatch_signal(item.sig_byte)
+                            finally:
+                                with _locked_mux(mux):
+                                    if mux.rsock is my_rsock:
+                                        _pump_pipe_bytes_into_queue_locked(mux)
+                                    mux.in_flight_guards = ()
+                        continue
+                    if exit_loop:
+                        return
+                    try:
+                        sel.select(timeout=0.04)
+                    except (OSError, ValueError):
+                        return
+            finally:
+                try:
+                    sel.unregister(my_rsock)
+                except (KeyError, OSError, ValueError):
+                    pass
     finally:
-        _retire_all_pending_barriers(mux)
-        _close_sock_quietly(rs)
+        leftover: list[_MuxWorkItem] = []
+        with _locked_mux(mux):
+            if mux.rsock is my_rsock or mux.rsock is None:
+                while mux.retiring_barriers:
+                    leftover.append(_MuxWorkItem((), 0, mux.retiring_barriers.popleft()))
+                while mux.dispatch_queue:
+                    leftover.append(mux.dispatch_queue.popleft())
+        for rem in leftover:
+            if rem.barrier is not None:
+                rem.barrier[0].mark_inactive()
+                rem.barrier[1].set()
+            else:
+                for guard in rem.targets:
+                    guard.dispatch_signal(rem.sig_byte)
+        _close_sock_quietly(my_rsock)
+
+
+@contextmanager
+def _locked_mux(mux: _SignalMuxState) -> Iterator[_SignalMuxState]:
+    is_main = threading.current_thread() is threading.main_thread()
+    if is_main:
+        mux.main_active_tokens.append(1)
+    try:
+        mux.lock.acquire()
+        try:
+            yield mux
+        finally:
+            mux.lock.release()
+    finally:
+        if is_main:
+            mux.main_active_tokens.pop()
+    if is_main and not mux.main_active_tokens and mux.deferred_main_signals:
+        _drain_deferred_main_signals(mux)
+
+
+def _process_main_signal_once(mux: _SignalMuxState, sig_num: int, frame: object) -> None:
+    absorbed = False
+    orig: object = signal.SIG_DFL
+    handles = _MainDrainHandles()
+    mux.lock.acquire()
+    try:
+        _pump_pipe_bytes_into_queue_locked(mux)
+        orig = mux.orig_handlers.get(sig_num, signal.SIG_DFL)
+        cur_cred = mux.absorbed_credits.get(sig_num, 0)
+        guarded_sigs = _guarded_mux_sigs_locked(mux)
+        has_more_def = any(s_n == sig_num for s_n, _f in mux.deferred_main_signals)
+        if cur_cred > 0:
+            absorbed = True
+            new_cred = (cur_cred - 1) if (sig_num in guarded_sigs or has_more_def) else 0
+            if new_cred > 0:
+                mux.absorbed_credits[sig_num] = new_cred
+            else:
+                mux.absorbed_credits.pop(sig_num, None)
+        needed = _needed_mux_sigs_locked(mux)
+        if needed:
+            _restore_unused_mux_handlers_locked(mux, needed)
+        elif not mux.dispatch_queue and (bool(mux.orig_handlers) or mux.wsock is not None):
+            handles = _detach_mux_on_main_locked(mux)
+    finally:
+        mux.lock.release()
+    _finish_main_drain(handles, join_watcher=False)
+    if absorbed:
+        return
+    if callable(orig) and orig is not _handle_signal_on_main:
+        orig(sig_num, frame)
+        return
+    if orig == signal.SIG_DFL:
+        try:
+            if signal.getsignal(sig_num) is _handle_signal_on_main:
+                signal.signal(sig_num, signal.SIG_DFL)
+        except (OSError, ValueError):
+            return
+        signal.raise_signal(sig_num)
+
+
+def _drain_deferred_main_signals(mux: _SignalMuxState) -> None:
+    while mux.deferred_main_signals:
+        mux.main_active_tokens.append(1)
+        try:
+            while mux.deferred_main_signals:
+                try:
+                    s_num, s_frame = mux.deferred_main_signals.popleft()
+                except IndexError:
+                    break
+                _process_main_signal_once(mux, s_num, s_frame)
+        finally:
+            mux.main_active_tokens.pop()
+
+
+def _handle_signal_on_main(sig_num: int, frame: object) -> None:
+    mux = _SignalMuxState.instance()
+    mux.deferred_main_signals.append((sig_num, frame))
+    if mux.main_active_tokens:
+        return
+    _drain_deferred_main_signals(mux)
 
 
 class SignalWakeupGuard:
     """Routes main-thread OS signals through a single FIFO-barrier C-level set_wakeup_fd coordinator."""
-
-    _MUX: ClassVar[_SignalMuxState] = _SignalMuxState()
 
     @classmethod
     def drain_retired_on_main(cls) -> None:
         if threading.current_thread() is not threading.main_thread():
             return
         handles = _MainDrainHandles()
-        with cls._MUX.lock:
-            needed = {s for g in cls._MUX.active_guards for s in g._sig_nums}
-            if cls._MUX.active_guards:
-                _restore_unused_mux_handlers_locked(cls._MUX, needed)
-            elif bool(cls._MUX.orig_handlers) or cls._MUX.wsock is not None:
-                handles = _detach_mux_on_main_locked(cls._MUX)
-        _finish_main_drain(handles)
-
-    @classmethod
-    def _try_drain_from_signal_handler(cls) -> bool:
-        mux = cls._MUX
-        if not mux.lock.acquire(blocking=False):
-            return False
-        handles = _MainDrainHandles()
         try:
-            if mux.active_guards:
-                return False
-            if bool(mux.orig_handlers) or mux.wsock is not None:
-                handles = _detach_mux_on_main_locked(mux)
+            with _locked_mux(_SignalMuxState.instance()) as mux:
+                _pump_pipe_bytes_into_queue_locked(mux)
+                needed = _needed_mux_sigs_locked(mux)
+                if needed:
+                    _restore_unused_mux_handlers_locked(mux, needed)
+                elif bool(mux.orig_handlers) or mux.wsock is not None:
+                    handles = _detach_mux_on_main_locked(mux)
         finally:
-            mux.lock.release()
-        _finish_main_drain(handles, join_watcher=False)
-        return True
+            _finish_main_drain(handles)
 
     def __init__(
         self,
@@ -831,28 +1257,47 @@ class SignalWakeupGuard:
         self.install()
         return self
 
-    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        _ = (exc_type, exc, tb)
         self.close()
 
-    def _is_active(self) -> bool:
-        with self._state_lock:
-            return self._installed
+    @contextmanager
+    def _locked_guard_state(self) -> Iterator[None]:
+        is_main = threading.current_thread() is threading.main_thread()
+        mux = _SignalMuxState.instance() if is_main else None
+        if mux is not None:
+            mux.main_active_tokens.append(1)
+        try:
+            self._state_lock.acquire()
+            try:
+                yield
+            finally:
+                self._state_lock.release()
+        finally:
+            if mux is not None:
+                mux.main_active_tokens.pop()
+        if mux is not None and not mux.main_active_tokens and mux.deferred_main_signals:
+            _drain_deferred_main_signals(mux)
 
-    def _mark_inactive(self) -> None:
-        with self._state_lock:
-            self._installed = False
+    @property
+    def is_installed(self) -> bool:
+        return self._installed
 
-    def _dispatch_signal(self, sig_num: int) -> None:
-        if sig_num not in self._sig_nums:
+    def mark_inactive(self) -> None:
+        self._installed = False
+
+    def dispatch_signal(self, sig_num: int) -> None:
+        if sig_num not in self._sig_nums or not self._installed:
             return
-        with self._state_lock:
+        with self._locked_guard_state():
             if not self._installed:
                 return
             was_first = self._seen_hits == 0
             self._seen_hits += 1
         if was_first:
             invoke_observer_safely(self._on_signal)
-        elif self._on_second_signal is not None and self._is_active():
+            return
+        if self._on_second_signal is not None and self._installed:
             invoke_observer_safely(self._on_second_signal)
 
     def _activate_guard_locked(self, mux: _SignalMuxState) -> _MainDrainHandles:
@@ -860,108 +1305,115 @@ class SignalWakeupGuard:
             self._seen_hits = 0
             self._installed = True
         mux.active_guards.append(self)
-        _refresh_mux_snapshots_locked(mux)
         if _register_mux_signals_locked(mux, self._sig_nums):
             return _MainDrainHandles()
         mux.active_guards.remove(self)
-        self._mark_inactive()
-        _refresh_mux_snapshots_locked(mux)
-        return _detach_mux_on_main_locked(mux) if not mux.active_guards else _MainDrainHandles()
+        self.mark_inactive()
+        return _detach_mux_on_main_locked(mux) if not _needed_mux_sigs_locked(mux) else _MainDrainHandles()
 
     def install(self) -> None:
         if threading.current_thread() is not threading.main_thread() or not self._sig_nums:
             return
         stale = _MainDrainHandles()
         abort_drain = _MainDrainHandles()
-        mux = SignalWakeupGuard._MUX
-        with mux.lock:
-            if self in mux.active_guards:
-                return
-            pipe_ok, stale = _ensure_mux_pipe_locked(mux)
-            if pipe_ok:
-                abort_drain = self._activate_guard_locked(mux)
-        _finish_main_drain(stale)
-        _finish_main_drain(abort_drain)
+        try:
+            with _locked_mux(_SignalMuxState.instance()) as mux:
+                _pump_pipe_bytes_into_queue_locked(mux)
+                if self in mux.active_guards:
+                    return
+                pipe_ok, stale = _ensure_mux_pipe_locked(mux)
+                if pipe_ok:
+                    abort_drain = self._activate_guard_locked(mux)
+        finally:
+            try:
+                _finish_main_drain(stale)
+            finally:
+                _finish_main_drain(abort_drain)
 
     def _enqueue_retire_barrier_locked(self, mux: _SignalMuxState, on_watcher: bool) -> Optional[threading.Event]:
-        if on_watcher or mux.wsock is None:
-            self._mark_inactive()
+        if on_watcher or mux.wsock is None or mux.watcher_thread is None or not mux.watcher_thread.is_alive():
+            self.mark_inactive()
             return None
         done_ev = threading.Event()
         mux.retiring_barriers.append((self, done_ev))
         try:
             mux.wsock.send(b"\x00")
+            _pump_pipe_bytes_into_queue_locked(mux)
             return done_ev
         except OSError:
-            mux.retiring_barriers.pop()
-            self._mark_inactive()
+            if (self, done_ev) in mux.retiring_barriers:
+                mux.retiring_barriers.remove((self, done_ev))
+            self.mark_inactive()
             return None
 
-    def _close_on_main_locked(self, mux: _SignalMuxState, was_active: bool, on_watcher: bool) -> tuple[_MainDrainHandles, Optional[threading.Event]]:
-        needed = {s for g in mux.active_guards for s in g._sig_nums}
-        _restore_unused_mux_handlers_locked(mux, needed)
-        if not mux.active_guards and (bool(mux.orig_handlers) or mux.wsock is not None):
-            if was_active:
-                mux.retiring_barriers.append((self, threading.Event()))
-            return (_detach_mux_on_main_locked(mux), None)
-        return (_MainDrainHandles(), self._enqueue_retire_barrier_locked(mux, on_watcher) if was_active else None)
+    @property
+    def sig_nums(self) -> frozenset[int]:
+        return self._sig_nums
 
     def close(self) -> None:
         cur_th = threading.current_thread()
         is_main = cur_th is threading.main_thread()
-        handles = _MainDrainHandles()
         barrier_ev: Optional[threading.Event] = None
-        mux = SignalWakeupGuard._MUX
-        with mux.lock:
+        with _locked_mux(_SignalMuxState.instance()) as mux:
+            _pump_pipe_bytes_into_queue_locked(mux)
             on_watcher = cur_th is mux.watcher_thread
-            was_active = self in mux.active_guards
-            if was_active:
+            if self in mux.active_guards:
                 mux.active_guards.remove(self)
-                _refresh_mux_snapshots_locked(mux)
-            else:
-                self._mark_inactive()
-            if is_main:
-                handles, barrier_ev = self._close_on_main_locked(mux, was_active, on_watcher)
-            elif was_active:
                 barrier_ev = self._enqueue_retire_barrier_locked(mux, on_watcher)
-        _finish_main_drain(handles)
-        if barrier_ev is not None:
-            barrier_ev.wait(timeout=1.0)
-            self._mark_inactive()
-
-
-atexit.register(SignalWakeupGuard.drain_retired_on_main)
-
-
-def _mux_signal_handler(sig_num: int, frame: object) -> None:
-    mux = SignalWakeupGuard._MUX
-    if sig_num in mux.handled_sigs:
-        return
-    orig = mux.orig_handlers_snap.get(sig_num, signal.SIG_DFL)
-    SignalWakeupGuard._try_drain_from_signal_handler()
-    if callable(orig) and orig is not _mux_signal_handler:
-        orig(sig_num, frame)
-        return
-    if orig == signal.SIG_DFL:
+            else:
+                self.mark_inactive()
         try:
-            if signal.getsignal(sig_num) is _mux_signal_handler:
-                signal.signal(sig_num, signal.SIG_DFL)
-        except (OSError, ValueError):
-            return
-        signal.raise_signal(sig_num)
+            if barrier_ev is not None:
+                barrier_ev.wait(timeout=1.0)
+                if is_main:
+                    time.sleep(0.0)
+        finally:
+            self.mark_inactive()
+            handles = _MainDrainHandles()
+            try:
+                with _locked_mux(_SignalMuxState.instance()) as mux:
+                    _pump_pipe_bytes_into_queue_locked(mux)
+                    if barrier_ev is not None and (self, barrier_ev) in mux.retiring_barriers:
+                        mux.retiring_barriers.remove((self, barrier_ev))
+                    if is_main:
+                        still_guarded = _guarded_mux_sigs_locked(mux)
+                        def_sigs = {sn for sn, _f in mux.deferred_main_signals}
+                        for s_k in [k for k in mux.absorbed_credits if k not in still_guarded and k not in def_sigs]:
+                            mux.absorbed_credits.pop(s_k, None)
+                        needed = _needed_mux_sigs_locked(mux)
+                        if needed:
+                            _restore_unused_mux_handlers_locked(mux, needed)
+                        elif bool(mux.orig_handlers) or mux.wsock is not None:
+                            handles = _detach_mux_on_main_locked(mux)
+            finally:
+                _finish_main_drain(handles)
+
+
+
+
+_MANAGED_HIJACK_ENV_UPPER: Final[frozenset[str]] = frozenset(k.upper() for k in PYTHON_LAUNCHER_HIJACK_ENV_KEYS)
 
 
 def _build_managed_child_env(
     env: Optional[Mapping[str, str]],
     token_hex: str,
 ) -> Optional[dict[str, str]]:
-    need_flags = sys.dont_write_bytecode or sys.flags.optimize > 0 or bool(token_hex)
-    env_map = dict(env) if env is not None else (dict(os.environ) if need_flags else None)
+    validated = _validate_process_env_map(env, "ManagedProcessTree env") if env is not None else None
+    has_hijack = validated is None and any(k.upper() in _MANAGED_HIJACK_ENV_UPPER for k in os.environ)
+    need_flags = sys.dont_write_bytecode or sys.flags.optimize > 0 or bool(token_hex) or has_hijack
+    if validated is not None:
+        env_map: Optional[dict[str, str]] = {
+            k: v for k, v in validated.items() if k.upper() not in _MANAGED_HIJACK_ENV_UPPER
+        }
+    elif need_flags:
+        env_map = {k: v for k, v in os.environ.items() if k.upper() not in _MANAGED_HIJACK_ENV_UPPER}
+    else:
+        env_map = None
     if env_map is None:
         return None
     if token_hex:
-        prev_chain = env_map.get("_YSCB_TREE_ID", "").strip(",")
-        env_map["_YSCB_TREE_ID"] = f"{prev_chain},{token_hex}" if prev_chain else token_hex
+        prev_chain = env_map.get(TREE_ID_ENV_KEY, "").strip(",")
+        env_map[TREE_ID_ENV_KEY] = f"{prev_chain},{token_hex}" if prev_chain else token_hex
     if sys.dont_write_bytecode:
         env_map.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     if sys.flags.optimize > 0:
@@ -1024,7 +1476,8 @@ class ManagedProcessTree:
     def __enter__(self) -> ManagedProcessTree:
         return self
 
-    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        _ = (exc_type, exc, tb)
         self.terminate_tree()
 
     @property
@@ -1044,7 +1497,7 @@ class ManagedProcessTree:
             cur_st = _read_posix_proc_starttime(dpid)
             if not is_process_alive(dpid) or (exp_st is not None and cur_st != exp_st):
                 self._known_descendants.pop(dpid, None)
-        ps_snap = None if _HAS_POSIX_PROC_STAT else _snapshot_ps_tree_maps()
+        ps_snap = None if _has_posix_proc_stat() else _snapshot_ps_tree_maps()
         ps_map = ps_snap.by_ppid if ps_snap is not None else None
         seeds = [self._proc.pid] if self._proc.returncode is None else []
         seeds.extend(self._known_descendants.keys())
@@ -1052,20 +1505,22 @@ class ManagedProcessTree:
         new_pids = [
             cpid
             for spid in seeds
-            for cpid in _collect_posix_descendants(spid, seen, ps_map)
+            for cpid in _collect_posix_descendants(
+                spid, seen, ps_map, tree_token_bytes=self._tree_token_bytes
+            )
             if cpid not in self._known_descendants
         ]
         if self._owns_process_group:
-            for gpid in _collect_orphan_pgid_members_posix(self._proc.pid, seen, ps_snap):
+            for gpid in _collect_orphan_pgid_members_posix(self._proc.pid, seen, ps_snap, tree_token_bytes=self._tree_token_bytes):
                 if gpid not in self._known_descendants:
                     new_pids.append(gpid)
         if self._tree_token_bytes:
-            for dpid in _collect_procfs_env_token_pids(self._tree_token_bytes, self._proc.pid, seen, ps_map):
+            for dpid in _collect_posix_env_token_pids(self._tree_token_bytes, self._proc.pid, seen, ps_map):
                 if dpid not in self._known_descendants:
                     new_pids.append(dpid)
         for cpid in new_pids:
             st = _read_posix_proc_starttime(cpid)
-            if st is not None or not _HAS_POSIX_PROC_STARTTIME:
+            if st is not None or not _has_posix_proc_starttime():
                 self._known_descendants[cpid] = st
         return dict(self._known_descendants)
 
@@ -1207,7 +1662,8 @@ class ManagedProcessTree:
     def _kill_residual_group(self) -> None:
         if IS_WINDOWS:
             if self._job_handle is not None:
-                _close_win32_job(self._job_handle)
+                _WIN_TERM_JOB(wintypes.HANDLE(self._job_handle), 1)
+                _WIN_CLOSE_HANDLE(wintypes.HANDLE(self._job_handle))
                 self._job_handle = None
             return
         try:

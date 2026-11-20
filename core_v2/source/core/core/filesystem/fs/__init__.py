@@ -1,10 +1,13 @@
 """Domain 2.1: Physical filesystem primitives (atomic writes, OS file locks, and directory watchers)."""
 
 from core.filesystem.fs.atomic import (
+    IGNORED_FS_PREFIXES,
     MAX_JSON_FILE_BYTES,
     BeforeReplaceHook,
+    assert_no_symlink_raw_path,
     atomic_write_bytes,
     atomic_write_json,
+    has_symlink_raw_path,
     hash_nofollow_regular_sha256,
     is_atomic_staging_filename,
     is_contained_nonsymlink_path,
@@ -34,11 +37,14 @@ __all__ = (
     "CrossProcessLockPaths",
     "EchoSuppressionHook",
     "FileLock",
+    "IGNORED_FS_PREFIXES",
     "MAX_JSON_FILE_BYTES",
     "PollingDirectoryWatcher",
     "acquire_verified_cross_proc_pin",
+    "assert_no_symlink_raw_path",
     "atomic_write_bytes",
     "atomic_write_json",
+    "has_symlink_raw_path",
     "hash_nofollow_regular_sha256",
     "is_atomic_staging_filename",
     "is_contained_nonsymlink_path",

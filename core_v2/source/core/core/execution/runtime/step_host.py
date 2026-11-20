@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 import threading
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional, Sequence, TypeVar
 import uuid
 
 from core.execution.lifecycle import (
@@ -14,7 +14,7 @@ from core.execution.lifecycle import (
     TurnScope,
     WorkerContainerLifecycle,
 )
-from core.execution.rpc import FrameKind, InboundCallHandler, RemoteCallOutcome
+from core.execution.rpc import InboundCallHandler, RemoteCallOutcome
 from core.execution.runtime.contracts import (
     ClientRoutingPolicy,
     InvokeRequest,
@@ -49,6 +49,7 @@ from core.foundation.observability import MAX_SAFE_WAIT_SEC, CancellationToken, 
 from core.foundation.primitives import EventId, HostPath, JsonObject, JsonValue, TaskId, invoke_observer_safely, require_non_none
 
 _TIER0_CANCEL_GRACE_SEC = 0.20
+_TRes = TypeVar("_TRes")
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,21 +107,15 @@ class WorkerCallbackBridge(InboundCallHandler):
         peer_cancel_token: CancellationToken,
     ) -> tuple[bool, JsonObject]:
         _ = (stream_id, emit_progress)
-        ack_accepted()
         try:
             env = DataclassCodec.decode_envelope(WorkerCallbackEnvelope, payload)
         except YscbError as exc:
-            return (True, DataclassCodec.encode_envelope(WorkerCallbackReply(ok=False, error=exc.detail)))
+            return (False, DataclassCodec.encode_envelope(WorkerCallbackReply(ok=False, error=exc.detail)))
+        if not ack_accepted():
+            return (False, {"ok": False})
         reply = self._dispatch_fn(env, peer_cancel_token)
         return (True, DataclassCodec.encode_envelope(reply))
 
-    def on_control(self, kind: FrameKind, payload: JsonObject) -> JsonObject:
-        _ = payload
-        return {
-            "ok": False,
-            "error": ErrorCode.CODEC_VALIDATION_FAILED.value,
-            "message": f"Unsupported callback control frame: {kind.value}",
-        }
 
 
 class Tier0HostExitCoordinator:
@@ -421,6 +416,47 @@ def _wait_tier0_done_or_cancel(
         unreg()
 
 
+def _run_tier0_bounded(
+    fn: Callable[[], _TRes],
+    guard: DeadlineGuard,
+    cancel_token: CancellationToken,
+    default_timeout_ms: int,
+    task_id: TaskId,
+    label: str,
+) -> _TRes:
+    tmo_ms = guard.remaining_ms(default_timeout_ms, expired_message=f"{label} timed out for '{task_id}'")
+    done_ev = threading.Event()
+    wake_ev = threading.Event()
+    outcome_box: list[_TRes] = []
+    err_box: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            outcome_box.append(fn())
+        except BaseException as exc:
+            err_box.append(exc)
+        finally:
+            done_ev.set()
+            wake_ev.set()
+
+    threading.Thread(target=_worker, name=f"yscb-t0-{label}-{task_id}", daemon=True).start()
+    finished = _wait_tier0_done_or_cancel(done_ev, wake_ev, cancel_token, ms_to_safe_sec(tmo_ms))
+    if not finished:
+        if cancel_token.is_cancelled:
+            code = ErrorCode.TASK_PREEMPTED if cancel_token.is_preempted else ErrorCode.TASK_CANCELLED
+            raise TaskCancelledException(
+                ErrorDetail(code, cancel_token.reason or f"{label} cancelled", source_task=str(task_id))
+            )
+        raise YscbError(
+            ErrorCode.TASK_TIMEOUT,
+            f"{label} timed out after {tmo_ms}ms for '{task_id}'",
+            source_task=str(task_id),
+        )
+    if err_box:
+        raise err_box[0]
+    return outcome_box[0]
+
+
 def _handle_unfinished_tier0_step(
     spec: TaskRouteSpec,
     turn: TurnScope,
@@ -502,10 +538,11 @@ class StepHostRunner:
         *,
         forbid_retiring_wait: bool = False,
     ) -> tuple[StepExecutionResult[JsonValue], Optional[threading.Event]]:
+        attempt_cancel, detach_attempt = CancellationToken.combine(effective_cancel)
         active_env = replace(
             env,
-            step_cancel=effective_cancel,
-            step_guard=DeadlineGuard(cancel_token=effective_cancel, deadline=env.step_guard.deadline),
+            step_cancel=attempt_cancel,
+            step_guard=DeadlineGuard(cancel_token=attempt_cancel, deadline=env.step_guard.deadline),
         )
         tid = active_env.turn.turn_id
         ctree = active_env.step_req.propagation.call_tree_id or tid
@@ -529,8 +566,9 @@ class StepHostRunner:
             host_ok = res.ok
             return (res, gev)
         finally:
-            if not host_ok and not effective_cancel.is_cancelled:
-                effective_cancel.cancel(reason="Host step terminated")
+            detach_attempt()
+            if not host_ok and not attempt_cancel.is_cancelled:
+                attempt_cancel.cancel(reason="Host step terminated")
             exit_coord.caller_exit()
 
     def is_reentrant_retiring(self, req: InvokeRequest) -> bool:
@@ -691,8 +729,23 @@ class StepHostRunner:
         turn = require_non_none(ctx.turn)
         eff_ctree = ctx.call_tree_id or turn.turn_id
         with self._gates.host_step_scope(desc.module_id, turn.turn_id, eff_ctree):
+            eff_cancel = ctx.cancel_token or turn.cancel_token
             if desc.venv_python is None:
-                return self._sessions.slots_for_turn(turn).map_batch_locally(task_id, event_id, filtered_payloads)
+                try:
+                    return _run_tier0_bounded(
+                        lambda: self._sessions.slots_for_turn(turn).map_batch_locally(task_id, event_id, filtered_payloads),
+                        ctx.guard,
+                        eff_cancel,
+                        10000,
+                        task_id,
+                        "Event mapper",
+                    )
+                except TaskCancelledException as exc:
+                    if turn.cancel_token.is_cancelled:
+                        raise
+                    return WorkerMapBatchReply(ok=False, error=exc.detail.with_fallback_task(str(task_id)))
+                except YscbError as exc:
+                    return WorkerMapBatchReply(ok=False, error=exc.detail.with_fallback_task(str(task_id)))
             cmd = WorkerCommandEnvelope(
                 action=WorkerCommandKind.MAP_BATCH,
                 task_id=task_id,
@@ -700,7 +753,6 @@ class StepHostRunner:
                 event_payloads=tuple(filtered_payloads),
             )
             bypass_rel = self._gates.has_turn_or_tree_exempt(turn.turn_id, eff_ctree)
-            eff_cancel = ctx.cancel_token or turn.cancel_token
             try:
                 map_tmo = ctx.guard.remaining_ms(10000)
             except YscbError as exc:
@@ -775,8 +827,8 @@ class StepHostRunner:
         turn = ctx.turn
         tid = turn.turn_id if turn is not None else ""
         ctree = ctx.call_tree_id or tid
+        eff_tok = ctx.cancel_token or (turn.cancel_token if turn is not None else CancellationToken())
         if self._is_daemon_host and not ctx.bypass_reload and not ctx.is_nested:
-            eff_tok = ctx.cancel_token or (turn.cancel_token if turn is not None else CancellationToken())
             self._gates.wait_if_module_reloading(
                 req,
                 eff_tok,
@@ -784,7 +836,14 @@ class StepHostRunner:
                 timeout_ms=ctx.guard.remaining_ms(3000),
             )
         with self._gates.host_step_scope(desc.module_id, tid, ctree):
-            rep = self._sessions.slots_for_turn(turn).compute_equiv_locally(req.task_id, req.raw_input)
+            rep = _run_tier0_bounded(
+                lambda: self._sessions.slots_for_turn(turn).compute_equiv_locally(req.task_id, req.raw_input),
+                ctx.guard,
+                eff_tok,
+                3000,
+                req.task_id,
+                "Equivalence key",
+            )
             if not rep.ok or not rep.equiv_key:
                 err = rep.error or ErrorDetail(ErrorCode.BUSINESS_FAILURE, f"Equivalence failed for '{req.task_id}'", source_task=str(req.task_id))
                 err.raise_as_exception()

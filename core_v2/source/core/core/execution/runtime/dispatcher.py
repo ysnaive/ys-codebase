@@ -33,6 +33,10 @@ from core.execution.rpc import (
     call_ephemeral_daemon_rpc,
 )
 from core.execution.runtime.contracts import (
+    CONFIG_CHANGED_EVENT_ID,
+    CORE_MODULE_ID,
+    DEFAULT_CACHE_DIRNAME,
+    WATCHER_TASK_ID,
     CallPropagationContext,
     ClientRoutingPolicy,
     CoalesceCallerView,
@@ -77,7 +81,6 @@ from core.execution.runtime.lineage_join import (
     FlightCascade,
     StepEventCapture,
     advance_hops_checked,
-    check_cascade_acyclic,
     extract_emitted_hops_from_records,
 )
 from core.execution.runtime.module_slot import LocalModuleSlotRegistry, StepContextCallbacks
@@ -155,43 +158,6 @@ from core.foundation.primitives import (
 
 TIn = TypeVar("TIn")
 TOut = TypeVar("TOut")
-
-
-@dataclass(frozen=True, slots=True)
-class _RefreshedStepEnv:
-    early_error: Optional[StepExecutionResult[JsonValue]]
-    env: StepExecutionEnv
-    changed: bool
-
-
-@dataclass(frozen=True, slots=True)
-class _SubscriberTarget:
-    error: Optional[ErrorDetail]
-    desc: ModuleDescriptor
-    spec: TaskRouteSpec
-
-
-@dataclass(frozen=True, slots=True)
-class _RegisteredTurnResult:
-    report: TurnExecutionReport
-    invoked_tasks: tuple[tuple[HostPath, TaskId], ...]
-    emitted_hops: tuple[EmittedEventHop, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _BoundStepContext:
-    session: ActiveTurnSession
-    on_progress: Optional[Callable[[JsonObject], None]]
-    step_prio: PriorityHandle
-    unreg_prio: Callable[[], None]
-
-
-@dataclass(frozen=True, slots=True)
-class _CoordAttemptEnv:
-    early_result: Optional[StepExecutionResult[JsonValue]]
-    env: StepExecutionEnv
-    group_descs: tuple[ModuleDescriptor, ...]
-    equiv_key: Optional[str]
 
 
 def _validate_daemon_spawner_port(sp: DaemonSpawner) -> None:
@@ -409,7 +375,7 @@ def _compute_post_reload_targets(
     gated_mods: frozenset[ModuleId],
     fresh_descs: Sequence[ModuleDescriptor],
 ) -> tuple[frozenset[ModuleId], frozenset[ModuleId]]:
-    fresh_ids = frozenset(d.module_id for d in fresh_descs if d.module_id != ModuleId("core"))
+    fresh_ids = frozenset(d.module_id for d in fresh_descs if d.module_id != CORE_MODULE_ID)
     post_exp = expand_colocated_tier1_siblings(base_mods, fresh_descs)
     now_mods = fresh_ids if reload_all else ((gated_mods | post_exp) & fresh_ids)
     extra_siblings = (now_mods - gated_mods) if not reload_all else frozenset()
@@ -420,7 +386,7 @@ def _should_shutdown_ephemeral_child(parent: RuntimeDispatcher, child_disp: Runt
     return (
         owns_flag
         and child_disp is not parent
-        and not child_disp._opts.is_daemon_host
+        and not child_disp.is_daemon_host
         and child_disp.container_lifecycle.state == ContainerState.UNINITIALIZED
         and child_disp.active_turn_count == 0
     )
@@ -442,7 +408,7 @@ def _make_peer_cache_resolver(
         if cached is not None:
             return cached
         if opts.child_dispatcher_factory is None:
-            return resolve_contained_subpath(ws_root, ".cache")
+            return resolve_contained_subpath(ws_root, DEFAULT_CACHE_DIRNAME)
         peer_disp = opts.child_dispatcher_factory(ws_root)
         try:
             resolved = peer_disp.cache_dir
@@ -482,6 +448,7 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
             tier0_slots=self._tier0_slots, container=self._container, gates=self._gates,
         )
         self._callback_bridge = WorkerCallbackBridge(self._handle_worker_callback)
+        self._bind_lock = threading.RLock()
         self._shared_ws = SharedWorkspaceState()
         self._sessions = TurnSessionRegistry(
             workspace_root=workspace_root, module_provider=module_provider, tier0_slots=self._tier0_slots,
@@ -518,13 +485,20 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
         self._force_drain = threading.Event()
         self._routes.init_index()
 
+    @property
+    def is_daemon_host(self) -> bool:
+        return self._opts.is_daemon_host
+
     def _bind_shared_coordinators(self, shared_ws: SharedWorkspaceState) -> None:
-        self._shared_ws = shared_ws
         ws_key = self._workspace_root.comparison_key
-        with shared_ws.guard:
-            shared_ws.captures_by_ws.setdefault(ws_key, [])
-            shared_ws.cache_dirs_by_ws[ws_key] = self._cache_dir
-        self._coordinator = self._cold_locks.bind_shared(shared_ws, self._coordinator)
+        with self._bind_lock:
+            with shared_ws.guard:
+                if self._shared_ws is shared_ws and ws_key in shared_ws.cache_dirs_by_ws:
+                    return
+                shared_ws.captures_by_ws.setdefault(ws_key, [])
+                shared_ws.cache_dirs_by_ws[ws_key] = self._cache_dir
+                self._shared_ws = shared_ws
+                self._coordinator = self._cold_locks.bind_shared(shared_ws, self._coordinator)
 
     @property
     def cache_dir(self) -> HostPath:
@@ -569,21 +543,39 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
         return self._routes.subscribed_modules_for_event(event_id)
 
     def warmup_daemon_container(self, only_modules: Optional[frozenset[ModuleId]] = None) -> None:
-        """Warm up modules declaring eager_warmup=True across Tier 0 and Tier 1."""
+        """Warm up modules declaring eager_warmup=True across Tier 0 and Tier 1 before marking READY."""
         if self._gates.is_globally_quiesced():
             return
-        descriptors = list(self._module_provider.list_modules())
-        tier0 = [d for d in descriptors if d.venv_python is None]
-        self._tier0_slots.register_descriptors(tier0)
-        self._container.warmup(dict(self._tier0_slots.warmup_modules(only_modules)))
+        prev_base = self._container.base_state
+        was_initial_boot = prev_base in (ContainerState.UNINITIALIZED, ContainerState.BOOTING, ContainerState.WARMING)
+        if was_initial_boot:
+            self._container.transition_boot_phase(ContainerState.WARMING)
+        try:
+            descriptors = list(self._module_provider.list_modules())
+            tier0 = [d for d in descriptors if d.venv_python is None]
+            self._tier0_slots.register_descriptors(tier0)
+            self._container.warmup(dict(self._tier0_slots.warmup_modules(only_modules)))
+            if was_initial_boot and only_modules is None:
+                self._container.transition_boot_phase(ContainerState.WARMING)
 
-        tier1_groups: dict[str, list[ModuleDescriptor]] = {}
-        for d in descriptors:
-            if d.venv_python is not None:
-                tier1_groups.setdefault(tier1_group_key_for(d), []).append(d)
-        for g_descs in tier1_groups.values():
-            if only_modules is None or any(d.module_id in only_modules for d in g_descs):
-                self._tier1_pool.warmup_group(g_descs, only_modules)
+            tier1_groups: dict[str, list[ModuleDescriptor]] = {}
+            for d in descriptors:
+                if d.venv_python is not None:
+                    tier1_groups.setdefault(tier1_group_key_for(d), []).append(d)
+            for g_descs in tier1_groups.values():
+                if only_modules is None or any(d.module_id in only_modules for d in g_descs):
+                    self._tier1_pool.warmup_group(g_descs, only_modules)
+            if was_initial_boot and only_modules is None:
+                self._container.transition_boot_phase(ContainerState.READY)
+        except BaseException:
+            if (
+                was_initial_boot
+                and only_modules is None
+                and self._container.base_state == ContainerState.WARMING
+                and prev_base in (ContainerState.UNINITIALIZED, ContainerState.BOOTING)
+            ):
+                self._container.transition_boot_phase(prev_base)
+            raise
 
     def _apply_tier1_warmup_reply(self, eager_mods: Sequence[ModuleId], reply: WorkerWarmupReply) -> None:
         for mid in eager_mods:
@@ -637,6 +629,15 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
         """Decode, execute, and encode a hot DaemonRpcInvokeEnvelope preserving transitive call & event lineage."""
         try:
             rpc_env = DataclassCodec.decode_envelope(DaemonRpcInvokeEnvelope, payload)
+            if rpc_env.workspace_root != self._workspace_root:
+                return DaemonRpcInvokeReply(
+                    ok=False,
+                    error=ErrorDetail(
+                        ErrorCode.SECURITY_GATED,
+                        f"Cross-workspace top-level RPC rejected: expected {self._workspace_root}, got {rpc_env.workspace_root}",
+                        source_task=str(rpc_env.task_id),
+                    ),
+                )
             prop = rpc_env.propagation
             eff_scope = frozenset() if prop.in_event_chain else rpc_env.approval_scope
             req = InvokeRequest(
@@ -739,7 +740,7 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
         self,
         request: InvokeRequest,
         *,
-        cancel_token: Optional[CancellationToken],
+        cancel_token: Optional[CancellationToken] = None,
         on_progress: Optional[Callable[[JsonObject], None]] = None,
         turn_guard: Optional[DeadlineGuard] = None,
     ) -> RawInvokeResult:
@@ -851,13 +852,18 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
             child_disp = self._opts.child_dispatcher_factory(child_req.workspace_root)
         except YscbError as exc:
             return RawInvokeResult(TaskOutcome(ok=False, error=exc.detail.with_fallback_task(str(request.task_id))))
-        child_disp._bind_shared_coordinators(self._shared_ws)
         raw_res: Optional[RawInvokeResult] = None
         child_td: tuple[ErrorDetail, ...] = ()
         try:
-            raw_res = child_disp._invoke_raw(
-                child_req, cancel_token=token, on_progress=on_progress, turn_guard=turn_guard
-            )
+            if isinstance(child_disp, RuntimeDispatcher):
+                child_disp._bind_shared_coordinators(self._shared_ws)
+                raw_res = child_disp._invoke_raw(
+                    child_req, cancel_token=token, on_progress=on_progress, turn_guard=turn_guard
+                )
+            else:
+                raw_res = RawInvokeResult(
+                    child_disp.invoke(child_req, cancel_token=token, on_progress=on_progress)
+                )
             if raw_res.invoked_tasks:
                 self._sessions.record_transitive_invoked_tasks(request.propagation, raw_res.invoked_tasks)
             if raw_res.emitted_hops:
@@ -977,11 +983,11 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
                 if safe_dl is None
                 else max(100, min(2000, int(max(0.0, min(10.0, safe_dl - time.monotonic())) * 1000.0)))
             )
-            q_all = (not bool(modules)) or (ModuleId("core") in modules)
+            q_all = (not bool(modules)) or (CORE_MODULE_ID in modules)
             try:
                 self._sessions.record_host_teardown_diags(
                     self._tier1_pool.stop_groups_for_modules(
-                        target_mods, all_descs, grace_ms=rem_ms, drain_in_flight=True
+                        target_mods, all_descs, grace_ms=rem_ms, drain_in_flight=False
                     )
                 )
                 self._sessions.record_host_teardown_diags(
@@ -1021,7 +1027,7 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
         preserve_modules = require_typed_frozenset(preserve_modules, ModuleId, "preserve_modules")
         eff_mods = None if deferred_boot else modules
         expanded_cands = (
-            (self.expand_quiesce_targets(eff_mods) - frozenset({ModuleId("core")}))
+            (self.expand_quiesce_targets(eff_mods) - frozenset({CORE_MODULE_ID}))
             if eff_mods is not None
             else frozenset()
         )
@@ -1079,7 +1085,7 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
                 if re_warm:
                     stop_descs = (*prev_descs, *(d for d in plan_descs if d not in prev_descs))
                     self._sessions.record_host_teardown_diags(
-                        self._tier1_pool.stop_groups_for_modules(re_warm, stop_descs, grace_ms=1000, drain_in_flight=True)
+                        self._tier1_pool.stop_groups_for_modules(re_warm, stop_descs, grace_ms=1000, drain_in_flight=False)
                     )
                     self._sessions.record_host_teardown_diags(
                         self._tier0_slots.unload_modules(re_warm, drain_in_flight=True, grace_sec=1.0)
@@ -1110,7 +1116,7 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
         st = self._container.state
         cfg_sub_gated = any(
             self._gates.is_call_gated_for_quiesce(mid)
-            for mid in self.subscribed_modules(EventId("core.config_changed"))
+            for mid in self.subscribed_modules(CONFIG_CHANGED_EVENT_ID)
         )
         can_emit = (
             st in (ContainerState.UNINITIALIZED, ContainerState.READY, ContainerState.QUIESCED)
@@ -1118,17 +1124,17 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
             and not cfg_sub_gated
         )
         if emit_event and changed and self._opts.is_daemon_host and can_emit:
-            self.emit_background_event(EventId("core.config_changed"), {"changed_paths": list(changed_paths)})
+            self.emit_background_event(CONFIG_CHANGED_EVENT_ID, {"changed_paths": list(changed_paths)})
         return changed
 
     def reload_affected_modules(self, modules: frozenset[ModuleId], grace_ms: int = 2000) -> None:
         with self._gates.lifecycle_scope():
             all_descs = list(self._module_provider.list_modules())
-            reload_all = (not bool(modules)) or (ModuleId("core") in modules)
+            reload_all = (not bool(modules)) or (CORE_MODULE_ID in modules)
             base_mods = (
-                (modules - frozenset({ModuleId("core")}))
+                (modules - frozenset({CORE_MODULE_ID}))
                 if not reload_all
-                else frozenset(d.module_id for d in all_descs if d.module_id != ModuleId("core"))
+                else frozenset(d.module_id for d in all_descs if d.module_id != CORE_MODULE_ID)
             )
             gated_mods = base_mods if reload_all else expand_colocated_tier1_siblings(base_mods, all_descs)
             with self._gates.module_reload_scope(reload_all, gated_mods) as update_reload_stage:
@@ -1142,6 +1148,7 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
                 self._cfg_tracker.reload_always()
                 self._module_provider.reload()
                 fresh_descs = list(self._module_provider.list_modules())
+                _ = self._gates.sync_colocated_quiesce_siblings(fresh_descs)
                 now_mods, extra_siblings = _compute_post_reload_targets(reload_all, base_mods, gated_mods, fresh_descs)
                 if extra_siblings:
                     update_reload_stage(extra_siblings, False)
@@ -1156,24 +1163,13 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
                 self._routes.rebuild()
                 update_reload_stage(base_mods | gated_mods | now_mods, True)
                 if self._opts.is_daemon_host and (reload_all or now_mods):
-                    self.warmup_daemon_container(only_modules=None if reload_all else now_mods)
-
-    def _refresh_step_env_after_reload_wait(self, env: StepExecutionEnv) -> _RefreshedStepEnv:
-        prop = env.step_req.propagation
-        parent_req = replace(env.step_req, propagation=replace(prop, call_stack=prop.call_stack[:-1]))
-        rem_tmo = env.current_guard().remaining_ms(env.spec.timeout_ms)
-        self._gates.wait_if_module_reloading(
-            parent_req, env.step_cancel, self._step_host.is_reentrant_retiring, timeout_ms=rem_tmo
-        )
-        gate_err, resolved = self._validate_stage1_gates(parent_req, in_cold_turn=(env.turn.kind == TurnKind.COLD))
-        if gate_err is not None:
-            err_res = StepExecutionResult(ok=False, error=gate_err, fatal_abort_turn=is_fatal_error_code(gate_err.code))
-            return _RefreshedStepEnv(err_res, env, False)
-        new_desc, new_spec = require_non_none(resolved)
-        cur_ep = self._gates.current_epoch(new_desc.module_id)
-        if new_desc != env.desc or new_spec != env.spec or cur_ep != env.reload_epoch:
-            return _RefreshedStepEnv(None, replace(env, desc=new_desc, spec=new_spec, reload_epoch=cur_ep), True)
-        return _RefreshedStepEnv(None, env, False)
+                    warm_mods = (
+                        None
+                        if reload_all
+                        else frozenset(m for m in now_mods if not self._gates.is_module_quiesced(m))
+                    )
+                    if reload_all or warm_mods:
+                        self.warmup_daemon_container(only_modules=warm_mods)
 
     def emit_background_event(
         self,
@@ -1215,7 +1211,7 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
         )
         rec = RawEventRecord(
             event_id=event_id,
-            emitter_task=TaskId("core.watcher"),
+            emitter_task=WATCHER_TASK_ID,
             raw_payload=raw_payload,
             ordering=ordering,
             lineage=CausalLineage().advance(event_id, workspace_scope=self._workspace_root.comparison_key),
@@ -1383,32 +1379,32 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
         spec: TaskRouteSpec,
         wait_tok: CancellationToken,
         guard: DeadlineGuard,
-    ) -> _SubscriberTarget:
+    ) -> tuple[Optional[ErrorDetail], ModuleDescriptor, TaskRouteSpec]:
         try:
             gate_tmo = guard.remaining_ms(spec.timeout_ms)
         except YscbError as exc:
-            return _SubscriberTarget(exc.detail.with_fallback_task(str(spec.task_id)), desc, spec)
+            return (exc.detail.with_fallback_task(str(spec.task_id)), desc, spec)
         if self._opts.is_daemon_host:
             try:
                 self._gates.wait_if_module_reloading(
                     probe_req, wait_tok, self._step_host.is_reentrant_retiring, timeout_ms=gate_tmo
                 )
             except (TaskCancelledException, YscbError) as exc:
-                return _SubscriberTarget(exc.detail.with_fallback_task(str(spec.task_id)), desc, spec)
+                return (exc.detail.with_fallback_task(str(spec.task_id)), desc, spec)
             if self._gates.is_quiesced_blocked(probe_req, desc.module_id, self._opts.is_daemon_host):
                 q_err = ErrorDetail(
                     ErrorCode.DAEMON_UNAVAILABLE,
                     f"Module '{desc.module_id}' is currently quiesced.",
                     source_task=str(spec.task_id),
                 )
-                return _SubscriberTarget(q_err, desc, spec)
+                return (q_err, desc, spec)
             refreshed = self._routes.lookup(spec.task_id)
             if refreshed is not None:
                 desc, spec = refreshed
         degraded = self._container.get_degraded(desc.module_id)
         if degraded is not None:
-            return _SubscriberTarget(degraded.with_fallback_task(str(spec.task_id)), desc, spec)
-        return _SubscriberTarget(None, desc, spec)
+            return (degraded.with_fallback_task(str(spec.task_id)), desc, spec)
+        return (None, desc, spec)
 
     def _run_matched_event_subscriber(
         self,
@@ -1440,12 +1436,11 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
                 coalesce_callers=raw_views,
             ),
         )
-        sub_t = self._prepare_subscriber_target(probe_req, desc, spec, turn.cancel_token, sub_guard)
-        if sub_t.error is not None:
+        sub_err, desc, spec = self._prepare_subscriber_target(probe_req, desc, spec, turn.cancel_token, sub_guard)
+        if sub_err is not None:
             return StepExecutionResult(
-                ok=False, error=sub_t.error, preempted=(sub_t.error.code == ErrorCode.TASK_PREEMPTED)
+                ok=False, error=sub_err, preempted=(sub_err.code == ErrorCode.TASK_PREEMPTED)
             )
-        desc, spec = sub_t.desc, sub_t.spec
         m_out = self._step_host.map_event_batch(
             desc,
             spec.task_id,
@@ -1746,38 +1741,6 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
             self._sessions.record_transitive_emitted_hops(request.propagation, translated.emitted_hops)
         return translated
 
-    def _run_full_turn_locally(
-        self,
-        request: InvokeRequest,
-        spec: TaskRouteSpec,
-        *,
-        is_hot: bool,
-        cancel_token: CancellationToken,
-        on_progress: Optional[Callable[[JsonObject], None]],
-        turn_guard: Optional[DeadlineGuard],
-    ) -> RawInvokeResult:
-        prop = request.propagation
-        tid = prop.turn_id or uuid.uuid4().hex
-        tagged_req = replace(request, propagation=replace(prop, turn_id=tid))
-        turn_kind = (
-            (TurnKind.HOT_BACKGROUND if request.priority == ExecutionPriority.BACKGROUND else TurnKind.HOT_FOREGROUND)
-            if is_hot
-            else TurnKind.COLD
-        )
-        reg_res = self._execute_registered_turn(
-            tagged_req,
-            spec=spec,
-            turn_kind=turn_kind,
-            cancel_token=cancel_token,
-            on_progress=on_progress,
-            turn_guard=turn_guard,
-        )
-        return RawInvokeResult(
-            report_to_outcome(reg_res.report, is_hot=is_hot, fallback_task=str(request.task_id)),
-            reg_res.invoked_tasks,
-            reg_res.emitted_hops,
-        )
-
     def _is_draining_admitted_turn(self, prop: CallPropagationContext) -> bool:
         if self._sessions.has_admitted_session(prop):
             return True
@@ -1796,18 +1759,25 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
             return TurnScope(turn_id=tid, kind=turn_kind, cancel_token=host_token)
         return scope
 
-    def _execute_registered_turn(
+    def _run_full_turn_locally(
         self,
-        tagged_req: InvokeRequest,
-        *,
+        request: InvokeRequest,
         spec: TaskRouteSpec,
-        turn_kind: TurnKind,
+        *,
+        is_hot: bool,
         cancel_token: CancellationToken,
         on_progress: Optional[Callable[[JsonObject], None]],
         turn_guard: Optional[DeadlineGuard],
-    ) -> _RegisteredTurnResult:
-        tid, prop = self._sessions.ensure_fresh_turn_id(tagged_req.propagation)
-        tagged_req = replace(tagged_req, propagation=prop)
+    ) -> RawInvokeResult:
+        raw_prop = request.propagation
+        init_tid = raw_prop.turn_id or uuid.uuid4().hex
+        tid, prop = self._sessions.ensure_fresh_turn_id(replace(raw_prop, turn_id=init_tid))
+        tagged_req = replace(request, propagation=prop)
+        turn_kind = (
+            (TurnKind.HOT_BACKGROUND if request.priority == ExecutionPriority.BACKGROUND else TurnKind.HOT_FOREGROUND)
+            if is_hot
+            else TurnKind.COLD
+        )
         turn_cg = SharedCancelGroup()
         turn_scope = self._build_turn_scope_or_reject(tid, turn_kind, turn_cg.host_token)
         if turn_scope is None:
@@ -1815,9 +1785,9 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
             err = ErrorDetail(
                 ErrorCode.DAEMON_UNAVAILABLE, "Hot container is draining or stopped.", source_task=str(tagged_req.task_id)
             )
-            return _RegisteredTurnResult(
-                TurnExecutionReport(turn_id=tid, primary_result=StepExecutionResult(ok=False, error=err)), (), ()
-            )
+            rej_rep = TurnExecutionReport(turn_id=tid, primary_result=StepExecutionResult(ok=False, error=err))
+            return RawInvokeResult(report_to_outcome(rej_rep, is_hot=is_hot, fallback_task=str(request.task_id)), (), ())
+
         detach_caller = turn_cg.try_add_participant(cancel_token)
         cold_shared = prop.cold_shared_workspaces | (
             frozenset({self._workspace_root})
@@ -1849,11 +1819,15 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
                     else self._turn_engine.execute_turn(tagged_req, turn_kind, scope=turn_scope)
                 )
                 inv_snap, em_snap = self._sessions.snapshot_session_lineage(session)
-                return _RegisteredTurnResult(report, inv_snap, em_snap)
         finally:
             if detach_caller is not None:
                 detach_caller()
             turn_cg.close_all()
+        return RawInvokeResult(
+            report_to_outcome(report, is_hot=is_hot, fallback_task=str(request.task_id)),
+            inv_snap,
+            em_snap,
+        )
 
     def finalize_turn_events(self, turn: TurnScope, *, abort_only: bool = False) -> Optional[ErrorDetail]:
         session, cascades = self._sessions.pop_attached_cascades(turn.turn_id)
@@ -1893,116 +1867,93 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
         parent_prio: Optional[PriorityHandle] = None,
         parent_deadline: Optional[float] = None,
     ) -> StepExecutionResult[JsonValue]:
-        b_ctx = self._bind_step_turn_context(request, turn, parent_prio)
-        sess, eff_prog, step_ph, unreg_p = b_ctx.session, b_ctx.on_progress, b_ctx.step_prio, b_ctx.unreg_prio
-        try:
-            res = self._run_validated_step(
-                request, turn, sess, eff_prog, step_ph, DeadlineGuard(cancel_token=parent_step_cancel, deadline=parent_deadline)
-            )
-            if res.error is not None and res.error.source_task is None:
-                return replace(res, error=res.error.with_fallback_task(str(request.task_id)))
-            return res
-        finally:
-            unreg_p()
-
-    def _bind_step_turn_context(
-        self,
-        request: InvokeRequest,
-        turn: TurnScope,
-        parent_prio: Optional[PriorityHandle],
-    ) -> _BoundStepContext:
         sess = self._sessions.get_or_bind_turn_session(turn)
         self._sessions.record_session_invoked_frame(sess, (request.workspace_root, request.task_id))
         prop = request.propagation
         eff_prog = sess.on_progress if not prop.is_internal_trigger else None
         if not prop.is_nested_call and not prop.is_internal_trigger:
-            return _BoundStepContext(sess, eff_prog, sess.prio_handle, lambda: None)
-        init_p = parent_prio.current if parent_prio is not None else request.priority
-        step_ph = PriorityHandle(init_p)
-        unreg_up = (
-            parent_prio.register_listener(
-                lambda p: step_ph.elevate_to_foreground() if p == ExecutionPriority.FOREGROUND else None
+            step_ph = sess.prio_handle
+            unreg_p: Callable[[], None] = lambda: None
+        else:
+            init_p = parent_prio.current if parent_prio is not None else request.priority
+            step_ph = PriorityHandle(init_p)
+            unreg_p = (
+                parent_prio.register_listener(
+                    lambda p: step_ph.elevate_to_foreground() if p == ExecutionPriority.FOREGROUND else None
+                )
+                if parent_prio is not None
+                else (lambda: None)
             )
-            if parent_prio is not None
-            else (lambda: None)
-        )
-        return _BoundStepContext(sess, eff_prog, step_ph, unreg_up)
-
-    def _wait_step_reload_gate(
-        self,
-        request: InvokeRequest,
-        wait_tok: CancellationToken,
-        eff_outer_dl: Optional[float],
-        step_started: float,
-    ) -> Optional[StepExecutionResult[JsonValue]]:
-        pre_found = self._routes.lookup(request.task_id)
-        pre_tmo = pre_found[1].timeout_ms if pre_found is not None else None
-        pre_dl = merge_deadlines(eff_outer_dl, (step_started + ms_to_safe_sec(pre_tmo)) if pre_tmo is not None else None)
-        pre_guard = DeadlineGuard(cancel_token=wait_tok, deadline=pre_dl)
         try:
-            self._gates.wait_if_module_reloading(
-                request, wait_tok, self._step_host.is_reentrant_retiring, timeout_ms=pre_guard.remaining_ms(pre_tmo)
+            eff_outer_dl = merge_deadlines(sess.turn_deadline, parent_deadline)
+            step_started = time.monotonic()
+            wait_tok = parent_step_cancel or turn.cancel_token
+            pre_found = self._routes.lookup(request.task_id)
+            pre_tmo = pre_found[1].timeout_ms if pre_found is not None else None
+            pre_dl = merge_deadlines(eff_outer_dl, (step_started + ms_to_safe_sec(pre_tmo)) if pre_tmo is not None else None)
+            pre_guard = DeadlineGuard(cancel_token=wait_tok, deadline=pre_dl)
+            try:
+                self._gates.wait_if_module_reloading(
+                    request, wait_tok, self._step_host.is_reentrant_retiring, timeout_ms=pre_guard.remaining_ms(pre_tmo)
+                )
+            except (TaskCancelledException, YscbError) as exc:
+                res = StepExecutionResult(
+                    ok=False, error=exc.detail, preempted=(exc.detail.code == ErrorCode.TASK_PREEMPTED)
+                )
+                return (
+                    replace(res, error=res.error.with_fallback_task(str(request.task_id)))
+                    if res.error is not None and res.error.source_task is None
+                    else res
+                )
+            gate_err, resolved = self._validate_stage1_gates(request, in_cold_turn=(turn.kind == TurnKind.COLD))
+            if gate_err is not None:
+                res = StepExecutionResult(ok=False, error=gate_err, fatal_abort_turn=is_fatal_error_code(gate_err.code))
+                return (
+                    replace(res, error=res.error.with_fallback_task(str(request.task_id)))
+                    if res.error is not None and res.error.source_task is None
+                    else res
+                )
+            desc, spec = require_non_none(resolved)
+            self._sessions.record_transitive_invoked_tasks(prop, ((request.workspace_root, request.task_id),))
+            step_req = replace(
+                request,
+                propagation=replace(prop, call_stack=(*prop.call_stack, (request.workspace_root, request.task_id))),
             )
-            return None
-        except (TaskCancelledException, YscbError) as exc:
-            return StepExecutionResult(ok=False, error=exc.detail, preempted=(exc.detail.code == ErrorCode.TASK_PREEMPTED))
-
-    def _run_validated_step(
-        self,
-        request: InvokeRequest,
-        turn: TurnScope,
-        sess: ActiveTurnSession,
-        on_progress: Optional[Callable[[JsonObject], None]],
-        step_ph: PriorityHandle,
-        parent_bounds: DeadlineGuard,
-    ) -> StepExecutionResult[JsonValue]:
-        parent_step_cancel, parent_deadline = parent_bounds.cancel_token, parent_bounds.deadline
-        eff_outer_dl = merge_deadlines(sess.turn_deadline, parent_deadline)
-        step_started = time.monotonic()
-        wait_err = self._wait_step_reload_gate(request, parent_step_cancel or turn.cancel_token, eff_outer_dl, step_started)
-        if wait_err is not None:
-            return wait_err
-        gate_err, resolved = self._validate_stage1_gates(request, in_cold_turn=(turn.kind == TurnKind.COLD))
-        if gate_err is not None:
-            return StepExecutionResult(ok=False, error=gate_err, fatal_abort_turn=is_fatal_error_code(gate_err.code))
-        desc, spec = require_non_none(resolved)
-        prop = request.propagation
-        self._sessions.record_transitive_invoked_tasks(prop, ((request.workspace_root, request.task_id),))
-        step_req = replace(
-            request,
-            propagation=replace(prop, call_stack=(*prop.call_stack, (request.workspace_root, request.task_id))),
-        )
-        step_cancel = CancellationToken()
-        parent_cancel = (
-            parent_step_cancel
-            if parent_step_cancel is not None
-            else (sess.caller_cancel if not prop.in_event_chain else turn.cancel_token)
-        )
-        unreg = parent_cancel.register_callback(lambda p, r: step_cancel.cancel(preempted=p, reason=r))
-        spec_dl = (step_started + ms_to_safe_sec(spec.timeout_ms)) if spec.timeout_ms is not None else None
-        step_guard = DeadlineGuard(cancel_token=step_cancel, deadline=merge_deadlines(eff_outer_dl, spec_dl))
-        step_env = StepExecutionEnv(
-            desc=desc,
-            spec=spec,
-            step_req=step_req,
-            turn=turn,
-            step_cancel=step_cancel,
-            on_progress=on_progress,
-            step_guard=step_guard,
-            reload_epoch=self._gates.current_epoch(desc.module_id),
-        )
-        step_ok = False
-        try:
-            if not spec.resource_key or spec.concurrency_mode == ConcurrencyMode.PARALLEL:
-                res = self._dispatch_parallel_step_safe(step_env, step_ph, step_cancel)
-            else:
-                res = self._coordinate_and_dispatch_step(step_env, step_ph)
-            step_ok = res.ok
+            step_cancel = CancellationToken()
+            parent_cancel = (
+                parent_step_cancel
+                if parent_step_cancel is not None
+                else (sess.caller_cancel if not prop.in_event_chain else turn.cancel_token)
+            )
+            unreg = parent_cancel.register_callback(lambda p, r: step_cancel.cancel(preempted=p, reason=r))
+            spec_dl = (step_started + ms_to_safe_sec(spec.timeout_ms)) if spec.timeout_ms is not None else None
+            step_guard = DeadlineGuard(cancel_token=step_cancel, deadline=merge_deadlines(eff_outer_dl, spec_dl))
+            step_env = StepExecutionEnv(
+                desc=desc,
+                spec=spec,
+                step_req=step_req,
+                turn=turn,
+                step_cancel=step_cancel,
+                on_progress=eff_prog,
+                step_guard=step_guard,
+                reload_epoch=self._gates.current_epoch(desc.module_id),
+            )
+            step_ok = False
+            try:
+                if not spec.resource_key or spec.concurrency_mode == ConcurrencyMode.PARALLEL:
+                    res = self._dispatch_parallel_step_safe(step_env, step_ph, step_cancel)
+                else:
+                    res = self._coordinate_and_dispatch_step(step_env, step_ph)
+                step_ok = res.ok
+            finally:
+                unreg()
+                if not step_ok and not step_cancel.is_cancelled:
+                    step_cancel.cancel(reason="Parent step terminated")
+            if res.error is not None and res.error.source_task is None:
+                return replace(res, error=res.error.with_fallback_task(str(request.task_id)))
             return res
         finally:
-            unreg()
-            if not step_ok and not step_cancel.is_cancelled:
-                step_cancel.cancel(reason="Parent step terminated")
+            unreg_p()
 
     def _dispatch_parallel_step_safe(
         self,
@@ -2172,29 +2123,33 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
 
         return _build_coalesce_flight_bundle(res, guard_ev, capture, flight, prio_handle, td_diags)
 
-    def _prepare_coord_attempt_env(
+    def _recheck_hot_step_before_coord(
         self,
         env: StepExecutionEnv,
-        group_descs: tuple[ModuleDescriptor, ...],
-        equiv_key: Optional[str],
         ext_prio: PriorityHandle,
-    ) -> _CoordAttemptEnv:
-        if not self._opts.is_daemon_host:
-            return _CoordAttemptEnv(None, env, group_descs, equiv_key)
-        ref = self._refresh_step_env_after_reload_wait(env)
-        env = ref.env
-        if ref.early_error is not None:
-            return _CoordAttemptEnv(ref.early_error, env, group_descs, equiv_key)
-        if ref.changed and (not env.spec.resource_key or env.spec.concurrency_mode == ConcurrencyMode.PARALLEL):
-            return _CoordAttemptEnv(self._dispatch_parallel_step_safe(env, ext_prio, env.step_cancel), env, group_descs, equiv_key)
-        if ref.changed:
-            new_groups = (
-                tuple(self._routes.collect_group_descriptors(env.desc))
-                if env.desc.venv_python is not None
-                else (env.desc,)
+    ) -> tuple[StepExecutionEnv, Optional[StepExecutionResult[JsonValue]]]:
+        prop = env.step_req.propagation
+        parent_req = replace(env.step_req, propagation=replace(prop, call_stack=prop.call_stack[:-1]))
+        rem_tmo = env.current_guard().remaining_ms(env.spec.timeout_ms)
+        self._gates.wait_if_module_reloading(
+            parent_req, env.step_cancel, self._step_host.is_reentrant_retiring, timeout_ms=rem_tmo
+        )
+        gate_err, resolved = self._validate_stage1_gates(
+            parent_req, in_cold_turn=(env.turn.kind == TurnKind.COLD)
+        )
+        if gate_err is not None:
+            return (
+                env,
+                StepExecutionResult(ok=False, error=gate_err, fatal_abort_turn=is_fatal_error_code(gate_err.code)),
             )
-            return _CoordAttemptEnv(None, env, new_groups, None)
-        return _CoordAttemptEnv(None, env, group_descs, equiv_key)
+        new_desc, new_spec = require_non_none(resolved)
+        cur_ep = self._gates.current_epoch(new_desc.module_id)
+        if new_desc == env.desc and new_spec == env.spec and cur_ep == env.reload_epoch:
+            return (env, None)
+        next_env = replace(env, desc=new_desc, spec=new_spec, reload_epoch=cur_ep)
+        if not next_env.spec.resource_key or next_env.spec.concurrency_mode == ConcurrencyMode.PARALLEL:
+            return (next_env, self._dispatch_parallel_step_safe(next_env, ext_prio, next_env.step_cancel))
+        return (next_env, None)
 
     def _coordinate_and_dispatch_step(
         self,
@@ -2211,11 +2166,21 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
         equiv_key: Optional[str] = None
         while True:
             try:
-                att = self._prepare_coord_attempt_env(env, group_descs, equiv_key, ext_prio)
-                env, group_descs, equiv_key = att.env, att.group_descs, att.equiv_key
-                if att.early_result is not None:
-                    return att.early_result
-                coord, equiv_key = self._acquire_single_coord_attempt(env, group_descs, allow_coalesce, equiv_key, ext_prio)
+                if self._opts.is_daemon_host:
+                    next_env, early_res = self._recheck_hot_step_before_coord(env, ext_prio)
+                    if early_res is not None:
+                        return early_res
+                    if next_env is not env:
+                        env = next_env
+                        equiv_key = None
+                        group_descs = (
+                            tuple(self._routes.collect_group_descriptors(env.desc))
+                            if env.desc.venv_python is not None
+                            else (env.desc,)
+                        )
+                coord, equiv_key = self._acquire_single_coord_attempt(
+                    env, group_descs, allow_coalesce, equiv_key, ext_prio
+                )
             except TaskCancelledException as exc:
                 return StepExecutionResult(
                     ok=False, error=exc.detail, preempted=(exc.detail.code == ErrorCode.TASK_PREEMPTED)
@@ -2226,6 +2191,18 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
                 )
             c_out = require_non_none(coord.outcome)
             if c_out.retry_group_busy:
+                try:
+                    env.step_cancel.raise_if_cancelled()
+                    env.current_guard().remaining_ms(None, expired_message="Timed out waiting for retiring worker group.")
+                except TaskCancelledException as exc:
+                    return StepExecutionResult(
+                        ok=False, error=exc.detail, preempted=(exc.detail.code == ErrorCode.TASK_PREEMPTED)
+                    )
+                except YscbError as exc:
+                    return StepExecutionResult(
+                        ok=False, error=exc.detail, fatal_abort_turn=is_fatal_error_code(exc.detail.code)
+                    )
+                env.step_cancel.wait(0.005)
                 continue
             try:
                 return self._resolve_coordinated_bundle(env, coord)
@@ -2318,7 +2295,7 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
 
         caller_lineage = prop.lineage
         try:
-            check_cascade_acyclic(caller_lineage, bundle.cascade)
+            bundle.cascade.assert_acyclic(caller_lineage)
         except EventCycleError as exc:
             bundle.cascade.detach_caller_slot(coord.caller_slot_id)
             return StepExecutionResult(
@@ -2421,7 +2398,13 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
             )
         prop = spec.propagation
         eff_tid = turn.turn_id if turn is not None else (prop.turn_id or "")
-        ext_route = self._should_route_nested_externally(turn, spec, is_cross_ws)
+        if is_cross_ws or turn is None:
+            ext_route = True
+        elif turn.kind != TurnKind.COLD or self._opts.is_daemon_host or spec.routing_policy != ClientRoutingPolicy.STRICT_HOT:
+            ext_route = False
+        else:
+            ext_route = True
+
         try:
             nested_req = self._build_nested_invoke_request(turn, spec, eff_tid, is_cross_ws, ext_route)
             validate_wire_json_object(
@@ -2450,9 +2433,45 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
                 out.error.raise_as_exception()
             return out
 
-        step_res = self._run_same_ws_nested_step(
-            turn, nested_req, cancel_token, spec.parent_prio, spec.step_deadline
-        )
+        found = self._routes.lookup(nested_req.task_id, ensure_ready=True)
+        if turn.kind != TurnKind.COLD or found is None or found[1].mutation_scope == SelfMutationScope.NONE:
+            step_res = self._execute_single_step_with_coordination(
+                request=nested_req,
+                turn=turn,
+                parent_step_cancel=cancel_token,
+                parent_prio=spec.parent_prio,
+                parent_deadline=spec.step_deadline,
+            )
+        else:
+            gate_err, _ = self._validate_stage1_gates(nested_req, in_cold_turn=True)
+            if gate_err is not None:
+                step_res = StepExecutionResult(
+                    ok=False, error=gate_err, fatal_abort_turn=is_fatal_error_code(gate_err.code)
+                )
+            else:
+                nested_prop = nested_req.propagation
+                eff_ctree = nested_prop.call_tree_id or turn.turn_id
+                excl_req = replace(
+                    nested_req,
+                    propagation=replace(
+                        nested_prop,
+                        cold_shared_workspaces=nested_prop.cold_shared_workspaces - frozenset({self._workspace_root}),
+                    ),
+                )
+                step_res = self._cold_locks.run_upgraded_nested(
+                    eff_ctree,
+                    nested_req.task_id,
+                    cancel_token,
+                    lambda: self._execute_single_step_with_coordination(
+                        request=excl_req,
+                        turn=turn,
+                        parent_step_cancel=cancel_token,
+                        parent_prio=spec.parent_prio,
+                        parent_deadline=spec.step_deadline,
+                    ),
+                    deadline=spec.step_deadline,
+                )
+
         if not step_res.fatal_abort_turn and step_res.committed_events:
             cyc_err = self._check_coalesce_committed_events(turn, prop, step_res.committed_events)
             if cyc_err is not None:
@@ -2505,71 +2524,6 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
             approval_scope=frozenset() if strip_scope else spec.approval_scope,
             allow_conditional=spec.allow_conditional,
             propagation=nested_prop,
-        )
-
-    def _should_route_nested_externally(
-        self,
-        turn: Optional[TurnScope],
-        spec: _NestedInvokeSpec,
-        is_cross_ws: bool,
-    ) -> bool:
-        if is_cross_ws or turn is None:
-            return True
-        if turn.kind != TurnKind.COLD or self._opts.is_daemon_host or spec.routing_policy != ClientRoutingPolicy.STRICT_HOT:
-            return False
-        entry = self._routes.lookup(spec.child_task_id, ensure_ready=True)
-        return entry is None or entry[1].dispatch_mode != DispatchMode.DAEMON_ONLY
-
-    def _run_same_ws_nested_step(
-        self,
-        turn: TurnScope,
-        nested_req: InvokeRequest,
-        cancel_token: CancellationToken,
-        parent_prio: Optional[PriorityHandle],
-        parent_deadline: Optional[float],
-    ) -> StepExecutionResult[JsonValue]:
-        found = self._routes.lookup(nested_req.task_id, ensure_ready=True)
-        if turn.kind != TurnKind.COLD or found is None or found[1].mutation_scope == SelfMutationScope.NONE:
-            return self._execute_single_step_with_coordination(
-                request=nested_req,
-                turn=turn,
-                parent_step_cancel=cancel_token,
-                parent_prio=parent_prio,
-                parent_deadline=parent_deadline,
-            )
-        return self._run_upgraded_nested_cold_mutation(turn, nested_req, cancel_token, parent_prio, parent_deadline)
-
-    def _run_upgraded_nested_cold_mutation(
-        self,
-        turn: TurnScope,
-        nested_req: InvokeRequest,
-        cancel_token: CancellationToken,
-        parent_prio: Optional[PriorityHandle],
-        parent_deadline: Optional[float],
-    ) -> StepExecutionResult[JsonValue]:
-        gate_err, _ = self._validate_stage1_gates(nested_req, in_cold_turn=True)
-        if gate_err is not None:
-            return StepExecutionResult(ok=False, error=gate_err, fatal_abort_turn=is_fatal_error_code(gate_err.code))
-        prop = nested_req.propagation
-        eff_ctree = prop.call_tree_id or turn.turn_id
-        excl_req = replace(
-            nested_req,
-            propagation=replace(
-                prop, cold_shared_workspaces=prop.cold_shared_workspaces - frozenset({self._workspace_root})
-            ),
-        )
-        return self._cold_locks.run_upgraded_nested(
-            eff_ctree,
-            nested_req.task_id,
-            cancel_token,
-            lambda: self._execute_single_step_with_coordination(
-                request=excl_req,
-                turn=turn,
-                parent_step_cancel=cancel_token,
-                parent_prio=parent_prio,
-                parent_deadline=parent_deadline,
-            ),
-            deadline=parent_deadline,
         )
 
     def _evict_or_raise_imm_flight_cycle(
@@ -2706,11 +2660,10 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
         eff_tok = spec.parent_step_cancel or turn.cancel_token
         imm_dl = merge_deadlines(sess.turn_deadline, spec.step_deadline)
         imm_guard = DeadlineGuard(cancel_token=eff_tok, deadline=imm_dl)
-        sub_t = self._prepare_subscriber_target(imm_req, desc, route_spec, eff_tok, imm_guard)
-        if sub_t.error is not None:
-            self._fail_or_record_imm_subscriber(spec, turn, route_spec.task_id, sub_t.error)
+        sub_err, desc, route_spec = self._prepare_subscriber_target(imm_req, desc, route_spec, eff_tok, imm_guard)
+        if sub_err is not None:
+            self._fail_or_record_imm_subscriber(spec, turn, route_spec.task_id, sub_err)
             return
-        desc, route_spec = sub_t.desc, sub_t.spec
         m_out = self._step_host.map_event_batch(
             desc,
             route_spec.task_id,

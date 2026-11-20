@@ -33,6 +33,8 @@ from core.foundation.primitives import (
     TaskId,
     INT64_MAX,
     MAX_PARSE_JSON_DEPTH,
+    PYTHON_LAUNCHER_HIJACK_ENV_KEYS,
+    TREE_ID_ENV_KEY,
     require_pure_bool,
     require_pure_int,
     require_pure_str,
@@ -67,8 +69,24 @@ _ALLOWED_ENV_EXACT: frozenset[str] = frozenset(
         "NO_COLOR",
     }
 )
+WORKER_AUTH_ENV_KEY: str = "YSCB_WORKER_AUTH_TOKEN"
+LOCKS_SUBDIR: str = "locks"
+INSTALLER_LOCK_STEM: str = "installer"
+INSTALLER_LOCK_FILENAME: str = "installer.lock"
+MODULES_DIRNAME: str = ".modules"
+DEFAULT_CACHE_DIRNAME: str = ".cache"
+CORE_MODULE_ID: ModuleId = ModuleId("core")
+WATCHER_TASK_ID: TaskId = TaskId("core.watcher")
+CONFIG_CHANGED_EVENT_ID: EventId = EventId("core.config_changed")
+
 _ALLOWED_ENV_PREFIXES: tuple[str, ...] = ("LC_", "YSCB_")
-_FORBIDDEN_ENV_EXACT: frozenset[str] = frozenset({"YSCB_WORKER_AUTH_TOKEN"})
+_FORBIDDEN_ENV_UPPER: frozenset[str] = frozenset(
+    {
+        WORKER_AUTH_ENV_KEY.upper(),
+        TREE_ID_ENV_KEY.upper(),
+        *(k.upper() for k in PYTHON_LAUNCHER_HIJACK_ENV_KEYS),
+    }
+)
 
 
 def _is_valid_env_str(val: str, *, forbid_eq: bool = False) -> bool:
@@ -84,15 +102,22 @@ def _is_valid_env_str(val: str, *, forbid_eq: bool = False) -> bool:
 def sanitize_caller_env(raw_env: Mapping[str, str]) -> dict[str, str]:
     """Filter transient caller environment variables against the explicit runtime allowlist and UTF-8/OS safety."""
     cleaned: dict[str, str] = {}
+    seen_yscb_upper: dict[str, str] = {}
     for k, v in raw_env.items():
-        if type(k) is not str or type(v) is not str:
+        if type(k) is not str or type(v) is not str or not k:
             continue
+        k_up = k.upper()
         if (
-            k not in _FORBIDDEN_ENV_EXACT
+            k_up not in _FORBIDDEN_ENV_UPPER
             and (k in _ALLOWED_ENV_EXACT or k.startswith(_ALLOWED_ENV_PREFIXES))
             and _is_valid_env_str(k, forbid_eq=True)
             and _is_valid_env_str(v)
         ):
+            if k_up.startswith("YSCB_"):
+                prev_k = seen_yscb_upper.get(k_up)
+                if prev_k is not None and prev_k != k:
+                    cleaned.pop(prev_k, None)
+                seen_yscb_upper[k_up] = k
             cleaned[k] = v
     return cleaned
 
@@ -227,6 +252,8 @@ def _validate_route_invariants(spec: TaskRouteSpec) -> None:
         raise ValueError(f"Task '{spec.task_id}' with mode={spec.concurrency_mode} requires non-empty resource_key.")
     if spec.interactive_tty and spec.dispatch_mode != DispatchMode.COLD_ONLY:
         raise ValueError(f"Task '{spec.task_id}' with interactive_tty=True must declare COLD_ONLY.")
+    if spec.interactive_tty and spec.exposure == TaskExposure.SDK_ONLY:
+        raise ValueError(f"SDK_ONLY Task '{spec.task_id}' cannot declare interactive_tty=True.")
     if spec.mutation_scope != SelfMutationScope.NONE and spec.dispatch_mode != DispatchMode.COLD_ONLY:
         raise ValueError(f"Task '{spec.task_id}' with mutation_scope={spec.mutation_scope} must declare COLD_ONLY.")
     if spec.exposure == TaskExposure.INTERNAL_TRIGGER and (
@@ -475,8 +502,8 @@ def _validate_caller_env_map(raw: object) -> Mapping[str, str]:
     for k, v in raw.items():
         require_pure_str(k, "InvokeRequest.caller_env key", non_empty=True)
         require_pure_str(v, "InvokeRequest.caller_env value")
-        if not _is_valid_env_str(k) or not _is_valid_env_str(v):
-            raise ValueError("InvokeRequest.caller_env keys and values forbid NUL and lone surrogates.")
+        if not _is_valid_env_str(k, forbid_eq=True) or not _is_valid_env_str(v):
+            raise ValueError("InvokeRequest.caller_env keys forbid '=' and keys/values forbid NUL and lone surrogates.")
         frozen_env[k] = v
     return MappingProxyType(frozen_env)
 

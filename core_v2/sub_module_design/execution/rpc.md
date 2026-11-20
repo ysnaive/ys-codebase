@@ -31,7 +31,7 @@
 
 | `FrameKind` | `stream_id` | 方向 | 語意與可靠度保證 |
 | :--- | :---: | :--- | :--- |
-| **`HELLO` / `HELLO_ACK`** | `0` | 雙向控制流 | 完成協定版本、`workspace_root`、`boot_id` 與 `auth_token` 雙向驗證。 |
+| **`HELLO` / `HELLO_ACK`** | `0` | 雙向控制流 | 客戶端提示 `.cache/daemon/daemon.json`（`0o600`）之 `auth_token`、`boot_id` 與 `workspace_root` 接受常數時間核驗，伺服端回傳 `HELLO_ACK` 確認協定版本與 `boot_id` 一致。 |
 | **`CALL_START`** | `> 0` | 呼叫方 $\rightarrow$ 執行方 | 發起呼叫，攜帶序列化請求封包。 |
 | **`CALL_ACCEPTED`** | `> 0` | 執行方 $\rightarrow$ 呼叫方 | **收單確認屏障**：執行方通過停機/讓位閘門收單後回傳此幀；呼叫方收到瞬間標記 `was_accepted = True`（若執行方正處於 `DRAINING` 停機中，則於 `RpcFrame.meta` 標註 `rejected_before_accept=True` 回傳 `CALL_RESULT` 而不發 `CALL_ACCEPTED`，確保 `was_accepted = False` 可安全冷降級或透明重連）。 |
 | **`PROGRESS`** | `> 0` | 執行方 $\rightarrow$ 呼叫方 | 非阻塞依序投遞結構化階段進度（於 `CALL_RESULT` 抵達前完成序向排空）。 |
@@ -47,6 +47,10 @@
    - 空閒未發單之長連線 Socket 不阻擋服務端 `Idle TTL` 停機（服務端停機呼叫 `stop_accepting()` 排空在途握手並於 `close_all()` 主動斷開空閒 Socket；單一連線關閉時透過 `on_closed` 立即從伺服器清單移除零殘留），且重連握手於會話互斥鎖外進行，取消時設定 `cancel_grace_ms=500` 防止無協作阻塞。
    - 當發送請求收到 `was_accepted=False` 或端點短暫消失（如舊 Daemon 已休眠關機或正在執行 `core` 自重啟交棒）時，內建 `wait_for_handoff_daemon_endpoint`（或自訂 `on_reconnect_wait`）自動依單調 `DeadlineGuard` 剩餘預算等待 `daemon/handoff_lease.json` 交棒新端點並透明重試，確保零誤報斷線。
 
+### 3.3 伺服端「先確認收單再產生副作用」鐵律與本機迴路信任邊界
+1. **先送達 `CALL_ACCEPTED` 再執行業務副作用（Ack-Before-Side-Effects Rule）**：為使客戶端 `was_accepted=False` 透明重連與非冪等任務「收單後絕不重跑」承諾在雙端嚴格成立，所有 `InboundCallHandler.on_call` 實作（含 `WorkspaceDaemon` 與 `WorkerSubprocessHandler`）**必須在呼叫業務派發或修改任何模組/環境狀態前先行呼叫 `ack_accepted()` 並確認其回傳 `True`**；一旦 `ack_accepted()` 因底層連線中斷回傳 `False`，伺服端必須立即中止而不執行目標步驟。
+2. **本機同使用者 `0o600` 憑證邊界**：跨進程連線認證錨定於宿主工作區 `.cache/daemon/daemon.json`（POSIX `0o600` 權限）內隨機產生的 `auth_token` 與 `boot_id`；持有合法 `auth_token` 之同機同使用者進程屬於同一作業系統主體信任域，上層 `InvokeRequest.approval_scope` 與 `allow_conditional` 定位為**防誤觸與防背景/事件暗中觸發之顯式工作流安全確認護欄（Workflow Safety Gate）**，而非多租戶跨權限隔離邊界。
+
 ## 4. 核心 OOP 類別與強型別契約規格 (`core/execution/rpc/channel.py`)
 
 ```python
@@ -59,6 +63,9 @@ from core.foundation.observability import CancellationToken
 from core.foundation.primitives import HostPath, JsonObject
 
 MAX_FRAME_BYTES: int = 64 * 1024 * 1024  # 64 MiB 硬上限
+DAEMON_SUBDIR: str = "daemon"
+DAEMON_ENDPOINT_FILENAME: str = "daemon.json"
+DAEMON_HANDOFF_FILENAME: str = "handoff_lease.json"
 
 
 class FrameKind(Enum):
@@ -122,6 +129,12 @@ class RemoteCallOutcome:
 def bind_loopback_ephemeral(*, backlog: int = 64) -> socket.socket: ...
 
 
+def build_daemon_endpoint_dict(info: RpcEndpointInfo) -> JsonObject: ...
+
+
+def build_handoff_lease_dict(old_boot_id: str, expires_epoch: float) -> JsonObject: ...
+
+
 def read_daemon_endpoint_file(cache_dir: HostPath, workspace_root: HostPath) -> Optional[RpcEndpointInfo]: ...
 
 
@@ -176,6 +189,8 @@ class MultiplexedChannel:
     ) -> None: ...
     @property
     def is_closed(self) -> bool: ...
+    @property
+    def is_usable(self) -> bool: ...
     def wait_until_closed(self, timeout_sec: Optional[float] = None) -> bool: ...
     def wait_inbound_controls_flushed(self, timeout_sec: float = 1.0) -> None: ...
     def call(
@@ -238,6 +253,15 @@ class PersistentRpcSession:
         timeout_ms: Optional[int] = None,
         on_reconnect_wait: Optional[Callable[[Optional[CancellationToken]], bool]] = None,
     ) -> RemoteCallOutcome: ...
+    def call_with_reachability(
+        self,
+        payload: JsonObject,
+        *,
+        on_progress: Optional[Callable[[JsonObject], None]] = None,
+        cancel_token: Optional[CancellationToken] = None,
+        timeout_ms: Optional[int] = None,
+        on_reconnect_wait: Optional[Callable[[Optional[CancellationToken]], bool]] = None,
+    ) -> tuple[RemoteCallOutcome, bool]: ...
     def close(self) -> None: ...
 
 

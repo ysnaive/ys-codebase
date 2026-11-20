@@ -10,7 +10,7 @@
 
 所有派發決策、`resource_key` 鎖、`StepFlight` 與 `Tier1WorkerPool` 均已收斂至 `execution.runtime`；**`core.execution.daemon` 專職扮演「每專案獨立常駐進程外殼 + 單一條件監督迴圈 + 背景信號觸發器」**（且 `DaemonRunState = ContainerState` 直接複用 `lifecycle.ContainerState`，零重複狀態列舉）：
 1. **零分流邏輯**：收到外部 RPC 業務請求或內部監視/定時觸發，**100% 委派同一個 `RuntimeDispatcher` 執行**。
-2. **事件驅動單一監督迴圈（Single Supervisor Loop + `DirtyPathsAccumulator`）**：所有檔案監視回呼於 `daemon.json` 發布前即建立初始目錄快照基線（確保 `WARMING` 預熱期間之組態或模組異動零漏接），並僅以 $O(1)$ 非阻塞寫入內部 `DirtyPathsAccumulator` 喚醒單一條件變數 `_cond`；執行重載或讓位恢復時，於共享 `installer.lock` 內**先完成監視器快照重同步與髒佇列修剪，再讀取磁碟重載模組/組態**，確保重載預熱期間新發生的第二次檔案修改絕不被覆蓋漏接。
+2. **事件驅動單一監督迴圈（Single Supervisor Loop + `_DirtyPathsAccumulator`）**：所有檔案監視回呼於 `daemon.json` 發布前即建立初始目錄快照基線（確保 `WARMING` 預熱期間之組態或模組異動零漏接），並僅以 $O(1)$ 非阻塞寫入內部 `_DirtyPathsAccumulator` 喚醒單一條件變數 `_cond`；執行重載或讓位恢復時，於共享 `installer.lock` 內**先完成監視器快照重同步與髒佇列修剪，再讀取磁碟重載模組/組態**，確保重載預熱期間新發生的第二次檔案修改絕不被覆蓋漏接。
 
 ## 2. 核心架構與競態防禦機制 (Core & Race-Free Mechanisms)
 
@@ -55,6 +55,7 @@ from core.execution.lifecycle import ContainerState
 from core.execution.rpc import FrameKind, InboundCallHandler
 from core.execution.runtime import ConfigViewPort, DaemonSpawner, RuntimeDispatcher, VfsEchoGuardPort, WorkerProcessSnapshot
 from core.foundation.observability import CancellationToken
+from core.foundation.errors import ErrorDetail
 from core.foundation.primitives import HostPath, JsonObject, ModuleId, TaskId
 
 DaemonRunState = ContainerState
@@ -72,6 +73,7 @@ class DaemonStatusSnapshot:
     tasks_handled: int
     active_tier1_workers: tuple[WorkerProcessSnapshot, ...]
     degraded_modules: tuple[str, ...] = ()
+    background_error_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +135,7 @@ class IdleTtlMonitor:
 
 
 class PeriodicTriggerLoop:
-    """支援組態開關閘控 (enabled_config_key) 與 fixed-delay 防堆積之背景定時排程迴圈。"""
+    """支援組態開關閘控 (enabled_config_key)、fixed-delay 防堆積與背景異常診斷記錄之定時排程迴圈。"""
     def __init__(
         self,
         *,
@@ -142,6 +144,7 @@ class PeriodicTriggerLoop:
         can_run_background: Callable[[], bool],
         execute_periodic_task: Callable[[TaskId], None],
         can_run_task: Optional[Callable[[TaskId], bool]] = None,
+        on_error: Optional[Callable[[ErrorDetail], None]] = None,
     ) -> None: ...
     def start(self) -> None: ...
     def refresh_schedules(self) -> None: ...
@@ -185,6 +188,7 @@ class WorkspaceDaemon(InboundCallHandler):
         expected_epoch: Optional[int] = None,
         modules: Optional[frozenset[ModuleId]] = None,
     ) -> bool: ...
+    def drain_background_errors(self) -> tuple[ErrorDetail, ...]: ...
     def snapshot_status(self) -> DaemonStatusSnapshot: ...
     def on_call(
         self,

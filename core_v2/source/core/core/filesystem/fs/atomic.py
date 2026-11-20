@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import errno
 import hashlib
 import io
 import json
@@ -10,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import sys
 import time
 from typing import Callable, Final, Iterator, Optional
 import uuid
@@ -22,18 +24,91 @@ from core.foundation.primitives import (
     JsonObject,
     MutableJsonObject,
     clone_strict_json_object,
+    is_valid_relative_segment,
     require_pure_int,
-    require_pure_str,
     strict_parse_json_object,
+    validate_relative_segment,
 )
+
+import ctypes
+
+if IS_WINDOWS:
+    from ctypes import wintypes
+    import msvcrt
+
+    class _WinSecurityAttributes(ctypes.Structure):
+        _fields_ = [
+            ("nLength", wintypes.DWORD),
+            ("lpSecurityDescriptor", ctypes.c_void_p),
+            ("bInheritHandle", wintypes.BOOL),
+        ]
+
+    _ADV32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    _K32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _WIN_GET_CURRENT_PROCESS = _K32.GetCurrentProcess
+    _WIN_GET_CURRENT_PROCESS.argtypes = []
+    _WIN_GET_CURRENT_PROCESS.restype = wintypes.HANDLE
+    _WIN_OPEN_PROCESS_TOKEN = _ADV32.OpenProcessToken
+    _WIN_OPEN_PROCESS_TOKEN.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    _WIN_OPEN_PROCESS_TOKEN.restype = wintypes.BOOL
+    _WIN_GET_TOKEN_INFO = _ADV32.GetTokenInformation
+    _WIN_GET_TOKEN_INFO.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    _WIN_GET_TOKEN_INFO.restype = wintypes.BOOL
+    _WIN_CONVERT_SID_TO_STR = _ADV32.ConvertSidToStringSidW
+    _WIN_CONVERT_SID_TO_STR.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    _WIN_CONVERT_SID_TO_STR.restype = wintypes.BOOL
+    _WIN_CONVERT_STR_TO_SD = _ADV32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    _WIN_CONVERT_STR_TO_SD.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.ULONG),
+    ]
+    _WIN_CONVERT_STR_TO_SD.restype = wintypes.BOOL
+    _WIN_LOCAL_FREE = _K32.LocalFree
+    _WIN_LOCAL_FREE.argtypes = [wintypes.HLOCAL]
+    _WIN_LOCAL_FREE.restype = wintypes.HLOCAL
+    _WIN_CLOSE_HANDLE = _K32.CloseHandle
+    _WIN_CLOSE_HANDLE.argtypes = [wintypes.HANDLE]
+    _WIN_CLOSE_HANDLE.restype = wintypes.BOOL
+    _WIN_CREATE_FILE_W = _K32.CreateFileW
+    _WIN_CREATE_FILE_W.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(_WinSecurityAttributes),
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    _WIN_CREATE_FILE_W.restype = wintypes.HANDLE
+    _WIN_INVALID_HANDLE_VAL: int = int(ctypes.c_void_p(-1).value or -1)
+
+
+class _WinSidAndAttributes(ctypes.Structure):
+    _fields_ = [
+        ("Sid", ctypes.c_void_p),
+        ("Attributes", ctypes.c_uint32),
+    ]
 
 BeforeReplaceHook = Callable[[int, int, int], None]
 MAX_JSON_FILE_BYTES: Final[int] = 4 * 1024 * 1024
+IGNORED_FS_PREFIXES: Final[tuple[str, ...]] = (".tmp_", ".staging_", "__pycache__")
 _ATOMIC_STAGING_RE = re.compile(r"\.tmp_\d+_[0-9a-f]{12}$")
 _NOFOLLOW_READ_FLAGS: Final[int] = (
     os.O_RDONLY
     | (os.O_BINARY if IS_WINDOWS else 0)
-    | (0 if IS_WINDOWS else os.O_NOFOLLOW)
+    | (0 if IS_WINDOWS else os.O_NOFOLLOW | os.O_NONBLOCK)
 )
 
 
@@ -54,34 +129,6 @@ def is_symlink_or_reparse(raw_path: str) -> bool:
     return False
 
 
-def _validate_single_subpath_segment(part: str, root: HostPath) -> str:
-    require_pure_str(part, "contained subpath segment")
-    seps = ("/", "\\") if IS_WINDOWS else ("/",)
-    cand = Path(part)
-    if (
-        not part
-        or "\x00" in part
-        or part in (".", "..")
-        or any(sep in part for sep in seps)
-        or cand.is_absolute()
-        or bool(cand.anchor)
-    ):
-        raise ValueError(f"Invalid relative segment {part!r} under '{root}'.")
-    return part
-
-
-def _step_contained_segment(cur: str, seg: str, is_intermediate: bool, root: HostPath) -> str:
-    nxt = os.path.join(cur, seg)
-    if is_symlink_or_reparse(nxt):
-        raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing symlink or reparse point inside '{root}': {nxt}")
-    if os.path.lexists(nxt):
-        if is_intermediate and not os.path.isdir(nxt):
-            raise YscbError(ErrorCode.SECURITY_GATED, f"Non-directory intermediate path inside '{root}': {nxt}")
-        if os.path.normcase(os.path.realpath(nxt)) != os.path.normcase(os.path.normpath(nxt)):
-            raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing redirected path inside '{root}': {nxt}")
-    return nxt
-
-
 def resolve_contained_subpath(root: HostPath, *parts: str) -> HostPath:
     """Resolve ``root/parts...`` rejecting any symlinked or reparse-redirected root, intermediate, or leaf."""
     if not isinstance(root, HostPath):
@@ -92,11 +139,19 @@ def resolve_contained_subpath(root: HostPath, *parts: str) -> HostPath:
         raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing symlink or reparse root directory: {raw_root}")
     if not parts:
         return root
-    cleaned = [_validate_single_subpath_segment(p, root) for p in parts]
+    cleaned = [validate_relative_segment(p, label="contained subpath segment") for p in parts]
     cur = real_root_raw
     last_idx = len(cleaned) - 1
     for idx, seg in enumerate(cleaned):
-        cur = _step_contained_segment(cur, seg, idx < last_idx, root)
+        nxt = os.path.join(cur, seg)
+        if is_symlink_or_reparse(nxt):
+            raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing symlink or reparse point inside '{root}': {nxt}")
+        if os.path.lexists(nxt):
+            if idx < last_idx and not os.path.isdir(nxt):
+                raise YscbError(ErrorCode.SECURITY_GATED, f"Non-directory intermediate path inside '{root}': {nxt}")
+            if os.path.normcase(os.path.realpath(nxt)) != os.path.normcase(os.path.normpath(nxt)):
+                raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing redirected path inside '{root}': {nxt}")
+        cur = nxt
     real_root = os.path.normcase(real_root_raw)
     real_cur = os.path.normcase(os.path.realpath(cur))
     try:
@@ -116,7 +171,7 @@ def try_resolve_contained_subpath(root: HostPath, *parts: str) -> Optional[HostP
         return None
 
 
-def _step_nonsymlink_raw_segment(cur: str, seg: str) -> Optional[str]:
+def _step_nonsymlink_segment(cur: str, seg: str) -> Optional[str]:
     if seg in (".", ".."):
         if not os.path.isdir(cur) or is_symlink_or_reparse(cur):
             return None
@@ -124,6 +179,8 @@ def _step_nonsymlink_raw_segment(cur: str, seg: str) -> Optional[str]:
             return cur
         parent = os.path.dirname(cur)
         return None if is_symlink_or_reparse(parent) else parent
+    if not is_valid_relative_segment(seg):
+        return None
     if os.path.lexists(cur) and not os.path.isdir(cur):
         return None
     nxt = os.path.join(cur, seg)
@@ -149,9 +206,9 @@ def _walk_nonsymlink_path(raw_path: str) -> Optional[str]:
         cur = os.path.realpath(".")
         tail = raw_path
     for seg in (s for s in re.split(sep_pat, tail) if s):
-        cur = _step_nonsymlink_raw_segment(cur, seg) if cur is not None else None
         if cur is None:
             return None
+        cur = _step_nonsymlink_segment(cur, seg)
     if cur is None:
         return None
     seps = ("/", "\\") if IS_WINDOWS else ("/",)
@@ -160,6 +217,102 @@ def _walk_nonsymlink_path(raw_path: str) -> Optional[str]:
     if os.path.lexists(raw_path) and os.path.normcase(os.path.realpath(raw_path)) != os.path.normcase(cur):
         return None
     return cur
+
+
+_DARWIN_SYSTEM_ROOT_LINKS: Final[tuple[tuple[str, str], ...]] = (
+    ("tmp", "private/tmp"),
+    ("var", "private/var"),
+    ("etc", "private/etc"),
+)
+
+
+def _normalize_darwin_root_alias(abs_path: str) -> str:
+    if sys.platform != "darwin" or not abs_path.startswith("/"):
+        return abs_path
+    trimmed = abs_path.lstrip("/")
+    top, sep, rest = trimmed.partition("/")
+    mapped = next((dst for src, dst in _DARWIN_SYSTEM_ROOT_LINKS if src == top), None)
+    if mapped is None:
+        return abs_path
+    try:
+        if os.lstat(f"/{top}").st_uid != 0:
+            return abs_path
+    except OSError:
+        return abs_path
+    return f"/{mapped}/{rest}" if sep else f"/{mapped}"
+
+
+def _resolve_nonsymlink_root_spec(
+    root: HostPath | Path | str,
+) -> Optional[tuple[str, Optional[tuple[str, tuple[str, ...]]]]]:
+    raw_root = str(root)
+    if not raw_root or "\x00" in raw_root:
+        return None
+    walked_root = _walk_nonsymlink_path(raw_root)
+    if walked_root is not None:
+        return (walked_root, None)
+    if isinstance(root, HostPath):
+        return None
+    seps = "/\\" if IS_WINDOWS else "/"
+    p_root = Path(raw_root)
+    stripped = raw_root.rstrip(seps) if len(raw_root) > len(p_root.anchor) else raw_root
+    if not stripped or is_symlink_or_reparse(stripped):
+        return None
+    abs_root = stripped if Path(stripped).is_absolute() else os.path.join(os.path.realpath("."), stripped)
+    sep_pat = r"[\\/]+" if IS_WINDOWS else r"/+"
+    p_abs = Path(abs_root)
+    anchor = p_abs.anchor
+    if not anchor or is_symlink_or_reparse(anchor):
+        return None
+    segs = tuple(s for s in re.split(sep_pat, abs_root[len(anchor) :]) if s)
+    if any(s in (".", "..") or not is_valid_relative_segment(s) for s in segs):
+        return None
+    real_root = os.path.realpath(abs_root)
+    if os.path.lexists(real_root) and raw_root.endswith(tuple(seps)) and not os.path.isdir(real_root):
+        return None
+    lex_spec = (os.path.normcase(anchor), tuple(os.path.normcase(s) for s in segs))
+    return (real_root, lex_spec)
+
+
+def _extract_candidate_tail_segs(
+    raw_cand: str,
+    real_root: str,
+    allowed_lex_root: Optional[tuple[str, tuple[str, ...]]],
+) -> Optional[tuple[str, ...]]:
+    abs_cand = raw_cand if Path(raw_cand).is_absolute() else os.path.join(os.path.realpath("."), raw_cand)
+    sep_pat = r"[\\/]+" if IS_WINDOWS else r"/+"
+    norm_real_root = os.path.normcase(real_root)
+    if allowed_lex_root is not None:
+        req_anchor, req_segs = allowed_lex_root
+        p_c = Path(abs_cand)
+        c_anchor = p_c.anchor
+        c_segs = tuple(s for s in re.split(sep_pat, abs_cand[len(c_anchor) :]) if s)
+        n_req = len(req_segs)
+        if (
+            c_anchor
+            and os.path.normcase(c_anchor) == req_anchor
+            and len(c_segs) >= n_req
+            and tuple(os.path.normcase(s) for s in c_segs[:n_req]) == req_segs
+        ):
+            matched_base = os.path.join(c_anchor, *c_segs[:n_req]) if n_req else c_anchor
+            if not is_symlink_or_reparse(matched_base) and os.path.normcase(os.path.realpath(matched_base)) == norm_real_root:
+                return c_segs[n_req:]
+    walk_cand = _normalize_darwin_root_alias(abs_cand)
+    p_w = Path(walk_cand)
+    w_anchor = p_w.anchor
+    if not w_anchor or is_symlink_or_reparse(w_anchor):
+        return None
+    w_segs = tuple(s for s in re.split(sep_pat, walk_cand[len(w_anchor) :]) if s)
+    cur: Optional[str] = os.path.realpath(w_anchor)
+    if os.path.normcase(cur) == norm_real_root:
+        return w_segs
+    for idx, seg in enumerate(w_segs):
+        if cur is None:
+            return None
+        cur = _step_nonsymlink_segment(cur, seg)
+        if cur is not None and os.path.normcase(cur) == norm_real_root:
+            return w_segs[idx + 1 :]
+    return None
 
 
 def is_contained_nonsymlink_path(
@@ -171,18 +324,34 @@ def is_contained_nonsymlink_path(
     ignored_dir_prefixes: tuple[str, ...] = (),
 ) -> bool:
     """Return True iff candidate stays strictly within root without traversing any symlink, reparse point, or ignored dir."""
-    walked_root = _walk_nonsymlink_path(str(root))
-    walked_cand = _walk_nonsymlink_path(str(candidate))
-    if walked_root is None or walked_cand is None:
+    root_spec = _resolve_nonsymlink_root_spec(root)
+    raw_cand = str(candidate)
+    if root_spec is None or not raw_cand or "\x00" in raw_cand or is_symlink_or_reparse(raw_cand):
         return False
-    norm_root = os.path.normcase(walked_root)
-    norm_cand = os.path.normcase(walked_cand)
+    real_root, allowed_lex_root = root_spec
+    tail_segs = _extract_candidate_tail_segs(raw_cand, real_root, allowed_lex_root)
+    if tail_segs is None:
+        return False
+    norm_root = os.path.normcase(real_root)
+    cur: Optional[str] = real_root
+    for seg in tail_segs:
+        if cur is None or (seg == ".." and os.path.normcase(cur) == norm_root):
+            return False
+        cur = _step_nonsymlink_segment(cur, seg)
+    if cur is None:
+        return False
+    seps = ("/", "\\") if IS_WINDOWS else ("/",)
+    if raw_cand.endswith(seps) and os.path.lexists(cur) and not os.path.isdir(cur):
+        return False
+    if os.path.lexists(cur) and os.path.normcase(os.path.realpath(cur)) != os.path.normcase(cur):
+        return False
+    norm_cand = os.path.normcase(cur)
     if norm_cand == norm_root:
         return allow_equal
     try:
         if os.path.commonpath([norm_root, norm_cand]) != norm_root:
             return False
-        rel = os.path.relpath(walked_cand, walked_root)
+        rel = os.path.relpath(cur, real_root)
     except ValueError:
         return False
     rel_parts = tuple(p for p in Path(rel).parts if p not in ("", "."))
@@ -200,27 +369,34 @@ def resolve_contained_child_dir(
     guarded_name: Optional[str] = None,
 ) -> Optional[HostPath]:
     """Resolve a direct 1-level non-symlink child directory strictly inside ``parent_dir``."""
-    if is_symlink_or_reparse(str(parent_dir)):
+    walked_parent = _walk_nonsymlink_path(str(parent_dir))
+    if walked_parent is None:
         return None
     for child_name in (expected_name, guarded_name):
-        if child_name is not None and is_symlink_or_reparse(os.path.join(str(parent_dir), child_name)):
+        if child_name is None:
+            continue
+        if not is_valid_relative_segment(child_name):
+            return None
+        if _walk_nonsymlink_path(os.path.join(walked_parent, child_name)) is None:
             return None
     raw_cand = (
         str(candidate_dir)
         if candidate_dir is not None
-        else (os.path.join(str(parent_dir), expected_name) if expected_name is not None else "")
+        else (os.path.join(walked_parent, expected_name) if expected_name is not None else "")
     )
-    if not raw_cand or is_symlink_or_reparse(raw_cand):
+    if not raw_cand:
         return None
-    real_parent = os.path.normcase(os.path.realpath(str(parent_dir)))
-    real_raw_child = os.path.realpath(raw_cand)
-    real_child = os.path.normcase(real_raw_child)
-    if real_child == real_parent or os.path.normcase(os.path.dirname(real_raw_child)) != real_parent:
+    walked_cand = _walk_nonsymlink_path(raw_cand)
+    if walked_cand is None:
         return None
-    if expected_name is not None and real_child != os.path.normcase(os.path.join(real_parent, expected_name)):
+    norm_parent = os.path.normcase(walked_parent)
+    norm_child = os.path.normcase(walked_cand)
+    if norm_child == norm_parent or os.path.normcase(os.path.dirname(walked_cand)) != norm_parent:
+        return None
+    if expected_name is not None and norm_child != os.path.normcase(os.path.join(walked_parent, expected_name)):
         return None
     try:
-        return HostPath(real_raw_child)
+        return HostPath(walked_cand)
     except (OSError, ValueError):
         return None
 
@@ -244,10 +420,132 @@ def assert_no_symlink_raw_path(raw_path: str) -> None:
         raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing filesystem operation across symlink path: {raw_path}")
 
 
+def _extract_sid_pointer_from_token_user(buf: ctypes.Array[ctypes.c_char]) -> ctypes.c_void_p:
+    if len(buf) < ctypes.sizeof(_WinSidAndAttributes):
+        raise OSError("Win32 GetTokenInformation returned truncated TOKEN_USER buffer")
+    sid_addr = ctypes.cast(buf, ctypes.POINTER(_WinSidAndAttributes)).contents.Sid
+    if not sid_addr:
+        raise OSError("Win32 TOKEN_USER contained NULL owner SID pointer")
+    return ctypes.c_void_p(sid_addr)
+
+
+@contextmanager
+def _windows_owner_only_sd(target_label: str) -> Iterator[ctypes.c_void_p]:
+    tok = wintypes.HANDLE()
+    if not _WIN_OPEN_PROCESS_TOKEN(_WIN_GET_CURRENT_PROCESS(), 0x0008, ctypes.byref(tok)):
+        err = ctypes.get_last_error()
+        raise OSError(err, f"OpenProcessToken failed while securing {target_label} (winerr={err})")
+    try:
+        needed = wintypes.DWORD(0)
+        _WIN_GET_TOKEN_INFO(tok, 1, None, 0, ctypes.byref(needed))
+        if needed.value < ctypes.sizeof(_WinSidAndAttributes):
+            err = ctypes.get_last_error()
+            raise OSError(err, f"GetTokenInformation size probe failed for {target_label} (winerr={err})")
+        buf = ctypes.create_string_buffer(needed.value)
+        if not _WIN_GET_TOKEN_INFO(tok, 1, ctypes.cast(buf, ctypes.c_void_p), needed, ctypes.byref(needed)):
+            err = ctypes.get_last_error()
+            raise OSError(err, f"GetTokenInformation failed while securing {target_label} (winerr={err})")
+        sid_ptr = _extract_sid_pointer_from_token_user(buf)
+        str_sid_ptr = ctypes.c_void_p()
+        if not _WIN_CONVERT_SID_TO_STR(sid_ptr, ctypes.byref(str_sid_ptr)) or not str_sid_ptr.value:
+            err = ctypes.get_last_error()
+            raise OSError(err, f"ConvertSidToStringSidW failed while securing {target_label} (winerr={err})")
+        try:
+            sid_text = ctypes.wstring_at(str_sid_ptr.value)
+            sddl = f"D:P(A;;FA;;;{sid_text})(A;;FA;;;SY)(A;;FA;;;BA)"
+        finally:
+            _WIN_LOCAL_FREE(str_sid_ptr)
+        sd_ptr = ctypes.c_void_p()
+        if not _WIN_CONVERT_STR_TO_SD(sddl, 1, ctypes.byref(sd_ptr), None) or not sd_ptr.value:
+            err = ctypes.get_last_error()
+            raise OSError(err, f"ConvertStringSecurityDescriptorToSecurityDescriptorW failed (winerr={err})")
+        try:
+            yield sd_ptr
+        finally:
+            _WIN_LOCAL_FREE(sd_ptr)
+    finally:
+        _WIN_CLOSE_HANDLE(tok)
+
+
+def _open_windows_owner_only_temp_fd(tmp_path: str) -> int:
+    with _windows_owner_only_sd(tmp_path) as sd_ptr:
+        sec_attr = _WinSecurityAttributes(
+            nLength=ctypes.sizeof(_WinSecurityAttributes),
+            lpSecurityDescriptor=sd_ptr.value,
+            bInheritHandle=False,
+        )
+        handle = _WIN_CREATE_FILE_W(
+            tmp_path,
+            0x40000000,
+            0,
+            ctypes.byref(sec_attr),
+            1,
+            0x00000080,
+            None,
+        )
+        h_int = int(handle) if handle is not None else _WIN_INVALID_HANDLE_VAL
+        if handle is None or h_int in (0, _WIN_INVALID_HANDLE_VAL):
+            err = ctypes.get_last_error()
+            raise OSError(err, f"CreateFileW owner-only exclusive creation failed for {tmp_path} (winerr={err})")
+        try:
+            return msvcrt.open_osfhandle(h_int, os.O_WRONLY | os.O_BINARY)
+        except BaseException:
+            _WIN_CLOSE_HANDLE(handle)
+            raise
+
+
+_FSYNC_IGNORABLE_ERRNOS: Final[frozenset[int]] = frozenset(
+    {
+        errno.EINVAL,
+        errno.EROFS,
+        errno.EBADF,
+        errno.EPERM,
+        errno.EACCES,
+        errno.ENOTSUP,
+        errno.EOPNOTSUPP,
+    }
+)
+
+
+def _fsync_parent_dir_posix(parent_dir: Path) -> None:
+    if IS_WINDOWS:
+        return
+    try:
+        dir_fd = os.open(str(parent_dir), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError as exc:
+        if exc.errno not in _FSYNC_IGNORABLE_ERRNOS:
+            raise
+    finally:
+        try:
+            os.close(dir_fd)
+        except OSError:
+            pass
+
+
+def _existing_posix_file_mode(dst_str: str) -> Optional[int]:
+    if IS_WINDOWS:
+        return None
+    try:
+        st = os.lstat(dst_str)
+    except OSError:
+        return None
+    if stat.S_ISREG(st.st_mode):
+        return stat.S_IMODE(st.st_mode)
+    return None
+
+
 def _write_and_fsync_temp(tmp_path: str, data: bytes, file_mode: Optional[int]) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | (0 if IS_WINDOWS else os.O_NOFOLLOW)
-    mode = file_mode if (file_mode is not None and not IS_WINDOWS) else 0o666
-    fd = os.open(tmp_path, flags, mode)
+    is_owner_only = file_mode is not None and (file_mode & 0o077) == 0
+    if IS_WINDOWS and is_owner_only:
+        fd = _open_windows_owner_only_temp_fd(tmp_path)
+    else:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | (0 if IS_WINDOWS else os.O_NOFOLLOW)
+        mode = file_mode if (file_mode is not None and not IS_WINDOWS) else 0o666
+        fd = os.open(tmp_path, flags, mode)
     try:
         f = os.fdopen(fd, "wb")
     except BaseException:
@@ -260,8 +558,9 @@ def _write_and_fsync_temp(tmp_path: str, data: bytes, file_mode: Optional[int]) 
             os.fchmod(f.fileno(), file_mode)
         try:
             os.fsync(f.fileno())
-        except OSError:
-            pass
+        except OSError as exc:
+            if exc.errno not in _FSYNC_IGNORABLE_ERRNOS:
+                raise
 
 
 def _replace_with_nt_retry(tmp_path: str, dst_path: str) -> None:
@@ -291,14 +590,16 @@ def atomic_write_bytes(
     assert_no_symlink_raw_path(dst_str)
     os.makedirs(dest.path.parent, exist_ok=True)
     assert_no_symlink_raw_path(dst_str)
+    eff_mode = file_mode if file_mode is not None else _existing_posix_file_mode(dst_str)
     tmp_path = f"{dst_str}.tmp_{os.getpid()}_{uuid.uuid4().hex[:12]}"
     try:
-        _write_and_fsync_temp(tmp_path, data, file_mode)
+        _write_and_fsync_temp(tmp_path, data, eff_mode)
         if before_replace is not None:
             st = os.stat(tmp_path, follow_symlinks=False)
             before_replace(st.st_mtime_ns, st.st_size, st.st_ino)
         assert_no_symlink_raw_path(dst_str)
         _replace_with_nt_retry(tmp_path, dst_str)
+        _fsync_parent_dir_posix(dest.path.parent)
     finally:
         if os.path.lexists(tmp_path):
             try:
@@ -353,31 +654,74 @@ def _open_verified_nofollow_regular(
     max_bytes: Optional[int] = None,
     expected_stat: Optional[os.stat_result] = None,
 ) -> Iterator[Optional[io.BufferedReader]]:
-    if has_symlink_raw_path(raw_path):
-        yield None
-        return
-    l_st = expected_stat if expected_stat is not None else os.stat(raw_path, follow_symlinks=False)
-    if not stat.S_ISREG(l_st.st_mode) or (max_bytes is not None and l_st.st_size > max_bytes):
-        yield None
-        return
-    fd = os.open(raw_path, _NOFOLLOW_READ_FLAGS)
-    try:
-        raw_io = os.fdopen(fd, "rb")
-    except BaseException:
-        os.close(fd)
-        raise
-    with raw_io as handle:
-        f_st = os.fstat(handle.fileno())
-        same_id = not (l_st.st_ino and f_st.st_ino and (f_st.st_ino, f_st.st_dev) != (l_st.st_ino, l_st.st_dev))
-        if (
-            not stat.S_ISREG(f_st.st_mode)
-            or not same_id
-            or (max_bytes is not None and f_st.st_size > max_bytes)
-            or has_symlink_raw_path(raw_path)
-        ):
+    max_attempts = 1 if expected_stat is not None else 6
+    for attempt in range(max_attempts):
+        if has_symlink_raw_path(raw_path):
             yield None
             return
-        yield handle
+        l_st: Optional[os.stat_result] = expected_stat
+        if l_st is None and IS_WINDOWS:
+            try:
+                l_st = os.stat(raw_path, follow_symlinks=False)
+            except PermissionError:
+                if attempt + 1 < max_attempts and not has_symlink_raw_path(raw_path):
+                    time.sleep(0.005 * (attempt + 1))
+                    continue
+                raise
+            except FileNotFoundError:
+                if attempt + 1 < max_attempts and os.path.lexists(raw_path):
+                    continue
+                raise
+        if l_st is not None and (not stat.S_ISREG(l_st.st_mode) or (max_bytes is not None and l_st.st_size > max_bytes)):
+            yield None
+            return
+        try:
+            fd = os.open(raw_path, _NOFOLLOW_READ_FLAGS)
+        except PermissionError:
+            if IS_WINDOWS and expected_stat is None and attempt + 1 < max_attempts and not has_symlink_raw_path(raw_path):
+                time.sleep(0.005 * (attempt + 1))
+                continue
+            raise
+        except FileNotFoundError:
+            if IS_WINDOWS and expected_stat is None and attempt + 1 < max_attempts and os.path.lexists(raw_path):
+                continue
+            raise
+        except OSError as exc:
+            if not IS_WINDOWS and exc.errno == errno.ELOOP:
+                yield None
+                return
+            raise
+        try:
+            f_st = os.fstat(fd)
+            if not stat.S_ISREG(f_st.st_mode) or (max_bytes is not None and f_st.st_size > max_bytes):
+                os.close(fd)
+                yield None
+                return
+            if not IS_WINDOWS:
+                os.set_blocking(fd, True)
+            raw_io = os.fdopen(fd, "rb")
+        except BaseException:
+            os.close(fd)
+            raise
+        if has_symlink_raw_path(raw_path):
+            raw_io.close()
+            yield None
+            return
+        same_id = (
+            True
+            if l_st is None
+            else not (l_st.st_ino and f_st.st_ino and (f_st.st_ino, f_st.st_dev) != (l_st.st_ino, l_st.st_dev))
+        )
+        if not same_id:
+            raw_io.close()
+            if expected_stat is None and attempt + 1 < max_attempts:
+                continue
+            yield None
+            return
+        with raw_io as handle:
+            yield handle
+            return
+    yield None
 
 
 def read_nofollow_regular_bytes(
@@ -447,29 +791,6 @@ def _try_admit_walk_dir(
     return real_dir
 
 
-def _collect_walk_subdirs(
-    cur_dir: str,
-    entries: tuple[os.DirEntry[str], ...],
-    ignored_prefixes: tuple[str, ...],
-    real_root_norm: str,
-    visited_inodes: set[tuple[int, int]],
-    visited_paths: set[str],
-) -> list[str]:
-    subdirs: list[str] = []
-    for ent in entries:
-        if ent.name.startswith(ignored_prefixes) or ent.is_symlink() or is_symlink_or_reparse(ent.path):
-            continue
-        try:
-            is_sub = ent.is_dir(follow_symlinks=False)
-        except OSError:
-            continue
-        if is_sub:
-            admitted = _try_admit_walk_dir(os.path.join(cur_dir, ent.name), real_root_norm, visited_inodes, visited_paths)
-            if admitted is not None:
-                subdirs.append(admitted)
-    return sorted(subdirs, reverse=True)
-
-
 def walk_nonsymlink_dir_tree(
     root_dir: str,
     *,
@@ -491,9 +812,20 @@ def walk_nonsymlink_dir_tree(
         except OSError:
             continue
         yield (cur_dir, entries)
-        stack.extend(
-            _collect_walk_subdirs(cur_dir, entries, ignored_dir_prefixes, real_root_norm, visited_inodes, visited_paths)
-        )
+        subdirs: list[str] = []
+        for ent in entries:
+            if ent.name.startswith(ignored_dir_prefixes) or ent.is_symlink() or is_symlink_or_reparse(ent.path):
+                continue
+            try:
+                is_sub = ent.is_dir(follow_symlinks=False)
+            except OSError:
+                continue
+            if not is_sub:
+                continue
+            admitted = _try_admit_walk_dir(os.path.join(cur_dir, ent.name), real_root_norm, visited_inodes, visited_paths)
+            if admitted is not None:
+                subdirs.append(admitted)
+        stack.extend(sorted(subdirs, reverse=True))
 
 
 def read_json_dict(

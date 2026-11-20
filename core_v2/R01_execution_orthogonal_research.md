@@ -4,7 +4,7 @@
 > **目標功能域**：`Domain 5 — 執行與常駐調度域 (core.execution.{event, lifecycle, rpc, runtime, daemon})`
 > **關聯設計文件**：[`ROADMAP.md`](./ROADMAP.md)、[`sub_module_design/execution/`](./sub_module_design/execution/)
 > **狀態**：`Active Verification Benchmark (Living Document)`
-> **最後更新**：`2026-11-11`
+> **最後更新**：`2026-11-16`
 
 ## 1. 調研動機與方法論 (Motivation & Orthogonal Methodology)
 
@@ -29,7 +29,7 @@
 | **A5. 資源並發策略 (`ConcurrencyMode`)** | 決定同一 `resource_key` 競爭時的排程規則 | `PARALLEL` ｜ `SERIALIZE` ｜ `COALESCE` ｜ `PREEMPT` |
 | **A6. 單步阻塞與可中斷性 (`Interruptibility`)** | 決定執行途中收到取消/搶占/逾時信號時能否即時停下 | `COOPERATIVE` ｜ `OPAQUE_NATIVE_OR_IO` ｜ `SPAWNS_OS_SUBPROC` |
 | **A7. 業務副作用冪等性 (`SideEffectIdempotency`)** | 決定斷線結果未知時能否安全自動重跑 | `PURE_READ` ｜ `IDEMPOTENT_LOCAL_WRITE` ｜ `NON_IDEMPOTENT_EXTERNAL` |
-| **A8. 運行底座自變異範圍 (`SelfMutationScope`)** | 決定執行是否改動已載入模組代碼、`.venv` 或內核本體 | `NONE` ｜ `MUTATES_MODULES_OR_VENV` ｜ `MUTATES_CORE_KERNEL` |
+| **A8. 運行底座自變異範圍 (`SelfMutationScope`)** | 決定執行是否改動已載入模組代碼、`.venv` 或內核本體 | `NONE` ｜ `MUTATES_MODULES` ｜ `MUTATES_CORE` |
 | **A9. 安全授權等級 (`SecurityTier`)** | 決定進入流水線前是否需顯式破壞性授權確認 | `SAFE` ｜ `CONDITIONAL` ｜ `GATED` |
 
 ### 2.2 構面 B：觸發源與呼叫端上下文軸（7 個正交因子）
@@ -116,7 +116,7 @@
 | 盲區根因分類 | 發現編號與具體邊界漏點 | 回補目標規格文件 |
 | :--- | :--- | :--- |
 | **1. 呼叫端與常駐端時空錯位** | **#1** 顯式傳遞 `caller_cwd` 與白名單 `caller_env`，禁業務模組直呼 `os.getcwd()` | `runtime.md` |
-| | **#2** 新增 `ConfigAndContributesWatcher` 監聽手改 `config/` JSON + 冷啟動 Step 1 指紋校驗 | `daemon.md`, `lifecycle.md` |
+| | **#2** 新增 `DaemonWatcherConfig` 搭配 `PollingDirectoryWatcher` 監聽手改 `config/` JSON + 冷啟動 Step 1 指紋校驗 | `daemon.md`, `lifecycle.md` |
 | | **#3** 空閒長連線不卡 `Idle TTL` 休眠；持久客戶端於 `P0_PRE_ACCEPT` 遇舊 Socket EOF 自動重探測重連 | `rpc.md`, `daemon.md` |
 | **2. 動態參數與呼叫棧血緣** | **#4** `COALESCE` 引入正規化請求等價指紋 `equivalence_key`，同鎖異參自動退為 `SERIALIZE` 排隊防吞參 | `runtime.md` |
 | | **#5** 補齊 `HELD_BY_SAME_CALLSTACK`：同同步 `CallStack` 祖先持鎖僅允許 `SERIALIZE` 重入，攔截自重入 `PREEMPT/COALESCE` | `runtime.md` |
@@ -147,16 +147,16 @@
 - **覆蓋水準**：`A5:COALESCE+SERIALIZE`, `B1:NESTED_INVOKE_TASK`, `B3:FOREGROUND`, `B6:PROGRESS_STREAMING`, `C2:HELD_BY_INMEM_FG`, `D1:LINEAR_REENTRANT_CHAIN`, `E2:P4_EVENT_DRAIN_LOOP`。
 
 ### `RC-04`：IDE 長連線多路亂序並發、單流精準取消與跨 Idle TTL 休眠透明重連
-- **劇本**：持久 `PersistentRpcClient` 於單一 Socket 同時並發發送快慢多路 `SDK_ONLY` 與 `DAEMON_ONLY`（`STRICT_HOT`）呼叫驗證亂序回傳；對 `P2` 等鎖中與 `P3` 執行中之指定 `stream_id` 發送 `CANCEL` 驗證連線不斷且其他流正常；保持空閒長連線驗證不阻擋 Daemon `Idle TTL` 到期進入 `DRAINING_STOP_OR_TTL`，並在到期邊界與停機後再次發單（`P0_PRE_ACCEPT`, `was_accepted=False`），驗證客戶端自動廢棄舊 Socket 重探測重拉起無感成功。
+- **劇本**：持久 `PersistentRpcSession` 於單一 Socket 同時並發發送快慢多路 `SDK_ONLY` 與 `DAEMON_ONLY`（`STRICT_HOT`）呼叫驗證亂序回傳；對 `P2` 等鎖中與 `P3` 執行中之指定 `stream_id` 發送 `CANCEL` 驗證連線不斷且其他流正常；保持空閒長連線驗證不阻擋 Daemon `Idle TTL` 到期進入 `DRAINING_STOP_OR_TTL`，並在到期邊界與停機後再次發單（`P0_PRE_ACCEPT`, `was_accepted=False`），驗證客戶端自動廢棄舊 Socket 重探測重拉起無感成功。
 - **覆蓋水準**：`A1:SDK_ONLY`, `A2:DAEMON_ONLY`, `A9:SAFE`, `B1:SDK_PERSISTENT_CLIENT`, `B2:STRICT_HOT`, `B5:WORKSPACE_ROOT_ONLY`, `B6:UNARY_STRUCTURED`, `B7:MULTI_STREAM_SAME_CONN`, `C1:DRAINING_STOP_OR_TTL`, `C2:FREE`, `E1:CALLER_CANCEL`, `E2:P0_PRE_ACCEPT+P2_WAITING_LOCK+P3_PRIMARY_IN_FLIGHT`。
 
 ### `RC-05`：前景互動 TTY 授權、手改組態動態啟停定時排程與外部非冪等斷線保護
-- **劇本**：① 執行 `INTERACTIVE_TTY` 授權任務驗證強制 `COLD_ONLY` 與壓制 `auto_spawn`；② 直接手改磁碟 `config` JSON 將 `auto_sync` 由 `false` 改為 `true`，驗證 `ConfigAndContributesWatcher` 熱感知啟動 `fixed-delay` 定時任務（空轉不續命 TTL 且慢執行不重疊堆積）；③ 攜帶暫態環境變數執行外部非冪等 I/O 任務與定時任務互斥排隊，分別於 Worker `P0` 收單前與 `P3` 收單後注入 `SIGKILL` 硬崩潰及 `TIMEOUT_EXCEEDED`，驗證 `P0` 透明重拉成功而 `P3` 嚴格回報 `TRANSPORT_LOST` 絕不重跑。
+- **劇本**：① 執行 `INTERACTIVE_TTY` 授權任務驗證強制 `COLD_ONLY` 與壓制 `auto_spawn`；② 直接手改磁碟 `config` JSON 將 `auto_sync` 由 `false` 改為 `true`，驗證 `DaemonWatcherConfig` 搭配 `PollingDirectoryWatcher` 熱感知啟動 `fixed-delay` 定時任務（空轉不續命 TTL 且慢執行不重疊堆積）；③ 攜帶暫態環境變數執行外部非冪等 I/O 任務與定時任務互斥排隊，分別於 Worker `P0` 收單前與 `P3` 收單後注入 `SIGKILL` 硬崩潰及 `TIMEOUT_EXCEEDED`，驗證 `P0` 透明重拉成功而 `P3` 嚴格回報 `TRANSPORT_LOST` 絕不重跑。
 - **覆蓋水準**：`A2:COLD_ONLY`, `A4:STATELESS`, `A6:OPAQUE_NATIVE_OR_IO`, `A7:NON_IDEMPOTENT_EXTERNAL`, `A9:CONDITIONAL`, `B1:DAEMON_PERIODIC`, `B5:CALLER_ENV_SENSITIVE`, `B6:INTERACTIVE_TTY`, `B7:ISOLATED_SINGLE`, `C3:DISK_CONFIG_EDITED`, `E1:HARD_CRASH_OR_EOF+TIMEOUT_EXCEEDED`。
 
 ### `RC-06`：套件安裝/卸載、`emit_imm` 有序清理、`QUIESCED` 排隊自癒與 `core` 釋鎖交棒重啟
-- **劇本**：常駐與 Tier 1 Worker 在線持句柄下：① 執行模組移除與安裝（`MUTATES_MODULES_OR_VENV`），發送 `CONTROL_QUIESCE` 釋鎖；期間連入之外部 `HYBRID` 請求於 `QUIESCED` 閘門安全排隊等待 `RESUME`（冷啟動讀者則等待共享 `installer.lock`），移除前以 `emit_imm` + `ORDERED_FIFO` 同步執行設定還原，完成後同呼叫棧 `SERIALIZE` 重入 `reload` 扇出 `FANOUT_DIAMOND_DAG`（並模擬安裝器崩潰驗證租約到期自癒恢復 `READY` 與 `.modules/<mod>` 熱重載）；② 執行 `core` 內核更新（`MUTATES_CORE_KERNEL`），驗證舊 Daemon 排空、刪除 `daemon.json` 並釋放 `daemon.lock` 後成功交棒新 Daemon。
-- **覆蓋水準**：`A8:MUTATES_MODULES_OR_VENV+MUTATES_CORE_KERNEL`, `A9:GATED`, `B1:EVENT_SUB_IMMEDIATE`, `C1:QUIESCED+DRAINING_CORE_HANDOFF`, `C2:HELD_BY_INSTALLER+HELD_BY_SAME_CALLSTACK`, `C3:DISK_CODE_OR_PROTO_UPDATED`, `D1:FANOUT_DIAMOND_DAG`, `D2:IMMEDIATE_SYNC+MIXED_BOTH`, `D3:ORDERED_FIFO`, `D4:UNCONDITIONAL`, `E1:SYSTEM_DRAIN_OR_QUIESCE`。
+- **劇本**：常駐與 Tier 1 Worker 在線持句柄下：① 執行模組移除與安裝（`MUTATES_MODULES`），發送 `CONTROL_QUIESCE` 釋鎖；期間連入之外部 `HYBRID` 請求於 `QUIESCED` 閘門安全排隊等待 `RESUME`（冷啟動讀者則等待共享 `installer.lock`），移除前以 `emit_imm` + `ORDERED_FIFO` 同步執行設定還原，完成後同呼叫棧 `SERIALIZE` 重入 `reload` 扇出 `FANOUT_DIAMOND_DAG`（並模擬安裝器崩潰驗證租約到期自癒恢復 `READY` 與 `.modules/<mod>` 熱重載）；② 執行 `core` 內核更新（`MUTATES_CORE`），驗證舊 Daemon 排空、刪除 `daemon.json` 並釋放 `daemon.lock` 後成功交棒新 Daemon。
+- **覆蓋水準**：`A8:MUTATES_MODULES+MUTATES_CORE`, `A9:GATED`, `B1:EVENT_SUB_IMMEDIATE`, `C1:QUIESCED+DRAINING_CORE_HANDOFF`, `C2:HELD_BY_INSTALLER+HELD_BY_SAME_CALLSTACK`, `C3:DISK_CODE_OR_PROTO_UPDATED`, `D1:FANOUT_DIAMOND_DAG`, `D2:IMMEDIATE_SYNC+MIXED_BOTH`, `D3:ORDERED_FIFO`, `D4:UNCONDITIONAL`, `E1:SYSTEM_DRAIN_OR_QUIESCE`。
 
 ### `RC-07`：跨倉隔離沙盒並行跑測、OS 子進程樹 `Ctrl+C` 清場與 Step 6 LIFO 卸載隔離
 - **劇本**：編排任務建立多個 `ISOLATED_CHILD_WORKSPACE`（顯式 `AUTO_NO_SPAWN`，驗證跨倉同 `task_id` 合法不誤報自環），拉起多路外部 OS 子進程樹執行，中途注入 `Ctrl+C`（`SIGINT`）驗證連根強殺回收整棵子進程樹無孤兒殘留，且於 Step 6 `P5_LIFO_TEARDOWN` 注入單一資源 `close()` 異常驗證不阻斷底層資源釋放、達成 `0 ResourceWarning`，正常跑通時串聯宿主安裝閉環。

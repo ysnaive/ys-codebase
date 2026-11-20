@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass
 import os
 import signal
 import sys
 import threading
-from typing import Callable, Literal, Optional, Sequence
+from typing import MutableMapping, Callable, Optional, Sequence
 
 from core.execution.event import CausalLineage
 from core.execution.lifecycle import WorkerContainerLifecycle
@@ -20,10 +19,9 @@ from core.execution.rpc import (
     RpcEndpointInfo,
     connect_and_handshake,
 )
-from core.execution.runtime.contracts import ClientRoutingPolicy, ExecutionPriority, ModuleDescriptor, TaskOutcome
+from core.execution.runtime.contracts import WORKER_AUTH_ENV_KEY, ClientRoutingPolicy, ExecutionPriority, ModuleDescriptor, TaskOutcome
 from core.execution.runtime.module_slot import LocalModuleSlotRegistry, LocalStepExecutionSpec, StepContextCallbacks
 from core.execution.runtime.wire import (
-    WORKER_AUTH_ENV_KEY,
     WorkerBootstrapConfig,
     WorkerCallbackContext,
     WorkerCallbackEnvelope,
@@ -31,6 +29,11 @@ from core.execution.runtime.wire import (
     WorkerCallbackReply,
     WorkerCommandEnvelope,
     WorkerCommandKind,
+    WorkerControlAction,
+    WorkerElevateControl,
+    WorkerModInitControl,
+    WorkerStopAck,
+    WorkerStopControl,
     WorkerEquivReply,
     WorkerMapBatchReply,
     WorkerUnloadReply,
@@ -157,7 +160,9 @@ class WorkerSubprocessHandler(InboundCallHandler):
             return
         ch.send_control(
             FrameKind.CONTROL_REQUEST,
-            {"action": "module_initialized", "module_id": str(mod_id)},
+            DataclassCodec.encode_object(
+                WorkerModInitControl(action=WorkerControlAction.MODULE_INITIALIZED, module_id=mod_id)
+            ),
             timeout_ms=2000,
         )
 
@@ -180,11 +185,7 @@ class WorkerSubprocessHandler(InboundCallHandler):
         peer_cancel_token: CancellationToken,
     ) -> tuple[bool, JsonObject]:
         _ = stream_id
-        try:
-            cmd = DataclassCodec.decode_envelope(WorkerCommandEnvelope, payload)
-        except YscbError:
-            ack_accepted()
-            raise
+        cmd = DataclassCodec.decode_envelope(WorkerCommandEnvelope, payload)
         if cmd.action == WorkerCommandKind.RUN_STEP:
             return self._handle_run_step(cmd, ack_accepted, emit_progress, peer_cancel_token)
         simple_fn = self._simple_commands.get(cmd.action)
@@ -197,7 +198,8 @@ class WorkerSubprocessHandler(InboundCallHandler):
         cmd: WorkerCommandEnvelope,
         ack_accepted: Callable[[], bool],
     ) -> tuple[bool, JsonObject]:
-        ack_accepted()
+        if not ack_accepted():
+            return (False, {"ok": False})
         only_mods = frozenset(cmd.modules) if cmd.modules else None
         hooks = self._slots.warmup_modules(only_mods)
         self._container.warmup(hooks)
@@ -214,7 +216,8 @@ class WorkerSubprocessHandler(InboundCallHandler):
         cmd: WorkerCommandEnvelope,
         ack_accepted: Callable[[], bool],
     ) -> tuple[bool, JsonObject]:
-        ack_accepted()
+        if not ack_accepted():
+            return (False, {"ok": False})
         fb_mod = str(cmd.modules[0]) if cmd.modules else None
         try:
             diags = self._slots.unload_modules(frozenset(cmd.modules), drain_in_flight=False)
@@ -227,10 +230,11 @@ class WorkerSubprocessHandler(InboundCallHandler):
         cmd: WorkerCommandEnvelope,
         ack_accepted: Callable[[], bool],
     ) -> tuple[bool, JsonObject]:
-        ack_accepted()
         if cmd.task_id is None:
             err = ErrorDetail(ErrorCode.CODEC_VALIDATION_FAILED, "COMPUTE_EQUIV requires task_id.")
             return (True, DataclassCodec.encode_envelope(WorkerEquivReply(ok=False, error=err)))
+        if not ack_accepted():
+            return (False, {"ok": False})
         return (True, DataclassCodec.encode_envelope(self._slots.compute_equiv_locally(cmd.task_id, cmd.raw_input)))
 
     def _handle_map_batch(
@@ -238,10 +242,11 @@ class WorkerSubprocessHandler(InboundCallHandler):
         cmd: WorkerCommandEnvelope,
         ack_accepted: Callable[[], bool],
     ) -> tuple[bool, JsonObject]:
-        ack_accepted()
         if cmd.task_id is None or cmd.event_id is None:
             err = ErrorDetail(ErrorCode.CODEC_VALIDATION_FAILED, "MAP_BATCH requires task_id and event_id.")
             return (True, DataclassCodec.encode_envelope(WorkerMapBatchReply(ok=False, error=err)))
+        if not ack_accepted():
+            return (False, {"ok": False})
         rep = self._slots.map_batch_locally(cmd.task_id, cmd.event_id, cmd.event_payloads)
         return (True, DataclassCodec.encode_envelope(rep))
 
@@ -253,7 +258,6 @@ class WorkerSubprocessHandler(InboundCallHandler):
         peer_cancel_token: CancellationToken,
     ) -> tuple[bool, JsonObject]:
         if cmd.task_id is None or cmd.caller_cwd is None or cmd.callback_context is None:
-            ack_accepted()
             raise YscbError(
                 ErrorCode.CODEC_VALIDATION_FAILED,
                 "RUN_STEP requires task_id, caller_cwd, and callback_context.",
@@ -360,17 +364,17 @@ class WorkerSubprocessHandler(InboundCallHandler):
     def on_control(self, kind: FrameKind, payload: JsonObject) -> JsonObject:
         try:
             if kind == FrameKind.CONTROL_STOP:
-                stop_ctrl = DataclassCodec.decode(_WorkerStopControl, payload)
+                stop_ctrl = DataclassCodec.decode(WorkerStopControl, payload)
                 if stop_ctrl.grace_ms < 0:
                     raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, "grace_ms must be >= 0.")
                 td_diags = self.close(grace_ms=stop_ctrl.grace_ms)
                 self._channel_ready.wait(timeout=2.0)
                 if self.channel is not None:
                     self.channel.close_when_idle()
-                return {"ok": True, "teardown_diagnostics": [DataclassCodec.encode_object(d) for d in td_diags]}
+                return DataclassCodec.encode_object(WorkerStopAck(ok=True, teardown_diagnostics=td_diags))
             if kind == FrameKind.CONTROL_REQUEST:
-                ctrl = DataclassCodec.decode(_WorkerElevateControl, payload)
-                if not ctrl.step_run_id.strip():
+                ctrl = DataclassCodec.decode(WorkerElevateControl, payload)
+                if ctrl.action != WorkerControlAction.ELEVATE_STEP or not ctrl.step_run_id.strip():
                     raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, "step_run_id must be a non-empty string.")
                 self._elevate_step_if_active(ctrl.step_run_id)
                 return {"ok": True}
@@ -379,26 +383,20 @@ class WorkerSubprocessHandler(InboundCallHandler):
             return {"ok": False, "error": exc.detail.code.value, "message": exc.detail.message}
 
 
-@dataclass(frozen=True, slots=True)
-class _WorkerStopControl:
-    grace_ms: int = 1000
-
-
-@dataclass(frozen=True, slots=True)
-class _WorkerElevateControl:
-    action: Literal["elevate_step"]
-    step_run_id: str
-
-
-def worker_main() -> int:
-    """Subprocess entrypoint consuming auth token from popped environment variable."""
-    auth_token = os.environ.pop(WORKER_AUTH_ENV_KEY, "")
+def worker_main(
+    argv: Optional[Sequence[str]] = None,
+    env: Optional[MutableMapping[str, str]] = None,
+) -> int:
+    """Subprocess entrypoint consuming auth token from injected or process environment."""
+    eff_env = os.environ if env is None else env
+    auth_token = eff_env.pop(WORKER_AUTH_ENV_KEY, "")
     if not auth_token:
         return 1
-    if len(sys.argv) < 2 or not sys.argv[1]:
+    eff_argv = sys.argv if argv is None else argv
+    if len(eff_argv) < 2 or not eff_argv[1]:
         return 2
     try:
-        raw_cfg = strict_parse_json_object(sys.argv[1])
+        raw_cfg = strict_parse_json_object(eff_argv[1])
         cfg = DataclassCodec.decode(WorkerBootstrapConfig, raw_cfg)
     except (ValueError, YscbError, KeyError, TypeError, RecursionError):
         return 2

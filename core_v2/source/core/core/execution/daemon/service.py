@@ -1,4 +1,4 @@
-"""WorkspaceDaemon, DirtyPathsAccumulator, SingleFlightDaemonSpawner, IdleTtlMonitor, and PeriodicTriggerLoop."""
+"""WorkspaceDaemon, _DirtyPathsAccumulator, SingleFlightDaemonSpawner, IdleTtlMonitor, and PeriodicTriggerLoop."""
 
 from __future__ import annotations
 
@@ -16,14 +16,25 @@ import uuid
 
 from core.execution.lifecycle import ContainerState
 from core.execution.rpc import (
+    DAEMON_ENDPOINT_FILENAME,
+    DAEMON_HANDOFF_FILENAME,
+    DAEMON_SUBDIR,
     FrameKind,
     InboundCallHandler,
     RpcServerListener,
+    build_daemon_endpoint_dict,
+    build_handoff_lease_dict,
     probe_daemon_endpoint,
     read_active_handoff_boot_id,
 )
 from core.execution.runtime import (
+    CONFIG_CHANGED_EVENT_ID,
+    CORE_MODULE_ID,
+    INSTALLER_LOCK_FILENAME,
+    LOCKS_SUBDIR,
+    MODULES_DIRNAME,
     CallPropagationContext,
+    DaemonRpcInvokeReply,
     ConfigViewPort,
     DaemonSpawner,
     DueQuiesceResume,
@@ -35,6 +46,7 @@ from core.execution.runtime import (
     WorkerProcessSnapshot,
 )
 from core.filesystem.fs import (
+    IGNORED_FS_PREFIXES,
     FileLock,
     PollingDirectoryWatcher,
     atomic_write_json,
@@ -60,7 +72,6 @@ from core.foundation.observability import (
 )
 from core.foundation.primitives import (
     IS_WINDOWS,
-    EventId,
     HostPath,
     JsonObject,
     JsonValue,
@@ -78,7 +89,10 @@ from core.foundation.proc import SignalWakeupGuard, is_process_alive, spawn_deta
 DaemonRunState = ContainerState
 
 
-_HANDOFF_LEASE_SUBPATH: tuple[str, str] = ("daemon", "handoff_lease.json")
+_HANDOFF_LEASE_SUBPATH: tuple[str, str] = (DAEMON_SUBDIR, DAEMON_HANDOFF_FILENAME)
+_DAEMON_LOCK_FILENAME: str = "daemon.lock"
+_SPAWN_LOCK_FILENAME: str = "spawn.lock"
+_SPAWN_LEASE_FILENAME: str = "spawn_lease.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +107,7 @@ class DaemonStatusSnapshot:
     tasks_handled: int
     active_tier1_workers: tuple[WorkerProcessSnapshot, ...]
     degraded_modules: tuple[str, ...] = ()
+    background_error_count: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.state, ContainerState):
@@ -101,6 +116,7 @@ class DaemonStatusSnapshot:
         require_pure_int(self.port, "DaemonStatusSnapshot.port", min_val=0, max_val=65535)
         require_pure_int(self.active_foreground_calls, "DaemonStatusSnapshot.active_foreground_calls", min_val=0)
         require_pure_int(self.tasks_handled, "DaemonStatusSnapshot.tasks_handled", min_val=0)
+        require_pure_int(self.background_error_count, "DaemonStatusSnapshot.background_error_count", min_val=0)
         up_s = validate_non_negative_sec(self.uptime_sec, label="uptime_sec")
         if up_s is None:
             raise ValueError("DaemonStatusSnapshot.uptime_sec required.")
@@ -221,7 +237,7 @@ class _DirtyBatch:
         )
 
 
-class DirtyPathsAccumulator:
+class _DirtyPathsAccumulator:
     """Thread-safe O(1) dirty-path buffer decoupling Watchers from Daemon lifecycle locks."""
 
     __slots__ = (
@@ -300,7 +316,7 @@ class DirtyPathsAccumulator:
                 self._module_paths.clear()
             else:
                 r_all = False
-                blocked = quiesced_mods | frozenset({ModuleId("core")})
+                blocked = quiesced_mods | frozenset({CORE_MODULE_ID})
                 ready_mods = frozenset(m for m in self._reload_modules if m not in blocked)
                 self._reload_modules.difference_update(ready_mods)
                 ready_mpaths = frozenset(
@@ -346,7 +362,7 @@ class DirtyPathsAccumulator:
 
     def has_explicit_core_reload(self) -> bool:
         with self._lock:
-            return ModuleId("core") in self._reload_modules
+            return CORE_MODULE_ID in self._reload_modules
 
 
 class SingleFlightDaemonSpawner(DaemonSpawner):
@@ -377,7 +393,7 @@ class SingleFlightDaemonSpawner(DaemonSpawner):
             return False
 
         try:
-            lock = FileLock(resolve_contained_subpath(self._cache_dir, "daemon", "spawn.lock"))
+            lock = FileLock(resolve_contained_subpath(self._cache_dir, DAEMON_SUBDIR, _SPAWN_LOCK_FILENAME), allow_transitions=False)
             if not lock.acquire(blocking=False):
                 return False
         except (OSError, ValueError, YscbError):
@@ -386,7 +402,7 @@ class SingleFlightDaemonSpawner(DaemonSpawner):
         try:
             if probe_daemon_endpoint(self._cache_dir, workspace_root) is not None:
                 return False
-            lease_path = resolve_contained_subpath(self._cache_dir, "daemon", "spawn_lease.json")
+            lease_path = resolve_contained_subpath(self._cache_dir, DAEMON_SUBDIR, _SPAWN_LEASE_FILENAME)
             now_epoch = time.time()
             if _is_spawn_lease_active(read_json_dict(lease_path), now_epoch, self._lease_cooldown_sec):
                 return False
@@ -469,12 +485,14 @@ class PeriodicTriggerLoop:
         can_run_background: Callable[[], bool],
         execute_periodic_task: Callable[[TaskId], None],
         can_run_task: Optional[Callable[[TaskId], bool]] = None,
+        on_error: Optional[Callable[[ErrorDetail], None]] = None,
     ) -> None:
         self._dispatcher = dispatcher
         self._config_view = config_view
         self._can_run_bg = can_run_background
         self._can_run_task = can_run_task
         self._exec_periodic = execute_periodic_task
+        self._on_error = on_error
         self._cond = threading.Condition()
         self._wake_seq = 0
         self._stopped = True
@@ -574,7 +592,14 @@ class PeriodicTriggerLoop:
                     return
             try:
                 due_list = self._wait_and_pop_due_specs()
-            except (Exception, SystemExit, GeneratorExit):
+            except (Exception, SystemExit, GeneratorExit) as exc:
+                if self._on_error is not None:
+                    self._on_error(
+                        ErrorDetail(
+                            ErrorCode.BUSINESS_FAILURE,
+                            f"Periodic scheduler poll failed: {safe_exception_summary(exc)}",
+                        )
+                    )
                 time.sleep(0.05)
                 continue
             for spec in due_list:
@@ -594,6 +619,14 @@ class PeriodicTriggerLoop:
                 self._cond.notify_all()
             if not isinstance(exc, Exception):
                 raise
+            if self._on_error is not None:
+                self._on_error(
+                    ErrorDetail(
+                        ErrorCode.BUSINESS_FAILURE,
+                        f"Periodic thread spawn failed for '{spec.task_id}': {safe_exception_summary(exc)}",
+                        source_task=str(spec.task_id),
+                    )
+                )
 
     def _snapshot_runnable_periodic_specs(self) -> dict[TaskId, TaskRouteSpec]:
         if not self._can_run_bg():
@@ -653,7 +686,15 @@ class PeriodicTriggerLoop:
             if latest is None:
                 return (False, 0.0)
             return self._resolve_periodic_config(latest)
-        except (Exception, SystemExit, GeneratorExit):
+        except (Exception, SystemExit, GeneratorExit) as exc:
+            if self._on_error is not None:
+                self._on_error(
+                    ErrorDetail(
+                        ErrorCode.BUSINESS_FAILURE,
+                        f"Post-periodic schedule refresh failed for '{spec.task_id}': {safe_exception_summary(exc)}",
+                        source_task=str(spec.task_id),
+                    )
+                )
             p = spec.periodic
             if p is None:
                 return (False, 0.0)
@@ -682,10 +723,27 @@ class PeriodicTriggerLoop:
     def _run_periodic_once(self, spec: TaskRouteSpec) -> None:
         try:
             self._exec_periodic(spec.task_id)
-        except (Exception, SystemExit, GeneratorExit):
-            pass
+        except (Exception, SystemExit, GeneratorExit) as exc:
+            if self._on_error is not None:
+                self._on_error(
+                    ErrorDetail(
+                        ErrorCode.BUSINESS_FAILURE,
+                        f"Periodic task '{spec.task_id}' raised: {safe_exception_summary(exc)}",
+                        source_task=str(spec.task_id),
+                    )
+                )
         finally:
             self._commit_periodic_completion(spec)
+
+
+def _resolve_diag_owners(diag: ErrorDetail, scope_mods: frozenset[ModuleId]) -> frozenset[ModuleId]:
+    head = (diag.source_task or "").split(".", 1)[0]
+    if head and head != "tier1_pool":
+        try:
+            return frozenset({ModuleId(head)})
+        except ValueError:
+            pass
+    return scope_mods
 
 
 def _extract_module_id_under(p: HostPath, mods_root: Optional[Path]) -> Optional[ModuleId]:
@@ -729,7 +787,7 @@ def _extract_payload_module_id(payload: JsonObject) -> Optional[ModuleId]:
 
 
 def _is_installer_exclusively_locked(cache_dir: HostPath) -> bool:
-    probe = try_acquire_contained_lock(cache_dir, "locks", "installer.lock", shared=True)
+    probe = try_acquire_contained_lock(cache_dir, LOCKS_SUBDIR, INSTALLER_LOCK_FILENAME, shared=True)
     if probe is None:
         return True
     probe.release()
@@ -740,7 +798,7 @@ def _write_handoff_lease(cache_dir: HostPath, old_boot_id: str, ttl_sec: float) 
     try:
         lease_file = resolve_contained_subpath(cache_dir, *_HANDOFF_LEASE_SUBPATH)
         clamped_ttl = clamp_positive_sec(ttl_sec, min_sec=0.5, max_sec=30.0, default_sec=10.0)
-        atomic_write_json(lease_file, {"old_boot_id": old_boot_id, "expires_epoch": time.time() + clamped_ttl})
+        atomic_write_json(lease_file, build_handoff_lease_dict(old_boot_id, time.time() + clamped_ttl))
     except (OSError, ValueError, YscbError):
         return
 
@@ -781,7 +839,7 @@ def _scan_core_module_tree(
     workspace_root: HostPath,
     cached: Optional[Mapping[str, _CoreFileSig]] = None,
 ) -> dict[str, _CoreFileSig]:
-    core_hp = try_resolve_contained_subpath(workspace_root, ".modules", "core")
+    core_hp = try_resolve_contained_subpath(workspace_root, MODULES_DIRNAME, str(CORE_MODULE_ID))
     if core_hp is None or not os.path.isdir(str(core_hp)):
         return {}
     snap: dict[str, _CoreFileSig] = {}
@@ -789,18 +847,10 @@ def _scan_core_module_tree(
         fnames = sorted(
             ent.name
             for ent in entries
-            if not ent.name.startswith((".tmp_", ".staging_", "__pycache__")) and not _is_nonsymlink_dir_entry(ent)
+            if not ent.name.startswith(IGNORED_FS_PREFIXES) and not _is_nonsymlink_dir_entry(ent)
         )
         _record_core_dir_files(cur_dir, fnames, snap, cached)
     return snap
-
-
-@dataclass(frozen=True, slots=True)
-class _SupervisorStep:
-    should_stop: bool = False
-    due_resume: Optional[DueQuiesceResume] = None
-    finish_deferred_boot: bool = False
-    dirty_batch: Optional[_DirtyBatch] = None
 
 
 class WorkspaceDaemon(InboundCallHandler):
@@ -819,11 +869,13 @@ class WorkspaceDaemon(InboundCallHandler):
         self._workspace_root = workspace_root
         self._cache_dir = cache_dir
         self._dispatcher = dispatcher
+        self._config_view = config_view
         self._watch_cfg = watch_config
         self._self_restart_argv = tuple(self_restart_argv) if self_restart_argv else None
 
         self._cond = threading.Condition()
-        self._phase = ContainerState.BOOTING
+        self._stopping = False
+        dispatcher.container_lifecycle.transition_boot_phase(ContainerState.BOOTING)
         self._active_fg_calls = 0
         self._active_bg_turns = 0
         self._lifecycle_ops_in_flight = 0
@@ -838,17 +890,20 @@ class WorkspaceDaemon(InboundCallHandler):
         self._dispatcher_stopped = False
         self._shutdown_diagnostics: tuple[ErrorDetail, ...] = ()
         self._bg_teardown_diags: deque[tuple[frozenset[ModuleId], ErrorDetail]] = deque(maxlen=256)
+        self._bg_error_diags: deque[ErrorDetail] = deque(maxlen=256)
         self._started_at = time.monotonic()
 
-        self._dirty = DirtyPathsAccumulator()
+        self._dirty = _DirtyPathsAccumulator()
+        self._stopped = False
+        self._boot_warming_active = False
         self._deferred_boot_warmup = False
         self._inst_wait_cancels: set[CancellationToken] = set()
         self._pending_ready_callback: Optional[Callable[[], None]] = None
         self._pending_startup_catchup = False
 
-        self._daemon_lock = FileLock(resolve_contained_subpath(cache_dir, "daemon", "daemon.lock"))
-        _ = resolve_contained_subpath(cache_dir, "daemon", "daemon.json")
-        _ = resolve_contained_subpath(cache_dir, "locks", "installer.lock")
+        self._daemon_lock = FileLock(resolve_contained_subpath(cache_dir, DAEMON_SUBDIR, _DAEMON_LOCK_FILENAME), allow_transitions=False)
+        _ = resolve_contained_subpath(cache_dir, DAEMON_SUBDIR, DAEMON_ENDPOINT_FILENAME)
+        _ = resolve_contained_subpath(cache_dir, LOCKS_SUBDIR, INSTALLER_LOCK_FILENAME)
         self._listener = RpcServerListener(workspace_root, self)
         self._idle_monitor = IdleTtlMonitor(None)
         self._periodic_loop = PeriodicTriggerLoop(
@@ -857,6 +912,7 @@ class WorkspaceDaemon(InboundCallHandler):
             can_run_background=self._can_run_any_background,
             can_run_task=lambda tid: self._can_run_any_background() and not dispatcher.reload_gate.is_call_gated_for_quiesce(tid.module_id),
             execute_periodic_task=lambda tid: self._trigger_bg_task(tid, {}),
+            on_error=self._record_bg_error_diag,
         )
         self._watchers: list[PollingDirectoryWatcher] = []
         self._modules_watcher: Optional[PollingDirectoryWatcher] = None
@@ -873,18 +929,58 @@ class WorkspaceDaemon(InboundCallHandler):
     def quiesce_epoch(self) -> int:
         return self._dispatcher.reload_gate.quiesce_epoch
 
+    def _record_bg_error_diag(self, detail: ErrorDetail) -> None:
+        with self._cond:
+            self._bg_error_diags.append(detail)
+
+    def drain_background_errors(self) -> tuple[ErrorDetail, ...]:
+        with self._cond:
+            if not self._bg_error_diags:
+                return ()
+            out = tuple(self._bg_error_diags)
+            self._bg_error_diags.clear()
+            return out
+
+    def _base_phase_locked(self) -> ContainerState:
+        lc_base = self._dispatcher.container_lifecycle.base_state
+        if self._stopped or lc_base == ContainerState.STOPPED:
+            return ContainerState.STOPPED
+        if self._stopping or lc_base == ContainerState.DRAINING:
+            return ContainerState.DRAINING
+        if (self._boot_warming_active or self._deferred_boot_warmup) and lc_base == ContainerState.READY:
+            return ContainerState.WARMING
+        return lc_base
+
     def _effective_state_locked(self) -> ContainerState:
-        if self._phase == ContainerState.READY:
-            return self._dispatcher.container_lifecycle.state
-        if self._phase == ContainerState.WARMING and self._dispatcher.reload_gate.has_any_quiesced():
-            return ContainerState.QUIESCED
-        return self._phase
+        base = self._base_phase_locked()
+        if base in (ContainerState.WARMING, ContainerState.READY):
+            if self._dispatcher.container_lifecycle.state == ContainerState.QUIESCED:
+                return ContainerState.QUIESCED
+        return base
 
     def _can_run_any_background(self) -> bool:
         with self._cond:
-            if self._phase != ContainerState.READY or self._deferred_boot_warmup:
+            if self._base_phase_locked() != ContainerState.READY or self._deferred_boot_warmup:
                 return False
         return not self._dispatcher.reload_gate.is_globally_gated()
+
+    def _resolve_default_idle_ttl(self) -> Optional[float]:
+        default_ttl = 1800.0
+        if self._config_view is None:
+            return default_ttl
+        try:
+            raw_val = self._config_view.get_module_value(CORE_MODULE_ID, "idle_timeout_sec", default_ttl)
+        except (Exception, SystemExit, GeneratorExit):
+            return default_ttl
+        if raw_val is None:
+            return None
+        return clamp_positive_sec(
+            raw_val,
+            min_sec=0.05,
+            max_sec=MAX_SAFE_WAIT_SEC,
+            default_sec=default_ttl,
+            label="idle_timeout_sec",
+        )
 
     def run_forever(
         self,
@@ -893,7 +989,12 @@ class WorkspaceDaemon(InboundCallHandler):
         console_mode: bool = False,
         ready_callback: Optional[Callable[[], None]] = None,
     ) -> int:
-        effective_ttl = None if (console_mode and ttl_override_sec is None) else ttl_override_sec
+        if ttl_override_sec is not None:
+            effective_ttl: Optional[float] = ttl_override_sec
+        elif console_mode:
+            effective_ttl = None
+        else:
+            effective_ttl = self._resolve_default_idle_ttl()
         norm_ttl = _normalize_idle_ttl_sec(effective_ttl)
         if not self._acquire_daemon_singleton_lock():
             return 0
@@ -927,66 +1028,67 @@ class WorkspaceDaemon(InboundCallHandler):
         except YscbError:
             return False
 
+    def _finish_deferred_boot_warmup(self) -> None:
+        if not self._is_warming_deferred_boot():
+            return
+        inst_lock = self._acquire_cancellable_shared_installer_lock(timeout_sec=30.0)
+        if inst_lock is None:
+            return
+        try:
+            if self._is_warming_deferred_boot():
+                leased_now = self._dispatcher.reload_gate.active_quiesced_modules()
+                self._execute_synchronous_quiesce_resume(None, None, leased_now)
+        finally:
+            inst_lock.release()
+
     def _run_supervisor_loop(self) -> None:
-        while True:
-            step = self._next_supervisor_action()
-            if step.should_stop:
-                return
-            if step.finish_deferred_boot:
-                self._finish_unquiesced_deferred_boot()
-            elif step.due_resume is not None:
-                self._run_due_quiesce_resume(step.due_resume)
-            elif step.dirty_batch is not None and step.dirty_batch.has_any:
-                self._run_dirty_batch_counted(step.dirty_batch)
-
-    def _next_supervisor_action(self) -> _SupervisorStep:
-        due_resume: Optional[DueQuiesceResume] = None
-        probe_deferred_boot = False
-        stop_due_to_ttl = False
         gate = self._dispatcher.reload_gate
-        cfg_consumers = self._config_consumer_modules() if gate.has_any_quiesced() else frozenset()
-        with self._cond:
-            if self._phase in (ContainerState.DRAINING, ContainerState.STOPPED):
-                return _SupervisorStep(should_stop=True)
-            now = time.monotonic()
-            due_resume = gate.due_quiesce_resume(now) if gate.has_any_quiesced() else None
-            if due_resume is None and self._check_idle_ttl_expired_locked():
-                self._phase = ContainerState.DRAINING
-                self._cond.notify_all()
-                stop_due_to_ttl = True
-            elif due_resume is None and self._phase == ContainerState.WARMING and self._deferred_boot_warmup:
-                if not gate.is_globally_quiesced():
-                    probe_deferred_boot = True
-                else:
-                    self._cond.wait(timeout=self._compute_supervisor_sleep_locked(now))
-                    return _SupervisorStep()
-            elif due_resume is None:
-                dirty_batch = self._claim_dirty_batch_if_ready_locked(cfg_consumers)
-                if dirty_batch is None:
-                    self._cond.wait(timeout=self._compute_supervisor_sleep_locked(now))
-                    return _SupervisorStep()
-                return _SupervisorStep(dirty_batch=dirty_batch)
+        while True:
+            due_resume: Optional[DueQuiesceResume] = None
+            dirty_batch: Optional[_DirtyBatch] = None
+            probe_deferred_boot = False
+            stop_due_to_ttl = False
+            cfg_consumers = self._config_consumer_modules() if gate.has_any_quiesced() else frozenset()
+            with self._cond:
+                if self._base_phase_locked() in (ContainerState.DRAINING, ContainerState.STOPPED):
+                    return
+                now = time.monotonic()
+                due_resume = gate.due_quiesce_resume(now) if gate.has_any_quiesced() else None
+                if due_resume is None and self._check_idle_ttl_expired_locked():
+                    self._stopping = True
+                    self._cond.notify_all()
+                    stop_due_to_ttl = True
+                elif due_resume is None and self._base_phase_locked() == ContainerState.WARMING and self._deferred_boot_warmup:
+                    probe_deferred_boot = not gate.is_globally_quiesced()
+                    if not probe_deferred_boot:
+                        self._cond.wait(timeout=self._compute_supervisor_sleep_locked(now))
+                elif due_resume is None:
+                    dirty_batch = self._claim_dirty_batch_if_ready_locked(cfg_consumers)
+                    if dirty_batch is None:
+                        self._cond.wait(timeout=self._compute_supervisor_sleep_locked(now))
 
-        if stop_due_to_ttl:
-            self._listener.stop_accepting()
-            return _SupervisorStep(should_stop=True)
-        locked_excl = _is_installer_exclusively_locked(self._cache_dir)
-        if probe_deferred_boot:
-            if not locked_excl:
-                return _SupervisorStep(finish_deferred_boot=True)
+            if stop_due_to_ttl:
+                self._listener.stop_accepting()
+                return
+            if dirty_batch is not None and dirty_batch.has_any:
+                self._run_dirty_batch_counted(dirty_batch)
+                continue
+            if not probe_deferred_boot and due_resume is None:
+                continue
+            locked_excl = _is_installer_exclusively_locked(self._cache_dir)
+            if probe_deferred_boot and not locked_excl:
+                self._finish_deferred_boot_warmup()
+                continue
+            if due_resume is not None and not locked_excl:
+                self._run_due_quiesce_resume(due_resume)
+                continue
+            if due_resume is not None:
+                gate.postpone_due_lease(due_resume.epoch, due_resume.modules, 0.05)
             with self._cond:
                 self._cond.wait(timeout=0.05)
-            return _SupervisorStep()
-        if due_resume is not None and not locked_excl:
-            return _SupervisorStep(due_resume=due_resume)
-        if due_resume is not None:
-            gate.postpone_due_lease(due_resume.epoch, due_resume.modules, 0.05)
-            with self._cond:
-                self._cond.wait(timeout=0.05)
-        return _SupervisorStep()
 
     def _config_consumer_modules(self) -> frozenset[ModuleId]:
-        base = self._dispatcher.subscribed_modules(EventId("core.config_changed"))
+        base = self._dispatcher.subscribed_modules(CONFIG_CHANGED_EVENT_ID)
         cfg_task = self._watch_cfg.on_config_changed_task
         return base if cfg_task is None else (base | frozenset({cfg_task.module_id}))
 
@@ -996,7 +1098,7 @@ class WorkspaceDaemon(InboundCallHandler):
     ) -> Optional[_DirtyBatch]:
         gate = self._dispatcher.reload_gate
         if (
-            self._phase != ContainerState.READY
+            self._base_phase_locked() != ContainerState.READY
             or self._deferred_boot_warmup
             or self._quiesce_waiters > 0
             or self._lifecycle_ops_in_flight > 0
@@ -1041,6 +1143,12 @@ class WorkspaceDaemon(InboundCallHandler):
                     self._cond.notify_all()
                 if not isinstance(exc, Exception):
                     raise
+                self._record_bg_error_diag(
+                    ErrorDetail(
+                        ErrorCode.BUSINESS_FAILURE,
+                        f"Config notification thread spawn failed: {safe_exception_summary(exc)}",
+                    )
+                )
 
     def _run_dirty_batch_counted(self, dirty_batch: _DirtyBatch) -> None:
         pending_cfg: frozenset[HostPath] = frozenset()
@@ -1059,7 +1167,7 @@ class WorkspaceDaemon(InboundCallHandler):
 
     def _check_idle_ttl_expired_locked(self) -> bool:
         if (
-            self._phase != ContainerState.READY
+            self._base_phase_locked() != ContainerState.READY
             or self._dispatcher.reload_gate.has_any_quiesced()
             or self._active_fg_calls > 0
             or self._active_bg_turns > 0
@@ -1069,7 +1177,7 @@ class WorkspaceDaemon(InboundCallHandler):
 
     def _compute_supervisor_sleep_locked(self, now: float) -> Optional[float]:
         wake_q = self._dispatcher.reload_gate.next_quiesce_wakeup(now)
-        rem_ttl = self._idle_monitor.remaining_sec() if self._phase == ContainerState.READY else None
+        rem_ttl = self._idle_monitor.remaining_sec() if self._base_phase_locked() == ContainerState.READY else None
         ttl_s = min(MAX_SAFE_WAIT_SEC, max(0.01, rem_ttl)) if rem_ttl is not None else None
         raw_sleep = min(wake_q, ttl_s) if (wake_q is not None and ttl_s is not None) else (wake_q if wake_q is not None else ttl_s)
         return min(MAX_SAFE_WAIT_SEC, max(0.001, raw_sleep)) if raw_sleep is not None else None
@@ -1080,7 +1188,7 @@ class WorkspaceDaemon(InboundCallHandler):
                 silent_unlink_contained(self._cache_dir, *_HANDOFF_LEASE_SUBPATH)
                 return
         try:
-            sp_lock = FileLock(resolve_contained_subpath(self._cache_dir, "daemon", "spawn.lock"))
+            sp_lock = FileLock(resolve_contained_subpath(self._cache_dir, DAEMON_SUBDIR, _SPAWN_LOCK_FILENAME), allow_transitions=False)
             sp_lock.acquire(shared=False, blocking=True, timeout_sec=5.0)
         except (OSError, ValueError, YscbError):
             silent_unlink_contained(self._cache_dir, *_HANDOFF_LEASE_SUBPATH)
@@ -1089,11 +1197,11 @@ class WorkspaceDaemon(InboundCallHandler):
             if probe_daemon_endpoint(self._cache_dir, self._workspace_root) is not None:
                 silent_unlink_contained(self._cache_dir, *_HANDOFF_LEASE_SUBPATH)
                 return
-            lease_path = resolve_contained_subpath(self._cache_dir, "daemon", "spawn_lease.json")
+            lease_path = resolve_contained_subpath(self._cache_dir, DAEMON_SUBDIR, _SPAWN_LEASE_FILENAME)
             if _is_spawn_lease_active(read_json_dict(lease_path), time.time(), 1.5):
                 return
             inst_lk = try_acquire_contained_lock(
-                self._cache_dir, "locks", "installer.lock", shared=True, timeout_sec=5.0
+                self._cache_dir, LOCKS_SUBDIR, INSTALLER_LOCK_FILENAME, shared=True, timeout_sec=5.0
             )
             if inst_lk is not None:
                 inst_lk.release()
@@ -1127,38 +1235,37 @@ class WorkspaceDaemon(InboundCallHandler):
         self._idle_monitor = IdleTtlMonitor(effective_ttl)
         boot_tok = CancellationToken()
         with self._cond:
-            if self._phase in (ContainerState.DRAINING, ContainerState.STOPPED):
+            if self._base_phase_locked() in (ContainerState.DRAINING, ContainerState.STOPPED):
                 return
-            self._phase = ContainerState.WARMING
+            self._boot_warming_active = True
+            self._dispatcher.container_lifecycle.transition_boot_phase(ContainerState.WARMING)
             self._inst_wait_cancels.add(boot_tok)
             self._pending_ready_callback = ready_callback
             self._pending_startup_catchup = self._watch_cfg.on_space_changed_task is not None
         try:
             self._start_watchers_only()
             ep = self._listener.start(pid=os.getpid())
-            daemon_json_path = resolve_contained_subpath(self._cache_dir, "daemon", "daemon.json")
+            daemon_json_path = resolve_contained_subpath(self._cache_dir, DAEMON_SUBDIR, DAEMON_ENDPOINT_FILENAME)
             atomic_write_json(
                 daemon_json_path,
-                {
-                    "pid": ep.pid,
-                    "host": ep.host,
-                    "port": ep.port,
-                    "boot_id": ep.boot_id,
-                    "auth_token": ep.auth_token,
-                    "workspace_root": str(ep.workspace_root),
-                },
+                build_daemon_endpoint_dict(ep),
                 file_mode=0o600,
             )
             deferred = self._run_initial_boot_warmup(boot_tok)
+        except BaseException:
+            with self._cond:
+                self._boot_warming_active = False
+            raise
         finally:
             with self._cond:
                 self._inst_wait_cancels.discard(boot_tok)
         aborted_boot = False
         with self._cond:
-            if self._phase in (ContainerState.DRAINING, ContainerState.STOPPED):
+            self._boot_warming_active = False
+            if self._base_phase_locked() in (ContainerState.DRAINING, ContainerState.STOPPED):
                 aborted_boot = True
-            elif not deferred and self._phase == ContainerState.WARMING:
-                self._phase = ContainerState.READY
+            elif not deferred and self._base_phase_locked() == ContainerState.WARMING:
+                self._dispatcher.container_lifecycle.transition_boot_phase(ContainerState.READY)
             self._idle_monitor.record_external_activity()
             self._cond.notify_all()
         with self._handoff_lease_lock:
@@ -1175,7 +1282,7 @@ class WorkspaceDaemon(InboundCallHandler):
         cb: Optional[Callable[[], None]] = None
         need_catchup = False
         with self._cond:
-            if self._phase != ContainerState.READY or self._dispatcher.reload_gate.is_globally_gated():
+            if self._base_phase_locked() != ContainerState.READY or self._dispatcher.reload_gate.is_globally_gated():
                 return
             cb = self._pending_ready_callback
             self._pending_ready_callback = None
@@ -1191,7 +1298,7 @@ class WorkspaceDaemon(InboundCallHandler):
         ):
             return
         with self._cond:
-            if self._phase not in (ContainerState.DRAINING, ContainerState.STOPPED):
+            if self._base_phase_locked() not in (ContainerState.DRAINING, ContainerState.STOPPED):
                 self._pending_startup_catchup = True
 
     def _acquire_cancellable_shared_installer_lock(
@@ -1202,15 +1309,15 @@ class WorkspaceDaemon(InboundCallHandler):
     ) -> Optional[FileLock]:
         tok = CancellationToken()
         with self._cond:
-            not_ready = (self._phase != ContainerState.READY) if require_ready else (
-                self._phase in (ContainerState.DRAINING, ContainerState.STOPPED)
+            not_ready = (self._base_phase_locked() != ContainerState.READY) if require_ready else (
+                self._base_phase_locked() in (ContainerState.DRAINING, ContainerState.STOPPED)
             )
             if self._quiesce_waiters > 0 or not_ready:
                 return None
             self._inst_wait_cancels.add(tok)
         try:
             return try_acquire_contained_lock(
-                self._cache_dir, "locks", "installer.lock", shared=True, timeout_sec=timeout_sec, cancel_token=tok
+                self._cache_dir, LOCKS_SUBDIR, INSTALLER_LOCK_FILENAME, shared=True, timeout_sec=timeout_sec, cancel_token=tok
             )
         finally:
             with self._cond:
@@ -1218,12 +1325,12 @@ class WorkspaceDaemon(InboundCallHandler):
 
     def _run_initial_boot_warmup(self, boot_tok: CancellationToken) -> bool:
         inst_lock = try_acquire_contained_lock(
-            self._cache_dir, "locks", "installer.lock", shared=True, timeout_sec=30.0, cancel_token=boot_tok
+            self._cache_dir, LOCKS_SUBDIR, INSTALLER_LOCK_FILENAME, shared=True, timeout_sec=30.0, cancel_token=boot_tok
         )
         with self._cond:
             self._inst_wait_cancels.discard(boot_tok)
             if inst_lock is None:
-                if self._phase not in (ContainerState.DRAINING, ContainerState.STOPPED):
+                if self._base_phase_locked() not in (ContainerState.DRAINING, ContainerState.STOPPED):
                     self._deferred_boot_warmup = True
                 self._cond.notify_all()
                 return True
@@ -1254,9 +1361,9 @@ class WorkspaceDaemon(InboundCallHandler):
             q_mods, self._contained_modules_path(), space_gated=True, config_gated=True
         )
         raw_mods = batch.reload_modules | frozenset(self._extract_touched_modules(batch.module_paths))
-        if ModuleId("core") in raw_mods:
+        if CORE_MODULE_ID in raw_mods:
             return True
-        target = frozenset() if batch.reload_all else (raw_mods - frozenset({ModuleId("core")}))
+        target = frozenset() if batch.reload_all else (raw_mods - frozenset({CORE_MODULE_ID}))
         if batch.reload_all or target:
             drained_cfg = self._resync_watchers_before_reload(target)
             if drained_cfg:
@@ -1268,21 +1375,7 @@ class WorkspaceDaemon(InboundCallHandler):
 
     def _is_warming_deferred_boot(self) -> bool:
         with self._cond:
-            return self._phase == ContainerState.WARMING and self._deferred_boot_warmup
-
-    def _finish_unquiesced_deferred_boot(self) -> None:
-        if not self._is_warming_deferred_boot():
-            return
-        inst_lock = self._acquire_cancellable_shared_installer_lock(timeout_sec=30.0)
-        if inst_lock is None:
-            return
-        try:
-            if not self._is_warming_deferred_boot():
-                return
-            leased_now = self._dispatcher.reload_gate.active_quiesced_modules()
-            self._execute_synchronous_quiesce_resume(None, None, leased_now)
-        finally:
-            inst_lock.release()
+            return self._base_phase_locked() == ContainerState.WARMING and self._deferred_boot_warmup
 
     def _cancel_installer_lock_waits_locked(self) -> None:
         for tok in list(self._inst_wait_cancels):
@@ -1292,10 +1385,10 @@ class WorkspaceDaemon(InboundCallHandler):
     def _release_singleton_registration(self) -> None:
         if not self._daemon_lock.is_acquired:
             return
-        silent_unlink_contained(self._cache_dir, "daemon", "daemon.json")
-        doc = read_json_dict(self._cache_dir, "daemon", "spawn_lease.json")
+        silent_unlink_contained(self._cache_dir, DAEMON_SUBDIR, DAEMON_ENDPOINT_FILENAME)
+        doc = read_json_dict(self._cache_dir, DAEMON_SUBDIR, _SPAWN_LEASE_FILENAME)
         if doc is None or doc.get("pid") == os.getpid():
-            silent_unlink_contained(self._cache_dir, "daemon", "spawn_lease.json")
+            silent_unlink_contained(self._cache_dir, DAEMON_SUBDIR, _SPAWN_LEASE_FILENAME)
         self._daemon_lock.release()
 
     def _execute_full_shutdown(self, *, force: bool) -> tuple[ErrorDetail, ...]:
@@ -1345,7 +1438,8 @@ class WorkspaceDaemon(InboundCallHandler):
             self._execute_full_shutdown(force=force)
             self._listener.close_all()
             with self._cond:
-                self._phase = ContainerState.STOPPED
+                self._stopping = True
+                self._stopped = True
                 self._cond.notify_all()
         finally:
             self._release_singleton_registration()
@@ -1367,19 +1461,19 @@ class WorkspaceDaemon(InboundCallHandler):
             with self._cond:
                 if force:
                     self._force_shutdown = True
-                self._phase = ContainerState.DRAINING
+                self._stopping = True
                 self._cancel_installer_lock_waits_locked()
                 self._cond.notify_all()
         if force:
             self._dispatcher.cancel_all_active_turns("Forced daemon shutdown")
 
     def _wait_daemon_pre_quiesce_locked(self, drain_deadline: float) -> bool:
-        if self._phase in (ContainerState.DRAINING, ContainerState.STOPPED):
+        if self._base_phase_locked() in (ContainerState.DRAINING, ContainerState.STOPPED):
             return False
         self._cancel_installer_lock_waits_locked()
         while (
             (
-                (self._phase == ContainerState.WARMING and not self._deferred_boot_warmup)
+                (self._base_phase_locked() == ContainerState.WARMING and not self._deferred_boot_warmup)
                 or self._lifecycle_ops_in_flight > 0
             )
             and time.monotonic() < drain_deadline
@@ -1387,16 +1481,16 @@ class WorkspaceDaemon(InboundCallHandler):
             self._cancel_installer_lock_waits_locked()
             self._cond.wait(timeout=min(0.02, max(0.001, drain_deadline - time.monotonic())))
         return not (
-            (self._phase == ContainerState.WARMING and not self._deferred_boot_warmup)
+            (self._base_phase_locked() == ContainerState.WARMING and not self._deferred_boot_warmup)
             or self._lifecycle_ops_in_flight > 0
-            or self._phase in (ContainerState.DRAINING, ContainerState.STOPPED)
+            or self._base_phase_locked() in (ContainerState.DRAINING, ContainerState.STOPPED)
         )
 
     def _release_quiesce_wait_counters(self) -> None:
         retry_hooks = False
         with self._cond:
             self._quiesce_waiters = max(0, self._quiesce_waiters - 1)
-            retry_hooks = self._phase == ContainerState.READY and self._pending_startup_catchup
+            retry_hooks = self._base_phase_locked() == ContainerState.READY and self._pending_startup_catchup
             self._cond.notify_all()
         if retry_hooks:
             self._consume_and_fire_post_boot_hooks()
@@ -1416,7 +1510,7 @@ class WorkspaceDaemon(InboundCallHandler):
         clamped_lease = min(3600.0, max(0.2, v_lease))
         clamped_drain = min(300.0, max(0.05, v_drain))
         drain_deadline = time.monotonic() + clamped_drain
-        is_global = (not bool(affected_modules)) or (ModuleId("core") in affected_modules)
+        is_global = (not bool(affected_modules)) or (CORE_MODULE_ID in affected_modules)
         with self._cond:
             self._quiesce_waiters += 1
         try:
@@ -1428,41 +1522,31 @@ class WorkspaceDaemon(InboundCallHandler):
                 if not got_scope:
                     return False
                 with self._cond:
-                    unquiesceable = self._phase in (ContainerState.DRAINING, ContainerState.STOPPED)
+                    unquiesceable = self._base_phase_locked() in (ContainerState.DRAINING, ContainerState.STOPPED)
                 if unquiesceable:
                     return False
-                self._stash_dispatcher_teardown_diags()
+                self._record_scoped_bg_diags(self._dispatcher.drain_teardown_diagnostics(), frozenset())
                 expanded = (
                     frozenset()
                     if is_global
-                    else (self._dispatcher.expand_quiesce_targets(affected_modules) - frozenset({ModuleId("core")}))
+                    else (self._dispatcher.expand_quiesce_targets(affected_modules) - frozenset({CORE_MODULE_ID}))
                 )
                 entered = self._dispatcher.try_quiesce_modules(
                     expanded,
                     drain_deadline=drain_deadline,
                     leased=True,
                 )
-                self._stash_dispatcher_teardown_diags(expanded)
-                return self._commit_quiesce_entry(entered, affected_modules, expanded, is_global, clamped_lease)
+                self._record_scoped_bg_diags(self._dispatcher.drain_teardown_diagnostics(), expanded)
+                if not entered:
+                    return False
+                if CORE_MODULE_ID in affected_modules:
+                    self._dirty.add_reload(frozenset({CORE_MODULE_ID}))
+                self._dispatcher.reload_gate.record_quiesce_lease(is_global, expanded, clamped_lease)
+                with self._cond:
+                    self._cond.notify_all()
+                return True
         finally:
             self._release_quiesce_wait_counters()
-
-    def _commit_quiesce_entry(
-        self,
-        entered: bool,
-        affected_modules: frozenset[ModuleId],
-        expanded_mods: frozenset[ModuleId],
-        is_global: bool,
-        clamped_lease: float,
-    ) -> bool:
-        if not entered:
-            return False
-        if ModuleId("core") in affected_modules:
-            self._dirty.add_reload(frozenset({ModuleId("core")}))
-        self._dispatcher.reload_gate.record_quiesce_lease(is_global, expanded_mods, clamped_lease)
-        with self._cond:
-            self._cond.notify_all()
-        return True
 
     def _has_deferred_core_mutation(self) -> bool:
         with self._dispatcher.reload_gate.lifecycle_scope():
@@ -1501,7 +1585,7 @@ class WorkspaceDaemon(InboundCallHandler):
             self._dirty.prune_modules(touched_all, self._contained_modules_path())
 
     def _run_due_quiesce_resume(self, due: DueQuiesceResume) -> None:
-        inst_lock = try_acquire_contained_lock(self._cache_dir, "locks", "installer.lock", shared=True)
+        inst_lock = try_acquire_contained_lock(self._cache_dir, LOCKS_SUBDIR, INSTALLER_LOCK_FILENAME, shared=True)
         if inst_lock is None:
             self._dispatcher.reload_gate.postpone_due_lease(due.epoch, due.modules, 0.05)
             with self._cond:
@@ -1524,38 +1608,22 @@ class WorkspaceDaemon(InboundCallHandler):
             modules = require_typed_frozenset(modules, ModuleId, "modules")
         eff_mods = (
             None
-            if (modules is None or len(modules) == 0 or ModuleId("core") in modules)
+            if (modules is None or len(modules) == 0 or CORE_MODULE_ID in modules)
             else modules
         )
-        inst_lock = try_acquire_contained_lock(self._cache_dir, "locks", "installer.lock", shared=True)
+        inst_lock = try_acquire_contained_lock(self._cache_dir, LOCKS_SUBDIR, INSTALLER_LOCK_FILENAME, shared=True)
         if inst_lock is not None:
             try:
                 return self._execute_synchronous_quiesce_resume(expected_epoch, eff_mods, frozenset())
             finally:
                 inst_lock.release()
         with self._cond:
-            can_defer = self._phase in (ContainerState.READY, ContainerState.WARMING) and (
+            can_defer = self._base_phase_locked() in (ContainerState.READY, ContainerState.WARMING) and (
                 self._deferred_boot_warmup or self._dispatcher.reload_gate.has_any_quiesced()
             )
         if can_defer:
             self._dispatcher.reload_gate.schedule_deferred_resume(expected_epoch, eff_mods)
         return False
-
-    def _finish_quiesce_resume_state(
-        self,
-        cleared_def_boot: bool,
-        still_quiesced: bool,
-        need_handoff: bool,
-    ) -> None:
-        with self._cond:
-            if cleared_def_boot and not need_handoff:
-                self._deferred_boot_warmup = False
-                if self._phase == ContainerState.WARMING:
-                    self._phase = ContainerState.READY
-            if self._phase == ContainerState.READY and not still_quiesced and not need_handoff:
-                self._idle_monitor.record_external_activity()
-            self._cond.notify_all()
-        self._periodic_loop.wake()
 
     def _execute_synchronous_quiesce_resume(
         self,
@@ -1567,9 +1635,11 @@ class WorkspaceDaemon(InboundCallHandler):
             with self._cond:
                 def_boot = self._deferred_boot_warmup
                 active_q = self._dispatcher.reload_gate.has_any_quiesced()
-                if self._phase not in (ContainerState.READY, ContainerState.WARMING) or (not def_boot and not active_q):
+                if self._base_phase_locked() not in (ContainerState.READY, ContainerState.WARMING) or (
+                    not def_boot and not active_q
+                ):
                     return False
-            self._stash_dispatcher_teardown_diags()
+            self._record_scoped_bg_diags(self._dispatcher.drain_teardown_diagnostics(), frozenset())
             q_res = self._dispatcher.execute_daemon_quiesce_resume(
                 expected_epoch=expected_epoch,
                 modules=eff_mods,
@@ -1579,12 +1649,20 @@ class WorkspaceDaemon(InboundCallHandler):
                 on_before_warmup=self._resync_watchers_for_quiesce_resume,
             )
             scope_mods = self._dispatcher.expand_quiesce_targets(eff_mods) if eff_mods else frozenset()
-            self._stash_dispatcher_teardown_diags(scope_mods)
+            self._record_scoped_bg_diags(self._dispatcher.drain_teardown_diagnostics(), scope_mods)
             if not q_res.started:
                 return False
             if not q_res.need_handoff:
                 self._periodic_loop.refresh_schedules()
-            self._finish_quiesce_resume_state(def_boot, q_res.still_quiesced, q_res.need_handoff)
+            with self._cond:
+                if def_boot and not q_res.need_handoff:
+                    self._deferred_boot_warmup = False
+                    if self._base_phase_locked() == ContainerState.WARMING:
+                        self._dispatcher.container_lifecycle.transition_boot_phase(ContainerState.READY)
+                if self._base_phase_locked() == ContainerState.READY and not q_res.still_quiesced and not q_res.need_handoff:
+                    self._idle_monitor.record_external_activity()
+                self._cond.notify_all()
+            self._periodic_loop.wake()
         if q_res.need_handoff:
             self.request_shutdown(core_handoff=True)
             return True
@@ -1600,6 +1678,7 @@ class WorkspaceDaemon(InboundCallHandler):
             st = self._effective_state_locked()
             fg = self._active_fg_calls
             handled = self._tasks_handled
+            bg_errs = len(self._bg_error_diags)
             idle_rem = self._idle_monitor.remaining_sec()
         return DaemonStatusSnapshot(
             state=st,
@@ -1612,49 +1691,8 @@ class WorkspaceDaemon(InboundCallHandler):
             tasks_handled=handled,
             active_tier1_workers=() if st == ContainerState.STOPPED else workers,
             degraded_modules=degraded,
+            background_error_count=bg_errs,
         )
-
-    def _admit_rpc_call_locked(
-        self,
-        target_mod: Optional[ModuleId],
-        rpc_turn_id: str,
-        is_bg_rpc: bool,
-        peer_cancel_token: CancellationToken,
-        guard: DeadlineGuard,
-        prop: Optional[CallPropagationContext],
-    ) -> bool:
-        while True:
-            self._wait_until_gate_open_locked(target_mod, peer_cancel_token, guard, prop)
-            if self._phase != ContainerState.READY:
-                return False
-            if target_mod is not None and not self._dispatcher.reload_gate.enter_rpc_call(
-                target_mod, rpc_turn_id, prop
-            ):
-                continue
-            if is_bg_rpc:
-                self._active_bg_turns += 1
-            else:
-                self._active_fg_calls += 1
-                self._idle_monitor.record_external_activity()
-            return True
-
-    def _admit_rpc_call(
-        self,
-        target_mod: Optional[ModuleId],
-        rpc_turn_id: str,
-        is_bg_rpc: bool,
-        peer_cancel_token: CancellationToken,
-        guard: DeadlineGuard,
-        prop: Optional[CallPropagationContext],
-    ) -> bool:
-        unreg = peer_cancel_token.register_callback(lambda _p, _r: self._wake_cond())
-        try:
-            with self._cond:
-                return self._admit_rpc_call_locked(
-                    target_mod, rpc_turn_id, is_bg_rpc, peer_cancel_token, guard, prop
-                )
-        finally:
-            unreg()
 
     def on_call(
         self,
@@ -1665,16 +1703,62 @@ class WorkspaceDaemon(InboundCallHandler):
         peer_cancel_token: CancellationToken,
     ) -> tuple[bool, JsonObject]:
         _ = stream_id
+        raw_ws = payload.get("workspace_root")
+        if type(raw_ws) is str and raw_ws:
+            try:
+                req_ws = HostPath(raw_ws)
+            except ValueError:
+                req_ws = None
+            if req_ws is not None and req_ws != self._workspace_root:
+                with self._cond:
+                    if self._base_phase_locked() != ContainerState.READY:
+                        return (False, {"ok": False})
+                if not ack_accepted():
+                    return (False, {"ok": False})
+                raw_tid = payload.get("task_id")
+                src_t = raw_tid if (type(raw_tid) is str and bool(raw_tid)) else None
+                rej = DaemonRpcInvokeReply(
+                    ok=False,
+                    error=ErrorDetail(
+                        ErrorCode.SECURITY_GATED,
+                        f"Cross-workspace top-level RPC rejected: expected {self._workspace_root}, got {req_ws}",
+                        source_task=src_t,
+                    ),
+                )
+                return (True, DataclassCodec.encode_envelope(rej))
         is_bg_rpc = payload.get("priority") == ExecutionPriority.BACKGROUND.value
         target_mod = _extract_payload_module_id(payload)
         prop = _extract_payload_propagation(payload)
         rpc_turn_id = uuid.uuid4().hex
         tm_raw = payload.get("timeout_ms")
         has_tm = isinstance(tm_raw, int) and not isinstance(tm_raw, bool)
-        if has_tm and tm_raw <= 0:
-            raise YscbError(ErrorCode.TASK_TIMEOUT, f"Timed out after {tm_raw}ms waiting on daemon gate.")
+        if has_tm and tm_raw < 0:
+            raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"timeout_ms must be >= 0, got {tm_raw}")
+        if has_tm and tm_raw == 0:
+            raise YscbError(ErrorCode.TASK_TIMEOUT, "Timed out after 0ms waiting on daemon gate.")
         guard = DeadlineGuard.from_timeout_ms(tm_raw if has_tm else None, peer_cancel_token)
-        if not self._admit_rpc_call(target_mod, rpc_turn_id, is_bg_rpc, peer_cancel_token, guard, prop):
+        admitted = False
+        unreg = peer_cancel_token.register_callback(lambda _p, _r: self._wake_cond())
+        try:
+            with self._cond:
+                while True:
+                    self._wait_until_gate_open_locked(target_mod, peer_cancel_token, guard, prop)
+                    if self._base_phase_locked() != ContainerState.READY:
+                        break
+                    if target_mod is not None and not self._dispatcher.reload_gate.enter_rpc_call(
+                        target_mod, rpc_turn_id, prop
+                    ):
+                        continue
+                    if is_bg_rpc:
+                        self._active_bg_turns += 1
+                    else:
+                        self._active_fg_calls += 1
+                        self._idle_monitor.record_external_activity()
+                    admitted = True
+                    break
+        finally:
+            unreg()
+        if not admitted:
             return (False, {"ok": False})
 
         mark_done_activity = False
@@ -1714,9 +1798,9 @@ class WorkspaceDaemon(InboundCallHandler):
         target_mod: Optional[ModuleId],
         prop: Optional[CallPropagationContext],
     ) -> bool:
-        if self._phase in (ContainerState.DRAINING, ContainerState.STOPPED):
+        if self._base_phase_locked() in (ContainerState.DRAINING, ContainerState.STOPPED):
             return False
-        if self._phase == ContainerState.WARMING or self._deferred_boot_warmup:
+        if self._base_phase_locked() == ContainerState.WARMING or self._deferred_boot_warmup:
             return True
         return self._dispatcher.reload_gate.is_rpc_call_gated(target_mod, prop)
 
@@ -1767,7 +1851,7 @@ class WorkspaceDaemon(InboundCallHandler):
 
     def _handle_control_resume(self, ctrl: DaemonResumeControl) -> JsonObject:
         mods = frozenset(ctrl.modules)
-        eff_scope = frozenset() if (not mods or ModuleId("core") in mods) else mods
+        eff_scope = frozenset() if (not mods or CORE_MODULE_ID in mods) else mods
         resumed_sync = self.resume_from_quiesce(
             expected_epoch=ctrl.expected_epoch, modules=mods if mods else None
         )
@@ -1806,7 +1890,7 @@ class WorkspaceDaemon(InboundCallHandler):
             cur_st = self._effective_state_locked().value
         if not entered:
             return {"ok": False, "state": cur_st, "error": "daemon_busy"}
-        eff_scope = frozenset() if (not mods or ModuleId("core") in mods) else mods
+        eff_scope = frozenset() if (not mods or CORE_MODULE_ID in mods) else mods
         td = self._pop_matching_bg_diags(eff_scope)
         return {
             "ok": True,
@@ -1832,29 +1916,29 @@ class WorkspaceDaemon(InboundCallHandler):
         expanded_mods: frozenset[ModuleId],
     ) -> bool:
         gate = self._dispatcher.reload_gate
-        if self._phase == ContainerState.WARMING or self._deferred_boot_warmup or gate.is_globally_gated():
+        if self._base_phase_locked() == ContainerState.WARMING or self._deferred_boot_warmup or gate.is_globally_gated():
             return True
-        if not mods or ModuleId("core") in mods:
+        if not mods or CORE_MODULE_ID in mods:
             return gate.has_any_quiesced()
         return any(gate.is_call_gated_for_quiesce(m) for m in expanded_mods)
 
     def _handle_control_reload(self, ctrl: DaemonReloadControl) -> JsonObject:
         mods = frozenset(ctrl.modules)
         expanded_mods = (
-            (self._dispatcher.expand_quiesce_targets(mods) - frozenset({ModuleId("core")}))
-            if (mods and ModuleId("core") not in mods)
+            (self._dispatcher.expand_quiesce_targets(mods) - frozenset({CORE_MODULE_ID}))
+            if (mods and CORE_MODULE_ID not in mods)
             else frozenset()
         )
         with self._cond:
-            if self._phase in (ContainerState.READY, ContainerState.WARMING) and self._is_reload_target_gated_locked(
+            if self._base_phase_locked() in (ContainerState.READY, ContainerState.WARMING) and self._is_reload_target_gated_locked(
                 mods, expanded_mods
             ):
                 self._dirty.add_reload(mods)
                 self._cond.notify_all()
                 return {"ok": True, "reloaded": False, "deferred": True}
-            if self._phase != ContainerState.READY:
+            if self._base_phase_locked() != ContainerState.READY:
                 return {"ok": False, "state": self._effective_state_locked().value, "error": "daemon_stopping"}
-            if ModuleId("core") in mods:
+            if CORE_MODULE_ID in mods:
                 immediate_handoff = True
             else:
                 self._active_bg_turns += 1
@@ -1891,25 +1975,14 @@ class WorkspaceDaemon(InboundCallHandler):
         self._dirty.prune_modules(expanded, self._contained_modules_path())
         return drained_cfg
 
-    @staticmethod
-    def _resolve_diag_owners(diag: ErrorDetail, scope_mods: frozenset[ModuleId]) -> frozenset[ModuleId]:
-        head = (diag.source_task or "").split(".", 1)[0]
-        if head and head != "tier1_pool":
-            try:
-                return frozenset({ModuleId(head)})
-            except ValueError:
-                pass
-        return scope_mods
+
 
     def _record_scoped_bg_diags(self, diags: Sequence[ErrorDetail], scope_mods: frozenset[ModuleId] = frozenset()) -> None:
         if not diags:
             return
-        entries = tuple((self._resolve_diag_owners(d, scope_mods), d) for d in diags)
+        entries = tuple((_resolve_diag_owners(d, scope_mods), d) for d in diags)
         with self._cond:
             self._bg_teardown_diags.extend(entries)
-
-    def _stash_dispatcher_teardown_diags(self, scope_mods: frozenset[ModuleId] = frozenset()) -> None:
-        self._record_scoped_bg_diags(self._dispatcher.drain_teardown_diagnostics(), scope_mods)
 
     def _pop_matching_bg_diags(self, mods: frozenset[ModuleId]) -> tuple[ErrorDetail, ...]:
         expanded = self._dispatcher.expand_quiesce_targets(mods) if mods else frozenset()
@@ -1937,7 +2010,7 @@ class WorkspaceDaemon(InboundCallHandler):
 
         def _sync_and_reload() -> None:
             with self._dispatcher.reload_gate.lifecycle_scope():
-                self._stash_dispatcher_teardown_diags()
+                self._record_scoped_bg_diags(self._dispatcher.drain_teardown_diagnostics(), frozenset())
                 drained_holder.append(self._resync_watchers_before_reload(mods))
                 self._dispatcher.reload_affected_modules(mods)
                 op_td = self._dispatcher.drain_teardown_diagnostics()
@@ -1979,7 +2052,7 @@ class WorkspaceDaemon(InboundCallHandler):
             self._config_watcher = cw
             self._watchers.append(cw)
 
-        mods_hp = try_resolve_contained_subpath(self._workspace_root, ".modules")
+        mods_hp = try_resolve_contained_subpath(self._workspace_root, MODULES_DIRNAME)
         if mods_hp is not None:
             mw = PollingDirectoryWatcher(
                 (mods_hp,),
@@ -2008,13 +2081,13 @@ class WorkspaceDaemon(InboundCallHandler):
             return
         record_fn(paths)
         with self._cond:
-            if self._phase == ContainerState.READY:
+            if self._base_phase_locked() == ContainerState.READY:
                 self._idle_monitor.record_external_activity()
             self._cond.notify_all()
 
     def _requeue_notify_config_paths(self, paths: frozenset[HostPath]) -> None:
         with self._cond:
-            if self._phase in (ContainerState.DRAINING, ContainerState.STOPPED):
+            if self._base_phase_locked() in (ContainerState.DRAINING, ContainerState.STOPPED):
                 return
             self._dirty.add_notify_config_paths(paths)
             self._cond.notify_all()
@@ -2029,7 +2102,7 @@ class WorkspaceDaemon(InboundCallHandler):
         if not paths:
             return
         with self._cond:
-            if self._phase in (ContainerState.DRAINING, ContainerState.STOPPED):
+            if self._base_phase_locked() in (ContainerState.DRAINING, ContainerState.STOPPED):
                 return
         gate = self._dispatcher.reload_gate
         seq_before = gate.transition_seq
@@ -2037,8 +2110,18 @@ class WorkspaceDaemon(InboundCallHandler):
             self._requeue_notify_config_paths(paths)
             return
         sorted_paths = sorted(str(p) for p in paths)
-        rep = self._dispatcher.emit_background_event(EventId("core.config_changed"), {"changed_paths": sorted_paths})
+        consumers = self._config_consumer_modules()
+        rep = self._dispatcher.emit_background_event(CONFIG_CHANGED_EVENT_ID, {"changed_paths": sorted_paths})
+        if rep.teardown_diagnostics:
+            self._record_scoped_bg_diags(rep.teardown_diagnostics, consumers)
         prim_err = rep.primary_result.error
+        if prim_err is not None and prim_err.code != ErrorCode.DAEMON_UNAVAILABLE:
+            self._record_bg_error_diag(prim_err)
+        if rep.fatal_event_error is not None and rep.fatal_event_error.code != ErrorCode.DAEMON_UNAVAILABLE:
+            self._record_bg_error_diag(rep.fatal_event_error)
+        for ev_d in rep.event_diagnostics:
+            if ev_d.code != ErrorCode.DAEMON_UNAVAILABLE:
+                self._record_bg_error_diag(ev_d)
         ev_blocked = (prim_err is not None and prim_err.code == ErrorCode.DAEMON_UNAVAILABLE) or any(
             d.code == ErrorCode.DAEMON_UNAVAILABLE for d in rep.event_diagnostics
         )
@@ -2051,9 +2134,9 @@ class WorkspaceDaemon(InboundCallHandler):
 
     def _process_dirty_batch(self, batch: _DirtyBatch) -> frozenset[HostPath]:
         raw_touched = batch.reload_modules | frozenset(self._extract_touched_modules(batch.module_paths))
-        explicit_core = ModuleId("core") in batch.reload_modules
+        explicit_core = CORE_MODULE_ID in batch.reload_modules
         core_probe: Optional[bool] = True if explicit_core else False
-        if not explicit_core and (ModuleId("core") in raw_touched or batch.reload_all):
+        if not explicit_core and (CORE_MODULE_ID in raw_touched or batch.reload_all):
             core_probe = self._probe_core_mutation_under_installer_lock()
         if core_probe is None:
             self._requeue_unapplied_dirty_batch(batch)
@@ -2064,7 +2147,7 @@ class WorkspaceDaemon(InboundCallHandler):
             self.request_shutdown(core_handoff=True)
             return frozenset()
 
-        touched = raw_touched - frozenset({ModuleId("core")})
+        touched = raw_touched - frozenset({CORE_MODULE_ID})
         pending_cfg = self._resolve_dirty_config_work(batch, touched)
         if pending_cfg is None:
             return frozenset()
@@ -2131,11 +2214,11 @@ class WorkspaceDaemon(InboundCallHandler):
         return paths | (drained_extra[0] if drained_extra else frozenset())
 
     def _contained_modules_path(self) -> Optional[Path]:
-        mods_hp = try_resolve_contained_subpath(self._workspace_root, ".modules")
+        mods_hp = try_resolve_contained_subpath(self._workspace_root, MODULES_DIRNAME)
         return mods_hp.path if mods_hp is not None else None
 
     def _resync_all_modules_watcher(self) -> None:
-        mods_hp = try_resolve_contained_subpath(self._workspace_root, ".modules")
+        mods_hp = try_resolve_contained_subpath(self._workspace_root, MODULES_DIRNAME)
         if self._modules_watcher is not None and mods_hp is not None:
             self._modules_watcher.resync_paths((mods_hp,))
 
@@ -2145,7 +2228,7 @@ class WorkspaceDaemon(InboundCallHandler):
         targets = tuple(
             hp
             for m in mods
-            if (hp := try_resolve_contained_subpath(self._workspace_root, ".modules", str(m))) is not None
+            if (hp := try_resolve_contained_subpath(self._workspace_root, MODULES_DIRNAME, str(m))) is not None
         )
         if targets:
             self._modules_watcher.resync_paths(targets)
@@ -2165,7 +2248,7 @@ class WorkspaceDaemon(InboundCallHandler):
             return False
         try:
             with self._cond:
-                ready_now = self._phase == ContainerState.READY
+                ready_now = self._base_phase_locked() == ContainerState.READY
             if not ready_now:
                 requeue_fn()
                 return False
@@ -2175,7 +2258,7 @@ class WorkspaceDaemon(InboundCallHandler):
             inst_lock.release()
 
     def _try_admit_bg_turn_locked(self, mod_id: ModuleId, bg_tid: str) -> bool:
-        if self._phase != ContainerState.READY or self._deferred_boot_warmup:
+        if self._base_phase_locked() != ContainerState.READY or self._deferred_boot_warmup:
             return False
         if self._dispatcher.reload_gate.is_call_gated_for_quiesce(mod_id):
             return False
@@ -2203,6 +2286,13 @@ class WorkspaceDaemon(InboundCallHandler):
                 self._cond.notify_all()
             if not isinstance(exc, Exception):
                 raise
+            self._record_bg_error_diag(
+                ErrorDetail(
+                    ErrorCode.BUSINESS_FAILURE,
+                    f"Background task thread spawn failed for '{task_id}': {safe_exception_summary(exc)}",
+                    source_task=str(task_id),
+                )
+            )
             return False
         return True
 
@@ -2217,7 +2307,22 @@ class WorkspaceDaemon(InboundCallHandler):
                 turn_id=bg_tid, is_internal_trigger=True, from_hot_container=True
             ),
         )
-        self._dispatcher.invoke(req)
+        out = self._dispatcher.invoke(req)
+        with self._cond:
+            stopping_now = self._base_phase_locked() in (ContainerState.DRAINING, ContainerState.STOPPED)
+        quiesced_now = self._dispatcher.reload_gate.is_call_gated_for_quiesce(task_id.module_id)
+        if not out.ok and out.error is not None and out.error.code not in (
+            ErrorCode.TASK_CANCELLED,
+            ErrorCode.TASK_PREEMPTED,
+        ):
+            if not (out.error.code == ErrorCode.DAEMON_UNAVAILABLE and (stopping_now or quiesced_now)):
+                self._record_bg_error_diag(out.error)
+        for diag in (*out.event_diagnostics, *out.teardown_diagnostics):
+            if diag.code in (ErrorCode.TASK_CANCELLED, ErrorCode.TASK_PREEMPTED):
+                continue
+            if diag.code == ErrorCode.DAEMON_UNAVAILABLE and (stopping_now or quiesced_now):
+                continue
+            self._record_bg_error_diag(diag)
 
     def _run_acquired_bg_task(self, task_id: TaskId, raw_input: JsonObject, bg_tid: str) -> None:
         try:

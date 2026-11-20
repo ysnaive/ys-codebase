@@ -18,7 +18,6 @@ from core.execution.runtime.contracts import (
 from core.foundation.errors import ErrorDetail, safe_exception_summary
 from core.foundation.primitives import MAX_USER_JSON_DEPTH, EventId, HostPath, JsonObject, JsonValue, ModuleId, TaskId, require_pure_bool, require_pure_str, require_typed_tuple, validate_wire_json_object
 
-WORKER_AUTH_ENV_KEY: str = "YSCB_WORKER_AUTH_TOKEN"
 
 
 class WorkerCommandKind(Enum):
@@ -32,6 +31,34 @@ class WorkerCommandKind(Enum):
 class WorkerCallbackKind(Enum):
     EMIT_IMM = "emit_imm"
     INVOKE_TASK = "invoke_task"
+
+
+class WorkerControlAction(Enum):
+    MODULE_INITIALIZED = "module_initialized"
+    ELEVATE_STEP = "elevate_step"
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerModInitControl:
+    action: WorkerControlAction
+    module_id: ModuleId
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerElevateControl:
+    action: WorkerControlAction
+    step_run_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerStopControl:
+    grace_ms: int = 1000
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerStopAck:
+    ok: bool = True
+    teardown_diagnostics: tuple[ErrorDetail, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

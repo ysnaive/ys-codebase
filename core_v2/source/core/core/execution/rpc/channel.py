@@ -9,6 +9,7 @@ import hmac
 import json
 import math
 import os
+import select
 import selectors
 import socket
 import struct
@@ -46,6 +47,9 @@ from core.foundation.primitives import (
 from core.foundation.proc import is_process_alive
 
 MAX_FRAME_BYTES: int = 64 * 1024 * 1024
+DAEMON_SUBDIR: str = "daemon"
+DAEMON_ENDPOINT_FILENAME: str = "daemon.json"
+DAEMON_HANDOFF_FILENAME: str = "handoff_lease.json"
 _MAX_HANDSHAKE_FRAME_BYTES: int = 64 * 1024
 _RECV_CHUNK_BYTES: int = 64 * 1024
 _MAX_CONCURRENT_HANDSHAKES: int = 32
@@ -155,14 +159,7 @@ class RpcFrame:
         object.__setattr__(self, "payload", norm_pl)
         object.__setattr__(self, "meta", norm_meta)
 
-    @staticmethod
-    def _from_trusted_wire(kind: FrameKind, stream_id: int, payload: JsonObject, meta: JsonObject) -> RpcFrame:
-        inst = object.__new__(RpcFrame)
-        object.__setattr__(inst, "kind", kind)
-        object.__setattr__(inst, "stream_id", stream_id)
-        object.__setattr__(inst, "payload", payload)
-        object.__setattr__(inst, "meta", meta)
-        return inst
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,18 +201,16 @@ class RemoteCallOutcome:
         if self.error_source_task is not None:
             require_pure_str(self.error_source_task, "RemoteCallOutcome.error_source_task")
 
-    @staticmethod
-    def _from_trusted_state(state: _PendingCallState) -> RemoteCallOutcome:
-        inst = object.__new__(RemoteCallOutcome)
-        object.__setattr__(inst, "was_accepted", state.was_accepted)
-        object.__setattr__(inst, "transport_lost", state.transport_lost)
-        object.__setattr__(inst, "rejected_before_accept", state.rejected_before_accept)
-        object.__setattr__(inst, "error_code", state.error_code)
-        object.__setattr__(inst, "result_payload", state.result_payload)
-        object.__setattr__(inst, "error_message", state.error_message)
-        object.__setattr__(inst, "error_remediation", state.error_remediation)
-        object.__setattr__(inst, "error_source_task", state.error_source_task)
-        return inst
+
+
+
+def _frame_from_trusted_wire(kind: FrameKind, stream_id: int, payload: JsonObject, meta: JsonObject) -> RpcFrame:
+    inst = object.__new__(RpcFrame)
+    object.__setattr__(inst, "kind", kind)
+    object.__setattr__(inst, "stream_id", stream_id)
+    object.__setattr__(inst, "payload", payload)
+    object.__setattr__(inst, "meta", meta)
+    return inst
 
 
 class InboundCallHandler(Protocol):
@@ -230,7 +225,20 @@ class InboundCallHandler(Protocol):
         peer_cancel_token: CancellationToken,
     ) -> tuple[bool, JsonObject]: ...
 
-    def on_control(self, kind: FrameKind, payload: JsonObject) -> JsonObject: ...
+    def on_control(self, kind: FrameKind, payload: JsonObject) -> JsonObject:
+        _ = payload
+        return {
+            "ok": False,
+            "error": ErrorCode.CODEC_VALIDATION_FAILED.value,
+            "message": f"Unsupported control frame: {kind.value}",
+        }
+
+
+def _enable_tcp_nodelay(sock: socket.socket) -> None:
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
 
 
 def bind_loopback_ephemeral(*, backlog: int = 64) -> socket.socket:
@@ -265,6 +273,25 @@ def _shutdown_and_close_sock(sock: socket.socket) -> None:
         pass
 
 
+def _wait_sock_readable(sock: socket.socket, timeout_sec: float) -> Optional[bool]:
+    if sock.fileno() < 0:
+        return None
+    try:
+        rlist, _, _ = select.select([sock], [], [], timeout_sec)
+        return bool(rlist)
+    except ValueError:
+        if sock.fileno() < 0:
+            return None
+        try:
+            with selectors.DefaultSelector() as sel:
+                sel.register(sock, selectors.EVENT_READ)
+                return bool(sel.select(timeout=timeout_sec))
+        except (OSError, ValueError):
+            return None
+    except OSError:
+        return None
+
+
 def _recv_exact(sock: socket.socket, n: int, *, deadline: Optional[float] = None) -> Optional[bytes]:
     chunks: list[bytes] = []
     remaining = n
@@ -276,6 +303,17 @@ def _recv_exact(sock: socket.socket, n: int, *, deadline: Optional[float] = None
             sock.settimeout(rem_sec)
         try:
             chunk = sock.recv(min(remaining, _RECV_CHUNK_BYTES))
+        except (BlockingIOError, InterruptedError):
+            while True:
+                if deadline is not None and time.monotonic() >= deadline:
+                    return None
+                wait_s = 0.05 if deadline is None else min(0.05, max(0.001, deadline - time.monotonic()))
+                ready = _wait_sock_readable(sock, wait_s)
+                if ready is None:
+                    return None
+                if ready:
+                    break
+            continue
         except OSError:
             return None
         if not chunk:
@@ -310,7 +348,7 @@ def _read_raw_frame(
         raise TypeError("Inbound RPC stream_id must be a non-negative 31-bit int")
     if not isinstance(payload, dict) or not isinstance(meta, dict):
         raise TypeError("Inbound RPC frame payload and meta must be JSON dicts")
-    return RpcFrame._from_trusted_wire(
+    return _frame_from_trusted_wire(
         kind=FrameKind(str(decoded["kind"])),
         stream_id=stream_raw,
         payload=payload,
@@ -362,12 +400,6 @@ def _is_sock_writable_ready(sock: socket.socket, timeout_sec: float) -> Optional
 
 
 def _try_send_slice(sock: socket.socket, view: memoryview) -> Optional[int]:
-    if IS_WINDOWS:
-        ready = _is_sock_writable_ready(sock, 0.0)
-        if ready is None:
-            return None
-        if not ready:
-            return 0
     try:
         return sock.send(view, _MSG_DONTWAIT)
     except (BlockingIOError, InterruptedError):
@@ -458,27 +490,22 @@ class _PendingCallState:
             invoke_observer_safely(lambda cur=item: cb(cur))
 
     def to_outcome(self) -> RemoteCallOutcome:
-        return RemoteCallOutcome._from_trusted_state(self)
+        inst = object.__new__(RemoteCallOutcome)
+        object.__setattr__(inst, "was_accepted", self.was_accepted)
+        object.__setattr__(inst, "transport_lost", self.transport_lost)
+        object.__setattr__(inst, "rejected_before_accept", self.rejected_before_accept)
+        object.__setattr__(inst, "error_code", self.error_code)
+        object.__setattr__(inst, "result_payload", self.result_payload)
+        object.__setattr__(inst, "error_message", self.error_message)
+        object.__setattr__(inst, "error_remediation", self.error_remediation)
+        object.__setattr__(inst, "error_source_task", self.error_source_task)
+        return inst
 
 
 def _settle_stream_outcome(pending: _PendingCallState, outcome: RemoteCallOutcome) -> RemoteCallOutcome:
     if not outcome.transport_lost:
         pending.drain_progress_inline()
     return outcome
-
-
-@dataclass(frozen=True, slots=True)
-class _OpenedStream:
-    early_error: Optional[RemoteCallOutcome]
-    stream_id: int = -1
-    pending: Optional[_PendingCallState] = None
-
-
-@dataclass(frozen=True, slots=True)
-class _StreamWaitSlice:
-    grace_expired: bool = False
-    timed_out: bool = False
-    wait_sec: Optional[float] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -505,7 +532,8 @@ class MultiplexedChannel:
         if stall_v is None or stall_v <= 0.0:
             raise ValueError("write_stall_timeout_sec must be finite and > 0.")
         self._sock = sock
-        self._sock.settimeout(None)
+        _enable_tcp_nodelay(self._sock)
+        self._sock.setblocking(False)
         self._handler = handler
         self._max_frame_bytes = require_pure_int(max_frame_bytes, "max_frame_bytes", min_val=1, max_val=None)
         self._write_stall_sec = max(0.2, stall_v)
@@ -555,7 +583,8 @@ class MultiplexedChannel:
         with self._cond:
             return self._closed
 
-    def _is_usable(self) -> bool:
+    @property
+    def is_usable(self) -> bool:
         with self._cond:
             return not self._closed and not self._retiring
 
@@ -631,22 +660,22 @@ class MultiplexedChannel:
                 error_message=f"RPC call timed out immediately (timeout_ms={timeout_ms}).",
             )
         clamped_sec = ms_to_safe_sec(timeout_ms) if timeout_ms is not None else None
-        opened = self._open_outbound_call_stream(payload, on_progress)
-        if opened.early_error is not None or opened.pending is None:
-            return require_non_none(opened.early_error)
+        early_err, stream_id, pending = self._open_outbound_call_stream(payload, on_progress)
+        if early_err is not None or pending is None:
+            return require_non_none(early_err)
         return self._await_outbound_call_stream(
-            opened.stream_id, opened.pending, cancel_token, timeout_ms, clamped_sec, cancel_grace_ms
+            stream_id, pending, cancel_token, timeout_ms, clamped_sec, cancel_grace_ms
         )
 
     def _open_outbound_call_stream(
         self,
         payload: JsonObject,
         on_progress: Optional[Callable[[JsonObject], None]],
-    ) -> _OpenedStream:
+    ) -> tuple[Optional[RemoteCallOutcome], int, Optional[_PendingCallState]]:
         with self._cond:
             early = self._closed_or_retiring_outcome_locked()
             if early is not None:
-                return _OpenedStream(early)
+                return (early, -1, None)
             while self._next_stream_id > 0x7FFFFFFF or self._next_stream_id in self._pending_calls:
                 self._next_stream_id = (
                     (1 if self._is_initiator else 2)
@@ -662,40 +691,46 @@ class MultiplexedChannel:
                 max_frame_bytes=self._max_frame_bytes,
             )
         except OverflowError as exc:
-            return _OpenedStream(
+            return (
                 RemoteCallOutcome(
                     was_accepted=False,
                     error_code=ErrorCode.PAYLOAD_TOO_LARGE,
                     error_message=safe_exception_summary(exc),
-                )
+                ),
+                -1,
+                None,
             )
         except (TypeError, ValueError) as exc:
-            return _OpenedStream(
+            return (
                 RemoteCallOutcome(
                     was_accepted=False,
                     error_code=ErrorCode.CODEC_VALIDATION_FAILED,
                     error_message=safe_exception_summary(exc),
-                )
+                ),
+                -1,
+                None,
             )
 
         pending = _PendingCallState(on_progress)
         with self._cond:
             early = self._closed_or_retiring_outcome_locked()
             if early is not None:
-                return _OpenedStream(early)
+                return (early, -1, None)
             if stream_id in self._pending_calls:
-                return _OpenedStream(
+                return (
                     RemoteCallOutcome(
                         was_accepted=False,
                         transport_lost=True,
                         error_code=ErrorCode.TRANSPORT_LOST,
                         error_message="RPC stream_id collision on saturated channel.",
-                    )
+                    ),
+                    -1,
+                    None,
                 )
             self._pending_calls[stream_id] = pending
             self._data_out_queue.append(_OutboundFrameItem(frame_bytes, call_start_sid=stream_id))
             self._cond.notify_all()
-        return _OpenedStream(None, stream_id, pending)
+        return (None, stream_id, pending)
 
     def _drop_unsent_call_start_locked(self, stream_id: int) -> bool:
         for item in tuple(self._data_out_queue):
@@ -785,19 +820,19 @@ class MultiplexedChannel:
         self,
         pending: _PendingCallState,
         deadline: Optional[float],
-    ) -> _StreamWaitSlice:
+    ) -> tuple[bool, bool, Optional[float]]:
         now = time.monotonic()
         with self._cond:
             grace_dl = pending.cancel_grace_deadline
         if grace_dl is not None and now >= grace_dl:
-            return _StreamWaitSlice(grace_expired=True)
+            return (True, False, None)
         if deadline is not None and now >= deadline:
-            return _StreamWaitSlice(timed_out=True)
+            return (False, True, None)
         candidates = [d - now for d in (deadline, grace_dl) if d is not None]
         if not candidates:
-            return _StreamWaitSlice()
+            return (False, False, None)
         rem = min(candidates)
-        return _StreamWaitSlice(wait_sec=min(rem, MAX_SAFE_WAIT_SEC) if math.isfinite(rem) else MAX_SAFE_WAIT_SEC)
+        return (False, False, min(rem, MAX_SAFE_WAIT_SEC) if math.isfinite(rem) else MAX_SAFE_WAIT_SEC)
 
     def _wait_call_stream_loop(
         self,
@@ -816,8 +851,7 @@ class MultiplexedChannel:
                 with self._cond:
                     settled = pending.to_outcome()
                 return _settle_stream_outcome(pending, settled)
-            ws = self._compute_stream_wait_slice(pending, deadline)
-            grace_exp, timed_out, wait_slice = ws.grace_expired, ws.timed_out, ws.wait_sec
+            grace_exp, timed_out, wait_slice = self._compute_stream_wait_slice(pending, deadline)
             if grace_exp:
                 return self._abandon_cancelled_outbound_stream(stream_id, pending)
             if timed_out:
@@ -989,6 +1023,17 @@ class MultiplexedChannel:
         if ev is None or ok_box is None:
             return True
         if not ev.wait(timeout=self._write_stall_sec + 1.0):
+            need_close = False
+            with self._cond:
+                if ev.is_set():
+                    return bool(ok_box and ok_box[0])
+                target_q = self._ctrl_out_queue if priority else self._data_out_queue
+                if item in target_q:
+                    target_q.remove(item)
+                    return False
+                need_close = not self._closed
+            if need_close:
+                self.close()
             return False
         return bool(ok_box and ok_box[0])
 
@@ -1332,9 +1377,9 @@ class MultiplexedChannel:
         res_payload: JsonObject,
         ack_accepted: Callable[[], bool],
     ) -> None:
-        res_meta: JsonObject = {"rejected_before_accept": True} if not accepted else {}
-        if accepted:
-            ack_accepted()
+        eff_accepted = accepted and ack_accepted()
+        res_meta: JsonObject = {"rejected_before_accept": True} if not eff_accepted else {}
+        accepted = eff_accepted
         try:
             encoded = _encode_raw_frame(
                 RpcFrame(kind=FrameKind.CALL_RESULT, stream_id=stream_id, payload=res_payload, meta=res_meta),
@@ -1400,6 +1445,7 @@ def _const_time_utf8_eq(left: str, right: str) -> bool:
 
 def _send_reject_ack_quietly(conn: socket.socket, max_frame_bytes: int) -> None:
     try:
+        conn.settimeout(2.0)
         conn.sendall(
             _encode_raw_frame(
                 RpcFrame(FrameKind.HELLO_ACK, 0, {"ok": False, "protocol": _PROTOCOL_VERSION}),
@@ -1410,26 +1456,24 @@ def _send_reject_ack_quietly(conn: socket.socket, max_frame_bytes: int) -> None:
         pass
 
 
-@dataclass(frozen=True, slots=True)
-class _HandshakeExpectation:
-    auth_token: str
-    boot_id: str
-    workspace_root: Optional[HostPath]
-
-
 def _verify_inbound_hello(
     conn: socket.socket,
-    exp: _HandshakeExpectation,
+    expected_auth_token: str,
+    expected_boot_id: str,
+    expected_workspace_root: Optional[HostPath],
     max_frame_bytes: int,
     timeout_sec: float = 2.0,
 ) -> bool:
     try:
+        _enable_tcp_nodelay(conn)
         hs_cap = min(max_frame_bytes, _MAX_HANDSHAKE_FRAME_BYTES)
         hello = _read_raw_frame(conn, max_frame_bytes=hs_cap, deadline=time.monotonic() + timeout_sec)
         if hello is None or hello.kind != FrameKind.HELLO or hello.stream_id != 0:
             _shutdown_and_close_sock(conn)
             return False
-        if not _is_valid_hello_payload(hello.payload, exp.auth_token, exp.boot_id, exp.workspace_root):
+        if not _is_valid_hello_payload(
+            hello.payload, expected_auth_token, expected_boot_id, expected_workspace_root
+        ):
             _send_reject_ack_quietly(conn, max_frame_bytes)
             _shutdown_and_close_sock(conn)
             return False
@@ -1493,11 +1537,10 @@ def accept_worker_handshake(
             if (sock_tmo is not None and math.isfinite(sock_tmo) and sock_tmo > 0.0)
             else 2.0
         )
-        exp = _HandshakeExpectation(expected_auth_token, boot_id, expected_workspace_root)
     except BaseException:
         _shutdown_and_close_sock(conn)
         raise
-    if not _verify_inbound_hello(conn, exp, safe_max, safe_hs):
+    if not _verify_inbound_hello(conn, expected_auth_token, boot_id, expected_workspace_root, safe_max, safe_hs):
         return None
     return _open_accepted_peer_channel(conn, boot_id, handler, safe_max)
 
@@ -1509,7 +1552,7 @@ def connect_and_handshake(
     connect_timeout_sec: float = 1.0,
     max_frame_bytes: int = MAX_FRAME_BYTES,
 ) -> Optional[MultiplexedChannel]:
-    """Connect to a loopback RPC endpoint, verify mutual HELLO/HELLO_ACK, and return a MultiplexedChannel."""
+    """Connect to a loopback RPC endpoint, complete HELLO/HELLO_ACK handshake, and return a MultiplexedChannel."""
     safe_timeout = max(0.05, require_non_none(validate_non_negative_sec(connect_timeout_sec, label="connect_timeout_sec")))
     safe_max = require_pure_int(max_frame_bytes, "max_frame_bytes", min_val=1, max_val=None)
     deadline = time.monotonic() + safe_timeout
@@ -1518,6 +1561,7 @@ def connect_and_handshake(
     try:
         sock.settimeout(safe_timeout)
         sock.connect((endpoint.host, endpoint.port))
+        _enable_tcp_nodelay(sock)
         rem_send = deadline - time.monotonic()
         if rem_send <= 0.0:
             sock.close()
@@ -1571,9 +1615,32 @@ def connect_and_handshake(
         raise
 
 
+def build_daemon_endpoint_dict(info: RpcEndpointInfo) -> JsonObject:
+    """Serialize RpcEndpointInfo using the canonical daemon.json field schema."""
+    if not isinstance(info, RpcEndpointInfo):
+        raise ValueError(f"Expected RpcEndpointInfo, got {info!r}")
+    return {
+        "pid": info.pid,
+        "host": info.host,
+        "port": info.port,
+        "boot_id": info.boot_id,
+        "auth_token": info.auth_token,
+        "workspace_root": str(info.workspace_root),
+    }
+
+
+def build_handoff_lease_dict(old_boot_id: str, expires_epoch: float) -> JsonObject:
+    """Serialize core handoff lease metadata using the canonical handoff_lease.json field schema."""
+    require_pure_str(old_boot_id, "old_boot_id", non_empty=True)
+    exp = safe_real_to_float(expires_epoch)
+    if not math.isfinite(exp):
+        raise ValueError("expires_epoch must be finite")
+    return {"old_boot_id": old_boot_id, "expires_epoch": exp}
+
+
 def read_daemon_endpoint_file(cache_dir: HostPath, workspace_root: HostPath) -> Optional[RpcEndpointInfo]:
     """Read and validate daemon.json coordinates without opening a network socket or following symlinks."""
-    data = read_json_dict(cache_dir, "daemon", "daemon.json")
+    data = read_json_dict(cache_dir, DAEMON_SUBDIR, DAEMON_ENDPOINT_FILENAME)
     if not data:
         return None
     try:
@@ -1622,7 +1689,7 @@ def probe_daemon_endpoint(
 
 def read_active_handoff_boot_id(cache_dir: HostPath) -> Optional[str]:
     """Return old_boot_id if a cross-process core handoff lease is currently active, otherwise None."""
-    data = read_json_dict(cache_dir, "daemon", "handoff_lease.json")
+    data = read_json_dict(cache_dir, DAEMON_SUBDIR, DAEMON_HANDOFF_FILENAME)
     if not data:
         return None
     exp_raw = data.get("expires_epoch", 0.0)
@@ -1649,7 +1716,7 @@ def wait_for_handoff_daemon_endpoint(
     safe_wait = max(0.05, require_non_none(validate_non_negative_sec(max_wait_sec, label="max_wait_sec")))
     old_boot = read_active_handoff_boot_id(cache_dir)
     if old_boot is None:
-        if previous_boot_id is None and read_json_dict(cache_dir, "daemon", "handoff_lease.json") is not None:
+        if previous_boot_id is None and read_json_dict(cache_dir, DAEMON_SUBDIR, DAEMON_HANDOFF_FILENAME) is not None:
             return None
         probed_now = probe_daemon_endpoint(cache_dir, workspace_root)
         if probed_now is not None and (previous_boot_id is None or probed_now.boot_id != previous_boot_id):
@@ -1726,7 +1793,7 @@ class PersistentRpcSession:
             )
         eff_tok, unreg = CancellationToken.combine(self._close_token, cancel_token)
         try:
-            outcome, _reached = self._call_with_reachability(
+            outcome, _reached = self.call_with_reachability(
                 payload,
                 on_progress=on_progress,
                 cancel_token=eff_tok,
@@ -1743,14 +1810,14 @@ class PersistentRpcSession:
             )
         return outcome
 
-    def _call_with_reachability(
+    def call_with_reachability(
         self,
         payload: JsonObject,
         *,
-        on_progress: Optional[Callable[[JsonObject], None]],
-        cancel_token: Optional[CancellationToken],
-        timeout_ms: Optional[int],
-        on_reconnect_wait: Optional[Callable[[Optional[CancellationToken]], bool]],
+        on_progress: Optional[Callable[[JsonObject], None]] = None,
+        cancel_token: Optional[CancellationToken] = None,
+        timeout_ms: Optional[int] = None,
+        on_reconnect_wait: Optional[Callable[[Optional[CancellationToken]], bool]] = None,
     ) -> tuple[RemoteCallOutcome, bool]:
         if timeout_ms is not None:
             require_pure_int(timeout_ms, "timeout_ms", min_val=None, max_val=None)
@@ -1847,7 +1914,7 @@ class PersistentRpcSession:
         with self._lock:
             if self._closed:
                 return None
-            if self._channel is not None and self._channel._is_usable():
+            if self._channel is not None and self._channel.is_usable:
                 return self._channel
             self._channel = None
         info = read_daemon_endpoint_file(self._cache_dir, self._workspace_root)
@@ -1863,7 +1930,7 @@ class PersistentRpcSession:
             return None
         existing: Optional[MultiplexedChannel] = None
         with self._lock:
-            if not self._closed and (self._channel is None or not self._channel._is_usable()):
+            if not self._closed and (self._channel is None or not self._channel.is_usable):
                 self._channel = new_ch
                 self._last_boot_id = info.boot_id
                 self._generation += 1
@@ -1909,7 +1976,7 @@ class PersistentRpcSession:
             if self._channel is target:
                 self._channel = None
                 was_current = True
-        if force_close and (was_current or target.is_closed or target._is_usable()):
+        if force_close and (was_current or target.is_closed or target.is_usable):
             target.close()
         else:
             target.close_when_idle()
@@ -1962,7 +2029,7 @@ def call_ephemeral_daemon_rpc(
     cache_dir, workspace_root = endpoint_dirs
     session = PersistentRpcSession(cache_dir, workspace_root, connect_timeout_sec=2.5)
     try:
-        outcome, reached = session._call_with_reachability(
+        outcome, reached = session.call_with_reachability(
             payload,
             on_progress=on_progress,
             cancel_token=cancel_token,
@@ -2223,8 +2290,9 @@ class RpcServerListener:
             if info is None:
                 _shutdown_and_close_sock(conn)
                 return
-            exp = _HandshakeExpectation(info.auth_token, info.boot_id, info.workspace_root)
-            if not _verify_inbound_hello(conn, exp, self._max_frame_bytes):
+            if not _verify_inbound_hello(
+                conn, info.auth_token, info.boot_id, info.workspace_root, self._max_frame_bytes
+            ):
                 return
             if not self._try_admit_handshake_sock(conn):
                 _send_reject_ack_quietly(conn, self._max_frame_bytes)

@@ -7,13 +7,12 @@ from dataclasses import dataclass
 import stat
 import threading
 import time
-from typing import Callable, Optional, Sequence
+from typing import Callable, Mapping, Optional, Sequence
 
-from core.filesystem.fs.atomic import is_atomic_staging_filename, is_contained_nonsymlink_path, is_symlink_or_reparse, walk_nonsymlink_dir_tree
+from core.filesystem.fs.atomic import IGNORED_FS_PREFIXES, is_atomic_staging_filename, is_contained_nonsymlink_path, is_symlink_or_reparse, walk_nonsymlink_dir_tree
 from core.foundation.observability import MAX_SAFE_WAIT_SEC, validate_non_negative_sec
 from core.foundation.primitives import HostPath, require_typed_tuple
 
-_IGNORED_DIR_PREFIXES = (".tmp_", ".staging_", "__pycache__")
 EchoSuppressionHook = Callable[[HostPath, int, int, int], bool]
 
 
@@ -24,22 +23,28 @@ class _FileStatStamp:
     ino: int
 
 
-def _record_regular_watch_entry(entry: os.DirEntry[str], out_state: dict[HostPath, _FileStatStamp]) -> None:
+def _record_regular_watch_entry(
+    entry: os.DirEntry[str],
+    out_state: dict[HostPath, _FileStatStamp],
+    prev_snap: Mapping[HostPath, _FileStatStamp],
+) -> None:
     if entry.is_symlink() or is_symlink_or_reparse(entry.path) or is_atomic_staging_filename(entry.name):
         return
     try:
         if not entry.is_dir(follow_symlinks=False):
             st = entry.stat(follow_symlinks=False)
             if stat.S_ISREG(st.st_mode):
-                out_state[HostPath(entry.path)] = _FileStatStamp(st.st_mtime_ns, st.st_size, st.st_ino)
+                hp = HostPath(entry.path)
+                ino = st.st_ino
+                if ino == 0:
+                    prev = prev_snap.get(hp)
+                    if prev is not None and prev.mtime_ns == st.st_mtime_ns and prev.size == st.st_size and prev.ino != 0:
+                        ino = prev.ino
+                    else:
+                        ino = os.lstat(entry.path).st_ino
+                out_state[hp] = _FileStatStamp(st.st_mtime_ns, st.st_size, ino)
     except (OSError, ValueError):
         return
-
-
-def _scan_dir_tree(root_dir: str, out_state: dict[HostPath, _FileStatStamp]) -> None:
-    for _cur_dir, entries in walk_nonsymlink_dir_tree(root_dir, ignored_dir_prefixes=_IGNORED_DIR_PREFIXES):
-        for entry in entries:
-            _record_regular_watch_entry(entry, out_state)
 
 
 def _normalize_prefix_pair(hp: HostPath) -> tuple[str, str]:
@@ -64,7 +69,7 @@ def _diff_stat_snapshots(
 
 def _stat_watchable_file(hp: HostPath, roots: Sequence[HostPath]) -> Optional[_FileStatStamp]:
     if is_atomic_staging_filename(hp.path.name) or not any(
-        is_contained_nonsymlink_path(root, hp, allow_equal=True, is_dir=False, ignored_dir_prefixes=_IGNORED_DIR_PREFIXES)
+        is_contained_nonsymlink_path(root, hp, allow_equal=True, is_dir=False, ignored_dir_prefixes=IGNORED_FS_PREFIXES)
         for root in roots
     ):
         return None
@@ -79,6 +84,7 @@ def _scan_resync_candidates(
     under_roots: Sequence[HostPath],
     roots: Sequence[HostPath],
     root_prefixes: tuple[tuple[str, str], ...],
+    prev_snap: Mapping[HostPath, _FileStatStamp],
 ) -> dict[HostPath, _FileStatStamp]:
     raw_partial: dict[HostPath, _FileStatStamp] = {}
     for hp in under_roots:
@@ -93,8 +99,10 @@ def _scan_resync_candidates(
             stamp = _stat_watchable_file(hp, roots)
             if stamp is not None:
                 raw_partial[hp] = stamp
-        elif stat.S_ISDIR(mode) and any(is_contained_nonsymlink_path(root, hp, allow_equal=True, is_dir=True, ignored_dir_prefixes=_IGNORED_DIR_PREFIXES) for root in roots):
-            _scan_dir_tree(raw_r, raw_partial)
+        elif stat.S_ISDIR(mode) and any(is_contained_nonsymlink_path(root, hp, allow_equal=True, is_dir=True, ignored_dir_prefixes=IGNORED_FS_PREFIXES) for root in roots):
+            for _cur_dir, entries in walk_nonsymlink_dir_tree(raw_r, ignored_dir_prefixes=IGNORED_FS_PREFIXES):
+                for entry in entries:
+                    _record_regular_watch_entry(entry, raw_partial, prev_snap)
     return {k: v for k, v in raw_partial.items() if _is_under_any_prefix(k, root_prefixes)}
 
 
@@ -150,7 +158,7 @@ class PollingDirectoryWatcher:
             self._last_change_ts = None
             self._first_change_ts = None
             self._dispatch_pending.clear()
-            self._snapshot = self._scan_all()
+            self._snapshot = self._scan_all({})
             pt = threading.Thread(target=self._run_loop, name="yscb-fs-watcher", daemon=True)
             dt = threading.Thread(
                 target=self._dispatch_loop,
@@ -188,7 +196,7 @@ class PollingDirectoryWatcher:
             if self._dispatch_thread is dt and (dt is None or not dt.is_alive()):
                 self._dispatch_thread = None
 
-    def _scan_all(self) -> dict[HostPath, _FileStatStamp]:
+    def _scan_all(self, prev_snap: Mapping[HostPath, _FileStatStamp]) -> dict[HostPath, _FileStatStamp]:
         root_prefixes = tuple(_normalize_prefix_pair(r) for r in self._roots)
         if not root_prefixes:
             return {}
@@ -206,7 +214,9 @@ class PollingDirectoryWatcher:
                 if stamp is not None:
                     state[root] = stamp
             elif stat.S_ISDIR(mode):
-                _scan_dir_tree(raw_root, state)
+                for _cur_dir, entries in walk_nonsymlink_dir_tree(raw_root, ignored_dir_prefixes=IGNORED_FS_PREFIXES):
+                    for entry in entries:
+                        _record_regular_watch_entry(entry, state, prev_snap)
         return {k: v for k, v in state.items() if _is_under_any_prefix(k, root_prefixes)}
 
     def resync_paths(self, under_roots: Sequence[HostPath]) -> frozenset[HostPath]:
@@ -227,7 +237,9 @@ class PollingDirectoryWatcher:
         root_prefixes: tuple[tuple[str, str], ...],
     ) -> frozenset[HostPath]:
         with self._scan_lock:
-            partial = _scan_resync_candidates(under_roots, self._roots, root_prefixes)
+            with self._state_lock:
+                prev_snap = dict(self._snapshot)
+            partial = _scan_resync_candidates(under_roots, self._roots, root_prefixes, prev_snap)
             with self._state_lock:
                 prev_under = {k: v for k, v in self._snapshot.items() if _is_under_any_prefix(k, prefixes)}
             unsuppressed = self._filter_unsuppressed_unlocked(_diff_stat_snapshots(prev_under, partial))
@@ -289,7 +301,9 @@ class PollingDirectoryWatcher:
 
     def _poll_once(self, max_defer_sec: float) -> bool:
         with self._scan_lock:
-            new_snap = self._scan_all()
+            with self._state_lock:
+                prev_snap = dict(self._snapshot)
+            new_snap = self._scan_all(prev_snap)
             with self._state_lock:
                 raw_cands = _diff_stat_snapshots(self._snapshot, new_snap)
             diff_paths = self._filter_unsuppressed_unlocked(raw_cands)

@@ -19,6 +19,8 @@
    - **原子封口（`StepFlight.seal_and_finalize`）與共享 `FlightCascade`**：單步完成時先於 `_lock` 內封口停止收客並快照存活槽位，隨即於鎖外展開嵌套呼叫端視圖並掛載 `FlightCascade`（傳遞完整嵌套 `ChildCascadeJoin` `EmittedEventHop` 因果鏈與存活呼叫端視圖 `snapshot_live_caller_views`），最後於 `_lock` 內原子綁定 `abort_hook` 並重播封口視窗期間之中止槽位，消除跨鎖順序反轉；若全體參與者皆已取消則不建立孤兒 `FlightCascade`；若單一存活參與者且無子級合流則走內聯因果重算快徑；多人或嵌套合流則透過對稱 `FlightCascade` 單次排空並依各呼叫端自身因果鏈精確歸責環路來源。
 4. **純淨 `sys.meta_path` 隔離套件與子模組載入（`module_slot.py`）**：透過 `_ScopedModuleFinder` 與直接呼叫幀（Direct-Frame）限定之 `importlib.import_module` 轉發，將每個模組掛載為獨立合成套件 `_yscb_v2_mod_<id>_<hex>` 及其入口子模組 `.__entry__`，完整支援相對匯入、不遮蔽 Python 標準庫之絕對兄弟匯入、`importlib.import_module()` 動態匯入與 PEP 420 命名空間子目錄，零全域 `sys.path` / `sys.modules` 頂層污染。
 5. **與 `execution.daemon` 零逆向耦合**：`runtime` 透過 `execution.rpc` 唯讀探測線上 Daemon，並透過外層注入的 `DaemonSpawner(Protocol)` 按需背景拉起 Daemon，**`runtime` 內部 0 行匯入 `execution.daemon`**。
+6. **消費端擁有之 `ModuleProviderPort` 契約與 `surface` 組裝轉接縫（Dependency Inversion Seam）**：`ModuleProviderPort` 及 `ModuleDescriptor` / `TaskRouteSpec` 由消費端 `execution.runtime` 定義並擁有；下游 `Domain 3 (metadata)` 與 `Domain 4 (packaging)` 維持 100% 執行引擎無涉（零匯入 `execution`），由頂層組裝根 `Domain 6 (surface)` 實作超薄轉接器將 `(metadata + packaging)` 靜態產物映射為 `ModuleDescriptor` 注入 `RuntimeDispatcher`。
+7. **跨進程 `SERIALIZE` 合法後代 `.pin` 免排隊直通與全回合逾時語意**：當外部進程已持有 `resource_key` 之 `SERIALIZE` 檔案鎖並透過 RPC 巢狀回呼常駐 Daemon 時，合法後代透過 `.pin` 共享鎖驗證擁有者身分後直接重入執行，絕不排在正等待該外部鎖之無關競爭者後方造成循環等待；`TaskMetadata.timeout_ms` 定義為涵蓋主任務單步與同一 Turn 延遲事件訂閱鏈排空之整體時間預算；`approval_scope` 與 `allow_conditional` 則作為同使用者信任域內防止破壞性任務遭未確認或背景/事件鏈誤觸發之顯式安全護欄。
 
 ## 2. 核心契約規格 (`contracts.py` & `wire.py` 公開快照)
 
@@ -36,6 +38,16 @@ TIn = TypeVar("TIn")
 TOut = TypeVar("TOut")
 TOut_co = TypeVar("TOut_co", covariant=True)
 TPayload = TypeVar("TPayload")
+
+
+WORKER_AUTH_ENV_KEY: str = "YSCB_WORKER_AUTH_TOKEN"
+LOCKS_SUBDIR: str = "locks"
+INSTALLER_LOCK_FILENAME: str = "installer.lock"
+MODULES_DIRNAME: str = ".modules"
+DEFAULT_CACHE_DIRNAME: str = ".cache"
+CORE_MODULE_ID: ModuleId = ModuleId("core")
+WATCHER_TASK_ID: TaskId = TaskId("core.watcher")
+CONFIG_CHANGED_EVENT_ID: EventId = EventId("core.config_changed")
 
 
 def sanitize_caller_env(raw_env: Mapping[str, str]) -> dict[str, str]: ...
@@ -289,6 +301,19 @@ class Task(BoundTask, Generic[TIn, TOut]):
     def metadata(self) -> TaskMetadata[TIn, TOut]: ...
     @abstractmethod
     def run(self, req: TIn, ctx: TaskContext) -> TOut: ...
+    @property
+    def task_id(self) -> TaskId: ...
+    @property
+    def route_spec(self) -> TaskRouteSpec: ...
+    @property
+    def interactive_tty(self) -> bool: ...
+    def compute_normalized_equivalence(self, raw_input: JsonObject) -> str: ...
+    def map_subscription_batch(
+        self,
+        event_id: EventId,
+        raw_payloads: Sequence[JsonObject],
+    ) -> tuple[bool, JsonObject]: ...
+    def execute_encoded(self, raw_input: JsonObject, ctx: TaskContext) -> JsonValue: ...
 
 
 class YscbModule(ABC):
@@ -357,7 +382,7 @@ InvokeRequest (攜帶 caller_cwd、caller_env、approval_scope 與顯式組合�
 [Stage 1: Metadata Lookup, Security/Mutation Invariant Gate & CallStack Check (gates.py)]
    │ 1. 驗證靜默/降級狀態（LifecycleReloadGate / WorkerContainerLifecycle）、TaskId、Exposure、--cold 相容性
    │ 2. 核驗 SecurityTier.GATED / CONDITIONAL（事件鏈與跨工作區自動收緊授權）
-   │ 3. 驗證物理互斥：interactive_tty 僅限頂層前景冷呼叫；mutation_scope != NONE 嚴禁從常駐熱容器呼叫樹同步呼叫
+   │ 3. 驗證物理互斥：interactive_tty 僅限頂層前景冷呼叫（不可為 SDK_ONLY）；mutation_scope != NONE 僅允許前景冷 Turn（零 hot_workspaces、非事件鏈），嚴禁任何觸及常駐熱容器呼叫樹之同步呼叫
    │ 4. 事件觸發先於 Tier 0 主控端執行 filter_for_subscription（未命中直接短路，絕不進 Stage 3 誤觸 PREEMPT 或污染因果鏈）
    │ 5. 以 (workspace_root, task_id) 與對稱單飛 coalesce_callers 檢查任務呼叫環路（跨子工作區同 task_id 合法放行）
    ▼
@@ -373,7 +398,7 @@ InvokeRequest (攜帶 caller_cwd、caller_env、approval_scope 與顯式組合�
 [Stage 3: Symmetric Resource Coordinator & FlightCascade (coordinator.py + lineage_join.py)]
    │ • 同棧與跨多跳單飛祖先重入判定：僅有效 SERIALIZE 允許同棧或 COALESCE 參與者祖先重入繼承持鎖；部分參與者非法重入僅逐槽剔除違規者！
    │ • COALESCE 中性對稱單飛：獨立 flight TurnScope 隔離執行，StepFlight.seal_and_finalize 原子掛載 FlightCascade 或單人內聯重算快徑
-   │ • 物理層統一持有 .cache/locks/res_<prefix>_<sha256>.lock/.owner.json/.pin 屏障，與外部 --cold 100% 跨進程互斥
+   │ • 物理層統一持有 .cache/locks/res_<prefix>_<sha256>.lock/.owner.json/.pin/.turn.lock/.turn.json 屏障，確保同進程與跨進程冷熱混合多執行緒 SERIALIZE 重入 100% 嚴格互斥且巢狀子呼叫免死鎖讓位
    ▼
 [Stage 4 & 5: Isolated Step Execution Host (module_slot.py / worker_pool.py / worker_entry.py)]
    ├── Tier 0 模組：LocalModuleSlotRegistry + _ScopedModuleFinder 合成套件隔離直跑單步 + guard_standard_streams 守護
@@ -464,6 +489,7 @@ class Tier1WorkerPool(Protocol):
 
 
 class LifecycleReloadGate:
+    def __init__(self, workspace_root: HostPath) -> None: ...
     @property
     def quiesce_epoch(self) -> int: ...
     @property
@@ -541,6 +567,10 @@ class LifecycleReloadGate:
     def exit_host_step(self, mod_id: ModuleId, turn_id: str, call_tree_id: str) -> None: ...
     @contextmanager
     def host_step_scope(self, mod_id: ModuleId, turn_id: str, call_tree_id: str) -> Iterator[None]: ...
+    def sync_colocated_quiesce_siblings(
+        self,
+        fresh_descs: Sequence[ModuleDescriptor],
+    ) -> frozenset[ModuleId]: ...
     def try_begin_quiesce(
         self,
         modules: frozenset[ModuleId],
@@ -595,6 +625,8 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
         options: DispatcherHostOptions = DispatcherHostOptions(),
     ) -> None: ...
 
+    @property
+    def is_daemon_host(self) -> bool: ...
     @property
     def cache_dir(self) -> HostPath: ...
     @property
@@ -699,9 +731,387 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
     def finalize_turn_events(self, turn: TurnScope, *, abort_only: bool = False) -> Optional[ErrorDetail]: ...
 ```
 
+## 4.1 協調引擎、級聯排空與隔離模組槽契約 (`coordinator.py` / `lineage_join.py` / `module_slot.py`)
+
+```python
+import contextlib
+from dataclasses import dataclass, field
+import threading
+from typing import Callable, Generic, Iterator, Mapping, MutableMapping, Optional, Sequence, TypeVar
+import weakref
+from core.execution.event import CausalLineage, RawEventRecord, ScopedHop
+from core.execution.lifecycle import LifoResourceStack, TurnExecutionReport, WorkerContainerLifecycle
+
+TVal = TypeVar("TVal")
+TResult = TypeVar("TResult")
+TBundle = TypeVar("TBundle")
+
+@dataclass(frozen=True, slots=True)
+class CascadeOutcome:
+    event_diagnostics: tuple[ErrorDetail, ...] = ()
+    teardown_diagnostics: tuple[ErrorDetail, ...] = ()
+    fatal_error: Optional[ErrorDetail] = None
+
+@dataclass(frozen=True, slots=True)
+class ChildCascadeJoin:
+    rel_hops: tuple[EmittedEventHop, ...]
+    cascade: FlightCascade
+    slot_id: int = -1
+
+@dataclass(frozen=True, slots=True)
+class CoordinatedExecution(Generic[TResult]):
+    is_follower: bool
+    caller_slot_id: int
+    outcome: Optional[TResult]
+
+@dataclass(frozen=True, slots=True)
+class FlightCallerRegistration:
+    caller_turn_id: str
+    call_tree_id: str
+    caller_stack: tuple[tuple[HostPath, TaskId], ...]
+    caller_hops: tuple[ScopedHop, ...]
+    step_cancel: CancellationToken
+    turn_cancel: CancellationToken
+    enclosing_flights: tuple[StepFlight[object], ...] = ()
+    inherited_views: tuple[CoalesceCallerView, ...] = ()
+    coalesce_flights: tuple[str, ...] = ()
+    turn_entry_stack: tuple[tuple[HostPath, TaskId], ...] = ()
+    in_event_chain: bool = False
+    deadline: Optional[float] = None
+
+class FlightCascade:
+
+    def __init__(self, *, seed_events: Sequence[RawEventRecord]=(), imm_hops: Sequence[EmittedEventHop]=(), imm_diagnostics: Sequence[ErrorDetail]=(), seed_teardown_diagnostics: Sequence[ErrorDetail]=(), initial_priority: ExecutionPriority=ExecutionPriority.BACKGROUND, graph_cond: Optional[threading.Condition]=None) -> None:
+        ...
+
+    def assert_acyclic(self, base_lineage: CausalLineage) -> None:
+        ...
+
+    def snapshot_emitted_hops(self) -> tuple[EmittedEventHop, ...]:
+        ...
+
+    def snapshot_live_caller_views(self) -> tuple[CoalesceCallerView, ...]:
+        ...
+
+    def add_cleanup(self, unreg: Callable[[], None]) -> None:
+        ...
+
+    def register_caller_slots(self, callers: Sequence[LiveFlightParticipant], priority: ExecutionPriority) -> None:
+        ...
+
+    def detach_caller_slot(self, slot_id: int) -> None:
+        ...
+
+    def bind_parent_cascade(self, parent: FlightCascade, transfer_slot_id: int=-1) -> bool:
+        ...
+
+    def record_emitted_hops(self, hops: Sequence[EmittedEventHop]) -> None:
+        ...
+
+    def record_live_diagnostic(self, detail: ErrorDetail) -> None:
+        ...
+
+    def add_child_join(self, call_rel_hops: Sequence[EmittedEventHop | ScopedHop], child: FlightCascade, transfer_slot_id: int=-1) -> None:
+        ...
+
+    def mark_own_completed(self, *, event_diagnostics: Sequence[ErrorDetail]=(), teardown_diagnostics: Sequence[ErrorDetail]=(), fatal_error: Optional[ErrorDetail]=None) -> None:
+        ...
+
+    def activate_and_await(self, slot_id: int, base_lineage: CausalLineage, caller_cancel: CancellationToken, deadline: Optional[float], drain_fn: Optional[Callable[[FlightCascade], TurnExecutionReport]]) -> CascadeOutcome:
+        ...
+
+    def collect_outcomes(self, slot_id: int, base_lineage: CausalLineage) -> CascadeOutcome:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class HolderIdentity:
+    turn_id: str = ''
+    tree_id: str = ''
+    flight_id: str = ''
+    stack: tuple[tuple[HostPath, TaskId], ...] = ()
+    alt_owners: tuple[HolderIdentity, ...] = ()
+
+@dataclass(frozen=True, slots=True)
+class LiveFlightParticipant:
+    slot_id: int
+    turn_cancel: CancellationToken
+    caller_hops: tuple[ScopedHop, ...] = ()
+    caller_views: tuple[CoalesceCallerView, ...] = ()
+
+@dataclass(slots=True)
+class LoadedModuleArtifact:
+    instance: YscbModule
+    package_key: str
+    in_flight: int = 0
+
+class LocalModuleSlotRegistry:
+
+    def __init__(self, workspace_root: HostPath, lifo_stack: LifoResourceStack, *, container: Optional[WorkerContainerLifecycle]=None, is_module_quiesced: Optional[Callable[[ModuleId], bool]]=None, require_eager_start: bool=False, on_module_initialized: Optional[Callable[[ModuleId], None]]=None) -> None:
+        ...
+
+    @property
+    def workspace_root(self) -> HostPath:
+        ...
+
+    def drain_pending_teardown_diagnostics(self) -> tuple[ErrorDetail, ...]:
+        ...
+
+    def register_descriptors(self, descriptors: Sequence[ModuleDescriptor]) -> None:
+        ...
+
+    def ensure_module_artifact_loaded(self, module_id: ModuleId, *, record_runtime_degraded: bool=True) -> YscbModule:
+        ...
+
+    def introspect_bound_route_specs(self, module_id: ModuleId) -> tuple[TaskRouteSpec, ...]:
+        ...
+
+    def ensure_module_loaded_and_initialized(self, module_id: ModuleId) -> YscbModule:
+        ...
+
+    def warmup_modules(self, only_modules: Optional[frozenset[ModuleId]]=None) -> Mapping[ModuleId, Callable[[], None]]:
+        ...
+
+    def lookup_task(self, task_id: TaskId, *, require_initialized: bool=True) -> BoundTask:
+        ...
+
+    def compute_equiv_locally(self, task_id: TaskId, raw_input: JsonObject) -> WorkerEquivReply:
+        ...
+
+    def map_batch_locally(self, task_id: TaskId, event_id: EventId, event_payloads: Sequence[JsonObject]) -> WorkerMapBatchReply:
+        ...
+
+    def unload_all_modules(self, *, grace_sec: float=0.2) -> tuple[ErrorDetail, ...]:
+        ...
+
+    def unload_modules(self, modules: frozenset[ModuleId], *, drain_in_flight: bool=False, grace_sec: float=2.0, force_retire: bool=False) -> tuple[ErrorDetail, ...]:
+        ...
+
+    def execute_step_locally(self, spec: LocalStepExecutionSpec) -> WorkerStepReply:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class LocalStepExecutionSpec:
+    task_id: TaskId
+    raw_input: JsonObject
+    caller_cwd: HostPath
+    caller_env: Mapping[str, str]
+    base_lineage: CausalLineage
+    cancel_token: CancellationToken
+    priority_getter: Callable[[], ExecutionPriority]
+    callbacks: StepContextCallbacks
+    interactive_tty: bool = False
+
+class PriorityHandle:
+
+    def __init__(self, initial: ExecutionPriority) -> None:
+        ...
+
+    @property
+    def current(self) -> ExecutionPriority:
+        ...
+
+    def __call__(self) -> ExecutionPriority:
+        ...
+
+    def elevate_to_foreground(self) -> None:
+        ...
+
+    def register_listener(self, cb: Callable[[ExecutionPriority], None]) -> Callable[[], None]:
+        ...
+
+class ProtectedModuleLoader:
+
+    def __init__(self, workspace_root: HostPath) -> None:
+        ...
+
+    @classmethod
+    def cleanup_package(cls, pkg_or_entry: str) -> None:
+        ...
+
+    def load_module_artifact(self, descriptor: ModuleDescriptor) -> LoadedModuleArtifact:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class ResourceAcquireSpec:
+    resource_key: Optional[str]
+    mode: ConcurrencyMode
+    equiv_key: str
+    priority: ExecutionPriority
+    turn_id: str
+    call_stack: tuple[tuple[HostPath, TaskId], ...]
+    cancel_token: CancellationToken
+    turn_cancel_token: Optional[CancellationToken] = None
+    timeout_ms: Optional[int] = None
+    external_priority_handle: Optional[PriorityHandle] = None
+    allow_step_coalesce: bool = True
+    call_tree_id: str = ''
+    caller_hops: tuple[ScopedHop, ...] = ()
+    enclosing_flights: tuple[StepFlight[object], ...] = ()
+    coalesce_callers: tuple[CoalesceCallerView, ...] = ()
+    coalesce_flights: tuple[str, ...] = ()
+    turn_entry_stack: tuple[tuple[HostPath, TaskId], ...] = ()
+    in_event_chain: bool = False
+    on_progress: Optional[Callable[[JsonObject], None]] = None
+
+class ResourceCoordinator:
+
+    def __init__(self, locks_dir: Optional[HostPath]=None, *, cache_dir: Optional[HostPath]=None, workspace_root: Optional[HostPath]=None, resolve_cache_dir: Optional[Callable[[HostPath], HostPath]]=None, is_daemon_host: bool=False) -> None:
+        ...
+
+    @property
+    def is_daemon_host(self) -> bool:
+        ...
+
+    def drain_local_borrowed_locks(self, spec: ResourceAcquireSpec, deadline: float) -> None:
+        ...
+
+    def remove_remote_flight(self, flight_id: str) -> None:
+        ...
+
+    def evict_local_flight_ident(self, flight_id: str, ident: HolderIdentity, detail: ErrorDetail) -> bool:
+        ...
+
+    def handle_remote_flight_control(self, payload: JsonObject) -> JsonObject:
+        ...
+
+    def register_remote_flight_join(self, flight_id: str, views: Sequence[CoalesceCallerView], *, origin_ws: Optional[HostPath]=None) -> Optional[tuple[HolderIdentity, ErrorDetail]]:
+        ...
+
+    def coalesce_participant_count(self, resource_key: str) -> int:
+        ...
+
+    @contextlib.contextmanager
+    def pin_inbound_flights(self, flight_ids: Sequence[str]) -> Iterator[None]:
+        ...
+
+    def bind_shared_peers(self, peers: weakref.WeakValueDictionary[str, ResourceCoordinator], cache_dirs: dict[str, HostPath], guard: threading.RLock) -> None:
+        ...
+
+    def execute(self, spec: ResourceAcquireSpec, leader_fn: Callable[[PriorityHandle, CancellationToken, Optional[StepFlight[TResult]]], TResult], *, extract_release_guard: Optional[Callable[[TResult], Optional[threading.Event]]]=None) -> CoordinatedExecution[TResult]:
+        ...
+
+class SharedCancelGroup:
+
+    def __init__(self) -> None:
+        ...
+
+    def add_participants(self, caller_tokens: Sequence[CancellationToken]) -> tuple[Optional[Callable[[], None]], ...]:
+        ...
+
+    def try_add_participant(self, caller_token: CancellationToken) -> Optional[Callable[[], None]]:
+        ...
+
+    @property
+    def active_count(self) -> int:
+        ...
+
+    def close_all(self) -> None:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class StepContextCallbacks:
+    on_emit_imm: Callable[[EventId, JsonObject, CausalLineage, bool], None]
+    on_invoke_task: Callable[[TaskId, JsonObject, Optional[HostPath], Optional[ClientRoutingPolicy]], TaskOutcome[JsonValue]]
+    on_progress: Callable[[JsonObject], None]
+
+class StepFlight(Generic[TVal]):
+
+    def __init__(self, priority_handle: PriorityHandle) -> None:
+        ...
+
+    def record_notified_workspace(self, ws: HostPath, *, send_tcp: bool) -> bool:
+        ...
+
+    def drain_notified_workspaces(self) -> tuple[tuple[HostPath, bool], ...]:
+        ...
+
+    def slot_wake_event(self, slot_id: int) -> threading.Event:
+        ...
+
+    def seal(self) -> None:
+        ...
+
+    def get_slot_error(self, slot_id: int) -> Optional[BaseException]:
+        ...
+
+    def effective_deadline(self) -> Optional[float]:
+        ...
+
+    def add_caller(self, reg: FlightCallerRegistration, on_progress: Optional[Callable[[JsonObject], None]]) -> tuple[int, Optional[Callable[[], None]]]:
+        ...
+
+    def evict_callers_where(self, reg_pred: Callable[[FlightCallerRegistration], bool], view_pred: Callable[[CoalesceCallerView, tuple[str, ...]], bool], exc_factory: Callable[[Sequence[CoalesceCallerView]], BaseException]) -> tuple[bool, bool]:
+        ...
+
+    def evict_callers_matching_holder(self, ident: HolderIdentity, leaf_frame: Optional[tuple[HostPath, TaskId]], exc: BaseException) -> tuple[bool, bool]:
+        ...
+
+    def seal_and_finalize(self, builder: Callable[[list[LiveFlightParticipant], int], tuple[TBundle, Optional[Callable[[int], None]]]]) -> TBundle:
+        ...
+
+    def notify_waiter_aborted(self, slot_id: int) -> None:
+        ...
+
+    def broadcast_progress(self, payload: JsonObject) -> None:
+        ...
+
+    def snapshot_caller_views(self, visited: Optional[set[int]]=None, *, post_step: bool=False) -> tuple[CoalesceCallerView, ...]:
+        ...
+
+    def find_common_conflicting_hop(self, cand_hops: Sequence[ScopedHop]) -> Optional[ScopedHop]:
+        ...
+
+    def all_active_callers_have_frame(self, frame: tuple[HostPath, TaskId]) -> bool:
+        ...
+
+    def depends_on_flight_ids(self, target_fids: frozenset[str], seen: Optional[set[int]]=None) -> bool:
+        ...
+
+    def has_reentrant_caller(self, ident: HolderIdentity, leaf_frame: Optional[tuple[HostPath, TaskId]]=None) -> bool:
+        ...
+
+    def complete(self, *, outcome: Optional[TVal]=None, raised_exc: Optional[BaseException]=None) -> None:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class WorkerBootstrapConfig:
+    host: str
+    port: int
+    boot_id: str
+    workspace_root: HostPath
+    modules: tuple[ModuleDescriptor, ...]
+    is_hot_container: bool = True
+
+@dataclass(frozen=True, slots=True)
+class WorkerEquivReply:
+    ok: bool
+    equiv_key: str = ''
+    error: Optional[ErrorDetail] = None
+
+@dataclass(frozen=True, slots=True)
+class WorkerMapBatchReply:
+    ok: bool
+    skip: bool = False
+    mapped_input: JsonObject = field(default_factory=dict)
+    error: Optional[ErrorDetail] = None
+
+@dataclass(frozen=True, slots=True)
+class WorkerStepReply:
+    ok: bool
+    raw_output: JsonValue = None
+    committed_events: tuple[RawEventRecord, ...] = ()
+    teardown_diagnostics: tuple[ErrorDetail, ...] = ()
+    preempted: bool = False
+    fatal_abort_turn: bool = False
+    error: Optional[ErrorDetail] = None
+
+def worker_main(argv: Optional[Sequence[str]] = None, env: Optional[MutableMapping[str, str]] = None) -> int:
+    ...
+```
+
 ## 5. 必測封閉性驗收門檻 (Verification Gate — 對標 `verify_execution_live.py` `RC-01 ～ RC-08`)
 
-1. **零逆向匯入、參數/深度靜態門檻與共置 Worker 強制主控路由檢查**。
+1. **零逆向匯入、顯式六域匯入白名單、業務階段聚合與零跨協作者私有穿透檢查，以及共置 Worker 強制主控路由檢查**。
 2. **帶參 `COALESCE` 中性對稱 `StepFlight` / `FlightCascade` 合併、多跳跨鎖重入（含跨常駐 Daemon 彈跳與 `.pin` 保護）、逐呼叫方非法重入剔除與環路隔離、動態截止預算、優先級傳遞與部分取消不誤殺測試**。
 3. **`_ScopedModuleFinder` 合成套件世代熱重載隔離、不遮蔽標準庫匯入、直接幀限定 `importlib.import_module` 並發動態匯入與 PEP 420 命名空間子套件測試**。
 4. **`caller_cwd` / `caller_env` 跨熱派發傳遞、`GATED` 巢狀防提權、Worker 收單前後崩潰分流、逐模組跨層級 LIFO 釋放診斷與中毒子進程實際退出後釋鎖測試**。

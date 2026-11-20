@@ -8,6 +8,8 @@ from typing import Callable, Optional, Sequence
 
 from core.execution.lifecycle import ContainerState, LifoResourceStack, WorkerContainerLifecycle
 from core.execution.runtime.contracts import (
+    INSTALLER_LOCK_FILENAME,
+    LOCKS_SUBDIR,
     ModuleDescriptor,
     ModuleProviderPort,
     SubscriptionRouteSpec,
@@ -76,7 +78,7 @@ class RouteIndexRegistry:
         if not self._is_daemon_host:
             self.rebuild()
             return
-        probe = try_acquire_contained_lock(self._cache_dir, "locks", "installer.lock", shared=True)
+        probe = try_acquire_contained_lock(self._cache_dir, LOCKS_SUBDIR, INSTALLER_LOCK_FILENAME, shared=True)
         if probe is not None:
             try:
                 self.rebuild()
@@ -94,7 +96,7 @@ class RouteIndexRegistry:
     def ensure_ready(self) -> None:
         if not self._has_deferred_boot_index():
             return
-        probe = try_acquire_contained_lock(self._cache_dir, "locks", "installer.lock", shared=True)
+        probe = try_acquire_contained_lock(self._cache_dir, LOCKS_SUBDIR, INSTALLER_LOCK_FILENAME, shared=True)
         if probe is None:
             return
         try:

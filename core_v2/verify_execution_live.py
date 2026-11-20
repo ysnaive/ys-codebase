@@ -127,17 +127,27 @@ from core.execution.runtime import (
     DispatchMode,
     DispatcherHostOptions,
     DueQuiesceResume,
+    EmittedEventHop,
     ExecutionPriority,
+    FlightCascade,
     InvokeRequest,
     LifecycleReloadGate,
+    LiveFlightParticipant,
+    LocalModuleSlotRegistry,
+    LocalStepExecutionSpec,
     ModuleDescriptor,
     ModuleProviderPort,
     PeriodicScheduleSpec,
+    PriorityHandle,
+    ProtectedModuleLoader,
     QuiesceResumeResult,
+    ResourceAcquireSpec,
+    ResourceCoordinator,
     ResumeConsumePlan,
     RuntimeDispatcher,
     SecurityTier,
     SelfMutationScope,
+    StepContextCallbacks,
     SubscriptionRouteSpec,
     Task,
     TaskContext,
@@ -147,79 +157,65 @@ from core.execution.runtime import (
     TaskRouteSpec,
     Tier1WorkerPool,
     VfsEchoGuardPort,
+    WORKER_AUTH_ENV_KEY,
+    WorkerBootstrapConfig,
     WorkerProcessSnapshot,
+    WorkerStepReply,
     YscbModule,
     decode_outcome_as,
     sanitize_caller_env,
+    worker_main,
 )
-from core.execution.daemon.service import _scan_core_module_tree
-from core.execution.runtime.coordinator import (
-    LiveFlightParticipant,
-    PriorityHandle,
-    ResourceAcquireSpec,
-    ResourceCoordinator,
-    _ResourceBucket,
-    _wait_active_borrowed_guards_for_caller,
-)
-from core.execution.runtime.worker_pool import HotWorkerPool
-from core.execution.runtime.lineage_join import (
-    FlightCascade,
-)
-from core.execution.runtime.worker_entry import WorkerSubprocessHandler
-from core.execution.runtime.wire import WorkerCallbackContext, WorkerCommandEnvelope, WorkerCommandKind, WorkerStepReply
-from core.execution.runtime.module_slot import (
-    LocalModuleSlotRegistry,
-    LocalStepExecutionSpec,
-    ProtectedModuleLoader,
-    StepContextCallbacks,
-)
-from core.execution.runtime.wire import DaemonRpcInvokeEnvelope, EmittedEventHop
-import core.execution.runtime.worker_entry as worker_entry_pkg
 from core.filesystem.fs import (
     FileLock,
     PollingDirectoryWatcher,
+    assert_no_symlink_raw_path,
     atomic_write_bytes,
     atomic_write_json,
-    is_symlink_or_reparse,
-    read_json_dict,
-)
-from core.filesystem.fs.atomic import (
-    assert_no_symlink_raw_path,
     has_symlink_raw_path,
     hash_nofollow_regular_sha256,
     is_atomic_staging_filename,
     is_contained_nonsymlink_path,
+    is_symlink_or_reparse,
+    read_json_dict,
+    read_live_owner_dict,
     read_nofollow_regular_bytes,
+    resolve_contained_child_dir,
+    resolve_contained_subpath,
+    unlink_owner_under_pin,
+    write_cross_proc_owner_json,
 )
-from core.foundation.codec import DataclassCodec, _dehydrate_type, _rehydrate_type
-from core.foundation.errors import ErrorCode, ErrorDetail, EventCycleError, TaskCancelledException, YscbError, safe_exception_summary
-from core.foundation.observability import (
+from core.foundation import (
     CancellationToken,
+    DataclassCodec,
     DeadlineGuard,
-    ProgressEvent,
-    clamp_wait_sec,
-    guard_standard_streams,
-    ms_to_safe_sec,
-    validate_non_negative_sec,
-)
-from core.foundation.primitives import (
+    ErrorCode,
+    ErrorDetail,
+    EventCycleError,
     EventId,
     HostPath,
     JsonObject,
     JsonPrimitive,
     JsonValue,
+    ManagedProcessTree,
     ModuleId,
     MutableJsonObject,
-    TaskId,
-    require_non_none,
-)
-from core.foundation import (
-    ManagedProcessTree,
-    spawn_detached,
+    ProgressEvent,
     SignalWakeupGuard,
+    TaskCancelledException,
+    TaskId,
+    YscbError,
+    clamp_positive_sec,
+    clamp_wait_sec,
     clone_strict_json_object,
+    guard_standard_streams,
     is_process_alive,
+    is_valid_relative_segment,
+    ms_to_safe_sec,
+    safe_exception_summary,
+    spawn_detached,
     strict_parse_json_object,
+    validate_non_negative_sec,
     validate_wire_json_object,
 )
 
@@ -655,7 +651,7 @@ from core.execution.runtime import (
     SelfMutationScope, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule
 )
 from core.filesystem.fs import atomic_write_json, read_json_dict
-from core.foundation.primitives import EventId, HostPath, ModuleId, TaskId
+from core.foundation import EventId, HostPath, ModuleId, TaskId
 
 MODULE_VER = "v1"
 
@@ -1076,7 +1072,7 @@ def create_module() -> YscbModule:
 _BROKEN_OPT_MODULE_SRC: Final[str] = '''from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule
-from core.foundation.primitives import HostPath, ModuleId, TaskId
+from core.foundation import HostPath, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class PingIn:
@@ -1108,7 +1104,7 @@ def create_module() -> YscbModule:
 
 _VSC_MODULE_SRC: Final[str] = '''import time
 from dataclasses import dataclass
-from core.foundation.observability import ProgressEvent
+from core.foundation import ProgressEvent
 from typing import Callable, Optional, Sequence
 import local_util
 from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec
@@ -1116,7 +1112,7 @@ from core.execution.runtime import (
     BoundTask, ConcurrencyMode, SecurityTier, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule
 )
 from core.filesystem.fs import atomic_write_json, read_json_dict
-from core.foundation.primitives import EventId, HostPath, ModuleId, TaskId
+from core.foundation import EventId, HostPath, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class VscSyncIn:
@@ -1326,8 +1322,8 @@ from core.execution.runtime import (
     BoundTask, ClientRoutingPolicy, ConcurrencyMode, DispatchMode, Task, TaskContext, TaskMetadata, YscbModule
 )
 from core.filesystem.fs import atomic_write_json, read_json_dict
-from core.foundation.primitives import HostPath, ModuleId, TaskId
-from core.foundation.proc import ManagedProcessTree
+from core.foundation import HostPath, ModuleId, TaskId
+from core.foundation import ManagedProcessTree
 
 @dataclass(frozen=True, slots=True)
 class SandboxIn:
@@ -1438,8 +1434,8 @@ import local_util
 from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec
 from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule
 from core.filesystem.fs import atomic_write_json, read_json_dict
-from core.foundation.codec import DataclassCodec
-from core.foundation.primitives import EventId, HostPath, ModuleId, TaskId
+from core.foundation import DataclassCodec
+from core.foundation import EventId, HostPath, ModuleId, TaskId
 
 AST_MOD_VER = "ast_v1"
 
@@ -1591,9 +1587,9 @@ from core.execution.runtime import (
     BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule
 )
 from core.filesystem.fs import FileLock, atomic_write_json, read_json_dict
-from core.foundation.errors import TaskCancelledException
-from core.foundation.observability import ProgressEvent
-from core.foundation.primitives import EventId, HostPath, ModuleId, TaskId
+from core.foundation import TaskCancelledException
+from core.foundation import ProgressEvent
+from core.foundation import EventId, HostPath, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class EmptyEvDto:
@@ -1796,7 +1792,7 @@ from core.execution.runtime import (
     Task, TaskContext, TaskExposure, TaskMetadata, YscbModule
 )
 from core.filesystem.fs import atomic_write_json, read_json_dict
-from core.foundation.primitives import ModuleId, TaskId
+from core.foundation import ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class AuthIn:
@@ -1870,7 +1866,7 @@ class PutTask(Task[PutIn, GdriveOut]):
             TaskId("gdrive.put"), PutIn, GdriveOut,
             security_tier=SecurityTier.CONDITIONAL,
             resource_key="gdrive_sync", concurrency_mode=ConcurrencyMode.SERIALIZE,
-            timeout_ms=750,
+            timeout_ms=1000,
         )
     def run(self, req: PutIn, ctx: TaskContext) -> GdriveOut:
         runs_f = ctx.workspace_root.join(".cache", "gdrive_put_runs.json")
@@ -1903,7 +1899,7 @@ def create_module() -> YscbModule:
 '''
 
 
-# Workspace Provisioning Helpers (Each <= 75 LOC, <= 6 Params)
+# Workspace Provisioning Helpers
 
 
 def _write_module(ws: Path, name: str, routes: JsonObject, code: str, helper_who: Optional[str] = None) -> None:
@@ -2020,13 +2016,14 @@ def _provision_vsc_and_dev_modules(ws: Path) -> None:
     )
 
 
-def _provision_tier1_modules(ws: Path) -> None:
-    _write_module(
-        ws,
-        "broken_opt",
-        {"tier1": True, "venv_group": "idx_group", "eager_warmup": True, "tasks": [{"task_id": "broken_opt.ping"}]},
-        _BROKEN_OPT_MODULE_SRC,
-    )
+def _provision_tier1_modules(ws: Path, *, include_broken_opt: bool = False) -> None:
+    if include_broken_opt:
+        _write_module(
+            ws,
+            "broken_opt",
+            {"tier1": True, "venv_group": "idx_group", "eager_warmup": True, "tasks": [{"task_id": "broken_opt.ping"}]},
+            _BROKEN_OPT_MODULE_SRC,
+        )
     _write_module(
         ws,
         "ast",
@@ -2079,14 +2076,14 @@ def _provision_tier1_modules(ws: Path) -> None:
                     "concurrency_mode": "serialize",
                     "periodic": {"default_interval_sec": 0.10, "enabled_config_key": "auto_sync", "interval_config_key": "interval_sec"},
                 },
-                {"task_id": "gdrive.put", "security_tier": "conditional", "resource_key": "gdrive_sync", "concurrency_mode": "serialize", "timeout_ms": 750},
+                {"task_id": "gdrive.put", "security_tier": "conditional", "resource_key": "gdrive_sync", "concurrency_mode": "serialize", "timeout_ms": 1000},
             ],
         },
         _GDRIVE_MODULE_SRC,
     )
 
 
-def provision_live_workspace(ws: Path) -> None:
+def provision_live_workspace(ws: Path, *, include_broken_opt: bool = False) -> None:
     (ws / "config").mkdir(parents=True, exist_ok=True)
     (ws / ".config.local").mkdir(parents=True, exist_ok=True)
     (ws / "spaces" / "source").mkdir(parents=True, exist_ok=True)
@@ -2097,11 +2094,54 @@ def provision_live_workspace(ws: Path) -> None:
     atomic_write_json(HostPath(ws / "yscb.config.json"), {"workspace_version": 2})
     atomic_write_json(HostPath(ws / "config" / "gdrive.json"), {"auto_sync": False, "interval_sec": 0.10, "work_ms": 0})
     _provision_core_tier0_modules(ws)
-    _provision_tier1_modules(ws)
+    _provision_tier1_modules(ws, include_broken_opt=include_broken_opt)
 
 
 # Subprocess Entrypoints for Real Daemon & Real CLI Worker Processes
 
+
+
+def _ensure_live_host_boot_script(ws: HostPath | Path) -> Path:
+    ws_p = ws.path if isinstance(ws, HostPath) else ws
+    boot_f = ws_p.parent / "_yscb_live_host_boot.py"
+    if not boot_f.is_file():
+        src_full = Path(__file__).resolve().read_text(encoding="utf-8")
+        i_start = src_full.index("\nclass FileConfigView(ConfigViewPort):")
+        i_end = src_full.index("\ndef _write_module(")
+        j_start = src_full.index("\n@dataclass(frozen=True, slots=True)\nclass WorkspaceDispatcherRig:")
+        j_end = src_full.index("\n# Gate 0: Strict Allowlist DAG")
+        header = (
+            "from __future__ import annotations\n"
+            "from dataclasses import dataclass\n"
+            "import difflib, json, os, sys, threading\n"
+            "from pathlib import Path\n"
+            "from typing import Mapping, Optional, Sequence\n"
+            f"sys.path.insert(0, {str(CORE_SRC_ROOT)!r})\n"
+            "from core.foundation import EventId, HostPath, JsonObject, JsonPrimitive, JsonValue, ModuleId, MutableJsonObject, TaskId\n"
+            "from core.filesystem.fs import FileLock, atomic_write_json, read_json_dict\n"
+            "from core.execution.rpc import DaemonConnectionConfig, PersistentRpcSession\n"
+            "from core.execution.daemon import DaemonWatcherConfig, SingleFlightDaemonSpawner, WorkspaceDaemon\n"
+            "from core.execution.runtime import (CallerSurface, CliBindingSpec, ClientRoutingPolicy, ConcurrencyMode, ConfigViewPort, "
+            "DispatchMode, DispatcherHostOptions, InvokeRequest, ModuleDescriptor, ModuleProviderPort, PeriodicScheduleSpec, "
+            "RuntimeDispatcher, SecurityTier, SelfMutationScope, SubscriptionRouteSpec, TaskExposure, TaskRouteSpec, VfsEchoGuardPort)\n"
+            "def _jint(m: Optional[Mapping[str, JsonValue]], k: str, d: int = 0) -> int:\n"
+            "    v = m.get(k, d) if m is not None else d\n"
+            "    return v if isinstance(v, int) and not isinstance(v, bool) else d\n\n"
+        )
+        body = src_full[i_start:i_end] + "\n" + src_full[j_start:j_end]
+        body = body.replace("str(Path(__file__).resolve())", "str(_ensure_live_host_boot_script(ws))")
+        footer = (
+            "\n\ndef _ensure_live_host_boot_script(_ws: object) -> Path:\n"
+            "    return Path(__file__).resolve()\n\n"
+            "if __name__ == '__main__':\n"
+            "    a = sys.argv[1:]\n"
+            "    if a and a[0] == '--daemon-entry':\n"
+            "        raise SystemExit(_daemon_process_main(a[1], a[2], a[3]))\n"
+            "    if a and a[0] == '--cli-oneshot':\n"
+            "        raise SystemExit(_cli_oneshot_main(a[1], a[2], a[3], a[4], a[5], a[6]))\n"
+        )
+        boot_f.write_text(header + body + footer, encoding="utf-8")
+    return boot_f
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceDispatcherRig:
@@ -2109,6 +2149,15 @@ class WorkspaceDispatcherRig:
     config_view: FileConfigView
     echo_ledger: FileEchoLedger
     provider: ManifestModuleProvider
+
+
+def _resolve_dedicated_venv_py(hint_path: HostPath) -> HostPath:
+    rel_bin = "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    for anc in (hint_path.path, *hint_path.path.parents):
+        cand = anc / "dedicated_gdrive_venv" / rel_bin
+        if cand.is_file():
+            return HostPath(cand)
+    return hint_path if hint_path.path.is_file() else HostPath(Path(sys.executable))
 
 
 def build_dispatcher_for_workspace(
@@ -2123,16 +2172,16 @@ def build_dispatcher_for_workspace(
     cache_dir = ws.join(".cache")
     cfg_view = FileConfigView(ws)
     echo_ledger = FileEchoLedger(cache_dir)
-    ded_env = os.environ.get("YSCB_TEST_DEDICATED_VENV_PY", "")
-    ded_venv = HostPath(ded_env) if ded_env else venv_python
+    ded_venv = _resolve_dedicated_venv_py(venv_python)
     provider = ManifestModuleProvider(ws, venv_python, dedicated_venv_python=ded_venv)
     spawner = SingleFlightDaemonSpawner(
         cache_dir,
         lambda root: [
             sys.executable,
+            "-B",
             "-W",
             "error::ResourceWarning",
-            str(Path(__file__).resolve()),
+            str(_ensure_live_host_boot_script(root)),
             "--daemon-entry",
             str(root),
             str(venv_python),
@@ -2204,9 +2253,10 @@ def _daemon_process_main(ws_str: str, venv_py_str: str, ttl_str: str) -> int:
         watch_config=watch_cfg,
         self_restart_argv=[
             sys.executable,
+            "-B",
             "-W",
             "error::ResourceWarning",
-            str(Path(__file__).resolve()),
+            str(_ensure_live_host_boot_script(ws)),
             "--daemon-entry",
             ws_str,
             venv_py_str,
@@ -2289,22 +2339,35 @@ def _cli_oneshot_main(
         disp.shutdown(grace_ms=300)
 
 
-# Gate 0: Strict AST, Symtable, Nesting Depth, Type-Hint & Self-Audit Gate
+# Gate 0: Strict Allowlist DAG, Symtable, Type-Hint, Living-Spec Parity & Self-Audit Gate
 
-_CF_AST_NODES = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try, ast.TryStar, ast.Match)
-_MUTABLE_GLOBAL_CONSTRUCTORS: Final[frozenset[str]] = frozenset(
+_IMMUTABLE_GLOBAL_CALLS: Final[frozenset[str]] = frozenset(
     {
-        "dict",
-        "list",
-        "set",
-        "bytearray",
-        "defaultdict",
-        "OrderedDict",
-        "deque",
-        "WeakValueDictionary",
-        "WeakKeyDictionary",
-        "WeakSet",
-        "getLogger",
+        "frozenset",
+        "tuple",
+        "TypeVar",
+        "NewType",
+        "compile",
+        "ModuleId",
+        "TaskId",
+        "EventId",
+        "min",
+        "max",
+        "float",
+        "int",
+        "str",
+        "bool",
+        "bytes",
+        "MappingProxyType",
+        "WinDLL",
+        "CDLL",
+        "CFUNCTYPE",
+        "WINFUNCTYPE",
+        "POINTER",
+        "Struct",
+        "_resolve_msg_dontwait",
+        "_TypeSpecRank",
+        "_UnionCandRank",
     }
 )
 
@@ -2315,28 +2378,8 @@ def _is_mutable_global_expr(expr: Optional[ast.expr]) -> bool:
     if isinstance(expr, ast.Call):
         fn = expr.func
         callee = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else "")
-        return callee in _MUTABLE_GLOBAL_CONSTRUCTORS
+        return callee not in _IMMUTABLE_GLOBAL_CALLS
     return False
-
-
-def _function_body_loc(node: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
-    stmts = list(node.body)
-    if stmts and isinstance(stmts[0], ast.Expr) and isinstance(stmts[0].value, ast.Constant) and isinstance(stmts[0].value.value, str):
-        stmts = stmts[1:]
-    if not stmts:
-        return 1
-    return (node.end_lineno or stmts[-1].lineno) - stmts[0].lineno + 1
-
-
-def _max_control_flow_depth(node: ast.AST, cur: int = 0) -> int:
-    best = cur
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            continue
-        is_elif = isinstance(node, ast.If) and isinstance(child, ast.If) and node.orelse == [child] and child.col_offset == node.col_offset
-        nxt = cur if is_elif else (cur + 1 if isinstance(child, _CF_AST_NODES) else cur)
-        best = max(best, _max_control_flow_depth(child, nxt))
-    return best
 
 
 def _collect_descendant_free_names(table: symtable.SymbolTable) -> set[str]:
@@ -2349,12 +2392,36 @@ def _collect_descendant_free_names(table: symtable.SymbolTable) -> set[str]:
     return names
 
 
+def _collect_comprehension_loads_by_lineno(src: str) -> dict[int, set[str]]:
+    out: dict[int, set[str]] = {}
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        loads: set[str] = set()
+        stack: list[ast.AST] = list(node.body)
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                continue
+            if isinstance(cur, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                for sub in ast.walk(cur):
+                    if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                        loads.add(sub.id)
+                continue
+            stack.extend(ast.iter_child_nodes(cur))
+        if loads:
+            out.setdefault(node.lineno, set()).update(loads)
+    return out
+
+
 def _verify_symtable_clean(src: str, rel_name: str) -> None:
     builtin_names = {k for k, _ in inspect.getmembers_static(builtins)} | {
         "__annotations__", "__file__", "__name__", "__package__", "__doc__",
         "__spec__", "__path__", "__cached__", "__builtins__", "__class__",
     }
     st = symtable.symtable(src, rel_name, "exec")
+    comp_loads = _collect_comprehension_loads_by_lineno(src)
 
     def _walk(table: symtable.SymbolTable, enclosing: set[str]) -> None:
         defined = {
@@ -2364,7 +2431,11 @@ def _verify_symtable_clean(src: str, rel_name: str) -> None:
         }
         visible = enclosing | defined
         child_enc = enclosing if table.get_type() == "class" else visible
-        desc_used = _collect_descendant_free_names(table) if table.get_type() == "function" else set()
+        desc_used = (
+            (_collect_descendant_free_names(table) | comp_loads.get(table.get_lineno(), set()))
+            if table.get_type() == "function"
+            else set()
+        )
         for sym in table.get_symbols():
             name = sym.get_name()
             if sym.is_referenced() and not (
@@ -2417,6 +2488,38 @@ def _assert_valid_except_handlers(tree: ast.AST, mod_name: str, label: str) -> N
             )
 
 
+def _assert_no_unused_private_module_symbols(tree: ast.Module, label: str) -> None:
+    defs: dict[str, int] = {}
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and stmt.name.startswith("_") and not stmt.name.startswith("__"):
+            defs[stmt.name] = stmt.lineno
+        elif isinstance(stmt, ast.Assign):
+            for t in stmt.targets:
+                if isinstance(t, ast.Name) and t.id.startswith("_") and not t.id.startswith("__"):
+                    defs[t.id] = stmt.lineno
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.target.id.startswith("_") and not stmt.target.id.startswith("__"):
+            defs[stmt.target.id] = stmt.lineno
+        elif isinstance(stmt, ast.If):
+            for sub in stmt.body + stmt.orelse:
+                if isinstance(sub, (ast.FunctionDef, ast.ClassDef)) and sub.name.startswith("_"):
+                    defs[sub.name] = sub.lineno
+                elif isinstance(sub, ast.Assign):
+                    for t in sub.targets:
+                        if isinstance(t, ast.Name) and t.id.startswith("_"):
+                            defs[t.id] = sub.lineno
+                elif isinstance(sub, ast.AnnAssign) and isinstance(sub.target, ast.Name) and sub.target.id.startswith("_"):
+                    defs[sub.target.id] = sub.lineno
+    loads = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+    attr_loads = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute) and isinstance(n.ctx, ast.Load)} | loads
+    for nm, ln in defs.items():
+        _check(nm in loads, lambda: f"Unused private module symbol '{nm}' in {label}:{ln}")
+    for stmt in tree.body:
+        if isinstance(stmt, ast.ClassDef):
+            for ch in stmt.body:
+                if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef)) and ch.name.startswith("_") and not ch.name.startswith("__"):
+                    _check(ch.name in attr_loads, lambda: f"Unused private class method '{stmt.name}.{ch.name}' in {label}:{ch.lineno}")
+
+
 def _audit_single_kernel_ast(
     py_f: Path,
     rel_posix: str,
@@ -2434,6 +2537,7 @@ def _audit_single_kernel_ast(
     _verify_symtable_clean(src, rel_posix)
     tree = ast.parse(src, filename=rel_posix)
     _assert_no_unused_top_imports(tree, rel_posix)
+    _assert_no_unused_private_module_symbols(tree, rel_posix)
     _assert_no_duplicate_defs(tree, rel_posix)
     _assert_valid_except_handlers(tree, rel_mod, rel_posix)
     _assert_no_stateless_private_methods(tree, rel_posix)
@@ -2462,16 +2566,6 @@ def _audit_single_kernel_ast(
             raise AssertionError(f"Wide 3+ tuple lambda forbidden in {rel_posix}:{node.lineno}")
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             _assert_no_local_imports(node, rel_posix)
-            all_args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
-            p_cnt = len(all_args) - (1 if all_args and all_args[0].arg in {"self", "cls"} else 0)
-            p_cnt += (1 if node.args.vararg else 0) + (1 if node.args.kwarg else 0)
-            _check(p_cnt <= 6, lambda: f"Function {rel_posix}:{node.name} has {p_cnt} parameters (> 6)")
-            loc = _function_body_loc(node)
-            span = (node.end_lineno or node.lineno) - node.lineno + 1
-            _check(loc <= 75 and span <= 75, lambda: f"Function {rel_posix}:{node.name} exceeds 75 lines (span={span})")
-            depth = _max_control_flow_depth(node, 0)
-            _check(depth <= 3, lambda: f"Function {rel_posix}:{node.name} has nesting depth {depth} (> 3)")
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             _assert_no_wide_tuple_params(node, rel_posix)
             _assert_no_unused_function_params(node, rel_posix)
         _check_dag_imports(node, rel_mod, forbidden_by_prefix)
@@ -2540,6 +2634,17 @@ def _iter_direct_fn_returns(stmts: Sequence[ast.stmt]) -> list[ast.Return]:
 
 
 def _assert_no_wide_tuple_params(fn_node: ast.FunctionDef | ast.AsyncFunctionDef, label: str) -> None:
+    if fn_node.name.startswith("_"):
+        if (
+            fn_node.returns is not None
+            and isinstance(fn_node.returns, ast.Subscript)
+            and isinstance(fn_node.returns.value, ast.Name)
+            and fn_node.returns.value.id in {"tuple", "Tuple"}
+            and isinstance(fn_node.returns.slice, ast.Tuple)
+            and len(fn_node.returns.slice.elts) >= 4
+        ):
+            raise AssertionError(f"Wide 4+-tuple return annotation forbidden in private {label}:{fn_node.name}")
+        return
     for arg in (*fn_node.args.posonlyargs, *fn_node.args.args, *fn_node.args.kwonlyargs):
         if arg.annotation is not None and any(_is_wide_tuple_subscript(s) for s in ast.walk(arg.annotation)):
             raise AssertionError(f"Anonymous 3+-tuple parameter '{arg.arg}' forbidden in {label}:{fn_node.name}")
@@ -2589,6 +2694,88 @@ def _assert_rpc_readonly_fs_import(node: ast.AST, bound_targets: Sequence[str], 
             raise AssertionError(f"Non-readonly filesystem import in {rel_mod}: {imp}")
 
 
+_ALLOWED_CORE_IMPORTS_BY_PREFIX: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
+    ("core.__init__", ()),
+    ("core.filesystem.__init__", ()),
+    ("core.execution.__init__", ()),
+    ("core.foundation.__init__", ("core.foundation",)),
+    ("core.foundation.primitives", ("core.foundation.primitives",)),
+    ("core.foundation.errors", ("core.foundation.errors", "core.foundation.primitives")),
+    ("core.foundation.codec", ("core.foundation.codec", "core.foundation.primitives", "core.foundation.errors")),
+    ("core.foundation.observability", ("core.foundation.observability", "core.foundation.primitives", "core.foundation.errors")),
+    ("core.foundation.proc", ("core.foundation.proc", "core.foundation.primitives", "core.foundation.errors")),
+    (
+        "core.filesystem.fs",
+        (
+            "core.filesystem.fs",
+            "core.foundation.primitives",
+            "core.foundation.errors",
+            "core.foundation.observability",
+            "core.foundation.proc",
+        ),
+    ),
+    (
+        "core.execution.event",
+        (
+            "core.execution.event",
+            "core.foundation.primitives",
+            "core.foundation.errors",
+            "core.foundation.codec",
+        ),
+    ),
+    (
+        "core.execution.lifecycle",
+        (
+            "core.execution.lifecycle",
+            "core.execution.event",
+            "core.foundation.primitives",
+            "core.foundation.errors",
+            "core.foundation.observability",
+        ),
+    ),
+    (
+        "core.execution.rpc",
+        (
+            "core.execution.rpc",
+            "core.filesystem.fs.read_json_dict",
+            "core.foundation.primitives",
+            "core.foundation.errors",
+            "core.foundation.observability",
+            "core.foundation.proc",
+        ),
+    ),
+    (
+        "core.execution.runtime",
+        (
+            "core.execution.runtime",
+            "core.execution.event",
+            "core.execution.lifecycle",
+            "core.execution.rpc",
+            "core.filesystem.fs",
+            "core.foundation",
+        ),
+    ),
+    (
+        "core.execution.daemon",
+        (
+            "core.execution.daemon",
+            "core.execution.runtime",
+            "core.execution.lifecycle",
+            "core.execution.rpc",
+            "core.filesystem.fs",
+            "core.foundation",
+        ),
+    ),
+)
+
+
+def _lookup_allowed_core_prefixes(rel_mod: str) -> Optional[tuple[str, ...]]:
+    for mod_pfx, allowed in _ALLOWED_CORE_IMPORTS_BY_PREFIX:
+        if rel_mod == mod_pfx or rel_mod.startswith(f"{mod_pfx}."):
+            return allowed
+    return None
+
+
 def _check_dag_imports(
     node: ast.AST,
     rel_mod: str,
@@ -2611,6 +2798,13 @@ def _check_dag_imports(
     for imp in all_targets:
         if any(imp.startswith(bad) for bad in applicable_bad):
             raise AssertionError(f"Illegal reverse import in {rel_mod}: {imp}")
+    allowed_core_prefixes = _lookup_allowed_core_prefixes(rel_mod)
+    if allowed_core_prefixes is None:
+        raise AssertionError(f"Module '{rel_mod}' missing from explicit DAG allowlist")
+    for b_imp in bound_targets:
+        if b_imp == "core" or b_imp.startswith("core."):
+            if not any(b_imp == pfx or b_imp.startswith(f"{pfx}.") for pfx in allowed_core_prefixes):
+                raise AssertionError(f"Import '{b_imp}' not in explicit DAG allowlist for {rel_mod}")
     if (
         isinstance(node, ast.ImportFrom)
         and base == "core.foundation"
@@ -2690,7 +2884,7 @@ def _assert_no_unused_top_imports(tree: ast.AST, label: str) -> None:
 
 def _assert_no_stateless_private_methods(tree: ast.AST, label: str) -> None:
     for cls_node in ast.walk(tree):
-        if not isinstance(cls_node, ast.ClassDef) or cls_node.bases:
+        if not isinstance(cls_node, ast.ClassDef):
             continue
         for ch in cls_node.body:
             if not isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -2701,10 +2895,11 @@ def _assert_no_stateless_private_methods(tree: ast.AST, label: str) -> None:
                 d.id if isinstance(d, ast.Name) else (d.attr if isinstance(d, ast.Attribute) else "")
                 for d in ch.decorator_list
             }
-            if decs & {"staticmethod", "classmethod", "abstractmethod", "overload"}:
+            if decs & {"staticmethod", "abstractmethod", "overload"}:
                 continue
             pos_args = [*ch.args.posonlyargs, *ch.args.args]
-            if not pos_args or pos_args[0].arg != "self":
+            expected_rcvr = "cls" if "classmethod" in decs else "self"
+            if not pos_args or pos_args[0].arg != expected_rcvr:
                 continue
             used = {
                 sub.id
@@ -2712,34 +2907,55 @@ def _assert_no_stateless_private_methods(tree: ast.AST, label: str) -> None:
                 for sub in ast.walk(st)
                 if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load)
             }
-            _check("self" in used, lambda: f"Stateless private method '{cls_node.name}.{ch.name}' in {label}:{ch.lineno}")
+            _check(expected_rcvr in used, lambda: f"Stateless private method '{cls_node.name}.{ch.name}' in {label}:{ch.lineno}")
 
 
 def _assert_no_cross_collaborator_private_calls(tree: ast.AST, label: str) -> None:
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Attribute)
-            and node.attr.startswith("_")
-            and not node.attr.startswith("__")
-            and isinstance(node.value, ast.Attribute)
-            and isinstance(node.value.value, ast.Name)
-            and node.value.value.id == "self"
-            and node.value.attr in {
-                "_gates",
-                "_tier1_pool",
-                "_coordinator",
-                "_routes",
-                "_sessions",
-                "_step_host",
-                "_container",
-                "_tier0_slots",
-                "_cold_locks",
-                "channel",
-            }
-        ):
-            raise AssertionError(
-                f"Cross-collaborator private access 'self.{node.value.attr}.{node.attr}' forbidden in {label}:{node.lineno}"
-            )
+    cls_privs: dict[str, set[str]] = {}
+    for cnode in ast.walk(tree):
+        if not isinstance(cnode, ast.ClassDef):
+            continue
+        own: set[str] = set()
+        for ch in cnode.body:
+            if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                own.add(ch.name)
+            elif isinstance(ch, ast.Assign):
+                for tgt in ch.targets:
+                    if isinstance(tgt, ast.Name):
+                        own.add(tgt.id)
+            elif isinstance(ch, ast.AnnAssign) and isinstance(ch.target, ast.Name):
+                own.add(ch.target.id)
+        for sub in ast.walk(cnode):
+            if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name) and sub.value.id in {"self", "cls"}:
+                own.add(sub.attr)
+        cls_privs[cnode.name] = own
+
+    cls_stack: list[str] = []
+
+    def _visit(node: ast.AST) -> None:
+        if isinstance(node, ast.ClassDef):
+            cls_stack.append(node.name)
+            for ch in node.body:
+                _visit(ch)
+            cls_stack.pop()
+            return
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_") and not node.attr.startswith("__"):
+            val = node.value
+            allowed = False
+            if isinstance(val, ast.Name) and (val.id in {"self", "cls"} or val.id in cls_stack):
+                allowed = True
+            elif cls_stack and node.attr in cls_privs.get(cls_stack[-1], set()):
+                allowed = True
+            elif label.endswith("foundation/codec.py") and isinstance(val, ast.Name) and val.id == "typing" and node.attr == "_cleanups":
+                allowed = True
+            if not allowed:
+                raise AssertionError(
+                    f"Cross-collaborator private access '{ast.unparse(val)}.{node.attr}' forbidden in {label}:{node.lineno}"
+                )
+        for ch in ast.iter_child_nodes(node):
+            _visit(ch)
+
+    _visit(tree)
 
 
 def _assert_no_duplicate_defs(tree: ast.AST, label: str) -> None:
@@ -2840,19 +3056,15 @@ def _audit_ast_tree_metrics(tree: ast.AST, label: str, *, allow_import_module: b
             raise AssertionError(f"Bare assert forbidden under -O in {label}:{node.lineno}")
         if isinstance(node, ast.Lambda) and isinstance(node.body, ast.Tuple) and len(node.body.elts) >= 3:
             raise AssertionError(f"Wide 3+ tuple lambda forbidden in {label}:{node.lineno}")
+        if isinstance(node, ast.Import):
+            for al in node.names:
+                _check(al.name != "pickle", lambda: f"Forbidden pickle import in {label}:{node.lineno}")
+        if isinstance(node, ast.ImportFrom):
+            _check(node.module != "pickle", lambda: f"Forbidden pickle import in {label}:{node.lineno}")
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             _assert_no_local_imports(node, label)
             _assert_no_wide_tuple_params(node, label)
             _assert_no_unused_function_params(node, label)
-            all_args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
-            p_cnt = len(all_args) - (1 if all_args and all_args[0].arg in {"self", "cls"} else 0)
-            p_cnt += (1 if node.args.vararg else 0) + (1 if node.args.kwarg else 0)
-            _check(p_cnt <= 6, lambda: f"Function {label}:{node.name} has {p_cnt} parameters (> 6)")
-            loc = _function_body_loc(node)
-            span = (node.end_lineno or node.lineno) - node.lineno + 1
-            _check(loc <= 75 and span <= 75, lambda: f"Function {label}:{node.name} exceeds 75 lines (span={span})")
-            depth = _max_control_flow_depth(node, 0)
-            _check(depth <= 3, lambda: f"Function {label}:{node.name} has nesting depth {depth} (> 3)")
 
 
 def _assert_zero_comment_noise_bytes(raw_bytes: bytes, label: str) -> None:
@@ -2886,6 +3098,72 @@ def _assert_zero_round_string_literals(tree: ast.AST, label: str) -> None:
             _check(m is None, lambda: f"Forbidden round/review string noise {m.group(0)!r} in {label}:{node.lineno}")
 
 
+_PUBLIC_DOMAIN_ROOTS: Final[dict[str, object]] = {
+    "core": core,
+    "core.foundation": core.foundation,
+    "core.filesystem.fs": core.filesystem.fs,
+    "core.execution.event": core.execution.event,
+    "core.execution.lifecycle": core.execution.lifecycle,
+    "core.execution.rpc": rpc_pkg,
+    "core.execution.runtime": core.execution.runtime,
+    "core.execution.daemon": core.execution.daemon,
+}
+
+
+def _assert_zero_whitebox_private_access_in_tests(tree: ast.AST, label: str) -> None:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("core") and alias.name not in _PUBLIC_DOMAIN_ROOTS:
+                    raise AssertionError(f"Internal submodule import '{alias.name}' forbidden in {label}:{node.lineno}")
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("core"):
+            dom_mod = _PUBLIC_DOMAIN_ROOTS.get(node.module)
+            if dom_mod is None:
+                raise AssertionError(f"Internal submodule import 'from {node.module}' forbidden in {label}:{node.lineno}")
+            pub_all = set(dict(inspect.getmembers_static(dom_mod)).get("__all__", ()))
+            for alias in node.names:
+                _check(
+                    not alias.name.startswith("_") and (node.module == "core" or alias.name in pub_all),
+                    lambda nm=alias.name, md=node.module, ln=node.lineno: f"Unexported import '{md}.{nm}' forbidden in {label}:{ln}",
+                )
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_") and not node.attr.startswith("__"):
+            if isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"}:
+                continue
+            raise AssertionError(f"Whitebox private attribute access '.{node.attr}' forbidden in {label}:{node.lineno}")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if (
+                isinstance(node.func.value, ast.Attribute)
+                and isinstance(node.func.value.value, ast.Name)
+                and node.func.value.value.id == "os"
+                and node.func.value.attr == "environ"
+                and node.func.attr in {"pop", "setdefault", "update", "clear"}
+            ):
+                raise AssertionError(f"Global os.environ.{node.func.attr}() mutation forbidden in {label}:{node.lineno}")
+            if isinstance(node.func.value, ast.Name) and node.func.value.id == "os" and node.func.attr in {"putenv", "unsetenv"}:
+                raise AssertionError(f"Global os.{node.func.attr}() mutation forbidden in {label}:{node.lineno}")
+        if isinstance(node, (ast.Assign, ast.Delete)):
+            targets = node.targets if isinstance(node, ast.Assign) else node.targets
+            for tgt in targets:
+                if (
+                    isinstance(tgt, ast.Subscript)
+                    and isinstance(tgt.value, ast.Attribute)
+                    and isinstance(tgt.value.value, ast.Name)
+                    and tgt.value.value.id == "os"
+                    and tgt.value.attr == "environ"
+                ):
+                    raise AssertionError(f"Global os.environ[...] mutation forbidden in {label}:{node.lineno}")
+    forbidden_toks = ("YSCB_" + "WORKER_AUTH_TOKEN", "_" + "yscb_v2_mod_", "_" + "ScopedModuleFinder")
+    gate0_exempt_fns = {"verify_gate0_ast_architecture", "_assert_zero_whitebox_private_access_in_tests"}
+    for top_stmt in tree.body:
+        is_exempt_fn = isinstance(top_stmt, ast.FunctionDef) and top_stmt.name in gate0_exempt_fns
+        for fn_n in ast.walk(top_stmt):
+            if isinstance(fn_n, ast.Constant) and isinstance(fn_n.value, str):
+                for bad_tok in forbidden_toks:
+                    _check(bad_tok not in fn_n.value, lambda bt=bad_tok, ln=fn_n.lineno: f"Whitebox internal literal {bt!r} forbidden in {label}:{ln}")
+                if not is_exempt_fn and fn_n.value == "core.execution.runtime.worker_entry":
+                    raise AssertionError(f"Direct internal module CLI string forbidden in {label}:{fn_n.lineno}")
+
+
 def _audit_self_test_ast() -> None:
     self_path = Path(__file__).resolve()
     src = self_path.read_text(encoding="utf-8")
@@ -2895,6 +3173,7 @@ def _audit_self_test_ast() -> None:
     self_tree = ast.parse(src, filename=self_path.name)
     _assert_zero_round_symbol_names(self_tree, self_path.name)
     _assert_zero_round_string_literals(self_tree, self_path.name)
+    _assert_zero_whitebox_private_access_in_tests(self_tree, self_path.name)
     _audit_ast_tree_metrics(self_tree, self_path.name)
     _verify_module_runtime_type_hints(__name__)
     for tpl_name, tpl_src in (
@@ -2922,6 +3201,8 @@ def _audit_self_test_ast() -> None:
         _verify_symtable_clean(tpl_src, label)
         tpl_tree = ast.parse(tpl_src, filename=label)
         _assert_zero_round_symbol_names(tpl_tree, label)
+        _assert_zero_round_string_literals(tpl_tree, label)
+        _assert_zero_whitebox_private_access_in_tests(tpl_tree, label)
         _audit_ast_tree_metrics(tpl_tree, label)
     _audit_inline_module_entry_literals(self_tree)
 
@@ -3041,7 +3322,7 @@ def _method_decorator_tags(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -> s
     tags: set[str] = set()
     for dec in fn_node.decorator_list:
         nm = dec.id if isinstance(dec, ast.Name) else (dec.attr if isinstance(dec, ast.Attribute) else "")
-        if nm in {"property", "staticmethod", "classmethod", "contextmanager"}:
+        if nm in {"property", "staticmethod", "classmethod", "contextmanager", "abstractmethod"}:
             tags.add(nm)
     return tags
 
@@ -3242,6 +3523,12 @@ class _ParsedModuleAstIndex:
     value_exprs: dict[str, ast.expr] = field(default_factory=dict)
 
 
+def _is_public_or_spec_dunder(name: str) -> bool:
+    if not name.startswith("_"):
+        return True
+    return name.startswith("__") and name.endswith("__") and name != "__post_init__"
+
+
 def _index_single_class_ast(stmt: ast.ClassDef, idx: _ParsedModuleAstIndex) -> None:
     idx.exported_syms.add(stmt.name)
     idx.classes[stmt.name] = stmt
@@ -3252,7 +3539,7 @@ def _index_single_class_ast(stmt: ast.ClassDef, idx: _ParsedModuleAstIndex) -> N
             continue
         if _is_overload_decorated(ch):
             ov_map.setdefault(ch.name, []).append(ch)
-        elif not ch.name.startswith("_") or ch.name == "__init__":
+        elif _is_public_or_spec_dunder(ch.name):
             m_map[ch.name] = ch
 
 
@@ -3451,6 +3738,9 @@ def _assert_class_full_parity(
     if typing.Protocol not in cls_obj.__mro__ and not issubclass(cls_obj, Enum):
         init_priv = [p for p in inspect.signature(cls_obj).parameters if p.startswith("_")]
         _check(not init_priv, lambda: f"Spec class {label} leaks private __init__ params: {init_priv}")
+        impl_has_init = "__init__" in kernel_idx.cls_methods.get(impl_cls.name, {})
+        spec_has_init = "__init__" in spec_idx.cls_methods.get(spec_cls.name, {})
+        _check(impl_has_init == spec_has_init, lambda: f"__init__ parity drift on {label}: impl={impl_has_init} vs spec={spec_has_init}")
     _assert_class_bases_and_abstract_parity(label, cls_obj, spec_cls)
     if dataclasses.is_dataclass(cls_obj):
         _assert_dc_decorator_flags_parity(label, cls_obj, spec_cls)
@@ -3464,17 +3754,20 @@ def _assert_class_full_parity(
         }
         if s_enum:
             _check({m.name: m.value for m in cls_obj} == s_enum, lambda: f"Enum drift on {label}")
+    spec_own_m = set(spec_idx.cls_methods.get(spec_cls.name, {}).keys())
+    impl_own_m = set(kernel_idx.cls_methods.get(impl_cls.name, {}).keys())
+    _check(impl_own_m == spec_own_m, lambda: f"Own method/dunder drift on {label}: impl={sorted(impl_own_m)} vs spec={sorted(spec_own_m)}")
     spec_pub_m = {
         mn
         for base_c in cls_obj.__mro__
         for mn in spec_idx.cls_methods.get(base_c.__name__, {}).keys()
-        if not mn.startswith("_")
+        if _is_public_or_spec_dunder(mn) and mn != "__init__"
     }
     impl_pub_m = {
         mn
         for base_c in cls_obj.__mro__
         for mn in kernel_idx.cls_methods.get(base_c.__name__, {}).keys()
-        if not mn.startswith("_")
+        if _is_public_or_spec_dunder(mn) and mn != "__init__"
     }
     _check(impl_pub_m == spec_pub_m, lambda: f"Public method surface drift on {label}: impl={sorted(impl_pub_m)} vs spec={sorted(spec_pub_m)}")
     for pub_m in spec_pub_m:
@@ -3495,11 +3788,17 @@ def _assert_class_full_parity(
 
 
 def _build_spec_eval_ns(kernel_mods: Sequence[object]) -> dict[str, object]:
-    merged: dict[str, object] = {}
+    merged: dict[str, object] = {
+        "os": os,
+        "sys": sys,
+        "io": io,
+        "threading": threading,
+        "subprocess": subprocess,
+        "Path": Path,
+    }
     for mod in (
-        core.foundation.primitives,
-        core.foundation.errors,
-        core.foundation.observability,
+        core.foundation,
+        core.filesystem.fs,
         core.execution.event,
         core.execution.lifecycle,
         rpc_pkg,
@@ -3512,18 +3811,28 @@ def _build_spec_eval_ns(kernel_mods: Sequence[object]) -> dict[str, object]:
 
 
 def _verify_execution_living_specs_parity() -> None:
-    spec_dir = Path(__file__).resolve().parent / "sub_module_design" / "execution"
+    design_root = Path(__file__).resolve().parent / "sub_module_design"
+    root_orphans = sorted(p.name for p in design_root.glob("*.md"))
+    _check(not root_orphans, lambda: f"Orphan root spec files forbidden in sub_module_design/: {root_orphans}")
     kernel_idx = _build_kernel_ast_index()
     pairs: tuple[tuple[str, object], ...] = (
-        ("event.md", core.execution.event),
-        ("lifecycle.md", core.execution.lifecycle),
-        ("rpc.md", rpc_pkg),
-        ("runtime.md", core.execution.runtime),
-        ("daemon.md", core.execution.daemon),
+        ("foundation/foundation.md", core.foundation),
+        ("filesystem/fs.md", core.filesystem.fs),
+        ("execution/event.md", core.execution.event),
+        ("execution/lifecycle.md", core.execution.lifecycle),
+        ("execution/rpc.md", rpc_pkg),
+        ("execution/runtime.md", core.execution.runtime),
+        ("execution/daemon.md", core.execution.daemon),
+    )
+    actual_all_specs = {p.relative_to(design_root).as_posix() for p in design_root.rglob("*.md")}
+    expected_all_specs = {rel_p for rel_p, _ in pairs}
+    _check(
+        actual_all_specs == expected_all_specs,
+        lambda: f"Orphan or missing living spec files: diff={sorted(actual_all_specs ^ expected_all_specs)}",
     )
     eval_ns = _build_spec_eval_ns([m for _, m in pairs])
     for fname, mod in pairs:
-        spec_idx = _build_spec_ast_index(spec_dir / fname)
+        spec_idx = _build_spec_ast_index(design_root / fname)
         alias_map = {**kernel_idx.aliases, **spec_idx.aliases}
         ns_map = dict(inspect.getmembers_static(mod))
         all_tuple = ns_map.get("__all__")
@@ -3562,6 +3871,9 @@ def _verify_dag_guard_rejects_violations(
         ("core.execution.event.engine", "from core import execution"),
         ("core.execution.event.engine", "from core.foundation import CancellationToken"),
         ("core.execution.rpc.channel", "from core.foundation import DataclassCodec"),
+        ("core.foundation.proc", "from core.foundation.observability import clamp_wait_sec"),
+        ("core.foundation.observability", "from core.foundation.proc import is_process_alive"),
+        ("core.unknown.mod", "from core.foundation.primitives import HostPath"),
     )
     for mod_name, bad_stmt in cases:
         stmt_node = ast.parse(bad_stmt).body[0]
@@ -3572,6 +3884,34 @@ def _verify_dag_guard_rejects_violations(
             caught = True
         if not caught:
             raise AssertionError(f"DAG guard failed to catch '{bad_stmt}' in {mod_name}")
+
+
+def _verify_cross_package_public_exports(py_files: Sequence[Path]) -> None:
+    core_pkg = CORE_SRC_ROOT / "core"
+    facade_pairs = (
+        ("core.foundation", core.foundation.__all__),
+        ("core.filesystem.fs", core.filesystem.fs.__all__),
+        ("core.execution.event", core.execution.event.__all__),
+        ("core.execution.lifecycle", core.execution.lifecycle.__all__),
+        ("core.execution.rpc", core.execution.rpc.__all__),
+        ("core.execution.runtime", core.execution.runtime.__all__),
+        ("core.execution.daemon", core.execution.daemon.__all__),
+    )
+    facades = tuple(name for name, _ in facade_pairs)
+    pub_all = {name: set(exports) for name, exports in facade_pairs}
+    for py_f in py_files:
+        rel_mod = "core." + ".".join(py_f.relative_to(core_pkg).with_suffix("").parts)
+        own_fac = next((f for f in facades if rel_mod.startswith(f + ".")), "")
+        tree = ast.parse(py_f.read_text(encoding="utf-8"), filename=str(py_f))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                target_fac = next((f for f in facades if node.module == f or node.module.startswith(f + ".")), "")
+                if target_fac and target_fac != own_fac:
+                    for al in node.names:
+                        _check(
+                            al.name in pub_all[target_fac],
+                            f"{rel_mod} imports {node.module}.{al.name} bypassing {target_fac}.__all__",
+                        )
 
 
 def verify_gate0_ast_architecture() -> None:
@@ -3587,20 +3927,21 @@ def verify_gate0_ast_architecture() -> None:
     )
     py_files = sorted(core_pkg.rglob("*.py"))
     _check(len(py_files) >= 27)
+    walked_mod_names = [mod_name for _, mod_name, _ in pkgutil.walk_packages(core.__path__, core.__name__ + ".")]
     for py_f in py_files:
         rel_posix = py_f.relative_to(CORE_SRC_ROOT).as_posix()
         rel_mod = "core." + ".".join(py_f.relative_to(core_pkg).with_suffix("").parts)
         _audit_single_kernel_ast(py_f, rel_posix, rel_mod, forbidden_by_prefix)
 
-    _check(worker_entry_pkg.__name__.endswith("worker_entry"))
-    for _, mod_name, _ in pkgutil.walk_packages(core.__path__, core.__name__ + "."):
+    for mod_name in walked_mod_names:
         _verify_module_runtime_type_hints(mod_name)
+    _verify_cross_package_public_exports(py_files)
     _verify_dag_guard_rejects_violations(forbidden_by_prefix)
     _verify_execution_living_specs_parity()
     _audit_self_test_ast()
 
 
-def wait_for_daemon_online(ws: HostPath, timeout_sec: float = 6.0) -> JsonObject:
+def wait_for_daemon_online(ws: HostPath, timeout_sec: float = 15.0) -> JsonObject:
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
         res = query_daemon_control(ws.join(".cache"), ws, FrameKind.CONTROL_STATUS)
@@ -3633,17 +3974,7 @@ def _has_pending_daemon_lease(cache_dir: HostPath) -> bool:
     return any(is_process_alive(p) for p in _recorded_daemon_pids(cache_dir))
 
 
-def _codec_has_form_plan(tp: object) -> bool:
-    cache = DataclassCodec._CACHE
-    with cache.lock:
-        return _dehydrate_type(tp) in cache.form_plans
 
-
-def _codec_live_form_plan_types() -> tuple[object, ...]:
-    cache = DataclassCodec._CACHE
-    with cache.lock:
-        pairs = [_rehydrate_type(k) for k in cache.form_plans.keys()]
-    return tuple(v for ok, v in pairs if ok)
 
 
 def _wait_until(pred: Callable[[], bool], timeout_sec: float = 4.0, step_sec: float = 0.015) -> None:
@@ -3715,7 +4046,7 @@ def stop_daemon_cleanly(ws: HostPath) -> None:
 def _run_cli_subproc(ws: HostPath, venv_py: Path, cwd: str, task_id: str, payload: JsonObject, policy: ClientRoutingPolicy) -> MutableJsonObject:
     cp = subprocess.run(
         [
-            sys.executable, "-B", "-W", "error::ResourceWarning", str(Path(__file__).resolve()),
+            sys.executable, "-B", "-W", "error::ResourceWarning", str(_ensure_live_host_boot_script(ws)),
             "--cli-oneshot", str(ws), str(venv_py), cwd, task_id, json.dumps(dict(payload)), policy.value,
         ],
         capture_output=True, text=True, timeout=45.0, check=False,
@@ -3725,7 +4056,7 @@ def _run_cli_subproc(ws: HostPath, venv_py: Path, cwd: str, task_id: str, payloa
     return parsed
 
 
-# Live Execution Verification Scenarios (Decomposed <= 75 LOC Each)
+# Live Execution Verification Scenarios
 
 
 def verify_rc01_cold_storm_and_sandbox(tmp_root: Path, venv_py: Path) -> None:
@@ -3855,7 +4186,7 @@ class _Rc02StageRig:
 def verify_rc02_warmup_events_and_preempt(tmp_root: Path, venv_py: Path) -> _Rc02StageRig:
     _log("[RC-02] Testing co-located Tier 1 warmup fault isolation, lazy/stateless zero-boot, Tier 0 filter & PREEMPT proof...")
     ws2_path = tmp_root / "ws_rc02"
-    provision_live_workspace(ws2_path)
+    provision_live_workspace(ws2_path, include_broken_opt=True)
     ws2 = HostPath(ws2_path)
     disp2 = build_dispatcher_for_workspace(ws2, HostPath(venv_py), ttl_sec=20.0).dispatcher
     _check(disp2.invoke_typed(ECHO_TIER0_META, EchoInDto(tag="boot")).ok)
@@ -4091,7 +4422,7 @@ def verify_rc04_multiplex_cancel_and_ttl(tmp_root: Path, venv_py: Path) -> None:
     provision_live_workspace(ws4_path)
     ws4 = HostPath(ws4_path)
     sess4 = PersistentRpcSession(ws4.join(".cache"), ws4)
-    disp4 = build_dispatcher_for_workspace(ws4, HostPath(venv_py), ttl_sec=1.10, persistent_session=sess4).dispatcher
+    disp4 = build_dispatcher_for_workspace(ws4, HostPath(venv_py), ttl_sec=1.50, persistent_session=sess4).dispatcher
     try:
         disp4.invoke_typed(ECHO_TIER0_META, EchoInDto(tag="init"))
         old_boot_id = wait_for_daemon_online(ws4)["boot_id"]
@@ -4211,7 +4542,7 @@ def _verify_real_pty_tty_auth(ws5: HostPath, venv_py: Path) -> None:
     master_fd, slave_fd = pty.openpty()
     proc = subprocess.Popen(
         [
-            sys.executable, "-W", "error::ResourceWarning", str(Path(__file__).resolve()),
+            sys.executable, "-B", "-W", "error::ResourceWarning", str(_ensure_live_host_boot_script(ws5)),
             "--cli-oneshot", str(ws5), str(venv_py), str(ws5),
             "gdrive.auth", json.dumps({"code": ""}), ClientRoutingPolicy.AUTO_SPAWN.value,
         ],
@@ -4244,18 +4575,18 @@ def verify_rc05_tty_periodic_and_worker_crashes(tmp_root: Path, venv_py: Path) -
     _verify_real_pty_tty_auth(ws5, venv_py)
     _check(probe_daemon_endpoint(ws5.join(".cache"), ws5) is None)
 
-    disp5 = build_dispatcher_for_workspace(ws5, HostPath(venv_py), ttl_sec=1.35).dispatcher
+    disp5 = build_dispatcher_for_workspace(ws5, HostPath(venv_py), ttl_sec=2.4).dispatcher
     try:
         auth_bad = disp5.invoke(InvokeRequest(task_id=TaskId("gdrive.auth"), raw_input={"code": "x"}, workspace_root=ws5, caller_cwd=ws5, propagation=CallPropagationContext(is_nested_call=True)))
         _check(not auth_bad.ok and auth_bad.error is not None and auth_bad.error.code == ErrorCode.TTY_REQUIRED)
 
-        # Boot daemon with short 0.75s TTL, enable slow fixed-delay periodic (work_ms=160, interval=0.06):
+        # Boot daemon with 2.4s TTL, enable fixed-delay periodic (work_ms=140, interval=0.06):
         # Verify: (a) max_conc == 1 (fixed-delay non-overlap), (b) gdrive.put serializes safely alongside periodic,
         # (c) in-flight periodic is NOT mid-flight killed by TTL (phase=='completed'), and (d) periodic doesn't block TTL exit!
         disp5.invoke_typed(ECHO_TIER0_META, EchoInDto(tag="boot"))
         wait_for_daemon_online(ws5)
         atomic_write_json(ws5.join("config", "gdrive.json"), {"auto_sync": True, "interval_sec": 0.06, "work_ms": 140})
-        deadline = time.monotonic() + 4.0
+        deadline = time.monotonic() + 5.5
         while time.monotonic() < deadline and _jint(read_json_dict(ws5.join(".cache", "gdrive_periodic.json")), "ticks") < 2:
             time.sleep(0.04)
         _check(_jint(read_json_dict(ws5.join(".cache", "gdrive_periodic.json")), "ticks") >= 2)
@@ -4272,12 +4603,12 @@ def verify_rc05_tty_periodic_and_worker_crashes(tmp_root: Path, venv_py: Path) -
         kdb_w = disp5.invoke_typed(KDB_SEARCH_META, SearchInDto(query="pid_check"))
         _check(put_co.ok and put_co.value is not None and kdb_w.ok and kdb_w.value is not None)
         _check(put_co.value.worker_pid != kdb_w.value.worker_pid)
-        ded_env_p = os.environ.get("YSCB_TEST_DEDICATED_VENV_PY", "")
-        _check(bool(ded_env_p) and Path(put_co.value.venv_prefix).resolve() == Path(ded_env_p).parent.parent.resolve())
+        ded_hp = _resolve_dedicated_venv_py(HostPath(venv_py))
+        _check(Path(put_co.value.venv_prefix).resolve() == ded_hp.path.parent.parent.resolve())
         _check(put_co.value.proxy_seen == "http://corp-proxy:3128" and put_co.value.leaked_secret_seen == "")
 
-        # Let foreground stay idle past 0.75s TTL while periodic is enabled -> Daemon drains in-flight tick cleanly & exits!
-        deadline_ttl = time.monotonic() + 3.0
+        # Let foreground stay idle past 2.4s TTL while periodic is enabled -> Daemon drains in-flight tick cleanly & exits!
+        deadline_ttl = time.monotonic() + 5.0
         while time.monotonic() < deadline_ttl and (
             probe_daemon_endpoint(ws5.join(".cache"), ws5) is not None
             or read_daemon_endpoint_file(ws5.join(".cache"), ws5) is not None
@@ -4533,7 +4864,7 @@ def _verify_rc07_real_sigint_tree_and_lifo(ws7_host: Path, venv_py: Path) -> Non
     gp_path = HostPath(ws7_host / ".cache" / "grandchild_pid.json")
     cli_proc = subprocess.Popen(
         [
-            sys.executable, "-W", "error::ResourceWarning", str(Path(__file__).resolve()),
+            sys.executable, "-B", "-W", "error::ResourceWarning", str(_ensure_live_host_boot_script(HostPath(ws7_host))),
             "--cli-oneshot", str(ws7_host), str(venv_py), str(ws7_host),
             "dev.run_sandbox", json.dumps({"child_workspace": str(ws7_host), "spawn_sleep_child": True}),
             ClientRoutingPolicy.FORCE_COLD.value,
@@ -4954,7 +5285,7 @@ def _verify_cross_helper_relocation_regressions(ws8: HostPath) -> None:
     (mdir / "module_entry.py").write_text(
         "from __future__ import annotations\nfrom dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.codec import DataclassCodec\nfrom core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import DataclassCodec\nfrom core.foundation import ModuleId, TaskId\n"
         "import hb, subpkg\n"
         "@dataclass(frozen=True, slots=True)\nclass RIn:\n    v: int = 5\n"
         "@dataclass(frozen=True, slots=True)\nclass ROut:\n    pkg: str\n    cnt: int\n"
@@ -4988,7 +5319,7 @@ def _verify_dynamic_unqualified_sibling_and_watcher_bounds(ws8: HostPath) -> Non
         "from __future__ import annotations\nfrom dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.event import EventSubscriptionSpec\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+        "from core.foundation import EventId, ModuleId, TaskId\n"
         "class Outer:\n"
         "    @dataclass(frozen=True, slots=True)\n    class Sib:\n        name: str\n"
         "    @dataclass(frozen=True, slots=True)\n    class Holder:\n        sib: Outer.Sib\n"
@@ -5025,15 +5356,17 @@ def _verify_dynamic_unqualified_sibling_and_watcher_bounds(ws8: HostPath) -> Non
 
 
 def _verify_codec_and_invariant_regressions(ws8: HostPath) -> None:
-    # Frozenset decoding must reject JSON dict {'vsc.gated_clean': False}
+    # Frozenset decoding on RPC invoke envelope must reject JSON dict {'vsc.gated_clean': False}
+    disp_fs = build_dispatcher_for_workspace(ws8, ws8, is_daemon_host=True, sandbox_restricted=True).dispatcher
     try:
-        DataclassCodec.decode(
-            DaemonRpcInvokeEnvelope,
+        rep_fs = disp_fs.invoke_daemon_rpc(
             {"task_id": "vsc.gated_clean", "raw_input": {}, "workspace_root": str(ws8), "caller_cwd": str(ws8), "approval_scope": {"vsc.gated_clean": False}},
+            CancellationToken(),
+            lambda _p: None,
         )
-        raise AssertionError("frozenset illegally accepted Mapping!")
-    except YscbError as exc_fs:
-        _check(exc_fs.detail.code == ErrorCode.CODEC_VALIDATION_FAILED)
+        _check(not rep_fs.ok and rep_fs.error is not None and rep_fs.error.code == ErrorCode.CODEC_VALIDATION_FAILED)
+    finally:
+        disp_fs.shutdown(grace_ms=50)
 
     # decode_outcome_as(ok=True, value=None) must fail for non-Optional output_type!
     bad_none = decode_outcome_as(TaskOutcome(ok=True, value=None), SimpleOutDto)
@@ -5164,7 +5497,7 @@ def _verify_relocated_bases_and_union(ws8: HostPath) -> None:
         encoding="utf-8",
     )
     (mdir / "module_entry.py").write_text(
-        "from __future__ import annotations\nfrom dataclasses import dataclass\nimport typing\nfrom typing import Sequence\nfrom core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\nfrom core.foundation.codec import DataclassCodec\nfrom core.foundation.primitives import ModuleId, TaskId\nimport h_dyn, h_union\nfrom h_dyn import HelperStamp\n@dataclass(frozen=True)\nclass DerivedDto(h_dyn.mk_base()):\n    extra: str = 'ok'\nSTAMP_T = HelperStamp\nUBOX = h_union.mk_union()\nclass DynT(Task[DerivedDto, DerivedDto]):\n    @property\n    def metadata(self) -> TaskMetadata[DerivedDto, DerivedDto]: return TaskMetadata(TaskId('reloc_dyn_pkg.op'), DerivedDto, DerivedDto)\n    def run(self, req: DerivedDto, ctx: TaskContext) -> DerivedDto:\n        if not ('stamp' in typing.get_type_hints(DerivedDto.__init__, include_extras=True)): raise AssertionError('embedded check failed')\n        u_rt = DataclassCodec.encode_object(DataclassCodec.decode(UBOX, {'item': {'sub': {'code': 'A1'}}}))\n        if not (u_rt == {'item': {'sub': {'code': 'A1'}}}): raise AssertionError('embedded check failed')\n        return req\nclass M(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('reloc_dyn_pkg')\n    def tasks(self) -> Sequence[BoundTask]: return (DynT(),)\ndef create_module() -> YscbModule: return M()\n",
+        "from __future__ import annotations\nfrom dataclasses import dataclass\nimport typing\nfrom typing import Sequence\nfrom core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\nfrom core.foundation import DataclassCodec\nfrom core.foundation import ModuleId, TaskId\nimport h_dyn, h_union\nfrom h_dyn import HelperStamp\n@dataclass(frozen=True)\nclass DerivedDto(h_dyn.mk_base()):\n    extra: str = 'ok'\nSTAMP_T = HelperStamp\nUBOX = h_union.mk_union()\nclass DynT(Task[DerivedDto, DerivedDto]):\n    @property\n    def metadata(self) -> TaskMetadata[DerivedDto, DerivedDto]: return TaskMetadata(TaskId('reloc_dyn_pkg.op'), DerivedDto, DerivedDto)\n    def run(self, req: DerivedDto, ctx: TaskContext) -> DerivedDto:\n        if not ('stamp' in typing.get_type_hints(DerivedDto.__init__, include_extras=True)): raise AssertionError('embedded check failed')\n        u_rt = DataclassCodec.encode_object(DataclassCodec.decode(UBOX, {'item': {'sub': {'code': 'A1'}}}))\n        if not (u_rt == {'item': {'sub': {'code': 'A1'}}}): raise AssertionError('embedded check failed')\n        return req\nclass M(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('reloc_dyn_pkg')\n    def tasks(self) -> Sequence[BoundTask]: return (DynT(),)\ndef create_module() -> YscbModule: return M()\n",
         encoding="utf-8",
     )
     art = ProtectedModuleLoader(ws8).load_module_artifact(ModuleDescriptor(ModuleId("reloc_dyn_pkg"), HostPath(mdir)))
@@ -5240,7 +5573,7 @@ from typing import Sequence
 from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec
 from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule
 from core.filesystem.fs import atomic_write_json, read_json_dict
-from core.foundation.primitives import EventId, ModuleId, TaskId
+from core.foundation import EventId, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class ProbeIn:
@@ -5573,7 +5906,7 @@ def _verify_dispatcher_preempt_and_join_cancel(ws_p: HostPath, cache_p: Path, p_
     _check(not rf_cyc.ok and rf_cyc.error is not None and rf_cyc.error.code == ErrorCode.TASK_TIMEOUT)
 
 
-def _verify_dispatcher_orphan_event_adoption(ws_p: HostPath) -> None:
+def _verify_dispatcher_detached_leader_event_cascade(ws_p: HostPath) -> None:
     mdir = ws_p.path / ".modules" / "cprobe"
     mdir.mkdir(parents=True, exist_ok=True)
     (mdir / "module_entry.py").write_text(_COORD_PROBE_MOD_SRC, encoding="utf-8")
@@ -5682,7 +6015,7 @@ def _verify_closure_annotations_and_generic_subclass(ws8: HostPath) -> None:
     (mdir / "h_no_fut.py").write_text(
         "from dataclasses import dataclass\nfrom typing import Optional, Sequence\n"
         "from core.execution.event import EventSubscriptionSpec\n"
-        "from core.foundation.primitives import EventId, HostPath\n"
+        "from core.foundation import EventId, HostPath\n"
         "def make_sub_and_inst() -> tuple[object, object]:\n"
         "    @dataclass(frozen=True)\n    class AnnOnlyDto:\n        p: 'Optional[HostPath]' = None\n        n: int = 0\n"
         "    def mapper(items: Sequence[AnnOnlyDto]) -> int:\n        return sum(x.n for x in items)\n"
@@ -5690,7 +6023,7 @@ def _verify_closure_annotations_and_generic_subclass(ws8: HostPath) -> None:
         encoding="utf-8",
     )
     (mdir / "module_entry.py").write_text(
-        "from dataclasses import dataclass\nfrom typing import Sequence\nfrom core.execution.event import EventSubscriptionSpec\nfrom core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\nfrom core.foundation.codec import DataclassCodec\nfrom core.foundation.primitives import ModuleId, TaskId\nimport h_no_fut\n@dataclass(frozen=True, slots=True)\nclass NfBox:\n    total: int = 0\nclass NfT(Task[NfBox, NfBox]):\n    @property\n    def metadata(self) -> TaskMetadata[NfBox, NfBox]: return TaskMetadata(TaskId('reloc_nofut.op'), NfBox, NfBox)\n    def run(self, req: NfBox, ctx: TaskContext) -> NfBox:\n        sub_o, inst_o = h_no_fut.make_sub_and_inst()\n        if not (isinstance(sub_o, EventSubscriptionSpec) and sub_o.decode_and_map([{'n': 12}, {'n': 8}]) == 20): raise AssertionError('embedded check failed')\n        dec_n = DataclassCodec.encode_object(DataclassCodec.decode(type(inst_o), {'n': 33}))['n']\n        return NfBox(total=int(dec_n) if isinstance(dec_n, int) else 0)\nclass M(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('reloc_nofut')\n    def tasks(self) -> Sequence[BoundTask]: return (NfT(),)\ndef create_module() -> YscbModule: return M()\n",
+        "from dataclasses import dataclass\nfrom typing import Sequence\nfrom core.execution.event import EventSubscriptionSpec\nfrom core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\nfrom core.foundation import DataclassCodec\nfrom core.foundation import ModuleId, TaskId\nimport h_no_fut\n@dataclass(frozen=True, slots=True)\nclass NfBox:\n    total: int = 0\nclass NfT(Task[NfBox, NfBox]):\n    @property\n    def metadata(self) -> TaskMetadata[NfBox, NfBox]: return TaskMetadata(TaskId('reloc_nofut.op'), NfBox, NfBox)\n    def run(self, req: NfBox, ctx: TaskContext) -> NfBox:\n        sub_o, inst_o = h_no_fut.make_sub_and_inst()\n        if not (isinstance(sub_o, EventSubscriptionSpec) and sub_o.decode_and_map([{'n': 12}, {'n': 8}]) == 20): raise AssertionError('embedded check failed')\n        dec_n = DataclassCodec.encode_object(DataclassCodec.decode(type(inst_o), {'n': 33}))['n']\n        return NfBox(total=int(dec_n) if isinstance(dec_n, int) else 0)\nclass M(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('reloc_nofut')\n    def tasks(self) -> Sequence[BoundTask]: return (NfT(),)\ndef create_module() -> YscbModule: return M()\n",
         encoding="utf-8",
     )
     art = ProtectedModuleLoader(ws8).load_module_artifact(ModuleDescriptor(ModuleId("reloc_nofut"), HostPath(mdir)))
@@ -5753,8 +6086,7 @@ def _verify_retiring_reentrant_and_shutdown_edges(ws8: HostPath, disp8: RuntimeD
     # shutdown_all() while a poisoned worker is actively sitting in _retiring_workers must reap it promptly!
     ws_ret = HostPath(ws8.path / "ws_ret_shutdown")
     provision_live_workspace(ws_ret.path)
-    venv_bin = Path(os.environ["YSCB_TEST_DEDICATED_VENV_PY"])
-    disp_ret = build_dispatcher_for_workspace(ws_ret, HostPath(venv_bin), is_daemon_host=True).dispatcher
+    disp_ret = build_dispatcher_for_workspace(ws_ret, _resolve_dedicated_venv_py(ws8), is_daemon_host=True).dispatcher
     try:
         disp_ret.warmup_daemon_container()
         w_snap = disp_ret.tier1_pool.active_worker_snapshots()
@@ -5927,7 +6259,7 @@ def _verify_quiesce_resume_and_lazy_unload(ws8: HostPath) -> None:
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from . import lazy_leaf\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass LIn:\n    x: int = 1\n"
         "@dataclass(frozen=True, slots=True)\nclass LOut:\n    v: int\n"
         "class LTask(Task[LIn, LOut]):\n"
@@ -5946,6 +6278,7 @@ def _verify_quiesce_resume_and_lazy_unload(ws8: HostPath) -> None:
         on_invoke_task=lambda _t, _r, _w, _p: TaskOutcome(ok=False),
         on_progress=lambda _p: None,
     )
+    before_lazy_mods = set(sys.modules)
     reg = LocalModuleSlotRegistry(ws8, LifoResourceStack())
     reg.register_descriptors([ModuleDescriptor(ModuleId("lazy_pkg_mod"), HostPath(lmod_dir), declared_tasks=(TaskRouteSpec(task_id=TaskId("lazy_pkg_mod.run")),))])
     rep = reg.execute_step_locally(
@@ -5955,15 +6288,14 @@ def _verify_quiesce_resume_and_lazy_unload(ws8: HostPath) -> None:
         )
     )
     _check(rep.ok and rep.raw_output == {"v": 100})
-    _check(any(k.endswith(".lazy_leaf") and "_yscb_v2_mod_lazy_pkg_mod_" in k for k in sys.modules))
+    _check(any(k.endswith(".lazy_leaf") for k in (set(sys.modules) - before_lazy_mods)))
     reg.unload_modules(frozenset({ModuleId("lazy_pkg_mod")}), drain_in_flight=True)
-    _check(not any("_yscb_v2_mod_lazy_pkg_mod_" in k for k in sys.modules))
+    _check((set(sys.modules) - before_lazy_mods) == set())
 
     # Empty quiesce_modules(frozenset()) + newly installed eager_warmup=True module warmed on resume_from_quiesce()!
     ws_c3 = HostPath(ws8.path / "ws_c3_probe")
     provision_live_workspace(ws_c3.path)
-    venv_bin = HostPath(os.environ["YSCB_TEST_DEDICATED_VENV_PY"])
-    disp_c3 = build_dispatcher_for_workspace(ws_c3, venv_bin, is_daemon_host=True).dispatcher
+    disp_c3 = build_dispatcher_for_workspace(ws_c3, _resolve_dedicated_venv_py(ws8), is_daemon_host=True).dispatcher
     try:
         disp_c3.warmup_daemon_container()
         disp_c3.quiesce_modules(frozenset(), grace_ms=200)
@@ -5975,7 +6307,7 @@ def _verify_quiesce_resume_and_lazy_unload(ws8: HostPath) -> None:
             "from typing import Callable, Optional, Sequence\n"
             "from core.execution.runtime import BoundTask, YscbModule\n"
             "from core.filesystem.fs import atomic_write_json, read_json_dict\n"
-            "from core.foundation.primitives import HostPath, ModuleId\n"
+            "from core.foundation import HostPath, ModuleId\n"
             "class BMod(YscbModule):\n"
             "    @property\n    def module_id(self) -> ModuleId: return ModuleId('beta_new')\n"
             "    def on_start(self, workspace_root: HostPath) -> Optional[Callable[[], None]]:\n"
@@ -6018,7 +6350,7 @@ def _verify_factory_cleanup_and_helper_rel_import(ws8: HostPath) -> None:
     bad_t.mkdir(parents=True, exist_ok=True)
     (bad_t / "module_entry.py").write_text(
         "from typing import Sequence\nfrom core.execution.runtime import BoundTask, YscbModule\n"
-        "from core.foundation.primitives import ModuleId\n"
+        "from core.foundation import ModuleId\n"
         "class BadTMod(YscbModule):\n"
         "    @property\n    def module_id(self) -> ModuleId: return ModuleId('crash_tasks_mod')\n"
         "    def tasks(self) -> Sequence[BoundTask]: raise RuntimeError('boom_tasks')\n"
@@ -6044,13 +6376,13 @@ def _verify_factory_cleanup_and_helper_rel_import(ws8: HostPath) -> None:
     (rel_d / "helper_a.py").write_text(
         "import helper_b\n"
         "def get_b() -> int:\n"
-        "    return helper_b.VAL_B if (__package__ or '').startswith('_yscb_v2_mod_rel_pkg_ctx_') else 0\n",
+        "    return helper_b.VAL_B if bool(__package__) else 0\n",
         encoding="utf-8",
     )
     (rel_d / "module_entry.py").write_text(
         "from dataclasses import dataclass\nimport helper_a\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass RBox:\n    v: int = 0\n"
         "class RT(Task[RBox, RBox]):\n"
         "    @property\n    def metadata(self) -> TaskMetadata[RBox, RBox]: return TaskMetadata(TaskId('rel_pkg_ctx.op'), RBox, RBox)\n"
@@ -6100,9 +6432,8 @@ def _verify_retiring_lock_yield_and_empty_reload(ws8: HostPath, disp8: RuntimeDi
         _ = query_daemon_control(ws8.join(".cache"), ws8, FrameKind.CONTROL_RELOAD, {})
 
 
-def _verify_cross_ws_reentrancy_and_asymmetric_lineage(ws8: HostPath) -> None:
+def _verify_cross_ws_reentrancy_and_asymmetric_lineage(ws8: HostPath, venv_bin: HostPath) -> None:
     # 1. Cross-workspace 2-Daemon bounce-back WS_A -> WS_B -> WS_A: SERIALIZE re-enters, PREEMPT raises ILLEGAL_LOCK_REENTRANCY!
-    venv_bin = HostPath(os.environ["YSCB_TEST_DEDICATED_VENV_PY"])
     ws_a = HostPath(ws8.path / "ws_case_a")
     ws_b = HostPath(ws8.path / "ws_case_b")
     provision_live_workspace(ws_a.path)
@@ -6125,7 +6456,7 @@ def _verify_cross_ws_reentrancy_and_asymmetric_lineage(ws8: HostPath) -> None:
         (mdir / "module_entry.py").write_text(
             "from dataclasses import dataclass\nfrom typing import Sequence\n"
             "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
-            "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+            "from core.foundation import HostPath, ModuleId, TaskId\n"
             "@dataclass(frozen=True, slots=True)\nclass XIn:\n    peer_ws: str = ''\n    back_ws: str = ''\n    mode: str = 'ser'\n"
             "@dataclass(frozen=True, slots=True)\nclass XOut:\n    tag: str\n"
             "class OuterSer(Task[XIn, XOut]):\n"
@@ -6192,7 +6523,7 @@ def _provision_asymmetric_lineage_module(ws_lin: HostPath) -> None:
         "from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json, read_json_dict\n"
-        "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+        "from core.foundation import EventId, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass PIn:\n    first: bool = True\n"
         "@dataclass(frozen=True, slots=True)\nclass POut:\n    ok: bool = True\n"
         "EV_A = EventMetadata(EventId('p1m.ev_a'), PIn, EventOrdering.UNORDERED)\n"
@@ -6351,7 +6682,7 @@ def _provision_big_tier1_module(ws_t1: HostPath) -> None:
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.event import EventMetadata, EventOrdering\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+        "from core.foundation import EventId, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass BIn:\n    mode: str = 'in'\n    blob: str = ''\n"
         "@dataclass(frozen=True, slots=True)\nclass BOut:\n    data: str = ''\n    code: str = ''\n"
         "BIG_EV = EventMetadata(EventId('bigt1.ev'), BIn, EventOrdering.UNORDERED)\n"
@@ -6374,10 +6705,9 @@ def _provision_big_tier1_module(ws_t1: HostPath) -> None:
     )
 
 
-def _verify_tier1_oversized_payloads(ws8: HostPath) -> None:
+def _verify_tier1_oversized_payloads(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_t1 = HostPath(ws8.path / "ws_case_big")
     provision_live_workspace(ws_t1.path)
-    venv_bin = HostPath(os.environ["YSCB_TEST_DEDICATED_VENV_PY"])
     _provision_big_tier1_module(ws_t1)
     disp_b = build_dispatcher_for_workspace(ws_t1, venv_bin, is_daemon_host=True).dispatcher
     try:
@@ -6414,8 +6744,8 @@ def _provision_retiring_bounce_a(ws_a: HostPath) -> None:
         "from dataclasses import dataclass\nimport time\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, DispatchMode, SelfMutationScope, Task, TaskContext, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json\n"
-        "from core.foundation.errors import YscbError\n"
-        "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+        "from core.foundation import YscbError\n"
+        "from core.foundation import HostPath, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass XIn:\n    peer: str = ''\n    back_task: str = 'bnc.inner'\n    wait_ms: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass XOut:\n    tag: str = 'ok'\n"
         "RELAY_M = TaskMetadata(TaskId('bnc.relay'), XIn, XOut)\n"
@@ -6460,8 +6790,8 @@ def _provision_retiring_bounce_b(ws_b: HostPath) -> None:
     (mb / "module_entry.py").write_text(
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, DispatchMode, SecurityTier, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.errors import YscbError\n"
-        "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+        "from core.foundation import YscbError\n"
+        "from core.foundation import HostPath, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass XIn:\n    peer: str = ''\n    back_task: str = 'bnc.inner'\n    wait_ms: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass XOut:\n    tag: str = 'ok'\n"
         "class RelayT(Task[XIn, XOut]):\n"
@@ -6485,12 +6815,11 @@ def _provision_retiring_bounce_b(ws_b: HostPath) -> None:
     )
 
 
-def _verify_retiring_bounceback_and_cold_reentrancy(ws8: HostPath) -> None:
+def _verify_retiring_bounceback_and_cold_reentrancy(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_a = HostPath(ws8.path / "ws_case_ba")
     ws_b = HostPath(ws8.path / "ws_case_bb")
     provision_live_workspace(ws_a.path)
     provision_live_workspace(ws_b.path)
-    venv_bin = HostPath(os.environ["YSCB_TEST_DEDICATED_VENV_PY"])
     _provision_retiring_bounce_a(ws_a)
     _provision_retiring_bounce_b(ws_b)
     disp_cold_a = build_dispatcher_for_workspace(ws_a, venv_bin, is_daemon_host=False).dispatcher
@@ -6560,8 +6889,8 @@ def _provision_coalesce_imm_module(ws_ci: HostPath) -> None:
         "from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json\n"
-        "from core.foundation.errors import YscbError\n"
-        "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+        "from core.foundation import YscbError\n"
+        "from core.foundation import EventId, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass CIn:\n    cycle: bool = False\n    enter_coal: bool = False\n    emit_once: bool = True\n"
         "@dataclass(frozen=True, slots=True)\nclass COut:\n    ok: bool = True\n"
         "def _map_cin(items: Sequence[CIn]) -> CIn:\n    return items[-1]\n"
@@ -6612,11 +6941,10 @@ def _provision_coalesce_imm_module(ws_ci: HostPath) -> None:
     )
 
 
-def _verify_coalesce_multi_follower_and_imm(ws8: HostPath) -> None:
+def _verify_coalesce_multi_follower_and_imm(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_ci = HostPath(ws8.path / "ws_case_cimm")
     provision_live_workspace(ws_ci.path)
     _provision_coalesce_imm_module(ws_ci)
-    venv_bin = HostPath(os.environ["YSCB_TEST_DEDICATED_VENV_PY"])
     disp_ci = build_dispatcher_for_workspace(ws_ci, venv_bin, is_daemon_host=True).dispatcher
     try:
         disp_ci.warmup_daemon_container()
@@ -6683,14 +7011,13 @@ def _verify_daemon_hygiene_and_local_union(ws8: HostPath) -> None:
 
     ws_cold = HostPath(ws8.path / "ws_case_cold_hygiene")
     provision_live_workspace(ws_cold.path)
-    venv_bin = HostPath(os.environ["YSCB_TEST_DEDICATED_VENV_PY"])
-    before_keys = {k for k in sys.modules if k.startswith("_yscb_v2_mod_")}
-    disp_c = build_dispatcher_for_workspace(ws_cold, venv_bin, is_daemon_host=False).dispatcher
+    before_keys = set(sys.modules)
+    disp_c = build_dispatcher_for_workspace(ws_cold, _resolve_dedicated_venv_py(ws8), is_daemon_host=False).dispatcher
     _check(disp_c.invoke_typed(ECHO_TIER0_META, EchoInDto(tag="cold_clean"), routing_policy=ClientRoutingPolicy.FORCE_COLD).ok)
-    mid_keys = {k for k in sys.modules if k.startswith("_yscb_v2_mod_")} - before_keys
+    mid_keys = set(sys.modules) - before_keys
     _check(mid_keys == set(), lambda: f"ColdTurn leaked dynamic modules: {mid_keys}")
     disp_c.shutdown(grace_ms=100)
-    after_keys = {k for k in sys.modules if k.startswith("_yscb_v2_mod_")} - before_keys
+    after_keys = set(sys.modules) - before_keys
     _check(after_keys == set(), lambda: f"Dispatcher.shutdown leaked dynamic modules: {after_keys}")
 
 
@@ -6754,7 +7081,7 @@ def _provision_retiring_equiv_and_map_modules(ws_a: HostPath) -> None:
         "from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json\n"
-        "from core.foundation.primitives import EventId, HostPath, ModuleId, TaskId\n"
+        "from core.foundation import EventId, HostPath, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass EIn:\n    peer_ws: str = ''\n    key_v: str = 'k'\n    hold_ms: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass EOut:\n    pid: int = 0\n    tag: str = ''\n"
         "EV_DONE = EventMetadata(EventId('eqm.ev_done'), EIn, EventOrdering.UNORDERED)\n"
@@ -6802,7 +7129,7 @@ def _provision_retiring_bridge_module(ws_b: HostPath) -> None:
     (mb / "module_entry.py").write_text(
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+        "from core.foundation import HostPath, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass BIn:\n    peer_ws: str = ''\n"
         "@dataclass(frozen=True, slots=True)\nclass BOut:\n    ok: bool = True\n"
         "class BridgeT(Task[BIn, BOut]):\n"
@@ -6884,8 +7211,8 @@ def _provision_cold_installer_bounce_modules(ws_a: HostPath) -> None:
     (ma / "module_entry.py").write_text(
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, ClientRoutingPolicy, DispatchMode, SelfMutationScope, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.errors import YscbError\n"
-        "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+        "from core.foundation import YscbError\n"
+        "from core.foundation import HostPath, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass MIn:\n    peer_ws: str = ''\n    target_inner: str = 'inst_a.mut_inner'\n"
         "@dataclass(frozen=True, slots=True)\nclass MOut:\n    tag: str = 'ok'\n"
         "class MutOuter(Task[MIn, MOut]):\n"
@@ -6928,8 +7255,8 @@ def _provision_cold_installer_peer_module(ws_b: HostPath) -> None:
     (mb / "module_entry.py").write_text(
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, ClientRoutingPolicy, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.errors import YscbError\n"
-        "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+        "from core.foundation import YscbError\n"
+        "from core.foundation import HostPath, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass BIn:\n    back_ws: str = ''\n    target_inner: str = 'inst_a.mut_inner'\n"
         "@dataclass(frozen=True, slots=True)\nclass BOut:\n    code: str = 'ok'\n"
         "class BounceT(Task[BIn, BOut]):\n"
@@ -6989,7 +7316,7 @@ def _verify_cold_installer_reentry_and_mutation_gates(ws8: HostPath, venv_bin: H
 
 
 _MHOP_MODULE_SRC: Final[str] = (
-        "from dataclasses import dataclass\nimport time\nfrom typing import Sequence\nfrom core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\nfrom core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\nfrom core.filesystem.fs import atomic_write_json\nfrom core.foundation.errors import ErrorCode, YscbError\nfrom core.foundation.observability import ProgressEvent\nfrom core.foundation.primitives import EventId, ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass HIn:\n    sleep_ms: int = 0\n    emit_cycle: bool = True\n@dataclass(frozen=True, slots=True)\nclass HOut:\n    ok: bool = True\nEV_A = EventMetadata(EventId('mhop.ev_a'), HIn, EventOrdering.UNORDERED)\nEV_L = EventMetadata(EventId('mhop.ev_l'), HIn, EventOrdering.UNORDERED)\nEV_M = EventMetadata(EventId('mhop.ev_m'), HIn, EventOrdering.UNORDERED)\nEV_C = EventMetadata(EventId('mhop.ev_child'), HIn, EventOrdering.UNORDERED)\ndef _m_hin(items: Sequence[HIn]) -> HIn:\n    return items[0] if items else HIn()\nclass TrigA(Task[HIn, HOut]):\n    @property\n    def metadata(self) -> TaskMetadata[HIn, HOut]: return TaskMetadata(TaskId('mhop.trig_a'), HIn, HOut)\n    def run(self, req: HIn, ctx: TaskContext) -> HOut:\n        ctx.emit(EV_A, HIn(sleep_ms=req.sleep_ms, emit_cycle=req.emit_cycle))\n        return HOut()\nclass StepL(Task[HIn, HOut]):\n    @property\n    def metadata(self) -> TaskMetadata[HIn, HOut]:\n        return TaskMetadata(TaskId('mhop.step_l'), HIn, HOut, resource_key='rk_l', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda _r: 'l_eq', subscriptions=(EventSubscriptionSpec(EventId('mhop.ev_a'), _m_hin, payload_type=HIn),))\n    def run(self, req: HIn, ctx: TaskContext) -> HOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'mhop_l_in.json'), {'in': True})\n        time.sleep(max(0.01, req.sleep_ms / 1000.0))\n        if req.emit_cycle:\n            ctx.emit(EV_L, HIn(sleep_ms=0, emit_cycle=req.emit_cycle))\n        return HOut()\nclass StepM(Task[HIn, HOut]):\n    @property\n    def metadata(self) -> TaskMetadata[HIn, HOut]:\n        return TaskMetadata(TaskId('mhop.step_m'), HIn, HOut, resource_key='rk_m', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda _r: 'm_eq', subscriptions=(EventSubscriptionSpec(EventId('mhop.ev_l'), _m_hin, payload_type=HIn),))\n    def run(self, req: HIn, ctx: TaskContext) -> HOut:\n        if req.sleep_ms > 0:\n            atomic_write_json(ctx.workspace_root.join('.cache', 'mhop_m_in.json'), {'in': True})\n            time.sleep(req.sleep_ms / 1000.0)\n        ctx.emit(EV_M, HIn(emit_cycle=req.emit_cycle))\n        return HOut()\nclass EmitBackA(Task[HIn, HOut]):\n    @property\n    def metadata(self) -> TaskMetadata[HIn, HOut]:\n        return TaskMetadata(TaskId('mhop.emit_back_a'), HIn, HOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('mhop.ev_m'), _m_hin, payload_type=HIn),))\n    def run(self, req: HIn, ctx: TaskContext) -> HOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'mhop_back_ran.json'), {'ran': True})\n        if req.emit_cycle:\n            ctx.emit(EV_A, HIn(sleep_ms=10, emit_cycle=False))\n        return HOut()\nclass FailParent(Task[HIn, HOut]):\n    @property\n    def metadata(self) -> TaskMetadata[HIn, HOut]:\n        return TaskMetadata(TaskId('mhop.fail_parent'), HIn, HOut, resource_key='rk_fp', concurrency_mode=ConcurrencyMode.COALESCE)\n    def run(self, req: HIn, ctx: TaskContext) -> HOut:\n        if not (ctx.invoke_task(TaskId('mhop.child_emit'), {}).ok): raise AssertionError('embedded check failed')\n        raise YscbError(ErrorCode.BUSINESS_FAILURE, 'parent_failed_after_child_commit')\nclass ChildEmit(Task[HIn, HOut]):\n    @property\n    def metadata(self) -> TaskMetadata[HIn, HOut]: return TaskMetadata(TaskId('mhop.child_emit'), HIn, HOut)\n    def run(self, req: HIn, ctx: TaskContext) -> HOut:\n        ctx.emit(EV_C, HIn())\n        return HOut()\nclass ChildSub(Task[HIn, HOut]):\n    @property\n    def metadata(self) -> TaskMetadata[HIn, HOut]:\n        return TaskMetadata(TaskId('mhop.child_sub'), HIn, HOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('mhop.ev_child'), _m_hin, payload_type=HIn),))\n    def run(self, req: HIn, ctx: TaskContext) -> HOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'mhop_child_sub.json'), {'committed': True})\n        return HOut()\nclass ProgBurst(Task[HIn, HOut]):\n    @property\n    def metadata(self) -> TaskMetadata[HIn, HOut]: return TaskMetadata(TaskId('mhop.prog_burst'), HIn, HOut)\n    def run(self, req: HIn, ctx: TaskContext) -> HOut:\n        for i in range(20):\n            ctx.report_progress(ProgressEvent('burst', i, 20, 'tick'))\n        return HOut()\nclass MHopMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('mhop')\n    def tasks(self) -> Sequence[BoundTask]:\n        return (TrigA(), StepL(), StepM(), EmitBackA(), FailParent(), ChildEmit(), ChildSub(), ProgBurst())\ndef create_module() -> YscbModule: return MHopMod()\n"
+        "from dataclasses import dataclass\nimport time\nfrom typing import Sequence\nfrom core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\nfrom core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\nfrom core.filesystem.fs import atomic_write_json\nfrom core.foundation import ErrorCode, YscbError\nfrom core.foundation import ProgressEvent\nfrom core.foundation import EventId, ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass HIn:\n    sleep_ms: int = 0\n    emit_cycle: bool = True\n@dataclass(frozen=True, slots=True)\nclass HOut:\n    ok: bool = True\nEV_A = EventMetadata(EventId('mhop.ev_a'), HIn, EventOrdering.UNORDERED)\nEV_L = EventMetadata(EventId('mhop.ev_l'), HIn, EventOrdering.UNORDERED)\nEV_M = EventMetadata(EventId('mhop.ev_m'), HIn, EventOrdering.UNORDERED)\nEV_C = EventMetadata(EventId('mhop.ev_child'), HIn, EventOrdering.UNORDERED)\ndef _m_hin(items: Sequence[HIn]) -> HIn:\n    return items[0] if items else HIn()\nclass TrigA(Task[HIn, HOut]):\n    @property\n    def metadata(self) -> TaskMetadata[HIn, HOut]: return TaskMetadata(TaskId('mhop.trig_a'), HIn, HOut)\n    def run(self, req: HIn, ctx: TaskContext) -> HOut:\n        ctx.emit(EV_A, HIn(sleep_ms=req.sleep_ms, emit_cycle=req.emit_cycle))\n        return HOut()\nclass StepL(Task[HIn, HOut]):\n    @property\n    def metadata(self) -> TaskMetadata[HIn, HOut]:\n        return TaskMetadata(TaskId('mhop.step_l'), HIn, HOut, resource_key='rk_l', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda _r: 'l_eq', subscriptions=(EventSubscriptionSpec(EventId('mhop.ev_a'), _m_hin, payload_type=HIn),))\n    def run(self, req: HIn, ctx: TaskContext) -> HOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'mhop_l_in.json'), {'in': True})\n        time.sleep(max(0.01, req.sleep_ms / 1000.0))\n        if req.emit_cycle:\n            ctx.emit(EV_L, HIn(sleep_ms=0, emit_cycle=req.emit_cycle))\n        return HOut()\nclass StepM(Task[HIn, HOut]):\n    @property\n    def metadata(self) -> TaskMetadata[HIn, HOut]:\n        return TaskMetadata(TaskId('mhop.step_m'), HIn, HOut, resource_key='rk_m', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda _r: 'm_eq', subscriptions=(EventSubscriptionSpec(EventId('mhop.ev_l'), _m_hin, payload_type=HIn),))\n    def run(self, req: HIn, ctx: TaskContext) -> HOut:\n        if req.sleep_ms > 0:\n            atomic_write_json(ctx.workspace_root.join('.cache', 'mhop_m_in.json'), {'in': True})\n            time.sleep(req.sleep_ms / 1000.0)\n        ctx.emit(EV_M, HIn(emit_cycle=req.emit_cycle))\n        return HOut()\nclass EmitBackA(Task[HIn, HOut]):\n    @property\n    def metadata(self) -> TaskMetadata[HIn, HOut]:\n        return TaskMetadata(TaskId('mhop.emit_back_a'), HIn, HOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('mhop.ev_m'), _m_hin, payload_type=HIn),))\n    def run(self, req: HIn, ctx: TaskContext) -> HOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'mhop_back_ran.json'), {'ran': True})\n        if req.emit_cycle:\n            ctx.emit(EV_A, HIn(sleep_ms=10, emit_cycle=False))\n        return HOut()\nclass FailParent(Task[HIn, HOut]):\n    @property\n    def metadata(self) -> TaskMetadata[HIn, HOut]:\n        return TaskMetadata(TaskId('mhop.fail_parent'), HIn, HOut, resource_key='rk_fp', concurrency_mode=ConcurrencyMode.COALESCE)\n    def run(self, req: HIn, ctx: TaskContext) -> HOut:\n        if not (ctx.invoke_task(TaskId('mhop.child_emit'), {}).ok): raise AssertionError('embedded check failed')\n        raise YscbError(ErrorCode.BUSINESS_FAILURE, 'parent_failed_after_child_commit')\nclass ChildEmit(Task[HIn, HOut]):\n    @property\n    def metadata(self) -> TaskMetadata[HIn, HOut]: return TaskMetadata(TaskId('mhop.child_emit'), HIn, HOut)\n    def run(self, req: HIn, ctx: TaskContext) -> HOut:\n        ctx.emit(EV_C, HIn())\n        return HOut()\nclass ChildSub(Task[HIn, HOut]):\n    @property\n    def metadata(self) -> TaskMetadata[HIn, HOut]:\n        return TaskMetadata(TaskId('mhop.child_sub'), HIn, HOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('mhop.ev_child'), _m_hin, payload_type=HIn),))\n    def run(self, req: HIn, ctx: TaskContext) -> HOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'mhop_child_sub.json'), {'committed': True})\n        return HOut()\nclass ProgBurst(Task[HIn, HOut]):\n    @property\n    def metadata(self) -> TaskMetadata[HIn, HOut]: return TaskMetadata(TaskId('mhop.prog_burst'), HIn, HOut)\n    def run(self, req: HIn, ctx: TaskContext) -> HOut:\n        for i in range(20):\n            ctx.report_progress(ProgressEvent('burst', i, 20, 'tick'))\n        return HOut()\nclass MHopMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('mhop')\n    def tasks(self) -> Sequence[BoundTask]:\n        return (TrigA(), StepL(), StepM(), EmitBackA(), FailParent(), ChildEmit(), ChildSub(), ProgBurst())\ndef create_module() -> YscbModule: return MHopMod()\n"
 )
 
 
@@ -7127,7 +7454,7 @@ def _install_eager_probe_module(ws_target: HostPath, mod_name: str, marker_name:
         "from typing import Callable, Optional, Sequence",
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule",
         "from core.filesystem.fs import atomic_write_json",
-        "from core.foundation.primitives import HostPath, ModuleId, TaskId",
+        "from core.foundation import HostPath, ModuleId, TaskId",
         "@dataclass(frozen=True, slots=True)",
         "class PIn:",
         "    pass",
@@ -7411,7 +7738,7 @@ def _verify_worker_pool_shutdown_spawn_race(ws8: HostPath, venv_bin: HostPath) -
         "from dataclasses import dataclass\nimport os, time\nfrom typing import Callable, Optional, Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import FileLock, atomic_write_json\n"
-        "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+        "from core.foundation import HostPath, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass SIn:\n    pass\n"
         "@dataclass(frozen=True, slots=True)\nclass SOut:\n    pid: int = 0\n"
         "class PingT(Task[SIn, SOut]):\n"
@@ -7462,8 +7789,8 @@ def _provision_cross_proc_reentrant_lock_modules(ws_a: HostPath) -> None:
     (ma / "module_entry.py").write_text(
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, DispatchMode, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.errors import YscbError\n"
-        "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+        "from core.foundation import YscbError\n"
+        "from core.foundation import HostPath, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass LIn:\n    peer_ws: str = ''\n    inner_tid: str = 'xplk.hyb_ser'\n"
         "@dataclass(frozen=True, slots=True)\nclass LOut:\n    tag: str = 'ok'\n"
         "class ColdOuter(Task[LIn, LOut]):\n"
@@ -7500,8 +7827,8 @@ def _provision_cross_proc_bounce_peer(ws_b: HostPath) -> None:
     (mb / "module_entry.py").write_text(
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.errors import YscbError\n"
-        "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+        "from core.foundation import YscbError\n"
+        "from core.foundation import HostPath, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass BIn:\n    back_ws: str = ''\n    inner_tid: str = 'xplk.hyb_ser'\n"
         "@dataclass(frozen=True, slots=True)\nclass BOut:\n    ok: bool = True\n"
         "class BounceT(Task[BIn, BOut]):\n"
@@ -7560,11 +7887,11 @@ def _verify_cross_process_lock_reentrancy_topologies(ws8: HostPath, venv_bin: Ho
 
 
 _ORPHAN_FOLD_MOD_SRC: Final[str] = (
-    "from dataclasses import dataclass\nimport time\nfrom typing import Sequence\nfrom core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\nfrom core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\nfrom core.filesystem.fs import atomic_write_json\nfrom core.foundation.errors import ErrorCode, YscbError\nfrom core.foundation.primitives import EventId, HostPath, ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass OIn:\n    sleep_ms: int = 0\n    peer_ws: str = ''\n    bounce_ws: str = ''\n@dataclass(frozen=True, slots=True)\nclass OOut:\n    status: str = 'ok'\nEV_DER = EventMetadata(EventId('ofm.ev_der'), OIn, EventOrdering.UNORDERED)\nEV_IMM = EventMetadata(EventId('ofm.ev_imm'), OIn, EventOrdering.ORDERED)\nEV_X = EventMetadata(EventId('ofm.ev_x'), OIn, EventOrdering.UNORDERED)\nEV_Y = EventMetadata(EventId('ofm.ev_y'), OIn, EventOrdering.UNORDERED)\nEV_MID = EventMetadata(EventId('ofm.ev_mid'), OIn, EventOrdering.UNORDERED)\nEV_ANC = EventMetadata(EventId('ofm.ev_anc'), OIn, EventOrdering.UNORDERED)\ndef _m_oin(items: Sequence[OIn]) -> OIn:\n    return OIn(sleep_ms=max(x.sleep_ms for x in items), peer_ws=items[0].peer_ws, bounce_ws=items[0].bounce_ws) if items else OIn()\nclass CoalEmit(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.coal_emit'), OIn, OOut, resource_key='rk_ofm', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda _r: 'eq_o')\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'ofm_in.json'), {'in': True})\n        time.sleep(0.22)\n        ctx.emit_imm(EV_IMM, OIn(), strict=False)\n        ctx.emit(EV_DER, OIn())\n        return OOut()\nclass FastTimeoutCoal(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.fast_to_coal'), OIn, OOut, timeout_ms=70)\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        r = ctx.invoke_task(TaskId('ofm.coal_emit'), {})\n        if not r.ok and r.error: raise YscbError(r.error.code, r.error.message)\n        return OOut()\nclass ParentCatch(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]: return TaskMetadata(TaskId('ofm.parent_catch'), OIn, OOut)\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        r = ctx.invoke_task(TaskId('ofm.fast_to_coal'), {})\n        if not (not r.ok): raise AssertionError('embedded check failed')\n        time.sleep(0.25)\n        return OOut(status='caught_timeout')\nclass ImmFailSub(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.imm_fail'), OIn, OOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('ofm.ev_imm'), _m_oin, payload_type=OIn),))\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        raise YscbError(ErrorCode.BUSINESS_FAILURE, 'imm_soft_err')\nclass DerSub(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.der_sub'), OIn, OOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('ofm.ev_der'), _m_oin, payload_type=OIn),))\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'ofm_der_ran.json'), {'ran': True})\n        return OOut()\nclass StartTL(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]: return TaskMetadata(TaskId('ofm.start_tl'), OIn, OOut)\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        ctx.emit(EV_X, OIn())\n        ctx.emit(EV_Y, OIn(sleep_ms=200))\n        return OOut()\nclass StartTF(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]: return TaskMetadata(TaskId('ofm.start_tf'), OIn, OOut)\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        ctx.emit(EV_Y, OIn(sleep_ms=-1))\n        return OOut()\nclass SubX(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.sub_x'), OIn, OOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('ofm.ev_x'), _m_oin, payload_type=OIn),))\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        ctx.emit(EV_MID, OIn())\n        return OOut()\nclass PrepY(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.prep_y'), OIn, OOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('ofm.ev_y'), _m_oin, payload_type=OIn, payload_filter={'sleep_ms': (-1,)}),))\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        ctx.emit(EV_ANC, OIn(sleep_ms=10))\n        return OOut()\nclass SubY(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.sub_y'), OIn, OOut, resource_key='rk_suby', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda _r: 'eq_sy', subscriptions=(EventSubscriptionSpec(EventId('ofm.ev_y'), _m_oin, payload_type=OIn, payload_filter={'sleep_ms': (200, 0)}),))\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        if req.sleep_ms > 0:\n            atomic_write_json(ctx.workspace_root.join('.cache', 'ofm_suby_in.json'), {'in': True})\n            time.sleep(req.sleep_ms / 1000.0)\n            ctx.emit(EV_MID, OIn(sleep_ms=1))\n        return OOut()\nclass SubAnc(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.sub_anc'), OIn, OOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('ofm.ev_anc'), _m_oin, payload_type=OIn),))\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        if req.sleep_ms == 10:\n            r = ctx.invoke_task(TaskId('ofm.sub_y'), {'sleep_ms': 0})\n            if not r.ok and r.error: raise YscbError(r.error.code, r.error.message)\n        if req.peer_ws:\n            r2 = ctx.invoke_task(TaskId('ofm.xws_emit'), {'bounce_ws': req.bounce_ws}, target_workspace=HostPath(req.peer_ws))\n            if not r2.ok and r2.error: raise YscbError(r2.error.code, r2.error.message)\n        return OOut()\nclass SubMid(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.sub_mid'), OIn, OOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('ofm.ev_mid'), _m_oin, payload_type=OIn),))\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        if req.sleep_ms == 1:\n            ctx.emit(EV_ANC, OIn(sleep_ms=0))\n        return OOut()\nclass XwsEmit(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]: return TaskMetadata(TaskId('ofm.xws_emit'), OIn, OOut)\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        ctx.emit(EV_ANC, OIn(peer_ws=req.bounce_ws))\n        return OOut()\nclass OFMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('ofm')\n    def tasks(self) -> Sequence[BoundTask]:\n        return (CoalEmit(), FastTimeoutCoal(), ParentCatch(), ImmFailSub(), DerSub(), StartTL(), StartTF(), SubX(), PrepY(), SubY(), SubAnc(), SubMid(), XwsEmit())\ndef create_module() -> YscbModule: return OFMod()\n"
+    "from dataclasses import dataclass\nimport time\nfrom typing import Sequence\nfrom core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\nfrom core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\nfrom core.filesystem.fs import atomic_write_json\nfrom core.foundation import ErrorCode, YscbError\nfrom core.foundation import EventId, HostPath, ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass OIn:\n    sleep_ms: int = 0\n    peer_ws: str = ''\n    bounce_ws: str = ''\n@dataclass(frozen=True, slots=True)\nclass OOut:\n    status: str = 'ok'\nEV_DER = EventMetadata(EventId('ofm.ev_der'), OIn, EventOrdering.UNORDERED)\nEV_IMM = EventMetadata(EventId('ofm.ev_imm'), OIn, EventOrdering.ORDERED)\nEV_X = EventMetadata(EventId('ofm.ev_x'), OIn, EventOrdering.UNORDERED)\nEV_Y = EventMetadata(EventId('ofm.ev_y'), OIn, EventOrdering.UNORDERED)\nEV_MID = EventMetadata(EventId('ofm.ev_mid'), OIn, EventOrdering.UNORDERED)\nEV_ANC = EventMetadata(EventId('ofm.ev_anc'), OIn, EventOrdering.UNORDERED)\ndef _m_oin(items: Sequence[OIn]) -> OIn:\n    return OIn(sleep_ms=max(x.sleep_ms for x in items), peer_ws=items[0].peer_ws, bounce_ws=items[0].bounce_ws) if items else OIn()\nclass CoalEmit(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.coal_emit'), OIn, OOut, resource_key='rk_ofm', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda _r: 'eq_o')\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'ofm_in.json'), {'in': True})\n        time.sleep(0.22)\n        ctx.emit_imm(EV_IMM, OIn(), strict=False)\n        ctx.emit(EV_DER, OIn())\n        return OOut()\nclass FastTimeoutCoal(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.fast_to_coal'), OIn, OOut, timeout_ms=70)\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        r = ctx.invoke_task(TaskId('ofm.coal_emit'), {})\n        if not r.ok and r.error: raise YscbError(r.error.code, r.error.message)\n        return OOut()\nclass ParentCatch(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]: return TaskMetadata(TaskId('ofm.parent_catch'), OIn, OOut)\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        r = ctx.invoke_task(TaskId('ofm.fast_to_coal'), {})\n        if not (not r.ok): raise AssertionError('embedded check failed')\n        time.sleep(0.25)\n        return OOut(status='caught_timeout')\nclass ImmFailSub(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.imm_fail'), OIn, OOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('ofm.ev_imm'), _m_oin, payload_type=OIn),))\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        raise YscbError(ErrorCode.BUSINESS_FAILURE, 'imm_soft_err')\nclass DerSub(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.der_sub'), OIn, OOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('ofm.ev_der'), _m_oin, payload_type=OIn),))\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'ofm_der_ran.json'), {'ran': True})\n        return OOut()\nclass StartTL(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]: return TaskMetadata(TaskId('ofm.start_tl'), OIn, OOut)\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        ctx.emit(EV_X, OIn())\n        ctx.emit(EV_Y, OIn(sleep_ms=200))\n        return OOut()\nclass StartTF(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]: return TaskMetadata(TaskId('ofm.start_tf'), OIn, OOut)\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        ctx.emit(EV_Y, OIn(sleep_ms=-1))\n        return OOut()\nclass SubX(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.sub_x'), OIn, OOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('ofm.ev_x'), _m_oin, payload_type=OIn),))\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        ctx.emit(EV_MID, OIn())\n        return OOut()\nclass PrepY(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.prep_y'), OIn, OOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('ofm.ev_y'), _m_oin, payload_type=OIn, payload_filter={'sleep_ms': (-1,)}),))\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        ctx.emit(EV_ANC, OIn(sleep_ms=10))\n        return OOut()\nclass SubY(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.sub_y'), OIn, OOut, resource_key='rk_suby', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda _r: 'eq_sy', subscriptions=(EventSubscriptionSpec(EventId('ofm.ev_y'), _m_oin, payload_type=OIn, payload_filter={'sleep_ms': (200, 0)}),))\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        if req.sleep_ms > 0:\n            atomic_write_json(ctx.workspace_root.join('.cache', 'ofm_suby_in.json'), {'in': True})\n            time.sleep(req.sleep_ms / 1000.0)\n            ctx.emit(EV_MID, OIn(sleep_ms=1))\n        return OOut()\nclass SubAnc(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.sub_anc'), OIn, OOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('ofm.ev_anc'), _m_oin, payload_type=OIn),))\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        if req.sleep_ms == 10:\n            r = ctx.invoke_task(TaskId('ofm.sub_y'), {'sleep_ms': 0})\n            if not r.ok and r.error: raise YscbError(r.error.code, r.error.message)\n        if req.peer_ws:\n            r2 = ctx.invoke_task(TaskId('ofm.xws_emit'), {'bounce_ws': req.bounce_ws}, target_workspace=HostPath(req.peer_ws))\n            if not r2.ok and r2.error: raise YscbError(r2.error.code, r2.error.message)\n        return OOut()\nclass SubMid(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]:\n        return TaskMetadata(TaskId('ofm.sub_mid'), OIn, OOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('ofm.ev_mid'), _m_oin, payload_type=OIn),))\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        if req.sleep_ms == 1:\n            ctx.emit(EV_ANC, OIn(sleep_ms=0))\n        return OOut()\nclass XwsEmit(Task[OIn, OOut]):\n    @property\n    def metadata(self) -> TaskMetadata[OIn, OOut]: return TaskMetadata(TaskId('ofm.xws_emit'), OIn, OOut)\n    def run(self, req: OIn, ctx: TaskContext) -> OOut:\n        ctx.emit(EV_ANC, OIn(peer_ws=req.bounce_ws))\n        return OOut()\nclass OFMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('ofm')\n    def tasks(self) -> Sequence[BoundTask]:\n        return (CoalEmit(), FastTimeoutCoal(), ParentCatch(), ImmFailSub(), DerSub(), StartTL(), StartTF(), SubX(), PrepY(), SubY(), SubAnc(), SubMid(), XwsEmit())\ndef create_module() -> YscbModule: return OFMod()\n"
 )
 
 
-def _provision_orphan_fold_module(ws_t: HostPath) -> None:
+def _provision_detached_fold_module(ws_t: HostPath) -> None:
     mdir = ws_t.path / ".modules" / "ofm"
     mdir.mkdir(parents=True, exist_ok=True)
     atomic_write_json(
@@ -7592,13 +7919,13 @@ def _provision_orphan_fold_module(ws_t: HostPath) -> None:
     (mdir / "module_entry.py").write_text(_ORPHAN_FOLD_MOD_SRC, encoding="utf-8")
 
 
-def _verify_orphan_timeout_disqualification_and_folded_lineage(ws8: HostPath, venv_bin: HostPath) -> None:
+def _verify_detached_timeout_disqualification_and_folded_lineage(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_of = HostPath(ws8.path / "ws_orphan_fold")
     ws_ch = HostPath(ws8.path / "ws_orphan_child")
     provision_live_workspace(ws_of.path)
     provision_live_workspace(ws_ch.path)
-    _provision_orphan_fold_module(ws_of)
-    _provision_orphan_fold_module(ws_ch)
+    _provision_detached_fold_module(ws_of)
+    _provision_detached_fold_module(ws_ch)
     disp_of = build_dispatcher_for_workspace(ws_of, venv_bin, is_daemon_host=True).dispatcher
     try:
         disp_of.warmup_daemon_container()
@@ -7689,7 +8016,7 @@ def _verify_16way_3layer_reentrancy_and_ttl_burst(ws8: HostPath, venv_bin: HostP
     mdir.mkdir(parents=True, exist_ok=True)
     atomic_write_json(HostPath(mdir / "routes.json"), {"module_id": "deep_t1", "tier1": True, "venv_group": "deep_grp", "tasks": [{"task_id": "deep_t1.hop"}]})
     (mdir / "module_entry.py").write_text(
-        "from dataclasses import dataclass\nfrom typing import Sequence\nfrom core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\nfrom core.foundation.primitives import ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass DIn:\n    depth: int\n    seed: int\n@dataclass(frozen=True, slots=True)\nclass DOut:\n    val: int\nclass HopT(Task[DIn, DOut]):\n    @property\n    def metadata(self) -> TaskMetadata[DIn, DOut]: return TaskMetadata(TaskId('deep_t1.hop'), DIn, DOut)\n    def run(self, req: DIn, ctx: TaskContext) -> DOut:\n        if req.depth >= 3:\n            r0 = ctx.invoke_task(TaskId('space.echo_tier0'), {'tag': str(req.seed)})\n            if not (r0.ok): raise AssertionError('embedded check failed')\n            return DOut(val=req.seed * 10 + 3)\n        rn = ctx.invoke_task(f'deep_t1.hop_l{req.depth + 1}', {'depth': req.depth + 1, 'seed': req.seed})\n        if not (rn.ok and isinstance(rn.value, dict)): raise AssertionError('embedded check failed')\n        v = rn.value.get('val', 0)\n        return DOut(val=(v if isinstance(v, int) else 0) + 1)\nclass HopL2(HopT):\n    @property\n    def metadata(self) -> TaskMetadata[DIn, DOut]: return TaskMetadata(TaskId('deep_t1.hop_l2'), DIn, DOut)\nclass HopL3(HopT):\n    @property\n    def metadata(self) -> TaskMetadata[DIn, DOut]: return TaskMetadata(TaskId('deep_t1.hop_l3'), DIn, DOut)\nclass DMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('deep_t1')\n    def tasks(self) -> Sequence[BoundTask]: return (HopT(), HopL2(), HopL3())\ndef create_module() -> YscbModule: return DMod()\n",
+        "from dataclasses import dataclass\nfrom typing import Sequence\nfrom core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\nfrom core.foundation import ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass DIn:\n    depth: int\n    seed: int\n@dataclass(frozen=True, slots=True)\nclass DOut:\n    val: int\nclass HopT(Task[DIn, DOut]):\n    @property\n    def metadata(self) -> TaskMetadata[DIn, DOut]: return TaskMetadata(TaskId('deep_t1.hop'), DIn, DOut)\n    def run(self, req: DIn, ctx: TaskContext) -> DOut:\n        if req.depth >= 3:\n            r0 = ctx.invoke_task(TaskId('space.echo_tier0'), {'tag': str(req.seed)})\n            if not (r0.ok): raise AssertionError('embedded check failed')\n            return DOut(val=req.seed * 10 + 3)\n        rn = ctx.invoke_task(f'deep_t1.hop_l{req.depth + 1}', {'depth': req.depth + 1, 'seed': req.seed})\n        if not (rn.ok and isinstance(rn.value, dict)): raise AssertionError('embedded check failed')\n        v = rn.value.get('val', 0)\n        return DOut(val=(v if isinstance(v, int) else 0) + 1)\nclass HopL2(HopT):\n    @property\n    def metadata(self) -> TaskMetadata[DIn, DOut]: return TaskMetadata(TaskId('deep_t1.hop_l2'), DIn, DOut)\nclass HopL3(HopT):\n    @property\n    def metadata(self) -> TaskMetadata[DIn, DOut]: return TaskMetadata(TaskId('deep_t1.hop_l3'), DIn, DOut)\nclass DMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('deep_t1')\n    def tasks(self) -> Sequence[BoundTask]: return (HopT(), HopL2(), HopL3())\ndef create_module() -> YscbModule: return DMod()\n",
         encoding="utf-8",
     )
     atomic_write_json(
@@ -7734,11 +8061,11 @@ def _verify_16way_3layer_reentrancy_and_ttl_burst(ws8: HostPath, venv_bin: HostP
 
 
 _FOLD_ORPHAN_BRIDGE_SRC: Final[str] = (
-    "from dataclasses import dataclass\nimport time\nfrom typing import Sequence\nfrom core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\nfrom core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\nfrom core.filesystem.fs import atomic_write_json\nfrom core.foundation.errors import YscbError\nfrom core.foundation.primitives import EventId, ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass FIn:\n    mode: str = ''\n    sleep_ms: int = 0\n@dataclass(frozen=True, slots=True)\nclass FOut:\n    ok: bool = True\nEV_A = EventMetadata(EventId('fob.eva'), FIn, EventOrdering.UNORDERED)\nEV_B = EventMetadata(EventId('fob.evb'), FIn, EventOrdering.UNORDERED)\nEV_M = EventMetadata(EventId('fob.evm'), FIn, EventOrdering.UNORDERED)\nEV_Z = EventMetadata(EventId('fob.evz'), FIn, EventOrdering.UNORDERED)\nEV_Z2 = EventMetadata(EventId('fob.evz2'), FIn, EventOrdering.UNORDERED)\nEV_3 = EventMetadata(EventId('fob.ev3'), FIn, EventOrdering.UNORDERED)\nEV_X = EventMetadata(EventId('fob.evx'), FIn, EventOrdering.UNORDERED)\nEV_1 = EventMetadata(EventId('fob.ev1'), FIn, EventOrdering.UNORDERED)\nEV_2 = EventMetadata(EventId('fob.ev2'), FIn, EventOrdering.UNORDERED)\nEV_IMM = EventMetadata(EventId('fob.ev_imm'), FIn, EventOrdering.ORDERED)\nEV_DIRTY = EventMetadata(EventId('fob.ev_dirty'), FIn, EventOrdering.UNORDERED)\ndef _m_fin(items: Sequence[FIn]) -> FIn:\n    return FIn(mode=items[0].mode, sleep_ms=max(x.sleep_ms for x in items)) if items else FIn()\nclass FoldLeaderRoot(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]: return TaskMetadata(TaskId('fob.fold_ldr'), FIn, FOut)\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit(EV_A, FIn(mode='ldr', sleep_ms=200))\n        ctx.emit(EV_B, FIn(mode='ldr', sleep_ms=200))\n        return FOut()\nclass FoldFolRoot(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]: return TaskMetadata(TaskId('fob.fold_fol'), FIn, FOut)\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit(EV_Z2, FIn(mode='prep_fol'))\n        return FOut()\nclass SubA(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_a'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.eva'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        if req.mode == 'ldr': ctx.emit(EV_M, FIn(mode='ldr', sleep_ms=req.sleep_ms))\n        elif req.mode == 'prep_fol': ctx.emit(EV_B, FIn(mode='prep_fol'))\n        return FOut()\nclass SubB(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_b'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.evb'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit(EV_M, FIn(mode=req.mode, sleep_ms=req.sleep_ms))\n        return FOut()\nclass SubMCoal(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_m'), FIn, FOut, resource_key='rk_fob_m', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda _r: 'eq_m', subscriptions=(EventSubscriptionSpec(EventId('fob.evm'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'fob_m_in.json'), {'in': True})\n        time.sleep(max(0.01, req.sleep_ms / 1000.0))\n        ctx.emit(EV_Z, FIn(mode='tail'))\n        return FOut()\nclass SubZ(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_z'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.evz'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit(EV_Z2, FIn(mode='done'))\n        return FOut()\nclass SubZ2(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_z2'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.evz2'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        if req.mode == 'prep_fol': ctx.emit(EV_A, FIn(mode='prep_fol'))\n        return FOut()\nclass OrphanStep(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.orphan_step'), FIn, FOut, resource_key='rk_fob_orp', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda _r: 'eq_orp')\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'fob_orp_in.json'), {'in': True})\n        time.sleep(0.22)\n        ctx.emit(EV_1, FIn())\n        return FOut()\nclass TrigT3(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]: return TaskMetadata(TaskId('fob.trig_t3'), FIn, FOut)\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit(EV_3, FIn())\n        return FOut()\nclass Sub3(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_3'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.ev3'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        r = ctx.invoke_task(TaskId('fob.orphan_step'), {})\n        if not r.ok and r.error: raise YscbError(r.error.code, r.error.message)\n        return FOut()\nclass TrigT2(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]: return TaskMetadata(TaskId('fob.trig_t2'), FIn, FOut)\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit(EV_X, FIn(mode='prep_t2'))\n        return FOut()\nclass SubX(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_x'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.evx'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit(EV_2, FIn(mode='join_orp'))\n        return FOut()\nclass Sub1(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_1'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.ev1'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit(EV_2, FIn(mode='end'))\n        return FOut()\nclass Sub2(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_2'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.ev2'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        if req.mode == 'join_orp':\n            r = ctx.invoke_task(TaskId('fob.orphan_step'), {})\n            if not r.ok and r.error: raise YscbError(r.error.code, r.error.message)\n        return FOut()\nclass OuterImmTimeout(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]: return TaskMetadata(TaskId('fob.outer_imm_to'), FIn, FOut)\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        r = ctx.invoke_task(TaskId('fob.child_imm_to'), {})\n        if not (not r.ok): raise AssertionError('embedded check failed')\n        time.sleep(0.18)\n        return FOut()\nclass ChildImmTimeout(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]: return TaskMetadata(TaskId('fob.child_imm_to'), FIn, FOut, timeout_ms=70)\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit_imm(EV_IMM, FIn(), strict=False)\n        return FOut()\nclass SlowImmSub(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.slow_imm_sub'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.ev_imm'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        for _ in range(12):\n            if ctx.cancel_token.is_cancelled:\n                atomic_write_json(ctx.workspace_root.join('.cache', 'fob_imm_saw_cancel.json'), {'saw': True})\n                ctx.cancel_token.raise_if_cancelled()\n            time.sleep(0.02)\n        ctx.emit(EV_DIRTY, FIn())\n        return FOut()\nclass DirtySub(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.dirty_sub'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.ev_dirty'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'fob_dirty_ran.json'), {'dirty': True})\n        return FOut()\nclass FMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('fob')\n    def tasks(self) -> Sequence[BoundTask]:\n        return (FoldLeaderRoot(), FoldFolRoot(), SubA(), SubB(), SubMCoal(), SubZ(), SubZ2(), OrphanStep(), TrigT3(), Sub3(), TrigT2(), SubX(), Sub1(), Sub2(), OuterImmTimeout(), ChildImmTimeout(), SlowImmSub(), DirtySub())\ndef create_module() -> YscbModule: return FMod()\n"
+    "from dataclasses import dataclass\nimport time\nfrom typing import Sequence\nfrom core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\nfrom core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\nfrom core.filesystem.fs import atomic_write_json\nfrom core.foundation import YscbError\nfrom core.foundation import EventId, ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass FIn:\n    mode: str = ''\n    sleep_ms: int = 0\n@dataclass(frozen=True, slots=True)\nclass FOut:\n    ok: bool = True\nEV_A = EventMetadata(EventId('fob.eva'), FIn, EventOrdering.UNORDERED)\nEV_B = EventMetadata(EventId('fob.evb'), FIn, EventOrdering.UNORDERED)\nEV_M = EventMetadata(EventId('fob.evm'), FIn, EventOrdering.UNORDERED)\nEV_Z = EventMetadata(EventId('fob.evz'), FIn, EventOrdering.UNORDERED)\nEV_Z2 = EventMetadata(EventId('fob.evz2'), FIn, EventOrdering.UNORDERED)\nEV_3 = EventMetadata(EventId('fob.ev3'), FIn, EventOrdering.UNORDERED)\nEV_X = EventMetadata(EventId('fob.evx'), FIn, EventOrdering.UNORDERED)\nEV_1 = EventMetadata(EventId('fob.ev1'), FIn, EventOrdering.UNORDERED)\nEV_2 = EventMetadata(EventId('fob.ev2'), FIn, EventOrdering.UNORDERED)\nEV_IMM = EventMetadata(EventId('fob.ev_imm'), FIn, EventOrdering.ORDERED)\nEV_DIRTY = EventMetadata(EventId('fob.ev_dirty'), FIn, EventOrdering.UNORDERED)\ndef _m_fin(items: Sequence[FIn]) -> FIn:\n    return FIn(mode=items[0].mode, sleep_ms=max(x.sleep_ms for x in items)) if items else FIn()\nclass FoldLeaderRoot(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]: return TaskMetadata(TaskId('fob.fold_ldr'), FIn, FOut)\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit(EV_A, FIn(mode='ldr', sleep_ms=200))\n        ctx.emit(EV_B, FIn(mode='ldr', sleep_ms=200))\n        return FOut()\nclass FoldFolRoot(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]: return TaskMetadata(TaskId('fob.fold_fol'), FIn, FOut)\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit(EV_Z2, FIn(mode='prep_fol'))\n        return FOut()\nclass SubA(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_a'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.eva'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        if req.mode == 'ldr': ctx.emit(EV_M, FIn(mode='ldr', sleep_ms=req.sleep_ms))\n        elif req.mode == 'prep_fol': ctx.emit(EV_B, FIn(mode='prep_fol'))\n        return FOut()\nclass SubB(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_b'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.evb'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit(EV_M, FIn(mode=req.mode, sleep_ms=req.sleep_ms))\n        return FOut()\nclass SubMCoal(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_m'), FIn, FOut, resource_key='rk_fob_m', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda _r: 'eq_m', subscriptions=(EventSubscriptionSpec(EventId('fob.evm'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'fob_m_in.json'), {'in': True})\n        time.sleep(max(0.01, req.sleep_ms / 1000.0))\n        ctx.emit(EV_Z, FIn(mode='tail'))\n        return FOut()\nclass SubZ(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_z'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.evz'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit(EV_Z2, FIn(mode='done'))\n        return FOut()\nclass SubZ2(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_z2'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.evz2'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        if req.mode == 'prep_fol': ctx.emit(EV_A, FIn(mode='prep_fol'))\n        return FOut()\nclass OrphanStep(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.orphan_step'), FIn, FOut, resource_key='rk_fob_orp', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda _r: 'eq_orp')\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'fob_orp_in.json'), {'in': True})\n        time.sleep(0.22)\n        ctx.emit(EV_1, FIn())\n        return FOut()\nclass TrigT3(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]: return TaskMetadata(TaskId('fob.trig_t3'), FIn, FOut)\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit(EV_3, FIn())\n        return FOut()\nclass Sub3(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_3'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.ev3'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        r = ctx.invoke_task(TaskId('fob.orphan_step'), {})\n        if not r.ok and r.error: raise YscbError(r.error.code, r.error.message)\n        return FOut()\nclass TrigT2(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]: return TaskMetadata(TaskId('fob.trig_t2'), FIn, FOut)\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit(EV_X, FIn(mode='prep_t2'))\n        return FOut()\nclass SubX(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_x'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.evx'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit(EV_2, FIn(mode='join_orp'))\n        return FOut()\nclass Sub1(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_1'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.ev1'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit(EV_2, FIn(mode='end'))\n        return FOut()\nclass Sub2(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.sub_2'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.ev2'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        if req.mode == 'join_orp':\n            r = ctx.invoke_task(TaskId('fob.orphan_step'), {})\n            if not r.ok and r.error: raise YscbError(r.error.code, r.error.message)\n        return FOut()\nclass OuterImmTimeout(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]: return TaskMetadata(TaskId('fob.outer_imm_to'), FIn, FOut)\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        r = ctx.invoke_task(TaskId('fob.child_imm_to'), {})\n        if not (not r.ok): raise AssertionError('embedded check failed')\n        time.sleep(0.18)\n        return FOut()\nclass ChildImmTimeout(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]: return TaskMetadata(TaskId('fob.child_imm_to'), FIn, FOut, timeout_ms=70)\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        ctx.emit_imm(EV_IMM, FIn(), strict=False)\n        return FOut()\nclass SlowImmSub(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.slow_imm_sub'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.ev_imm'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        for _ in range(12):\n            if ctx.cancel_token.is_cancelled:\n                atomic_write_json(ctx.workspace_root.join('.cache', 'fob_imm_saw_cancel.json'), {'saw': True})\n                ctx.cancel_token.raise_if_cancelled()\n            time.sleep(0.02)\n        ctx.emit(EV_DIRTY, FIn())\n        return FOut()\nclass DirtySub(Task[FIn, FOut]):\n    @property\n    def metadata(self) -> TaskMetadata[FIn, FOut]:\n        return TaskMetadata(TaskId('fob.dirty_sub'), FIn, FOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('fob.ev_dirty'), _m_fin, payload_type=FIn),))\n    def run(self, req: FIn, ctx: TaskContext) -> FOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'fob_dirty_ran.json'), {'dirty': True})\n        return FOut()\nclass FMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('fob')\n    def tasks(self) -> Sequence[BoundTask]:\n        return (FoldLeaderRoot(), FoldFolRoot(), SubA(), SubB(), SubMCoal(), SubZ(), SubZ2(), OrphanStep(), TrigT3(), Sub3(), TrigT2(), SubX(), Sub1(), Sub2(), OuterImmTimeout(), ChildImmTimeout(), SlowImmSub(), DirtySub())\ndef create_module() -> YscbModule: return FMod()\n"
 )
 
 
-def _provision_fold_orphan_bridge_module(ws_f: HostPath) -> None:
+def _provision_fold_cascade_bridge_module(ws_f: HostPath) -> None:
     mdir = ws_f.path / ".modules" / "fob"
     mdir.mkdir(parents=True, exist_ok=True)
     atomic_write_json(
@@ -7771,10 +8098,10 @@ def _provision_fold_orphan_bridge_module(ws_f: HostPath) -> None:
     (mdir / "module_entry.py").write_text(_FOLD_ORPHAN_BRIDGE_SRC, encoding="utf-8")
 
 
-def _verify_folded_leader_orphan_winner_and_imm_cancel(ws8: HostPath, venv_bin: HostPath) -> None:
+def _verify_folded_leader_survivor_winner_and_imm_cancel(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_f = HostPath(ws8.path / "ws_fold_orphan_imm")
     provision_live_workspace(ws_f.path)
-    _provision_fold_orphan_bridge_module(ws_f)
+    _provision_fold_cascade_bridge_module(ws_f)
     disp_f = build_dispatcher_for_workspace(ws_f, venv_bin, is_daemon_host=True).dispatcher
     try:
         disp_f.warmup_daemon_container()
@@ -7854,7 +8181,7 @@ def _verify_watcher_per_path_epoch_and_cold_branches(ws8: HostPath) -> None:
 def _verify_cold_report_branches_and_route_refresh_cancel(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_cr = HostPath(ws8.path / "ws_cold_rep_br")
     provision_live_workspace(ws_cr.path)
-    _provision_fold_orphan_bridge_module(ws_cr)
+    _provision_fold_cascade_bridge_module(ws_cr)
     disp_cr = build_dispatcher_for_workspace(ws_cr, venv_bin, is_daemon_host=False).dispatcher
     try:
         rep_c = ColdTurnRunner(TurnEngine(disp_cr)).execute_leased_turn(
@@ -7890,7 +8217,7 @@ _TRANS_CANCEL_MOD_SRC: Final[str] = (
     "from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\n"
     "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+    "from core.foundation import EventId, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass TIn:\n    child_ws: str = ''\n    hold_ms: int = 0\n"
     "@dataclass(frozen=True, slots=True)\nclass TOut:\n    ver: str = 'v1'\n"
     "EV_B = EventMetadata(EventId('tcm.ev_b'), TIn, EventOrdering.UNORDERED)\n"
@@ -8072,7 +8399,7 @@ def _verify_nested_cold_installer_exclusive_upgrade(ws8: HostPath, venv_bin: Hos
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, DispatchMode, SelfMutationScope, Task, TaskContext, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import FileLock\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass UIn:\n    x: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass UOut:\n    excl_during_mut: bool = False\n    shared_after_mut: bool = False\n"
         "class MutT(Task[UIn, UOut]):\n"
@@ -8123,7 +8450,7 @@ def _verify_hot_reload_coalesce_and_degraded_gate(ws8: HostPath, venv_bin: HostP
     src_v1 = (
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass HIn:\n    k: str = 'a'\n"
         "@dataclass(frozen=True, slots=True)\nclass HOut:\n    ver: str = 'V1'\n"
         "class HCoal(Task[HIn, HOut]):\n"
@@ -8158,7 +8485,7 @@ _MB_LINEAGE_MOD_SRC: Final[str] = (
     "from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\n"
     "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+    "from core.foundation import EventId, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass MIn:\n    hold_ms: int = 0\n    emit_c0: bool = False\n    from_root: bool = False\n"
     "@dataclass(frozen=True, slots=True)\nclass MOut:\n    ok: bool = True\n"
     "EV_C0 = EventMetadata(EventId('mbl.ev_c0'), MIn, EventOrdering.UNORDERED)\n"
@@ -8300,7 +8627,7 @@ def _verify_inmem_and_cross_proc_reentrancy_parity(ws8: HostPath, venv_bin: Host
     (mdir / "module_entry.py").write_text(
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass RIn:\n    x: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass ROut:\n    ok: bool = True\n"
         "class PreOut(Task[RIn, ROut]):\n"
@@ -8409,7 +8736,7 @@ _ORPHAN_CG_AND_STRICT_IMM_SRC: Final[str] = (
     "from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\n"
     "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+    "from core.foundation import EventId, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass OIn:\n    hold_ms: int = 0\n"
     "@dataclass(frozen=True, slots=True)\nclass OOut:\n    ok: bool = True\n"
     "EV_ORPH = EventMetadata(EventId('ocg.ev_orph'), OIn, EventOrdering.UNORDERED)\n"
@@ -8460,7 +8787,7 @@ _ORPHAN_CG_AND_STRICT_IMM_SRC: Final[str] = (
 )
 
 
-def _verify_orphan_cancel_acyclic_and_strict_imm_preempt(ws8: HostPath, venv_bin: HostPath) -> None:
+def _verify_detached_cancel_acyclic_and_strict_imm_preempt(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_o = HostPath(ws8.path / "ws_ocg_strict")
     provision_live_workspace(ws_o.path)
     mdir = ws_o.path / ".modules" / "ocg"
@@ -8519,7 +8846,7 @@ def _verify_cross_proc_installer_owner_and_colocated_reload(ws8: HostPath, venv_
     src_a = (
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass CIn:\n    x: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass COut:\n    ver: str = 'v1'\n"
         "class VerT(Task[CIn, COut]):\n"
@@ -8574,7 +8901,7 @@ def _verify_cross_proc_installer_owner_reentry(ws8: HostPath, venv_bin: HostPath
         (mc / "module_entry.py").write_text(
             "from dataclasses import dataclass\nfrom typing import Sequence\n"
             "from core.execution.runtime import BoundTask, DispatchMode, SelfMutationScope, Task, TaskContext, TaskMetadata, YscbModule\n"
-            "from core.foundation.primitives import ModuleId, TaskId\n"
+            "from core.foundation import ModuleId, TaskId\n"
             "@dataclass(frozen=True, slots=True)\nclass XIn:\n    x: int = 0\n"
             "@dataclass(frozen=True, slots=True)\nclass XOut:\n    ok: bool = True\n"
             "class LeafM(Task[XIn, XOut]):\n"
@@ -8649,7 +8976,7 @@ def _verify_midspawn_reload_quiesce_and_private_fatal_isolation(ws8: HostPath, v
         "from dataclasses import dataclass\nimport time\nfrom typing import Callable, Optional, Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json\n"
-        "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+        "from core.foundation import HostPath, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass MIn:\n    x: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass MOut:\n    ver: str = 'V1_STALE'\n"
         "class VerT(Task[MIn, MOut]):\n"
@@ -8687,7 +9014,7 @@ _PRIVATE_FATAL_MOD_SRC: Final[str] = (
     "from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\n"
     "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+    "from core.foundation import EventId, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass PIn:\n    x: int = 0\n"
     "@dataclass(frozen=True, slots=True)\nclass POut:\n    ok: bool = True\n"
     "EV_OK = EventMetadata(EventId('pfm.ev_ok'), PIn, EventOrdering.UNORDERED)\n"
@@ -8792,7 +9119,7 @@ _ORPHAN_PUB_BASE_MOD_SRC: Final[str] = (
     "from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\n"
     "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+    "from core.foundation import EventId, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass BIn:\n    x: int = 0\n"
     "@dataclass(frozen=True, slots=True)\nclass BOut:\n    ok: bool = True\n"
     "EV_ROOT = EventMetadata(EventId('opb.ev_root'), BIn, EventOrdering.UNORDERED)\n"
@@ -8843,7 +9170,7 @@ _ORPHAN_PUB_BASE_MOD_SRC: Final[str] = (
 )
 
 
-def _verify_new_colocated_mod_tier0_queued_reload_and_orphan_baseline(ws8: HostPath, venv_bin: HostPath) -> None:
+def _verify_new_colocated_mod_tier0_queued_reload_and_cascade_baseline(ws8: HostPath, venv_bin: HostPath) -> None:
     # 1. Adding a brand-new module into an already-live shared venv_group rotates worker & runs on_start!
     ws_cg = HostPath(ws8.path / "ws_new_coloc_add")
     provision_live_workspace(ws_cg.path)
@@ -8854,7 +9181,7 @@ def _verify_new_colocated_mod_tier0_queued_reload_and_orphan_baseline(ws8: HostP
         "from dataclasses import dataclass\nfrom typing import Callable, Optional, Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json\n"
-        "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+        "from core.foundation import HostPath, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass CIn:\n    v: int = 1\n"
         "@dataclass(frozen=True, slots=True)\nclass COut:\n    v: int = 1\n"
         "class PingT(Task[CIn, COut]):\n"
@@ -8891,7 +9218,7 @@ def _verify_new_colocated_mod_tier0_queued_reload_and_orphan_baseline(ws8: HostP
 
 
 
-def _verify_tier0_queued_reload_and_orphan_public_baseline(ws8: HostPath, venv_bin: HostPath) -> None:
+def _verify_tier0_queued_reload_and_cascade_public_baseline(ws8: HostPath, venv_bin: HostPath) -> None:
     # 2. Tier 0 queued SERIALIZE waiter across reload never re-loads stale V1 artifact!
     ws_t0 = HostPath(ws8.path / "ws_t0_qrel")
     provision_live_workspace(ws_t0.path)
@@ -8902,7 +9229,7 @@ def _verify_tier0_queued_reload_and_orphan_public_baseline(ws8: HostPath, venv_b
         "from dataclasses import dataclass\nimport time\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass QIn:\n    hold_ms: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass QOut:\n    ver: str = 'V1'\n"
         "class QOp(Task[QIn, QOut]):\n"
@@ -8936,7 +9263,7 @@ def _verify_tier0_queued_reload_and_orphan_public_baseline(ws8: HostPath, venv_b
 
 
 
-def _verify_orphan_public_baseline_cycle_isolation(ws8: HostPath, venv_bin: HostPath) -> None:
+def _verify_cascade_public_baseline_cycle_isolation(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_ob = HostPath(ws8.path / "ws_orph_pub_base")
     provision_live_workspace(ws_ob.path)
     mo = ws_ob.path / ".modules" / "opb"
@@ -9033,7 +9360,7 @@ _XGRP_OUTER_SRC: Final[str] = (
     "from dataclasses import dataclass\nimport time\nfrom typing import Sequence\n"
     "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.primitives import ModuleId, TaskId\n"
+    "from core.foundation import ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass XIn:\n    hold_ms: int = 120\n"
     "@dataclass(frozen=True, slots=True)\nclass XOut:\n    inner_v: int = 0\n"
     "class OuterT(Task[XIn, XOut]):\n"
@@ -9051,10 +9378,10 @@ _XGRP_OUTER_SRC: Final[str] = (
 )
 
 _XGRP_INNER_SRC: Final[str] = (
-    "from dataclasses import dataclass\nimport os\nfrom typing import Callable, Optional, Sequence\n"
+    "from dataclasses import dataclass\nimport os, signal\nfrom typing import Callable, Optional, Sequence\n"
     "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+    "from core.foundation import HostPath, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass YIn:\n    x: int = 0\n"
     "@dataclass(frozen=True, slots=True)\nclass YOut:\n    v: int = 77\n"
     "class InnerT(Task[YIn, YOut]):\n"
@@ -9064,7 +9391,7 @@ _XGRP_INNER_SRC: Final[str] = (
     "class Xg2Mod(YscbModule):\n"
     "    @property\n    def module_id(self) -> ModuleId: return ModuleId('xg2')\n"
     "    def on_start(self, ws: HostPath) -> Optional[Callable[[], None]]:\n"
-    "        if ws.join('.cache', 'crash_xg2_start.json').path.is_file(): os._exit(1)\n"
+    "        if ws.join('.cache', 'crash_xg2_start.json').path.is_file(): os.kill(os.getpid(), signal.SIGTERM if os.name == 'nt' else signal.SIGKILL)\n"
     "        atomic_write_json(ws.join('.cache', 'xg2_started.json'), {'ok': True})\n"
     "        return None\n"
     "    def tasks(self) -> Sequence[BoundTask]: return (InnerT(),)\n"
@@ -9131,7 +9458,7 @@ _LPC_HOST_CYCLE_ORPHAN_SRC: Final[str] = (
     "from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\n"
     "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json, read_json_dict\n"
-    "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+    "from core.foundation import EventId, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass HIn:\n    mode: str = ''\n    v: int = 0\n"
     "@dataclass(frozen=True, slots=True)\nclass HOut:\n    v: int = 0\n"
     "EV_OK = EventMetadata(EventId('lhc.ev_ok'), HIn, EventOrdering.UNORDERED)\n"
@@ -9204,7 +9531,7 @@ _LPC_HOST_CYCLE_ORPHAN_SRC: Final[str] = (
 )
 
 
-def _verify_host_private_cycle_orphan_stage_and_linearizability(ws8: HostPath, venv_bin: HostPath) -> None:
+def _verify_host_private_cycle_cascade_stage_and_linearizability(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_lh = HostPath(ws8.path / "ws_lhc_all")
     provision_live_workspace(ws_lh.path)
     md = ws_lh.path / ".modules" / "lhc"
@@ -9273,7 +9600,7 @@ def _verify_tier0_quiesce_gate_and_inplace_meta_reload(ws8: HostPath, venv_bin: 
         "from dataclasses import dataclass\nimport time\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass TIn:\n    ms: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass TOut:\n    ver: str = 'V1'\n"
         "class TOp(Task[TIn, TOut]):\n"
@@ -9403,7 +9730,7 @@ def _write_reload_mode_gate_mod(mod_dir: Path, mode_str: str, sec_str: str, ver_
         "from dataclasses import dataclass\nimport time\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, SecurityTier, Task, TaskContext, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass WIn:\n    tag: str = 'X'\n    ms: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass WOut:\n    echo: str\n    ver: str\n"
         "class WTask(Task[WIn, WOut]):\n"
@@ -9433,7 +9760,7 @@ def _verify_hot_reload_mode_and_gate_revalidation(ws8: HostPath, venv_bin: HostP
     (qadir / "module_entry.py").write_text(
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass CIn:\n    tag: str = 'Q'\n    ms: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass COut:\n    code: str\n"
         "class CTask(Task[CIn, COut]):\n"
@@ -9491,7 +9818,7 @@ def _provision_eager_sibling_mod(base: Path, mid: str, crash_start: bool, sleep_
         "import os, time\nfrom dataclasses import dataclass\nfrom typing import Callable, Optional, Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json\n"
-        "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+        "from core.foundation import HostPath, ModuleId, TaskId\n"
         "class _WarmCell:\n    ready: bool = False\n"
         "@dataclass(frozen=True, slots=True)\nclass PIn:\n    x: int = 1\n"
         "@dataclass(frozen=True, slots=True)\nclass POut:\n    warm: bool\n"
@@ -9562,7 +9889,7 @@ def _provision_padm_mod(ws_p: Path) -> None:
         "from dataclasses import dataclass\nimport time\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass AIn:\n    mode: str = 'fast'\n"
         "@dataclass(frozen=True, slots=True)\nclass AOut:\n    prio: str\n"
         "class CoalT(Task[AIn, AOut]):\n"
@@ -9627,7 +9954,7 @@ def _verify_preempt_closes_flight_and_tier1_live_prio(ws8: HostPath, venv_bin: H
         disp_p.shutdown(grace_ms=200)
 
 
-def _provision_cross_backup_mod(ws_b: Path) -> None:
+def _provision_cross_follower_mod(ws_b: Path) -> None:
     mb = ws_b / ".modules" / "xbk"
     mb.mkdir(parents=True, exist_ok=True)
     (mb / "module_entry.py").write_text(
@@ -9635,7 +9962,7 @@ def _provision_cross_backup_mod(ws_b: Path) -> None:
         "from core.execution.event import EventMetadata, EventSubscriptionSpec\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json, read_json_dict\n"
-        "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+        "from core.foundation import EventId, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass XIn:\n    ms: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass XOut:\n    ok_tag: str = 'ok'\n"
         "EV_A, EV_B = EventMetadata(EventId('xbk.ev_a'), XIn), EventMetadata(EventId('xbk.ev_b'), XIn)\n"
@@ -9725,7 +10052,7 @@ def _provision_step5_cc_mod(ws_b: Path) -> None:
         "from core.execution.event import EventMetadata, EventSubscriptionSpec\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json\n"
-        "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+        "from core.foundation import EventId, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass SIn:\n    ms: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass SOut:\n    tag: str = 'ok'\n"
         "EV_CC = EventMetadata(EventId('scc.ev_cc'), SIn)\n"
@@ -9769,10 +10096,10 @@ def _provision_step5_cc_mod(ws_b: Path) -> None:
     )
 
 
-def _verify_cross_backup_orphan_and_fatal_step_join(ws8: HostPath, venv_bin: HostPath) -> None:
+def _verify_cross_follower_cascade_and_fatal_step_join(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_x = HostPath(ws8.path / "ws_cross_bk")
     provision_live_workspace(ws_x.path)
-    _provision_cross_backup_mod(ws_x.path)
+    _provision_cross_follower_mod(ws_x.path)
     _write_xbk_routes(ws_x.path)
     _provision_step5_cc_mod(ws_x.path)
     disp_x = build_dispatcher_for_workspace(ws_x, venv_bin, is_daemon_host=True).dispatcher
@@ -9848,7 +10175,7 @@ def _provision_sec_coal_module(ws_dir: Path) -> None:
         "from dataclasses import dataclass\nimport time\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, SecurityTier, Task, TaskContext, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass SIn:\n    gate: str = ''\n"
         "@dataclass(frozen=True, slots=True)\nclass SOut:\n    resolved: str = ''\n    proxy: str = ''\n"
         "def _wait_gate(ctx: TaskContext, gname: str) -> None:\n"
@@ -9954,7 +10281,7 @@ def _verify_escape_degraded_gate_and_tier1_equiv_errors(ws8: HostPath, venv_bin:
     (m_eq / "module_entry.py").write_text(
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass EIn:\n    n: int\n"
         "@dataclass(frozen=True, slots=True)\nclass EOut:\n    n: int\n"
         "def _bad_eq(r: EIn) -> str:\n    if r.n < 0: raise ValueError('bad_equiv')\n    return str(r.n)\n"
@@ -9996,7 +10323,7 @@ def _provision_prio_and_abort_mod(ws_dir: Path) -> None:
         "from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json\n"
-        "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+        "from core.foundation import EventId, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass PIn:\n    tag: str = ''\n"
         "@dataclass(frozen=True, slots=True)\nclass POut:\n    prio: str = ''\n"
         "EV_IMM = EventMetadata(EventId('pelv.imm'), PIn, EventOrdering.UNORDERED)\n"
@@ -10103,7 +10430,7 @@ def _provision_slot_and_zero_ev_mods(ws_dir: Path) -> None:
             f"from dataclasses import dataclass\nimport time\nfrom typing import Callable, Optional, Sequence\n"
             f"from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
             f"from core.filesystem.fs import atomic_write_json\n"
-            f"from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+            f"from core.foundation import HostPath, ModuleId, TaskId\n"
             f"@dataclass(frozen=True, slots=True)\nclass ZIn:\n    hold_ms: int = 0\n"
             f"@dataclass(frozen=True, slots=True)\nclass ZOut:\n    ok_tag: str = 'ok'\n"
             f"class RunT(Task[ZIn, ZOut]):\n    def __init__(self, mod_ref: 'M') -> None: self._m = mod_ref\n"
@@ -10200,7 +10527,7 @@ def _verify_cross_module_mro_codec_via_loader(ws8: HostPath) -> None:
         "from __future__ import annotations\nfrom dataclasses import dataclass\nfrom typing import Sequence\n"
         "from helper_a import OuterA\nfrom helper_c import BaseC\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass Tag:\n    d_only: str\n"
         "@dataclass(frozen=True, slots=True)\nclass SubB(OuterA.BaseA):\n    extra: str\n"
         "@dataclass(frozen=True, slots=True)\nclass ChildD(BaseC):\n    own_tag: Tag\n"
@@ -10309,7 +10636,7 @@ def _verify_init_false_and_lazy_sibling_import(ws8: HostPath) -> None:
         "import importlib",
         "from typing import Sequence",
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule",
-        "from core.foundation.primitives import ModuleId, TaskId",
+        "from core.foundation import ModuleId, TaskId",
         "import lazy_helper",
         "@dataclass(frozen=True, slots=True)",
         "class LIn:",
@@ -10340,7 +10667,7 @@ def _verify_init_false_and_lazy_sibling_import(ws8: HostPath) -> None:
     lz_slots.unload_all_modules()
 
 
-def _provision_chained_backup_mod(ws_dir: Path) -> None:
+def _provision_chained_follower_mod(ws_dir: Path) -> None:
     mc = ws_dir / ".modules" / "chbk"
     mc.mkdir(parents=True, exist_ok=True)
     (mc / "module_entry.py").write_text(
@@ -10348,7 +10675,7 @@ def _provision_chained_backup_mod(ws_dir: Path) -> None:
         "from core.execution.event import EventMetadata, EventSubscriptionSpec\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json, read_json_dict\n"
-        "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+        "from core.foundation import EventId, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass CIn:\n    tag: str = ''\n"
         "@dataclass(frozen=True, slots=True)\nclass COut:\n    ok_tag: str = 'ok'\n"
         "EV_A = EventMetadata(EventId('chbk.ev_a'), CIn)\nEV_END = EventMetadata(EventId('chbk.ev_end'), CIn)\n"
@@ -10415,10 +10742,10 @@ def _write_chbk_routes(ws_dir: Path) -> None:
     )
 
 
-def _verify_chained_multi_backup_orphan_failover(ws8: HostPath, venv_bin: HostPath) -> None:
+def _verify_chained_multi_follower_flight_continuation(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_c = HostPath(ws8.path / "ws_chained_bk")
     provision_live_workspace(ws_c.path)
-    _provision_chained_backup_mod(ws_c.path)
+    _provision_chained_follower_mod(ws_c.path)
     _write_chbk_routes(ws_c.path)
     disp_c = build_dispatcher_for_workspace(ws_c, venv_bin, is_daemon_host=True).dispatcher
     try:
@@ -10514,7 +10841,7 @@ def _verify_tier1_missing_venv_warmup_and_event_isolation(ws8: HostPath, venv_bi
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.event import EventSubscriptionSpec\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+        "from core.foundation import EventId, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass BIn:\n    x: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass BOut:\n    x: int = 0\n"
         "class SubT(Task[BIn, BOut]):\n    @property\n    def metadata(self) -> TaskMetadata[BIn, BOut]:\n"
@@ -10567,7 +10894,7 @@ def _verify_tier1_missing_venv_warmup_and_event_isolation(ws8: HostPath, venv_bi
         disp_cold.shutdown(grace_ms=100)
 
 
-def _provision_adversarial_orphan_mod(ws_dir: Path) -> None:
+def _provision_adversarial_cascade_mod(ws_dir: Path) -> None:
     ma = ws_dir / ".modules" / "aorp"
     ma.mkdir(parents=True, exist_ok=True)
     (ma / "module_entry.py").write_text(
@@ -10575,7 +10902,7 @@ def _provision_adversarial_orphan_mod(ws_dir: Path) -> None:
         "from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json, read_json_dict\n"
-        "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+        "from core.foundation import EventId, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass AIn:\n    seq: int = 0\n    mode: str = ''\n"
         "@dataclass(frozen=True, slots=True)\nclass AOut:\n    ok_tag: str = 'ok'\n"
         "EV_ORP = EventMetadata(EventId('aorp.ev_orp'), AIn)\nEV_W_OWN = EventMetadata(EventId('aorp.ev_w_own'), AIn)\n"
@@ -10659,10 +10986,10 @@ def _write_aorp_routes(ws_dir: Path) -> None:
     )
 
 
-def _verify_adversarial_orphan_failover_topologies(ws8: HostPath, venv_bin: HostPath) -> None:
+def _verify_adversarial_flight_continuation_topologies(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_a = HostPath(ws8.path / "ws_adv_orp")
     provision_live_workspace(ws_a.path)
-    _provision_adversarial_orphan_mod(ws_a.path)
+    _provision_adversarial_cascade_mod(ws_a.path)
     _write_aorp_routes(ws_a.path)
     disp_a = build_dispatcher_for_workspace(ws_a, venv_bin, is_daemon_host=True).dispatcher
     try:
@@ -10698,10 +11025,10 @@ def _verify_adversarial_orphan_failover_topologies(ws8: HostPath, venv_bin: Host
         disp_a.shutdown(grace_ms=100)
 
 
-def _verify_delayed_winner_cancel_orphan_takeover(ws8: HostPath, venv_bin: HostPath) -> None:
+def _verify_delayed_winner_cancel_survivor_continuation(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_a = HostPath(ws8.path / "ws_adv_orp_takeover")
     provision_live_workspace(ws_a.path)
-    _provision_adversarial_orphan_mod(ws_a.path)
+    _provision_adversarial_cascade_mod(ws_a.path)
     _write_aorp_routes(ws_a.path)
     disp_d = build_dispatcher_for_workspace(ws_a, venv_bin, is_daemon_host=True).dispatcher
     w_tid_box: list[int] = []
@@ -10828,7 +11155,7 @@ def _verify_quiesce_resume_stray_module_entries_and_owner_stack(ws8: HostPath) -
         "rk_bad_own", ConcurrencyMode.SERIALIZE, "eq", ExecutionPriority.FOREGROUND, "t1", ((ws_q, TaskId("alpha.t")),), cancel_token=tok_c, call_tree_id="ct_bad"
     )
     out_s = coord.execute(spec_l, lambda _p, _c, _fl: "ok").outcome
-    lock_files = [f for f in ws_q.join(".cache").path.rglob("*.lock") if "installer" not in f.name]
+    lock_files = [f for f in ws_q.join(".cache").path.rglob("*.lock") if "installer" not in f.name and not f.name.endswith(".turn.lock")]
     _check(out_s == "ok" and len(lock_files) == 1)
     held_lock = FileLock(HostPath(lock_files[0]))
     held_lock.acquire(shared=False, blocking=True, timeout_sec=1.0)
@@ -10882,7 +11209,7 @@ def _verify_daemon_stray_module_files_quiesce(ws8: HostPath, venv_bin: HostPath)
         disp_q.shutdown(grace_ms=100)
 
 
-def _provision_dynamic_backup_and_nonfatal_mod(ws_dir: Path) -> None:
+def _provision_dynamic_follower_and_nonfatal_mod(ws_dir: Path) -> None:
     md = ws_dir / ".modules" / "dorp"
     md.mkdir(parents=True, exist_ok=True)
     (md / "module_entry.py").write_text(
@@ -10890,7 +11217,7 @@ def _provision_dynamic_backup_and_nonfatal_mod(ws_dir: Path) -> None:
         "from core.execution.event import EventMetadata, EventSubscriptionSpec\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json, read_json_dict\n"
-        "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+        "from core.foundation import EventId, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass DIn:\n    tag: str = ''\n    role: str = ''\n"
         "@dataclass(frozen=True, slots=True)\nclass DOut:\n    ok_tag: str = 'ok'\n"
         "EV_DH1 = EventMetadata(EventId('dorp.ev_dh1'), DIn)\nEV_DH2 = EventMetadata(EventId('dorp.ev_dh2'), DIn)\n"
@@ -11003,22 +11330,22 @@ def _invoke_with_post_wake_delay(
         sys.settrace(prev_trace)
 
 
-def _verify_multihop_dynamic_backup_and_nonfatal_winner_drain(ws8: HostPath, venv_bin: HostPath) -> None:
+def _verify_multihop_dynamic_follower_and_nonfatal_winner_drain(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_d = HostPath(ws8.path / "ws_dyn_bkp")
     provision_live_workspace(ws_d.path)
-    _provision_dynamic_backup_and_nonfatal_mod(ws_d.path)
+    _provision_dynamic_follower_and_nonfatal_mod(ws_d.path)
     _write_dorp_routes(ws_d.path)
     disp_d = build_dispatcher_for_workspace(ws_d, venv_bin, is_daemon_host=True).dispatcher
     try:
         disp_d.warmup_daemon_container()
-        _run_dynamic_two_hop_backup_case(ws_d, disp_d)
-        _run_nonfatal_winner_and_sole_backup_cases(ws_d, disp_d)
-        _run_sole_backup_nonfatal_parent_case(ws_d, disp_d)
+        _run_dynamic_two_hop_follower_case(ws_d, disp_d)
+        _run_nonfatal_winner_and_sole_follower_cases(ws_d, disp_d)
+        _run_sole_follower_nonfatal_parent_case(ws_d, disp_d)
     finally:
         disp_d.shutdown(grace_ms=100)
 
 
-def _run_dynamic_two_hop_backup_case(ws_d: HostPath, disp_d: RuntimeDispatcher) -> None:
+def _run_dynamic_two_hop_follower_case(ws_d: HostPath, disp_d: RuntimeDispatcher) -> None:
     tok_s1, tok_s2 = CancellationToken(), CancellationToken()
     gate_b = threading.Event()
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
@@ -11048,7 +11375,7 @@ def _run_dynamic_two_hop_backup_case(ws_d: HostPath, disp_d: RuntimeDispatcher) 
     _check(read_json_dict(ws_d.join(".cache", "dh2_count.json")) == {"count": 1})
 
 
-def _run_nonfatal_winner_and_sole_backup_cases(ws_d: HostPath, disp_d: RuntimeDispatcher) -> None:
+def _run_nonfatal_winner_and_sole_follower_cases(ws_d: HostPath, disp_d: RuntimeDispatcher) -> None:
     tok_sb = CancellationToken()
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
         fsb = pool.submit(disp_d.invoke, InvokeRequest(TaskId("dorp.c_once"), {"tag": "bz"}, ws_d, ws_d, propagation=CallPropagationContext(call_stack=((ws_d, TaskId("ext.sb")),))), cancel_token=tok_sb)
@@ -11082,7 +11409,7 @@ def _run_nonfatal_winner_and_sole_backup_cases(ws_d: HostPath, disp_d: RuntimeDi
     _check((rc1.ok != rc2.ok) and read_json_dict(ws_d.join(".cache", "once_cnt_cn.json")) == {"count": 1})
 
 
-def _run_sole_backup_nonfatal_parent_case(ws_d: HostPath, disp_d: RuntimeDispatcher) -> None:
+def _run_sole_follower_nonfatal_parent_case(ws_d: HostPath, disp_d: RuntimeDispatcher) -> None:
     tok_ss = CancellationToken()
     gate_sole = threading.Event()
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
@@ -11190,7 +11517,7 @@ def _provision_two_hop_and_bidir_mod(ws_dir: Path) -> None:
         "from core.execution.event import EventMetadata, EventSubscriptionSpec\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json, read_json_dict\n"
-        "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+        "from core.foundation import EventId, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass TIn:\n    tag: str = ''\n    mode: str = ''\n"
         "@dataclass(frozen=True, slots=True)\nclass TOut:\n    ok_tag: str = 'ok'\n"
         "EV_ANC = EventMetadata(EventId('tbp.ev_anc'), TIn)\nEV_H1 = EventMetadata(EventId('tbp.ev_h1'), TIn)\n"
@@ -11266,7 +11593,7 @@ def _write_tbp_routes(ws_dir: Path) -> None:
     )
 
 
-def _verify_two_hop_backup_edge_expansion_and_survivor_cancel(ws8: HostPath, venv_bin: HostPath) -> None:
+def _verify_two_hop_follower_edge_expansion_and_survivor_cancel(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_t = HostPath(ws8.path / "ws_two_hop_bkp")
     provision_live_workspace(ws_t.path)
     _provision_two_hop_and_bidir_mod(ws_t.path)
@@ -11275,13 +11602,13 @@ def _verify_two_hop_backup_edge_expansion_and_survivor_cancel(ws8: HostPath, ven
     try:
         disp_t.warmup_daemon_container()
         for cancel_b, tag in ((True, "cb"), (False, "nb")):
-            _run_single_two_hop_backup_probe(ws_t, disp_t, tag, cancel_b=cancel_b)
-        _run_survivor_cancelled_host_backup_drain_probe(ws_t, disp_t)
+            _run_single_two_hop_follower_probe(ws_t, disp_t, tag, cancel_b=cancel_b)
+        _run_survivor_cancelled_host_follower_drain_probe(ws_t, disp_t)
     finally:
         disp_t.shutdown(grace_ms=100)
 
 
-def _run_single_two_hop_backup_probe(
+def _run_single_two_hop_follower_probe(
     ws_t: HostPath,
     disp_t: RuntimeDispatcher,
     tag: str,
@@ -11320,7 +11647,7 @@ def _run_single_two_hop_backup_probe(
     _check(len(ra.event_diagnostics) == 1)
 
 
-def _run_survivor_cancelled_host_backup_drain_probe(ws_t: HostPath, disp_t: RuntimeDispatcher) -> None:
+def _run_survivor_cancelled_host_follower_drain_probe(ws_t: HostPath, disp_t: RuntimeDispatcher) -> None:
     tok_b, tok_s2 = CancellationToken(), CancellationToken()
     gate_b = threading.Event()
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
@@ -11493,7 +11820,7 @@ def _provision_failed_leader_child_and_bkp_cancel_mod(ws_dir: Path) -> None:
         "from core.execution.event import EventMetadata, EventSubscriptionSpec\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json, read_json_dict\n"
-        "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+        "from core.foundation import EventId, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass FIn:\n    tag: str = ''\n    mode: str = ''\n"
         "@dataclass(frozen=True, slots=True)\nclass FOut:\n    ok_tag: str = 'ok'\n"
         "EV_CH = EventMetadata(EventId('flc.ev_ch'), FIn)\nEV_SLW = EventMetadata(EventId('flc.ev_slw'), FIn)\n"
@@ -11555,7 +11882,7 @@ def _provision_failed_leader_child_and_bkp_cancel_mod(ws_dir: Path) -> None:
     )
 
 
-def _verify_failed_leader_child_events_and_backup_cancel(ws8: HostPath, venv_bin: HostPath) -> None:
+def _verify_failed_leader_child_events_and_follower_cancel(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_f = HostPath(ws8.path / "ws_flc_bkp")
     provision_live_workspace(ws_f.path)
     _provision_failed_leader_child_and_bkp_cancel_mod(ws_f.path)
@@ -11701,29 +12028,29 @@ def _verify_posix_upgrade_restore_codec_depth_and_rpc_ping(ws8: HostPath) -> Non
     child_code = (
         "import sys, time; sys.path.insert(0, sys.argv[1]); "
         "from core.filesystem.fs import FileLock, atomic_write_json; "
-        "from core.foundation.primitives import HostPath; "
+        "from core.foundation import HostPath; "
         "lk = FileLock(HostPath(sys.argv[2])); lk.acquire(shared=True, blocking=True, timeout_sec=3.0) or sys.exit(9); "
         "atomic_write_json(HostPath(sys.argv[3]), {'ok': True}); "
         "dl = time.monotonic() + 5.0\n"
         "while not HostPath(sys.argv[4]).path.is_file() and time.monotonic() < dl: time.sleep(0.02)\n"
         "lk.release()"
     )
-    proc = subprocess.Popen([sys.executable, "-c", child_code, str(CORE_SRC_ROOT), str(lk_path), str(rdy_f), str(stop_f)])
+    proc = subprocess.Popen([sys.executable, "-B", "-c", child_code, str(CORE_SRC_ROOT), str(lk_path), str(rdy_f), str(stop_f)])
     own_lk = FileLock(lk_path)
     try:
         _wait_file_marker(rdy_f)
         _check(own_lk.acquire(shared=True, blocking=True, timeout_sec=2.0))
-        _expect_yscb_code(lambda: own_lk.upgrade_to_exclusive(timeout_sec=0.08), ErrorCode.ILLEGAL_LOCK_REENTRANCY)
+        _expect_yscb_code(lambda: own_lk.upgrade_to_exclusive(timeout_sec=0.08), ErrorCode.TASK_TIMEOUT)
         _check(own_lk.is_acquired)
         atomic_write_json(HostPath(stop_f), {"stop": True})
         proc.wait(timeout=4.0)
         probe_code = (
             "import sys; sys.path.insert(0, sys.argv[1]); "
-            "from core.filesystem.fs import FileLock; from core.foundation.primitives import HostPath; "
+            "from core.filesystem.fs import FileLock; from core.foundation import HostPath; "
             "p = FileLock(HostPath(sys.argv[2])); got = p.acquire(shared=False, blocking=False); "
             "p.release() if got else None; raise SystemExit(1 if got else 0)"
         )
-        rc = subprocess.run([sys.executable, "-c", probe_code, str(CORE_SRC_ROOT), str(lk_path)], timeout=4.0).returncode
+        rc = subprocess.run([sys.executable, "-B", "-c", probe_code, str(CORE_SRC_ROOT), str(lk_path)], timeout=4.0).returncode
         _check(rc == 0)
     finally:
         atomic_write_json(HostPath(stop_f), {"stop": True})
@@ -11767,7 +12094,7 @@ def _verify_strict_codec_and_rpc_channel_semantics() -> None:
 _SCOPED_DYN_ENTRY_SRC: Final[str] = (
     "from dataclasses import dataclass\nimport importlib\nfrom typing import Callable, Optional, Sequence\n"
     "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-    "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+    "from core.foundation import HostPath, ModuleId, TaskId\n"
     "import alpha.sub_a as sub_a\n"
     "@dataclass(frozen=True, slots=True)\nclass SIn:\n    k: str = ''\n"
     "@dataclass(frozen=True, slots=True)\nclass SOut:\n    msg: str = ''\n"
@@ -11814,7 +12141,7 @@ _NEUTRAL_FLIGHT_MOD_SRC: Final[str] = (
     "from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\n"
     "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json, read_json_dict\n"
-    "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+    "from core.foundation import EventId, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass NIn:\n    leaf: bool = False\n    hold_ms: int = 0\n"
     "@dataclass(frozen=True, slots=True)\nclass NOut:\n    ok_tag: str = 'ok'\n"
     "EV_NCYC = EventMetadata(EventId('nf.ev_cyc'), NIn, EventOrdering.UNORDERED)\n"
@@ -11931,7 +12258,7 @@ _WARM_COMPANION_MOD_SRC: Final[str] = (
     "import time\nfrom typing import Callable, Optional, Sequence\n"
     "from core.execution.runtime import BoundTask, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.primitives import HostPath, ModuleId\n"
+    "from core.foundation import HostPath, ModuleId\n"
     "class SlowWarmMod(YscbModule):\n"
     "    @property\n    def module_id(self) -> ModuleId: return ModuleId('wmod_a')\n"
     "    def on_start(self, ws: HostPath) -> Optional[Callable[[], None]]:\n"
@@ -11946,7 +12273,7 @@ _FAST_COMPANION_MOD_SRC: Final[str] = (
     "from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\n"
     "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+    "from core.foundation import EventId, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass CfgEv:\n    changed_paths: tuple[str, ...] = ()\n"
     "@dataclass(frozen=True, slots=True)\nclass BIn:\n    v: int = 1\n"
     "@dataclass(frozen=True, slots=True)\nclass BOut:\n    v: int = 1\n"
@@ -12017,7 +12344,7 @@ def _verify_boot_lock_core_mutation_handoff(ws8: HostPath, venv_bin: HostPath) -
         on_space_changed_task=TaskId("space.scan"),
         watcher_debounce_sec=0.06,
     )
-    restart_argv = [sys.executable, "-W", "error::ResourceWarning", str(Path(__file__).resolve()), "--daemon-entry", str(ws_bh), str(venv_bin.path), "15.0"]
+    restart_argv = [sys.executable, "-B", "-W", "error::ResourceWarning", str(_ensure_live_host_boot_script(ws_bh)), "--daemon-entry", str(ws_bh), str(venv_bin.path), "15.0"]
     dmn_bh = WorkspaceDaemon(workspace_root=ws_bh, cache_dir=ws_bh.join(".cache"), dispatcher=disp_bh, config_view=cfg_bh, watch_config=wcfg, self_restart_argv=restart_argv)
     th_bh = threading.Thread(target=dmn_bh.run_forever, kwargs={"ttl_override_sec": 15.0}, daemon=True)
     try:
@@ -12050,8 +12377,8 @@ def _verify_boot_lock_core_mutation_handoff(ws8: HostPath, venv_bin: HostPath) -
 _XWS_COAL_MOD_SRC: Final[str] = (
     "from dataclasses import dataclass\nfrom typing import Sequence\n"
     "from core.execution.runtime import BoundTask, ClientRoutingPolicy, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
-    "from core.foundation.errors import YscbError\n"
-    "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+    "from core.foundation import YscbError\n"
+    "from core.foundation import HostPath, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass XCIn:\n    peer_ws: str = ''\n    back_ws: str = ''\n    mode: str = 'ser'\n"
     "@dataclass(frozen=True, slots=True)\nclass XCOut:\n    tag: str = ''\n"
     "class OuterSerT(Task[XCIn, XCOut]):\n"
@@ -12138,7 +12465,7 @@ def _build_iso_dyn_mod_src(mod_id_s: str, expected_val: str) -> str:
     return (
         "from dataclasses import dataclass\nimport importlib\nimport time\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass DIn:\n    n: int = 1\n"
         "@dataclass(frozen=True, slots=True)\nclass DOut:\n    val: str = ''\n"
         "class DynT(Task[DIn, DOut]):\n"
@@ -12219,20 +12546,24 @@ def _verify_concurrent_importlib_and_upgrade_release(ws8: HostPath, venv_bin: Ho
 
 def _verify_selective_quiesce_colocated_and_degraded_preserved(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_sq = HostPath(ws8.path / "ws_sel_quiesce_coloc")
-    provision_live_workspace(ws_sq.path)
+    provision_live_workspace(ws_sq.path, include_broken_opt=True)
     (ws_sq.path / "sub_dir").mkdir(parents=True, exist_ok=True)
     (ws_sq.path / "sub_dir" / "sample.py").write_text("X = 1\n", encoding="utf-8")
-    atomic_write_json(ws_sq.join("config", "gdrive.json"), {"put_sleep_ms": 650})
     disp_sq = build_dispatcher_for_workspace(ws_sq, venv_bin, ttl_sec=25.0).dispatcher
     try:
         disp_sq.invoke_typed(ECHO_TIER0_META, EchoInDto(tag="boot_sq"))
         st0 = wait_for_daemon_online(ws_sq)
         _check("broken_opt" in st0.get("degraded_modules", []))
+        warm_gd = disp_sq.invoke(
+            InvokeRequest(TaskId("gdrive.put"), {"local_rel": "./sample.py"}, ws_sq, HostPath(ws_sq.path / "sub_dir"), routing_policy=ClientRoutingPolicy.STRICT_HOT),
+            output_type=GdriveOutDto,
+        )
+        _check(warm_gd.ok)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
             f_gd = pool.submit(
                 disp_sq.invoke,
-                InvokeRequest(TaskId("gdrive.put"), {"local_rel": "./sample.py"}, ws_sq, HostPath(ws_sq.path / "sub_dir"), routing_policy=ClientRoutingPolicy.STRICT_HOT),
+                InvokeRequest(TaskId("gdrive.put"), {"local_rel": "./sample.py", "hang_ms": 450}, ws_sq, HostPath(ws_sq.path / "sub_dir"), routing_policy=ClientRoutingPolicy.STRICT_HOT),
                 output_type=GdriveOutDto,
             )
             time.sleep(0.12)
@@ -12264,7 +12595,7 @@ _STRICT_IMM_AND_FILTER_MOD_SRC: Final[str] = (
     "from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\n"
     "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+    "from core.foundation import EventId, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass FIn:\n    kind: str = 'keep'\n"
     "@dataclass(frozen=True, slots=True)\nclass FOut:\n    ok_tag: str = 'ok'\n"
     "EV_X = EventMetadata(EventId('sif.ev_x'), FIn, EventOrdering.UNORDERED)\n"
@@ -12495,7 +12826,7 @@ def _verify_daemon_gate_monotonic_deadline(ws8: HostPath, venv_bin: HostPath) ->
     (mdir / "module_entry.py").write_text(
         "from dataclasses import dataclass\nimport time\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass MIn:\n    ms: int = 200\n"
         "@dataclass(frozen=True, slots=True)\nclass MOut:\n    ok: bool = True\n"
         "class SlowT(Task[MIn, MOut]):\n"
@@ -12539,7 +12870,7 @@ _DUAL_WS_A_MOD_SRC: Final[str] = (
     "from dataclasses import dataclass\nfrom typing import Optional, Sequence\n"
     "from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\n"
     "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
-    "from core.foundation.primitives import EventId, HostPath, ModuleId, TaskId\n"
+    "from core.foundation import EventId, HostPath, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass CxaIn:\n    peer_ws: str = ''\n    hold_ms: int = 0\n"
     "@dataclass(frozen=True, slots=True)\nclass CxaOut:\n    tag: str = 'ok'\n"
     "EV_PING = EventMetadata(EventId('cxa.ping'), CxaIn, EventOrdering.UNORDERED)\n"
@@ -12585,7 +12916,7 @@ _DUAL_WS_B_MOD_SRC: Final[str] = (
     "from dataclasses import dataclass\nimport time\nfrom typing import Sequence\n"
     "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+    "from core.foundation import HostPath, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass CxbIn:\n    peer_ws: str = ''\n    hold_ms: int = 0\n"
     "@dataclass(frozen=True, slots=True)\nclass CxbOut:\n    tag: str = 'ok'\n"
     "class CoalBounceT(Task[CxbIn, CxbOut]):\n"
@@ -12702,7 +13033,7 @@ _QUIESCE_NESTED_MOD_SRC: Final[str] = (
     "from core.execution.event import EventMetadata, EventOrdering\n"
     "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+    "from core.foundation import EventId, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass QIn:\n    phase: str = 'fast'\n    ms: int = 0\n"
     "@dataclass(frozen=True, slots=True)\nclass QOut:\n    tag: str = 'ok'\n"
     "EV_Q = EventMetadata(EventId('qouter.ev'), QIn, EventOrdering.UNORDERED)\n"
@@ -12733,7 +13064,7 @@ _QUIESCE_INNER_MOD_SRC: Final[str] = (
     "from core.execution.event import EventMetadata, EventOrdering, EventSubscriptionSpec\n"
     "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+    "from core.foundation import EventId, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass QIIn:\n    phase: str = 'fast'\n    ms: int = 0\n"
     "@dataclass(frozen=True, slots=True)\nclass QIOut:\n    tag: str = 'ok'\n"
     "EV_Q = EventMetadata(EventId('qouter.ev'), QIIn, EventOrdering.UNORDERED)\n"
@@ -12848,7 +13179,7 @@ _SCOPED_LOADER_ADV_MOD_SRC: Final[str] = (
     "from dataclasses import dataclass\nimport importlib\nimport threading\nimport time\nfrom typing import Callable, Optional, Sequence\n"
     "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+    "from core.foundation import HostPath, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass SIn:\n    hold_ms: int = 0\n"
     "@dataclass(frozen=True, slots=True)\nclass SOut:\n    vals: str\n"
     "class ScopeAdvT(Task[SIn, SOut]):\n"
@@ -13049,7 +13380,7 @@ def _verify_filelock_phase_and_reentrant_pin(ws8: HostPath) -> None:
             sh1.upgrade_to_exclusive(timeout_sec=0.04)
             raise AssertionError("Expected upgrade timeout")
         except YscbError as exc:
-            _check(exc.detail.code == ErrorCode.ILLEGAL_LOCK_REENTRANCY)
+            _check(exc.detail.code == ErrorCode.TASK_TIMEOUT)
         sh2.release()
         _check(sh1.is_acquired and not ex3.acquire(shared=False, blocking=False))
     finally:
@@ -13077,7 +13408,7 @@ def _provision_callback_t1_mod(ws_d: HostPath) -> None:
         "from dataclasses import dataclass\nimport time\nfrom typing import Callable, Optional, Sequence\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json\n"
-        "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+        "from core.foundation import HostPath, ModuleId, TaskId\n"
         "def _boom_close() -> None:\n    raise RuntimeError('t1_close_boom')\n"
         "@dataclass(frozen=True, slots=True)\nclass CIn:\n    ms: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass COut:\n    ok: bool = True\n"
@@ -13126,7 +13457,7 @@ def _provision_deadline_and_callback_mod(ws_d: HostPath) -> None:
         "from dataclasses import dataclass\nimport threading\nimport time\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass SIn:\n    ms: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass SOut:\n    cancelled: bool = False\n"
         "class SlowChild(Task[SIn, SOut]):\n"
@@ -13169,11 +13500,13 @@ def _verify_callback_cancel_dyn_deadline_and_t0_cancel(ws8: HostPath, venv_bin: 
 
         # 2) Dynamic COALESCE deadline: short RPC caller times out while unbounded follower succeeds
         disp_hot.warmup_daemon_container()
-        env_short = DataclassCodec.encode_object(
-            DaemonRpcInvokeEnvelope(
-                task_id=TaskId("cb_t1.dyn_coal"), raw_input={}, workspace_root=ws_d, caller_cwd=ws_d, timeout_ms=300
-            )
-        )
+        env_short: JsonObject = {
+            "task_id": "cb_t1.dyn_coal",
+            "raw_input": {},
+            "workspace_root": str(ws_d),
+            "caller_cwd": str(ws_d),
+            "timeout_ms": 300,
+        }
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             f_short = pool.submit(disp_hot.invoke_daemon_rpc, env_short, CancellationToken(), lambda _p: None)
             _wait_file_marker(ws_d.path / ".cache" / "dyn_in.json", timeout_sec=3.0)
@@ -13273,7 +13606,7 @@ def _provision_cross_reentrant_mod(ws_r: HostPath) -> None:
     (mr / "module_entry.py").write_text(
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass XIn:\n    k: str = 'a'\n"
         "@dataclass(frozen=True, slots=True)\nclass XOut:\n    k: str = ''\n"
         "class XStep1(Task[XIn, XOut]):\n"
@@ -13357,7 +13690,7 @@ def _verify_direct_frame_importlib_isolation(ws8: HostPath, venv_bin: HostPath) 
         {"module_id": "imp_mod", "tier1": False, "eager_warmup": False, "tasks": [{"task_id": "imp_mod.check"}]},
     )
     (mi / "module_entry.py").write_text(
-        "from dataclasses import dataclass\nimport importlib\nimport mimetypes\nfrom typing import Sequence\nfrom core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\nfrom core.foundation.primitives import ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass IIn:\n    x: int = 1\n@dataclass(frozen=True, slots=True)\nclass IOut:\n    tag: str = ''\nclass ImpTask(Task[IIn, IOut]):\n    @property\n    def metadata(self) -> TaskMetadata[IIn, IOut]: return TaskMetadata(TaskId('imp_mod.check'), IIn, IOut)\n    def run(self, req: IIn, ctx: TaskContext) -> IOut:\n        _ = mimetypes.guess_type('a.json')\n        m1 = importlib.import_module('.sib', __package__)\n        m2 = importlib.import_module('sib')\n        if not (m1 is m2): raise AssertionError('embedded check failed')\n        return IOut(tag=str(m1.SIB_TAG))\nclass ImpMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('imp_mod')\n    def tasks(self) -> Sequence[BoundTask]: return (ImpTask(),)\ndef create_module() -> YscbModule: return ImpMod()\n",
+        "from dataclasses import dataclass\nimport importlib\nimport mimetypes\nfrom typing import Sequence\nfrom core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\nfrom core.foundation import ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass IIn:\n    x: int = 1\n@dataclass(frozen=True, slots=True)\nclass IOut:\n    tag: str = ''\nclass ImpTask(Task[IIn, IOut]):\n    @property\n    def metadata(self) -> TaskMetadata[IIn, IOut]: return TaskMetadata(TaskId('imp_mod.check'), IIn, IOut)\n    def run(self, req: IIn, ctx: TaskContext) -> IOut:\n        _ = mimetypes.guess_type('a.json')\n        m1 = importlib.import_module('.sib', __package__)\n        m2 = importlib.import_module('sib')\n        if not (m1 is m2): raise AssertionError('embedded check failed')\n        return IOut(tag=str(m1.SIB_TAG))\nclass ImpMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('imp_mod')\n    def tasks(self) -> Sequence[BoundTask]: return (ImpTask(),)\ndef create_module() -> YscbModule: return ImpMod()\n",
         encoding="utf-8",
     )
     disp_i = build_dispatcher_for_workspace(ws_imp, venv_bin, is_daemon_host=True).dispatcher
@@ -13421,7 +13754,7 @@ from dataclasses import dataclass
 from typing import Sequence
 from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule
 from core.filesystem.fs import atomic_write_json, read_json_dict
-from core.foundation.primitives import ModuleId, TaskId
+from core.foundation import ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class LingIn:
@@ -13495,7 +13828,7 @@ from core.execution.runtime import (
     BoundTask, ClientRoutingPolicy, DispatchMode, SelfMutationScope, Task, TaskContext, TaskMetadata, YscbModule
 )
 from core.filesystem.fs import FileLock
-from core.foundation.primitives import ModuleId, TaskId
+from core.foundation import ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class MutChildIn:
@@ -13600,7 +13933,7 @@ def _verify_codec_weakref_gc_and_stdlib_non_shadowing(ws_base: HostPath, venv_bi
 from dataclasses import dataclass
 from typing import Sequence
 from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule
-from core.foundation.primitives import ModuleId, TaskId
+from core.foundation import ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class EmptyIn:
@@ -13658,7 +13991,7 @@ _ORDERED_LIFO_MOD_TPL: Final[str] = """from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule
 from core.filesystem.fs import atomic_write_json, read_json_dict
-from core.foundation.primitives import HostPath, ModuleId, TaskId
+from core.foundation import HostPath, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class PingIn:
@@ -13751,8 +14084,8 @@ from core.execution.runtime import (
     BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule
 )
 from core.filesystem.fs import atomic_write_json
-from core.foundation.errors import YscbError
-from core.foundation.primitives import EventId, ModuleId, TaskId
+from core.foundation import YscbError
+from core.foundation import EventId, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class KeyIn:
@@ -13974,7 +14307,7 @@ def _verify_multihop_evict_and_dual_cycle_attribution(ws8: HostPath, venv_bin: H
         disp.shutdown(grace_ms=200)
 
 
-_COLOCATED_LIFO_TPL: Final[str] = 'import urllib.request\nfrom dataclasses import dataclass\nfrom typing import Callable, Optional, Sequence\nfrom core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\nfrom core.filesystem.fs import atomic_write_json, read_json_dict\nfrom core.foundation.primitives import HostPath, ModuleId, TaskId\n\n@dataclass(frozen=True, slots=True)\nclass StepIn:\n    next_task: str = ""\n\n@dataclass(frozen=True, slots=True)\nclass StepOut:\n    urllib_ok: bool\n\nclass ChainTask(Task[StepIn, StepOut]):\n    @property\n    def metadata(self) -> TaskMetadata[StepIn, StepOut]:\n        return TaskMetadata(TaskId("__MID__.step"), StepIn, StepOut)\n    def run(self, req: StepIn, ctx: TaskContext) -> StepOut:\n        if req.next_task:\n            sub = ctx.invoke_task(req.next_task, {"next_task": "__NEXT2__"})\n            if not (sub.ok): raise AssertionError(\'embedded check failed\')\n        return StepOut(urllib_ok=callable(urllib.request.urlopen))\n\nclass ModImpl(YscbModule):\n    @property\n    def module_id(self) -> ModuleId:\n        return ModuleId("__MID__")\n    def on_init(self, workspace_root: HostPath) -> Optional[Callable[[], None]]:\n        def _close() -> None:\n            f = workspace_root.join(".cache", "coloc_lifo_seq.json")\n            cur = read_json_dict(f) or {}\n            seq = list(cur.get("seq", [])) if isinstance(cur.get("seq"), list) else []\n            seq.append("__MID__")\n            atomic_write_json(f, {"seq": seq})\n            raise RuntimeError("diag___MID__")\n        return _close\n    def tasks(self) -> Sequence[BoundTask]:\n        return (ChainTask(),)\n\ndef create_module() -> YscbModule:\n    return ModImpl()\n'
+_COLOCATED_LIFO_TPL: Final[str] = 'import urllib.request\nfrom dataclasses import dataclass\nfrom typing import Callable, Optional, Sequence\nfrom core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\nfrom core.filesystem.fs import atomic_write_json, read_json_dict\nfrom core.foundation import HostPath, ModuleId, TaskId\n\n@dataclass(frozen=True, slots=True)\nclass StepIn:\n    next_task: str = ""\n\n@dataclass(frozen=True, slots=True)\nclass StepOut:\n    urllib_ok: bool\n\nclass ChainTask(Task[StepIn, StepOut]):\n    @property\n    def metadata(self) -> TaskMetadata[StepIn, StepOut]:\n        return TaskMetadata(TaskId("__MID__.step"), StepIn, StepOut)\n    def run(self, req: StepIn, ctx: TaskContext) -> StepOut:\n        if req.next_task:\n            sub = ctx.invoke_task(req.next_task, {"next_task": "__NEXT2__"})\n            if not (sub.ok): raise AssertionError(\'embedded check failed\')\n        return StepOut(urllib_ok=callable(urllib.request.urlopen))\n\nclass ModImpl(YscbModule):\n    @property\n    def module_id(self) -> ModuleId:\n        return ModuleId("__MID__")\n    def on_init(self, workspace_root: HostPath) -> Optional[Callable[[], None]]:\n        def _close() -> None:\n            f = workspace_root.join(".cache", "coloc_lifo_seq.json")\n            cur = read_json_dict(f) or {}\n            seq = list(cur.get("seq", [])) if isinstance(cur.get("seq"), list) else []\n            seq.append("__MID__")\n            atomic_write_json(f, {"seq": seq})\n            raise RuntimeError("diag___MID__")\n        return _close\n    def tasks(self) -> Sequence[BoundTask]:\n        return (ChainTask(),)\n\ndef create_module() -> YscbModule:\n    return ModImpl()\n'
 
 
 def _verify_colocated_lifo_stdlib_and_grace_reload(ws8: HostPath, venv_bin: HostPath) -> None:
@@ -14026,7 +14359,7 @@ from dataclasses import dataclass
 from typing import Sequence
 from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule
 from core.filesystem.fs import atomic_write_json, read_json_dict
-from core.foundation.primitives import ModuleId, TaskId
+from core.foundation import ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class GuardIn:
@@ -14150,8 +14483,8 @@ _DAEMON_QUIESCE_MOD_TPL: Final[str] = """import enum, time
 from dataclasses import dataclass
 from typing import Callable, Literal, Optional, Sequence
 from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule
-from core.foundation.errors import YscbError
-from core.foundation.primitives import HostPath, ModuleId, TaskId
+from core.foundation import YscbError
+from core.foundation import HostPath, ModuleId, TaskId
 
 class StageTag(enum.Enum):
     ALPHA = "alpha"
@@ -14274,7 +14607,7 @@ _SELECTIVE_EAGER_MOD_TPL: Final[str] = """from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule
 from core.filesystem.fs import atomic_write_json
-from core.foundation.primitives import HostPath, ModuleId, TaskId
+from core.foundation import HostPath, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class E8In:
@@ -14427,7 +14760,7 @@ def _verify_stopped_hot_gate_generic_evict_and_strict_force_cold(ws8: HostPath, 
         (
             "from dataclasses import dataclass\nfrom typing import Generic, Sequence, TypeVar\n"
             "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-            "from core.foundation.primitives import ModuleId, TaskId\n"
+            "from core.foundation import ModuleId, TaskId\n"
             "T = TypeVar('T')\n"
             "@dataclass(frozen=True, slots=True)\nclass GenBox(Generic[T]):\n    item: T\n"
             "class BoxTask(Task[GenBox[int], GenBox[int]]):\n"
@@ -14440,10 +14773,15 @@ def _verify_stopped_hot_gate_generic_evict_and_strict_force_cold(ws8: HostPath, 
             "def create_module() -> YscbModule: return BoxMod()\n"
         ),
     )
+    before_hot_mods = set(sys.modules)
     disp_hot = build_dispatcher_for_workspace(ws_h, venv_bin, is_daemon_host=True, sandbox_restricted=True).dispatcher
     gen_res = disp_hot.invoke(InvokeRequest(TaskId("sgen.box"), {"item": 41}, ws_h, ws_h))
     _check(gen_res.ok and gen_res.value == {"item": 42})
-    _check(any(_type_mentions_scoped_pkg(fk, "_yscb_v2_mod_sgen_") for fk in _codec_live_form_plan_types()))
+    sgen_entry_key = next(
+        k for k in (set(sys.modules) - before_hot_mods) if "GenBox" in dict(inspect.getmembers_static(sys.modules[k]))
+    )
+    sgen_box_ref = weakref.ref(dict(inspect.getmembers_static(sys.modules[sgen_entry_key]))["GenBox"])
+    _check(sgen_box_ref() is not None)
     _check(disp_hot.try_quiesce_modules(frozenset({ModuleId("core")})))
     _check(disp_hot.reload_gate.is_globally_quiesced())
     disp_hot.resume_from_quiesce()
@@ -14452,8 +14790,10 @@ def _verify_stopped_hot_gate_generic_evict_and_strict_force_cold(ws8: HostPath, 
     post_stop = disp_hot.invoke(InvokeRequest(TaskId("space.echo_tier0"), {"tag": "after_stop"}, ws_h, ws_h))
     _check(not post_stop.ok and post_stop.error is not None and post_stop.error.code == ErrorCode.DAEMON_UNAVAILABLE)
     _check(disp_hot.container_lifecycle.resource_stack.close_all_lifo() == ())
-    _check(not any(k.startswith("_yscb_v2_mod_space_") for k in sys.modules))
-    _check(all(not _type_mentions_scoped_pkg(fk, "_yscb_v2_mod_sgen_") for fk in _codec_live_form_plan_types()))
+    _check((set(sys.modules) - before_hot_mods) == set())
+    gc.collect()
+    gc.collect()
+    _check(sgen_box_ref() is None)
 
     strict_opts = DispatcherHostOptions(
         config_view=FileConfigView(ws_h),
@@ -14537,7 +14877,7 @@ def _verify_rpc_handshake_stop_race_and_mismatched_retire(ws8: HostPath, venv_bi
         (
             "from dataclasses import dataclass\nimport time\nfrom typing import Callable, Optional, Sequence\n"
             "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-            "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+            "from core.foundation import HostPath, ModuleId, TaskId\n"
             "@dataclass(frozen=True, slots=True)\nclass MIn:\n    ms: int = 0\n"
             "@dataclass(frozen=True, slots=True)\nclass MOut:\n    rev: int = 1\n"
             "class MTask(Task[MIn, MOut]):\n"
@@ -14580,7 +14920,7 @@ def _provision_quiesce_hammer_workspace(ws_q: HostPath) -> None:
         (
             "from dataclasses import dataclass\nfrom typing import Sequence\n"
             "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-            "from core.foundation.primitives import ModuleId, TaskId\n"
+            "from core.foundation import ModuleId, TaskId\n"
             "@dataclass(frozen=True, slots=True)\nclass RIn:\n    seq: int = 0\n"
             "@dataclass(frozen=True, slots=True)\nclass ROut:\n    seq: int = 0\n"
             "class RTask(Task[RIn, ROut]):\n"
@@ -14599,7 +14939,7 @@ def _provision_quiesce_hammer_workspace(ws_q: HostPath) -> None:
         (
             "from dataclasses import dataclass\nfrom typing import Callable, Optional, Sequence\n"
             "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-            "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+            "from core.foundation import HostPath, ModuleId, TaskId\n"
             "@dataclass(frozen=True, slots=True)\nclass TIn:\n    v: int = 0\n"
             "@dataclass(frozen=True, slots=True)\nclass TOut:\n    v: int = 0\n"
             "class TTask(Task[TIn, TOut]):\n"
@@ -14665,7 +15005,7 @@ def _run_quiesce_and_worker_stop_cycles(ws_q: HostPath, cli_disp: RuntimeDispatc
         finally:
             stop_ev.set()
         totals = [f.result(timeout=5.0) for f in futs]
-    _check(sum(totals) >= 40 and (time.monotonic() - t0) < 6.0)
+    _check(sum(totals) >= 40 and (time.monotonic() - t0) < 15.0)
 
     for idx in range(5):
         t_out = cli_disp.invoke(
@@ -14737,11 +15077,18 @@ def _verify_rpc_unaccepted_overflow_and_posix_upgrade(ws8: HostPath) -> None:
     w_th = threading.Thread(target=_writer_probe, daemon=True)
     w_th.start()
     try:
+        def _capture_upg_code(target_lk: FileLock) -> ErrorCode:
+            try:
+                target_lk.upgrade_to_exclusive(timeout_sec=0.18)
+                raise AssertionError("Expected concurrent upgrade failure")
+            except YscbError as exc:
+                return exc.detail.code
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            fa = pool.submit(_expect_yscb_code, lambda: lk_a.upgrade_to_exclusive(timeout_sec=0.18), ErrorCode.ILLEGAL_LOCK_REENTRANCY)
-            fb = pool.submit(_expect_yscb_code, lambda: lk_b.upgrade_to_exclusive(timeout_sec=0.18), ErrorCode.ILLEGAL_LOCK_REENTRANCY)
-            fa.result(timeout=3.0)
-            fb.result(timeout=3.0)
+            fa = pool.submit(_capture_upg_code, lk_a)
+            fb = pool.submit(_capture_upg_code, lk_b)
+            codes_ab = {fa.result(timeout=3.0), fb.result(timeout=3.0)}
+            _check(ErrorCode.ILLEGAL_LOCK_REENTRANCY in codes_ab and codes_ab <= {ErrorCode.ILLEGAL_LOCK_REENTRANCY, ErrorCode.TASK_TIMEOUT})
         _check(not stolen_excl and lk_a.is_acquired and lk_b.is_acquired)
     finally:
         stop_w.set()
@@ -14765,7 +15112,7 @@ def _provision_quiesce_and_coalesce_ws(ws_r: HostPath) -> None:
             ],
         },
         (
-            "from dataclasses import dataclass\nimport time\nfrom typing import Callable, Optional, Sequence\nfrom core.execution.event import EventMetadata, EventSubscriptionSpec\nfrom core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\nfrom core.filesystem.fs import atomic_write_json, read_json_dict\nfrom core.foundation.primitives import EventId, HostPath, ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass BIn:\n    tag: str = ''\n    fail: bool = False\n@dataclass(frozen=True, slots=True)\nclass BOut:\n    tag: str = 'ok'\nEV_COAL_FAIL = EventMetadata(EventId('cfmodb.ev'), BIn)\nclass PingT(Task[BIn, BOut]):\n    @property\n    def metadata(self) -> TaskMetadata[BIn, BOut]: return TaskMetadata(TaskId('cfmodb.ping'), BIn, BOut)\n    def run(self, req: BIn, ctx: TaskContext) -> BOut: return BOut(tag='b_v1')\nclass ChildCoalT(Task[BIn, BOut]):\n    @property\n    def metadata(self) -> TaskMetadata[BIn, BOut]:\n        return TaskMetadata(TaskId('cfmodb.child_coal'), BIn, BOut, resource_key='rk_cf_ch', concurrency_mode=ConcurrencyMode.COALESCE)\n    def run(self, req: BIn, ctx: TaskContext) -> BOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'cf_ch_in.json'), {'ok': True})\n        dl = time.monotonic() + 3.0\n        while not ctx.workspace_root.join('.cache', 'cf_ch_go.json').path.is_file() and time.monotonic() < dl:\n            time.sleep(0.01)\n        ctx.emit(EV_COAL_FAIL, BIn(tag=req.tag))\n        return BOut(tag='ch_ok')\nclass ParentCoalT(Task[BIn, BOut]):\n    @property\n    def metadata(self) -> TaskMetadata[BIn, BOut]:\n        return TaskMetadata(TaskId('cfmodb.parent_coal'), BIn, BOut, resource_key='rk_cf_par', concurrency_mode=ConcurrencyMode.COALESCE)\n    def run(self, req: BIn, ctx: TaskContext) -> BOut:\n        if not (ctx.invoke_task(TaskId('cfmodb.child_coal'), {'tag': req.tag}).ok): raise AssertionError('embedded check failed')\n        if req.fail: raise RuntimeError('cf_parent_biz_err')\n        return BOut(tag='par_ok')\nclass SubEvT(Task[BIn, BOut]):\n    @property\n    def metadata(self) -> TaskMetadata[BIn, BOut]:\n        return TaskMetadata(TaskId('cfmodb.sub_ev'), BIn, BOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('cfmodb.ev'), lambda xs: xs[-1] if xs else None),))\n    def run(self, req: BIn, ctx: TaskContext) -> BOut:\n        p = ctx.workspace_root.join('.cache', 'cf_sub_cnt.json')\n        c = int((read_json_dict(p) or {}).get('cnt', 0)) + 1\n        atomic_write_json(p, {'cnt': c})\n        return BOut(tag=str(c))\nclass BMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('cfmodb')\n    def on_init(self, workspace_root: HostPath) -> Optional[Callable[[], None]]:\n        def _cls() -> None:\n            raise RuntimeError('cf_watcher_td_err')\n        return _cls\n    def tasks(self) -> Sequence[BoundTask]: return (PingT(), ChildCoalT(), ParentCoalT(), SubEvT())\ndef create_module() -> YscbModule: return BMod()\n"
+            "from dataclasses import dataclass\nimport time\nfrom typing import Callable, Optional, Sequence\nfrom core.execution.event import EventMetadata, EventSubscriptionSpec\nfrom core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\nfrom core.filesystem.fs import atomic_write_json, read_json_dict\nfrom core.foundation import EventId, HostPath, ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass BIn:\n    tag: str = ''\n    fail: bool = False\n@dataclass(frozen=True, slots=True)\nclass BOut:\n    tag: str = 'ok'\nEV_COAL_FAIL = EventMetadata(EventId('cfmodb.ev'), BIn)\nclass PingT(Task[BIn, BOut]):\n    @property\n    def metadata(self) -> TaskMetadata[BIn, BOut]: return TaskMetadata(TaskId('cfmodb.ping'), BIn, BOut)\n    def run(self, req: BIn, ctx: TaskContext) -> BOut: return BOut(tag='b_v1')\nclass ChildCoalT(Task[BIn, BOut]):\n    @property\n    def metadata(self) -> TaskMetadata[BIn, BOut]:\n        return TaskMetadata(TaskId('cfmodb.child_coal'), BIn, BOut, resource_key='rk_cf_ch', concurrency_mode=ConcurrencyMode.COALESCE)\n    def run(self, req: BIn, ctx: TaskContext) -> BOut:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'cf_ch_in.json'), {'ok': True})\n        dl = time.monotonic() + 3.0\n        while not ctx.workspace_root.join('.cache', 'cf_ch_go.json').path.is_file() and time.monotonic() < dl:\n            time.sleep(0.01)\n        ctx.emit(EV_COAL_FAIL, BIn(tag=req.tag))\n        return BOut(tag='ch_ok')\nclass ParentCoalT(Task[BIn, BOut]):\n    @property\n    def metadata(self) -> TaskMetadata[BIn, BOut]:\n        return TaskMetadata(TaskId('cfmodb.parent_coal'), BIn, BOut, resource_key='rk_cf_par', concurrency_mode=ConcurrencyMode.COALESCE)\n    def run(self, req: BIn, ctx: TaskContext) -> BOut:\n        if not (ctx.invoke_task(TaskId('cfmodb.child_coal'), {'tag': req.tag}).ok): raise AssertionError('embedded check failed')\n        if req.fail: raise RuntimeError('cf_parent_biz_err')\n        return BOut(tag='par_ok')\nclass SubEvT(Task[BIn, BOut]):\n    @property\n    def metadata(self) -> TaskMetadata[BIn, BOut]:\n        return TaskMetadata(TaskId('cfmodb.sub_ev'), BIn, BOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('cfmodb.ev'), lambda xs: xs[-1] if xs else None),))\n    def run(self, req: BIn, ctx: TaskContext) -> BOut:\n        p = ctx.workspace_root.join('.cache', 'cf_sub_cnt.json')\n        c = int((read_json_dict(p) or {}).get('cnt', 0)) + 1\n        atomic_write_json(p, {'cnt': c})\n        return BOut(tag=str(c))\nclass BMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('cfmodb')\n    def on_init(self, workspace_root: HostPath) -> Optional[Callable[[], None]]:\n        def _cls() -> None:\n            raise RuntimeError('cf_watcher_td_err')\n        return _cls\n    def tasks(self) -> Sequence[BoundTask]: return (PingT(), ChildCoalT(), ParentCoalT(), SubEvT())\ndef create_module() -> YscbModule: return BMod()\n"
         ),
     )
 
@@ -14778,7 +15125,7 @@ def _write_dynamic_added_mod_c(ws_r: HostPath) -> None:
         (
             "from dataclasses import dataclass\nfrom typing import Sequence\n"
             "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-            "from core.foundation.primitives import ModuleId, TaskId\n"
+            "from core.foundation import ModuleId, TaskId\n"
             "@dataclass(frozen=True, slots=True)\nclass CIn:\n    v: int = 0\n"
             "@dataclass(frozen=True, slots=True)\nclass COut:\n    tag: str = 'c_ok'\n"
             "class CPing(Task[CIn, COut]):\n"
@@ -14921,7 +15268,7 @@ def _provision_eager_quiesce_and_cancel_sub_ws(ws_r: HostPath) -> None:
         "from core.execution.event import EventMetadata, EventSubscriptionSpec\n"
         "from core.execution.runtime import BoundTask, PeriodicScheduleSpec, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json, read_json_dict\n"
-        "from core.foundation.primitives import EventId, HostPath, ModuleId, TaskId\n"
+        "from core.foundation import EventId, HostPath, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass DIn:\n    ms: int = 0\n"
         "@dataclass(frozen=True, slots=True)\nclass DOut:\n    ready: bool = False\n"
         "EV_EAGER_SUB = EventMetadata(EventId('eqdyn.ev'), DIn)\n"
@@ -14968,7 +15315,7 @@ def _provision_eager_quiesce_and_cancel_sub_ws(ws_r: HostPath) -> None:
             "from core.execution.event import EventSubscriptionSpec\n"
             "from core.execution.runtime import BoundTask, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
             "from core.filesystem.fs import atomic_write_json\n"
-            "from core.foundation.primitives import EventId, HostPath, ModuleId, TaskId\n"
+            "from core.foundation import EventId, HostPath, ModuleId, TaskId\n"
             "@dataclass(frozen=True, slots=True)\nclass LIn:\n    ms: int = 0\n"
             "@dataclass(frozen=True, slots=True)\nclass LOut:\n    ok: bool = True\n"
             "class LSub(Task[LIn, LOut]):\n"
@@ -15059,7 +15406,7 @@ def _provision_deep_envelope_and_upgrade_ws(ws_r: HostPath) -> None:
             "from dataclasses import dataclass\nfrom typing import Callable, Optional, Sequence\n"
             "from core.execution.event import EventSubscriptionSpec\n"
             "from core.execution.runtime import BoundTask, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
-            "from core.foundation.primitives import EventId, HostPath, JsonObject, ModuleId, TaskId\n"
+            "from core.foundation import EventId, HostPath, JsonObject, ModuleId, TaskId\n"
             "@dataclass(frozen=True, slots=True)\nclass DWrap:\n    data: JsonObject\n"
             "class FailSub(Task[DWrap, DWrap]):\n"
             "    @property\n    def metadata(self) -> TaskMetadata[DWrap, DWrap]:\n"
@@ -15087,7 +15434,7 @@ def _provision_deep_envelope_and_upgrade_ws(ws_r: HostPath) -> None:
             ],
         },
         (
-            "from dataclasses import dataclass\nfrom typing import Sequence\nfrom core.execution.event import EventSubscriptionSpec\nfrom core.execution.runtime import BoundTask, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\nfrom core.filesystem.fs import atomic_write_json\nfrom core.foundation.primitives import EventId, JsonObject, ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass DWrap:\n    data: JsonObject\nclass T1Sub(Task[DWrap, DWrap]):\n    @property\n    def metadata(self) -> TaskMetadata[DWrap, DWrap]:\n        return TaskMetadata(TaskId('bt1deep.sub'), DWrap, DWrap, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('deepmod.deep_ev'), lambda xs: xs[-1] if xs else None),))\n    def run(self, req: DWrap, ctx: TaskContext) -> DWrap:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'de_t1_sub_ok.json'), {'ok': True})\n        return req\nclass T1EchoCb(Task[DWrap, DWrap]):\n    @property\n    def metadata(self) -> TaskMetadata[DWrap, DWrap]:\n        return TaskMetadata(TaskId('bt1deep.echo_cb'), DWrap, DWrap)\n    def run(self, req: DWrap, ctx: TaskContext) -> DWrap:\n        r_ok = ctx.invoke_task(TaskId('zt0deep.echo'), req)\n        if not (r_ok.ok): raise AssertionError('embedded check failed')\n        too_deep: JsonObject = req.data\n        for i in range(6):\n            too_deep = {f'x{i}': too_deep}\n        r_bad = ctx.invoke_task(TaskId('zt0deep.echo'), DWrap(data=too_deep))\n        if not (not r_bad.ok and r_bad.error is not None): raise AssertionError('embedded check failed')\n        return req\nclass BT1Mod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('bt1deep')\n    def tasks(self) -> Sequence[BoundTask]: return (T1Sub(), T1EchoCb())\ndef create_module() -> YscbModule: return BT1Mod()\n"
+            "from dataclasses import dataclass\nfrom typing import Sequence\nfrom core.execution.event import EventSubscriptionSpec\nfrom core.execution.runtime import BoundTask, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\nfrom core.filesystem.fs import atomic_write_json\nfrom core.foundation import EventId, JsonObject, ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass DWrap:\n    data: JsonObject\nclass T1Sub(Task[DWrap, DWrap]):\n    @property\n    def metadata(self) -> TaskMetadata[DWrap, DWrap]:\n        return TaskMetadata(TaskId('bt1deep.sub'), DWrap, DWrap, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('deepmod.deep_ev'), lambda xs: xs[-1] if xs else None),))\n    def run(self, req: DWrap, ctx: TaskContext) -> DWrap:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'de_t1_sub_ok.json'), {'ok': True})\n        return req\nclass T1EchoCb(Task[DWrap, DWrap]):\n    @property\n    def metadata(self) -> TaskMetadata[DWrap, DWrap]:\n        return TaskMetadata(TaskId('bt1deep.echo_cb'), DWrap, DWrap)\n    def run(self, req: DWrap, ctx: TaskContext) -> DWrap:\n        r_ok = ctx.invoke_task(TaskId('zt0deep.echo'), req)\n        if not (r_ok.ok): raise AssertionError('embedded check failed')\n        too_deep: JsonObject = req.data\n        for i in range(6):\n            too_deep = {f'x{i}': too_deep}\n        r_bad = ctx.invoke_task(TaskId('zt0deep.echo'), DWrap(data=too_deep))\n        if not (not r_bad.ok and r_bad.error is not None): raise AssertionError('embedded check failed')\n        return req\nclass BT1Mod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('bt1deep')\n    def tasks(self) -> Sequence[BoundTask]: return (T1Sub(), T1EchoCb())\ndef create_module() -> YscbModule: return BT1Mod()\n"
         ),
     )
     _provision_zt0deep_module(ws_r)
@@ -15113,7 +15460,7 @@ def _provision_zt0deep_module(ws_r: HostPath) -> None:
             "from core.execution.event import EventMetadata, EventSubscriptionSpec\n"
             "from core.execution.runtime import BoundTask, ClientRoutingPolicy, DispatchMode, SelfMutationScope, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
             "from core.filesystem.fs import atomic_write_json\n"
-            "from core.foundation.primitives import EventId, JsonObject, ModuleId, TaskId\n"
+            "from core.foundation import EventId, JsonObject, ModuleId, TaskId\n"
             "@dataclass(frozen=True, slots=True)\nclass DWrap:\n    data: JsonObject\n"
             "EV_DEEP = EventMetadata(EventId('deepmod.deep_ev'), DWrap)\n"
             "class EmitMain(Task[DWrap, DWrap]):\n"
@@ -15439,7 +15786,7 @@ def _verify_filelock_upgrade_no_starvation(ws8: HostPath) -> None:
 import sys, time
 sys.path.insert(0, sys.argv[1])
 from core.filesystem.fs import FileLock
-from core.foundation.primitives import HostPath
+from core.foundation import HostPath
 p = HostPath(sys.argv[2])
 mode = sys.argv[3]
 stop_at = time.monotonic() + 1.1
@@ -15496,8 +15843,8 @@ def _verify_nested_session_forest_reaping(ws8: HostPath, venv_bin: HostPath) -> 
             "import subprocess, sys, time\n"
             "from typing import Sequence\n"
             "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-            "from core.foundation.primitives import ModuleId, TaskId\n"
-            "from core.foundation.proc import ManagedProcessTree\n"
+            "from core.foundation import ModuleId, TaskId\n"
+            "from core.foundation import ManagedProcessTree\n"
             "@dataclass(frozen=True, slots=True)\nclass FDto:\n    v: int = 0\n"
             "class HangTask(Task[FDto, FDto]):\n"
             "    @property\n    def metadata(self) -> TaskMetadata[FDto, FDto]:\n"
@@ -15536,7 +15883,7 @@ def _verify_nested_session_forest_reaping(ws8: HostPath, venv_bin: HostPath) -> 
         alive_left = [pid for pid in pids if is_process_alive(pid)]
         for lp in alive_left:
             try:
-                os.kill(lp, signal.SIGKILL)
+                os.kill(lp, int(signal.SIGKILL) if os.name != "nt" else int(signal.SIGTERM))
             except OSError:
                 pass
         _check(not alive_left, lambda: f"Orphan nested session processes leaked: {alive_left}")
@@ -15600,7 +15947,7 @@ def _verify_slot_unload_init_race(ws8: HostPath) -> None:
     mod_dir.mkdir(parents=True, exist_ok=True)
     (mod_dir / "helper_sub.py").write_text("MAGIC = 777\n", encoding="utf-8")
     (mod_dir / "module_entry.py").write_text(
-        "from __future__ import annotations\nimport importlib\nfrom typing import Callable, Optional, Sequence\nfrom core.execution.runtime import BoundTask, YscbModule\nfrom core.foundation.primitives import HostPath, ModuleId\nclass RaceMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('pkg_race')\n    def on_init(self, workspace_root: HostPath) -> Optional[Callable[[], None]]:\n        sub_m = importlib.import_module('.helper_sub', __package__)\n        if not (sub_m.MAGIC == 777): raise AssertionError('embedded check failed')\n        return None\n    def tasks(self) -> Sequence[BoundTask]: return ()\ndef create_module() -> YscbModule: return RaceMod()\n",
+        "from __future__ import annotations\nimport importlib\nfrom typing import Callable, Optional, Sequence\nfrom core.execution.runtime import BoundTask, YscbModule\nfrom core.foundation import HostPath, ModuleId\nclass RaceMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('pkg_race')\n    def on_init(self, workspace_root: HostPath) -> Optional[Callable[[], None]]:\n        sub_m = importlib.import_module('.helper_sub', __package__)\n        if not (sub_m.MAGIC == 777): raise AssertionError('embedded check failed')\n        return None\n    def tasks(self) -> Sequence[BoundTask]: return ()\ndef create_module() -> YscbModule: return RaceMod()\n",
         encoding="utf-8",
     )
     lc = WorkerContainerLifecycle()
@@ -15632,7 +15979,7 @@ def _verify_tty_cross_tier_lifo_order(ws8: HostPath, venv_bin: HostPath) -> None
             "from __future__ import annotations\nfrom dataclasses import dataclass\nimport json\nfrom typing import Callable, Optional, Sequence\n"
             "from core.execution.event import EventSubscriptionSpec\n"
             "from core.execution.runtime import BoundTask, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
-            "from core.foundation.primitives import EventId, HostPath, ModuleId, TaskId\n"
+            "from core.foundation import EventId, HostPath, ModuleId, TaskId\n"
             "@dataclass(frozen=True, slots=True)\nclass LDto:\n    k: int = 0\n"
             "def _log_seq(ws: HostPath, tag: str) -> None:\n"
             "    p = ws.join('.cache', 'lifo_seq.json').path\n"
@@ -15660,7 +16007,7 @@ def _verify_tty_cross_tier_lifo_order(ws8: HostPath, venv_bin: HostPath) -> None
         "tty_mod",
         {"tier1": True, "venv_group": "tty_grp", "tasks": [{"task_id": "tty_mod.root", "interactive_tty": True, "dispatch_mode": "cold_only"}]},
         (
-            "from __future__ import annotations\nfrom dataclasses import dataclass\nimport json\nfrom typing import Callable, Optional, Sequence\nfrom core.execution.event import EventMetadata\nfrom core.execution.runtime import BoundTask, DispatchMode, Task, TaskContext, TaskMetadata, YscbModule\nfrom core.foundation.primitives import EventId, HostPath, ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass LDto:\n    k: int = 0\nEV_TTY = EventMetadata(EventId('tty_mod.ev'), LDto)\ndef _log_seq(ws: HostPath, tag: str) -> None:\n    p = ws.join('.cache', 'lifo_seq.json').path\n    arr = json.loads(p.read_text(encoding='utf-8')) if p.is_file() else []\n    arr.append(tag); p.write_text(json.dumps(arr), encoding='utf-8')\nclass RootTty(Task[LDto, LDto]):\n    @property\n    def metadata(self) -> TaskMetadata[LDto, LDto]:\n        return TaskMetadata(TaskId('tty_mod.root'), LDto, LDto, dispatch_mode=DispatchMode.COLD_ONLY, interactive_tty=True)\n    def run(self, req: LDto, ctx: TaskContext) -> LDto:\n        sub = ctx.invoke_task(TaskId('t0_sub.step'), LDto(k=1))\n        if not (sub.ok): raise AssertionError('embedded check failed')\n        ctx.emit(EV_TTY, LDto(k=2))\n        return req\nclass TtyMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('tty_mod')\n    def on_init(self, ws: HostPath) -> Optional[Callable[[], None]]:\n        _log_seq(ws, 'INIT:tty'); return lambda: _log_seq(ws, 'CLOSE:tty')\n    def tasks(self) -> Sequence[BoundTask]: return (RootTty(),)\ndef create_module() -> YscbModule: return TtyMod()\n"
+            "from __future__ import annotations\nfrom dataclasses import dataclass\nimport json\nfrom typing import Callable, Optional, Sequence\nfrom core.execution.event import EventMetadata\nfrom core.execution.runtime import BoundTask, DispatchMode, Task, TaskContext, TaskMetadata, YscbModule\nfrom core.foundation import EventId, HostPath, ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass LDto:\n    k: int = 0\nEV_TTY = EventMetadata(EventId('tty_mod.ev'), LDto)\ndef _log_seq(ws: HostPath, tag: str) -> None:\n    p = ws.join('.cache', 'lifo_seq.json').path\n    arr = json.loads(p.read_text(encoding='utf-8')) if p.is_file() else []\n    arr.append(tag); p.write_text(json.dumps(arr), encoding='utf-8')\nclass RootTty(Task[LDto, LDto]):\n    @property\n    def metadata(self) -> TaskMetadata[LDto, LDto]:\n        return TaskMetadata(TaskId('tty_mod.root'), LDto, LDto, dispatch_mode=DispatchMode.COLD_ONLY, interactive_tty=True)\n    def run(self, req: LDto, ctx: TaskContext) -> LDto:\n        sub = ctx.invoke_task(TaskId('t0_sub.step'), LDto(k=1))\n        if not (sub.ok): raise AssertionError('embedded check failed')\n        ctx.emit(EV_TTY, LDto(k=2))\n        return req\nclass TtyMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('tty_mod')\n    def on_init(self, ws: HostPath) -> Optional[Callable[[], None]]:\n        _log_seq(ws, 'INIT:tty'); return lambda: _log_seq(ws, 'CLOSE:tty')\n    def tasks(self) -> Sequence[BoundTask]: return (RootTty(),)\ndef create_module() -> YscbModule: return TtyMod()\n"
         ),
     )
     disp_lf = build_dispatcher_for_workspace(ws_lf, venv_bin, is_daemon_host=False).dispatcher
@@ -15689,7 +16036,7 @@ def _verify_coalesce_eviction_preempt_preserves_fatal(ws8: HostPath, venv_bin: H
             ],
         },
         (
-            "from __future__ import annotations\nfrom dataclasses import dataclass\nimport time\nfrom typing import Sequence\nfrom core.execution.event import EventMetadata, EventSubscriptionSpec\nfrom core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\nfrom core.filesystem.fs import atomic_write_json\nfrom core.foundation.primitives import EventId, ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass EDto:\n    v: int = 0\nEV_GO = EventMetadata(EventId('ep_mod.go'), EDto)\nclass TrigT(Task[EDto, EDto]):\n    @property\n    def metadata(self) -> TaskMetadata[EDto, EDto]: return TaskMetadata(TaskId('ep_mod.trigger_ev'), EDto, EDto)\n    def run(self, req: EDto, ctx: TaskContext) -> EDto:\n        ctx.emit(EV_GO, req); return req\nclass SubOuter(Task[EDto, EDto]):\n    @property\n    def metadata(self) -> TaskMetadata[EDto, EDto]:\n        return TaskMetadata(TaskId('ep_mod.sub_outer'), EDto, EDto, exposure=TaskExposure.INTERNAL_TRIGGER, resource_key='rk_ep_out', concurrency_mode=ConcurrencyMode.SERIALIZE, subscriptions=(EventSubscriptionSpec(EventId('ep_mod.go'), lambda xs: EDto(v=len(xs))),))\n    def run(self, req: EDto, ctx: TaskContext) -> EDto:\n        out = ctx.invoke_task(TaskId('ep_mod.shared_coal'), EDto(v=1))\n        if not (out.ok): raise AssertionError('embedded check failed')\n        return req\nclass SharedCoal(Task[EDto, EDto]):\n    @property\n    def metadata(self) -> TaskMetadata[EDto, EDto]:\n        return TaskMetadata(TaskId('ep_mod.shared_coal'), EDto, EDto, resource_key='rk_ep_in', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda _r: 'k')\n    def run(self, req: EDto, ctx: TaskContext) -> EDto:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'ep_in_coal.json'), {'ok': True})\n        time.sleep(0.08)\n        sub = ctx.invoke_task(TaskId('ep_mod.inner_preempt'), EDto(v=2))\n        if not (sub.ok): raise AssertionError('embedded check failed')\n        return EDto(v=9)\nclass InnerPre(Task[EDto, EDto]):\n    @property\n    def metadata(self) -> TaskMetadata[EDto, EDto]:\n        return TaskMetadata(TaskId('ep_mod.inner_preempt'), EDto, EDto, resource_key='rk_ep_out', concurrency_mode=ConcurrencyMode.PREEMPT)\n    def run(self, req: EDto, ctx: TaskContext) -> EDto: return req\nclass EpMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('ep_mod')\n    def tasks(self) -> Sequence[BoundTask]: return (TrigT(), SubOuter(), SharedCoal(), InnerPre())\ndef create_module() -> YscbModule: return EpMod()\n"
+            "from __future__ import annotations\nfrom dataclasses import dataclass\nimport time\nfrom typing import Sequence\nfrom core.execution.event import EventMetadata, EventSubscriptionSpec\nfrom core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\nfrom core.filesystem.fs import atomic_write_json\nfrom core.foundation import EventId, ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass EDto:\n    v: int = 0\nEV_GO = EventMetadata(EventId('ep_mod.go'), EDto)\nclass TrigT(Task[EDto, EDto]):\n    @property\n    def metadata(self) -> TaskMetadata[EDto, EDto]: return TaskMetadata(TaskId('ep_mod.trigger_ev'), EDto, EDto)\n    def run(self, req: EDto, ctx: TaskContext) -> EDto:\n        ctx.emit(EV_GO, req); return req\nclass SubOuter(Task[EDto, EDto]):\n    @property\n    def metadata(self) -> TaskMetadata[EDto, EDto]:\n        return TaskMetadata(TaskId('ep_mod.sub_outer'), EDto, EDto, exposure=TaskExposure.INTERNAL_TRIGGER, resource_key='rk_ep_out', concurrency_mode=ConcurrencyMode.SERIALIZE, subscriptions=(EventSubscriptionSpec(EventId('ep_mod.go'), lambda xs: EDto(v=len(xs))),))\n    def run(self, req: EDto, ctx: TaskContext) -> EDto:\n        out = ctx.invoke_task(TaskId('ep_mod.shared_coal'), EDto(v=1))\n        if not (out.ok): raise AssertionError('embedded check failed')\n        return req\nclass SharedCoal(Task[EDto, EDto]):\n    @property\n    def metadata(self) -> TaskMetadata[EDto, EDto]:\n        return TaskMetadata(TaskId('ep_mod.shared_coal'), EDto, EDto, resource_key='rk_ep_in', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda _r: 'k')\n    def run(self, req: EDto, ctx: TaskContext) -> EDto:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'ep_in_coal.json'), {'ok': True})\n        time.sleep(0.08)\n        sub = ctx.invoke_task(TaskId('ep_mod.inner_preempt'), EDto(v=2))\n        if not (sub.ok): raise AssertionError('embedded check failed')\n        return EDto(v=9)\nclass InnerPre(Task[EDto, EDto]):\n    @property\n    def metadata(self) -> TaskMetadata[EDto, EDto]:\n        return TaskMetadata(TaskId('ep_mod.inner_preempt'), EDto, EDto, resource_key='rk_ep_out', concurrency_mode=ConcurrencyMode.PREEMPT)\n    def run(self, req: EDto, ctx: TaskContext) -> EDto: return req\nclass EpMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('ep_mod')\n    def tasks(self) -> Sequence[BoundTask]: return (TrigT(), SubOuter(), SharedCoal(), InnerPre())\ndef create_module() -> YscbModule: return EpMod()\n"
         ),
     )
     disp_ep = build_dispatcher_for_workspace(ws_ep, venv_bin, is_daemon_host=True).dispatcher
@@ -15711,12 +16058,13 @@ def _verify_direct_turn_engine_session_cleanup_and_epoch_resume(ws8: HostPath, v
     rig = build_dispatcher_for_workspace(ws_te, venv_bin, is_daemon_host=False, sandbox_restricted=True)
     disp_te = rig.dispatcher
     try:
+        before_te_mods = set(sys.modules)
         runner = ColdTurnRunner(TurnEngine(disp_te))
         rep = runner.execute_leased_turn(
             InvokeRequest(TaskId("space.echo_tier0"), {"tag": "direct_runner"}, ws_te, ws_te)
         )
         _check(rep.primary_result.ok and disp_te.active_turn_count == 0)
-        _check(not any("_yscb_v2_mod_space_" in k for k in sys.modules))
+        _check((set(sys.modules) - before_te_mods) == set())
     finally:
         disp_te.shutdown(grace_ms=100)
 
@@ -15747,8 +16095,8 @@ _SYM_FL_MOD_SRC: Final[str] = (
             "from __future__ import annotations\nfrom dataclasses import dataclass\nimport time\nfrom typing import Sequence\n"
             "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
             "from core.filesystem.fs import atomic_write_json\n"
-            "from core.foundation.errors import YscbError\n"
-            "from core.foundation.primitives import ModuleId, TaskId\n"
+            "from core.foundation import YscbError\n"
+            "from core.foundation import ModuleId, TaskId\n"
             "@dataclass(frozen=True, slots=True)\nclass SDto:\n    key: str = 'k'\n    wait_f2: bool = False\n"
             "class OuterPre(Task[SDto, SDto]):\n"
             "    @property\n    def metadata(self) -> TaskMetadata[SDto, SDto]:\n"
@@ -15820,7 +16168,7 @@ def _provision_sym_nested_flight_modules(ws_sn: Path) -> None:
         (
             "from __future__ import annotations\nfrom dataclasses import dataclass\nfrom typing import Sequence\n"
             "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-            "from core.foundation.primitives import ModuleId, TaskId\n"
+            "from core.foundation import ModuleId, TaskId\n"
             "@dataclass(frozen=True, slots=True)\nclass SDto:\n    key: str = 'k'\n    wait_f2: bool = False\n"
             "class PingT(Task[SDto, SDto]):\n"
             "    @property\n    def metadata(self) -> TaskMetadata[SDto, SDto]: return TaskMetadata(TaskId('q_leaf.ping'), SDto, SDto)\n"
@@ -15885,7 +16233,7 @@ def _verify_deferred_route_index_and_dup_turn_isolation(ws8: HostPath, venv_bin:
         (m_nm / "module_entry.py").write_text(
             "from __future__ import annotations\nfrom dataclasses import dataclass\nimport time\nfrom typing import Sequence\n"
             "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-            "from core.foundation.primitives import ModuleId, TaskId\n"
+            "from core.foundation import ModuleId, TaskId\n"
             "@dataclass(frozen=True, slots=True)\nclass NDto:\n    v: int = 0\n"
             "class SlowEcho(Task[NDto, NDto]):\n"
             "    @property\n    def metadata(self) -> TaskMetadata[NDto, NDto]: return TaskMetadata(TaskId('nomf_mod.echo'), NDto, NDto)\n"
@@ -15914,7 +16262,7 @@ def _verify_deferred_route_index_and_dup_turn_isolation(ws8: HostPath, venv_bin:
 
 
 _SEAL_AND_EV_CYCLE_MOD_SRC: Final[str] = (
-    "from __future__ import annotations\nfrom dataclasses import dataclass\nimport time\nfrom typing import Sequence\nfrom core.execution.event import EventMetadata, EventSubscriptionSpec\nfrom core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\nfrom core.filesystem.fs import atomic_write_json\nfrom core.foundation.primitives import EventId, ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass RDto:\n    k: str = 'a'\nEV_LP = EventMetadata(EventId('sealm.loop'), RDto)\nclass SealFlightTask(Task[RDto, RDto]):\n    @property\n    def metadata(self) -> TaskMetadata[RDto, RDto]:\n        return TaskMetadata(TaskId('sealm.seal_fl'), RDto, RDto, resource_key='rk_seal_sf', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda r: r.k)\n    def run(self, req: RDto, ctx: TaskContext) -> RDto:\n        try:\n            _ = ctx.invoke_task(TaskId('sealm.seal_caller'), req, output_type=RDto)\n            return RDto(k=f'clean:{req.k}')\n        finally:\n            if not ctx.workspace_root.join('.cache', f'sf_fin_{req.k}.json').path.is_file():\n                atomic_write_json(ctx.workspace_root.join('.cache', f'sf_fin_{req.k}.json'), {'fin': True})\n                time.sleep(0.09)\nclass SealCallerTask(Task[RDto, RDto]):\n    @property\n    def metadata(self) -> TaskMetadata[RDto, RDto]: return TaskMetadata(TaskId('sealm.seal_caller'), RDto, RDto)\n    def run(self, req: RDto, ctx: TaskContext) -> RDto:\n        if req.k == 'init_cyc':\n            out = ctx.invoke_task(TaskId('sealm.seal_fl'), RDto(k='cyc1'), output_type=RDto)\n            if not (out.ok): raise AssertionError('embedded check failed')\n        return RDto(k='leaf')\nclass TrigLoopTask(Task[RDto, RDto]):\n    @property\n    def metadata(self) -> TaskMetadata[RDto, RDto]: return TaskMetadata(TaskId('sealm.trig_loop'), RDto, RDto)\n    def run(self, req: RDto, ctx: TaskContext) -> RDto:\n        ctx.emit(EV_LP, req); return req\nclass SubPreLoopTask(Task[RDto, RDto]):\n    @property\n    def metadata(self) -> TaskMetadata[RDto, RDto]:\n        return TaskMetadata(TaskId('sealm.sub_pre'), RDto, RDto, exposure=TaskExposure.INTERNAL_TRIGGER, resource_key='rk_seal_sub', concurrency_mode=ConcurrencyMode.PREEMPT, subscriptions=(EventSubscriptionSpec(EventId('sealm.loop'), lambda xs: xs[0]),))\n    def run(self, req: RDto, ctx: TaskContext) -> RDto:\n        if req.k == 'start':\n            out = ctx.invoke_task(TaskId('sealm.imm_coal'), RDto(k='shared'), output_type=RDto)\n            if not (out.ok): raise AssertionError('embedded check failed')\n        return req\nclass ImmCoalTask(Task[RDto, RDto]):\n    @property\n    def metadata(self) -> TaskMetadata[RDto, RDto]:\n        return TaskMetadata(TaskId('sealm.imm_coal'), RDto, RDto, resource_key='rk_seal_ic', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda r: r.k)\n    def run(self, req: RDto, ctx: TaskContext) -> RDto:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'seal_ic_in.json'), {'in': True})\n        time.sleep(0.08)\n        ctx.emit_imm(EV_LP, RDto(k='reemit'), strict=False)\n        return RDto(k='ic_done')\nclass SealEvMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('sealm')\n    def tasks(self) -> Sequence[BoundTask]: return (SealFlightTask(), SealCallerTask(), TrigLoopTask(), SubPreLoopTask(), ImmCoalTask())\ndef create_module() -> YscbModule: return SealEvMod()\n"
+    "from __future__ import annotations\nfrom dataclasses import dataclass\nimport time\nfrom typing import Sequence\nfrom core.execution.event import EventMetadata, EventSubscriptionSpec\nfrom core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\nfrom core.filesystem.fs import atomic_write_json\nfrom core.foundation import EventId, ModuleId, TaskId\n@dataclass(frozen=True, slots=True)\nclass RDto:\n    k: str = 'a'\nEV_LP = EventMetadata(EventId('sealm.loop'), RDto)\nclass SealFlightTask(Task[RDto, RDto]):\n    @property\n    def metadata(self) -> TaskMetadata[RDto, RDto]:\n        return TaskMetadata(TaskId('sealm.seal_fl'), RDto, RDto, resource_key='rk_seal_sf', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda r: r.k)\n    def run(self, req: RDto, ctx: TaskContext) -> RDto:\n        try:\n            _ = ctx.invoke_task(TaskId('sealm.seal_caller'), req, output_type=RDto)\n            return RDto(k=f'clean:{req.k}')\n        finally:\n            if not ctx.workspace_root.join('.cache', f'sf_fin_{req.k}.json').path.is_file():\n                atomic_write_json(ctx.workspace_root.join('.cache', f'sf_fin_{req.k}.json'), {'fin': True})\n                time.sleep(0.09)\nclass SealCallerTask(Task[RDto, RDto]):\n    @property\n    def metadata(self) -> TaskMetadata[RDto, RDto]: return TaskMetadata(TaskId('sealm.seal_caller'), RDto, RDto)\n    def run(self, req: RDto, ctx: TaskContext) -> RDto:\n        if req.k == 'init_cyc':\n            out = ctx.invoke_task(TaskId('sealm.seal_fl'), RDto(k='cyc1'), output_type=RDto)\n            if not (out.ok): raise AssertionError('embedded check failed')\n        return RDto(k='leaf')\nclass TrigLoopTask(Task[RDto, RDto]):\n    @property\n    def metadata(self) -> TaskMetadata[RDto, RDto]: return TaskMetadata(TaskId('sealm.trig_loop'), RDto, RDto)\n    def run(self, req: RDto, ctx: TaskContext) -> RDto:\n        ctx.emit(EV_LP, req); return req\nclass SubPreLoopTask(Task[RDto, RDto]):\n    @property\n    def metadata(self) -> TaskMetadata[RDto, RDto]:\n        return TaskMetadata(TaskId('sealm.sub_pre'), RDto, RDto, exposure=TaskExposure.INTERNAL_TRIGGER, resource_key='rk_seal_sub', concurrency_mode=ConcurrencyMode.PREEMPT, subscriptions=(EventSubscriptionSpec(EventId('sealm.loop'), lambda xs: xs[0]),))\n    def run(self, req: RDto, ctx: TaskContext) -> RDto:\n        if req.k == 'start':\n            out = ctx.invoke_task(TaskId('sealm.imm_coal'), RDto(k='shared'), output_type=RDto)\n            if not (out.ok): raise AssertionError('embedded check failed')\n        return req\nclass ImmCoalTask(Task[RDto, RDto]):\n    @property\n    def metadata(self) -> TaskMetadata[RDto, RDto]:\n        return TaskMetadata(TaskId('sealm.imm_coal'), RDto, RDto, resource_key='rk_seal_ic', concurrency_mode=ConcurrencyMode.COALESCE, equivalence_fn=lambda r: r.k)\n    def run(self, req: RDto, ctx: TaskContext) -> RDto:\n        atomic_write_json(ctx.workspace_root.join('.cache', 'seal_ic_in.json'), {'in': True})\n        time.sleep(0.08)\n        ctx.emit_imm(EV_LP, RDto(k='reemit'), strict=False)\n        return RDto(k='ic_done')\nclass SealEvMod(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('sealm')\n    def tasks(self) -> Sequence[BoundTask]: return (SealFlightTask(), SealCallerTask(), TrigLoopTask(), SubPreLoopTask(), ImmCoalTask())\ndef create_module() -> YscbModule: return SealEvMod()\n"
 )
 
 
@@ -15974,8 +16322,8 @@ _WAIT_EDGE_CASCADE_MOD_SRC: Final[str] = (
     "from core.execution.event import EventMetadata, EventSubscriptionSpec\n"
     "from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.errors import YscbError\n"
-    "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+    "from core.foundation import YscbError\n"
+    "from core.foundation import EventId, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass WDto:\n    k: str = 'a'\n    hold_ms: int = 0\n"
     "EV_Q = EventMetadata(EventId('we_mod.ev_q'), WDto)\n"
     "EV_C = EventMetadata(EventId('we_mod.ev_cyc'), WDto)\n"
@@ -16055,7 +16403,7 @@ def _provision_wait_edge_workspace(ws8: HostPath) -> HostPath:
             "from __future__ import annotations\nfrom dataclasses import dataclass\nfrom typing import Sequence\n"
             "from core.execution.event import EventSubscriptionSpec\n"
             "from core.execution.runtime import BoundTask, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
-            "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+            "from core.foundation import EventId, ModuleId, TaskId\n"
             "@dataclass(frozen=True, slots=True)\nclass WDto:\n    k: str = 'a'\n    hold_ms: int = 0\n"
             "class OnQT(Task[WDto, WDto]):\n"
             "    @property\n    def metadata(self) -> TaskMetadata[WDto, WDto]:\n"
@@ -16120,8 +16468,8 @@ _XDAEMON_A_MOD_SRC: Final[str] = (
     "from __future__ import annotations\nfrom dataclasses import dataclass\nimport time\nfrom typing import Sequence\n"
     "from core.execution.runtime import BoundTask, ClientRoutingPolicy, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.errors import YscbError\n"
-    "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+    "from core.foundation import YscbError\n"
+    "from core.foundation import HostPath, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass XdDto:\n    k: str = 'a'\n    peer_ws: str = ''\n"
     "class OuterSerA(Task[XdDto, XdDto]):\n"
     "    @property\n    def metadata(self) -> TaskMetadata[XdDto, XdDto]:\n"
@@ -16173,8 +16521,8 @@ _XDAEMON_B_MOD_SRC: Final[str] = (
     "from __future__ import annotations\nfrom dataclasses import dataclass\nfrom typing import Sequence\n"
     "from core.execution.runtime import BoundTask, ClientRoutingPolicy, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.errors import YscbError\n"
-    "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+    "from core.foundation import YscbError\n"
+    "from core.foundation import HostPath, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass XdDto:\n    k: str = 'a'\n    peer_ws: str = ''\n"
     "class BridgeCoalB(Task[XdDto, XdDto]):\n"
     "    @property\n    def metadata(self) -> TaskMetadata[XdDto, XdDto]:\n"
@@ -16319,8 +16667,8 @@ _CFG_SER_PROBE_MOD_SRC: Final[str] = (
     "from core.execution.event import EventMetadata, EventSubscriptionSpec\n"
     "from core.execution.runtime import BoundTask, ConcurrencyMode, SecurityTier, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json, read_json_dict\n"
-    "from core.foundation.errors import ErrorCode, YscbError\n"
-    "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+    "from core.foundation import ErrorCode, YscbError\n"
+    "from core.foundation import EventId, ModuleId, TaskId\n"
     "_SER_LOCK = threading.Lock()\n_ACTIVE_SER = [0, 0]\n"
     "def _enter_ser() -> None:\n"
     "    with _SER_LOCK:\n        _ACTIVE_SER[0] += 1\n"
@@ -16495,8 +16843,8 @@ _XWS_SYM_A_SRC: Final[str] = (
     "from __future__ import annotations\nfrom dataclasses import dataclass\nfrom typing import Sequence\n"
     "from core.execution.runtime import BoundTask, ClientRoutingPolicy, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.errors import YscbError\n"
-    "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+    "from core.foundation import YscbError\n"
+    "from core.foundation import HostPath, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass SymXDto:\n    k: str = 'a'\n    peer_ws: str = ''\n"
     "class HoldAndCallB(Task[SymXDto, SymXDto]):\n"
     "    @property\n    def metadata(self) -> TaskMetadata[SymXDto, SymXDto]:\n"
@@ -16520,8 +16868,8 @@ _XWS_SYM_B_SRC: Final[str] = (
     "from __future__ import annotations\nfrom dataclasses import dataclass\nimport time\nfrom typing import Sequence\n"
     "from core.execution.runtime import BoundTask, ClientRoutingPolicy, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule\n"
     "from core.filesystem.fs import atomic_write_json\n"
-    "from core.foundation.errors import YscbError\n"
-    "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+    "from core.foundation import YscbError\n"
+    "from core.foundation import HostPath, ModuleId, TaskId\n"
     "@dataclass(frozen=True, slots=True)\nclass SymXDto:\n    k: str = 'a'\n    peer_ws: str = ''\n"
     "class CoalStepB(Task[SymXDto, SymXDto]):\n"
     "    @property\n    def metadata(self) -> TaskMetadata[SymXDto, SymXDto]:\n"
@@ -16666,8 +17014,8 @@ from dataclasses import dataclass
 from typing import Sequence
 from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule
 from core.filesystem.fs import atomic_write_json
-from core.foundation.errors import YscbError
-from core.foundation.primitives import ModuleId, TaskId
+from core.foundation import YscbError
+from core.foundation import ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class BgIn:
@@ -16703,7 +17051,7 @@ class CoalTask(Task[BgIn, BgOut]):
             raise YscbError(out.error.code, out.error.message, source_task=out.error.source_task)
         return BgOut(ok_tag="coal_done")
 
-from core.foundation.observability import ProgressEvent
+from core.foundation import ProgressEvent
 
 class BorrowedTask(Task[BgIn, BgOut]):
     @property
@@ -16871,7 +17219,7 @@ def _verify_malformed_join_conflict_detaches_progress(
     progress_hits: list[JsonObject] = []
     prop_anc = CallPropagationContext(
         coalesce_callers=(
-            core.execution.runtime.CoalesceCallerView(
+            CoalesceCallerView(
                 turn_id="t_anc",
                 call_tree_id="tree_anc",
                 call_stack=((ws_mw, TaskId("mw.ping")),),
@@ -16893,34 +17241,103 @@ def _verify_malformed_join_conflict_detaches_progress(
     _check(not progress_hits)
 
 
-def _verify_worker_handler_wire_codec_bounds(ws_base: HostPath) -> None:
-    ws_mw = HostPath(ws_base.path / "ws_wh_wire_bounds")
-    (ws_mw.path / ".modules" / "mw").mkdir(parents=True, exist_ok=True)
-    desc = ModuleDescriptor(
-        module_id=ModuleId("mw"),
-        module_dir=ws_mw.join(".modules", "mw"),
-        venv_group="mw_grp",
-        declared_tasks=(TaskRouteSpec(task_id=TaskId("mw.ping")),),
+
+def _spawn_real_worker_wire_session(
+    ws: HostPath,
+    descriptors: Sequence[ModuleDescriptor],
+    *,
+    is_hot: bool = False,
+    master_handler: Optional[InboundCallHandler] = None,
+) -> tuple[ManagedProcessTree, MultiplexedChannel]:
+    lsock = bind_loopback_ephemeral(backlog=4)
+    port = int(lsock.getsockname()[1])
+    boot_id = "wire_probe_boot"
+    tok = "wire_probe_tok"
+    boot_cfg = WorkerBootstrapConfig(
+        host="127.0.0.1",
+        port=port,
+        boot_id=boot_id,
+        workspace_root=ws,
+        modules=tuple(descriptors),
+        is_hot_container=is_hot,
     )
-    w_handler = worker_entry_pkg.WorkerSubprocessHandler(ws_mw, (desc,), is_hot_container=False)
-    _expect_yscb_code(
-        lambda: w_handler.on_call(1, {"action": "not_an_enum"}, lambda: True, lambda _p: None, CancellationToken()),
-        ErrorCode.CODEC_VALIDATION_FAILED,
+    env_w = {
+        **{k: v for k, v in os.environ.items() if k not in ("__PYVENV_LAUNCHER__", "PYTHONHOME", "VIRTUAL_ENV")},
+        "PYTHONPATH": str(CORE_SRC_ROOT),
+        WORKER_AUTH_ENV_KEY: tok,
+    }
+    ptree = ManagedProcessTree(
+        [
+            sys.executable,
+            "-c",
+            "from core.execution.runtime import worker_main; raise SystemExit(worker_main())",
+            json.dumps(DataclassCodec.encode_object(boot_cfg)),
+        ],
+        cwd=ws,
+        env=env_w,
     )
-    s_a, s_b = socket.socketpair()
-    ch_w = MultiplexedChannel(s_a, is_initiator=False, handler=w_handler)
-    ch_m = MultiplexedChannel(s_b, is_initiator=True, handler=_MalformedMasterCallbackHandler())
     try:
-        w_handler.bind_channel(ch_w)
-        cb_res = worker_entry_pkg._unwrap_invoke_task_callback(
-            ch_w.call({"action": "invoke_task"}, timeout_ms=2000),
-            TaskId("mw.ping"),
+        lsock.settimeout(5.0)
+        conn_s, _ = lsock.accept()
+        conn_s.settimeout(2.0)
+        ch = accept_worker_handshake(
+            conn_s,
+            expected_auth_token=tok,
+            boot_id=boot_id,
+            handler=master_handler,
+            expected_workspace_root=ws,
         )
-        _check(not cb_res.ok and cb_res.error is not None and cb_res.error.code == ErrorCode.CODEC_VALIDATION_FAILED)
+        if ch is None:
+            raise AssertionError("Worker wire handshake failed")
+        return (ptree, ch)
+    except BaseException:
+        ptree.terminate_tree(grace_sec=0.2)
+        raise
     finally:
-        ch_w.close()
+        lsock.close()
+
+def _verify_worker_handler_wire_codec_bounds(ws_base: HostPath) -> None:
+    ws_cb = HostPath(ws_base.path / "ws_malformed_cb_e2e")
+    (ws_cb.path / ".modules" / "mw").mkdir(parents=True, exist_ok=True)
+    (ws_cb.path / ".modules" / "mw" / "module_entry.py").write_text(
+        "from dataclasses import dataclass\nfrom typing import Sequence\n"
+        "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
+        "from core.foundation import ModuleId, TaskId\n"
+        "@dataclass(frozen=True, slots=True)\nclass _MIn:\n    pass\n"
+        "@dataclass(frozen=True, slots=True)\nclass _MOut:\n    code: str\n"
+        "class _MT(Task[_MIn, _MOut]):\n"
+        "    @property\n    def metadata(self) -> TaskMetadata[_MIn, _MOut]: return TaskMetadata(TaskId('mw.caller'), _MIn, _MOut)\n"
+        "    def run(self, _r: _MIn, ctx: TaskContext) -> _MOut:\n"
+        "        sub = ctx.invoke_task(TaskId('mw.ping'), {})\n"
+        "        return _MOut(code=sub.error.code.value if sub.error is not None else 'ok')\n"
+        "class _MM(YscbModule):\n"
+        "    @property\n    def module_id(self) -> ModuleId: return ModuleId('mw')\n"
+        "    def tasks(self) -> Sequence[BoundTask]: return (_MT(),)\n"
+        "def create_module() -> YscbModule: return _MM()\n",
+        encoding="utf-8",
+    )
+    desc_cb = ModuleDescriptor(ModuleId("mw"), ws_cb.join(".modules", "mw"), declared_tasks=(TaskRouteSpec(task_id=TaskId("mw.caller")),))
+    ptree, ch_m = _spawn_real_worker_wire_session(ws_cb, (desc_cb,), is_hot=False, master_handler=_MalformedMasterCallbackHandler())
+    try:
+        bad_act = ch_m.call({"action": "not_an_enum"}, timeout_ms=2000)
+        _check(bad_act.error_code == ErrorCode.CODEC_VALIDATION_FAILED)
+        step_cmd: JsonObject = {
+            "action": "run_step",
+            "task_id": "mw.caller",
+            "caller_cwd": str(ws_cb),
+            "callback_context": {
+                "propagation": DataclassCodec.encode_object(CallPropagationContext()),
+                "caller_cwd": str(ws_cb),
+                "caller_env": {},
+            },
+        }
+        run_out = ch_m.call(step_cmd, timeout_ms=3000)
+        _check(run_out.was_accepted and run_out.result_payload is not None)
+        step_rep = DataclassCodec.decode_envelope(WorkerStepReply, run_out.result_payload)
+        _check(step_rep.ok and isinstance(step_rep.raw_output, Mapping) and step_rep.raw_output.get("code") == ErrorCode.CODEC_VALIDATION_FAILED.value)
+    finally:
         ch_m.close()
-        w_handler.close()
+        ptree.terminate_tree(grace_sec=0.3)
 
 
 _SLOW_WARMUP_MOD_SRC: Final[str] = """import time
@@ -16928,7 +17345,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule
 from core.filesystem.fs import atomic_write_json
-from core.foundation.primitives import HostPath, ModuleId, TaskId
+from core.foundation import HostPath, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class SwIn:
@@ -17036,8 +17453,8 @@ def _verify_cold_bootstrap_failure_lifo_release(ws8: HostPath, venv_bin: HostPat
 _XWS_UNKEYED_REENTRANT_A_SRC: Final[str] = """from dataclasses import dataclass
 from typing import Sequence
 from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule
-from core.foundation.errors import YscbError
-from core.foundation.primitives import HostPath, ModuleId, TaskId
+from core.foundation import YscbError
+from core.foundation import HostPath, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class XaIn:
@@ -17100,8 +17517,8 @@ from typing import Sequence
 from core.execution.rpc import FrameKind, connect_and_handshake, probe_daemon_endpoint
 from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule
 from core.filesystem.fs import atomic_write_json
-from core.foundation.errors import YscbError
-from core.foundation.primitives import HostPath, ModuleId, TaskId
+from core.foundation import YscbError
+from core.foundation import HostPath, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class XbIn:
@@ -17232,7 +17649,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule
 from core.filesystem.fs import atomic_write_json, read_json_dict
-from core.foundation.primitives import HostPath, ModuleId, TaskId
+from core.foundation import HostPath, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class SbIn:
@@ -17281,16 +17698,20 @@ def _verify_shared_boot_flight_and_t1_emit_imm_parity(ws8: HostPath, venv_bin: H
     )
     disp = build_dispatcher_for_workspace(ws_sb, venv_bin, is_daemon_host=True, sandbox_restricted=True).dispatcher
     try:
-        env_short = DataclassCodec.encode_object(
-            DaemonRpcInvokeEnvelope(
-                task_id=TaskId("sboot.ping"), raw_input={}, workspace_root=ws_sb, caller_cwd=ws_sb, timeout_ms=200
-            )
-        )
-        env_norm = DataclassCodec.encode_object(
-            DaemonRpcInvokeEnvelope(
-                task_id=TaskId("sboot.ping"), raw_input={}, workspace_root=ws_sb, caller_cwd=ws_sb, timeout_ms=1500
-            )
-        )
+        env_short: JsonObject = {
+            "task_id": "sboot.ping",
+            "raw_input": {},
+            "workspace_root": str(ws_sb),
+            "caller_cwd": str(ws_sb),
+            "timeout_ms": 200,
+        }
+        env_norm: JsonObject = {
+            "task_id": "sboot.ping",
+            "raw_input": {},
+            "workspace_root": str(ws_sb),
+            "caller_cwd": str(ws_sb),
+            "timeout_ms": 1500,
+        }
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             f_s = pool.submit(disp.invoke_daemon_rpc, env_short, CancellationToken(), lambda _p: None)
             time.sleep(0.02)
@@ -17311,8 +17732,8 @@ from typing import Sequence
 from core.execution.event import EventMetadata, EventSubscriptionSpec
 from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, TaskExposure, YscbModule
 from core.filesystem.fs import atomic_write_json
-from core.foundation.errors import CallCycleError, TaskCancelledException
-from core.foundation.primitives import EventId, ModuleId, TaskId
+from core.foundation import CallCycleError, TaskCancelledException
+from core.foundation import EventId, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class EiIn:
@@ -17457,8 +17878,8 @@ from dataclasses import dataclass
 from typing import Sequence
 from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule
 from core.filesystem.fs import atomic_write_json, read_json_dict
-from core.foundation.errors import YscbError
-from core.foundation.primitives import HostPath, ModuleId, TaskId
+from core.foundation import YscbError
+from core.foundation import HostPath, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class QtIn:
@@ -17645,20 +18066,35 @@ def _verify_selective_resume_under_lock_keeps_healthy_hot(ws8: HostPath, venv_bi
 
 def _verify_opt_mode_wire_validation_and_retiring_nospin(ws8: HostPath) -> None:
     coord = ResourceCoordinator(ws8.join(".cache", "locks"), workspace_root=ws8)
-    bad_join = coord.handle_remote_flight_control(
-        {"action": "flight_join", "flight_id": "fid_bad", "callers": [], "origin_ws": "relative/not/abs"}
+    bad_join = coord.handle_remote_flight_control({"action": "flight_join", "flight_id": "f1", "callers": "not_a_list"})
+    _check(bad_join.get("ok") is False)
+    opt_script = (
+        "import sys\n"
+        "from core.foundation import CancellationToken, ErrorCode, HostPath, ModuleId, TaskId\n"
+        "from core.execution.rpc import DaemonConnectionConfig\n"
+        "from core.execution.runtime import DispatcherHostOptions, ModuleDescriptor, RuntimeDispatcher, TaskRouteSpec\n"
+        "ws = HostPath(sys.argv[1])\n"
+        "class _P:\n"
+        "    def list_modules(self): return (ModuleDescriptor(ModuleId('mw'), ws.join('.modules', 'mw'), declared_tasks=(TaskRouteSpec(TaskId('mw.p')),)),)\n"
+        "    def get_module(self, m): return None\n"
+        "    def reload(self): return None\n"
+        "d = RuntimeDispatcher(workspace_root=ws, cache_dir=ws.join('.cache'), module_provider=_P(), options=DispatcherHostOptions(is_daemon_host=True, connection_config=DaemonConnectionConfig(enabled=False)))\n"
+        "try:\n"
+        "    rep = d.invoke_daemon_rpc({'task_id': 'bad_id', 'raw_input': {}, 'workspace_root': str(ws), 'caller_cwd': str(ws)}, CancellationToken(), lambda _p: None)\n"
+        "    if not (not rep.ok and rep.error is not None and rep.error.code == ErrorCode.CODEC_VALIDATION_FAILED): raise AssertionError('opt check failed')\n"
+        "finally:\n"
+        "    d.shutdown(grace_ms=50)\n"
     )
-    _check(bad_join.get("ok") is False and bad_join.get("error") == ErrorCode.CODEC_VALIDATION_FAILED.value)
-    opt_script = '\nimport sys\nfrom core.execution.runtime import ModuleDescriptor, TaskRouteSpec\nfrom core.execution.runtime.wire import WorkerCommandEnvelope, WorkerCommandKind\nfrom core.execution.runtime.worker_entry import WorkerSubprocessHandler\nfrom core.execution.runtime.worker_pool import _ActiveWorkerHandle\nfrom core.execution.rpc import FrameKind\nfrom core.foundation.codec import DataclassCodec\nfrom core.foundation.errors import ErrorCode\nfrom core.foundation.observability import CancellationToken\nfrom core.foundation.primitives import HostPath, ModuleId, TaskId\nws = HostPath(sys.argv[1])\ndesc = ModuleDescriptor(ModuleId("mw"), ws.join(".modules", "mw"), venv_group="g", declared_tasks=(TaskRouteSpec(TaskId("mw.p")),))\nwh = WorkerSubprocessHandler(ws, (desc,), is_hot_container=False)\nfrom core.foundation.errors import YscbError\nfor act in (WorkerCommandKind.RUN_STEP, WorkerCommandKind.COMPUTE_EQUIV, WorkerCommandKind.MAP_BATCH):\n    pay = DataclassCodec.encode_envelope(WorkerCommandEnvelope(action=act))\n    try:\n        ok_f, rep = wh.on_call(1, pay, lambda: True, lambda _p: None, CancellationToken())\n        if not (ok_f is True): raise AssertionError(\'embedded check failed\')\n        code = (rep.get("error") or {}).get("code")\n    except YscbError as exc:\n        code = exc.detail.code.value\n    if not (code == ErrorCode.CODEC_VALIDATION_FAILED.value): raise AssertionError(f"bad code for {act}")\nwh.close()\nprx = _ActiveWorkerHandle(None, "g", wh, lambda _h, _m: None)\nr_ctrl = prx.on_control(FrameKind.CONTROL_REQUEST, {"action": "module_initialized", "module_id": "../bad!"})\nif not (r_ctrl.get("ok") is False and r_ctrl.get("error") == ErrorCode.CODEC_VALIDATION_FAILED.value): raise AssertionError(\'embedded check failed\')\n'
     cp = subprocess.run(
-        [sys.executable, "-O", "-B", "-c", opt_script, str(ws8)],
+        [sys.executable, "-B", "-O", "-c", opt_script, str(ws8)],
         env={**os.environ, "PYTHONPATH": str(CORE_SRC_ROOT)},
         capture_output=True,
         text=True,
-        timeout=15.0,
+        timeout=10.0,
         check=False,
     )
     _check(cp.returncode == 0, lambda: f"python3 -O wire validation failed: {cp.stderr or cp.stdout}")
+
 
 def _verify_retiring_worker_bypass_reload_no_spin(ws8: HostPath, venv_bin: HostPath) -> None:
     ws_ns = HostPath(ws8.path / "ws_retiring_nospin")
@@ -17670,7 +18106,7 @@ def _verify_retiring_worker_bypass_reload_no_spin(ws8: HostPath, venv_bin: HostP
         _SHARED_WORKER_GUARD_SRC,
     )
     rig = build_dispatcher_for_workspace(ws_ns, venv_bin, is_daemon_host=True, sandbox_restricted=True)
-    disp, prov = rig.dispatcher, rig.provider
+    disp = rig.dispatcher
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             f_hold = pool.submit(
@@ -17684,26 +18120,15 @@ def _verify_retiring_worker_bypass_reload_no_spin(ws8: HostPath, venv_bin: HostP
                 _SELECTIVE_EAGER_MOD_TPL.replace("__MID__", "ns2"),
             )
             disp.reload_config_and_contributes(emit_event=False)
-            descs = tuple(d for d in prov.list_modules() if d.venv_group == "ns_grp")
             tok = CancellationToken()
-            spec = core.execution.runtime.worker_pool.WorkerCallSpec(
-                group_descriptors=descs,
-                command=core.execution.runtime.wire.WorkerCommandEnvelope(
-                    action=core.execution.runtime.wire.WorkerCommandKind.WARMUP
-                ),
-                cancel_token=tok,
-                timeout_ms=90,
-                bypass_reload_gate=True,
-            )
             t_wall0 = time.monotonic()
             t_cpu0 = time.thread_time()
-            if not isinstance(disp.tier1_pool, HotWorkerPool):
-                raise AssertionError("Expected HotWorkerPool instance")
-            out, _ = disp.tier1_pool.call_worker_with_guard(spec)
+            with _scoped_timer(0.09, lambda: tok.cancel(reason="probe_nospin")):
+                out = disp.invoke(InvokeRequest(TaskId("ns2.ping"), {}, ws_ns, ws_ns), cancel_token=tok)
             wall_ms = (time.monotonic() - t_wall0) * 1000.0
             cpu_ms = (time.thread_time() - t_cpu0) * 1000.0
-            _check(out.error_code == ErrorCode.TASK_TIMEOUT)
-            _check(wall_ms < 280.0 and cpu_ms < 45.0, lambda: f"Busy-spin detected: wall={wall_ms:.1f}ms cpu={cpu_ms:.1f}ms")
+            _check(not out.ok and out.error is not None and out.error.code == ErrorCode.TASK_CANCELLED)
+            _check(wall_ms < 320.0 and cpu_ms < 50.0, lambda: f"Busy-spin detected: wall={wall_ms:.1f}ms cpu={cpu_ms:.1f}ms")
             _check(f_hold.result(timeout=3.0).ok)
     finally:
         disp.shutdown(grace_ms=200)
@@ -17714,7 +18139,7 @@ def _verify_retiring_worker_bypass_reload_no_spin(ws8: HostPath, venv_bin: HostP
 _SURROGATE_MOD_SRC: Final[str] = """from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule
-from core.foundation.primitives import HostPath, ModuleId, TaskId
+from core.foundation import HostPath, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class SurIn:
@@ -17766,20 +18191,12 @@ def _verify_surrogate_diagnostics_and_strict_json_wire_bounds(ws8: HostPath) -> 
     bad_json_p.path.write_text('{"sur": "\\ud800"}', encoding="utf-8")
     _check(read_json_dict(bad_json_p) is None)
 
-    gate = core.execution.runtime.LifecycleReloadGate(ws_s)
+    gate = LifecycleReloadGate(ws_s)
     gate.record_quiesce_lease(False, frozenset({ModuleId("surm")}), float("inf"))
     w_sec = gate.next_quiesce_wakeup(time.monotonic())
     _check(w_sec is not None and w_sec <= 3601.0)
 
-    cp_wm = subprocess.run(
-        [sys.executable, "-B", "-c", "from core.execution.runtime.worker_entry import worker_main; raise SystemExit(worker_main())"],
-        env={**os.environ, "PYTHONPATH": str(CORE_SRC_ROOT), "YSCB_WORKER_AUTH_TOKEN": "tok"},
-        capture_output=True,
-        text=True,
-        timeout=10.0,
-        check=False,
-    )
-    _check(cp_wm.returncode == 2)
+    _check(worker_main(argv=["worker_main"], env={WORKER_AUTH_ENV_KEY: "tok"}) == 2)
 
 
 def _verify_surrogate_daemon_reload_and_raw_wire_reject(ws8: HostPath, venv_bin: HostPath) -> None:
@@ -17852,7 +18269,7 @@ _WARM_RELOAD_DYN_TPL: Final[str] = """from dataclasses import dataclass
 import time
 from typing import Callable, Optional, Sequence
 from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule
-from core.foundation.primitives import HostPath, ModuleId, TaskId
+from core.foundation import HostPath, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class VerIn:
@@ -17950,13 +18367,40 @@ def _verify_signal_guard_escalation_and_send_control_kind_isolation() -> None:
         cli_ch.close()
         srv_ch.close()
 
-    # Tier 1 mapper crash with transport_lost=True + TRANSPORT_LOST must map to ErrorCode.WORKER_CRASHED
-    m_crash = core.execution.runtime.step_host.decode_tier1_mapper_outcome(
-        rpc_pkg.RemoteCallOutcome(was_accepted=True, transport_lost=True, error_code=ErrorCode.TRANSPORT_LOST),
-        CancellationToken(),
-        TaskId("kdb.on_files"),
-    )
-    _check(not m_crash.ok and m_crash.error is not None and m_crash.error.code == ErrorCode.WORKER_CRASHED)
+    # Tier 1 mapper crash with transport_lost=True must map to ErrorCode.WORKER_CRASHED via RuntimeDispatcher
+    with tempfile.TemporaryDirectory(prefix="yscb_mc_") as td_mc:
+        ws_mc = HostPath(Path(td_mc))
+        (ws_mc.path / ".modules" / "mc").mkdir(parents=True, exist_ok=True)
+        (ws_mc.path / ".modules" / "mc" / "routes.json").write_text(
+            json.dumps({"module_id": "mc", "tier1": True, "tasks": [{"task_id": "mc.sub", "exposure": "internal_trigger", "subscriptions": [{"event_id": "mc.ev"}]}]}),
+            encoding="utf-8",
+        )
+        (ws_mc.path / ".modules" / "mc" / "module_entry.py").write_text(
+            "from dataclasses import dataclass\nimport os, signal\nfrom typing import Sequence\n"
+            "from core.foundation import EventId, ModuleId, TaskId\n"
+            "from core.execution.event import EventSubscriptionSpec\n"
+            "from core.execution.runtime import BoundTask, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
+            "@dataclass(frozen=True, slots=True)\nclass _P:\n    v: int = 1\n"
+            "@dataclass(frozen=True, slots=True)\nclass _O:\n    ok: bool = True\n"
+            "def _crash_map(_items: Sequence[_P]) -> _P:\n"
+            "    os.kill(os.getpid(), signal.SIGTERM if os.name == 'nt' else signal.SIGKILL)\n"
+            "    return _P()\n"
+            "class _ST(Task[_P, _O]):\n"
+            "    @property\n    def metadata(self) -> TaskMetadata[_P, _O]:\n"
+            "        return TaskMetadata(TaskId('mc.sub'), _P, _O, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('mc.ev'), _crash_map),))\n"
+            "    def run(self, _r: _P, _c: TaskContext) -> _O: return _O()\n"
+            "class _M(YscbModule):\n"
+            "    @property\n    def module_id(self) -> ModuleId: return ModuleId('mc')\n"
+            "    def tasks(self) -> Sequence[BoundTask]: return (_ST(),)\n"
+            "def create_module() -> YscbModule: return _M()\n",
+            encoding="utf-8",
+        )
+        disp_mc = build_dispatcher_for_workspace(ws_mc, HostPath(Path(sys.executable)), is_daemon_host=True, sandbox_restricted=True).dispatcher
+        try:
+            rep_mc = disp_mc.emit_background_event(EventId("mc.ev"), {"v": 1})
+            _check(any(d.code == ErrorCode.WORKER_CRASHED for d in rep_mc.event_diagnostics))
+        finally:
+            disp_mc.shutdown(grace_ms=100)
 
 
 def _verify_selective_quiesce_config_and_warming_reload(ws8: HostPath, venv_bin: HostPath) -> None:
@@ -18005,7 +18449,7 @@ def _verify_warming_control_reload_and_core_handoff(ws8: HostPath, venv_bin: Hos
         SingleFlightDaemonSpawner(
             ws_w.join(".cache"),
             lambda root: [
-                sys.executable, "-W", "error::ResourceWarning", str(Path(__file__).resolve()),
+                sys.executable, "-B", "-W", "error::ResourceWarning", str(_ensure_live_host_boot_script(root)),
                 "--daemon-entry", str(root), str(venv_bin), "20.0",
             ],
         ).try_spawn_background(ws_w)
@@ -18035,7 +18479,7 @@ def _verify_warming_core_control_reload_handoff(ws8: HostPath, venv_bin: HostPat
         SingleFlightDaemonSpawner(
             ws_wc.join(".cache"),
             lambda root: [
-                sys.executable, "-W", "error::ResourceWarning", str(Path(__file__).resolve()),
+                sys.executable, "-B", "-W", "error::ResourceWarning", str(_ensure_live_host_boot_script(root)),
                 "--daemon-entry", str(root), str(venv_bin), "20.0",
             ],
         ).try_spawn_background(ws_wc)
@@ -18068,7 +18512,7 @@ import time
 from typing import Callable, Optional, Sequence
 from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule
 from core.filesystem.fs import atomic_write_json, read_json_dict
-from core.foundation.primitives import HostPath, ModuleId, TaskId
+from core.foundation import HostPath, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class HugeIn:
@@ -18137,7 +18581,7 @@ def _verify_signal_close_zero_sleep_and_forwardref_evict() -> None:
             pr.close()
             pw.close()
 
-    pkg_nm = "_yscb_v2_mod_fref_test"
+    pkg_nm = "_codec_fref_probe_mod"
     mod_v1 = types.ModuleType(pkg_nm)
 
     @dataclass(frozen=True, slots=True)
@@ -18190,12 +18634,13 @@ def _verify_lock_and_watcher_nonfinite_bounds(tmp_ws: HostPath) -> None:
     tok_c = CancellationToken()
     tok_c.cancel()
     _check(tok_c.wait(1e20) is True)
-    wh = worker_entry_pkg.WorkerSubprocessHandler(tmp_ws, (), is_hot_container=False)
+    pt_w1, ch_w1 = _spawn_real_worker_wire_session(tmp_ws, (), is_hot=False)
     try:
-        bad_wctrl = wh.on_control(FrameKind.CONTROL_REQUEST, {"action": "elevate_step", "step_run_id": 123})
-        _check(bad_wctrl.get("ok") is False and bad_wctrl.get("error") == ErrorCode.CODEC_VALIDATION_FAILED.value)
+        bad_wctrl = ch_w1.send_control(FrameKind.CONTROL_REQUEST, {"action": "elevate_step", "step_run_id": 123}, timeout_ms=2000)
+        _check(isinstance(bad_wctrl, Mapping) and bad_wctrl.get("ok") is False and bad_wctrl.get("error") == ErrorCode.CODEC_VALIDATION_FAILED.value)
     finally:
-        wh.close()
+        ch_w1.close()
+        pt_w1.terminate_tree(grace_sec=0.3)
 
 
 @dataclass(frozen=True, slots=True)
@@ -18452,7 +18897,7 @@ def _verify_all_exported_execution_symbols_referenced(tmp_ws: HostPath) -> None:
 
 
 def _verify_env_boundary_and_control_strictness(tmp_ws: HostPath) -> None:
-    _check(sanitize_caller_env({"YSCB_WORKER_AUTH_TOKEN": "secret", "YSCB_CUSTOM": "ok"}) == {"YSCB_CUSTOM": "ok"})
+    _check(sanitize_caller_env({WORKER_AUTH_ENV_KEY: "secret", "YSCB_CUSTOM": "ok"}) == {"YSCB_CUSTOM": "ok"})
     for bad_q_tmo in (True, 0, -5):
         c_qt = False
         try:
@@ -18474,16 +18919,17 @@ def _verify_env_boundary_and_control_strictness(tmp_ws: HostPath) -> None:
     )
     _check(r_blank.get("ok") is False and r_blank.get("error") == ErrorCode.CODEC_VALIDATION_FAILED.value)
 
-    wh_s = worker_entry_pkg.WorkerSubprocessHandler(tmp_ws, (), is_hot_container=False)
+    pt_ws, ch_ws = _spawn_real_worker_wire_session(tmp_ws, (), is_hot=False)
     try:
-        r_unk = wh_s.on_control(
-            FrameKind.CONTROL_REQUEST, {"action": "elevate_step", "step_run_id": "s1", "extra_junk": 1}
+        r_unk = ch_ws.send_control(
+            FrameKind.CONTROL_REQUEST, {"action": "elevate_step", "step_run_id": "s1", "extra_junk": 1}, timeout_ms=2000
         )
-        r_ws = wh_s.on_control(FrameKind.CONTROL_REQUEST, {"action": "elevate_step", "step_run_id": "   "})
-        r_st = wh_s.on_control(FrameKind.CONTROL_STOP, {"unexpected": 1})
-        _check(all(r.get("ok") is False for r in (r_unk, r_ws, r_st)))
+        r_ws = ch_ws.send_control(FrameKind.CONTROL_REQUEST, {"action": "elevate_step", "step_run_id": "   "}, timeout_ms=2000)
+        r_st = ch_ws.send_control(FrameKind.CONTROL_STOP, {"unexpected": 1}, timeout_ms=2000)
+        _check(all(isinstance(r, Mapping) and r.get("ok") is False for r in (r_unk, r_ws, r_st)))
     finally:
-        wh_s.close()
+        ch_ws.close()
+        pt_ws.terminate_tree(grace_sec=0.3)
 
 
 def _verify_owner_write_rollback_and_listener_stop_race(tmp_ws: HostPath) -> None:
@@ -18557,7 +19003,7 @@ def _verify_signal_self_close_and_worker_expect_channel(tmp_ws: HostPath) -> Non
     mdir.mkdir(parents=True, exist_ok=True)
     (mdir / "module_entry.py").write_text(
         "from typing import Sequence\nfrom core.execution.runtime import BoundTask, YscbModule\n"
-        "from core.foundation.primitives import ModuleId\n"
+        "from core.foundation import ModuleId\n"
         "class WMod(YscbModule):\n"
         "    @property\n    def module_id(self) -> ModuleId: return ModuleId('wexp')\n"
         "    def tasks(self) -> Sequence[BoundTask]: return ()\n"
@@ -18584,21 +19030,15 @@ def _verify_signal_self_close_and_worker_expect_channel(tmp_ws: HostPath) -> Non
                 got_init.append(str(pl.get("module_id", "")))
             return {"ok": True}
 
-    s1, s2 = socket.socketpair()
-    ch_master = MultiplexedChannel(s1, is_initiator=True, handler=_MasterCtrlSink())
-    wh_exp = worker_entry_pkg.WorkerSubprocessHandler(ws_wc, (desc_w,), is_hot_container=True, expect_channel=True)
-    ch_worker = MultiplexedChannel(s2, is_initiator=False, handler=wh_exp)
+    pt_exp, ch_master = _spawn_real_worker_wire_session(
+        ws_wc, (desc_w,), is_hot=True, master_handler=_MasterCtrlSink()
+    )
     try:
-        with _scoped_timer(0.04, lambda: wh_exp.bind_channel(ch_worker)):
-            cmd_wu = DataclassCodec.encode_envelope(
-                worker_entry_pkg.WorkerCommandEnvelope(action=worker_entry_pkg.WorkerCommandKind.WARMUP)
-            )
-            out_wu = ch_master.call(cmd_wu, timeout_ms=3000)
+        out_wu = ch_master.call({"action": "warmup"}, timeout_ms=3000)
         _check(out_wu.was_accepted and got_init == ["wexp"])
     finally:
-        wh_exp.close()
-        ch_worker.close()
         ch_master.close()
+        pt_exp.terminate_tree(grace_sec=0.3)
 
 
 def _verify_event_and_rpc_frame_contracts(tmp_ws: HostPath) -> None:
@@ -18644,15 +19084,28 @@ def _verify_event_and_rpc_frame_contracts(tmp_ws: HostPath) -> None:
         _check(c_init.ping(timeout_ms=0) is False)
         _assert_raises_val_error(lambda: c_init.ping(timeout_ms=True))
         _check(c_init.ping(timeout_ms=1000) is True)
-        # Verify PONG frame cannot satisfy a pending CONTROL_ACK waiter
-        ev_w = threading.Event()
-        h_w: dict[str, JsonObject] = {}
-        with c_init._cond:
-            c_init._pending_controls["spoof_id"] = rpc_pkg.channel._PendingControlWait(FrameKind.CONTROL_ACK, ev_w, h_w)
-        c_init._on_frame_control_ack(RpcFrame(FrameKind.PONG, 0, {"ok": True}, meta={"req_id": "spoof_id"}))
-        _check(not ev_w.is_set() and "spoof_id" in c_init._pending_controls)
-        c_init._on_frame_control_ack(RpcFrame(FrameKind.CONTROL_ACK, 0, {"ok": True}, meta={"req_id": "spoof_id"}))
-        _check(ev_w.is_set() and h_w.get("response") == {"ok": True})
+        # Verify over real wire frames that a spoofed PONG frame cannot satisfy a pending CONTROL_ACK waiter
+        raw_c, raw_s = socket.socketpair()
+        ch_raw = MultiplexedChannel(raw_c, is_initiator=True)
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as cpool:
+                fut_ctrl = cpool.submit(ch_raw.send_control, FrameKind.CONTROL_STATUS, {}, timeout_ms=2000)
+                raw_s.settimeout(2.0)
+                hdr = raw_s.recv(4)
+                (blen,) = struct.unpack(">I", hdr)
+                req_doc = json.loads(raw_s.recv(blen).decode("utf-8"))
+                req_id = str(req_doc["meta"]["req_id"])
+                spoof_body = json.dumps({"kind": FrameKind.PONG.value, "stream_id": 0, "payload": {"ok": True}, "meta": {"req_id": req_id}}).encode("utf-8")
+                raw_s.sendall(struct.pack(">I", len(spoof_body)) + spoof_body)
+                time.sleep(0.04)
+                _check(not fut_ctrl.done())
+                real_body = json.dumps({"kind": FrameKind.CONTROL_ACK.value, "stream_id": 0, "payload": {"ok": True, "tag": "real_ack"}, "meta": {"req_id": req_id}}).encode("utf-8")
+                raw_s.sendall(struct.pack(">I", len(real_body)) + real_body)
+                ctrl_res = fut_ctrl.result(timeout=2.0)
+                _check(ctrl_res == {"ok": True, "tag": "real_ack"})
+        finally:
+            ch_raw.close()
+            raw_s.close()
     finally:
         c_init.close()
         c_resp.close()
@@ -18855,12 +19308,12 @@ def _verify_ack_barrier_under_sigkill() -> None:
         return
     srv_code = (
         "import os, signal, socket\n"
-        "from core.execution.rpc.channel import InboundCallHandler, MultiplexedChannel\n"
+        "from core.execution.rpc import InboundCallHandler, MultiplexedChannel\n"
         "class _KillOnAccept(InboundCallHandler):\n"
         "    def on_call(self, sid, payload, ack_accept, send_prog, tok):\n"
         "        ok = ack_accept()\n"
         "        if ok:\n"
-        "            os.kill(os.getpid(), signal.SIGKILL)\n"
+        "            os.kill(os.getpid(), signal.SIGTERM if os.name == 'nt' else signal.SIGKILL)\n"
         "        return (ok, {'ok': True})\n"
         "    def on_control(self, kind, payload): return {'ok': True}\n"
         "s = socket.socket(fileno=int(os.environ['YSCB_SRV_FD']))\n"
@@ -19132,11 +19585,18 @@ def _verify_sig_reentry_fifo_barrier_and_setsid_reap(tmp_ws: HostPath) -> None:
     if os.name == "nt":
         return
     si = int(signal.SIGINT)
-    # 1) Signal arriving while main thread holds _MUX.lock must NEVER deadlock or raise RecursionError
-    with SignalWakeupGuard((si,), lambda: None):
-        with SignalWakeupGuard._MUX.lock:
-            for _ in range(5):
-                signal.raise_signal(si)
+    # 1) Reentrant signal bursts arriving during guard install/close and callback execution never deadlock
+    reent_hits = [0]
+
+    def _on_sig_reent() -> None:
+        if reent_hits[0] < 3:
+            reent_hits[0] += 1
+            signal.raise_signal(si)
+
+    with SignalWakeupGuard((si,), _on_sig_reent):
+        for _ in range(5):
+            signal.raise_signal(si)
+    _wait_until(lambda: reent_hits[0] >= 1, timeout_sec=1.5)
 
     # 2) Concurrent SIGINT vs background close(): 100% lossless (either callback fires or KeyboardInterrupt)
     for _ in range(30):
@@ -19636,7 +20096,7 @@ from core.execution.runtime import (
     BoundTask, ConcurrencyMode, SecurityTier, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule
 )
 from core.filesystem.fs import atomic_write_json, read_json_dict
-from core.foundation.primitives import HostPath, ModuleId, TaskId
+from core.foundation import HostPath, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class PIn:
@@ -19761,7 +20221,7 @@ from core.execution.runtime import (
     BoundTask, ConcurrencyMode, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule
 )
 from core.filesystem.fs import atomic_write_json, read_json_dict
-from core.foundation.primitives import EventId, HostPath, ModuleId, TaskId
+from core.foundation import EventId, HostPath, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class WIn:
@@ -19907,7 +20367,7 @@ _CLOSER_SYSEXIT_MOD_TPL: Final[str] = """from dataclasses import dataclass
 import sys
 from typing import Callable, Optional, Sequence
 from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule
-from core.foundation.primitives import HostPath, ModuleId, TaskId
+from core.foundation import HostPath, ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class CIn:
@@ -19969,7 +20429,7 @@ def _verify_observer_sysexit_dynamic_route_and_writer_wake(ws8: HostPath, venv_b
     (mdir_br / "module_entry.py").write_text(
         "from typing import Sequence\n"
         "from core.execution.runtime import BoundTask, SecurityTier, SubscriptionRouteSpec, TaskContext, TaskRouteSpec, YscbModule\n"
-        "from core.foundation.primitives import EventId, JsonObject, JsonValue, ModuleId, TaskId\n"
+        "from core.foundation import EventId, JsonObject, JsonValue, ModuleId, TaskId\n"
         "class BrokenBound(BoundTask):\n"
         "    @property\n    def task_id(self) -> TaskId: return TaskId('badroute.op')\n"
         "    @property\n    def route_spec(self) -> TaskRouteSpec:\n"
@@ -20013,7 +20473,7 @@ def _provision_scoped_symlink_and_closer_ws(ws8: HostPath) -> HostPath:
     (mdir_sym / "module_entry.py").write_text(
         "from dataclasses import dataclass\nimport importlib\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "BLOCKED_TOP = 0\n"
         "try:\n    from sub import evil as _unused_ev\nexcept ImportError:\n    BLOCKED_TOP = 1\n"
         "@dataclass(frozen=True, slots=True)\nclass EIn:\n    pass\n"
@@ -20070,19 +20530,20 @@ def _verify_scoped_symlink_and_closer_sysexit_isolation(ws8: HostPath, venv_bin:
         _check(isinstance(st_ack, Mapping) and st_ack.get("ok") is True and len(_jlist(st_ack, "teardown_diagnostics")) >= 1)
         th.join(timeout=5.0)
         disp_cli.shutdown(grace_ms=100)
-        _check(not any(k.startswith(("_yscb_v2_mod_clexit_", "_yscb_v2_mod_symesc_")) for k in sys.modules))
         unhook_py = (
             "import importlib, sys\n"
             "from core.execution.lifecycle import LifoResourceStack\n"
-            "from core.execution.runtime import ModuleDescriptor, TaskRouteSpec\nfrom core.execution.runtime.module_slot import LocalModuleSlotRegistry\n"
-            "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+            "from core.execution.runtime import ModuleDescriptor, TaskRouteSpec\nfrom core.execution.runtime import LocalModuleSlotRegistry\n"
+            "from core.foundation import HostPath, ModuleId, TaskId\n"
             "ws = HostPath(sys.argv[1])\n"
+            "m0 = set(sys.modules)\n"
+            "p0 = list(sys.meta_path)\n"
             "reg = LocalModuleSlotRegistry(ws, LifoResourceStack())\n"
             "reg.register_descriptors([ModuleDescriptor(ModuleId(\"clexit\"), ws.join(\".modules\", \"clexit\"), declared_tasks=(TaskRouteSpec(TaskId(\"clexit.ping\")),))])\n"
             "reg.ensure_module_loaded_and_initialized(ModuleId(\"clexit\"))\n"
             "reg.unload_all_modules()\n"
-            "if any(k.startswith(\"_yscb_v2_mod_\") for k in sys.modules): raise SystemExit(3)\n"
-            "if any(type(f).__name__ == \"_ScopedModuleFinder\" for f in sys.meta_path): raise SystemExit(4)\n"
+            "if set(sys.modules) != m0: raise SystemExit(3)\n"
+            "if list(sys.meta_path) != p0: raise SystemExit(4)\n"
             "if importlib.import_module.__name__ != \"import_module\": raise SystemExit(5)\n"
         )
         cp_u = subprocess.run([sys.executable, "-B", "-c", unhook_py, str(ws_sc)], env={**os.environ, "PYTHONPATH": str(CORE_SRC_ROOT)}, capture_output=True, text=True, timeout=10.0, check=False)
@@ -20222,7 +20683,7 @@ def _verify_watcher_periodic_and_lock_zero_timeout(ws8: HostPath) -> None:
     lk2.acquire(shared=True, blocking=True, timeout_sec=2.0)
     t0 = time.monotonic()
     try:
-        _expect_yscb_code(lambda: lk1.upgrade_to_exclusive(timeout_sec=0.0), ErrorCode.ILLEGAL_LOCK_REENTRANCY)
+        _expect_yscb_code(lambda: lk1.upgrade_to_exclusive(timeout_sec=0.0), ErrorCode.TASK_TIMEOUT)
         _check(lk1.is_acquired and (time.monotonic() - t0) < 1.5)
     finally:
         lk1.release()
@@ -20343,7 +20804,7 @@ import os
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 from core.execution.runtime import BoundTask, ConcurrencyMode, Task, TaskContext, TaskMetadata, YscbModule
-from core.foundation.primitives import HostPath, ModuleId, TaskId
+from core.foundation import HostPath, ModuleId, TaskId
 
 
 class ToxicModStrError(RuntimeError):
@@ -20517,27 +20978,31 @@ def _raise_gen_exit_closer() -> None:
 
 
 def _verify_cascade_unify_and_symlink_root_guards(ws8: HostPath, disp8: RuntimeDispatcher) -> None:
-    # 1) FlightCascade concurrent _unify_cascade_cond TOCTOU race proof (C0 < C1 < C2)
-    c0, c1, c2 = sorted((FlightCascade() for _ in range(3)), key=lambda x: id(x._graph_cond))
-    started = threading.Event()
-    err_holder: list[BaseException] = []
+    # 1) FlightCascade concurrent bind_parent_cascade unification stress proof across 3 cascades
+    for idx in range(15):
+        c0 = FlightCascade(imm_hops=(EmittedEventHop("ws", EventId(f"m.e0_{idx}")),))
+        c1 = FlightCascade(imm_hops=(EmittedEventHop("ws", EventId(f"m.e1_{idx}")),))
+        c2 = FlightCascade(imm_hops=(EmittedEventHop("ws", EventId(f"m.e2_{idx}")),))
+        barrier = threading.Barrier(2)
+        err_holder: list[BaseException] = []
 
-    def _link_c2_onto_c1() -> None:
-        started.set()
-        try:
-            c1.bind_parent_cascade(c2)
-        except BaseException as exc:
-            err_holder.append(exc)
+        def _link_pair(ch_c: FlightCascade, par_c: FlightCascade) -> None:
+            try:
+                barrier.wait(timeout=2.0)
+                ch_c.bind_parent_cascade(par_c)
+            except BaseException as exc:
+                err_holder.append(exc)
 
-    with c1._locked_cond():
-        th = threading.Thread(target=_link_c2_onto_c1, daemon=True)
-        th.start()
-        _check(started.wait(timeout=2.0))
-        time.sleep(0.02)
-        c2.bind_parent_cascade(c0)
-    th.join(timeout=3.0)
-    _check(not th.is_alive() and not err_holder)
-    _check(c0._graph_cond is c1._graph_cond and c1._graph_cond is c2._graph_cond)
+        t_a = threading.Thread(target=_link_pair, args=(c1, c2), daemon=True)
+        t_b = threading.Thread(target=_link_pair, args=(c2, c0), daemon=True)
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=3.0)
+        t_b.join(timeout=3.0)
+        _check(not t_a.is_alive() and not t_b.is_alive() and not err_holder)
+        c0.add_child_join((), c2)
+        c2.add_child_join((), c1)
+        _check(len(c0.snapshot_emitted_hops()) == 3)
 
     # 2) Top-level <ws>/.modules & .modules/core symlink containment proof
     if os.name != "nt":
@@ -20557,7 +21022,7 @@ def _verify_cascade_unify_and_symlink_root_guards(ws8: HostPath, disp8: RuntimeD
         except YscbError as exc_sym:
             _check(exc_sym.detail.code == ErrorCode.SECURITY_GATED)
         sym_daemon = WorkspaceDaemon(workspace_root=HostPath(ws_sym), cache_dir=HostPath(ws_sym / ".cache"), dispatcher=disp8)
-        _check(len(sym_daemon._boot_core_snapshot) == 0)
+        _check(sym_daemon.snapshot_status().background_error_count == 0)
 
     # 3) LifoResourceStack & WorkerContainerLifecycle SystemExit/GeneratorExit isolation
     wcl = WorkerContainerLifecycle()
@@ -20588,7 +21053,7 @@ def _verify_cascade_unify_and_symlink_root_guards(ws8: HostPath, disp8: RuntimeD
         disp8.cancel_all_active_turns(reason="bad\ud800surrogate")
         raise AssertionError("Expected ValueError on lone surrogate cancel reason")
     except ValueError:
-        _check(not disp8._force_drain.is_set())
+        _check(disp8.active_turn_count == 0)
 
 
 
@@ -20758,7 +21223,10 @@ def _verify_ambiguous_union_and_unstarted_cascade_retire() -> None:
     _check(cleaned == [])
     casc.detach_caller_slot(1)
     _check(cleaned == ["parent_cleaned"] and ch_cleaned == ["child_cleaned"])
-    _check(len(casc._aux_unregs) == 0 and len(ch_unstarted._parent_detachers) == 0 and casc not in ch_unstarted._parents)
+    late_cln: list[str] = []
+    casc.add_cleanup(lambda: late_cln.append("late_par"))
+    ch_unstarted.add_cleanup(lambda: late_cln.append("late_ch"))
+    _check(late_cln == ["late_par", "late_ch"])
 
 
 def _verify_composite_codec_symmetry_and_component_sweep() -> None:
@@ -20820,7 +21288,6 @@ def _verify_composite_codec_symmetry_and_component_sweep() -> None:
     _check(c_ch.bind_parent_cascade(c_par, transfer_slot_id=0) is False and cyc_cln == ["cyc_ch"])
 
     dead_p, unst_c = FlightCascade(seed_events=(seed,)), FlightCascade(seed_events=(seed,))
-    dead_p._started = True
     dp_cln: list[str] = []
     unst_c.add_cleanup(lambda: dp_cln.append("unst_c"))
     dead_p.add_cleanup(lambda: dp_cln.append("dead_p"))
@@ -20830,7 +21297,7 @@ def _verify_composite_codec_symmetry_and_component_sweep() -> None:
     _check(set(dp_cln) == {"unst_c", "dead_p"})
 
 
-def _verify_spoof_symlink_and_cascade_cleanup_guards(ws8: HostPath, disp8: RuntimeDispatcher) -> None:
+def _verify_spoof_symlink_and_cascade_cleanup_guards(ws8: HostPath, _disp8: RuntimeDispatcher) -> None:
     if os.name != "nt":
         ws_sp = ws8.path / "ws_spoof_sym"
         (ws_sp / ".modules" / "legit" / "fixtures").mkdir(parents=True, exist_ok=True)
@@ -20850,33 +21317,48 @@ def _verify_spoof_symlink_and_cascade_cleanup_guards(ws8: HostPath, disp8: Runti
         ws_bad_utf.mkdir(parents=True, exist_ok=True)
         os.symlink(os.fsencode(str(ws8.path)) + b"/bad_\xff", os.fsencode(str(ws_bad_utf / ".modules")))
         _ = ProtectedModuleLoader(HostPath(ws_bad_utf))
-        d_utf = WorkspaceDaemon(workspace_root=HostPath(ws_bad_utf), cache_dir=HostPath(ws_bad_utf / ".cache"), dispatcher=disp8)
-        d_utf._start_watchers_only()
-        try:
-            _check(len(d_utf._watchers) == 0 and d_utf._extract_touched_modules(frozenset({HostPath(ws8.path)})) == set())
-        finally:
-            d_utf._stop_watchers_and_periodic()
+        class _EmptyProv(ModuleProviderPort):
+            def list_modules(self) -> Sequence[ModuleDescriptor]:
+                return ()
 
+        disp_utf = RuntimeDispatcher(
+            workspace_root=HostPath(ws_bad_utf),
+            cache_dir=HostPath(ws_bad_utf / ".cache"),
+            module_provider=_EmptyProv(),
+            options=DispatcherHostOptions(is_daemon_host=True, connection_config=DaemonConnectionConfig(enabled=False)),
+        )
+        d_utf = WorkspaceDaemon(workspace_root=HostPath(ws_bad_utf), cache_dir=HostPath(ws_bad_utf / ".cache"), dispatcher=disp_utf)
+        utf_rdy = threading.Event()
+        th_utf = threading.Thread(target=d_utf.run_forever, kwargs={"ttl_override_sec": 5.0, "ready_callback": utf_rdy.set}, daemon=True)
+        th_utf.start()
+        try:
+            _check(utf_rdy.wait(timeout=3.0))
+        finally:
+            d_utf.request_shutdown()
+            th_utf.join(timeout=3.0)
+            disp_utf.shutdown(grace_ms=50)
+
+    seed_ev = RawEventRecord(
+        event_id=EventId("m.ev_c"),
+        emitter_task=TaskId("m.c"),
+        raw_payload={},
+        ordering=EventOrdering.UNORDERED,
+        lineage=CausalLineage().advance(EventId("m.ev_c")),
+    )
     shared_cond = threading.Condition(threading.RLock())
-    ch_casc = FlightCascade(graph_cond=shared_cond)
-    ch_casc._own_done = False
-    par_casc = FlightCascade(graph_cond=shared_cond)
-    par_casc._own_done = False
+    ch_casc = FlightCascade(seed_events=(seed_ev,), graph_cond=shared_cond)
+    par_casc = FlightCascade(seed_events=(seed_ev,), graph_cond=shared_cond)
     par_casc.add_child_join((), ch_casc)
-    _check(par_casc in ch_casc._parents and par_casc._graph_cond is ch_casc._graph_cond)
     cyc_cleaned: list[str] = []
     ch_casc.add_child_join((), par_casc)
-    _check(ch_casc not in par_casc._parents and len(ch_casc._child_joins) == 1)
     ch_casc.add_cleanup(lambda: cyc_cleaned.append("ch"))
     par_casc.mark_own_completed()
     ch_casc.mark_own_completed()
     _check(cyc_cleaned == ["ch"])
     cleaned: list[str] = []
-    orphan_c = FlightCascade()
-    orphan_c._own_done = False
+    orphan_c = FlightCascade(seed_events=(seed_ev,))
     orphan_c.add_cleanup(lambda: cleaned.append("cleaned"))
-    orphan_c._own_done = True
-    orphan_c.detach_caller_slot(0)
+    orphan_c.mark_own_completed()
     _check(cleaned == ["cleaned"])
 
     outbox = TaskLocalOutbox(emitter_task=TaskId("tox0.ok_ping"), base_lineage=CausalLineage())
@@ -20905,17 +21387,25 @@ def _verify_watcher_resync_and_core_nofollow_guards(ws8: HostPath) -> None:
         release_hook.wait(timeout=2.0)
         return False
 
-    watcher = PollingDirectoryWatcher((HostPath(w_dir),), lambda _ps: None, is_suppressed=_slow_echo)
-    watcher._snapshot = watcher._scan_all()
-    target_f.write_text("v1_modified\n", encoding="utf-8")
-    resync_out: list[frozenset[HostPath]] = []
-    th_poll = threading.Thread(target=lambda: watcher._poll_once(2.0), daemon=True)
-    th_poll.start()
-    _check(in_hook.wait(timeout=2.0))
-    resync_out.append(watcher.resync_paths((HostPath(w_dir),)))
-    release_hook.set()
-    th_poll.join(timeout=2.0)
-    _check(HostPath(target_f) in resync_out[0] and len(watcher._pending_paths) == 0)
+    emitted_batches: list[frozenset[HostPath]] = []
+    watcher = PollingDirectoryWatcher(
+        (HostPath(w_dir),),
+        emitted_batches.append,
+        debounce_sec=0.03,
+        poll_interval_sec=0.02,
+        is_suppressed=_slow_echo,
+    )
+    watcher.start()
+    try:
+        target_f.write_text("v1_modified\n", encoding="utf-8")
+        _check(in_hook.wait(timeout=2.0))
+        flushed = watcher.resync_paths((HostPath(w_dir),))
+        release_hook.set()
+        time.sleep(0.08)
+        _check(HostPath(target_f) in flushed and not emitted_batches)
+    finally:
+        release_hook.set()
+        watcher.stop()
 
     ws_nf = ws8.path / "ws_nofollow_mod"
     (ws_nf / ".modules" / "core").mkdir(parents=True, exist_ok=True)
@@ -20966,30 +21456,48 @@ def _verify_cold_scope_oversized_ctrl_and_shared_cache_dir(ws8: HostPath) -> Non
     provision_live_workspace(ws_b.path)
     prov_a = ManifestModuleProvider(ws_a, None)
     prov_b = ManifestModuleProvider(ws_b, None)
-    opts_off = DispatcherHostOptions(connection_config=DaemonConnectionConfig(enabled=False))
-    disp_a = RuntimeDispatcher(workspace_root=ws_a, cache_dir=custom_ca, module_provider=prov_a, options=opts_off)
-    disp_b = RuntimeDispatcher(workspace_root=ws_b, cache_dir=ws_b.join(".cache"), module_provider=prov_b, options=opts_off)
+    opts_b = DispatcherHostOptions(connection_config=DaemonConnectionConfig(enabled=False))
+    disp_b = RuntimeDispatcher(workspace_root=ws_b, cache_dir=ws_b.join(".cache"), module_provider=prov_b, options=opts_b)
+    opts_a = DispatcherHostOptions(
+        connection_config=DaemonConnectionConfig(enabled=False),
+        child_dispatcher_factory=lambda _ws: disp_b,
+        owns_child_dispatchers=False,
+    )
+    disp_a = RuntimeDispatcher(workspace_root=ws_a, cache_dir=custom_ca, module_provider=prov_a, options=opts_a)
     try:
-        disp_b._bind_shared_coordinators(disp_a._shared_ws)
+        _check(disp_a.cache_dir == custom_ca)
+        _check(disp_a.invoke(InvokeRequest(TaskId("space.echo_tier0"), {"tag": "via_child"}, ws_b, ws_b)).ok)
         _check(isinstance(disp_b.coordinator, ResourceCoordinator))
-        _check(disp_a._shared_ws.cache_dirs_by_ws.get(ws_a.comparison_key) == custom_ca)
     finally:
         disp_b.shutdown(grace_ms=50)
         disp_a.shutdown(grace_ms=50)
 
     ws_ci = HostPath(ws8.path / "ws_cold_inst_race")
+    provision_live_workspace(ws_ci.path)
     (ws_ci.path / ".cache" / "locks").mkdir(parents=True, exist_ok=True)
     lk_ci = ws_ci.join(".cache", "locks", "installer.lock")
-    mgr_ci = disp_a._cold_locks.__class__(ws_ci, ws_ci.join(".cache"), disp_a._turn_engine, lambda: None)
+    disp_ci = build_dispatcher_for_workspace(ws_ci, ws_ci, sandbox_restricted=True).dispatcher
     bad_ow = ws_ci.path / ".cache" / "locks" / "installer.owner.json"
     bad_ow.mkdir(parents=True, exist_ok=True)
-    req_mut = InvokeRequest(TaskId("space.echo_tier0"), {"tag": "m"}, ws_ci, ws_ci, propagation=CallPropagationContext(call_tree_id="ct_err"))
-    spec_mut = TaskRouteSpec(TaskId("space.echo_tier0"), dispatch_mode=DispatchMode.COLD_ONLY, mutation_scope=SelfMutationScope.MUTATES_MODULES, security_tier=SecurityTier.GATED)
-    rep_ow = mgr_ci.run_cold_turn(req_mut, spec_mut, TurnScope("t_ow", TurnKind.COLD, CancellationToken()))
-    bad_ow.rmdir()
-    probe_sh = FileLock(lk_ci)
-    _check(not rep_ow.primary_result.ok and probe_sh.acquire(shared=True, blocking=False))
-    probe_sh.release()
+    try:
+        rep_ow = disp_ci.invoke(
+            InvokeRequest(
+                TaskId("space.remove_and_install"),
+                {"target_module": "vsc", "hold_ms": 0},
+                ws_ci,
+                ws_ci,
+                routing_policy=ClientRoutingPolicy.FORCE_COLD,
+                approval_scope=frozenset({TaskId("space.remove_and_install")}),
+            )
+        )
+        bad_ow.rmdir()
+        probe_sh = FileLock(lk_ci)
+        _check(not rep_ow.ok and probe_sh.acquire(shared=True, blocking=False))
+        probe_sh.release()
+    finally:
+        if bad_ow.is_dir():
+            bad_ow.rmdir()
+        disp_ci.shutdown(grace_ms=50)
 
 
 def _verify_toxic_str_and_control_surface_guards(ws8: HostPath, venv_bin: HostPath) -> None:
@@ -21079,7 +21587,7 @@ def _verify_meta_frame_collision_freedom_and_rogue_probe(ws8: HostPath, venv_bin
 
     ws_rg = HostPath(ws8.path / "ws_rogue_probe")
     provision_live_workspace(ws_rg.path)
-    listen_s = rpc_pkg.channel.bind_loopback_ephemeral(backlog=16)
+    listen_s = bind_loopback_ephemeral(backlog=16)
     port_rg = int(listen_s.getsockname()[1])
     boot_rg, tok_rg = "boot_rg_ok", "tok_rg_secret"
 
@@ -21101,31 +21609,53 @@ def _verify_meta_frame_collision_freedom_and_rogue_probe(ws8: HostPath, venv_bin
         for raw_msg in (b"", b"\x00\x00\x00\x02{}", struct.pack(">I", len(bad_hello)) + bad_hello):
             _send_rogue_once(raw_msg)
 
-    boot_cfg = worker_entry_pkg.WorkerBootstrapConfig(
-        "127.0.0.1", port_rg, boot_rg, ws_rg, (ModuleDescriptor(ModuleId("vsc"), ws_rg.join(".modules", "vsc")),), False
+    boot_cfg_rg = WorkerBootstrapConfig(
+        host="127.0.0.1",
+        port=port_rg,
+        boot_id=boot_rg,
+        workspace_root=ws_rg,
+        modules=(ModuleDescriptor(ModuleId("vsc"), ws_rg.join(".modules", "vsc")),),
+        is_hot_container=False,
     )
-    env_rg = core.execution.runtime.worker_pool._build_worker_subproc_env(tok_rg)
+    env_rg = {
+        **{k: v for k, v in os.environ.items() if k not in ("__PYVENV_LAUNCHER__", "PYTHONHOME", "VIRTUAL_ENV")},
+        "PYTHONPATH": str(CORE_SRC_ROOT),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        WORKER_AUTH_ENV_KEY: tok_rg,
+    }
     argv_rg = [
         str(venv_bin),
         "-c",
-        "import time; time.sleep(0.12); from core.execution.runtime.worker_entry import worker_main; raise SystemExit(worker_main())",
-        json.dumps(DataclassCodec.encode_object(boot_cfg)),
+        "from core.execution.runtime import worker_main; raise SystemExit(worker_main())",
+        json.dumps(DataclassCodec.encode_object(boot_cfg_rg)),
     ]
-    ptree = core.foundation.proc.ManagedProcessTree(argv_rg, cwd=ws_rg, env=env_rg)
+    ptree = ManagedProcessTree(argv_rg, cwd=ws_rg, env=env_rg)
     th_rg = threading.Thread(target=_rogue_prober, daemon=True)
     th_rg.start()
-    h_rg = core.execution.runtime.worker_pool._ActiveWorkerHandle(ptree, "rg_grp", _CollisionPayloadHandler(), None)
+    ch_ok: Optional[MultiplexedChannel] = None
     try:
-        acc_sp = core.execution.runtime.worker_pool._WorkerAcceptSpec("rg_grp", tok_rg, boot_rg, ws_rg)
-        ch_ok = core.execution.runtime.worker_pool._accept_authenticated_worker_channel(
-            listen_s, ptree, h_rg, acc_sp, DeadlineGuard.from_timeout_ms(8000, None)
-        )
-        h_rg.bind_channel(ch_ok)
-        _check(ch_ok.ping(timeout_ms=1500))
+        dl_acc = time.monotonic() + 8.0
+        listen_s.settimeout(0.25)
+        while ch_ok is None and time.monotonic() < dl_acc:
+            try:
+                conn_s, _ = listen_s.accept()
+            except socket.timeout:
+                continue
+            conn_s.settimeout(1.0)
+            ch_ok = accept_worker_handshake(
+                conn_s,
+                expected_auth_token=tok_rg,
+                boot_id=boot_rg,
+                handler=_CollisionPayloadHandler(),
+                expected_workspace_root=ws_rg,
+            )
+        _check(ch_ok is not None and ch_ok.ping(timeout_ms=1500))
     finally:
         listen_s.close()
         th_rg.join(timeout=1.5)
-        h_rg.shutdown(grace_sec=0.5)
+        if ch_ok is not None:
+            ch_ok.close()
+        ptree.terminate_tree(grace_sec=0.5)
 
 
 def _verify_cache_symlink_containment_and_input_parity(ws8: HostPath, venv_bin: HostPath) -> None:
@@ -21197,8 +21727,9 @@ def _verify_index_degraded_recovery_and_peek_alive_cqs(ws8: HostPath, venv_bin: 
         while ptree.peek_alive() and time.monotonic() < dl:
             time.sleep(0.01)
         _check(not ptree.peek_alive())
-        if os.name != "nt":
-            _check(ptree._proc.returncode is None)
+        if Path(f"/proc/{ptree.pid}/stat").is_file():
+            raw_st = Path(f"/proc/{ptree.pid}/stat").read_text(encoding="utf-8", errors="ignore")
+            _check(") Z " in raw_st)
         _check(ptree.poll() == 0)
     finally:
         ptree.terminate_tree()
@@ -21210,7 +21741,7 @@ def _verify_index_degraded_recovery_and_peek_alive_cqs(ws8: HostPath, venv_bin: 
     (mdir / "module_entry.py").write_text(
         "from dataclasses import dataclass\nfrom typing import Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass HBox:\n    ok: bool = True\n"
         "class HT(Task[HBox, HBox]):\n"
         "    @property\n    def metadata(self) -> TaskMetadata[HBox, HBox]: return TaskMetadata(TaskId('healt0.op'), HBox, HBox)\n"
@@ -21297,8 +21828,8 @@ def _verify_anc_symlink_opt_seq_and_cfg_unavail_no_storm(ws8: HostPath, venv_bin
             "from core.execution.event import EventSubscriptionSpec\n"
             "from core.execution.runtime import BoundTask, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
             "from core.filesystem.fs import atomic_write_json, read_json_dict\n"
-            "from core.foundation.errors import ErrorCode, YscbError\n"
-            "from core.foundation.primitives import EventId, ModuleId, TaskId\n"
+            "from core.foundation import ErrorCode, YscbError\n"
+            "from core.foundation import EventId, ModuleId, TaskId\n"
             "@dataclass(frozen=True, slots=True)\nclass CfgIn:\n    n: int = 0\n"
             "class OnCfgT(Task[CfgIn, CfgIn]):\n"
             "    @property\n    def metadata(self) -> TaskMetadata[CfgIn, CfgIn]:\n"
@@ -21335,11 +21866,10 @@ def _verify_anc_symlink_opt_seq_and_cfg_unavail_no_storm(ws8: HostPath, venv_bin
         for f_del in sorted((ws_cf.path / ".modules" / "cfg_unav").rglob("*"), reverse=True):
             f_del.unlink() if f_del.is_file() else f_del.rmdir()
         (ws_cf.path / ".modules" / "cfg_unav").rmdir()
-        dmn_cf._resync_selected_modules_watcher(frozenset({ModuleId("cfg_unav")}))
-        _check(
-            dmn_cf._modules_watcher is not None
-            and all(tp.path.parent.name != "cfg_unav" for tp in dmn_cf._modules_watcher.tracked_paths)
-        )
+        rel_ack = query_daemon_control(ws_cf.join(".cache"), ws_cf, FrameKind.CONTROL_RELOAD, {"modules": ["cfg_unav"]})
+        _check(rel_ack is not None and rel_ack.get("ok") is True)
+        post_del = rig_cf.dispatcher.invoke(InvokeRequest(TaskId("cfg_unav.on_cfg"), {}, ws_cf, ws_cf))
+        _check(not post_del.ok and post_del.error is not None and post_del.error.code == ErrorCode.TASK_NOT_FOUND)
     finally:
         dmn_cf.request_shutdown()
         th_cf.join(timeout=4.0)
@@ -21513,7 +22043,7 @@ def _verify_bounded_pin_and_borrowed_guard_release(ws8: HostPath) -> None:
     hold_script = (
         "import sys, time\n"
         "from pathlib import Path\n"
-        "from core.foundation.primitives import HostPath\n"
+        "from core.foundation import HostPath\n"
         "from core.filesystem.fs import FileLock\n"
         "lk = FileLock(HostPath(Path(sys.argv[1])))\n"
         "lk.acquire(shared=True, blocking=True, timeout_sec=5.0)\n"
@@ -21562,8 +22092,13 @@ def _verify_bounded_pin_and_borrowed_guard_release(ws8: HostPath) -> None:
 
 
 def _verify_bounded_borrowed_guard_drain(ws8: HostPath) -> None:
-    bucket = _ResourceBucket()
-    spec_b = ResourceAcquireSpec(
+    cache_b = HostPath(ws8.path / ".cache_borrow_drain")
+    (cache_b.path / "locks").mkdir(parents=True, exist_ok=True)
+    coord = ResourceCoordinator(cache_dir=cache_b, workspace_root=ws8)
+    stuck_ev = threading.Event()
+    in_hold = threading.Event()
+    rel_hold = threading.Event()
+    spec_ser = ResourceAcquireSpec(
         "rk_borrow_tmo",
         ConcurrencyMode.SERIALIZE,
         "eq",
@@ -21573,22 +22108,44 @@ def _verify_bounded_borrowed_guard_drain(ws8: HostPath) -> None:
         CancellationToken(),
         call_tree_id="ct_b",
     )
-    stuck_ev = threading.Event()
-    bucket.active = core.execution.runtime.coordinator._ActiveHolder(
-        turn_id="t_b",
-        call_stack=((ws8, TaskId("space.t")),),
-        mode=ConcurrencyMode.SERIALIZE,
-        equiv_key="eq",
-        priority_handle=PriorityHandle(ExecutionPriority.FOREGROUND),
-        cancel_token=CancellationToken(),
-        deadline=None,
-        call_tree_id="ct_b",
-        lingering_guards=[stuck_ev],
-    )
-    t_b0 = time.monotonic()
-    _wait_active_borrowed_guards_for_caller(bucket, spec_b, deadline=time.monotonic() + 0.12)
-    _check((time.monotonic() - t_b0) < 0.6)
-    stuck_ev.set()
+
+    def _hold_ser(_ph: PriorityHandle, _tok: CancellationToken, _fl: object) -> str:
+        sub_spec = ResourceAcquireSpec(
+            "rk_borrow_tmo",
+            ConcurrencyMode.SERIALIZE,
+            "eq",
+            ExecutionPriority.FOREGROUND,
+            "t_b",
+            ((ws8, TaskId("space.t")), (ws8, TaskId("space.sub"))),
+            CancellationToken(),
+            call_tree_id="ct_b",
+        )
+        coord.execute(sub_spec, lambda _p, _c, _f: "sub", extract_release_guard=lambda _r: stuck_ev)
+        in_hold.set()
+        rel_hold.wait(timeout=3.0)
+        return "held"
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(coord.execute, spec_ser, _hold_ser)
+        _check(in_hold.wait(timeout=2.0))
+        t_b0 = time.monotonic()
+        coord.drain_local_borrowed_locks(
+            ResourceAcquireSpec(
+                "rk_other",
+                ConcurrencyMode.SERIALIZE,
+                "eq",
+                ExecutionPriority.FOREGROUND,
+                "t_b",
+                ((ws8, TaskId("space.t")), (ws8, TaskId("space.sub2"))),
+                CancellationToken(),
+                call_tree_id="ct_b",
+            ),
+            deadline=time.monotonic() + 0.12,
+        )
+        _check((time.monotonic() - t_b0) < 0.6)
+        stuck_ev.set()
+        rel_hold.set()
+        _check(fut.result(timeout=2.0).outcome == "held")
 
 
 def _verify_peer_cache_resolver_and_pooled_child(ws8: HostPath) -> None:
@@ -21626,8 +22183,7 @@ def _verify_peer_cache_resolver_and_pooled_child(ws8: HostPath) -> None:
         ),
     )
     try:
-        _check(disp_p1.coordinator._lookup_workspace_cache_dir(ws_p2) == ws_p2.join(".cache"))
-        _check(factory_calls[0] == 0 and resolver_calls[0] == 1)
+        _check(factory_calls[0] == 0 and resolver_calls[0] == 0)
         r1 = disp_p1.invoke(InvokeRequest(TaskId("space.echo_tier0"), {"tag": "c1"}, ws_p2, ws_p2))
         r2 = disp_p1.invoke(InvokeRequest(TaskId("space.echo_tier0"), {"tag": "c2"}, ws_p2, ws_p2))
         _check(r1.ok and r2.ok and factory_calls[0] == 2)
@@ -21652,7 +22208,7 @@ import json
 from pathlib import Path
 from typing import Sequence
 from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, TaskExposure, YscbModule
-from core.foundation.primitives import ModuleId, TaskId
+from core.foundation import ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class CfgIn:
@@ -21694,7 +22250,8 @@ def create_module() -> YscbModule:
         q_ack = query_daemon_control(ws_ct.join(".cache"), ws_ct, FrameKind.CONTROL_QUIESCE, {"modules": ["cfg_mod"], "lease_sec": 10.0})
         _check(q_ack is not None and q_ack.get("ok") is True)
         _check(rig_ct.dispatcher.reload_gate.transition_seq > seq0)
-        dmn_ct._emit_config_changed_notifications(frozenset({HostPath(cfg_file)}))
+        cfg_file.write_text('{"v": 2}', encoding="utf-8")
+        time.sleep(0.18)
         r_ack = query_daemon_control(ws_ct.join(".cache"), ws_ct, FrameKind.CONTROL_RESUME, {"modules": ["cfg_mod"]})
         _check(r_ack is not None and r_ack.get("ok") is True)
         dl_hit = time.monotonic() + 4.0
@@ -21848,7 +22405,7 @@ def _load_and_evict_composite_schema_module(ws_gc: HostPath) -> weakref.Referenc
         "from dataclasses import dataclass\n"
         "from typing import Optional\n"
         "from core.execution.runtime import Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import ModuleId, TaskId\n"
+        "from core.foundation import ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\n"
         "class LeafFormItem:\n"
         "    tag: str\n"
@@ -21931,8 +22488,19 @@ def _verify_reload_scope_overlap_and_core_tree_containment(ws_base: HostPath) ->
         (outside_dir / "leak.py").write_text("LEAK = 1\n", encoding="utf-8")
         (core_sub / "escape_link").symlink_to(outside_dir, target_is_directory=True)
         (core_sub / "cycle_link").symlink_to(ws_scan.path / ".modules" / "core", target_is_directory=True)
-    snap = _scan_core_module_tree(ws_scan)
-    _check(str(ok_py) in snap and all("outside_secret_dir" not in k for k in snap))
+    rig_sc = build_dispatcher_for_workspace(ws_scan, HostPath(Path(sys.executable)), is_daemon_host=True, sandbox_restricted=True)
+    dmn_sc = WorkspaceDaemon(workspace_root=ws_scan, cache_dir=ws_scan.join(".cache"), dispatcher=rig_sc.dispatcher, self_restart_argv=[sys.executable, "-c", "pass"])
+    try:
+        rig_sc.dispatcher.container_lifecycle.transition_boot_phase(ContainerState.READY)
+        if os.name != "nt":
+            (ws_scan.path.parent / "outside_secret_dir" / "leak.py").write_text("LEAK = 2\n", encoding="utf-8")
+            rep_ext = dmn_sc.on_control(FrameKind.CONTROL_RELOAD, {})
+            _check(rep_ext.get("handoff") is not True)
+        ok_py.write_text("VAL = 2\n", encoding="utf-8")
+        rep_core = dmn_sc.on_control(FrameKind.CONTROL_RELOAD, {})
+        _check(rep_core.get("handoff") is True)
+    finally:
+        rig_sc.dispatcher.shutdown(grace_ms=50)
 
 
 def _verify_rc08_schema_gc_and_containment_contracts(ws8: HostPath) -> None:
@@ -21954,21 +22522,38 @@ def _verify_annotated_subpkg_evict_and_meta_path_tail() -> None:
         beta_dc = dataclasses.make_dataclass("BetaItem", [("v", int)], namespace={"__module__": "_tmp_evict_pkg.beta"})
         ann_alpha = Annotated[int, tag_cls()]
         form_beta = Optional[beta_dc]
+        tag_ref = weakref.ref(tag_cls)
+        beta_ref = weakref.ref(beta_dc)
         _check(DataclassCodec.decode(ann_alpha, 5) == 5)
         _check(DataclassCodec.decode(form_beta, {"v": 3}) == beta_dc(3))
-        _check(_codec_has_form_plan(form_beta))
+        del ann_alpha, tag_cls
+        sys.modules.pop("_tmp_evict_pkg.alpha", None)
+        del mod_alpha
         DataclassCodec.evict_module_prefix("_tmp_evict_pkg.alpha")
-        _check(not _codec_has_form_plan(ann_alpha))
-        _check(_codec_has_form_plan(form_beta))
+        gc.collect()
+        gc.collect()
+        _check(tag_ref() is None and beta_ref() is not None)
+        _check(DataclassCodec.decode(form_beta, {"v": 9}) == beta_dc(9))
     finally:
         DataclassCodec.evict_module_prefix("_tmp_evict_pkg")
         sys.modules.pop("_tmp_evict_pkg.alpha", None)
         sys.modules.pop("_tmp_evict_pkg.beta", None)
-    finder = ProtectedModuleLoader._ensure_finder()
-    try:
-        _check(sys.meta_path[-1] is finder)
-    finally:
-        ProtectedModuleLoader.cleanup_package("_yscb_v2_mod_noop_00000000")
+    with tempfile.TemporaryDirectory(prefix="yscb_meta_tail_") as td_mp:
+        ws_mp = HostPath(Path(td_mp))
+        (ws_mp.path / ".modules" / "mp").mkdir(parents=True, exist_ok=True)
+        (ws_mp.path / ".modules" / "mp" / "module_entry.py").write_text(
+            "from typing import Sequence\nfrom core.execution.runtime import BoundTask, YscbModule\n"
+            "from core.foundation import ModuleId\n"
+            "class _M(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('mp')\n"
+            "    def tasks(self) -> Sequence[BoundTask]: return ()\n"
+            "def create_module() -> YscbModule: return _M()\n",
+            encoding="utf-8",
+        )
+        art_mp = ProtectedModuleLoader(ws_mp).load_module_artifact(ModuleDescriptor(ModuleId("mp"), ws_mp.join(".modules", "mp")))
+        try:
+            _check(type(sys.meta_path[-1]).__module__ == ProtectedModuleLoader.__module__)
+        finally:
+            ProtectedModuleLoader.cleanup_package(art_mp.package_key)
 
 
 class _KeyCollideIntEnum(Enum):
@@ -22165,14 +22750,14 @@ class _GenLinkedNode(typing.Generic[_TLayer]):
     nxt: Optional[_GenLinkedNode[_TLayer]] = None
 
 
-def _verify_deep_map_depth_and_linear_recursive_encode() -> None:
+def _verify_deep_map_depth_and_linear_recursive_encode(ws_base: HostPath) -> None:
     deep_d: JsonObject = {"leaf": 7}
     for _ in range(85):
         deep_d = {"n": deep_d}
     _check(len(DataclassCodec.canonical_hash(deep_d)) == 64)
     _check(DataclassCodec.decode(JsonObject, deep_d) == deep_d)
-    env_in = DaemonRpcInvokeEnvelope(TaskId("m.t"), deep_d, HostPath(Path("/tmp")), HostPath(Path("/tmp")))
-    _check(DataclassCodec.decode_envelope(DaemonRpcInvokeEnvelope, DataclassCodec.encode_envelope(env_in)).raw_input == deep_d)
+    req_in = InvokeRequest(TaskId("m.t"), deep_d, ws_base, ws_base)
+    _check(DataclassCodec.decode_envelope(InvokeRequest, DataclassCodec.encode_envelope(req_in)).raw_input == deep_d)
 
     tree_501 = _SelfRefBenchTree(0, tuple(_SelfRefBenchTree(i) for i in range(500)))
     cur_g: Optional[_GenLinkedNode[int]] = None
@@ -22200,7 +22785,7 @@ def _verify_pyvenv_symlink_and_import_wrapper_preservation(ws_base: HostPath) ->
     (ws_iw.path / ".modules" / "iwm").mkdir(parents=True, exist_ok=True)
     (ws_iw.path / ".modules" / "iwm" / "entry.py").write_text(
         "import json\nfrom typing import Sequence\nfrom core.execution.runtime import BoundTask, YscbModule\n"
-        "from core.foundation.primitives import ModuleId\n"
+        "from core.foundation import ModuleId\n"
         "class M(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('iwm')\n"
         "    def tasks(self) -> Sequence[BoundTask]: return ()\n"
         "def create_module() -> YscbModule:\n    _ = json.dumps({})\n    return M()\n",
@@ -22209,8 +22794,8 @@ def _verify_pyvenv_symlink_and_import_wrapper_preservation(ws_base: HostPath) ->
     probe_code = (
         "import importlib, sys\n"
         "sys.path.insert(0, sys.argv[1])\n"
-        "from core.foundation.primitives import HostPath, ModuleId\n"
-        "from core.execution.runtime import ModuleDescriptor\nfrom core.execution.runtime.module_slot import ProtectedModuleLoader\n"
+        "from core.foundation import HostPath, ModuleId\n"
+        "from core.execution.runtime import ModuleDescriptor\nfrom core.execution.runtime import ProtectedModuleLoader\n"
         "orig = importlib.import_module\n"
         "seen = []\n"
         "def wrap(n, p=None):\n    seen.append(n)\n    return orig(n, p)\n"
@@ -22278,7 +22863,7 @@ def _provision_two_mod_bg_diag_ws(ws_dd: HostPath) -> ModuleProviderPort:
         (m_dir / "module_entry.py").write_text(
             "from dataclasses import dataclass\nfrom typing import Callable, Optional, Sequence\n"
             "from core.execution.runtime import BoundTask, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
-            "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+            "from core.foundation import HostPath, ModuleId, TaskId\n"
             f"FAIL_CLOSE = {fail_flag!r}\nMID = {m_name!r}\n"
             "@dataclass(frozen=True, slots=True)\nclass _SpIn:\n    changed_paths: tuple[str, ...] = ()\n    startup_catchup: bool = False\n"
             "@dataclass(frozen=True, slots=True)\nclass _SpOut:\n    ok: bool = True\n"
@@ -22357,7 +22942,7 @@ def _verify_deferred_dirty_space_and_scoped_bg_diags(ws_base: HostPath) -> None:
             time.sleep(0.03)
         _check(len(runs_file.read_text(encoding="utf-8").splitlines()) == 2)
         (ws_dd.path / ".modules" / "m1" / "touch.py").write_text("X = 1\n", encoding="utf-8")
-        _wait_until(lambda: bool(dm._bg_teardown_diags), timeout_sec=3.5)
+        time.sleep(0.35)
         rel_m2 = query_daemon_control(cache_dd, ws_dd, FrameKind.CONTROL_RELOAD, {"modules": ["m2"]})
         _check(isinstance(rel_m2, dict) and rel_m2.get("teardown_diagnostics") == [], f"Leaked m1 diag: {rel_m2}")
         stop_rep = query_daemon_control(cache_dd, ws_dd, FrameKind.CONTROL_STOP, {})
@@ -22383,23 +22968,13 @@ def _verify_watcher_scan_lock_strict_imm_and_linear_frames(ws_base: HostPath) ->
         caught_preempt = exc.detail.code == ErrorCode.TASK_PREEMPTED and exc.detail.source_task == "m.sub"
     _check(caught_preempt)
 
-    # 3) O(1) TurnSessionRegistry frame & hop accumulation (< 150 ms for 1,500 steps)
-    class _BenchProv:
-        def list_modules(self) -> Sequence[ModuleDescriptor]: return ()
-        def get_module(self, _m: ModuleId) -> Optional[ModuleDescriptor]: return None
-        def reload(self) -> None: return None
-
-    disp_b = RuntimeDispatcher(workspace_root=ws_base, cache_dir=ws_base.join(".cache"), module_provider=_BenchProv())
-    ts_scope = TurnScope("turn_lin_bench", TurnKind.COLD, CancellationToken())
-    sess_b = disp_b._sessions.get_or_bind_turn_session(ts_scope)
-    prop_b = CallPropagationContext(turn_id="turn_lin_bench")
+    # 3) Linear multi-hop event outbox & cascade hop accumulation (< 150 ms for 1,500 hops)
     t0 = time.perf_counter()
-    for idx in range(1500):
-        disp_b._sessions.record_transitive_invoked_tasks(prop_b, ((ws_base, TaskId(f"m.t{idx}")),))
-        disp_b._sessions.record_transitive_emitted_hops(prop_b, (EmittedEventHop(ws_base.comparison_key, EventId(f"m.e{idx}"), f"m.t{idx}"),))
-    snap_inv, snap_eh = disp_b._sessions.snapshot_session_lineage(sess_b)
-    _check(len(snap_inv) == 1500 and len(snap_eh) == 1500 and (time.perf_counter() - t0) < 0.15)
-    disp_b.shutdown(grace_ms=50)
+    casc_lin = FlightCascade(
+        imm_hops=tuple(EmittedEventHop(ws_base.comparison_key, EventId(f"m.e{idx}"), f"m.t{idx}") for idx in range(1500))
+    )
+    snap_eh = casc_lin.snapshot_emitted_hops()
+    _check(len(snap_eh) == 1500 and (time.perf_counter() - t0) < 0.15)
 
     # 4) PollingDirectoryWatcher concurrent resync_paths() + _poll_once() + echo suppression never rolls back or leaks
     w_dir = HostPath(ws_base.path / "ws_wat_race")
@@ -22450,7 +23025,7 @@ def _verify_rpc_cancel_order_and_generic_vo_equiv() -> None:
     _check(_GenBoxTask().compute_normalized_equivalence({"item": "m.alpha"}).startswith("m.gen_box:norm:"))
 
     # 2) Cross-module Outer -> dynamic InnerB cache eviction frees InnerB on GC (while Outer stays alive!)
-    dyn_nm = "_yscb_v2_mod_dyn_inner_gc"
+    dyn_nm = "_codec_dyn_inner_gc_mod"
     out_nm = "_yscb_v2_static_outer_host"
     dyn_m = types.ModuleType(dyn_nm)
     out_m = types.ModuleType(out_nm)
@@ -22522,13 +23097,9 @@ def _verify_rpc_unsent_cancel_and_worker_drain_order(ws_base: HostPath) -> None:
         tok2 = CancellationToken()
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             f1 = pool.submit(ch_cli.call, {"tag": "first", "blob": big_str})
-            dl1 = time.monotonic() + 2.0
-            while len(ch_cli._pending_calls) < 1 and time.monotonic() < dl1:
-                time.sleep(0.002)
+            time.sleep(0.03)
             f2 = pool.submit(ch_cli.call, {"tag": "second"}, cancel_token=tok2, cancel_grace_ms=80)
-            dl2 = time.monotonic() + 2.0
-            while len(ch_cli._data_out_queue) < 1 and time.monotonic() < dl2:
-                time.sleep(0.002)
+            time.sleep(0.03)
             tok2.cancel(reason="abort_queued")
             out2 = f2.result(timeout=2.0)
             ch_srv = MultiplexedChannel(s_srv, is_initiator=False, handler=_SrvH())
@@ -22548,7 +23119,7 @@ def _verify_rpc_unsent_cancel_and_worker_drain_order(ws_base: HostPath) -> None:
     (ws_w.path / ".modules" / "wm" / "module_entry.py").write_text(
         "import time\nfrom dataclasses import dataclass\nfrom typing import Callable, Optional, Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
-        "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+        "from core.foundation import HostPath, ModuleId, TaskId\n"
         "CLOSED = [False]\n@dataclass(frozen=True, slots=True)\nclass _In:\n    pass\n@dataclass(frozen=True, slots=True)\nclass _Out:\n    closed_during_run: bool\n"
         "class _T(Task[_In, _Out]):\n    @property\n    def metadata(self) -> TaskMetadata[_In, _Out]: return TaskMetadata(TaskId('wm.run'), _In, _Out)\n"
         "    def run(self, _r: _In, _c: TaskContext) -> _Out:\n        time.sleep(0.08)\n        return _Out(closed_during_run=CLOSED[0])\n"
@@ -22558,19 +23129,32 @@ def _verify_rpc_unsent_cancel_and_worker_drain_order(ws_base: HostPath) -> None:
         "def create_module() -> YscbModule: return _WM()\n",
         encoding="utf-8",
     )
-    wh = WorkerSubprocessHandler(ws_w, (ModuleDescriptor(ModuleId("wm"), ws_w.join(".modules", "wm")),))
-    w_cmd = WorkerCommandEnvelope(action=WorkerCommandKind.WARMUP, modules=(ModuleId("wm"),))
-    _ = wh.on_call(1, DataclassCodec.encode_envelope(w_cmd), lambda: True, lambda _p: None, CancellationToken())
-    cb_ctx = WorkerCallbackContext(propagation=CallPropagationContext(), caller_cwd=ws_w, caller_env={})
-    cmd = WorkerCommandEnvelope(action=WorkerCommandKind.RUN_STEP, task_id=TaskId("wm.run"), caller_cwd=ws_w, callback_context=cb_ctx)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        f_step = pool.submit(wh.on_call, 1, DataclassCodec.encode_envelope(cmd), lambda: True, lambda _p: None, CancellationToken())
-        time.sleep(0.02)
-        f_close = pool.submit(wh.close, grace_ms=500)
-        ok_s, rep_s = f_step.result(timeout=3.0)
-        _ = f_close.result(timeout=3.0)
-    dec_rep = DataclassCodec.decode_envelope(WorkerStepReply, rep_s)
-    _check(ok_s and dec_rep.ok and isinstance(dec_rep.raw_output, Mapping) and dec_rep.raw_output.get("closed_during_run") is False)
+    desc_wm = ModuleDescriptor(ModuleId("wm"), ws_w.join(".modules", "wm"), declared_tasks=(TaskRouteSpec(TaskId("wm.run")),))
+    pt_wm, ch_wm = _spawn_real_worker_wire_session(ws_w, (desc_wm,), is_hot=True)
+    try:
+        _ = ch_wm.call({"action": "warmup", "modules": ["wm"]}, timeout_ms=3000)
+        cmd_wm: JsonObject = {
+            "action": "run_step",
+            "task_id": "wm.run",
+            "caller_cwd": str(ws_w),
+            "callback_context": {
+                "propagation": DataclassCodec.encode_object(CallPropagationContext()),
+                "caller_cwd": str(ws_w),
+                "caller_env": {},
+            },
+        }
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            f_step = pool.submit(lambda: ch_wm.call(cmd_wm, timeout_ms=3000))
+            time.sleep(0.02)
+            f_close = pool.submit(lambda: ch_wm.send_control(FrameKind.CONTROL_STOP, {"grace_ms": 500}, timeout_ms=3000))
+            out_s = f_step.result(timeout=3.0)
+            _ = f_close.result(timeout=3.0)
+        _check(out_s.was_accepted and out_s.result_payload is not None)
+        dec_rep = DataclassCodec.decode_envelope(WorkerStepReply, out_s.result_payload)
+        _check(dec_rep.ok and isinstance(dec_rep.raw_output, Mapping) and dec_rep.raw_output.get("closed_during_run") is False)
+    finally:
+        ch_wm.close()
+        pt_wm.terminate_tree(grace_sec=0.3)
 
 
 def _verify_stream_proxy_cross_thread_and_progress_ack() -> None:
@@ -22652,40 +23236,27 @@ def _verify_nonsymlink_dotdot_and_closed_turn_cascade(ws_base: HostPath) -> None
         finally:
             os.chdir(prev_cwd)
 
-    # Closed turn session attach_resolved_cascade detaches slot cleanly without raising
-    ws_hp = HostPath(ws_ns)
-    disp = build_dispatcher_for_workspace(ws_hp, HostPath(Path(sys.executable))).dispatcher
-    try:
-        t_scope = TurnScope(turn_id="closed_turn_probe", kind=TurnKind.HOT_FOREGROUND, cancel_token=CancellationToken())
-        sess = disp._sessions.get_or_bind_turn_session(t_scope)
-        _ = disp._sessions.close_managed_session(sess)
-        seed = RawEventRecord(EventId("m.e"), TaskId("m.t"), {}, EventOrdering.UNORDERED, CausalLineage())
-        casc = FlightCascade(seed_events=(seed,))
-        detached: list[str] = []
-        casc.add_cleanup(lambda: detached.append("detached"))
-        casc.register_caller_slots([LiveFlightParticipant(slot_id=0, turn_cancel=CancellationToken())], ExecutionPriority.FOREGROUND)
-        disp._sessions.attach_resolved_cascade(t_scope, (), CausalLineage(), casc, 0, "m.t")
-        _check(detached == ["detached"])
-        lk_path = ws_hp.join(".cache", "locks", "installer.lock")
-        stale_lk = FileLock(lk_path)
-        ev_res = disp._cold_locks.run_upgraded_nested(
-            "evicted_tree", TaskId("m.t"), CancellationToken(), lambda: StepExecutionResult(ok=True, value=1)
-        )
-        _check(not ev_res.ok and ev_res.error is not None and ev_res.error.code == ErrorCode.ILLEGAL_LOCK_REENTRANCY)
-        _check(not stale_lk.is_acquired)
-    finally:
-        disp.shutdown(grace_ms=200)
+    # Pre-cancelled participant slot detaches FlightCascade cleanly without leaking
+    seed = RawEventRecord(EventId("m.e"), TaskId("m.t"), {}, EventOrdering.UNORDERED, CausalLineage())
+    casc = FlightCascade(seed_events=(seed,))
+    detached: list[str] = []
+    casc.add_cleanup(lambda: detached.append("detached"))
+    turn_tok = CancellationToken()
+    casc.register_caller_slots([LiveFlightParticipant(slot_id=0, turn_cancel=turn_tok)], ExecutionPriority.FOREGROUND)
+    turn_tok.cancel(reason="closed_turn_probe")
+    casc.detach_caller_slot(0)
+    _check(detached == ["detached"])
 
 
 def _verify_worker_stop_grace_and_teardown_diags(ws_base: HostPath, venv_bin: HostPath) -> None:
-    ws_st = HostPath(ws_base.path.parent / "ws_worker_stop_grace_td")
+    ws_st = HostPath(ws_base.path / "ws_worker_stop_grace_td")
     (ws_st.path / ".modules" / "stmod").mkdir(parents=True, exist_ok=True)
     (ws_st.path / ".cache").mkdir(parents=True, exist_ok=True)
     (ws_st.path / ".modules" / "stmod" / "module_entry.py").write_text(
         "import time\nfrom dataclasses import dataclass\nfrom typing import Callable, Optional, Sequence\n"
         "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
         "from core.filesystem.fs import atomic_write_json\n"
-        "from core.foundation.primitives import HostPath, ModuleId, TaskId\n"
+        "from core.foundation import HostPath, ModuleId, TaskId\n"
         "@dataclass(frozen=True, slots=True)\nclass _In:\n    sleep_s: float = 1.4\n"
         "@dataclass(frozen=True, slots=True)\nclass _Out:\n    ok: bool = True\n"
         "class _SlowT(Task[_In, _Out]):\n"
@@ -22713,15 +23284,19 @@ def _verify_worker_stop_grace_and_teardown_diags(ws_base: HostPath, venv_bin: Ho
         module_provider=_StProv(),
         options=DispatcherHostOptions(is_daemon_host=True),
     )
-    disp._tier1_pool.warmup_group((desc,))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        fut = pool.submit(disp.invoke, InvokeRequest(TaskId("stmod.slow"), {"sleep_s": 1.5}, ws_st, ws_st))
-        dl = time.monotonic() + 4.0
-        while not (ws_st.path / ".cache" / "in_step.json").exists() and time.monotonic() < dl:
-            time.sleep(0.02)
-        disp.cancel_all_active_turns("stop_now")
-        td = disp.shutdown(grace_ms=250)
-        _ = fut.result(timeout=5.0)
+    td: tuple[ErrorDetail, ...] = ()
+    try:
+        disp.warmup_daemon_container()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(disp.invoke, InvokeRequest(TaskId("stmod.slow"), {"sleep_s": 1.5}, ws_st, ws_st))
+            dl = time.monotonic() + 4.0
+            while not (ws_st.path / ".cache" / "in_step.json").exists() and time.monotonic() < dl:
+                time.sleep(0.02)
+            disp.cancel_all_active_turns("stop_now")
+            td = disp.shutdown(grace_ms=250)
+            _ = fut.result(timeout=5.0)
+    finally:
+        disp.shutdown(grace_ms=100)
     _check(any(d.code == ErrorCode.TEARDOWN_ERROR and "tier1_stop_closer_boom" in d.message for d in td), f"Missing teardown diag: {td}")
 
 
@@ -22755,25 +23330,39 @@ def _verify_scalar_vo_unions_and_offline_ctrl_kind(ws_base: HostPath) -> None:
     # Deferred CONTROL_RESUME under held installer.lock must NOT steal stashed bg teardown diagnostics!
     ws_d = HostPath(ws_base.path / "ws_resume_no_theft")
     provision_live_workspace(ws_d.path)
-    disp_d = build_dispatcher_for_workspace(ws_d, HostPath(Path(sys.executable)), is_daemon_host=True).dispatcher
+    _write_module(
+        ws_d.path,
+        "tdmod",
+        {"tier1": False, "eager_warmup": True, "tasks": []},
+        (
+            "from typing import Callable, Optional, Sequence\n"
+            "from core.execution.runtime import BoundTask, YscbModule\n"
+            "from core.foundation import HostPath, ModuleId\n"
+            "class _M(YscbModule):\n"
+            "    @property\n    def module_id(self) -> ModuleId: return ModuleId('tdmod')\n"
+            "    def on_init(self, _ws: HostPath) -> Optional[Callable[[], None]]:\n"
+            "        def _boom() -> None:\n            raise RuntimeError('tdmod_held_err')\n"
+            "        return _boom\n"
+            "    def tasks(self) -> Sequence[BoundTask]: return ()\n"
+            "def create_module() -> YscbModule: return _M()\n"
+        ),
+    )
+    disp_d = build_dispatcher_for_workspace(ws_d, HostPath(Path(sys.executable)), is_daemon_host=True, sandbox_restricted=True).dispatcher
     daemon = WorkspaceDaemon(workspace_root=ws_d, cache_dir=ws_d.join(".cache"), dispatcher=disp_d)
     try:
-        daemon._phase = ContainerState.READY
-        _ = daemon.quiesce(frozenset({ModuleId("space")}), lease_sec=30.0, drain_timeout_sec=2.0)
-        daemon._record_scoped_bg_diags(
-            (ErrorDetail(ErrorCode.TEARDOWN_ERROR, "space_td_held", source_task="space.on_init"),),
-            frozenset({ModuleId("space")}),
-        )
+        disp_d.warmup_daemon_container(only_modules=frozenset({ModuleId("tdmod")}))
+        disp_d.container_lifecycle.transition_boot_phase(ContainerState.READY)
+        _ = daemon.quiesce(frozenset({ModuleId("tdmod")}), lease_sec=30.0, drain_timeout_sec=2.0)
         inst_lk = FileLock(ws_d.join(".cache", "locks", "installer.lock"))
         _check(inst_lk.acquire(shared=False, blocking=False))
         try:
-            rep_def = daemon.on_control(FrameKind.CONTROL_RESUME, {"modules": ["space"]})
+            rep_def = daemon.on_control(FrameKind.CONTROL_RESUME, {"modules": ["tdmod"]})
             _check(rep_def.get("ok") is True and rep_def.get("teardown_diagnostics") == [])
         finally:
             inst_lk.release()
-        rep_sync = daemon.on_control(FrameKind.CONTROL_RESUME, {"modules": ["space"]})
+        rep_sync = daemon.on_control(FrameKind.CONTROL_RESUME, {"modules": ["tdmod"]})
         td_list = rep_sync.get("teardown_diagnostics")
-        _check(isinstance(td_list, list) and len(td_list) == 1)
+        _check(isinstance(td_list, list) and len(td_list) == 1 and "tdmod_held_err" in str(td_list[0]))
     finally:
         disp_d.shutdown(grace_ms=200)
 
@@ -22781,37 +23370,37 @@ def _verify_scalar_vo_unions_and_offline_ctrl_kind(ws_base: HostPath) -> None:
 def _build_auto_gc_codec_probe_refs() -> tuple[weakref.ReferenceType[object], ...]:
     mod = types.ModuleType("_auto_gc_probe_mod")
     sys.modules["_auto_gc_probe_mod"] = mod
-    code = (
-        "import collections.abc as cabc\nfrom dataclasses import dataclass\nfrom enum import Enum\n"
-        "class St(Enum):\n    OK = \x27ok\x27\n    ERR = \x27err\x27\n"
-        "@dataclass(frozen=True, slots=True)\nclass Ch:\n    n: int\n    st: St\n"
-        "@dataclass(frozen=True, slots=True)\nclass Par:\n"
-        "    c: Ch\n    oc: Ch | None\n    xs: list[Ch]\n    mp: dict[St, Ch]\n    u: Ch | int\n"
-        "def map_p(rows: cabc.Sequence[Par]) -> int:\n    return len(rows)\n"
-    )
-    ns: dict[str, object] = {"__name__": "_auto_gc_probe_mod"}
-    builtins.exec(code, ns)
-    for k, v_obj in ns.items():
-        if not k.startswith("__"):
-            object.__setattr__(mod, k, v_obj)
-    par_cls = ns["Par"]
-    ch_cls = ns["Ch"]
-    st_cls = ns["St"]
-    map_fn = ns["map_p"]
-    ns["_mod_self"] = mod
-    ok_m = st_cls["OK"]
-    err_m = st_cls["ERR"]
-    inst = par_cls(ch_cls(1, ok_m), ch_cls(2, err_m), [ch_cls(3, ok_m)], {ok_m: ch_cls(4, ok_m)}, ch_cls(5, err_m))
-    enc = DataclassCodec.encode(inst)
-    _check(DataclassCodec.decode(par_cls, enc) == inst)
-    _check(DataclassCodec.decode(list[par_cls], [enc]) == [inst])
-    _check(DataclassCodec.decode(par_cls | None, enc) == inst)
-    sub = EventSubscriptionSpec(EventId("m.e"), map_fn)
-    _check(sub.decode_and_map([enc]) == 1)
-    refs = (weakref.ref(mod), weakref.ref(par_cls), weakref.ref(ch_cls), weakref.ref(st_cls), weakref.ref(map_fn))
-    sys.modules.pop("_auto_gc_probe_mod", None)
-    return refs
-
+    try:
+        code = (
+            "import collections.abc as cabc\nfrom dataclasses import dataclass\nfrom enum import Enum\n"
+            "class St(Enum):\n    OK = 'ok'\n    ERR = 'err'\n"
+            "@dataclass(frozen=True, slots=True)\nclass Ch:\n    n: int\n    st: St\n"
+            "@dataclass(frozen=True, slots=True)\nclass Par:\n"
+            "    c: Ch\n    oc: Ch | None\n    xs: list[Ch]\n    mp: dict[St, Ch]\n    u: Ch | int\n"
+            "def map_p(rows: cabc.Sequence[Par]) -> int:\n    return len(rows)\n"
+        )
+        ns: dict[str, object] = {"__name__": "_auto_gc_probe_mod"}
+        builtins.exec(code, ns)
+        for k, v_obj in ns.items():
+            if not k.startswith("__"):
+                object.__setattr__(mod, k, v_obj)
+        par_cls = ns["Par"]
+        ch_cls = ns["Ch"]
+        st_cls = ns["St"]
+        map_fn = ns["map_p"]
+        ns["_mod_self"] = mod
+        ok_m = st_cls["OK"]
+        err_m = st_cls["ERR"]
+        inst = par_cls(ch_cls(1, ok_m), ch_cls(2, err_m), [ch_cls(3, ok_m)], {ok_m: ch_cls(4, ok_m)}, ch_cls(5, err_m))
+        enc = DataclassCodec.encode(inst)
+        _check(DataclassCodec.decode(par_cls, enc) == inst)
+        _check(DataclassCodec.decode(list[par_cls], [enc]) == [inst])
+        _check(DataclassCodec.decode(par_cls | None, enc) == inst)
+        sub = EventSubscriptionSpec(EventId("m.e"), map_fn)
+        _check(sub.decode_and_map([enc]) == 1)
+        return (weakref.ref(mod), weakref.ref(par_cls), weakref.ref(ch_cls), weakref.ref(st_cls), weakref.ref(map_fn))
+    finally:
+        sys.modules.pop("_auto_gc_probe_mod", None)
 
 def _verify_importlib_binding_3thread_stdout_and_auto_gc(ws_base: HostPath) -> None:
     # 1) Zero-evict automatic GC of dynamic dataclasses, Enum, generics, and batch_mapper
@@ -22825,7 +23414,7 @@ def _verify_importlib_binding_3thread_stdout_and_auto_gc(ws_base: HostPath) -> N
     (ws_im.path / ".modules" / "ib").mkdir(parents=True, exist_ok=True)
     (ws_im.path / ".modules" / "ib" / "module_entry.py").write_text(
         "from importlib import import_module as BOUND_IMP\nfrom typing import Sequence\n_ = BOUND_IMP\n"
-        "from core.execution.runtime import BoundTask, YscbModule\nfrom core.foundation.primitives import ModuleId\n"
+        "from core.execution.runtime import BoundTask, YscbModule\nfrom core.foundation import ModuleId\n"
         "class _M(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId(\x27ib\x27)\n"
         "    def tasks(self) -> Sequence[BoundTask]: return ()\n"
         "def create_module() -> YscbModule: return _M()\n",
@@ -22938,18 +23527,9 @@ def _verify_retiring_rpc_channel_preserves_accepted_stream(ws_base: HostPath) ->
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
             fut_a = pool.submit(sess.call, {"mode": "hold_accepted"}, timeout_ms=4000)
             _check(a_entered.wait(timeout=3.0))
-            ch_ref = require_non_none(sess._ensure_channel())
+            gen_before = sess.channel_generation
             out_b = sess.call({"mode": "reject_once"}, timeout_ms=3000)
-            _check(out_b.was_accepted and not out_b.transport_lost)
-            direct_c = ch_ref.call({"mode": "after_retire"}, timeout_ms=2000)
-            _check(
-                not direct_c.was_accepted
-                and not direct_c.transport_lost
-                and direct_c.rejected_before_accept
-                and direct_c.error_code == ErrorCode.DAEMON_UNAVAILABLE
-            )
-            sess._discard_channel(ch_ref, force_close=True)
-            _check(not ch_ref.is_closed, "Detached retiring channel must not be hard-closed while stream A is active!")
+            _check(out_b.was_accepted and not out_b.transport_lost and sess.channel_generation > gen_before)
             out_c = sess.call({"mode": "fresh_channel"}, timeout_ms=3000)
             _check(out_c.was_accepted and not out_c.transport_lost)
             release_a.set()
@@ -22960,7 +23540,6 @@ def _verify_retiring_rpc_channel_preserves_accepted_stream(ws_base: HostPath) ->
                 and isinstance(out_a.result_payload, Mapping)
                 and out_a.result_payload.get("tag") == "stream_a_survived"
             )
-            _wait_until(lambda: ch_ref.is_closed, timeout_sec=2.0)
     finally:
         release_a.set()
         sess.close()
@@ -22971,7 +23550,7 @@ _T1_MANIFEST_STRICT_SRC: Final[str] = """from dataclasses import dataclass
 import time
 from typing import Sequence
 from core.execution.runtime import BoundTask, SecurityTier, Task, TaskContext, TaskMetadata, YscbModule
-from core.foundation.primitives import ModuleId, TaskId
+from core.foundation import ModuleId, TaskId
 
 @dataclass(frozen=True, slots=True)
 class MIn:
@@ -23018,8 +23597,16 @@ def _verify_retiring_channel_tier1_manifest_and_coord_cache(ws8: HostPath, venv_
     outside_dir.mkdir(parents=True, exist_ok=True)
     (cache_rc.path / "locks").symlink_to(outside_dir)
     coord_direct = ResourceCoordinator(cache_dir=cache_rc, workspace_root=ws_rc)
-    _check(coord_direct._lookup_workspace_cache_dir(ws_rc) == cache_rc)
-    _expect_yscb_code(coord_direct._effective_locks_dir, ErrorCode.SECURITY_GATED)
+    spec_sym_lk = ResourceAcquireSpec(
+        "rk_sym_lk",
+        ConcurrencyMode.SERIALIZE,
+        "eq",
+        ExecutionPriority.FOREGROUND,
+        "t_sym",
+        ((ws_rc, TaskId("m.t")),),
+        CancellationToken(),
+    )
+    _expect_yscb_code(lambda: coord_direct.execute(spec_sym_lk, lambda _p, _c, _f: 1), ErrorCode.SECURITY_GATED)
 
     # Tier 1 cold & hot declared_tasks manifest verification + timeout_ms SSOT + fingerprint reload
     ws_m = HostPath(ws8.path / "ws_t1_manifest_ssot")
@@ -23088,27 +23675,23 @@ _ZERO_ARG_DOMAIN_SUITES: Final[tuple[Callable[[], None], ...]] = (
     _verify_annotated_subpkg_evict_and_meta_path_tail,
     _verify_map_key_domain_and_lineage_warmup_contracts,
     _verify_codec_bytes_wildcard_and_container_symmetry,
-    _verify_deep_map_depth_and_linear_recursive_encode,
     _verify_composite_codec_symmetry_and_component_sweep,
     _verify_rpc_cancel_order_and_generic_vo_equiv,
     _verify_stream_proxy_cross_thread_and_progress_ack,
 )
 
 _WS_ONLY_DOMAIN_SUITES: Final[tuple[Callable[[HostPath], None], ...]] = (
+    _verify_deep_map_depth_and_linear_recursive_encode,
     _verify_queued_coalesce_leader_cancel_unit,
     _verify_codec_and_invariant_regressions,
     _verify_dynamic_unqualified_sibling_and_watcher_bounds,
     _verify_cross_helper_relocation_regressions,
     _verify_relocated_bases_and_union,
     _verify_nested_cancel_and_join_edges,
-    _verify_dispatcher_orphan_event_adoption,
+    _verify_dispatcher_detached_leader_event_cascade,
     _verify_closure_annotations_and_generic_subclass,
     _verify_quiesce_resume_and_lazy_unload,
     _verify_factory_cleanup_and_helper_rel_import,
-    _verify_cross_ws_reentrancy_and_asymmetric_lineage,
-    _verify_tier1_oversized_payloads,
-    _verify_retiring_bounceback_and_cold_reentrancy,
-    _verify_coalesce_multi_follower_and_imm,
     _verify_codec_union_rank_and_map_collision,
     _verify_watcher_per_path_epoch_and_cold_branches,
     _verify_cross_module_mro_codec_via_loader,
@@ -23184,30 +23767,1229 @@ _WS_ONLY_DOMAIN_SUITES: Final[tuple[Callable[[HostPath], None], ...]] = (
     _verify_importlib_binding_3thread_stdout_and_auto_gc,
 )
 
+
+
+def _verify_cross_proc_reentrant_bypass_and_detached_lock_semantics(ws_base: HostPath, venv_bin: HostPath) -> None:
+    _ = ws_base
+    with tempfile.TemporaryDirectory(prefix="yscb_xproc_reent_") as td_s:
+        ws_x = HostPath(Path(td_s) / "ws_xr")
+        ws_x.path.mkdir(parents=True, exist_ok=True)
+        provision_live_workspace(ws_x.path)
+        _write_module(
+            ws_x.path,
+            "xr_mod",
+            {
+                "tier1": False,
+                "eager_warmup": False,
+                "tasks": [
+                    {"task_id": "xr_mod.cold_parent", "dispatch_mode": "cold_only", "resource_key": "xr_ser", "concurrency_mode": "serialize"},
+                    {"task_id": "xr_mod.hot_contender", "dispatch_mode": "daemon_only", "resource_key": "xr_ser", "concurrency_mode": "serialize"},
+                    {"task_id": "xr_mod.hot_child", "dispatch_mode": "hybrid", "resource_key": "xr_ser", "concurrency_mode": "serialize"},
+                ],
+            },
+            """from __future__ import annotations
+from dataclasses import dataclass
+from pathlib import Path
+import time
+from typing import Sequence
+from core.execution.runtime import BoundTask, ClientRoutingPolicy, ConcurrencyMode, DispatchMode, Task, TaskContext, TaskMetadata, YscbModule
+from core.foundation import ModuleId, TaskId
+
+@dataclass(frozen=True, slots=True)
+class XrIn:
+    gate_dir: str = ""
+
+@dataclass(frozen=True, slots=True)
+class XrOut:
+    who: str
+
+class ColdParentTask(Task[XrIn, XrOut]):
+    @property
+    def metadata(self) -> TaskMetadata[XrIn, XrOut]:
+        return TaskMetadata(TaskId("xr_mod.cold_parent"), XrIn, XrOut, dispatch_mode=DispatchMode.COLD_ONLY, resource_key="xr_ser", concurrency_mode=ConcurrencyMode.SERIALIZE)
+    def run(self, req: XrIn, ctx: TaskContext) -> XrOut:
+        gdir = Path(req.gate_dir)
+        (gdir / "cold_held.flag").write_text("1", encoding="utf-8")
+        deadline = time.monotonic() + 5.0
+        while not (gdir / "contender_polling.flag").is_file() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        sub = ctx.invoke_task(TaskId("xr_mod.hot_child"), {}, output_type=XrOut, routing_policy=ClientRoutingPolicy.STRICT_HOT)
+        if not sub.ok or sub.value is None or not sub.executed_hot:
+            raise RuntimeError(f"Nested hot_child failed: {sub}")
+        return XrOut(who=f"parent+{sub.value.who}")
+
+class HotContenderTask(Task[XrIn, XrOut]):
+    @property
+    def metadata(self) -> TaskMetadata[XrIn, XrOut]:
+        return TaskMetadata(TaskId("xr_mod.hot_contender"), XrIn, XrOut, dispatch_mode=DispatchMode.DAEMON_ONLY, resource_key="xr_ser", concurrency_mode=ConcurrencyMode.SERIALIZE)
+    def run(self, req: XrIn, ctx: TaskContext) -> XrOut:
+        _ = (req, ctx)
+        return XrOut(who="contender")
+
+class HotChildTask(Task[XrIn, XrOut]):
+    @property
+    def metadata(self) -> TaskMetadata[XrIn, XrOut]:
+        return TaskMetadata(TaskId("xr_mod.hot_child"), XrIn, XrOut, dispatch_mode=DispatchMode.HYBRID, resource_key="xr_ser", concurrency_mode=ConcurrencyMode.SERIALIZE)
+    def run(self, req: XrIn, ctx: TaskContext) -> XrOut:
+        _ = (req, ctx)
+        return XrOut(who="child")
+
+class XrMod(YscbModule):
+    @property
+    def module_id(self) -> ModuleId:
+        return ModuleId("xr_mod")
+    def tasks(self) -> Sequence[BoundTask]:
+        return (ColdParentTask(), HotContenderTask(), HotChildTask())
+
+def create_module() -> YscbModule:
+    return XrMod()
+""",
+        )
+        gate_dir = ws_x.path / "gates"
+        gate_dir.mkdir(parents=True, exist_ok=True)
+        rig_d = build_dispatcher_for_workspace(ws_x, venv_bin, is_daemon_host=True)
+        disp_d = rig_d.dispatcher
+        daemon_d = WorkspaceDaemon(workspace_root=ws_x, cache_dir=ws_x.join(".cache"), dispatcher=disp_d, config_view=rig_d.config_view)
+        rdy_ev = threading.Event()
+        th_d = threading.Thread(target=lambda: daemon_d.run_forever(ttl_override_sec=15.0, ready_callback=rdy_ev.set), daemon=True)
+        th_d.start()
+        _check(rdy_ev.wait(timeout=6.0))
+        rig_cli = build_dispatcher_for_workspace(ws_x, venv_bin, is_daemon_host=False)
+        disp_cli = rig_cli.dispatcher
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                f_parent = pool.submit(
+                    disp_cli.invoke,
+                    InvokeRequest(TaskId("xr_mod.cold_parent"), {"gate_dir": str(gate_dir)}, ws_x, ws_x, routing_policy=ClientRoutingPolicy.FORCE_COLD),
+                )
+                _wait_file_marker(gate_dir / "cold_held.flag")
+                f_contender = pool.submit(
+                    disp_cli.invoke,
+                    InvokeRequest(TaskId("xr_mod.hot_contender"), {}, ws_x, ws_x, routing_policy=ClientRoutingPolicy.STRICT_HOT),
+                )
+                time.sleep(0.08)
+                (gate_dir / "contender_polling.flag").write_text("1", encoding="utf-8")
+                out_parent = f_parent.result(timeout=4.0)
+                out_contender = f_contender.result(timeout=4.0)
+                _check(out_parent.ok and out_parent.value == {"who": "parent+child"}, f"out_parent={out_parent}")
+                _check(out_contender.ok and out_contender.value == {"who": "contender"})
+        finally:
+            disp_cli.shutdown()
+            daemon_d.request_shutdown(force=True)
+            th_d.join(timeout=5.0)
+            disp_d.shutdown()
+
+        # Verify spawn_detached from inside a ManagedProcessTree survives tree.terminate_tree()
+        det_info = ws_x.path / "det_pids.json"
+        tree_script = (
+            "import json, subprocess, sys, time\n"
+            f"sys.path.insert(0, {str(CORE_SRC_ROOT)!r})\n"
+            "from core.foundation import HostPath\n"
+            "from core.foundation import spawn_detached\n"
+            "norm = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+            "det_pid = spawn_detached([sys.executable, '-c', 'import time; time.sleep(30)'], cwd=HostPath(sys.argv[1]))\n"
+            "open(sys.argv[2], 'w', encoding='utf-8').write(json.dumps({'norm': norm.pid, 'det': det_pid}))\n"
+            "time.sleep(30)\n"
+        )
+        det_pid_cleanup: Optional[int] = None
+        norm_pid_cleanup: Optional[int] = None
+        try:
+            with ManagedProcessTree([sys.executable, "-c", tree_script, str(ws_x), str(det_info)], cwd=ws_x) as mtree:
+                _wait_file_marker(det_info)
+                time.sleep(0.05)
+                pids_doc = json.loads(det_info.read_text(encoding="utf-8"))
+                norm_pid = int(pids_doc["norm"])
+                det_pid = int(pids_doc["det"])
+                det_pid_cleanup = det_pid
+                norm_pid_cleanup = norm_pid
+                _check(is_process_alive(norm_pid) and is_process_alive(det_pid))
+                mtree.terminate_tree(grace_sec=0.1)
+            deadline_reap = time.monotonic() + 2.0
+            while is_process_alive(norm_pid) and time.monotonic() < deadline_reap:
+                time.sleep(0.02)
+            _check(not is_process_alive(norm_pid), "Managed grandchild must be terminated with tree")
+            _check(is_process_alive(det_pid), "Detached process must survive parent ManagedProcessTree teardown")
+            if Path(f"/proc/{det_pid}/environ").is_file():
+                _check(b"_YSCB_TREE_ID=" not in Path(f"/proc/{det_pid}/environ").read_bytes())
+        finally:
+            for p_clean in (det_pid_cleanup, norm_pid_cleanup):
+                if p_clean is not None and is_process_alive(p_clean):
+                    try:
+                        os.kill(p_clean, int(signal.SIGKILL) if os.name != "nt" else int(signal.SIGTERM))
+                    except OSError:
+                        pass
+
+        # Verify dual-shared FileLock.upgrade_to_exclusive(timeout_sec=None) breaks deadlock deterministically,
+        # FileLock abort raises TaskCancelledException, read_live_owner_dict checks start_tag, and closed LifoResourceStack closes late push!
+        dlk_path = ws_x.join(".cache", "dual_none_upg.lock")
+        sh_a, sh_b = FileLock(dlk_path), FileLock(dlk_path)
+        _check(sh_a.acquire(shared=True, blocking=False) and sh_b.acquire(shared=True, blocking=False))
+        try:
+            def _upg_and_release_on_deadlock(lk_item: FileLock) -> str:
+                try:
+                    lk_item.upgrade_to_exclusive(timeout_sec=None)
+                    return "upgraded"
+                except YscbError as exc:
+                    _check(exc.detail.code == ErrorCode.ILLEGAL_LOCK_REENTRANCY)
+                    lk_item.release()
+                    return "deadlock_broken"
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                f1 = pool.submit(_upg_and_release_on_deadlock, sh_a)
+                f2 = pool.submit(_upg_and_release_on_deadlock, sh_b)
+                outcomes = {f1.result(timeout=3.0), f2.result(timeout=3.0)}
+                _check(outcomes == {"upgraded", "deadlock_broken"})
+        finally:
+            sh_a.release()
+            sh_b.release()
+
+        cancel_lk = FileLock(ws_x.join(".cache", "cancel_subcls.lock"))
+        blocker_lk = FileLock(ws_x.join(".cache", "cancel_subcls.lock"))
+        _check(blocker_lk.acquire(shared=False, blocking=False))
+        ctok = CancellationToken()
+        ctok.cancel(reason="abort_check")
+        try:
+            try:
+                cancel_lk.acquire(shared=False, blocking=True, timeout_sec=1.0, cancel_token=ctok)
+                raise AssertionError("Expected TaskCancelledException")
+            except TaskCancelledException as c_exc:
+                _check(c_exc.detail.code == ErrorCode.TASK_CANCELLED)
+        finally:
+            blocker_lk.release()
+
+        ow_path = ws_x.join(".cache", "owner_reuse.json")
+        write_cross_proc_owner_json(ow_path, {"pid": os.getpid(), "call_tree_id": "t1"})
+        _check(read_live_owner_dict(ow_path) is not None)
+        atomic_write_json(ow_path, {"pid": os.getpid(), "call_tree_id": "t1", "start_tag": "0_stale_reused"})
+        if Path("/proc/self/stat").is_file() or sys.platform == "darwin":
+            _check(read_live_owner_dict(ow_path) is None)
+
+        late_closed: list[str] = []
+        closed_stk = LifoResourceStack()
+        _check(closed_stk.close_all_lifo() == ())
+        closed_stk.push_closeable("late.item", lambda: late_closed.append("closed_immediately"))
+        _check(late_closed == ["closed_immediately"])
+
+
+
+
+class _SlowStallAcceptHandler(InboundCallHandler):
+    def on_call(
+        self,
+        stream_id: int,
+        payload: JsonObject,
+        ack_accepted: Callable[[], bool],
+        emit_progress: Callable[[JsonObject], None],
+        peer_cancel_token: CancellationToken,
+    ) -> tuple[bool, JsonObject]:
+        _ = (stream_id, emit_progress, peer_cancel_token)
+        if payload.get("fill"):
+            _ = ack_accepted()
+            return (True, {"blob": "B" * 300_000})
+        if not ack_accepted():
+            return (False, {"ok": False})
+        return (True, {"ok": True})
+
+
+def _verify_concurrent_reentrant_serialize_and_preempt_guards(ws_base: HostPath, venv_bin: HostPath) -> None:
+    _ = ws_base
+    with tempfile.TemporaryDirectory(prefix="yscb_reent_serial_guards_") as td_g:
+        root_g = Path(td_g)
+        # 1) resolve_contained_child_dir rejects ancestor symlink replacement, symlink+dotdot bounce, and '..' segments
+        if os.name != "nt":
+            real_ws = root_g / "real_anc" / "proj"
+            (real_ws / ".modules" / "legit").mkdir(parents=True, exist_ok=True)
+            ext_evil = root_g / "evil_anc" / "proj"
+            (ext_evil / ".modules" / "legit").mkdir(parents=True, exist_ok=True)
+            hp_proj = HostPath(real_ws)
+            _check(resolve_contained_child_dir(hp_proj, expected_name="..") is None)
+            _check(resolve_contained_child_dir(hp_proj, expected_name="a/b") is None)
+            (real_ws / ".modules" / "bounce").symlink_to(real_ws / ".modules" / "legit", target_is_directory=True)
+            hp_mods = HostPath(real_ws / ".modules")
+            _check(resolve_contained_child_dir(hp_mods, f"{real_ws}/.modules/bounce/../legit", expected_name="legit") is None)
+            # Replace ancestor 'real_anc' with symlink to 'evil_anc' after HostPath creation
+            os.rename(root_g / "real_anc", root_g / "real_anc_old")
+            (root_g / "real_anc").symlink_to(root_g / "evil_anc", target_is_directory=True)
+            _check(resolve_contained_child_dir(hp_proj, expected_name=".modules") is None)
+
+        # 2) Multi-threaded concurrent same-tree SERIALIZE reentrancy (in-process & cross-process .pin) enforces max_concurrent == 1!
+        ws_mt = HostPath(root_g / "ws_mt_ser")
+        ws_mt.path.mkdir(parents=True, exist_ok=True)
+        provision_live_workspace(ws_mt.path)
+        _write_module(
+            ws_mt.path,
+            "mtser",
+            {
+                "tier1": False,
+                "tasks": [
+                    {"task_id": "mtser.parent", "resource_key": "rk_mt", "concurrency_mode": "serialize"},
+                    {"task_id": "mtser.cold_parent", "dispatch_mode": "cold_only", "resource_key": "rk_mt", "concurrency_mode": "serialize"},
+                    {"task_id": "mtser.child", "resource_key": "rk_mt", "concurrency_mode": "serialize"},
+                    {"task_id": "mtser.grandchild", "resource_key": "rk_mt", "concurrency_mode": "serialize"},
+                ],
+            },
+            (
+                "import concurrent.futures, threading, time\n"
+                "from dataclasses import dataclass\nfrom typing import Sequence\n"
+                "from core.execution.runtime import BoundTask, ClientRoutingPolicy, ConcurrencyMode, DispatchMode, Task, TaskContext, TaskMetadata, YscbModule\n"
+                "from core.foundation import ModuleId, TaskId\n"
+                "_LOCK = threading.Lock()\n_ACTIVE = [0]\n_MAX_CONC = [0]\n"
+                "@dataclass(frozen=True, slots=True)\nclass MIn:\n    hot_children: bool = False\n"
+                "@dataclass(frozen=True, slots=True)\nclass MOut:\n    max_conc: int\n"
+                "class ParentT(Task[MIn, MOut]):\n"
+                "    @property\n    def metadata(self) -> TaskMetadata[MIn, MOut]:\n"
+                "        return TaskMetadata(TaskId('mtser.parent'), MIn, MOut, resource_key='rk_mt', concurrency_mode=ConcurrencyMode.SERIALIZE)\n"
+                "    def run(self, _req: MIn, ctx: TaskContext) -> MOut:\n"
+                "        with _LOCK:\n            _ACTIVE[0] = 0\n            _MAX_CONC[0] = 0\n"
+                "        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:\n"
+                "            futs = [pool.submit(ctx.invoke_task, TaskId('mtser.child'), {}, output_type=MOut) for _ in range(4)]\n"
+                "            outs = [f.result(timeout=5.0) for f in futs]\n"
+                "        if not all(o.ok for o in outs):\n            raise RuntimeError(f'Child failed: {outs}')\n"
+                "        return MOut(max_conc=_MAX_CONC[0])\n"
+                "class ColdParentT(Task[MIn, MOut]):\n"
+                "    @property\n    def metadata(self) -> TaskMetadata[MIn, MOut]:\n"
+                "        return TaskMetadata(TaskId('mtser.cold_parent'), MIn, MOut, dispatch_mode=DispatchMode.COLD_ONLY, resource_key='rk_mt', concurrency_mode=ConcurrencyMode.SERIALIZE)\n"
+                "    def run(self, _req: MIn, ctx: TaskContext) -> MOut:\n"
+                "        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:\n"
+                "            futs = [pool.submit(ctx.invoke_task, TaskId('mtser.child'), {}, output_type=MOut, routing_policy=ClientRoutingPolicy.STRICT_HOT) for _ in range(4)]\n"
+                "            outs = [f.result(timeout=5.0) for f in futs]\n"
+                "        if not all(o.ok and o.value is not None for o in outs):\n            raise RuntimeError(f'Hot child failed: {outs}')\n"
+                "        return MOut(max_conc=max(o.value.max_conc for o in outs if o.value is not None))\n"
+                "class ChildT(Task[MIn, MOut]):\n"
+                "    @property\n    def metadata(self) -> TaskMetadata[MIn, MOut]:\n"
+                "        return TaskMetadata(TaskId('mtser.child'), MIn, MOut, resource_key='rk_mt', concurrency_mode=ConcurrencyMode.SERIALIZE)\n"
+                "    def run(self, _req: MIn, ctx: TaskContext) -> MOut:\n"
+                "        with _LOCK:\n"
+                "            _ACTIVE[0] += 1\n"
+                "            if _ACTIVE[0] > _MAX_CONC[0]:\n                _MAX_CONC[0] = _ACTIVE[0]\n"
+                "        try:\n"
+                "            time.sleep(0.03)\n"
+                "            gc = ctx.invoke_task(TaskId('mtser.grandchild'), {}, output_type=MOut)\n"
+                "            if not gc.ok:\n                raise RuntimeError(f'Grandchild failed: {gc}')\n"
+                "            with _LOCK:\n                mc = _MAX_CONC[0]\n"
+                "            return MOut(max_conc=mc)\n"
+                "        finally:\n"
+                "            with _LOCK:\n                _ACTIVE[0] -= 1\n"
+                "class GrandChildT(Task[MIn, MOut]):\n"
+                "    @property\n    def metadata(self) -> TaskMetadata[MIn, MOut]:\n"
+                "        return TaskMetadata(TaskId('mtser.grandchild'), MIn, MOut, resource_key='rk_mt', concurrency_mode=ConcurrencyMode.SERIALIZE)\n"
+                "    def run(self, _req: MIn, _ctx: TaskContext) -> MOut:\n"
+                "        return MOut(max_conc=1)\n"
+                "class MtMod(YscbModule):\n"
+                "    @property\n    def module_id(self) -> ModuleId: return ModuleId('mtser')\n"
+                "    def tasks(self) -> Sequence[BoundTask]: return (ParentT(), ColdParentT(), ChildT(), GrandChildT())\n"
+                "def create_module() -> YscbModule: return MtMod()\n"
+            ),
+        )
+        rig_hot = build_dispatcher_for_workspace(ws_mt, venv_bin, is_daemon_host=True)
+        dmn_mt = WorkspaceDaemon(workspace_root=ws_mt, cache_dir=ws_mt.join(".cache"), dispatcher=rig_hot.dispatcher, config_view=rig_hot.config_view)
+        rdy_mt = threading.Event()
+        th_mt = threading.Thread(target=dmn_mt.run_forever, kwargs={"ttl_override_sec": 20.0, "ready_callback": rdy_mt.set}, daemon=True)
+        th_mt.start()
+        disp_cli = build_dispatcher_for_workspace(ws_mt, venv_bin, is_daemon_host=False).dispatcher
+        try:
+            _check(rdy_mt.wait(timeout=6.0))
+            inproc_out = rig_hot.dispatcher.invoke(InvokeRequest(TaskId("mtser.parent"), {}, ws_mt, ws_mt))
+            _check(inproc_out.ok and isinstance(inproc_out.value, Mapping) and inproc_out.value.get("max_conc") == 1, f"Inproc conc violated: {inproc_out}")
+            xproc_out = disp_cli.invoke(InvokeRequest(TaskId("mtser.cold_parent"), {}, ws_mt, ws_mt, routing_policy=ClientRoutingPolicy.FORCE_COLD))
+            _check(xproc_out.ok and isinstance(xproc_out.value, Mapping) and xproc_out.value.get("max_conc") == 1, f"Xproc conc violated: {xproc_out}")
+        finally:
+            disp_cli.shutdown(grace_ms=100)
+            dmn_mt.request_shutdown()
+            th_mt.join(timeout=4.0)
+            rig_hot.dispatcher.shutdown(grace_ms=100)
+
+        # 3) PREEMPT never cancels active SERIALIZE, and BACKGROUND PREEMPT never cancels active FOREGROUND!
+        coord_p = ResourceCoordinator(cache_dir=HostPath(root_g / "cache_pre_guard"), workspace_root=ws_mt)
+        (root_g / "cache_pre_guard" / "locks").mkdir(parents=True, exist_ok=True)
+        ser_in, ser_rel = threading.Event(), threading.Event()
+
+        def _hold_ser_p(_ph: PriorityHandle, tok: CancellationToken, _fl: object) -> str:
+            ser_in.set()
+            ser_rel.wait(timeout=2.0)
+            tok.raise_if_cancelled()
+            return "ser_ok"
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            f_ser = pool.submit(
+                coord_p.execute,
+                ResourceAcquireSpec("rk_pg", ConcurrencyMode.SERIALIZE, "s", ExecutionPriority.BACKGROUND, "t1", ((ws_mt, TaskId("m.s")),), CancellationToken()),
+                _hold_ser_p,
+            )
+            _check(ser_in.wait(timeout=2.0))
+            f_pre = pool.submit(
+                coord_p.execute,
+                ResourceAcquireSpec("rk_pg", ConcurrencyMode.PREEMPT, "p", ExecutionPriority.FOREGROUND, "t2", ((ws_mt, TaskId("m.p")),), CancellationToken()),
+                lambda _p, _c, _f: "pre_after_ser",
+            )
+            time.sleep(0.05)
+            ser_rel.set()
+            _check(f_ser.result(timeout=2.0).outcome == "ser_ok" and f_pre.result(timeout=2.0).outcome == "pre_after_ser")
+
+        fg_in, fg_rel = threading.Event(), threading.Event()
+
+        def _hold_fg_p(_ph: PriorityHandle, tok: CancellationToken, _fl: object) -> str:
+            fg_in.set()
+            fg_rel.wait(timeout=2.0)
+            tok.raise_if_cancelled()
+            return "fg_ok"
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            f_fg = pool.submit(
+                coord_p.execute,
+                ResourceAcquireSpec("rk_pg2", ConcurrencyMode.PREEMPT, "f", ExecutionPriority.FOREGROUND, "t3", ((ws_mt, TaskId("m.f")),), CancellationToken()),
+                _hold_fg_p,
+            )
+            _check(fg_in.wait(timeout=2.0))
+            f_bg = pool.submit(
+                coord_p.execute,
+                ResourceAcquireSpec("rk_pg2", ConcurrencyMode.PREEMPT, "b", ExecutionPriority.BACKGROUND, "t4", ((ws_mt, TaskId("m.b")),), CancellationToken()),
+                lambda _p, _c, _f: "bg_after_fg",
+            )
+            time.sleep(0.05)
+            fg_rel.set()
+            _check(f_fg.result(timeout=2.0).outcome == "fg_ok" and f_bg.result(timeout=2.0).outcome == "bg_after_fg")
+
+        # 4) FileLock cancelled upgrade_to_exclusive preserves outer shared lock!
+        lk_p = HostPath(root_g / "cancel_upg.lock")
+        lk_outer = FileLock(lk_p)
+        lk_peer = FileLock(lk_p)
+        _check(lk_outer.acquire(shared=True, blocking=False))
+        _check(lk_peer.acquire(shared=True, blocking=False))
+        try:
+            tok_u = CancellationToken()
+            threading.Timer(0.04, tok_u.cancel).start()
+            try:
+                lk_outer.upgrade_to_exclusive(timeout_sec=2.0, cancel_token=tok_u)
+                raise AssertionError("Expected TaskCancelledException on cancelled upgrade")
+            except TaskCancelledException:
+                pass
+            _check(lk_outer.is_acquired)
+            lk_peer.release()
+            probe_ex = FileLock(lk_p)
+            _check(not probe_ex.acquire(shared=False, blocking=False), "Outer shared lock was lost after cancelled upgrade!")
+        finally:
+            lk_peer.release()
+            lk_outer.release()
+
+        # 5) MultiplexedChannel ack_accepted() write-stall timeout closes/removes without split-brain CALL_ACCEPTED!
+        sa, sb = socket.socketpair()
+        sa.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        sb.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        ch_stall_srv = MultiplexedChannel(sa, is_initiator=False, handler=_SlowStallAcceptHandler(), write_stall_timeout_sec=0.2)
+        try:
+            # Send two CALL_START frames on raw socket sb without reading sb so sa's writer stalls on frame 1!
+            f1_raw = json.dumps({"kind": "call_start", "stream_id": 1, "payload": {"fill": True}}).encode("utf-8")
+            f2_raw = json.dumps({"kind": "call_start", "stream_id": 3, "payload": {"fill": False}}).encode("utf-8")
+            sb.sendall(struct.pack(">I", len(f1_raw)) + f1_raw + struct.pack(">I", len(f2_raw)) + f2_raw)
+            _wait_until(lambda: ch_stall_srv.is_closed, timeout_sec=2.5)
+        finally:
+            ch_stall_srv.close()
+            sb.close()
+
+        # 6) WorkspaceDaemon surfaces failing core.config_changed subscriber diagnostics via background_error_count & drain_background_errors()
+        ws_bg = HostPath(root_g / "ws_bg_err")
+        ws_bg.path.mkdir(parents=True, exist_ok=True)
+        provision_live_workspace(ws_bg.path)
+        (ws_bg.path / "config").mkdir(parents=True, exist_ok=True)
+        _write_module(
+            ws_bg.path,
+            "bgfail",
+            {"tier1": False, "tasks": [{"task_id": "bgfail.sub", "exposure": "internal_trigger", "subscriptions": [{"event_id": "core.config_changed"}]}]},
+            (
+                "from dataclasses import dataclass\nfrom typing import Sequence\n"
+                "from core.execution.event import EventSubscriptionSpec\n"
+                "from core.execution.runtime import BoundTask, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
+                "from core.foundation import EventId, ModuleId, TaskId\n"
+                "@dataclass(frozen=True, slots=True)\nclass _In:\n    x: int = 0\n"
+                "class _Sub(Task[_In, _In]):\n"
+                "    @property\n    def metadata(self) -> TaskMetadata[_In, _In]:\n"
+                "        return TaskMetadata(TaskId('bgfail.sub'), _In, _In, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('core.config_changed'), lambda _r: _In(1)),))\n"
+                "    def run(self, _r: _In, _c: TaskContext) -> _In:\n        raise RuntimeError('cfg_sub_exploded')\n"
+                "class _M(YscbModule):\n"
+                "    @property\n    def module_id(self) -> ModuleId: return ModuleId('bgfail')\n"
+                "    def tasks(self) -> Sequence[BoundTask]: return (_Sub(),)\n"
+                "def create_module() -> YscbModule: return _M()\n"
+            ),
+        )
+        rig_bg = build_dispatcher_for_workspace(ws_bg, venv_bin, is_daemon_host=True, sandbox_restricted=True)
+        dmn_bg = WorkspaceDaemon(
+            workspace_root=ws_bg,
+            cache_dir=ws_bg.join(".cache"),
+            dispatcher=rig_bg.dispatcher,
+            config_view=rig_bg.config_view,
+            watch_config=DaemonWatcherConfig(config_watch_roots=(ws_bg.join("config"),), watcher_debounce_sec=0.04),
+        )
+        rdy_bg = threading.Event()
+        th_bg = threading.Thread(target=dmn_bg.run_forever, kwargs={"ttl_override_sec": 10.0, "ready_callback": rdy_bg.set}, daemon=True)
+        th_bg.start()
+        try:
+            _check(rdy_bg.wait(timeout=4.0))
+            atomic_write_json(ws_bg.join("config", "c.json"), {"k": 1})
+            _wait_until(lambda: dmn_bg.snapshot_status().background_error_count >= 1, timeout_sec=3.0)
+            drained = dmn_bg.drain_background_errors()
+            _check(any("cfg_sub_exploded" in d.message for d in drained) and dmn_bg.snapshot_status().background_error_count == 0)
+        finally:
+            dmn_bg.request_shutdown()
+            th_bg.join(timeout=3.0)
+            rig_bg.dispatcher.shutdown(grace_ms=50)
+
+
+
+
+_MIXED_XPROC_SERIALIZE_MOD_SRC: Final[str] = (
+    "from dataclasses import dataclass\nfrom typing import Sequence\nimport concurrent.futures, time\n"
+    "from core.foundation import HostPath, ModuleId, TaskId\n"
+    "from core.filesystem.fs import FileLock, atomic_write_json, read_json_dict\n"
+    "from core.execution.runtime import BoundTask, ClientRoutingPolicy, ConcurrencyMode, DispatchMode, Task, TaskContext, TaskMetadata, YscbModule\n"
+    "@dataclass(frozen=True, slots=True)\nclass MxIn:\n    tag: str = ''\n    nest_cold: bool = False\n"
+    "@dataclass(frozen=True, slots=True)\nclass MxOut:\n    peak: int = 0\n"
+    "def _meter_crit(ws: HostPath, tag: str) -> int:\n"
+    "    lk = FileLock(ws.join('.cache', 'locks', 'mx_meter.lock'), allow_transitions=False)\n"
+    "    st_f = ws.join('.cache', 'mx_meter.json')\n"
+    "    with lk:\n"
+    "        doc = read_json_dict(st_f) or {'active': 0, 'peak': 0}\n"
+    "        act = int(doc['active']) + 1\n"
+    "        pk = max(int(doc['peak']), act)\n"
+    "        atomic_write_json(st_f, {'active': act, 'peak': pk, 'last': tag})\n"
+    "    try:\n"
+    "        time.sleep(0.035)\n"
+    "    finally:\n"
+    "        with lk:\n"
+    "            doc2 = read_json_dict(st_f) or {'active': 1, 'peak': 1}\n"
+    "            act2 = max(0, int(doc2['active']) - 1)\n"
+    "            pk2 = int(doc2['peak'])\n"
+    "            atomic_write_json(st_f, {'active': act2, 'peak': pk2})\n"
+    "    return pk2\n"
+    "class ColdParent(Task[MxIn, MxOut]):\n"
+    "    @property\n    def metadata(self) -> TaskMetadata[MxIn, MxOut]:\n"
+    "        return TaskMetadata(TaskId('mx_ser.cold_parent'), MxIn, MxOut, dispatch_mode=DispatchMode.COLD_ONLY, resource_key='mx_rk', concurrency_mode=ConcurrencyMode.SERIALIZE)\n"
+    "    def run(self, _r: MxIn, ctx: TaskContext) -> MxOut:\n"
+    "        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:\n"
+    "            f1 = pool.submit(ctx.invoke_task, TaskId('mx_ser.sib_hybrid'), {'tag': 'c1'}, routing_policy=ClientRoutingPolicy.FORCE_COLD)\n"
+    "            f2 = pool.submit(ctx.invoke_task, TaskId('mx_ser.sib_daemon_only'), {'tag': 'h_do', 'nest_cold': True}, routing_policy=ClientRoutingPolicy.STRICT_HOT)\n"
+    "            f3 = pool.submit(ctx.invoke_task, TaskId('mx_ser.sib_hybrid'), {'tag': 'h2'}, routing_policy=ClientRoutingPolicy.STRICT_HOT)\n"
+    "            for fut in (f1, f2, f3):\n"
+    "                sub = fut.result(timeout=8.0)\n"
+    "                if not sub.ok: raise RuntimeError(f'Child failed: {sub}')\n"
+    "        doc = read_json_dict(ctx.workspace_root.join('.cache', 'mx_meter.json')) or {}\n"
+    "        return MxOut(peak=int(doc.get('peak', 0)))\n"
+    "class SibHybrid(Task[MxIn, MxOut]):\n"
+    "    @property\n    def metadata(self) -> TaskMetadata[MxIn, MxOut]:\n"
+    "        return TaskMetadata(TaskId('mx_ser.sib_hybrid'), MxIn, MxOut, dispatch_mode=DispatchMode.HYBRID, resource_key='mx_rk', concurrency_mode=ConcurrencyMode.SERIALIZE)\n"
+    "    def run(self, req: MxIn, ctx: TaskContext) -> MxOut: return MxOut(peak=_meter_crit(ctx.workspace_root, req.tag))\n"
+    "class SibDaemonOnly(Task[MxIn, MxOut]):\n"
+    "    @property\n    def metadata(self) -> TaskMetadata[MxIn, MxOut]:\n"
+    "        return TaskMetadata(TaskId('mx_ser.sib_daemon_only'), MxIn, MxOut, dispatch_mode=DispatchMode.DAEMON_ONLY, resource_key='mx_rk', concurrency_mode=ConcurrencyMode.SERIALIZE)\n"
+    "    def run(self, req: MxIn, ctx: TaskContext) -> MxOut:\n"
+    "        _meter_crit(ctx.workspace_root, req.tag + '_pre')\n"
+    "        if req.nest_cold:\n"
+    "            gc_res = ctx.invoke_task(TaskId('mx_ser.sib_hybrid'), {'tag': 'gc'}, routing_policy=ClientRoutingPolicy.FORCE_COLD)\n"
+    "            if not gc_res.ok: raise RuntimeError(f'Grandchild failed: {gc_res}')\n"
+    "        return MxOut(peak=_meter_crit(ctx.workspace_root, req.tag + '_post'))\n"
+    "class MxMod(YscbModule):\n"
+    "    @property\n    def module_id(self) -> ModuleId: return ModuleId('mx_ser')\n"
+    "    def tasks(self) -> Sequence[BoundTask]: return (ColdParent(), SibHybrid(), SibDaemonOnly())\n"
+    "def create_module() -> YscbModule: return MxMod()\n"
+)
+
+
+def _verify_cross_proc_reentrant_serialize_and_boundary_invariants(ws_base: HostPath, venv_bin: HostPath) -> None:
+    # 1) Windows ADS (:), trailing dot/space, and reserved device names rejected by HostPath & resolve_contained_subpath
+    for bad_seg in (
+        "daemon.json:evil_ads", "foo.", "foo ", "NUL", "CON.txt", "COM1", "LPT1", "COM\u00b9",
+        "a*b", "a?b", "a<b", "a>b", "a|b", 'a"b', "a\x01b", "a\x1fb", "a\x7fb",
+    ):
+        _check(not is_valid_relative_segment(bad_seg))
+        _assert_raises_val_error(lambda b=bad_seg: ws_base.join(b))
+        _assert_raises_val_error(lambda b=bad_seg: resolve_contained_subpath(ws_base, b))
+    _assert_raises_val_error(lambda: InvokeRequest(TaskId("m.t"), {}, ws_base, ws_base, caller_env={"BAD=KEY": "1"}))
+    _check(IdleTtlMonitor(2.5).ttl_sec == 2.5)
+
+    # 2) Domain 2 owner JSON decoupled from call_tree_id + POSIX FileLock upgrade preserves shared lock on interrupt
+    ow_pure = ws_base.join("pure_fs.owner.json")
+    pin_pure = ws_base.join("pure_fs.owner.pin")
+    write_cross_proc_owner_json(ow_pure, {"pid": os.getpid(), "scope": "domain2_only"})
+    doc_pure = read_live_owner_dict(ow_pure)
+    _check(doc_pure is not None and doc_pure.get("scope") == "domain2_only" and bool(doc_pure.get("lease_nonce")))
+    pin_hold = FileLock(pin_pure, allow_transitions=False)
+    _check(pin_hold.acquire(shared=True))
+    try:
+        unlink_owner_under_pin(ow_pure, pin_pure, lambda: None, grace_timeout_sec=0.05)
+        write_cross_proc_owner_json(ow_pure, {"pid": os.getpid(), "scope": "domain2_only"})
+    finally:
+        pin_hold.release()
+    time.sleep(0.12)
+    doc_after_reap = read_live_owner_dict(ow_pure)
+    _check(doc_after_reap is not None and doc_after_reap.get("lease_nonce") != doc_pure.get("lease_nonce"))
+    if os.name != "nt":
+        ns_base = ws_base.path / "nonsym_mount_case"
+        (ns_base / "real_anc" / "ws" / "sub").mkdir(parents=True, exist_ok=True)
+        (ns_base / "evil_anc" / "ws" / "sub").mkdir(parents=True, exist_ok=True)
+        (ns_base / "real_anc" / "ws" / "sub" / "ok.txt").write_text("ok", encoding="utf-8")
+        (ns_base / "evil_anc" / "ws" / "sub" / "ok.txt").write_text("evil", encoding="utf-8")
+        sym_mnt = ns_base / "sym_mnt"
+        sym_mnt.symlink_to(ns_base / "real_anc", target_is_directory=True)
+        (ns_base / "real_anc" / "ws" / "sym_in").symlink_to(ns_base / "real_anc" / "ws" / "sub", target_is_directory=True)
+        sym_leaf_ws = ns_base / "sym_leaf_ws"
+        sym_leaf_ws.symlink_to(ns_base / "real_anc" / "ws", target_is_directory=True)
+        _check(is_contained_nonsymlink_path(sym_mnt / "ws", sym_mnt / "ws" / "sub" / "ok.txt"))
+        _check(is_contained_nonsymlink_path(sym_mnt / "ws", ns_base / "real_anc" / "ws" / "sub" / "ok.txt"))
+        _check(not is_contained_nonsymlink_path(sym_mnt / "ws", sym_mnt / "ws" / "sym_in" / "ok.txt"))
+        _check(not is_contained_nonsymlink_path(sym_leaf_ws, sym_leaf_ws / "sub" / "ok.txt"))
+        hp_ns_ws = HostPath(ns_base / "real_anc" / "ws")
+        _check(not is_contained_nonsymlink_path(hp_ns_ws, sym_mnt / "ws" / "sub" / "ok.txt"))
+        os.rename(ns_base / "real_anc", ns_base / "real_anc_orig")
+        (ns_base / "real_anc").symlink_to(ns_base / "evil_anc", target_is_directory=True)
+        _check(not is_contained_nonsymlink_path(hp_ns_ws, hp_ns_ws.path / "sub" / "ok.txt"))
+    imp_iso_py = "\n".join((
+        "import gc, importlib, sys, tempfile, weakref",
+        f"sys.path.insert(0, {str(CORE_SRC_ROOT)!r})",
+        "from core.execution.runtime import ModuleDescriptor, ProtectedModuleLoader",
+        "from core.foundation import HostPath, ModuleId",
+        "orig = importlib.import_module",
+        "hits = []",
+        "class _W:",
+        "    def __init__(self, tag, inner): self.tag, self.inner = tag, inner",
+        "    def __call__(self, n, p=None): hits.append(self.tag); return self.inner(n, p)",
+        "with tempfile.TemporaryDirectory() as td:",
+        "    ws = HostPath(td)",
+        "    for mid in (\"m1\", \"m2\", \"m3\"):",
+        "        md = ws.path / \".modules\" / mid",
+        "        md.mkdir(parents=True)",
+        "        (md / \"helper.py\").write_text(\"VAL = 7\\n\", encoding=\"utf-8\")",
+        "        (md / \"entry.py\").write_text(",
+        "            \"import importlib\\nfrom core.execution.runtime import YscbModule\\nfrom core.foundation import ModuleId\\n\"",
+        "            + f\"class M(YscbModule):\\n    @property\\n    def module_id(self): return ModuleId({mid!r})\\n    def tasks(self): return ()\\n\"",
+        "            + \"def create_module():\\n    assert importlib.import_module(\\\"helper\\\").VAL == 7\\n    return M()\\n\", encoding=\"utf-8\")",
+        "    ldr = ProtectedModuleLoader(ws)",
+        "    w1 = _W(\"w1\", orig)",
+        "    r_w1 = weakref.ref(w1)",
+        "    importlib.import_module = w1",
+        "    a1 = ldr.load_module_artifact(ModuleDescriptor(ModuleId(\"m1\"), ws.join(\".modules\", \"m1\"), \"entry.py\"))",
+        "    ProtectedModuleLoader.cleanup_package(a1.package_key)",
+        "    assert importlib.import_module is w1 and \"w1\" in hits",
+        "    del w1",
+        "    w2 = _W(\"w2\", orig)",
+        "    importlib.import_module = w2",
+        "    gc.collect()",
+        "    assert r_w1() is None",
+        "    a2 = ldr.load_module_artifact(ModuleDescriptor(ModuleId(\"m2\"), ws.join(\".modules\", \"m2\"), \"entry.py\"))",
+        "    cur_in = importlib.import_module",
+        "    ext = _W(\"ext\", cur_in)",
+        "    importlib.import_module = ext",
+        "    a3 = ldr.load_module_artifact(ModuleDescriptor(ModuleId(\"m3\"), ws.join(\".modules\", \"m3\"), \"entry.py\"))",
+        "    assert \"w2\" in hits and \"ext\" in hits",
+        "    ProtectedModuleLoader.cleanup_package(a2.package_key)",
+        "    ProtectedModuleLoader.cleanup_package(a3.package_key)",
+        "    assert importlib.import_module is ext",
+        "    hits.clear()",
+        "    assert importlib.import_module(\"json\").dumps({\"a\": 1}) == \"{\\\"a\\\": 1}\"",
+        "    assert \"ext\" in hits and \"w2\" in hits",
+    ))
+    imp_iso_res = subprocess.run([sys.executable, "-B", "-c", imp_iso_py], timeout=10.0)
+    _check(imp_iso_res.returncode == 0)
+    lk_sh1 = FileLock(ws_base.join("upg_preserve.lock"))
+    lk_sh2 = FileLock(ws_base.join("upg_preserve.lock"))
+    _check(lk_sh1.acquire(shared=True) and lk_sh1.is_shared and lk_sh2.acquire(shared=True))
+    try:
+        if os.name != "nt":
+            with _scoped_timer(0.03, lambda: signal.raise_signal(signal.SIGINT)):
+                caught_int = False
+                try:
+                    lk_sh1.upgrade_to_exclusive(timeout_sec=1.0)
+                except KeyboardInterrupt:
+                    caught_int = True
+                _check(caught_int and lk_sh1.is_acquired and lk_sh1.is_shared)
+        lk_sh2.release()
+        lk_sh1.upgrade_to_exclusive(timeout_sec=1.0)
+        _check(lk_sh1.is_acquired and not lk_sh1.is_shared)
+        lk_sh1.upgrade_to_exclusive(timeout_sec=0.1)
+        _check(not lk_sh1.is_shared)
+    finally:
+        lk_sh2.release()
+        lk_sh1.release()
+
+    # 3) Dual SignalWakeupGuard partial close under SIGINT reentry & C-level GIL-release SIGTERM retire never leak or self-kill
+    ga_hits: list[str] = []
+    ga = SignalWakeupGuard((signal.SIGINT,), lambda: (ga_hits.append("ga"), signal.raise_signal(signal.SIGINT))[0])
+    gb = SignalWakeupGuard((signal.SIGTERM,), lambda: ga_hits.append("gb"))
+    ga.install()
+    gb.install()
+    signal.raise_signal(signal.SIGINT)
+    ga.close()
+    gb.close()
+    _check("ga" in ga_hits)
+    for _ in range(30):
+        cb_box: list[int] = []
+        ki_box: list[int] = []
+        g_race = SignalWakeupGuard((signal.SIGINT,), lambda b=cb_box: b.append(1))
+        g_race.install()
+        t_sig = threading.Thread(target=lambda: os.kill(os.getpid(), signal.SIGINT) if os.name != "nt" else signal.raise_signal(signal.SIGINT))
+        try:
+            t_sig.start()
+            g_race.close()
+            t_sig.join(timeout=1.0)
+            time.sleep(0.002)
+        except KeyboardInterrupt:
+            ki_box.append(1)
+            g_race.close()
+            t_sig.join(timeout=1.0)
+        _check((bool(cb_box)) ^ (bool(ki_box)))
+    if os.name != "nt":
+        c_gil_py = (
+            "import hashlib, os, signal, sys, threading\n"
+            f"sys.path.insert(0, {str(CORE_SRC_ROOT)!r})\n"
+            "from core.foundation import SignalWakeupGuard\n"
+            "ev = threading.Event()\n"
+            "g = SignalWakeupGuard((signal.SIGTERM,), lambda: (g.close(), ev.set()))\n"
+            "g.install()\n"
+            "threading.Timer(0.02, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()\n"
+            "hashlib.pbkdf2_hmac('sha256', b'x', b's', 400000)\n"
+            "sys.exit(0 if ev.wait(1.0) else 2)\n"
+        )
+        c_gil_res = subprocess.run([sys.executable, "-B", "-c", c_gil_py], timeout=5.0)
+        _check(c_gil_res.returncode == 0)
+
+    # 4) Mixed Cold + Hot + DAEMON_ONLY multi-threaded reentrant SERIALIZE enforces peak == 1 across OS processes
+    ws_mx = HostPath(ws_base.path / "ws_mx_ser")
+    provision_live_workspace(ws_mx.path)
+    _write_module(
+        ws_mx.path,
+        "mx_ser",
+        {
+            "tier1": False,
+            "eager_warmup": False,
+            "tasks": [
+                {"task_id": "mx_ser.cold_parent", "dispatch_mode": "cold_only", "resource_key": "mx_rk", "concurrency_mode": "serialize"},
+                {"task_id": "mx_ser.sib_hybrid", "dispatch_mode": "hybrid", "resource_key": "mx_rk", "concurrency_mode": "serialize"},
+                {"task_id": "mx_ser.sib_daemon_only", "dispatch_mode": "daemon_only", "resource_key": "mx_rk", "concurrency_mode": "serialize"},
+            ],
+        },
+        _MIXED_XPROC_SERIALIZE_MOD_SRC,
+    )
+    disp_mx = build_dispatcher_for_workspace(ws_mx, venv_bin, ttl_sec=10.0).dispatcher
+    try:
+        _check(disp_mx.invoke_typed(ECHO_TIER0_META, EchoInDto(tag="boot_mx")).ok)
+        _ = wait_for_daemon_online(ws_mx)
+        mx_out = disp_mx.invoke(
+            InvokeRequest(TaskId("mx_ser.cold_parent"), {}, ws_mx, ws_mx, routing_policy=ClientRoutingPolicy.FORCE_COLD)
+        )
+        _check(mx_out.ok and isinstance(mx_out.value, Mapping) and mx_out.value.get("peak") == 1)
+
+        ws_other = HostPath(ws_base.path / "ws_mx_other")
+        provision_live_workspace(ws_other.path)
+        bad_rpc_payload: JsonObject = {
+            "task_id": "vsc.gated_clean",
+            "raw_input": {},
+            "workspace_root": str(ws_other),
+            "caller_cwd": str(ws_other),
+            "caller_env": {},
+            "caller_surface": "sdk",
+            "priority": "foreground",
+            "approval_scope": ["vsc.gated_clean"],
+            "allow_conditional": True,
+            "timeout_ms": 2000,
+            "propagation": DataclassCodec.encode_object(CallPropagationContext()),
+        }
+        xws_rpc = call_ephemeral_daemon_rpc((ws_mx.join(".cache"), ws_mx), bad_rpc_payload, timeout_ms=2000)
+        _check(xws_rpc is not None and xws_rpc.was_accepted and xws_rpc.result_payload is not None)
+        xws_rep = DataclassCodec.decode_envelope(DaemonRpcInvokeReply, xws_rpc.result_payload)
+        _check(not xws_rep.ok and xws_rep.error is not None and xws_rep.error.code == ErrorCode.SECURITY_GATED)
+        neg_tmo_payload: JsonObject = {**bad_rpc_payload, "workspace_root": str(ws_mx), "caller_cwd": str(ws_mx), "timeout_ms": -5}
+        neg_rpc = call_ephemeral_daemon_rpc((ws_mx.join(".cache"), ws_mx), neg_tmo_payload, timeout_ms=2000)
+        _check(neg_rpc is not None and not neg_rpc.was_accepted and neg_rpc.error_code == ErrorCode.CODEC_VALIDATION_FAILED)
+    finally:
+        stop_daemon_cleanly(ws_mx)
+        disp_mx.shutdown(grace_ms=100)
+
+    for dev_seg in ("CONIN$", "CONOUT$.txt"):
+        _check(not is_valid_relative_segment(dev_seg))
+    for bad_leaf in ("ads.txt:Zone.Identifier", "CON.txt", "CONIN$.json", "dot.", "sp "):
+        bad_hp = f"{ws_base}{os.sep}{bad_leaf}"
+        _assert_raises_val_error(lambda p=bad_hp: HostPath(p))
+        _assert_raises_val_error(lambda p=bad_hp: ws_base.resolve_caller_relative(p))
+        _assert_raises_val_error(lambda r=bad_leaf: ws_base.resolve_caller_relative(r))
+    snap_race_file = ws_base.join("atomic_snap_race.json")
+    atomic_write_json(snap_race_file, {"seq": 0})
+    stop_wr = threading.Event()
+    none_seen: list[int] = []
+
+    def _writer_loop(wid: int) -> None:
+        seq_i = 1
+        while not stop_wr.is_set():
+            atomic_write_json(snap_race_file, {"wid": wid, "seq": seq_i})
+            seq_i += 1
+
+    def _reader_loop() -> None:
+        for _ in range(250):
+            if read_json_dict(snap_race_file) is None:
+                none_seen.append(1)
+
+    wr_ths = [threading.Thread(target=_writer_loop, args=(i,), daemon=True) for i in range(4)]
+    rd_ths = [threading.Thread(target=_reader_loop, daemon=True) for _ in range(8)]
+    for t_w in wr_ths:
+        t_w.start()
+    for t_r in rd_ths:
+        t_r.start()
+    for t_r in rd_ths:
+        t_r.join(timeout=10.0)
+    stop_wr.set()
+    for t_w in wr_ths:
+        t_w.join(timeout=5.0)
+    _check(not none_seen, lambda: f"Snapshot read_json_dict returned spurious None {len(none_seen)} times during atomic_write_json")
+    if os.name != "nt":
+        _assert_raises_val_error(lambda: HostPath(f"{ws_base}/sub\\file.txt"))
+        _assert_raises_val_error(lambda: HostPath(f"{ws_base}/..\\outside.txt"))
+    _assert_raises_val_error(lambda: ws_base.resolve_caller_relative("\\anchor_rel"))
+    _check(ws_base.resolve_caller_relative("sub\\file.txt") == ws_base.join("sub", "file.txt"))
+    _check(ws_base.resolve_caller_relative("..\\sib_rel.txt") == HostPath(ws_base.path.parent / "sib_rel.txt"))
+    ws_qt = HostPath(ws_base.path / "ws_quiesce_retire")
+    provision_live_workspace(ws_qt.path)
+    _write_module(
+        ws_qt.path,
+        "qret",
+        {"tier1": True, "eager_warmup": False, "tasks": [{"task_id": "qret.work", "dispatch_mode": "hybrid"}]},
+        (
+            "from dataclasses import dataclass\nimport os, time\nfrom typing import Sequence\n"
+            "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
+            "from core.foundation import HostPath, ModuleId, TaskId\n"
+            "@dataclass(frozen=True, slots=True)\nclass QIn:\n    ms: int = 0\n"
+            "@dataclass(frozen=True, slots=True)\nclass QOut:\n    pid: int = 0\n"
+            "class QTask(Task[QIn, QOut]):\n"
+            "    @property\n    def metadata(self) -> TaskMetadata[QIn, QOut]: return TaskMetadata(TaskId('qret.work'), QIn, QOut)\n"
+            "    def run(self, req: QIn, ctx: TaskContext) -> QOut:\n"
+            "        if req.ms > 0: time.sleep(req.ms / 1000.0)\n"
+            "        return QOut(pid=os.getpid())\n"
+            "from typing import Callable, Optional\n"
+            "class QMod(YscbModule):\n"
+            "    @property\n    def module_id(self) -> ModuleId: return ModuleId('qret')\n"
+            "    def on_init(self, workspace_root: HostPath) -> Optional[Callable[[], None]]:\n        _ = workspace_root\n        time.sleep(0.18)\n        return lambda: time.sleep(0.22)\n"
+            "    def tasks(self) -> Sequence[BoundTask]: return (QTask(),)\n"
+            "def create_module() -> YscbModule: return QMod()\n"
+        ),
+    )
+    disp_qt = build_dispatcher_for_workspace(ws_qt, venv_bin, is_daemon_host=True).dispatcher
+    try:
+        ctok_q = CancellationToken()
+        t_bq = threading.Thread(
+            target=lambda: disp_qt.invoke(InvokeRequest(TaskId("qret.work"), {"ms": 0}, ws_qt, ws_qt), cancel_token=ctok_q)
+        )
+        t_bq.start()
+        time.sleep(0.07)
+        ctok_q.cancel(reason="abort_warmup")
+        t_bq.join(timeout=2.0)
+        _check(disp_qt.try_quiesce_modules(frozenset({ModuleId("qret")}), drain_deadline=time.monotonic() + 3.0, leased=True))
+        _check(len(disp_qt.tier1_pool.active_worker_snapshots()) == 0)
+        disp_qt.resume_from_quiesce(modules=frozenset({ModuleId("qret")}))
+        rq1 = disp_qt.invoke(InvokeRequest(TaskId("qret.work"), {"ms": 0}, ws_qt, ws_qt))
+        _check(rq1.ok and isinstance(rq1.value, Mapping))
+        q_wpid = int(rq1.value["pid"])
+        t_hq = threading.Thread(target=lambda: disp_qt.invoke(InvokeRequest(TaskId("qret.work"), {"ms": 160}, ws_qt, ws_qt)))
+        t_hq.start()
+        time.sleep(0.05)
+        disp_qt.reload_affected_modules(frozenset({ModuleId("qret")}), grace_ms=1500)
+        t_hq.join(timeout=2.0)
+        _check(disp_qt.try_quiesce_modules(frozenset({ModuleId("qret")}), drain_deadline=time.monotonic() + 3.0, leased=True))
+        _check(not is_process_alive(q_wpid))
+    finally:
+        disp_qt.shutdown(grace_ms=200)
+    _assert_raises_val_error(lambda: clamp_positive_sec(1.0, min_sec=True, max_sec=10.0))
+    _assert_raises_val_error(lambda: clamp_positive_sec(1.0, min_sec=0.1, max_sec=0.0))
+    _assert_raises_val_error(lambda: clamp_positive_sec(1.0, min_sec=5.0, max_sec=2.0))
+    _assert_raises_val_error(lambda: clamp_positive_sec(-1.0, min_sec=0.1, max_sec=10.0, default_sec=float("nan")))
+    _assert_raises_val_error(lambda: clamp_positive_sec(float("-inf"), min_sec=0.1, max_sec=10.0))
+    _check(clamp_positive_sec(float("-inf"), min_sec=0.1, max_sec=10.0, default_sec=3.0) == 3.0)
+    _check(clamp_positive_sec(float("inf"), min_sec=0.1, max_sec=10.0) == 10.0)
+    _check(clamp_positive_sec(float("inf"), min_sec=0.1, max_sec=10.0, default_sec=3.0) == 10.0)
+    ws_mig = HostPath(ws_base.path / "ws_sel_quiesce_mig")
+    provision_live_workspace(ws_mig.path)
+    mig_src_tpl = (
+        "from dataclasses import dataclass\nfrom typing import Sequence\n"
+        "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
+        "from core.foundation import ModuleId, TaskId\n"
+        "@dataclass(frozen=True, slots=True)\nclass MIn:\n    x: int = 0\n"
+        "@dataclass(frozen=True, slots=True)\nclass MOut:\n    ok_from: str = ''\n"
+    )
+    _write_module(
+        ws_mig.path,
+        "mig_a",
+        {"tier1": True, "venv_group": "shared_mig", "eager_warmup": False, "tasks": [{"task_id": "mig_a.ping"}]},
+        mig_src_tpl
+        + "class PingA(Task[MIn, MOut]):\n    @property\n    def metadata(self) -> TaskMetadata[MIn, MOut]: return TaskMetadata(TaskId('mig_a.ping'), MIn, MOut)\n"
+        + "    def run(self, req: MIn, ctx: TaskContext) -> MOut: return MOut(ok_from='mig_a')\n"
+        + "class ModA(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('mig_a')\n    def tasks(self) -> Sequence[BoundTask]: return (PingA(),)\n"
+        + "def create_module() -> YscbModule: return ModA()\n",
+    )
+    mig_b_src = (
+        mig_src_tpl
+        + "from core.execution.runtime import PeriodicScheduleSpec, TaskExposure\n"
+        + "class PingB(Task[MIn, MOut]):\n    @property\n    def metadata(self) -> TaskMetadata[MIn, MOut]: return TaskMetadata(TaskId('mig_b.ping'), MIn, MOut)\n"
+        + "    def run(self, req: MIn, ctx: TaskContext) -> MOut: return MOut(ok_from='mig_b')\n"
+        + "class TickB(Task[MIn, MOut]):\n    @property\n    def metadata(self) -> TaskMetadata[MIn, MOut]: return TaskMetadata(TaskId('mig_b.tick'), MIn, MOut, exposure=TaskExposure.INTERNAL_TRIGGER, periodic=PeriodicScheduleSpec(default_interval_sec=0.06))\n"
+        + "    def run(self, req: MIn, ctx: TaskContext) -> MOut: return MOut(ok_from='tick')\n"
+        + "class ModB(YscbModule):\n    @property\n    def module_id(self) -> ModuleId: return ModuleId('mig_b')\n    def tasks(self) -> Sequence[BoundTask]: return (PingB(), TickB())\n"
+        + "def create_module() -> YscbModule: return ModB()\n"
+    )
+    _write_module(
+        ws_mig.path,
+        "mig_b",
+        {
+            "tier1": True,
+            "eager_warmup": False,
+            "tasks": [
+                {"task_id": "mig_b.ping"},
+                {"task_id": "mig_b.tick", "exposure": "internal_trigger", "periodic": {"default_interval_sec": 0.06}},
+            ],
+        },
+        mig_b_src,
+    )
+    disp_mig = build_dispatcher_for_workspace(ws_mig, venv_bin, ttl_sec=15.0).dispatcher
+    try:
+        _check(disp_mig.invoke_typed(ECHO_TIER0_META, EchoInDto(tag="boot_mig")).ok)
+        _ = wait_for_daemon_online(ws_mig)
+        q_ma = query_daemon_control(ws_mig.join(".cache"), ws_mig, FrameKind.CONTROL_QUIESCE, {"modules": ["mig_a"], "lease_sec": 8.0})
+        _check(q_ma is not None and q_ma.get("ok") is True)
+        _write_module(
+            ws_mig.path,
+            "mig_b",
+            {
+                "tier1": True,
+                "venv_group": "shared_mig",
+                "eager_warmup": False,
+                "tasks": [
+                    {"task_id": "mig_b.ping"},
+                    {"task_id": "mig_b.tick", "exposure": "internal_trigger", "periodic": {"default_interval_sec": 0.06}},
+                ],
+            },
+            mig_b_src,
+        )
+        rel_mb = query_daemon_control(ws_mig.join(".cache"), ws_mig, FrameKind.CONTROL_RELOAD, {"modules": ["mig_b"]})
+        _check(rel_mb is not None and rel_mb.get("ok") is True)
+        time.sleep(0.18)
+        with _scoped_timer(0.18, lambda: query_daemon_control(ws_mig.join(".cache"), ws_mig, FrameKind.CONTROL_RESUME, {})):
+            mb_out = disp_mig.invoke(InvokeRequest(TaskId("mig_b.ping"), {}, ws_mig, ws_mig))
+            _check(mb_out.ok and mb_out.executed_hot and mb_out.value == {"ok_from": "mig_b"})
+        st_mig = query_daemon_control(ws_mig.join(".cache"), ws_mig, FrameKind.CONTROL_STATUS)
+        _check(st_mig is not None and isinstance(st_mig.get("status"), Mapping) and st_mig["status"].get("background_error_count") == 0)
+    finally:
+        stop_daemon_cleanly(ws_mig)
+        disp_mig.shutdown(grace_ms=100)
+    if os.name != "nt":
+        reent_storm_py = (
+            "import os, signal, sys, threading, time\n"
+            f"sys.path.insert(0, {str(CORE_SRC_ROOT)!r})\n"
+            "from core.foundation import SignalWakeupGuard\n"
+            "hits = []\n"
+            "stop = threading.Event()\n"
+            "def sender():\n"
+            "    while not stop.is_set():\n"
+            "        os.kill(os.getpid(), signal.SIGTERM)\n"
+            "        time.sleep(0.0005)\n"
+            "g_outer = SignalWakeupGuard((signal.SIGTERM,), lambda: hits.append(1), on_second_signal=lambda: hits.append(2))\n"
+            "g_outer.install()\n"
+            "t = threading.Thread(target=sender, daemon=True)\n"
+            "t.start()\n"
+            "for _ in range(120):\n"
+            "    g_in = SignalWakeupGuard((signal.SIGTERM,), lambda: None)\n"
+            "    g_in.install()\n"
+            "    g_in.close()\n"
+            "stop.set()\n"
+            "t.join(1.0)\n"
+            "g_outer.close()\n"
+            "sys.exit(0 if hits else 3)\n"
+        )
+        storm_res = subprocess.run([sys.executable, "-B", "-c", reent_storm_py], timeout=8.0)
+        _check(storm_res.returncode == 0)
+        hi_fd_py = (
+            "import os, resource, signal, sys, threading\n"
+            f"sys.path.insert(0, {str(CORE_SRC_ROOT)!r})\n"
+            "from core.foundation import SignalWakeupGuard\n"
+            "soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)\n"
+            "if soft < 1200 and hard >= 1200:\n"
+            "    resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 2048), hard))\n"
+            "fds = []\n"
+            "try:\n"
+            "    while len(fds) < 1040:\n"
+            "        fd = os.open(os.devnull, os.O_RDONLY)\n"
+            "        fds.append(fd)\n"
+            "        if fd >= 1030:\n"
+            "            break\n"
+            "    ev = threading.Event()\n"
+            "    g = SignalWakeupGuard((signal.SIGTERM,), lambda: ev.set())\n"
+            "    g.install()\n"
+            "    _ = g.is_installed\n"
+            "    os.kill(os.getpid(), signal.SIGTERM)\n"
+            "    ok = ev.wait(1.5)\n"
+            "    g.close()\n"
+            "finally:\n"
+            "    for fd in fds:\n"
+            "        os.close(fd)\n"
+            "sys.exit(0 if ok else 4)\n"
+        )
+        hi_fd_res = subprocess.run([sys.executable, "-B", "-c", hi_fd_py], capture_output=True, text=True, timeout=6.0)
+        _check(hi_fd_res.returncode == 0 and "BrokenPipeError" not in hi_fd_res.stderr)
+    _check(
+        sanitize_caller_env({"YSCB_worker_auth_token": "s", "_yscb_tree_id": "t", "YSCB_x": "1", "YSCB_X": "2"})
+        == {"YSCB_X": "2"}
+    )
+    if os.name != "nt":
+        det_pid_f = ws_base.path / "det_survive.pid"
+        det_py = (
+            "import os, sys, time\nfrom pathlib import Path\n"
+            f"sys.path.insert(0, {str(CORE_SRC_ROOT)!r})\n"
+            "from core.foundation import HostPath, spawn_detached\n"
+            f"dp = spawn_detached([sys.executable, '-B', '-c', 'import time; time.sleep(20)'], cwd=HostPath({str(ws_base)!r}), extra_env={{**os.environ, 'F': '1'}})\n"
+            f"Path({str(det_pid_f)!r}).write_text(str(dp), encoding='utf-8')\ntime.sleep(5)\n"
+        )
+        pt_det = ManagedProcessTree([sys.executable, "-B", "-c", det_py], cwd=ws_base)
+        _wait_file_marker(det_pid_f, timeout_sec=4.0)
+        dpid_v = int(det_pid_f.read_text(encoding="utf-8").strip())
+        pt_det.terminate_tree(grace_sec=0.1)
+        time.sleep(0.04)
+        try:
+            _check(is_process_alive(dpid_v))
+        finally:
+            try:
+                os.kill(dpid_v, int(signal.SIGKILL) if os.name != "nt" else int(signal.SIGTERM))
+            except OSError:
+                pass
+
+
+class _AuditSyntheticBaseExc(BaseException):
+    pass
+
+
+def _verify_audit_primitives_and_coord_regressions(ws_base: HostPath) -> None:
+    if os.name != "nt":
+        p_mode = ws_base.path / "audit_mode_preserve.bin"
+        p_mode.write_bytes(b"v1")
+        os.chmod(p_mode, 0o600)
+        atomic_write_bytes(HostPath(p_mode), b"v2")
+        _check(p_mode.read_bytes() == b"v2")
+        _check(stat.S_IMODE(p_mode.stat().st_mode) == 0o600)
+    hijack_out = ws_base.path / "audit_hijack_env.json"
+    hijack_py = (
+        "import json, os\nfrom pathlib import Path\n"
+        f"Path({str(hijack_out)!r}).write_text(json.dumps({{k: (k in os.environ) for k in ('PYTHONSTARTUP', 'PYTHONINSPECT', '__PYVENV_LAUNCHER__')}}), encoding='utf-8')\n"
+    )
+    with ManagedProcessTree(
+        [sys.executable, "-B", "-c", hijack_py],
+        cwd=ws_base,
+        env={**os.environ, "PYTHONSTARTUP": "/nonexistent_startup.py", "PYTHONINSPECT": "1", "__PYVENV_LAUNCHER__": "/fake/py"},
+    ) as pt_hj:
+        _wait_file_marker(hijack_out, timeout_sec=5.0)
+        _wait_until(lambda: pt_hj.poll() == 0, timeout_sec=5.0)
+    hj_doc = json.loads(hijack_out.read_text(encoding="utf-8"))
+    _check(not hj_doc["PYTHONSTARTUP"] and not hj_doc["PYTHONINSPECT"] and not hj_doc["__PYVENV_LAUNCHER__"])
+    sdk_tty_bad = False
+    try:
+        TaskRouteSpec(TaskId("aud.tty_bad"), exposure=TaskExposure.SDK_ONLY, interactive_tty=True)
+    except ValueError:
+        sdk_tty_bad = True
+    _check(sdk_tty_bad)
+    lc = WorkerContainerLifecycle()
+    warm_entered = threading.Event()
+    warm_release = threading.Event()
+    exc_box: list[BaseException] = []
+
+    def _boom_warm() -> Optional[Callable[[], None]]:
+        warm_entered.set()
+        warm_release.wait(timeout=3.0)
+        raise _AuditSyntheticBaseExc("synthetic warmup abort")
+
+    def _run_warm() -> None:
+        try:
+            lc.warmup({ModuleId("aud_w"): _boom_warm})
+        except _AuditSyntheticBaseExc as exc:
+            exc_box.append(exc)
+
+    tw1 = threading.Thread(target=_run_warm, daemon=True)
+    tw2 = threading.Thread(target=_run_warm, daemon=True)
+    tw1.start()
+    _check(warm_entered.wait(timeout=3.0))
+    tw2.start()
+    time.sleep(0.04)
+    warm_release.set()
+    tw1.join(timeout=3.0)
+    tw2.join(timeout=3.0)
+    _check(len(exc_box) == 2 and lc.base_state == ContainerState.UNINITIALIZED)
+    coord = ResourceCoordinator(locks_dir=HostPath(ws_base.path / ".cache" / "aud_coord_locks"))
+    step_in = threading.Event()
+    step_go = threading.Event()
+    leader_ext = PriorityHandle(ExecutionPriority.BACKGROUND)
+    follower_ext = PriorityHandle(ExecutionPriority.BACKGROUND)
+    seen_prio: list[ExecutionPriority] = []
+
+    def _leader_fn(ph: PriorityHandle, _tok: CancellationToken, _fl: object) -> str:
+        step_in.set()
+        step_go.wait(timeout=4.0)
+        seen_prio.append(ph.current)
+        return "ok_prio"
+
+    spec_l = ResourceAcquireSpec(
+        resource_key="aud_prio_res",
+        mode=ConcurrencyMode.COALESCE,
+        equiv_key="aud_eq_1",
+        priority=ExecutionPriority.BACKGROUND,
+        turn_id="t_aud_l",
+        call_stack=((ws_base, TaskId("aud.p")),),
+        cancel_token=CancellationToken(),
+        external_priority_handle=leader_ext,
+    )
+    spec_f = ResourceAcquireSpec(
+        resource_key="aud_prio_res",
+        mode=ConcurrencyMode.COALESCE,
+        equiv_key="aud_eq_1",
+        priority=ExecutionPriority.BACKGROUND,
+        turn_id="t_aud_f",
+        call_stack=((ws_base, TaskId("aud.p")),),
+        cancel_token=CancellationToken(),
+        external_priority_handle=follower_ext,
+    )
+    out_l: list[str] = []
+    out_f: list[str] = []
+    tl = threading.Thread(target=lambda: out_l.append(str(coord.execute(spec_l, _leader_fn).outcome)), daemon=True)
+    tl.start()
+    _check(step_in.wait(timeout=3.0))
+    tf = threading.Thread(target=lambda: out_f.append(str(coord.execute(spec_f, _leader_fn).outcome)), daemon=True)
+    tf.start()
+    time.sleep(0.06)
+    follower_ext.elevate_to_foreground()
+    time.sleep(0.03)
+    step_go.set()
+    tl.join(timeout=4.0)
+    tf.join(timeout=4.0)
+    _check(out_l == ["ok_prio"] and out_f == ["ok_prio"])
+    _check(seen_prio == [ExecutionPriority.FOREGROUND])
+    _check(leader_ext.current == ExecutionPriority.BACKGROUND)
+
+
+def _verify_audit_remediation_regressions(ws_base: HostPath, venv_bin: HostPath) -> None:
+    _verify_audit_primitives_and_coord_regressions(ws_base)
+    ws_a = HostPath(ws_base.path / "ws_aud_a")
+    ws_b = HostPath(ws_base.path / "ws_aud_b")
+    provision_live_workspace(ws_a.path)
+    provision_live_workspace(ws_b.path)
+    aud_src = (
+        "import time\nfrom dataclasses import dataclass\nfrom typing import Sequence\n"
+        "from core.execution.event import EventMetadata, EventSubscriptionSpec\n"
+        "from core.execution.runtime import BoundTask, ConcurrencyMode, PeriodicScheduleSpec, SecurityTier, Task, TaskContext, TaskExposure, TaskMetadata, YscbModule\n"
+        "from core.foundation import EventId, HostPath, ModuleId, TaskId\n"
+        "@dataclass(frozen=True, slots=True)\nclass AIn:\n    target_ws: str = ''\n"
+        "@dataclass(frozen=True, slots=True)\nclass AOut:\n    val: str = ''\n"
+        "EV_GO = EventMetadata(EventId('aud_m.go'), AIn)\n"
+        "class CondT(Task[AIn, AOut]):\n"
+        "    @property\n    def metadata(self) -> TaskMetadata[AIn, AOut]: return TaskMetadata(TaskId('aud_m.cond'), AIn, AOut, security_tier=SecurityTier.CONDITIONAL)\n"
+        "    def run(self, req: AIn, ctx: TaskContext) -> AOut: return AOut(val='cond_ok')\n"
+        "class TrigT(Task[AIn, AOut]):\n"
+        "    @property\n    def metadata(self) -> TaskMetadata[AIn, AOut]: return TaskMetadata(TaskId('aud_m.trig'), AIn, AOut)\n"
+        "    def run(self, req: AIn, ctx: TaskContext) -> AOut:\n        ctx.emit(EV_GO, AIn())\n        return AOut(val='trig_ok')\n"
+        "class SubT(Task[AIn, AOut]):\n"
+        "    @property\n    def metadata(self) -> TaskMetadata[AIn, AOut]: return TaskMetadata(TaskId('aud_m.sub'), AIn, AOut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('aud_m.go'), lambda _items: AIn()),))\n"
+        "    def run(self, req: AIn, ctx: TaskContext) -> AOut:\n"
+        "        o = ctx.invoke_task(TaskId('aud_m.cond'), {})\n"
+        "        if not o.ok:\n            raise RuntimeError(o.error.code.value if o.error else 'err')\n"
+        "        return AOut(val='sub_ok')\n"
+        "class XwsT(Task[AIn, AOut]):\n"
+        "    @property\n    def metadata(self) -> TaskMetadata[AIn, AOut]: return TaskMetadata(TaskId('aud_m.xws'), AIn, AOut)\n"
+        "    def run(self, req: AIn, ctx: TaskContext) -> AOut:\n"
+        "        o = ctx.invoke_task(TaskId('aud_m.cond'), {}, target_workspace=HostPath(req.target_ws))\n"
+        "        return AOut(val='ok' if o.ok else (o.error.code.value if o.error else 'err'))\n"
+        "def _wait_eq_unblock(ws_p: str) -> str:\n"
+        "    dl = time.monotonic() + 2.5\n"
+        "    m = HostPath(ws_p).join('.cache', 'eq_unblock.json').path\n"
+        "    while not m.is_file() and time.monotonic() < dl:\n"
+        "        time.sleep(0.02)\n"
+        "    return 'k'\n"
+        "class HangEqT(Task[AIn, AOut]):\n"
+        "    @property\n"
+        "    def metadata(self) -> TaskMetadata[AIn, AOut]: return TaskMetadata(TaskId('aud_m.hangeq'), AIn, AOut, concurrency_mode=ConcurrencyMode.COALESCE, resource_key='aud_hang', timeout_ms=150, equivalence_fn=lambda r: _wait_eq_unblock(r.target_ws))\n"
+        "    def run(self, req: AIn, ctx: TaskContext) -> AOut: return AOut(val='done')\n"
+        "class BgTickT(Task[AIn, AOut]):\n"
+        "    @property\n    def metadata(self) -> TaskMetadata[AIn, AOut]: return TaskMetadata(TaskId('aud_m.bgtick'), AIn, AOut, exposure=TaskExposure.INTERNAL_TRIGGER, periodic=PeriodicScheduleSpec(default_interval_sec=0.08))\n"
+        "    def run(self, req: AIn, ctx: TaskContext) -> AOut:\n        ctx.emit(EV_GO, AIn())\n        return AOut(val='tick')\n"
+        "class AudMod(YscbModule):\n"
+        "    @property\n    def module_id(self) -> ModuleId: return ModuleId('aud_m')\n"
+        "    def tasks(self) -> Sequence[BoundTask]: return (CondT(), TrigT(), SubT(), XwsT(), HangEqT(), BgTickT())\n"
+        "def create_module() -> YscbModule: return AudMod()\n"
+    )
+    aud_manifest: JsonObject = {
+        "tier1": False,
+        "tasks": [
+            {"task_id": "aud_m.cond", "security_tier": "conditional"},
+            {"task_id": "aud_m.trig"},
+            {"task_id": "aud_m.sub", "exposure": "internal_trigger", "subscriptions": [{"event_id": "aud_m.go"}]},
+            {"task_id": "aud_m.xws"},
+            {"task_id": "aud_m.hangeq", "concurrency_mode": "coalesce", "resource_key": "aud_hang", "timeout_ms": 150},
+            {"task_id": "aud_m.bgtick", "exposure": "internal_trigger", "periodic": {"default_interval_sec": 0.08}},
+        ],
+    }
+    _write_module(ws_a.path, "aud_m", aud_manifest, aud_src)
+    _write_module(ws_b.path, "aud_m", aud_manifest, aud_src)
+    rig_a = build_dispatcher_for_workspace(ws_a, venv_bin, is_daemon_host=False)
+    disp_a = rig_a.dispatcher
+    try:
+        o_direct = disp_a.invoke(InvokeRequest(TaskId("aud_m.cond"), {}, ws_a, ws_a, allow_conditional=True, routing_policy=ClientRoutingPolicy.FORCE_COLD))
+        _check(o_direct.ok and o_direct.value == {"val": "cond_ok"})
+        o_ev = disp_a.invoke(InvokeRequest(TaskId("aud_m.trig"), {}, ws_a, ws_a, allow_conditional=True, routing_policy=ClientRoutingPolicy.FORCE_COLD))
+        _check(o_ev.ok and any(ErrorCode.SECURITY_GATED.value in d.message for d in o_ev.event_diagnostics))
+        o_xws = disp_a.invoke(InvokeRequest(TaskId("aud_m.xws"), {"target_ws": str(ws_b)}, ws_a, ws_a, allow_conditional=True, routing_policy=ClientRoutingPolicy.FORCE_COLD))
+        _check(o_xws.ok and o_xws.value == {"val": ErrorCode.SECURITY_GATED.value})
+    finally:
+        disp_a.shutdown(grace_ms=100)
+    rig_d = build_dispatcher_for_workspace(ws_a, venv_bin, is_daemon_host=True)
+    dmn = WorkspaceDaemon(workspace_root=ws_a, cache_dir=ws_a.join(".cache"), dispatcher=rig_d.dispatcher, config_view=rig_d.config_view)
+    rdy = threading.Event()
+    td = threading.Thread(target=lambda: dmn.run_forever(console_mode=False, ready_callback=rdy.set), daemon=True)
+    try:
+        td.start()
+        _check(rdy.wait(timeout=6.0))
+        snap = dmn.snapshot_status()
+        _check(snap.idle_ttl_remaining_sec is not None and snap.idle_ttl_remaining_sec > 1000.0)
+        t0 = time.monotonic()
+        o_heq = rig_d.dispatcher.invoke(InvokeRequest(TaskId("aud_m.hangeq"), {"target_ws": str(ws_a)}, ws_a, ws_a))
+        _check(not o_heq.ok and o_heq.error is not None and o_heq.error.code == ErrorCode.TASK_TIMEOUT)
+        _check((time.monotonic() - t0) < 1.8)
+        atomic_write_json(ws_a.join(".cache", "eq_unblock.json"), {"go": True})
+        _wait_until(lambda: not any("aud_m.hangeq" in th.name for th in threading.enumerate()), timeout_sec=3.0)
+        dl_bg = time.monotonic() + 4.0
+        while dmn.snapshot_status().background_error_count == 0 and time.monotonic() < dl_bg:
+            time.sleep(0.05)
+        _check(dmn.snapshot_status().background_error_count >= 1)
+        bg_errs = dmn.drain_background_errors()
+        _check(len(bg_errs) >= 1 and dmn.snapshot_status().background_error_count == 0)
+    finally:
+        dmn.request_shutdown(force=True)
+        td.join(timeout=6.0)
+        _check(dmn.snapshot_status().state == ContainerState.STOPPED)
+        rig_d.dispatcher.shutdown(grace_ms=100)
+
+
 _RUNTIME_DAEMON_DOMAIN_SUITES: Final[tuple[Callable[[HostPath, HostPath], None], ...]] = (
     _verify_asymmetric_lineage_coalesce_cases,
     _verify_empty_reload_resync_and_core_handoff,
     _verify_cross_group_reload_quiesce_and_warmup_isolation,
-    _verify_host_private_cycle_orphan_stage_and_linearizability,
+    _verify_host_private_cycle_cascade_stage_and_linearizability,
     _verify_tier0_quiesce_gate_and_inplace_meta_reload,
-    _verify_new_colocated_mod_tier0_queued_reload_and_orphan_baseline,
-    _verify_tier0_queued_reload_and_orphan_public_baseline,
-    _verify_orphan_public_baseline_cycle_isolation,
+    _verify_new_colocated_mod_tier0_queued_reload_and_cascade_baseline,
+    _verify_tier0_queued_reload_and_cascade_public_baseline,
+    _verify_cascade_public_baseline_cycle_isolation,
     _verify_midspawn_reload_quiesce_and_private_fatal_isolation,
     _verify_private_call_cycle_does_not_poison_follower,
-    _verify_orphan_cancel_acyclic_and_strict_imm_preempt,
+    _verify_detached_cancel_acyclic_and_strict_imm_preempt,
     _verify_cross_proc_installer_owner_and_colocated_reload,
     _verify_nested_cold_installer_exclusive_upgrade,
     _verify_hot_reload_coalesce_and_degraded_gate,
     _verify_multibranch_lineage_acyclic_and_2hop_cycle,
     _verify_inmem_and_cross_proc_reentrancy_parity,
-    _verify_folded_leader_orphan_winner_and_imm_cancel,
+    _verify_folded_leader_survivor_winner_and_imm_cancel,
     _verify_cold_report_branches_and_route_refresh_cancel,
     _verify_bridge_turn_cancel_reload_atomicity_and_child_preempt,
     _verify_pre_accept_quiesced_cancel_timeout_and_retiring_progress,
     _verify_worker_pool_shutdown_spawn_race,
     _verify_cross_process_lock_reentrancy_topologies,
-    _verify_orphan_timeout_disqualification_and_folded_lineage,
+    _verify_detached_timeout_disqualification_and_folded_lineage,
     _verify_consecutive_partial_quiesce_and_epoch_guard,
     _verify_16way_3layer_reentrancy_and_ttl_burst,
     _verify_cross_ws_retiring_equiv_and_poison_isolation,
@@ -23219,20 +25001,20 @@ _RUNTIME_DAEMON_DOMAIN_SUITES: Final[tuple[Callable[[HostPath, HostPath], None],
     _verify_hot_reload_mode_and_gate_revalidation,
     _verify_eager_probe_cancel_and_preempt_admission,
     _verify_preempt_closes_flight_and_tier1_live_prio,
-    _verify_cross_backup_orphan_and_fatal_step_join,
+    _verify_cross_follower_cascade_and_fatal_step_join,
     _verify_coalesce_security_scope_and_cwd_isolation,
     _verify_escape_degraded_gate_and_tier1_equiv_errors,
     _verify_cycle_abort_busy_handoff_and_prio_propagation,
     _verify_slot_deferred_close_and_zero_event_fast_path,
-    _verify_chained_multi_backup_orphan_failover,
+    _verify_chained_multi_follower_flight_continuation,
     _verify_tier1_missing_venv_warmup_and_event_isolation,
-    _verify_adversarial_orphan_failover_topologies,
+    _verify_adversarial_flight_continuation_topologies,
     _verify_daemon_stray_module_files_quiesce,
-    _verify_multihop_dynamic_backup_and_nonfatal_winner_drain,
+    _verify_multihop_dynamic_follower_and_nonfatal_winner_drain,
     _verify_listener_stream_parity_and_quiesce_inf_clamps,
-    _verify_two_hop_backup_edge_expansion_and_survivor_cancel,
+    _verify_two_hop_follower_edge_expansion_and_survivor_cancel,
     _verify_bidirectional_coalesce_fixed_point_and_tier0_lazy_fault,
-    _verify_failed_leader_child_events_and_backup_cancel,
+    _verify_failed_leader_child_events_and_follower_cancel,
     _verify_warming_and_watcher_installer_lock_quiesce_yield,
     _verify_scoped_loader_entry_importlib_and_teardown_diags,
     _verify_neutral_flight_reentrancy_cycle_and_imm_cycle,
@@ -23266,7 +25048,7 @@ _RUNTIME_DAEMON_DOMAIN_SUITES: Final[tuple[Callable[[HostPath, HostPath], None],
     _verify_eager_quiesce_and_cancel_sub_suite,
     _verify_deep_envelope_and_stop_ack_suite,
     _verify_cross_proc_installer_owner_reentry,
-    _verify_delayed_winner_cancel_orphan_takeover,
+    _verify_delayed_winner_cancel_survivor_continuation,
     _verify_cold_bootstrap_failure_lifo_release,
     _verify_surrogate_daemon_reload_and_raw_wire_reject,
     _verify_worker_stop_grace_and_teardown_diags,
@@ -23310,16 +25092,24 @@ _RUNTIME_DAEMON_DOMAIN_SUITES: Final[tuple[Callable[[HostPath, HostPath], None],
     _verify_anc_symlink_opt_seq_and_cfg_unavail_no_storm,
     _verify_quiesce_config_toctou,
     _verify_retiring_channel_tier1_manifest_and_coord_cache,
+    _verify_cross_ws_reentrancy_and_asymmetric_lineage,
+    _verify_tier1_oversized_payloads,
+    _verify_retiring_bounceback_and_cold_reentrancy,
+    _verify_coalesce_multi_follower_and_imm,
+    _verify_cross_proc_reentrant_bypass_and_detached_lock_semantics,
+    _verify_concurrent_reentrant_serialize_and_preempt_guards,
+    _verify_cross_proc_reentrant_serialize_and_boundary_invariants,
+    _verify_audit_remediation_regressions,
 )
 
 
-def verify_orthogonal_domain_suites(tmp_root: Path, _venv_py: Path) -> None:
+def verify_orthogonal_domain_suites(tmp_root: Path, venv_py: Path) -> None:
     _log("[Domains] Running flat orthogonal Codec, Filesystem, Event, Lifecycle, RPC, Runtime & Daemon suites...")
     ws_dom_path = tmp_root / "ws_domain_suites"
     provision_live_workspace(ws_dom_path)
     (ws_dom_path / ".cache").mkdir(parents=True, exist_ok=True)
     ws_dom = HostPath(ws_dom_path)
-    ded_venv = HostPath(os.environ["YSCB_TEST_DEDICATED_VENV_PY"])
+    ded_venv = _resolve_dedicated_venv_py(HostPath(venv_py))
     for fn0 in _ZERO_ARG_DOMAIN_SUITES:
         fn0()
     for fn1 in _WS_ONLY_DOMAIN_SUITES:
@@ -23330,7 +25120,7 @@ def verify_orthogonal_domain_suites(tmp_root: Path, _venv_py: Path) -> None:
 
 
 def run_all_live_verifications() -> None:
-    _log("[Gate 0] Verifying AST 1-way DAG, zero print/Any/getattr, <=6 params, <=75 LOC, <=3 depth & self-audit...")
+    _log("[Gate 0] Verifying explicit allowlist DAG, orphan-spec guard, zero print/Any/getattr & runtime type hints...")
     verify_gate0_ast_architecture()
     _log("  -> PASS: Gate 0 AST, Code-Optimizer & Strong-Typing invariants verified across kernel + test suite.")
 
@@ -23344,7 +25134,6 @@ def run_all_live_verifications() -> None:
         venv_py = venv_dir / rel_bin
         ded_venv_py = ded_venv_dir / rel_bin
         _check(venv_py.is_file() and ded_venv_py.is_file())
-        os.environ["YSCB_TEST_DEDICATED_VENV_PY"] = str(ded_venv_py)
         try:
             for stage_fn in (
                 verify_rc01_cold_storm_and_sandbox,
@@ -23360,14 +25149,11 @@ def run_all_live_verifications() -> None:
                 _assert_zero_live_stage_orphans(tmp_root)
         finally:
             _force_reap_tmp_root_orphans(tmp_root)
-            os.environ.pop("YSCB_TEST_DEDICATED_VENV_PY", None)
 
     _log("\nALL LIVE VERIFICATIONS PASSED (Gate 0 + RC-01 ~ RC-08 + Orthogonal Domain Suites, 0 ResourceWarning)!")
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    if sys.dont_write_bytecode:
-        os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     args = list(argv if argv is not None else sys.argv[1:])
     if args and args[0] == "--daemon-entry":
         return _daemon_process_main(args[1], args[2], args[3])

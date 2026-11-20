@@ -10,7 +10,7 @@ import sys
 import socket
 import threading
 import time
-from typing import Callable, Literal, Optional, Sequence
+from typing import Callable, Optional, Sequence
 import uuid
 
 from core.execution.lifecycle import LifoResourceStack
@@ -22,20 +22,24 @@ from core.execution.rpc import (
     accept_worker_handshake,
     bind_loopback_ephemeral,
 )
-from core.execution.runtime.contracts import ExecutionPriority, ModuleDescriptor, WorkerProcessSnapshot
+from core.execution.runtime.contracts import WORKER_AUTH_ENV_KEY, ExecutionPriority, ModuleDescriptor, WorkerProcessSnapshot
 from core.execution.runtime.coordinator import PriorityHandle, wait_on_event_with_cancel
 from core.execution.runtime.wire import (
-    WORKER_AUTH_ENV_KEY,
     WorkerBootstrapConfig,
     WorkerCommandEnvelope,
     WorkerCommandKind,
+    WorkerControlAction,
+    WorkerElevateControl,
+    WorkerModInitControl,
+    WorkerStopAck,
+    WorkerStopControl,
     WorkerUnloadReply,
     WorkerWarmupReply,
 )
 from core.foundation.codec import DataclassCodec
 from core.foundation.errors import ErrorCode, ErrorDetail, TaskCancelledException, YscbError, safe_exception_summary
 from core.foundation.observability import MAX_SAFE_WAIT_SEC, MAX_TIMEOUT_MS, CancellationToken, DeadlineGuard, ms_to_safe_sec
-from core.foundation.primitives import decrement_ref_count, HostPath, JsonObject, ModuleId, require_non_none
+from core.foundation.primitives import PYTHON_LAUNCHER_HIJACK_ENV_KEYS, decrement_ref_count, HostPath, JsonObject, ModuleId, require_non_none
 from core.foundation.proc import ManagedProcessTree
 
 
@@ -67,12 +71,6 @@ class _HandlePhase(Enum):
     RELOAD_DRAINING = "reload_draining"
     RELOAD_CLOSING = "reload_closing"
     CLOSING = "closing"
-
-
-@dataclass(frozen=True, slots=True)
-class _WorkerModInitControl:
-    action: Literal["module_initialized"]
-    module_id: ModuleId
 
 
 class _ActiveWorkerHandle(InboundCallHandler):
@@ -123,9 +121,13 @@ class _ActiveWorkerHandle(InboundCallHandler):
         return self._delegate.on_call(stream_id, payload, ack_accepted, emit_progress, peer_cancel_token)
 
     def on_control(self, kind: FrameKind, payload: JsonObject) -> JsonObject:
-        if self._on_module_init is not None and kind == FrameKind.CONTROL_REQUEST and payload.get("action") == "module_initialized":
+        if (
+            self._on_module_init is not None
+            and kind == FrameKind.CONTROL_REQUEST
+            and payload.get("action") == WorkerControlAction.MODULE_INITIALIZED.value
+        ):
             try:
-                ctrl = DataclassCodec.decode(_WorkerModInitControl, payload)
+                ctrl = DataclassCodec.decode(WorkerModInitControl, payload)
             except YscbError as exc:
                 return {"ok": False, "error": exc.detail.code.value, "message": exc.detail.message}
             self._on_module_init(self, ctrl.module_id)
@@ -337,7 +339,7 @@ class _ActiveWorkerHandle(InboundCallHandler):
                     ctrl_tmo_ms = min(MAX_TIMEOUT_MS, drain_ms + 1000)
                     rep = self._channel.send_control(
                         FrameKind.CONTROL_STOP,
-                        {"grace_ms": drain_ms},
+                        DataclassCodec.encode_object(WorkerStopControl(grace_ms=drain_ms)),
                         timeout_ms=ctrl_tmo_ms,
                     )
                     fb_mod = sorted(str(m) for m in self.bound_modules)[0] if self.bound_modules else None
@@ -394,17 +396,10 @@ def _unload_module_on_handle(
 def _decode_stop_diagnostics(reply: Optional[JsonObject]) -> tuple[ErrorDetail, ...]:
     if not isinstance(reply, dict):
         return ()
-    raw_list = reply.get("teardown_diagnostics")
-    if not isinstance(raw_list, list):
+    try:
+        return DataclassCodec.decode(WorkerStopAck, reply).teardown_diagnostics
+    except (YscbError, KeyError, TypeError, ValueError):
         return ()
-    decoded: list[ErrorDetail] = []
-    for item in raw_list:
-        if isinstance(item, dict):
-            try:
-                decoded.append(DataclassCodec.decode(ErrorDetail, item))
-            except (YscbError, KeyError, TypeError, ValueError):
-                continue
-    return tuple(decoded)
 
 
 def _compute_group_desc_fingerprint(descs: Sequence[ModuleDescriptor]) -> str:
@@ -423,19 +418,14 @@ def _compute_group_desc_fingerprint(descs: Sequence[ModuleDescriptor]) -> str:
     return DataclassCodec.canonical_hash(items)
 
 
-@dataclass(frozen=True, slots=True)
-class _WorkerAcceptSpec:
-    group_key: str
-    auth_token: str
-    boot_id: str
-    workspace_root: HostPath
-
-
 def _accept_authenticated_worker_channel(
     listen_sock: socket.socket,
     proc_tree: ManagedProcessTree,
     handle: _ActiveWorkerHandle,
-    spec: _WorkerAcceptSpec,
+    group_key: str,
+    auth_token: str,
+    boot_id: str,
+    workspace_root: HostPath,
     guard: DeadlineGuard,
 ) -> MultiplexedChannel:
     listen_sock.settimeout(0.05)
@@ -445,12 +435,12 @@ def _accept_authenticated_worker_channel(
             guard.cancel_token.raise_if_cancelled()
         now = time.monotonic()
         if guard.deadline is not None and now >= guard.deadline:
-            raise YscbError(ErrorCode.TASK_TIMEOUT, f"Timed out waiting for Tier 1 worker {spec.group_key!r} startup.")
+            raise YscbError(ErrorCode.TASK_TIMEOUT, f"Timed out waiting for Tier 1 worker {group_key!r} startup.")
         rc = proc_tree.poll()
         if rc is not None:
             raise YscbError(
                 ErrorCode.WORKER_CRASHED,
-                f"Tier 1 worker {spec.group_key!r} exited during startup with code {rc}.",
+                f"Tier 1 worker {group_key!r} exited during startup with code {rc}.",
             )
         try:
             conn, _addr = listen_sock.accept()
@@ -460,15 +450,14 @@ def _accept_authenticated_worker_channel(
         conn.settimeout(max(0.05, min(0.5, rem_cap)))
         ch = accept_worker_handshake(
             conn,
-            expected_auth_token=spec.auth_token,
-            boot_id=spec.boot_id,
+            expected_auth_token=auth_token,
+            boot_id=boot_id,
             handler=handle,
-            expected_workspace_root=spec.workspace_root,
+            expected_workspace_root=workspace_root,
         )
         if ch is not None:
             return ch
-    raise YscbError(ErrorCode.WORKER_CRASHED, f"Tier 1 worker {spec.group_key!r} timed out connecting.")
-
+    raise YscbError(ErrorCode.WORKER_CRASHED, f"Tier 1 worker {group_key!r} timed out connecting.")
 
 @dataclass(frozen=True, slots=True)
 class _WorkerSpawnOpts:
@@ -478,11 +467,15 @@ class _WorkerSpawnOpts:
     on_module_init: Optional[Callable[[_ActiveWorkerHandle, ModuleId], None]] = None
 
 
+_STRIPPED_WORKER_PYTHON_ENV_UPPER: frozenset[str] = frozenset(
+    k.upper() for k in (*PYTHON_LAUNCHER_HIJACK_ENV_KEYS, "PYTHONHOME", "VIRTUAL_ENV", "PYTHONUSERBASE")
+)
+
+
 def _build_worker_subproc_env(auth_token: str) -> dict[str, str]:
     core_src_root = str(HostPath(__file__).path.parents[3])
-    env = dict(os.environ)
-    existing_pp = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{core_src_root}{os.pathsep}{existing_pp}" if existing_pp else core_src_root
+    env = {k: v for k, v in os.environ.items() if k.upper() not in _STRIPPED_WORKER_PYTHON_ENV_UPPER}
+    env["PYTHONPATH"] = core_src_root
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     if sys.flags.optimize > 0:
         env["PYTHONOPTIMIZE"] = str(sys.flags.optimize)
@@ -530,8 +523,9 @@ def _spawn_connected_worker(
         except OSError as exc:
             raise YscbError(ErrorCode.WORKER_CRASHED, f"Failed to spawn Tier 1 worker '{opts.group_key}': {safe_exception_summary(exc)}") from exc
         handle = _ActiveWorkerHandle(proc_tree, group_key, master_callback_handler, opts.on_module_init)
-        acc_spec = _WorkerAcceptSpec(group_key, auth_token, boot_id, workspace_root)
-        channel = _accept_authenticated_worker_channel(listen_sock, proc_tree, handle, acc_spec, guard)
+        channel = _accept_authenticated_worker_channel(
+            listen_sock, proc_tree, handle, group_key, auth_token, boot_id, workspace_root, guard
+        )
         handle.bind_channel(channel)
         handle.boot_fingerprint = _compute_group_desc_fingerprint(descriptors)
         handle.bound_modules = frozenset(d.module_id for d in descriptors)
@@ -570,7 +564,9 @@ def _attach_priority_elevation_push(
         if not handle.channel.is_closed:
             handle.channel.post_control(
                 FrameKind.CONTROL_REQUEST,
-                {"action": "elevate_step", "step_run_id": step_run_id},
+                DataclassCodec.encode_object(
+                    WorkerElevateControl(action=WorkerControlAction.ELEVATE_STEP, step_run_id=step_run_id)
+                ),
             )
 
     return priority_handle.register_listener(_push_elevate)
@@ -689,32 +685,12 @@ def _invoke_worker_handle_with_taint(
             handle.exit_healthy_call(spec.turn_id, spec.call_tree_id)
 
 
-@dataclass(frozen=True, slots=True)
-class _PreparedWorkerCall:
-    gkey: str
-    guard: DeadlineGuard
-    wire_payload: Optional[JsonObject]
-    encode_error: Optional[RemoteCallOutcome] = None
-
-
-@dataclass(frozen=True, slots=True)
-class _PreSpawnCheck:
-    ready_handle: Optional[_ActiveWorkerHandle] = None
-    stale_handle: Optional[_ActiveWorkerHandle] = None
-    start_epoch: int = 0
-    retry_later: bool = False
-
-
-def _prepare_worker_call(spec: WorkerCallSpec) -> _PreparedWorkerCall:
+def _prepare_worker_call(spec: WorkerCallSpec) -> tuple[str, DeadlineGuard, JsonObject]:
     primary = spec.group_descriptors[0]
     _ = require_non_none(primary.venv_python)
     gkey = tier1_group_key_for(primary)
     guard = DeadlineGuard.from_timeout_ms(spec.timeout_ms, spec.cancel_token)
-    try:
-        return _PreparedWorkerCall(gkey, guard, DataclassCodec.encode_envelope(spec.command))
-    except YscbError as exc:
-        err = RemoteCallOutcome(was_accepted=False, error_code=exc.detail.code, error_message=exc.detail.message)
-        return _PreparedWorkerCall(gkey, guard, None, err)
+    return (gkey, guard, DataclassCodec.encode_envelope(spec.command))
 
 
 _GROUP_WARMUP_TIMEOUT_MS: int = 15000
@@ -865,9 +841,13 @@ class HotWorkerPool:
             if d.module_id in modules and d.venv_python is not None
         }
         to_stop: list[tuple[str, _ActiveWorkerHandle]] = []
+        existing_retiring: list[tuple[str, _ActiveWorkerHandle]] = []
         with self._state_cond:
             for g, wh in list(self._workers.items()):
                 if bool(wh.bound_modules & modules):
+                    target_groups.add(g)
+            for g, rlist in list(self._retiring_workers.items()):
+                if any(bool(rh.bound_modules & modules) for rh in rlist):
                     target_groups.add(g)
             boot_cancels: list[_GroupBootFlight] = []
             for g in target_groups:
@@ -875,6 +855,8 @@ class HotWorkerPool:
                 fl = self._boot_flights.get(g)
                 if fl is not None:
                     boot_cancels.append(fl)
+                for rh in self._live_retiring_locked(g):
+                    existing_retiring.append((g, rh))
                 h = self._workers.pop(g, None)
                 if h is not None:
                     self._retiring_workers.setdefault(g, []).append(h)
@@ -884,21 +866,19 @@ class HotWorkerPool:
             self._state_cond.notify_all()
         for fl in boot_cancels:
             fl.cancel_token.cancel(reason="Tier 1 group stopped.")
+        join_sec = min(MAX_SAFE_WAIT_SEC, max(0.5, grace_s + 0.3))
+        for fl in boot_cancels:
+            if fl.thread is not None and fl.thread is not threading.current_thread() and fl.thread.is_alive():
+                fl.thread.join(timeout=join_sec)
         if drain_in_flight:
             return self._retire_detached_handles(to_stop, grace_s)
         diags: list[ErrorDetail] = []
-        try:
-            join_sec = min(MAX_SAFE_WAIT_SEC, max(0.5, grace_s + 0.3))
-            for fl in boot_cancels:
-                if fl.thread is not None and fl.thread is not threading.current_thread() and fl.thread.is_alive():
-                    fl.thread.join(timeout=join_sec)
-        finally:
-            with self._state_cond:
-                for g in target_groups:
-                    self._deferred_retire_warmups.pop(g, None)
-            for g, h in to_stop:
-                diags.extend(h.shutdown(grace_sec=grace_s))
-                self._prune_stopped_retiring(g)
+        with self._state_cond:
+            for g in target_groups:
+                self._deferred_retire_warmups.pop(g, None)
+        for g, h in (*to_stop, *existing_retiring):
+            diags.extend(h.shutdown(grace_sec=grace_s))
+            self._prune_stopped_retiring(g)
         return tuple(diags)
 
     def _retire_detached_handles(
@@ -966,27 +946,6 @@ class HotWorkerPool:
                 return cand
         return None
 
-    def _check_pre_spawn_state_locked(
-        self,
-        group_key: str,
-        target_fp: str,
-        has_eager: bool,
-        allow_during_reload: bool,
-        quiesced_now: bool,
-        reloading_now: bool,
-    ) -> _PreSpawnCheck:
-        if self._closed or quiesced_now:
-            raise YscbError(ErrorCode.DAEMON_UNAVAILABLE, "Tier 1 worker group is shut down or quiesced.")
-        if reloading_now and not allow_during_reload:
-            return _PreSpawnCheck(retry_later=True)
-        existing = self._workers.get(group_key)
-        if existing is not None and existing.is_alive and existing.boot_fingerprint == target_fp:
-            return _PreSpawnCheck(ready_handle=existing)
-        if any(not h.is_stopped and (has_eager or h.is_closing_for_reload) for h in self._live_retiring_locked(group_key)):
-            return _PreSpawnCheck(retry_later=True)
-        stale = self._workers.pop(group_key, None) if existing is not None else None
-        return _PreSpawnCheck(stale_handle=stale, start_epoch=self._group_epochs.get(group_key, 0))
-
     def _commit_spawned_worker_or_abort(
         self,
         group_key: str,
@@ -1007,19 +966,6 @@ class HotWorkerPool:
             raise YscbError(ErrorCode.DAEMON_UNAVAILABLE, "Tier 1 worker group shut down or quiesced during startup.")
         return None
 
-    def _pop_mismatched_live_worker(self, group_key: str, target_fp: str) -> Optional[_ActiveWorkerHandle]:
-        with self._state_cond:
-            cur_h = self._workers.get(group_key)
-            if cur_h is None or not cur_h.is_alive or cur_h.boot_fingerprint == target_fp:
-                return None
-            self._workers.pop(group_key, None)
-            cur_h.mark_closing_for_reload()
-            self._retiring_workers.setdefault(group_key, []).append(cur_h)
-            if self._lifo_stack is not None:
-                self._lifo_stack.pop_tagged_by_prefixes(frozenset({f"tier1_pool.{group_key}"}))
-            self._state_cond.notify_all()
-            return cur_h
-
     def _try_spawn_under_group_lock(
         self,
         group_key: str,
@@ -1029,37 +975,83 @@ class HotWorkerPool:
     ) -> Optional[_ActiveWorkerHandle]:
         has_eager = any(d.eager_warmup for d in descriptors) and not allow_during_reload
         target_fp = _compute_group_desc_fingerprint(descriptors)
-        mismatched_live = self._pop_mismatched_live_worker(group_key, target_fp)
+        mismatched_live: Optional[_ActiveWorkerHandle] = None
+        with self._state_cond:
+            cur_h = self._workers.get(group_key)
+            if cur_h is not None and cur_h.is_alive and cur_h.boot_fingerprint != target_fp:
+                self._workers.pop(group_key, None)
+                cur_h.mark_closing_for_reload()
+                self._retiring_workers.setdefault(group_key, []).append(cur_h)
+                if self._lifo_stack is not None:
+                    self._lifo_stack.pop_tagged_by_prefixes(frozenset({f"tier1_pool.{group_key}"}))
+                self._state_cond.notify_all()
+                mismatched_live = cur_h
         if mismatched_live is not None:
             mis_diags = self._retire_detached_handles(((group_key, mismatched_live),), 1.0)
             if mis_diags and self._on_teardown_diags is not None:
                 self._on_teardown_diags(mis_diags)
+
         quiesced_now = self._any_descriptor_quiesced(descriptors)
         reloading_now = self._is_group_reloading is not None and self._is_group_reloading(descriptors)
+        ready_handle: Optional[_ActiveWorkerHandle] = None
+        stale_handle: Optional[_ActiveWorkerHandle] = None
+        retry_later = False
+        start_epoch = 0
         start_flight = False
         superseded_flight: Optional[_GroupBootFlight] = None
+        flight: Optional[_GroupBootFlight] = None
         with self._state_cond:
-            chk = self._check_pre_spawn_state_locked(
-                group_key, target_fp, has_eager, allow_during_reload, quiesced_now, reloading_now
-            )
-            flight = self._boot_flights.get(group_key)
-            if chk.ready_handle is None and not chk.retry_later:
-                if flight is not None and not flight.done_event.is_set() and flight.target_fp != target_fp:
-                    superseded_flight = flight
-                    flight = None
-                if flight is None or flight.done_event.is_set():
-                    flight = _GroupBootFlight(target_fp=target_fp)
-                    self._boot_flights[group_key] = flight
-                    start_flight = True
+            if self._closed or quiesced_now:
+                raise YscbError(ErrorCode.DAEMON_UNAVAILABLE, "Tier 1 worker group is shut down or quiesced.")
+            if reloading_now and not allow_during_reload:
+                retry_later = True
+            else:
+                existing = self._workers.get(group_key)
+                if existing is not None and existing.is_alive and existing.boot_fingerprint == target_fp:
+                    ready_handle = existing
+                elif any(
+                    not h.is_stopped and (has_eager or h.is_closing_for_reload)
+                    for h in self._live_retiring_locked(group_key)
+                ):
+                    retry_later = True
+                else:
+                    stale_handle = self._workers.pop(group_key, None) if existing is not None else None
+                    start_epoch = self._group_epochs.get(group_key, 0)
+                    flight = self._boot_flights.get(group_key)
+                    if flight is not None and not flight.done_event.is_set() and flight.target_fp != target_fp:
+                        superseded_flight = flight
+                        flight = None
+                    if flight is None or flight.done_event.is_set():
+                        flight = _GroupBootFlight(target_fp=target_fp)
+                        self._boot_flights[group_key] = flight
+                        start_flight = True
+
         if superseded_flight is not None:
             superseded_flight.cancel_token.cancel(reason="Tier 1 group fingerprint superseded.")
-        if chk.stale_handle is not None:
-            chk.stale_handle.kill_immediately()
-        if chk.ready_handle is not None or chk.retry_later:
-            return chk.ready_handle
+        if stale_handle is not None:
+            stale_handle.kill_immediately()
+        if ready_handle is not None or retry_later:
+            return ready_handle
         flight = require_non_none(flight)
         if start_flight:
-            self._start_group_boot_thread(group_key, tuple(descriptors), chk.start_epoch, flight)
+            th = threading.Thread(
+                target=self._run_group_boot_flight,
+                args=(group_key, tuple(descriptors), start_epoch, flight),
+                name=f"yscb-t1-boot-{group_key}",
+                daemon=True,
+            )
+            flight.thread = th
+            try:
+                th.start()
+            except BaseException as exc:
+                flight.thread = None
+                flight.error = exc if isinstance(exc, Exception) else RuntimeError(safe_exception_summary(exc))
+                flight.done_event.set()
+                with self._state_cond:
+                    if self._boot_flights.get(group_key) is flight:
+                        self._boot_flights.pop(group_key, None)
+                    self._state_cond.notify_all()
+                raise
         rem_sec = (guard.deadline - time.monotonic()) if guard.deadline is not None else None
         if rem_sec is not None and rem_sec <= 0:
             raise YscbError(ErrorCode.TASK_TIMEOUT, "Timed out waiting for Tier 1 worker startup.")
@@ -1071,31 +1063,6 @@ class HotWorkerPool:
         with self._state_cond:
             ready = self._workers.get(group_key)
             return ready if (ready is not None and ready.is_alive and ready.boot_fingerprint == target_fp) else None
-
-    def _start_group_boot_thread(
-        self,
-        group_key: str,
-        descriptors: tuple[ModuleDescriptor, ...],
-        start_epoch: int,
-        flight: _GroupBootFlight,
-    ) -> None:
-        th = threading.Thread(
-            target=self._run_group_boot_flight,
-            args=(group_key, descriptors, start_epoch, flight),
-            name=f"yscb-t1-boot-{group_key}",
-            daemon=True,
-        )
-        try:
-            th.start()
-            flight.thread = th
-        except BaseException as exc:
-            flight.error = exc if isinstance(exc, Exception) else RuntimeError(safe_exception_summary(exc))
-            flight.done_event.set()
-            with self._state_cond:
-                if self._boot_flights.get(group_key) is flight:
-                    self._boot_flights.pop(group_key, None)
-                self._state_cond.notify_all()
-            raise
 
     def _run_group_boot_flight(
         self,
@@ -1301,6 +1268,8 @@ class HotWorkerPool:
                 if (self._resolve_group_descs is not None and spec.command.action != WorkerCommandKind.WARMUP)
                 else spec.group_descriptors
             )
+            if cur_descs:
+                group_key = tier1_group_key_for(cur_descs[0])
             if not allow_during_reload:
                 self._wait_if_group_reloading(group_key, cur_descs, guard)
                 cur_descs = (
@@ -1308,6 +1277,8 @@ class HotWorkerPool:
                     if (self._resolve_group_descs is not None and spec.command.action != WorkerCommandKind.WARMUP)
                     else spec.group_descriptors
                 )
+                if cur_descs:
+                    group_key = tier1_group_key_for(cur_descs[0])
             has_eager = any(d.eager_warmup for d in cur_descs) and not spec.bypass_reload_gate
             cur_fp = _compute_group_desc_fingerprint(cur_descs)
             quiesced_now = self._any_descriptor_quiesced(cur_descs)
@@ -1411,10 +1382,10 @@ class HotWorkerPool:
             fl.cancel_token.cancel(reason="Tier 1 group epoch bumped.")
 
     def call_worker_with_guard(self, spec: WorkerCallSpec) -> tuple[RemoteCallOutcome, Optional[threading.Event]]:
-        prep = _prepare_worker_call(spec)
-        gkey, guard, wire_payload = prep.gkey, prep.guard, prep.wire_payload
-        if prep.encode_error is not None or wire_payload is None:
-            return (prep.encode_error or RemoteCallOutcome(was_accepted=False), None)
+        try:
+            gkey, guard, wire_payload = _prepare_worker_call(spec)
+        except YscbError as exc:
+            return (RemoteCallOutcome(was_accepted=False, error_code=exc.detail.code, error_message=exc.detail.message), None)
         transport_retries = 0
         for _guard_step in range(8):
             reentrant = self._find_reentrant_retiring_worker(
@@ -1598,13 +1569,14 @@ class OneShotVenvHost:
         spec: WorkerCallSpec,
         lifo_stack: LifoResourceStack,
     ) -> tuple[RemoteCallOutcome, Optional[threading.Event]]:
-        prep = _prepare_worker_call(spec)
-        gkey, guard, wire_payload = prep.gkey, prep.guard, prep.wire_payload
-        if prep.encode_error is not None or wire_payload is None:
-            return (prep.encode_error or RemoteCallOutcome(was_accepted=False), None)
+        try:
+            gkey, guard, wire_payload = _prepare_worker_call(spec)
+        except YscbError as exc:
+            return (RemoteCallOutcome(was_accepted=False, error_code=exc.detail.code, error_message=exc.detail.message), None)
+        hkey = f"{spec.turn_id}:{gkey}" if spec.turn_id else gkey
         for _attempt in range(4):
             try:
-                handle = self._acquire_turn_handle(gkey, spec, lifo_stack, guard)
+                handle = self._acquire_turn_handle(hkey, gkey, spec, lifo_stack, guard)
                 rem_ms = guard.remaining_ms(spec.timeout_ms, expired_message="Timed out before cold Tier 1 call.")
             except TaskCancelledException as exc:
                 return (
@@ -1629,18 +1601,19 @@ class OneShotVenvHost:
                 wire_payload,
                 spec,
                 rem_ms,
-                lambda h=handle: self._detach_turn_handle(gkey, h),
+                lambda h=handle: self._detach_turn_handle(hkey, h),
                 drain_wait_sec=10.0,
             )
         return (RemoteCallOutcome(was_accepted=False, transport_lost=True, error_code=ErrorCode.WORKER_CRASHED), None)
 
-    def _detach_turn_handle(self, gkey: str, handle: _ActiveWorkerHandle) -> None:
+    def _detach_turn_handle(self, hkey: str, handle: _ActiveWorkerHandle) -> None:
         with self._lock:
-            if self._handles.get(gkey) is handle:
-                self._handles.pop(gkey, None)
+            if self._handles.get(hkey) is handle:
+                self._handles.pop(hkey, None)
 
     def _acquire_turn_handle(
         self,
+        hkey: str,
         gkey: str,
         spec: WorkerCallSpec,
         lifo_stack: LifoResourceStack,
@@ -1648,17 +1621,17 @@ class OneShotVenvHost:
     ) -> _ActiveWorkerHandle:
         target_fp = _compute_group_desc_fingerprint(spec.group_descriptors)
         with self._lock:
-            fast = self._handles.get(gkey)
+            fast = self._handles.get(hkey)
             if fast is not None and fast.is_alive and fast.boot_fingerprint == target_fp:
                 return fast
-            glk = self._group_locks.setdefault(gkey, threading.Lock())
+            glk = self._group_locks.setdefault(hkey, threading.Lock())
         _acquire_lock_interruptible(glk, guard)
         try:
             with self._lock:
-                existing = self._handles.get(gkey)
+                existing = self._handles.get(hkey)
                 if existing is not None and existing.is_alive and existing.boot_fingerprint == target_fp:
                     return existing
-                stale = self._handles.pop(gkey, None)
+                stale = self._handles.pop(hkey, None)
             if stale is not None:
                 stale.terminate_when_healthy_drained(max_wait_sec=5.0)
             tag_prefix = f"cold_venv.{gkey}"
@@ -1675,8 +1648,8 @@ class OneShotVenvHost:
             )
             try:
                 with self._lock:
-                    self._handles[gkey] = spawned
-                lifo_stack.push_diagnostic_closeable(tag_prefix, lambda: self._close_turn_handle(gkey, spawned))
+                    self._handles[hkey] = spawned
+                lifo_stack.push_diagnostic_closeable(tag_prefix, lambda: self._close_turn_handle(hkey, spawned))
                 return spawned
             except BaseException:
                 spawned.kill_immediately()
@@ -1684,15 +1657,19 @@ class OneShotVenvHost:
         finally:
             glk.release()
 
-    def _close_turn_handle(self, gkey: str, handle: _ActiveWorkerHandle) -> tuple[ErrorDetail, ...]:
-        self._detach_turn_handle(gkey, handle)
+    def _close_turn_handle(self, hkey: str, handle: _ActiveWorkerHandle) -> tuple[ErrorDetail, ...]:
+        with self._lock:
+            if self._handles.get(hkey) is handle:
+                self._handles.pop(hkey, None)
+            if hkey not in self._handles:
+                self._group_locks.pop(hkey, None)
         return handle.shutdown(grace_sec=0.4)
 
     def _run_ephemeral_tty(self, spec: WorkerCallSpec, lifo_stack: LifoResourceStack) -> RemoteCallOutcome:
-        prep = _prepare_worker_call(spec)
-        gkey_base, guard, wire_payload = prep.gkey, prep.guard, prep.wire_payload
-        if prep.encode_error is not None or wire_payload is None:
-            return prep.encode_error or RemoteCallOutcome(was_accepted=False)
+        try:
+            gkey_base, guard, wire_payload = _prepare_worker_call(spec)
+        except YscbError as exc:
+            return RemoteCallOutcome(was_accepted=False, error_code=exc.detail.code, error_message=exc.detail.message)
         gkey = f"oneshot_{gkey_base}_{uuid.uuid4().hex[:6]}"
         tag_prefix = f"cold_tty.{gkey}"
         try:

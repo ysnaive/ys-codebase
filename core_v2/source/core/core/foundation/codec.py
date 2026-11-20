@@ -9,6 +9,7 @@ import collections.abc as cabc
 import dataclasses
 from enum import Enum
 import functools
+import inspect
 import hashlib
 import json
 import math
@@ -109,9 +110,11 @@ class _WeakTypeToken:
         return self._hash
 
     def __eq__(self, other: object) -> bool:
+        if self is other:
+            return True
         if type(other) is not _WeakTypeToken:
             return False
-        c1, c2 = self._ref(), other._ref()
+        c1, c2 = self.resolve(), other.resolve()
         return c1 is not None and c1 is c2
 
 
@@ -181,6 +184,19 @@ def _rehydrate_type(tok: object) -> tuple[bool, object]:
 class _CodecMetadataCache:
     """Thread-safe compiled plan, dataclass MRO field metadata, Enum table, and callable hint cache."""
 
+    _INSTANCE: ClassVar[Optional[_CodecMetadataCache]] = None
+    _INIT_LOCK: ClassVar[threading.Lock] = threading.Lock()
+
+    @classmethod
+    def instance(cls) -> _CodecMetadataCache:
+        inst = cls._INSTANCE
+        if inst is not None:
+            return inst
+        with cls._INIT_LOCK:
+            if cls._INSTANCE is None:
+                cls._INSTANCE = cls()
+            return cls._INSTANCE
+
     def __init__(self) -> None:
         self.active = _ActiveCodecMemo()
         self.lock = threading.RLock()
@@ -200,6 +216,8 @@ class _CodecMetadataCache:
         self.recursive_dcs: weakref.WeakSet[type[object]] = weakref.WeakSet()
         self.valid_type_schemas: weakref.WeakSet[type[object]] = weakref.WeakSet()
         self.valid_form_schemas: OrderedDict[object, None] = OrderedDict()
+
+
 
 
 def _assert_int64_range(val: int, *, path: str) -> int:
@@ -355,50 +373,20 @@ def _populate_active_stack_locals(qualname: str, out: dict[str, object]) -> None
         return
     parts = qualname.split(".")
     fn_names = {parts[i] for i in range(len(parts) - 1) if parts[i + 1] == "<locals>"}
-    frame: Optional[types.FrameType] = sys._getframe(0)
+    frame: Optional[types.FrameType] = inspect.currentframe()
     while frame is not None:
         if frame.f_code.co_name in fn_names:
             out.update({k: v for k, v in frame.f_locals.items() if isinstance(v, (type, TypeVar)) and k not in out})
         frame = frame.f_back
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
-class _UnwrappedCallable:
-    target_fn: Optional[types.FunctionType]
-    owner_cls: Optional[type[object]]
-    skip_pos: int
-    bound_kw: set[str]
-
-
-def _unwrap_callable_target(fn: object) -> _UnwrappedCallable:
-    cur: object = fn
-    skip_pos = 0
-    bound_kw: set[str] = set()
-    while isinstance(cur, functools.partial):
-        skip_pos += len(cur.args)
-        if cur.keywords:
-            bound_kw.update(cur.keywords.keys())
-        cur = cur.func
-    if isinstance(cur, types.MethodType):
-        owner = cur.__self__ if isinstance(cur.__self__, type) else type(cur.__self__)
-        fn_obj = cur.__func__ if isinstance(cur.__func__, types.FunctionType) else None
-        return _UnwrappedCallable(fn_obj, owner, skip_pos + 1, bound_kw)
-    if isinstance(cur, types.FunctionType):
-        return _UnwrappedCallable(cur, None, skip_pos, bound_kw)
-    if isinstance(cur, type):
-        init_fn = cur.__init__ if isinstance(cur.__init__, types.FunctionType) else None
-        return _UnwrappedCallable(init_fn, cur, skip_pos + 1, bound_kw)
-    call_m = type(cur).__call__
-    return _UnwrappedCallable(call_m if isinstance(call_m, types.FunctionType) else None, type(cur), skip_pos + 1, bound_kw)
-
-
 def infer_sequence_element_dataclass(fn: object, *, strict_unresolved: bool) -> tuple[bool, Optional[object]]:
     """Infer TPayload from a mapper callable's first Sequence[TPayload] parameter inside the codec reflection boundary."""
     if not callable(fn):
         return (True, None)
-    with DataclassCodec._CACHE.lock:
+    with _CodecMetadataCache.instance().lock:
         try:
-            cached = DataclassCodec._CACHE.callable_payloads.get(fn)
+            cached = _CodecMetadataCache.instance().callable_payloads.get(fn)
         except TypeError:
             cached = None
     if cached is not None and cached[0]:
@@ -406,13 +394,30 @@ def infer_sequence_element_dataclass(fn: object, *, strict_unresolved: bool) -> 
         if ok_cb:
             return (True, inf_tp)
 
-    unwrapped = _unwrap_callable_target(fn)
-    target_fn, owner_cls, skip_pos, bound_kw = (
-        unwrapped.target_fn,
-        unwrapped.owner_cls,
-        unwrapped.skip_pos,
-        unwrapped.bound_kw,
-    )
+    cur_fn: object = fn
+    skip_pos = 0
+    bound_kw: set[str] = set()
+    while isinstance(cur_fn, functools.partial):
+        skip_pos += len(cur_fn.args)
+        if cur_fn.keywords:
+            bound_kw.update(cur_fn.keywords.keys())
+        cur_fn = cur_fn.func
+    owner_cls: Optional[type[object]] = None
+    if isinstance(cur_fn, types.MethodType):
+        owner_cls = cur_fn.__self__ if isinstance(cur_fn.__self__, type) else type(cur_fn.__self__)
+        target_fn = cur_fn.__func__ if isinstance(cur_fn.__func__, types.FunctionType) else None
+        skip_pos += 1
+    elif isinstance(cur_fn, types.FunctionType):
+        target_fn = cur_fn
+    elif isinstance(cur_fn, type):
+        owner_cls = cur_fn
+        target_fn = cur_fn.__init__ if isinstance(cur_fn.__init__, types.FunctionType) else None
+        skip_pos += 1
+    else:
+        owner_cls = type(cur_fn)
+        call_m = owner_cls.__call__
+        target_fn = call_m if isinstance(call_m, types.FunctionType) else None
+        skip_pos += 1
     if target_fn is None:
         return (True, None)
     code = target_fn.__code__
@@ -438,9 +443,9 @@ def infer_sequence_element_dataclass(fn: object, *, strict_unresolved: bool) -> 
             elem_tp = _unwrap_annotated(args[0]) if args else None
             if elem_tp is not None and _is_dataclass_or_generic_dc(elem_tp):
                 inferred = elem_tp
-    with DataclassCodec._CACHE.lock:
+    with _CodecMetadataCache.instance().lock:
         try:
-            DataclassCodec._CACHE.callable_payloads[fn] = (True, _dehydrate_type(inferred))
+            _CodecMetadataCache.instance().callable_payloads[fn] = (True, _dehydrate_type(inferred))
         except TypeError:
             pass
     return (True, inferred)
@@ -762,12 +767,12 @@ def _strict_json_equals(expected: JsonValue, actual: JsonValue) -> bool:
 
 
 def _get_enum_table(tp: type[Enum]) -> tuple[tuple[JsonValue, Enum], ...]:
-    with DataclassCodec._CACHE.lock:
-        cached = DataclassCodec._CACHE.enum_tables.get(tp)
+    with _CodecMetadataCache.instance().lock:
+        cached = _CodecMetadataCache.instance().enum_tables.get(tp)
     if cached is None:
         cached = tuple((DataclassCodec.encode(m.value), m.name) for m in tp)
-        with DataclassCodec._CACHE.lock:
-            DataclassCodec._CACHE.enum_tables[tp] = cached
+        with _CodecMetadataCache.instance().lock:
+            _CodecMetadataCache.instance().enum_tables[tp] = cached
     return tuple((enc_v, tp[m_name]) for enc_v, m_name in cached)
 
 
@@ -988,8 +993,8 @@ def _is_uncacheable_local_or_unbound_node(node: object) -> bool:
 def _lookup_cached_dc_hints(
     dc_cls: type[object],
 ) -> Optional[tuple[tuple[tuple[str, bool], ...], dict[str, tuple[object, dict[str, object]]]]]:
-    with DataclassCodec._CACHE.lock:
-        cached_w = DataclassCodec._CACHE.dc_hints.get(dc_cls)
+    with _CodecMetadataCache.instance().lock:
+        cached_w = _CodecMetadataCache.instance().dc_hints.get(dc_cls)
     if cached_w is None:
         return None
     rehyd_pairs = {k: _rehydrate_type(wt) for k, wt in cached_w[1].items()}
@@ -1003,7 +1008,7 @@ def _compile_mro_base_metadata(
     parent_localns: Optional[Mapping[str, object]],
 ) -> tuple[tuple[tuple[str, bool], ...], dict[str, tuple[object, dict[str, object]]]]:
     is_local_cls = ".<locals>." in dc_cls.__qualname__
-    act_hints = DataclassCodec._CACHE.active.hints if parent_localns is None else None
+    act_hints = _CodecMetadataCache.instance().active.hints if parent_localns is None else None
     if act_hints is not None and dc_cls in act_hints:
         return act_hints[dc_cls]
     if parent_localns is None and not is_local_cls:
@@ -1051,11 +1056,11 @@ def _compile_mro_base_metadata(
     if act_hints is not None:
         act_hints[dc_cls] = compiled
     if parent_localns is None and not is_local_cls:
-        with DataclassCodec._CACHE.lock:
+        with _CodecMetadataCache.instance().lock:
             if has_cycle:
-                DataclassCodec._CACHE.recursive_dcs.add(dc_cls)
+                _CodecMetadataCache.instance().recursive_dcs.add(dc_cls)
             elif not any(lns for _st, lns in raw_fields.values()):
-                DataclassCodec._CACHE.dc_hints[dc_cls] = (
+                _CodecMetadataCache.instance().dc_hints[dc_cls] = (
                     init_specs,
                     {k: _dehydrate_type(st) for k, (st, _lns) in raw_fields.items()},
                 )
@@ -1192,17 +1197,10 @@ def _extract_dc_and_args(tp: object) -> tuple[type[object], tuple[object, ...]]:
     raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Expected dataclass type, got {tp}")
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
-class _DcEnvelopeSchema:
-    required: set[str]
-    known: set[str]
-    field_types: dict[str, object]
-
-
 def _dataclass_envelope_fields(
     dc_cls: type[object],
     args: tuple[object, ...],
-) -> _DcEnvelopeSchema:
+) -> tuple[set[str], set[str], dict[str, object]]:
     tv_map = dict(zip(_generic_type_params(dc_cls), args)) if args else {}
     try:
         specs, base_fields = _compile_mro_base_metadata(dc_cls, None)
@@ -1210,9 +1208,7 @@ def _dataclass_envelope_fields(
             fn: _resolve_schema_refs(_substitute_typevars(ft, tv_map) if tv_map else ft, f_lns)
             for fn, (ft, f_lns) in base_fields.items()
         }
-        req = {fn for fn, is_req in specs if is_req}
-        known = {fn for fn, _is_req in specs}
-        return _DcEnvelopeSchema(req, known, ftypes)
+        return ({fn for fn, is_req in specs if is_req}, {fn for fn, _ in specs}, ftypes)
     except _UnresolvedLocalHintError:
         init_f = [f for f in dataclasses.fields(dc_cls) if f.init]
         req = {f.name for f in init_f if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING}
@@ -1225,7 +1221,7 @@ def _dataclass_envelope_fields(
             )
             for f in init_f
         }
-        return _DcEnvelopeSchema(req, known, ftypes)
+        return (req, known, ftypes)
 
 
 def _dataclasses_overlap_on_wire(b1: object, b2: object, pair_seen: set[object]) -> bool:
@@ -1233,15 +1229,12 @@ def _dataclasses_overlap_on_wire(b1: object, b2: object, pair_seen: set[object])
     dc2, args2 = _extract_dc_and_args(b2)
     if not _try_mark_seen(pair_seen, ((dc1, args1), (dc2, args2))):
         return True
-    env1 = _dataclass_envelope_fields(dc1, args1)
-    env2 = _dataclass_envelope_fields(dc2, args2)
-    common_req = env1.required | env2.required
-    if not (common_req <= (env1.known & env2.known)):
+    req1, known1, ftypes1 = _dataclass_envelope_fields(dc1, args1)
+    req2, known2, ftypes2 = _dataclass_envelope_fields(dc2, args2)
+    common_req = req1 | req2
+    if not (common_req <= (known1 & known2)):
         return False
-    return all(
-        _wire_domains_overlap(env1.field_types.get(k, object), env2.field_types.get(k, object), pair_seen)
-        for k in common_req
-    )
+    return all(_wire_domains_overlap(ftypes1.get(k, object), ftypes2.get(k, object), pair_seen) for k in common_req)
 
 
 def _wire_domains_overlap(t1: object, t2: object, pair_seen: set[object]) -> bool:
@@ -1500,8 +1493,8 @@ def _type_reaches_bytes(raw_tp: object, seen: set[object]) -> bool:
         dc_cls, dc_args = _extract_dc_and_args(tp)
         if not _try_mark_seen(seen, ("dc_b", dc_cls, dc_args)):
             return False
-        env = _dataclass_envelope_fields(dc_cls, dc_args)
-        return any(_type_reaches_bytes(ft, seen) for ft in env.field_types.values())
+        _req, _known, ftypes = _dataclass_envelope_fields(dc_cls, dc_args)
+        return any(_type_reaches_bytes(ft, seen) for ft in ftypes.values())
     return any(_type_reaches_bytes(a, seen) for a in get_args(tp) if a not in (Ellipsis, type(None)))
 
 
@@ -1509,8 +1502,8 @@ def _dc_vs_map_bytes_conflict(b1: object, b2: object, pair_seen: set[object]) ->
     for dc_cand, map_cand in ((b1, b2), (b2, b1)):
         mv = _map_or_wildcard_val(map_cand)
         if _is_dataclass_or_generic_dc(dc_cand) and mv is not None:
-            env = _dataclass_envelope_fields(*_extract_dc_and_args(dc_cand))
-            return any(_branches_have_bytes_text_conflict(ft, mv, pair_seen) for ft in env.field_types.values())
+            _req, _known, ftypes = _dataclass_envelope_fields(*_extract_dc_and_args(dc_cand))
+            return any(_branches_have_bytes_text_conflict(ft, mv, pair_seen) for ft in ftypes.values())
     return False
 
 
@@ -1672,7 +1665,7 @@ def _validate_dc_fields_schema(
 
 
 def _is_schema_cached(tp: object) -> bool:
-    cache = DataclassCodec._CACHE
+    cache = _CodecMetadataCache.instance()
     with cache.lock:
         if isinstance(tp, type):
             try:
@@ -1696,7 +1689,7 @@ def _record_schema_cached(tp: object) -> None:
         or _type_tree_any(tp, _is_recursive_dataclass_node)
     ):
         return
-    cache = DataclassCodec._CACHE
+    cache = _CodecMetadataCache.instance()
     with cache.lock:
         if isinstance(tp, type):
             try:
@@ -1962,23 +1955,16 @@ def _compile_literal_plan(tp: object) -> DecodeFn:
     return _dec_lit
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
-class _DcFieldSpec:
-    name: str
-    required: bool
-    decode_fn: DecodeFn
-
-
 def _build_dc_field_specs(
     dc_cls: type[object],
     init_specs: Sequence[tuple[str, bool]],
     base_fields: Mapping[str, tuple[object, dict[str, object]]],
     tv_map: Mapping[object, object],
     fallback_lns: Mapping[str, object],
-) -> tuple[_DcFieldSpec, ...]:
+) -> tuple[tuple[str, bool, DecodeFn], ...]:
     raw_types = {f.name: f.type for f in dataclasses.fields(dc_cls) if f.init}
     is_local_cls = ".<locals>." in dc_cls.__qualname__
-    specs: list[_DcFieldSpec] = []
+    specs: list[tuple[str, bool, DecodeFn]] = []
     for fname, required in init_specs:
         entry = base_fields.get(fname)
         base_tp = entry[0] if entry is not None else raw_types.get(fname, object)
@@ -1986,7 +1972,7 @@ def _build_dc_field_specs(
         field_lns = entry[1] if entry is not None else fallback_lns
         _validate_declared_type_schema(field_tp, localns=field_lns or None)
         eff_lns = field_lns if (field_lns and (is_local_cls or _needs_localns_for_forward_ref(field_tp))) else None
-        specs.append(_DcFieldSpec(fname, required, _make_bound_field_decoder(field_tp, eff_lns)))
+        specs.append((fname, required, _make_bound_field_decoder(field_tp, eff_lns)))
     return tuple(specs)
 
 
@@ -2020,12 +2006,12 @@ def _compile_dataclass_plan(
             unknown = sorted(str(k) for k in raw.keys() if k not in known_names)
             raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Unexpected fields {unknown} at {path} for {cls_name}")
         kwargs: dict[str, object] = {}
-        for fs in field_specs:
-            if fs.name in raw:
-                kwargs[fs.name] = fs.decode_fn(raw[fs.name], f"{path}.{fs.name}", depth + 1)
-            elif fs.required:
+        for s_name, s_req, s_dec in field_specs:
+            if s_name in raw:
+                kwargs[s_name] = s_dec(raw[s_name], f"{path}.{s_name}", depth + 1)
+            elif s_req:
                 raise YscbError(
-                    ErrorCode.CODEC_VALIDATION_FAILED, f"Missing required field '{fs.name}' at {path} for {cls_name}"
+                    ErrorCode.CODEC_VALIDATION_FAILED, f"Missing required field '{s_name}' at {path} for {cls_name}"
                 )
         try:
             return cls_obj(**kwargs)
@@ -2238,26 +2224,26 @@ def _compile_plan_uncached(tp: object, localns: Optional[Mapping[str, object]]) 
 
 
 def _lookup_cached_plan(tp: object, is_plain_type: bool) -> Optional[DecodeFn]:
-    with DataclassCodec._CACHE.lock:
+    with _CodecMetadataCache.instance().lock:
         if is_plain_type and isinstance(tp, type):
-            return DataclassCodec._CACHE.type_plans.get(tp)
+            return _CodecMetadataCache.instance().type_plans.get(tp)
         try:
             wkey = _dehydrate_type(tp)
-            cached_f = DataclassCodec._CACHE.form_plans.get(wkey)
+            cached_f = _CodecMetadataCache.instance().form_plans.get(wkey)
         except TypeError:
             return None
         if cached_f is not None:
-            DataclassCodec._CACHE.form_plans.move_to_end(wkey)
+            _CodecMetadataCache.instance().form_plans.move_to_end(wkey)
         return cached_f
 
 
 def _is_self_referential_dataclass(tp: type[object]) -> bool:
     if tp in _SCALAR_VO_TYPES or not dataclasses.is_dataclass(tp):
         return False
-    with DataclassCodec._CACHE.lock:
-        if tp in DataclassCodec._CACHE.recursive_dcs:
+    with _CodecMetadataCache.instance().lock:
+        if tp in _CodecMetadataCache.instance().recursive_dcs:
             return True
-        if tp in DataclassCodec._CACHE.dc_hints:
+        if tp in _CodecMetadataCache.instance().dc_hints:
             return False
     return True
 
@@ -2265,7 +2251,7 @@ def _is_self_referential_dataclass(tp: type[object]) -> bool:
 def _store_cached_plan(tp: object, is_plain_type: bool, compiled: DecodeFn) -> None:
     if _type_tree_any(tp, _is_uncacheable_local_or_unbound_node) or _type_tree_any(tp, _is_recursive_dataclass_node):
         return
-    cache = DataclassCodec._CACHE
+    cache = _CodecMetadataCache.instance()
     with cache.lock:
         if is_plain_type and isinstance(tp, type):
             cache.type_plans[tp] = compiled
@@ -2290,7 +2276,7 @@ def _store_cached_plan(tp: object, is_plain_type: bool, compiled: DecodeFn) -> N
 def _get_or_compile_plan(tp: object, localns: Optional[Mapping[str, object]]) -> DecodeFn:
     if localns:
         return _compile_plan_uncached(tp, localns)
-    act_plans = DataclassCodec._CACHE.active.plans
+    act_plans = _CodecMetadataCache.instance().active.plans
     if act_plans is not None:
         try:
             in_act = act_plans.get(tp)
@@ -2322,7 +2308,7 @@ def _decode_by_type(
 ) -> object:
     if depth > _MAX_CODEC_DEPTH:
         raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Maximum nesting depth exceeded at {path}")
-    act = DataclassCodec._CACHE.active
+    act = _CodecMetadataCache.instance().active
     owns_memo = localns is None and act.plans is None
     if owns_memo:
         act.plans = {}
@@ -2337,8 +2323,8 @@ def _decode_by_type(
 
 
 def _get_dataclass_field_getters(dc_cls: type[object]) -> tuple[FieldGetter, ...]:
-    with DataclassCodec._CACHE.lock:
-        cached = DataclassCodec._CACHE.dc_getters.get(dc_cls)
+    with _CodecMetadataCache.instance().lock:
+        cached = _CodecMetadataCache.instance().dc_getters.get(dc_cls)
         if cached is not None:
             return cached
     try:
@@ -2349,8 +2335,8 @@ def _get_dataclass_field_getters(dc_cls: type[object]) -> tuple[FieldGetter, ...
     getters: tuple[FieldGetter, ...] = tuple(
         (f.name, operator.attrgetter(f.name)) for f in dataclasses.fields(dc_cls) if f.init
     )
-    with DataclassCodec._CACHE.lock:
-        DataclassCodec._CACHE.dc_getters[dc_cls] = getters
+    with _CodecMetadataCache.instance().lock:
+        _CodecMetadataCache.instance().dc_getters[dc_cls] = getters
     return getters
 
 
@@ -2435,11 +2421,9 @@ class DataclassCodec:
     overlapping-dataclass, or overlapping-key-domain ambiguities at schema validation time.
     """
 
-    _CACHE: ClassVar[_CodecMetadataCache] = _CodecMetadataCache()
-
     @staticmethod
     def encode(obj: object) -> JsonValue:
-        act = DataclassCodec._CACHE.active
+        act = _CodecMetadataCache.instance().active
         owns_h = act.hints is None
         if owns_h:
             act.hints = {}
@@ -2453,7 +2437,7 @@ class DataclassCodec:
 
     @staticmethod
     def encode_typed(expected_type: object, obj: object) -> JsonValue:
-        act = DataclassCodec._CACHE.active
+        act = _CodecMetadataCache.instance().active
         owns_h = act.hints is None
         if owns_h:
             act.hints = {}
@@ -2480,7 +2464,7 @@ class DataclassCodec:
 
     @staticmethod
     def encode_envelope(obj: object) -> MutableJsonObject:
-        act = DataclassCodec._CACHE.active
+        act = _CodecMetadataCache.instance().active
         owns_h = act.hints is None
         if owns_h:
             act.hints = {}
@@ -2559,7 +2543,7 @@ class DataclassCodec:
         if not root_pkg:
             return
         dot_pkg = f"{root_pkg}."
-        cache = DataclassCodec._CACHE
+        cache = _CodecMetadataCache.instance()
         with cache.lock:
             hints_snap = dict(cache.dc_hints.items())
             for wk_map in (cache.dc_getters, cache.dc_hints, cache.enum_tables, cache.type_plans):

@@ -8,6 +8,7 @@ from collections import deque
 from dataclasses import dataclass, field, replace
 from enum import Enum
 import importlib
+import inspect
 from importlib.abc import MetaPathFinder
 from importlib.machinery import ModuleSpec, PathFinder, SourceFileLoader
 from importlib.util import spec_from_file_location
@@ -23,6 +24,8 @@ import uuid
 from core.execution.event import CausalLineage, EventMetadata, TaskLocalOutbox
 from core.execution.lifecycle import ContainerState, LifoResourceStack, WorkerContainerLifecycle
 from core.execution.runtime.contracts import (
+    MODULES_DIRNAME,
+    CORE_MODULE_ID,
     BoundTask,
     ClientRoutingPolicy,
     ExecutionPriority,
@@ -35,6 +38,7 @@ from core.execution.runtime.contracts import (
 )
 from core.execution.runtime.wire import WorkerEquivReply, WorkerMapBatchReply, WorkerStepReply
 from core.filesystem.fs import (
+    IGNORED_FS_PREFIXES,
     is_contained_nonsymlink_path,
     is_symlink_or_reparse,
     read_nofollow_regular_bytes,
@@ -64,16 +68,26 @@ TaggedCloser = tuple[str, Callable[[], Sequence[ErrorDetail]]]
 
 
 def _infer_caller_scoped_pkg() -> Optional[str]:
-    frame: Optional[types.FrameType] = sys._getframe(1)
-    while frame is not None:
-        mod_name = frame.f_globals.get("__name__")
-        is_int = isinstance(mod_name, str) and (
-            mod_name in (__name__, "importlib") or mod_name.startswith(("importlib.", "_frozen_importlib"))
-        )
-        if not is_int:
-            return mod_name.split(".", 1)[0] if (isinstance(mod_name, str) and mod_name.startswith(_SCOPED_PKG_PREFIX)) else None
-        frame = frame.f_back
-    return None
+    cur_f = inspect.currentframe()
+    frame: Optional[types.FrameType] = None
+    try:
+        frame = cur_f.f_back if cur_f is not None else None
+        while frame is not None:
+            mod_name = frame.f_globals.get("__name__")
+            is_int = isinstance(mod_name, str) and (
+                mod_name in (__name__, "importlib") or mod_name.startswith(("importlib.", "_frozen_importlib"))
+            )
+            if not is_int:
+                return (
+                    mod_name.split(".", 1)[0]
+                    if (isinstance(mod_name, str) and mod_name.startswith(_SCOPED_PKG_PREFIX))
+                    else None
+                )
+            frame = frame.f_back
+        return None
+    finally:
+        del frame
+        del cur_f
 
 
 @dataclass(slots=True)
@@ -121,7 +135,7 @@ def _entry_is_contained_py(ent: os.DirEntry[str], mod_dir: Path) -> bool:
 def _subdir_has_nonsymlink_py(sub_dir: Path, mod_dir: Path) -> bool:
     if not is_contained_nonsymlink_path(mod_dir, sub_dir, is_dir=True):
         return False
-    for _cur_dir, entries in walk_nonsymlink_dir_tree(str(sub_dir), ignored_dir_prefixes=(".", "__pycache__")):
+    for _cur_dir, entries in walk_nonsymlink_dir_tree(str(sub_dir), ignored_dir_prefixes=(".", *IGNORED_FS_PREFIXES)):
         if any(_entry_is_contained_py(ent, mod_dir) for ent in entries):
             return True
     return False
@@ -144,7 +158,7 @@ def _dir_is_scoped_package(sub_dir: Path, mod_dir: Path, top_name: Optional[str]
 
 
 def _has_contained_sibling(mod_dir: Path, top_name: str) -> bool:
-    if not top_name or top_name.startswith((".", "__pycache__")) or top_name in sys.stdlib_module_names:
+    if not top_name or top_name.startswith((".", *IGNORED_FS_PREFIXES)) or top_name in sys.stdlib_module_names:
         return False
     py_file = mod_dir / f"{top_name}.py"
     if py_file.is_file() and is_contained_nonsymlink_path(mod_dir, py_file):
@@ -239,7 +253,7 @@ def _build_contained_subspec(
         loader = _ScopedSourceLoader(fullname, str(mod_py), unique_pkg, mod_dir)
         return spec_from_file_location(fullname, str(mod_py), loader=loader)
     top_chk = rel_parts[0] if len(rel_parts) == 1 else None
-    if not rel_parts[-1].startswith((".", "__pycache__")) and _dir_is_scoped_package(
+    if not rel_parts[-1].startswith((".", *IGNORED_FS_PREFIXES)) and _dir_is_scoped_package(
         rel_target, mod_dir, top_name=top_chk
     ):
         ns_spec = ModuleSpec(fullname, None, is_package=True)
@@ -329,49 +343,68 @@ def _try_import_in_scoped_package(
     return orig_fn(resolved[0], None) if resolved is not None else None
 
 
+@dataclass(slots=True)
+class _ScopedFinderState:
+    _INSTANCE: ClassVar[Optional[_ScopedFinderState]] = None
+    _INIT_LOCK: ClassVar[threading.Lock] = threading.Lock()
+
+    lock: threading.RLock
+    finder: _ScopedModuleFinder
+    active_wrapper: Optional[Callable[[str, Optional[str]], types.ModuleType]] = None
+    prev_import_module: Optional[Callable[[str, Optional[str]], types.ModuleType]] = None
+
+    @classmethod
+    def instance(cls) -> _ScopedFinderState:
+        inst = cls._INSTANCE
+        if inst is not None:
+            return inst
+        with cls._INIT_LOCK:
+            if cls._INSTANCE is None:
+                rlk = threading.RLock()
+                cls._INSTANCE = cls(rlk, _ScopedModuleFinder(rlk))
+            return cls._INSTANCE
+
+
 class ProtectedModuleLoader:
     """Loads YscbModule instances strictly from <workspace_root>/.modules/<module_id>/ with zero sys.path or global sys.modules pollution."""
-
-    _FINDER_LOCK: ClassVar[threading.RLock] = threading.RLock()
-    _FINDER: ClassVar[Optional[_ScopedModuleFinder]] = None
-    _ORIG_IMPORT_MODULE: ClassVar[Optional[Callable[[str, Optional[str]], types.ModuleType]]] = None
 
     def __init__(self, workspace_root: HostPath) -> None:
         self._workspace_root = workspace_root
 
-    @classmethod
-    def _scoped_import_module(cls, name: str, package: Optional[str] = None) -> types.ModuleType:
-        orig_fn = require_non_none(cls._ORIG_IMPORT_MODULE)
-        finder = cls._FINDER
-        if finder is None:
-            return orig_fn(name, package)
-        active_pkg = _infer_caller_scoped_pkg()
-        mod_root = finder.get_package_root(active_pkg) if active_pkg is not None else None
-        if mod_root is not None and active_pkg is not None and isinstance(name, str) and name:
-            scoped_mod = _try_import_in_scoped_package(orig_fn, active_pkg, mod_root, name, package)
-            if scoped_mod is not None:
-                return scoped_mod
-        return orig_fn(name, package)
+    @staticmethod
+    def _ensure_finder() -> _ScopedModuleFinder:
+        st = _ScopedFinderState.instance()
+        with st.lock:
+            if st.finder not in sys.meta_path:
+                sys.meta_path.append(st.finder)
+            if st.active_wrapper is None or importlib.import_module is not st.active_wrapper:
+                prev_fn = importlib.import_module
+                def _scoped_wrapper(name: str, package: Optional[str] = None) -> types.ModuleType:
+                    if st.active_wrapper is not _scoped_wrapper:
+                        return prev_fn(name, package)
+                    active_pkg = _infer_caller_scoped_pkg()
+                    mod_root = st.finder.get_package_root(active_pkg) if active_pkg is not None else None
+                    if mod_root is not None and active_pkg is not None and isinstance(name, str) and name:
+                        scoped_mod = _try_import_in_scoped_package(prev_fn, active_pkg, mod_root, name, package)
+                        if scoped_mod is not None:
+                            return scoped_mod
+                    return prev_fn(name, package)
 
-    @classmethod
-    def _ensure_finder(cls) -> _ScopedModuleFinder:
-        with cls._FINDER_LOCK:
-            if cls._FINDER is None:
-                cls._FINDER = _ScopedModuleFinder(cls._FINDER_LOCK)
-            if cls._FINDER not in sys.meta_path:
-                sys.meta_path.append(cls._FINDER)
-            if cls._ORIG_IMPORT_MODULE is None:
-                cls._ORIG_IMPORT_MODULE = importlib.import_module
-            if importlib.import_module != cls._scoped_import_module:
-                importlib.import_module = cls._scoped_import_module
-            return cls._FINDER
+                st.prev_import_module = prev_fn
+                st.active_wrapper = _scoped_wrapper
+                importlib.import_module = _scoped_wrapper
+            return st.finder
 
-    @classmethod
-    def _deactivate_finder_if_empty_locked(cls, finder: _ScopedModuleFinder) -> None:
-        if finder in sys.meta_path:
-            sys.meta_path.remove(finder)
-        if cls._ORIG_IMPORT_MODULE is not None and importlib.import_module == cls._scoped_import_module:
-            importlib.import_module = cls._ORIG_IMPORT_MODULE
+    @staticmethod
+    def _deactivate_finder_if_empty_locked(st: _ScopedFinderState) -> None:
+        if st.finder in sys.meta_path:
+            sys.meta_path.remove(st.finder)
+        old_wrap = st.active_wrapper
+        restore_fn = st.prev_import_module
+        st.active_wrapper = None
+        st.prev_import_module = None
+        if old_wrap is not None and restore_fn is not None and importlib.import_module is old_wrap:
+            importlib.import_module = restore_fn
 
     @classmethod
     def cleanup_package(cls, pkg_or_entry: str) -> None:
@@ -379,20 +412,18 @@ class ProtectedModuleLoader:
         if not unique_pkg:
             return
         DataclassCodec.evict_module_prefix(unique_pkg)
-        with cls._FINDER_LOCK:
-            finder = cls._FINDER
-            if finder is None:
-                return
-            still_has_pkgs = finder.unregister_package(unique_pkg)
+        st = _ScopedFinderState.instance()
+        with st.lock:
+            still_has_pkgs = st.finder.unregister_package(unique_pkg)
             if not still_has_pkgs:
-                cls._deactivate_finder_if_empty_locked(finder)
+                cls._deactivate_finder_if_empty_locked(st)
 
     def load_module_artifact(self, descriptor: ModuleDescriptor) -> LoadedModuleArtifact:
         entry_path, mod_hp = self._verify_containment_and_resolve_entry(descriptor)
         safe_id = str(descriptor.module_id).replace("-", "_")
         unique_pkg = f"{_SCOPED_PKG_PREFIX}{safe_id}_{uuid.uuid4().hex[:8]}"
         mod_dir = mod_hp.path
-        with self._FINDER_LOCK:
+        with _ScopedFinderState.instance().lock:
             finder = self._ensure_finder()
             finder.register_package(unique_pkg, mod_dir)
         try:
@@ -431,13 +462,13 @@ class ProtectedModuleLoader:
             raise
 
     def _verify_containment_and_resolve_entry(self, descriptor: ModuleDescriptor) -> tuple[HostPath, HostPath]:
-        mods_hp = try_resolve_contained_subpath(self._workspace_root, ".modules")
+        mods_hp = try_resolve_contained_subpath(self._workspace_root, MODULES_DIRNAME)
         mod_hp = (
             resolve_contained_child_dir(mods_hp, descriptor.module_dir, guarded_name=str(descriptor.module_id))
             if mods_hp is not None
             else None
         )
-        if mod_hp is None or str(descriptor.module_id) == "core" or mod_hp.path.name.lower() == "core":
+        if mod_hp is None or descriptor.module_id == CORE_MODULE_ID or mod_hp.path.name.lower() == "core":
             raise YscbError(
                 ErrorCode.SECURITY_GATED,
                 f"Module '{descriptor.module_id}' directory '{descriptor.module_dir}' violates .modules/ boundary.",
@@ -462,7 +493,7 @@ class _StepTaskContext(TaskContext):
     def __init__(self, workspace_root: HostPath, spec: LocalStepExecutionSpec, outbox: TaskLocalOutbox) -> None:
         self._workspace_root = workspace_root
         self._spec = spec
-        self._caller_env = dict(spec.caller_env)
+        self._caller_env: Mapping[str, str] = types.MappingProxyType(dict(spec.caller_env))
         self._outbox = outbox
 
     @property
@@ -606,14 +637,7 @@ class _ModuleSlot:
         return any(r_art.in_flight > 0 for r_art, _rc in self.retiring)
 
 
-@dataclass(frozen=True, slots=True)
-class _SlotInitClaim:
-    matched: bool
-    need_init: bool = False
-    need_start: bool = False
-    start_epoch: int = 0
-    ready_instance: Optional[YscbModule] = None
-    pinned_artifact: Optional[LoadedModuleArtifact] = None
+
 
 
 def _routes_match_manifest(declared: TaskRouteSpec, actual: TaskRouteSpec) -> bool:
@@ -718,7 +742,7 @@ class LocalModuleSlotRegistry:
         if self._container.state == ContainerState.STOPPED:
             return True
         return (
-            slot.module_id != ModuleId("core")
+            slot.module_id != CORE_MODULE_ID
             and self._is_quiesced_fn is not None
             and self._is_quiesced_fn(slot.module_id)
         )
@@ -907,54 +931,42 @@ class LocalModuleSlotRegistry:
         with load_lk:
             return self._load_and_init_under_slot_lock(module_id)
 
-    def _claim_loaded_slot_for_init(
-        self,
-        module_id: ModuleId,
-        inst: YscbModule,
-    ) -> _SlotInitClaim:
-        with self._drain_cond:
-            slot = self._slot_locked(module_id)
-            if slot.artifact is None or slot.artifact.instance is not inst:
-                return _SlotInitClaim(matched=False)
-            if slot.phase == _SlotPhase.STARTED:
-                return _SlotInitClaim(matched=True, start_epoch=slot.epoch, ready_instance=slot.artifact.instance)
-            need_init = slot.phase != _SlotPhase.INITIALIZED
-            need_start = (
-                self._require_eager_start
-                and not slot.starting
-                and slot.descriptor is not None
-                and slot.descriptor.eager_warmup
-            )
-            slot.artifact.in_flight += 1
-            return _SlotInitClaim(
-                matched=True,
-                need_init=need_init,
-                need_start=need_start,
-                start_epoch=slot.epoch,
-                pinned_artifact=slot.artifact,
-            )
-
     def _load_and_init_under_slot_lock(self, module_id: ModuleId) -> YscbModule:
         for _attempt in range(3):
             self._raise_if_degraded(module_id)
             inst = self.ensure_module_artifact_loaded(module_id)
-            claim = self._claim_loaded_slot_for_init(module_id, inst)
-            if not claim.matched:
-                continue
-            if claim.ready_instance is not None:
-                return claim.ready_instance
+            need_init = False
+            need_start = False
+            start_ep = 0
+            pinned_art: Optional[LoadedModuleArtifact] = None
+            with self._drain_cond:
+                slot = self._slot_locked(module_id)
+                if slot.artifact is None or slot.artifact.instance is not inst:
+                    continue
+                if slot.phase == _SlotPhase.STARTED:
+                    return slot.artifact.instance
+                need_init = slot.phase != _SlotPhase.INITIALIZED
+                need_start = (
+                    self._require_eager_start
+                    and not slot.starting
+                    and slot.descriptor is not None
+                    and slot.descriptor.eager_warmup
+                )
+                start_ep = slot.epoch
+                pinned_art = slot.artifact
+                pinned_art.in_flight += 1
             try:
-                if claim.need_init:
+                if need_init:
                     inst = self._run_slot_lifecycle_hook(
-                        module_id, inst, claim.start_epoch, _SlotPhase.INITIALIZED, "on_init"
+                        module_id, inst, start_ep, _SlotPhase.INITIALIZED, "on_init"
                     )
-                if claim.need_start:
+                if need_start:
                     self._run_slot_lifecycle_hook(
-                        module_id, inst, claim.start_epoch, _SlotPhase.STARTED, "on_start"
+                        module_id, inst, start_ep, _SlotPhase.STARTED, "on_start"
                     )
                 return inst
             finally:
-                self._release_artifact_in_flight(module_id, require_non_none(claim.pinned_artifact))
+                self._release_artifact_in_flight(module_id, pinned_art)
         raise YscbError(ErrorCode.DAEMON_UNAVAILABLE, f"Module '{module_id}' concurrently reloaded during init.")
 
     def _release_artifact_in_flight(

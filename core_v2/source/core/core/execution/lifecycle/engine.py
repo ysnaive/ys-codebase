@@ -48,13 +48,14 @@ class LifoResourceStack:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._entries: list[tuple[str, Callable[[], Sequence[ErrorDetail]]]] = []
+        self._closed = False
+        self._late_diagnostics: list[ErrorDetail] = []
 
     def push_closeable(self, owner: str, close_fn: Callable[[], None]) -> None:
         require_pure_str(owner, "LifoResourceStack.owner", non_empty=True)
         if not callable(close_fn):
             raise ValueError("LifoResourceStack.close_fn must be callable.")
-        with self._lock:
-            self._entries.append((owner, _wrap_void_closer(close_fn)))
+        self.push_diagnostic_closeable(owner, _wrap_void_closer(close_fn))
 
     def push_diagnostic_closeable(
         self,
@@ -64,8 +65,17 @@ class LifoResourceStack:
         require_pure_str(owner, "LifoResourceStack.owner", non_empty=True)
         if not callable(close_fn):
             raise ValueError("LifoResourceStack.close_fn must be callable.")
+        late_close = False
         with self._lock:
-            self._entries.append((owner, close_fn))
+            if self._closed:
+                late_close = True
+            else:
+                self._entries.append((owner, close_fn))
+        if late_close:
+            diags = LifoResourceStack.run_closers(((owner, close_fn),))
+            if diags:
+                with self._lock:
+                    self._late_diagnostics.extend(diags)
 
     def pop_tagged_by_prefixes(
         self,
@@ -124,9 +134,16 @@ class LifoResourceStack:
 
     def close_all_lifo(self) -> tuple[ErrorDetail, ...]:
         with self._lock:
+            self._closed = True
             items = list(reversed(self._entries))
             self._entries.clear()
-        return LifoResourceStack.run_closers(items)
+            prior_late = tuple(self._late_diagnostics)
+            self._late_diagnostics.clear()
+        diags = LifoResourceStack.run_closers(items)
+        with self._lock:
+            post_late = tuple(self._late_diagnostics)
+            self._late_diagnostics.clear()
+        return (*prior_late, *diags, *post_late)
 
 
 @dataclass(slots=True)
@@ -555,11 +572,31 @@ class WorkerContainerLifecycle:
         self._stop_done = threading.Event()
         self._draining_tid: Optional[int] = None
         self._state = ContainerState.UNINITIALIZED
+        self._active_warmups = 0
+        self._warmup_origin_state: Optional[ContainerState] = None
+        self._warmup_any_succeeded = False
         self._quiesced_flag = False
         self._quiesce_probe = quiesce_probe
         self._container_stack = LifoResourceStack()
         self._degraded: dict[ModuleId, ErrorDetail] = {}
         self._index_degraded: dict[ModuleId, ErrorDetail] = {}
+
+    @property
+    def base_state(self) -> ContainerState:
+        with self._lock:
+            return self._state
+
+    def transition_boot_phase(self, target: ContainerState) -> None:
+        if not isinstance(target, ContainerState) or target not in (
+            ContainerState.UNINITIALIZED,
+            ContainerState.BOOTING,
+            ContainerState.WARMING,
+            ContainerState.READY,
+        ):
+            raise ValueError(f"Invalid boot phase transition target: {target!r}")
+        with self._lock:
+            if self._state not in (ContainerState.DRAINING, ContainerState.STOPPED):
+                self._state = target
 
     @property
     def state(self) -> ContainerState:
@@ -631,57 +668,66 @@ class WorkerContainerLifecycle:
                     self._degraded.pop(m, None)
                     self._index_degraded.pop(m, None)
 
+    def _run_single_warmup_hook(self, mod_id: ModuleId, hook_fn: Callable[[], None]) -> bool:
+        with self._lock:
+            if self._state in (ContainerState.DRAINING, ContainerState.STOPPED):
+                return False
+        err_det: Optional[ErrorDetail] = None
+        try:
+            hook_fn()
+        except YscbError as exc:
+            err_det = exc.detail
+        except (Exception, SystemExit, GeneratorExit) as exc:
+            err_det = ErrorDetail(
+                code=ErrorCode.MODULE_DEGRADED,
+                message=f"Module '{mod_id}' warmup failed: {safe_exception_summary(exc)}",
+                source_task=None,
+            )
+        with self._lock:
+            if err_det is not None:
+                self._degraded[mod_id] = err_det
+            elif self._state not in (ContainerState.DRAINING, ContainerState.STOPPED):
+                self._degraded.pop(mod_id, None)
+        return True
+
     def warmup(
         self,
         warmup_hooks: Optional[Mapping[ModuleId, Callable[[], None]]] = None,
     ) -> None:
         hook_items = _validate_warmup_hooks_map(warmup_hooks)
-        prev_state: Optional[ContainerState] = None
         with self._lock:
             if self._state in (ContainerState.DRAINING, ContainerState.STOPPED):
                 return
-            if self._state in (ContainerState.UNINITIALIZED, ContainerState.BOOTING):
-                prev_state = self._state
+            if self._active_warmups == 0 and self._state in (ContainerState.UNINITIALIZED, ContainerState.BOOTING):
+                self._warmup_origin_state = self._state
+                self._warmup_any_succeeded = False
                 self._state = ContainerState.WARMING
+            self._active_warmups += 1
 
         try:
             for mod_id, hook_fn in hook_items:
-                if self._is_stopping():
+                if not self._run_single_warmup_hook(mod_id, hook_fn):
                     break
-                self._run_single_warmup_hook(mod_id, hook_fn)
         except BaseException:
             with self._lock:
-                if self._state == ContainerState.WARMING and prev_state is not None:
-                    self._state = prev_state
+                self._active_warmups = max(0, self._active_warmups - 1)
+                if self._active_warmups == 0:
+                    if self._state == ContainerState.WARMING:
+                        if self._warmup_any_succeeded:
+                            self._state = ContainerState.READY
+                        elif self._warmup_origin_state is not None:
+                            self._state = self._warmup_origin_state
+                    self._warmup_origin_state = None
+                    self._warmup_any_succeeded = False
             raise
         with self._lock:
-            if self._state == ContainerState.WARMING:
-                self._state = ContainerState.READY
-
-    def _is_stopping(self) -> bool:
-        with self._lock:
-            return self._state in (ContainerState.DRAINING, ContainerState.STOPPED)
-
-    def _run_single_warmup_hook(
-        self,
-        mod_id: ModuleId,
-        hook_fn: Callable[[], None],
-    ) -> None:
-        try:
-            hook_fn()
-            with self._lock:
-                if self._state not in (ContainerState.DRAINING, ContainerState.STOPPED):
-                    self._degraded.pop(mod_id, None)
-        except YscbError as exc:
-            with self._lock:
-                self._degraded[mod_id] = exc.detail
-        except (Exception, SystemExit, GeneratorExit) as exc:
-            with self._lock:
-                self._degraded[mod_id] = ErrorDetail(
-                    code=ErrorCode.MODULE_DEGRADED,
-                    message=f"Module '{mod_id}' warmup failed: {safe_exception_summary(exc)}",
-                    source_task=None,
-                )
+            self._warmup_any_succeeded = True
+            self._active_warmups = max(0, self._active_warmups - 1)
+            if self._active_warmups == 0:
+                if self._state == ContainerState.WARMING:
+                    self._state = ContainerState.READY
+                self._warmup_origin_state = None
+                self._warmup_any_succeeded = False
 
     def begin_hot_turn(
         self,

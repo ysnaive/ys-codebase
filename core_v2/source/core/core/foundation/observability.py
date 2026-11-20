@@ -12,7 +12,17 @@ import time
 from typing import BinaryIO, Callable, ClassVar, Final, Iterable, Iterator, Optional, Sequence, TextIO
 
 from core.foundation.errors import ErrorCode, TaskCancelledException, YscbError
-from core.foundation.primitives import INT64_MAX, INT64_MIN, require_pure_bool, require_pure_int, require_pure_str
+from core.foundation.primitives import (
+    INT64_MAX,
+    INT64_MIN,
+    MAX_SAFE_WAIT_SEC,
+    clamp_wait_sec,
+    require_pure_bool,
+    require_pure_int,
+    require_pure_str,
+    safe_real_to_float,
+    validate_min_sec,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,35 +157,7 @@ class CancellationToken:
             raise TaskCancelledException(reason or "Task cancelled", preempted=preempted)
 
 
-MAX_SAFE_WAIT_SEC: Final[float] = min(86400.0 * 7.0, float(threading.TIMEOUT_MAX) * 0.5)
 MAX_TIMEOUT_MS: Final[int] = int(MAX_SAFE_WAIT_SEC * 1000.0)
-
-
-def safe_real_to_float(val: object, *, label: str = "value") -> float:
-    """Convert exact int/float (excluding bool/Enum/subclasses) to pure float, clamping huge ints within [-1e18, 1e18]."""
-    if type(val) not in (int, float):
-        raise ValueError(f"{label} must be an exact int or float, got {val!r}")
-    if type(val) is int:
-        return float(min(10**18, max(-(10**18), val)))
-    return val
-
-
-def _validate_min_sec(min_sec: float) -> float:
-    f_min = safe_real_to_float(min_sec, label="min_sec")
-    if not math.isfinite(f_min) or f_min < 0.0:
-        raise ValueError(f"min_sec must be finite and >= 0, got {min_sec!r}")
-    return min(MAX_SAFE_WAIT_SEC, f_min)
-
-
-def clamp_wait_sec(timeout_sec: Optional[float], *, min_sec: float = 0.0) -> Optional[float]:
-    """Validate optional wait seconds (rejecting bool and NaN) and clamp within [min_sec, MAX_SAFE_WAIT_SEC]."""
-    safe_min = _validate_min_sec(min_sec)
-    if timeout_sec is None:
-        return None
-    f_val = safe_real_to_float(timeout_sec, label="timeout_sec")
-    if math.isnan(f_val):
-        raise ValueError(f"timeout_sec must not be bool or NaN, got {timeout_sec!r}")
-    return min(MAX_SAFE_WAIT_SEC, max(safe_min, f_val))
 
 
 def validate_non_negative_sec(timeout_sec: Optional[float], *, label: str = "timeout_sec") -> Optional[float]:
@@ -197,24 +179,37 @@ def clamp_positive_sec(
     label: str = "seconds",
 ) -> float:
     """Validate or fallback a positive seconds value and clamp within [min_sec, max_sec]."""
-    eff_max = min(MAX_SAFE_WAIT_SEC, max_sec)
+    f_min = safe_real_to_float(min_sec, label="min_sec")
+    f_max = safe_real_to_float(max_sec, label="max_sec")
+    if not math.isfinite(f_min) or f_min <= 0.0:
+        raise ValueError(f"min_sec must be finite and > 0, got {min_sec!r}")
+    if not math.isfinite(f_max) or f_max < f_min:
+        raise ValueError(f"max_sec must be finite and >= min_sec ({f_min}), got {max_sec!r}")
+    eff_min = min(MAX_SAFE_WAIT_SEC, f_min)
+    eff_max = min(MAX_SAFE_WAIT_SEC, f_max)
+    f_default: Optional[float] = None
     if default_sec is not None:
+        raw_def = safe_real_to_float(default_sec, label="default_sec")
+        if not math.isfinite(raw_def) or raw_def <= 0.0:
+            raise ValueError(f"default_sec must be finite and > 0, got {default_sec!r}")
+        f_default = min(eff_max, max(eff_min, raw_def))
+    if f_default is not None:
         try:
             f_val = safe_real_to_float(val, label=label)
         except ValueError:
-            return default_sec
-        if not math.isfinite(f_val) or f_val <= 0.0:
-            return default_sec
-        return min(eff_max, max(min_sec, f_val))
+            return f_default
+        if math.isnan(f_val) or f_val <= 0.0:
+            return f_default
+        return min(eff_max, max(eff_min, f_val))
     f_strict = safe_real_to_float(val, label=label)
     if math.isnan(f_strict) or f_strict <= 0.0:
         raise ValueError(f"{label} must be > 0 (not bool or NaN), got {val!r}")
-    return min(eff_max, max(min_sec, f_strict))
+    return min(eff_max, max(eff_min, f_strict))
 
 
 def ms_to_safe_sec(ms: int, *, min_sec: float = 0.0) -> float:
     """Convert integer milliseconds to safe monotonic seconds clamped within [min_sec, MAX_SAFE_WAIT_SEC]."""
-    safe_min = _validate_min_sec(min_sec)
+    safe_min = validate_min_sec(min_sec)
     if type(ms) is not int:
         raise ValueError(f"Duration in ms must be an int (not bool), got {ms!r}")
     clamped_ms = min(max(0, ms), MAX_TIMEOUT_MS)
@@ -289,12 +284,35 @@ def require_non_negative_sec(timeout_sec: float, *, label: str = "timeout_sec") 
     return validated
 
 
+def _unwrap_proxy_chain(stream: Optional[TextIO]) -> Optional[TextIO]:
+    cur = stream
+    while isinstance(cur, _ThreadLocalStdoutProxy):
+        cur = cur.fallback_stream
+    return cur
+
+
+@dataclass(slots=True)
+class _StdoutProxyState:
+    _INSTANCE: ClassVar[Optional[_StdoutProxyState]] = None
+    _INIT_LOCK: ClassVar[threading.Lock] = threading.Lock()
+
+    install_lock: threading.RLock
+    capture_local: _CaptureBufferStackLocal
+    total_active_guards: int = 0
+
+    @classmethod
+    def instance(cls) -> _StdoutProxyState:
+        inst = cls._INSTANCE
+        if inst is not None:
+            return inst
+        with cls._INIT_LOCK:
+            if cls._INSTANCE is None:
+                cls._INSTANCE = cls(threading.RLock(), _CaptureBufferStackLocal(), 0)
+            return cls._INSTANCE
+
+
 class _ThreadLocalStdoutProxy(io.TextIOBase):
     """TextIOBase-compliant thread-local stdout proxy isolating active task threads."""
-
-    _INSTALL_LOCK: ClassVar[threading.RLock] = threading.RLock()
-    _CAPTURE_LOCAL: ClassVar[_CaptureBufferStackLocal] = _CaptureBufferStackLocal()
-    _TOTAL_ACTIVE_GUARDS: ClassVar[int] = 0
 
     def __init__(self, fallback: Optional[TextIO]) -> None:
         super().__init__()
@@ -303,25 +321,24 @@ class _ThreadLocalStdoutProxy(io.TextIOBase):
             fallback.encoding if (fallback is not None and isinstance(fallback.encoding, str)) else "utf-8"
         )
 
-    @classmethod
-    def _unwrap_proxy_chain(cls, stream: Optional[TextIO]) -> Optional[TextIO]:
-        cur = stream
-        while isinstance(cur, _ThreadLocalStdoutProxy):
-            cur = cur._fallback
-        return cur
+    @property
+    def fallback_stream(self) -> Optional[TextIO]:
+        return self._fallback
 
     def _fallback_detached(self) -> Optional[TextIO]:
-        if self._TOTAL_ACTIVE_GUARDS == 0 and isinstance(sys.stdout, _ThreadLocalStdoutProxy):
-            with self._INSTALL_LOCK:
-                if self._TOTAL_ACTIVE_GUARDS == 0 and isinstance(sys.stdout, _ThreadLocalStdoutProxy):
-                    sys.stdout = self._unwrap_proxy_chain(sys.stdout)
+        st = _StdoutProxyState.instance()
+        if st.total_active_guards == 0 and isinstance(sys.stdout, _ThreadLocalStdoutProxy):
+            with st.install_lock:
+                if st.total_active_guards == 0 and isinstance(sys.stdout, _ThreadLocalStdoutProxy):
+                    sys.stdout = _unwrap_proxy_chain(sys.stdout)
         return self._fallback
 
     def _target(self) -> Optional[TextIO | io.StringIO]:
         fb = self._fallback_detached()
-        if self._TOTAL_ACTIVE_GUARDS == 0:
+        st = _StdoutProxyState.instance()
+        if st.total_active_guards == 0:
             return fb
-        cap = self._CAPTURE_LOCAL.stack[-1] if self._CAPTURE_LOCAL.stack else None
+        cap = st.capture_local.stack[-1] if st.capture_local.stack else None
         return cap if cap is not None else fb
 
     def readable(self) -> bool:
@@ -366,12 +383,12 @@ class _ThreadLocalStdoutProxy(io.TextIOBase):
 
     def isatty(self) -> bool:
         fb = self._fallback_detached()
-        cap = self._CAPTURE_LOCAL.stack[-1] if (self._TOTAL_ACTIVE_GUARDS > 0 and self._CAPTURE_LOCAL.stack) else None
+        cap = _StdoutProxyState.instance().capture_local.stack[-1] if (_StdoutProxyState.instance().total_active_guards > 0 and _StdoutProxyState.instance().capture_local.stack) else None
         return bool(fb.isatty()) if (cap is None and fb is not None) else False
 
     def fileno(self) -> int:
         fb = self._fallback_detached()
-        cap = self._CAPTURE_LOCAL.stack[-1] if (self._TOTAL_ACTIVE_GUARDS > 0 and self._CAPTURE_LOCAL.stack) else None
+        cap = _StdoutProxyState.instance().capture_local.stack[-1] if (_StdoutProxyState.instance().total_active_guards > 0 and _StdoutProxyState.instance().capture_local.stack) else None
         if cap is not None or fb is None:
             raise io.UnsupportedOperation("Captured task stdout does not expose raw OS fileno")
         return fb.fileno()
@@ -379,7 +396,7 @@ class _ThreadLocalStdoutProxy(io.TextIOBase):
     @property
     def buffer(self) -> BinaryIO:
         fb = self._fallback_detached()
-        cap = self._CAPTURE_LOCAL.stack[-1] if (self._TOTAL_ACTIVE_GUARDS > 0 and self._CAPTURE_LOCAL.stack) else None
+        cap = _StdoutProxyState.instance().capture_local.stack[-1] if (_StdoutProxyState.instance().total_active_guards > 0 and _StdoutProxyState.instance().capture_local.stack) else None
         if cap is not None or fb is None:
             raise io.UnsupportedOperation("Captured task stdout does not expose binary buffer")
         return fb.buffer
@@ -391,26 +408,29 @@ class _ThreadLocalStdoutProxy(io.TextIOBase):
 
     @classmethod
     def enter_guard(cls, frame_buf: Optional[io.StringIO]) -> Optional[_ThreadLocalStdoutProxy]:
-        with cls._INSTALL_LOCK:
+        st = _StdoutProxyState.instance()
+        with st.install_lock:
             cur = sys.stdout
             if frame_buf is None and not isinstance(cur, _ThreadLocalStdoutProxy):
                 return None
-            if isinstance(cur, _ThreadLocalStdoutProxy) and cls._TOTAL_ACTIVE_GUARDS > 0:
+            if isinstance(cur, _ThreadLocalStdoutProxy) and st.total_active_guards > 0:
                 proxy = cur
             else:
-                proxy = cls(cls._unwrap_proxy_chain(cur))
+                proxy = cls(_unwrap_proxy_chain(cur))
                 sys.stdout = proxy
-            cls._TOTAL_ACTIVE_GUARDS += 1
-            cls._CAPTURE_LOCAL.stack.append(frame_buf)
+            st.total_active_guards += 1
+            st.capture_local.stack.append(frame_buf)
             return proxy
 
-    def exit_guard(self) -> None:
-        with self._INSTALL_LOCK:
-            if self._CAPTURE_LOCAL.stack:
-                self._CAPTURE_LOCAL.stack.pop()
-            type(self)._TOTAL_ACTIVE_GUARDS = max(0, type(self)._TOTAL_ACTIVE_GUARDS - 1)
-            if type(self)._TOTAL_ACTIVE_GUARDS == 0 and isinstance(sys.stdout, _ThreadLocalStdoutProxy):
-                sys.stdout = self._unwrap_proxy_chain(sys.stdout)
+    @staticmethod
+    def leave_guard() -> None:
+        st = _StdoutProxyState.instance()
+        with st.install_lock:
+            if st.capture_local.stack:
+                st.capture_local.stack.pop()
+            st.total_active_guards = max(0, st.total_active_guards - 1)
+            if st.total_active_guards == 0 and isinstance(sys.stdout, _ThreadLocalStdoutProxy):
+                sys.stdout = _unwrap_proxy_chain(sys.stdout)
 
 
 @contextmanager
@@ -423,4 +443,4 @@ def guard_standard_streams(*, allow_interactive_tty: bool = False) -> Iterator[i
         yield captured
     finally:
         if proxy is not None:
-            proxy.exit_guard()
+            _ThreadLocalStdoutProxy.leave_guard()

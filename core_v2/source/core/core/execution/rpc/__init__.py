@@ -1,6 +1,9 @@
 """Full-duplex length-prefixed socket RPC, read-only endpoint discovery, and persistent sessions."""
 
 from core.execution.rpc.channel import (
+    DAEMON_ENDPOINT_FILENAME,
+    DAEMON_HANDOFF_FILENAME,
+    DAEMON_SUBDIR,
     MAX_FRAME_BYTES,
     DaemonConnectionConfig,
     FrameKind,
@@ -13,6 +16,8 @@ from core.execution.rpc.channel import (
     RpcServerListener,
     accept_worker_handshake,
     bind_loopback_ephemeral,
+    build_daemon_endpoint_dict,
+    build_handoff_lease_dict,
     call_ephemeral_daemon_rpc,
     connect_and_handshake,
     probe_daemon_endpoint,
@@ -23,6 +28,9 @@ from core.execution.rpc.channel import (
 )
 
 __all__ = (
+    "DAEMON_ENDPOINT_FILENAME",
+    "DAEMON_HANDOFF_FILENAME",
+    "DAEMON_SUBDIR",
     "MAX_FRAME_BYTES",
     "DaemonConnectionConfig",
     "FrameKind",
@@ -35,6 +43,8 @@ __all__ = (
     "RpcServerListener",
     "accept_worker_handshake",
     "bind_loopback_ephemeral",
+    "build_daemon_endpoint_dict",
+    "build_handoff_lease_dict",
     "call_ephemeral_daemon_rpc",
     "connect_and_handshake",
     "probe_daemon_endpoint",

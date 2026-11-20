@@ -9,6 +9,7 @@ import os
 import stat
 import threading
 import time
+import uuid
 from typing import Callable, Optional
 
 from core.filesystem.fs.atomic import (
@@ -27,7 +28,7 @@ from core.foundation.observability import (
     validate_non_negative_sec,
 )
 from core.foundation.primitives import IS_WINDOWS, HostPath, JsonObject, require_non_none, require_pure_bool, require_pure_str
-from core.foundation.proc import is_process_alive
+from core.foundation.proc import get_process_start_tag, is_process_alive
 
 if IS_WINDOWS:
     import ctypes
@@ -169,12 +170,16 @@ class _ExternalLockDisplacedError(Exception):
 class FileLock:
     """Process-safe advisory file lock supporting shared/exclusive modes, atomic transitions, and synchronous release."""
 
-    def __init__(self, lock_path: HostPath) -> None:
+    def __init__(self, lock_path: HostPath, *, allow_transitions: bool = True) -> None:
+        require_pure_bool(allow_transitions, "FileLock allow_transitions")
         self._lock_path = lock_path
+        self._allow_transitions = allow_transitions
         self._guard = threading.Condition(threading.RLock())
         self._fd: Optional[int] = None
+        self._held_shared: Optional[bool] = None
         self._phase: _LockPhase = _LockPhase.IDLE
         self._owner_tid: Optional[int] = None
+        self._acquire_gen: int = 0
         self._release_cancel = CancellationToken()
 
     @property
@@ -186,9 +191,35 @@ class FileLock:
         with self._guard:
             return self._fd is not None and self._phase in (_LockPhase.HELD, _LockPhase.TRANSITIONING)
 
-    def _wake_guard(self) -> None:
+    @property
+    def is_shared(self) -> bool:
         with self._guard:
-            self._guard.notify_all()
+            return bool(self._fd is not None and self._held_shared is True)
+
+    def _fd_matches_lock_inode(self, fd: int) -> bool:
+        if IS_WINDOWS:
+            return True
+        try:
+            f_st = os.fstat(fd)
+            p_st = os.lstat(str(self._lock_path))
+            return stat.S_ISREG(p_st.st_mode) and (f_st.st_dev, f_st.st_ino) == (p_st.st_dev, p_st.st_ino)
+        except OSError:
+            return False
+
+    def _commit_acquired_fd(self, fd: int, *, shared: bool) -> None:
+        aborted = False
+        with self._guard:
+            if self._phase == _LockPhase.RELEASING:
+                aborted = True
+            else:
+                self._fd = fd
+                self._held_shared = shared
+                self._phase = _LockPhase.HELD
+                self._owner_tid = None
+                self._guard.notify_all()
+        if aborted:
+            _os_unlock(fd)
+            raise TaskCancelledException(f"FileLock released during acquire: {self._lock_path}")
 
     def _wait_poll_slice(
         self,
@@ -197,7 +228,12 @@ class FileLock:
         cancel_token: Optional[CancellationToken] = None,
     ) -> None:
         rem = max_slice if deadline is None else min(max_slice, max(0.001, deadline - time.monotonic()))
-        unreg = cancel_token.register_callback(lambda _p, _r: self._wake_guard()) if cancel_token is not None else None
+
+        def _notify(_p: bool, _r: str) -> None:
+            with self._guard:
+                self._guard.notify_all()
+
+        unreg = cancel_token.register_callback(_notify) if cancel_token is not None else None
         try:
             with self._guard:
                 if self._phase == _LockPhase.RELEASING or (cancel_token is not None and cancel_token.is_cancelled):
@@ -221,93 +257,64 @@ class FileLock:
         with self._guard:
             if self._phase != _LockPhase.IDLE or self._fd is not None:
                 raise RuntimeError(f"FileLock already acquired or busy on this instance: {self._lock_path}")
+            self._acquire_gen += 1
             self._phase = _LockPhase.ACQUIRING
             self._owner_tid = threading.get_ident()
             self._release_cancel = CancellationToken()
 
         fd: Optional[int] = None
+        xchg_fd: Optional[int] = None
         try:
             _ensure_lock_parent_dir(self._lock_path)
-            fd = _open_nofollow_lock_fd(str(self._lock_path))
+            raw_path = str(self._lock_path)
+            fd = _open_nofollow_lock_fd(raw_path)
+            if self._allow_transitions and not raw_path.endswith((".xchg", ".upg")):
+                xchg_fd = _open_nofollow_lock_fd(f"{raw_path}.xchg")
             deadline = (time.monotonic() + safe_timeout) if safe_timeout is not None else None
-            return self._acquire_loop(fd, shared=shared, blocking=blocking, deadline=deadline, cancel_token=cancel_token)
+            while True:
+                if cancel_token is not None:
+                    cancel_token.raise_if_cancelled()
+                with self._guard:
+                    if self._phase == _LockPhase.RELEASING:
+                        raise TaskCancelledException(f"FileLock aborted during acquire: {self._lock_path}")
+                if _try_acquire_under_xchg_fd(fd, xchg_fd, shared=shared):
+                    self._commit_acquired_fd(fd, shared=shared)
+                    return True
+                if not blocking:
+                    _safe_close_fd(fd)
+                    fd = None
+                    with self._guard:
+                        self._held_shared = None
+                        self._phase = _LockPhase.IDLE
+                        self._owner_tid = None
+                        self._guard.notify_all()
+                    return False
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise YscbError(ErrorCode.TASK_TIMEOUT, f"Timed out waiting for file lock: {self._lock_path}")
+                self._wait_poll_slice(0.01, deadline, cancel_token)
         except BaseException:
             if fd is not None:
                 _safe_close_fd(fd)
             with self._guard:
                 self._fd = None
+                self._held_shared = None
                 self._phase = _LockPhase.IDLE
                 self._owner_tid = None
                 self._guard.notify_all()
             raise
-
-    def _acquire_loop(
-        self,
-        fd: int,
-        *,
-        shared: bool,
-        blocking: bool,
-        deadline: Optional[float],
-        cancel_token: Optional[CancellationToken],
-    ) -> bool:
-        raw_path = str(self._lock_path)
-        xchg_fd = None if raw_path.endswith(".xchg") else _open_nofollow_lock_fd(f"{raw_path}.xchg")
-        try:
-            return self._poll_lock_with_xchg(fd, xchg_fd, shared, blocking, deadline, cancel_token)
         finally:
             if xchg_fd is not None:
                 _safe_close_fd(xchg_fd)
-
-    def _poll_lock_with_xchg(
-        self,
-        fd: int,
-        xchg_fd: Optional[int],
-        shared: bool,
-        blocking: bool,
-        deadline: Optional[float],
-        cancel_token: Optional[CancellationToken],
-    ) -> bool:
-        while True:
-            if cancel_token is not None:
-                cancel_token.raise_if_cancelled()
-            with self._guard:
-                if self._phase == _LockPhase.RELEASING:
-                    raise YscbError(ErrorCode.TASK_CANCELLED, f"FileLock aborted during acquire: {self._lock_path}")
-            if _try_acquire_under_xchg_fd(fd, xchg_fd, shared=shared):
-                self._commit_owned_fd_or_abort(fd)
-                return True
-            if not blocking:
-                _safe_close_fd(fd)
-                with self._guard:
-                    self._phase = _LockPhase.IDLE
-                    self._owner_tid = None
-                    self._guard.notify_all()
-                return False
-            if deadline is not None and time.monotonic() >= deadline:
-                raise YscbError(ErrorCode.TASK_TIMEOUT, f"Timed out waiting for file lock: {self._lock_path}")
-            self._wait_poll_slice(0.01, deadline, cancel_token)
-
-    def _commit_owned_fd_or_abort(self, fd: int) -> None:
-        aborted = False
-        with self._guard:
-            if self._phase == _LockPhase.RELEASING:
-                aborted = True
-            else:
-                self._fd = fd
-                self._phase = _LockPhase.HELD
-                self._owner_tid = None
-                self._guard.notify_all()
-        if aborted:
-            _os_unlock(fd)
-            raise YscbError(ErrorCode.TASK_CANCELLED, f"FileLock released during acquire: {self._lock_path}")
 
     def release(self) -> None:
         cur_tid = threading.get_ident()
         fd_to_close: Optional[int] = None
         rel_tok: Optional[CancellationToken] = None
+        seen_gen = 0
         with self._guard:
             if self._phase == _LockPhase.IDLE:
                 return
+            seen_gen = self._acquire_gen
             if self._phase in (_LockPhase.ACQUIRING, _LockPhase.TRANSITIONING, _LockPhase.RELEASING):
                 self._phase = _LockPhase.RELEASING
                 rel_tok = self._release_cancel
@@ -315,13 +322,18 @@ class FileLock:
             else:
                 fd_to_close = self._fd
                 self._fd = None
+                self._held_shared = None
                 self._phase = _LockPhase.RELEASING
                 self._owner_tid = cur_tid
                 self._guard.notify_all()
         if rel_tok is not None:
             rel_tok.cancel(reason=f"FileLock released: {self._lock_path}")
             with self._guard:
-                while self._owner_tid != cur_tid and self._phase != _LockPhase.IDLE:
+                while (
+                    self._acquire_gen == seen_gen
+                    and self._owner_tid != cur_tid
+                    and self._phase != _LockPhase.IDLE
+                ):
                     self._guard.wait(timeout=0.02)
             return
         try:
@@ -337,6 +349,8 @@ class FileLock:
                 self._guard.notify_all()
 
     def _begin_transition(self) -> Optional[int]:
+        if not self._allow_transitions:
+            raise RuntimeError(f"Lock transitions disabled on FileLock: {self._lock_path}")
         with self._guard:
             if self._phase != _LockPhase.HELD or self._fd is None:
                 return None
@@ -357,7 +371,7 @@ class FileLock:
         while True:
             with self._guard:
                 if self._phase == _LockPhase.RELEASING:
-                    raise YscbError(ErrorCode.TASK_CANCELLED, f"FileLock released during transition: {self._lock_path}")
+                    raise TaskCancelledException(f"FileLock released during transition: {self._lock_path}")
             if cancel_token is not None:
                 cancel_token.raise_if_cancelled()
             if _try_os_lock(fd, shared=shared):
@@ -376,6 +390,7 @@ class FileLock:
                 self._guard.notify_all()
                 return
             self._fd = None
+            self._held_shared = None
             self._phase = _LockPhase.RELEASING
         try:
             try:
@@ -388,29 +403,26 @@ class FileLock:
                 self._owner_tid = None
                 self._guard.notify_all()
         if was_released and not raising:
-            raise YscbError(ErrorCode.TASK_CANCELLED, f"FileLock released during transition: {self._lock_path}")
+            raise TaskCancelledException(f"FileLock released during transition: {self._lock_path}")
 
     def _try_restore_shared_after_failed_upgrade(
         self,
         fd: int,
         timeout_sec: Optional[float],
-        cancel_token: Optional[CancellationToken],
     ) -> bool:
         with self._guard:
             if self._phase == _LockPhase.RELEASING:
                 return False
         if _try_os_lock(fd, shared=True):
             return True
-        if cancel_token is not None and cancel_token.is_cancelled:
-            return False
-        eff_tmo = 10.0 if timeout_sec is None else timeout_sec
+        eff_tmo = 2.0 if timeout_sec is None else min(2.0, max(0.5, timeout_sec))
         try:
-            restore_dl = time.monotonic() + max(0.5, eff_tmo)
+            restore_dl = time.monotonic() + eff_tmo
             self._poll_lock_mode(
                 fd,
                 shared=True,
                 deadline=restore_dl,
-                cancel_token=cancel_token,
+                cancel_token=self._release_cancel,
                 timeout_code=ErrorCode.TASK_TIMEOUT,
                 timeout_msg="Timed out restoring shared file lock after failed upgrade.",
             )
@@ -428,12 +440,12 @@ class FileLock:
         if has_symlink_raw_path(xchg_raw) or has_symlink_raw_path(str(self._lock_path)):
             raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing symlink lock transition gate: {xchg_raw}")
         merged_tok, detach_merged = CancellationToken.combine(self._release_cancel, cancel_token)
-        gate = FileLock(HostPath(xchg_raw))
+        gate = FileLock(HostPath(xchg_raw), allow_transitions=False)
         try:
             gate.acquire(shared=False, blocking=True, timeout_sec=timeout_sec, cancel_token=merged_tok)
         except TaskCancelledException as exc:
             if self._release_cancel.is_cancelled and (cancel_token is None or not cancel_token.is_cancelled):
-                raise YscbError(ErrorCode.TASK_CANCELLED, f"FileLock released during transition: {self._lock_path}") from exc
+                raise TaskCancelledException(f"FileLock released during transition: {self._lock_path}") from exc
             raise
         except YscbError as exc:
             if exc.detail.code == ErrorCode.TASK_TIMEOUT and timeout_code != ErrorCode.TASK_TIMEOUT:
@@ -446,25 +458,41 @@ class FileLock:
             detach_merged()
         return gate
 
+    def _acquire_upgrade_reservation_gate(self) -> FileLock:
+        upg_raw = f"{self._lock_path}.upg"
+        if has_symlink_raw_path(upg_raw) or has_symlink_raw_path(str(self._lock_path)):
+            raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing symlink lock upgrade reservation: {upg_raw}")
+        upg_gate = FileLock(HostPath(upg_raw), allow_transitions=False)
+        if not upg_gate.acquire(shared=False, blocking=False):
+            raise YscbError(
+                ErrorCode.ILLEGAL_LOCK_REENTRANCY,
+                f"Concurrent shared-to-exclusive lock upgrade deadlock detected on: {self._lock_path}",
+            )
+        return upg_gate
+
     def _poll_posix_upgrade_preserving_shared(
         self,
         fd: int,
         deadline: Optional[float],
         cancel_token: Optional[CancellationToken],
+        shared_at_risk: list[bool],
     ) -> None:
         while True:
             with self._guard:
                 if self._phase == _LockPhase.RELEASING:
-                    raise YscbError(ErrorCode.TASK_CANCELLED, f"FileLock released during transition: {self._lock_path}")
+                    raise TaskCancelledException(f"FileLock released during transition: {self._lock_path}")
             if cancel_token is not None:
                 cancel_token.raise_if_cancelled()
+            shared_at_risk[0] = True
             if _try_os_lock(fd, shared=False):
+                shared_at_risk[0] = False
                 return
             if not _try_os_lock(fd, shared=True):
                 raise _ExternalLockDisplacedError()
+            shared_at_risk[0] = False
             if deadline is not None and time.monotonic() >= deadline:
                 raise YscbError(
-                    ErrorCode.ILLEGAL_LOCK_REENTRANCY,
+                    ErrorCode.TASK_TIMEOUT,
                     f"Timed out upgrading shared lock to exclusive: {self._lock_path}",
                 )
             self._wait_poll_slice(0.005, deadline, cancel_token)
@@ -481,50 +509,53 @@ class FileLock:
             raise RuntimeError(f"FileLock not currently held for upgrade: {self._lock_path}")
         deadline = (time.monotonic() + safe_timeout) if safe_timeout is not None else None
         failed_unrestored = False
-        attempted_upgrade = False
+        unlocked_win32 = False
+        posix_shared_at_risk = [False]
         raising = False
+        upg_gate: Optional[FileLock] = None
         xchg_gate: Optional[FileLock] = None
         try:
             if cancel_token is not None:
                 cancel_token.raise_if_cancelled()
+            if self._held_shared is False:
+                return
+            upg_gate = self._acquire_upgrade_reservation_gate()
             rem_gate = None if deadline is None else max(0.0, deadline - time.monotonic())
-            xchg_gate = self._acquire_transition_gate(rem_gate, cancel_token, ErrorCode.ILLEGAL_LOCK_REENTRANCY)
-            attempted_upgrade = True
+            xchg_gate = self._acquire_transition_gate(rem_gate, cancel_token, ErrorCode.TASK_TIMEOUT)
             if IS_WINDOWS:
                 _os_unlock(fd)
+                unlocked_win32 = True
                 self._poll_lock_mode(
                     fd,
                     shared=False,
                     deadline=deadline,
                     cancel_token=cancel_token,
-                    timeout_code=ErrorCode.ILLEGAL_LOCK_REENTRANCY,
+                    timeout_code=ErrorCode.TASK_TIMEOUT,
                     timeout_msg=f"Timed out upgrading shared lock to exclusive: {self._lock_path}",
                 )
             else:
-                self._poll_posix_upgrade_preserving_shared(fd, deadline, cancel_token)
+                self._poll_posix_upgrade_preserving_shared(fd, deadline, cancel_token, posix_shared_at_risk)
+            with self._guard:
+                self._held_shared = False
         except _ExternalLockDisplacedError as exc:
             raising = True
             failed_unrestored = True
             raise YscbError(
-                ErrorCode.ILLEGAL_LOCK_REENTRANCY,
+                ErrorCode.DAEMON_UNAVAILABLE,
                 f"Shared lock displaced by external exclusive writer during upgrade: {self._lock_path}",
             ) from exc
-        except Exception:
-            raising = True
-            if attempted_upgrade:
-                failed_unrestored = True
-                failed_unrestored = not self._try_restore_shared_after_failed_upgrade(
-                    fd, safe_timeout, cancel_token
-                )
-            raise
         except BaseException:
             raising = True
-            if attempted_upgrade:
-                failed_unrestored = True
+            if unlocked_win32 or posix_shared_at_risk[0]:
+                failed_unrestored = not self._try_restore_shared_after_failed_upgrade(fd, safe_timeout)
+            else:
+                failed_unrestored = not self._fd_matches_lock_inode(fd)
             raise
         finally:
             if xchg_gate is not None:
                 xchg_gate.release()
+            if upg_gate is not None:
+                upg_gate.release()
             self._end_transition(fd, close_now=failed_unrestored, raising=raising)
 
     def downgrade_to_shared(
@@ -545,22 +576,32 @@ class FileLock:
         try:
             if cancel_token is not None:
                 cancel_token.raise_if_cancelled()
+            if self._held_shared is True:
+                return
+            acquired_fast = False
             if IS_WINDOWS:
                 rem_gate = max(0.0, deadline - time.monotonic())
                 xchg_gate = self._acquire_transition_gate(rem_gate, cancel_token, ErrorCode.TASK_TIMEOUT)
                 _os_unlock(fd)
                 unlocked_for_downgrade = True
-            self._poll_lock_mode(
-                fd,
-                shared=True,
-                deadline=deadline,
-                cancel_token=cancel_token,
-                timeout_code=ErrorCode.TASK_TIMEOUT,
-                timeout_msg=f"Timed out downgrading exclusive lock to shared: {self._lock_path}",
-            )
+                if _try_os_lock(fd, shared=True):
+                    unlocked_for_downgrade = False
+                    acquired_fast = True
+            if not acquired_fast:
+                self._poll_lock_mode(
+                    fd,
+                    shared=True,
+                    deadline=deadline,
+                    cancel_token=cancel_token,
+                    timeout_code=ErrorCode.TASK_TIMEOUT,
+                    timeout_msg=f"Timed out downgrading exclusive lock to shared: {self._lock_path}",
+                )
+                unlocked_for_downgrade = False
+            with self._guard:
+                self._held_shared = True
         except BaseException:
             raising = True
-            failed_close = unlocked_for_downgrade
+            failed_close = unlocked_for_downgrade or not self._fd_matches_lock_inode(fd)
             raise
         finally:
             if xchg_gate is not None:
@@ -571,7 +612,8 @@ class FileLock:
         self.acquire(blocking=True)
         return self
 
-    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        _ = (exc_type, exc, tb)
         self.release()
 
 
@@ -583,32 +625,52 @@ class CrossProcessLockPaths:
     owner_path: HostPath
     pin_path: HostPath
 
-    @staticmethod
-    def for_stem(locks_dir: HostPath, stem: str) -> CrossProcessLockPaths:
+    @classmethod
+    def for_stem(
+        cls,
+        locks_dir: HostPath,
+        stem: str,
+        *,
+        allow_transitions: bool = True,
+    ) -> CrossProcessLockPaths:
         require_pure_str(stem, "lock stem", non_empty=True)
-        return CrossProcessLockPaths(
-            lock_file=FileLock(resolve_contained_subpath(locks_dir, f"{stem}.lock")),
+        return cls(
+            lock_file=FileLock(
+                resolve_contained_subpath(locks_dir, f"{stem}.lock"),
+                allow_transitions=allow_transitions,
+            ),
             owner_path=resolve_contained_subpath(locks_dir, f"{stem}.owner.json"),
             pin_path=resolve_contained_subpath(locks_dir, f"{stem}.pin"),
         )
 
 
 def read_live_owner_dict(owner_path: HostPath) -> Optional[JsonObject]:
-    """Read cross-process lock owner metadata returning None when absent, malformed, or owner PID is dead."""
+    """Read cross-process lock owner metadata returning None when absent, malformed, dead, or PID-reused."""
     doc = read_json_dict(owner_path)
     if doc is None:
         return None
-    raw_tree = doc.get("call_tree_id")
     pid_raw = doc.get("pid")
-    if type(raw_tree) is not str or not raw_tree or type(pid_raw) is not int or pid_raw <= 0:
+    if type(pid_raw) is not int or pid_raw <= 0 or not is_process_alive(pid_raw):
         return None
-    return doc if is_process_alive(pid_raw) else None
+    rec_tag = doc.get("start_tag")
+    if type(rec_tag) is str and rec_tag:
+        live_tag = get_process_start_tag(pid_raw)
+        if live_tag is not None and live_tag != rec_tag:
+            return None
+    return doc
 
 
 def write_cross_proc_owner_json(owner_path: HostPath, payload: JsonObject) -> None:
-    """Atomically publish cross-process owner metadata translating filesystem errors to YscbError."""
+    """Atomically publish cross-process owner metadata (enriched with PID start_tag and unique lease_nonce)."""
+    enriched = dict(payload)
+    enriched.setdefault("lease_nonce", uuid.uuid4().hex)
+    pid_raw = enriched.get("pid")
+    if type(pid_raw) is int and pid_raw > 0 and "start_tag" not in enriched:
+        st_tag = get_process_start_tag(pid_raw)
+        if st_tag is not None:
+            enriched["start_tag"] = st_tag
     try:
-        atomic_write_json(owner_path, payload)
+        atomic_write_json(owner_path, enriched)
     except OSError as exc:
         raise _map_lock_os_error(str(owner_path), exc) from exc
 
@@ -624,7 +686,7 @@ def acquire_verified_cross_proc_pin(
     """Double-check ``owner_pred`` before and after pinning ``pin_path`` with a shared FileLock."""
     if not owner_pred(owner_path):
         return None
-    pin_lk = FileLock(pin_path)
+    pin_lk = FileLock(pin_path, allow_transitions=False)
     pin_lk.acquire(shared=True, blocking=True, timeout_sec=timeout_sec, cancel_token=cancel_token)
     try:
         if owner_pred(owner_path):
@@ -638,7 +700,7 @@ def acquire_verified_cross_proc_pin(
 
 def _spawn_deferred_owner_unlink(owner_path: HostPath, pin_path: HostPath, expected_doc: JsonObject) -> None:
     def _reap_when_unpinned() -> None:
-        reap_gate = FileLock(pin_path)
+        reap_gate = FileLock(pin_path, allow_transitions=False)
         acquired = False
         try:
             acquired = reap_gate.acquire(shared=False, blocking=True, timeout_sec=30.0)
@@ -665,7 +727,7 @@ def unlink_owner_under_pin(
 ) -> None:
     """Acquire exclusive ``pin_path`` within ``grace_timeout_sec``, unlink ``owner_path`` safely, then release."""
     safe_grace = max(0.05, require_non_none(validate_non_negative_sec(grace_timeout_sec, label="grace_timeout_sec")))
-    pin_gate = FileLock(pin_path)
+    pin_gate = FileLock(pin_path, allow_transitions=False)
     pin_acquired = False
     try:
         try:
