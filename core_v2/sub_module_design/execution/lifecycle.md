@@ -41,9 +41,9 @@
 ```
 
 ### 2.2 體系二：熱派發請求生命週期（`TurnEngine`：僅 Steps 2 ～ 5）
-適用於已啟動常駐容器承接單次請求或對稱 `FlightCascade` 排空：
-- **省略 Step 1 與全域 Step 6**：複用常駐底座與預熱模組實例，結束時僅釋放單次 `TurnScope.scoped_stack` 暫態資源；事件觸發型背景 Turn 與 `FlightCascade` 共用 `execute_event_turn()` 走同一條 BFS + LIFO 管線。
-- **Turn 級別佇列隔離與對稱 `COALESCE` 衍生收斂**：每個前景 `HOT_FOREGROUND`、背景 `HOT_BACKGROUND` 與共享 `FlightCascade` 各自擁有獨立 `TurnScope` 與 `DoubleBufferedEventQueue`；多方合併（`COALESCE`）時，衍生鏈於對稱 `FlightCascade` 單次排空並將 `event_diagnostics`、`teardown_diagnostics` 與 `fatal_error` 精確傳播予所有存活參與者。
+適用於已啟動常駐容器承接單次請求或同工作區頂層 `StepFlight` 單飛排空：
+- **省略 Step 1 與全域 Step 6**：複用常駐底座與預熱模組實例，結束時僅釋放單次 `TurnScope.scoped_stack` 暫態資源；事件觸發型背景 Turn 與頂層單飛 `StepFlight` 衍生鏈共用 `execute_event_turn()` 走同一條 BFS + LIFO 管線。
+- **Turn 級別佇列隔離與頂層 `COALESCE` 衍生收斂**：每個前景 `HOT_FOREGROUND`、背景 `HOT_BACKGROUND` 與頂層同工作區 `StepFlight` 各自擁有獨立 `TurnScope` 與 `DoubleBufferedEventQueue`；多方合併（`COALESCE`）時，衍生鏈於 `StepFlight` 單次排空並將 `event_diagnostics`、`teardown_diagnostics` 與 `fatal_error` 精確傳播予所有存活等待者（巢狀與事件鏈呼叫自動降級為 `SERIALIZE`）。
 
 ### 2.3 體系三：後台常駐容器生命週期（`WorkerContainerLifecycle`：統一狀態機與預熱故障隔離）
 適用於常駐守護進程（`DaemonRunState = ContainerState` 共用同一狀態列舉）與長駐容器主控：

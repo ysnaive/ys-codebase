@@ -1,9 +1,9 @@
 # 專案輕量級待辦與技術債帳本 (TODO Ledger)
 
 > 主題：專案輕量級待辦與技術債帳本  
-> 更新日期：2026-11-14  
+> 更新日期：2026-11-21  
 > 狀態：Active  
-> 最後分配編號：28  
+> 最後分配編號：29  
 > 模型：Unknown  
 
 ---
@@ -49,3 +49,8 @@
 - **建立日期**：2026-11-14
 - **目標範疇**：`ys_codebase/source/dev/dev/builder.py, ys_codebase/source/core/core/engine.py, yscb.py, .github/workflows/`
 - **備忘與解法要點**：於 5 處 ZipInfo 建構點顯式設定 create_system = 3，避免 Windows 預設 0 與 Linux 預設 3 造成 dev release 之 index.json sha256 被 ci-sha256-gate 攔截
+
+### [TODO-29] 評估 atomic.py Windows ACL/SID 模擬 0o600 權限之必要性
+- **建立日期**：2026-11-21
+- **目標範疇**：`core_v2/source/core/core/filesystem/fs/atomic.py`
+- **備忘與解法要點**：核對本機開發工具場景下 _WinSidAndAttributes 與 Win32 SD/ACL 防護是否值得保留或簡化

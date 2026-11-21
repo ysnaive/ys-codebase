@@ -37,7 +37,7 @@
 | **`PROGRESS`** | `> 0` | 執行方 $\rightarrow$ 呼叫方 | 非阻塞依序投遞結構化階段進度（於 `CALL_RESULT` 抵達前完成序向排空）。 |
 | **`CANCEL`** | `> 0` | 呼叫方 $\rightarrow$ 執行方 | 於同一條連線傳送指定 `stream_id` 取消信號（精確攜帶 `{"preempted": bool, "reason": str}`，不影響同連線其他活躍流）。 |
 | **`CALL_RESULT`** | `> 0` | 執行方 $\rightarrow$ 呼叫方 | 終結該 `stream_id`（正常業務輸出置於 `payload`，傳輸異常與未收單拒收標記置於 `meta`）。 |
-| **`CONTROL_REQUEST` / `CONTROL_QUIESCE` / `RESUME` / `STATUS` / `RELOAD` / `STOP` / `ACK`** | `0` | 雙向控制流 | 管理控制幀（讓位釋鎖 `CONTROL_QUIESCE`、恢復 `CONTROL_RESUME`、狀態查詢 `CONTROL_STATUS`、熱重載 `CONTROL_RELOAD`、停機 `CONTROL_STOP` 與 Worker 單步優先級抬升 `CONTROL_REQUEST`）及確認幀 `CONTROL_ACK`（透過 `meta.req_id` 配對）。 |
+| **`CONTROL_REQUEST` / `CONTROL_QUIESCE` / `RESUME` / `STATUS` / `RELOAD` / `STOP` / `ACK`** | `0` | 雙向控制流 | 管理控制幀（全域讓位釋鎖 `CONTROL_QUIESCE`、恢復 `CONTROL_RESUME`、狀態查詢 `CONTROL_STATUS`、熱重載 `CONTROL_RELOAD`、停機 `CONTROL_STOP`；`CONTROL_REQUEST` 僅供 `Daemon <-> Worker` 內部優先級抬升與初始化通知，外部 Daemon 控制面已退役拒收）及確認幀 `CONTROL_ACK`（透過 `meta.req_id` 配對）。 |
 | **`PING` / `PONG`** | `0` | 雙向控制流 | 連線健康度探針與長任務心跳（`MultiplexedChannel.ping()`，不刷新 Daemon 業務 Idle TTL）。 |
 
 ### 3.2 按需動態重入、一致斷線契約與長連線跨休眠/交棒透明重連

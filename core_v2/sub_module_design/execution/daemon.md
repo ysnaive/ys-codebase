@@ -10,7 +10,7 @@
 
 所有派發決策、`resource_key` 鎖、`StepFlight` 與 `Tier1WorkerPool` 均已收斂至 `execution.runtime`；**`core.execution.daemon` 專職扮演「每專案獨立常駐進程外殼 + 單一條件監督迴圈 + 背景信號觸發器」**（且 `DaemonRunState = ContainerState` 直接複用 `lifecycle.ContainerState`，零重複狀態列舉）：
 1. **零分流邏輯**：收到外部 RPC 業務請求或內部監視/定時觸發，**100% 委派同一個 `RuntimeDispatcher` 執行**。
-2. **事件驅動單一監督迴圈（Single Supervisor Loop + `_DirtyPathsAccumulator`）**：所有檔案監視回呼於 `daemon.json` 發布前即建立初始目錄快照基線（確保 `WARMING` 預熱期間之組態或模組異動零漏接），並僅以 $O(1)$ 非阻塞寫入內部 `_DirtyPathsAccumulator` 喚醒單一條件變數 `_cond`；執行重載或讓位恢復時，於共享 `installer.lock` 內**先完成監視器快照重同步與髒佇列修剪，再讀取磁碟重載模組/組態**，確保重載預熱期間新發生的第二次檔案修改絕不被覆蓋漏接。
+2. **事件驅動單一監督迴圈（Single Supervisor Loop + `_DirtyPathsAccumulator`）**：所有檔案監視回呼於 `daemon.json` 發布前即建立初始目錄快照基線（確保 `WARMING` 預熱期間之組態或模組異動零漏接），並僅以 $O(1)$ 非阻塞寫入內部 `_DirtyPathsAccumulator` 喚醒單一條件變數 `_cond`；執行重載或全域靜默恢復時，於共享 `installer.lock` 內**先完成監視器快照重同步與髒佇列清理，再讀取磁碟重載模組/組態**，確保重載預熱期間新發生的第二次檔案修改絕不被覆蓋漏接。
 
 ## 2. 核心架構與競態防禦機制 (Core & Race-Free Mechanisms)
 
@@ -41,10 +41,10 @@
    - **啟動期固定核心內容雜湊基線（`_boot_core_snapshot`）**：於 `__init__` 擷取記憶體載入時之 `.modules/core` `sha256` 內容基線，忽略純時間戳 `touch` 雜訊並精確捕捉任何實質 `core` 變更。
    - **`core` 內核自身變動（先寫 `handoff_lease.json`、先釋鎖、後拉起新進程！）**：嚴格執行 **① 原子寫入 `.cache/daemon/handoff_lease.json` 並切換 `DRAINING` 停收新單、排空在途請求 $\rightarrow$ ② 關閉監聽埠、清除本身 `daemon.json` 並釋放 `daemon.lock` $\rightarrow$ ③ 在 `spawn.lock` 與 `spawn_lease.json` 保護下透過 `spawn_detached(self_restart_argv)` 啟動全新 Daemon 進程接手後立即退出舊進程**。
 
-### 2.4 `QUIESCED` 逐模組獨立租約、無阻塞局部恢復與崩潰自癒
+### 2.4 單一全域 `QUIESCE` 屏障、無阻塞恢復與崩潰自癒
 
-1. **按模組粒度精確閘控與獨立租約（Per-Module Selective Quiesce Gate & Leases）**：當外部冷安裝發送 `CONTROL_QUIESCE` 僅讓位特定模組（如 `modules=["mod_a"]`）時，由 `LifecycleReloadGate` 單一狀態機採單調上界 `max` 統一追蹤全域與各模組租約期限（短租約絕不縮短既有長租約，且支援全域靜默期間按模組局部恢復降級），針對 `mod_a`（及其共置 `venv_group` 兄弟模組）之外部與跨模組巢狀請求安全排隊等待恢復，而**未受影響之其他健康模組（如 `mod_b`）在靜默與局部恢復預熱全期間皆直接放行熱執行，零全域無謂停擺**。
-2. **可取消共享鎖恢復與租約到期自癒**：收到 `CONTROL_RESUME`（支援全域或指定 `modules`；若 `installer.lock` 正被獨佔則立即標記到期交由單一監督迴圈排程，不丟失連續靜默／恢復信號）或租約到期且確認 `.cache/locks/installer.lock` 已釋放時，以共享鎖安全完成局部或全域 `dispatcher.resume_from_quiesce()`，待所有靜默模組皆恢復後自動回到 `READY`。
+1. **全域單一靜默屏障與單調 `epoch` 租約（Global Quiesce Barrier & Monotonic Lease）**：當外部冷安裝發送 `CONTROL_QUIESCE` 時，由 `LifecycleReloadGate` 單一全域狀態機排空在途非核心工作並以單調上界 `max` 統一追蹤租約期限與遞增 `quiesce_epoch`（短租約絕不縮短既有長租約）。`QUIESCED` 期間所有外部 `HYBRID` 請求安全排隊等待 `RESUME`（`core.*` 任務及已受理之重入鏈豁免），背景診斷統一收斂為扁平有界 `deque[ErrorDetail]`（經 `safe_exception_summary` 隔離異常字串）。
+2. **可取消共享鎖恢復與租約到期自癒**：收到 `CONTROL_RESUME`（若 `installer.lock` 正被獨佔則標記延遲恢復交由單一監督迴圈排程，不丟失信號）或租約到期且確認 `.cache/locks/installer.lock` 已釋放時，以共享鎖安全完成全域 `dispatcher.execute_daemon_quiesce_resume()`（若偵測到 `.modules/core` 變動則自動交棒重啟），完成後回到 `READY` 並喚醒排隊請求。
 
 ## 3. 核心 OOP 類別與強型別契約規格 (`core/execution/daemon/`)
 
@@ -78,14 +78,12 @@ class DaemonStatusSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class DaemonQuiesceControl:
-    modules: tuple[ModuleId, ...] = ()
     lease_sec: float = 10.0
     drain_timeout_sec: float = 3.0
 
 
 @dataclass(frozen=True, slots=True)
 class DaemonResumeControl:
-    modules: tuple[ModuleId, ...] = ()
     expected_epoch: Optional[int] = None
 
 
@@ -177,7 +175,6 @@ class WorkspaceDaemon(InboundCallHandler):
     def request_shutdown(self, *, force: bool = False, core_handoff: bool = False) -> None: ...
     def quiesce(
         self,
-        affected_modules: frozenset[ModuleId],
         lease_sec: float = 10.0,
         *,
         drain_timeout_sec: float = 3.0,
@@ -186,7 +183,6 @@ class WorkspaceDaemon(InboundCallHandler):
         self,
         *,
         expected_epoch: Optional[int] = None,
-        modules: Optional[frozenset[ModuleId]] = None,
     ) -> bool: ...
     def drain_background_errors(self) -> tuple[ErrorDetail, ...]: ...
     def snapshot_status(self) -> DaemonStatusSnapshot: ...
@@ -219,7 +215,7 @@ def query_daemon_control(
 - **`CONTROL_RESUME`**（`DaemonResumeControl`）：回傳 `{"ok": True, "state": <str>, "handoff": <bool>, "teardown_diagnostics": [<ErrorDetail>, ...]}`。
 - **`CONTROL_RELOAD`**（`DaemonReloadControl`）：啟動預熱（`warming`）或目標靜默期間排入延遲重載回傳 `{"ok": True, "reloaded": False, "deferred": True}`（若預熱期間含 `core` 變更則於預熱收尾自動觸發交棒重啟）；核心交棒回傳 `{"ok": True, "handoff": <bool>}`；即時重載完成回傳 `{"ok": True, "reloaded": True, "teardown_diagnostics": [<ErrorDetail>, ...]}`；停機排水期間回傳 `{"ok": False, "state": <str>, "error": "daemon_stopping"}`。
 - **`CONTROL_STOP`**（`DaemonStopControl`）：不可逆鎖存終止並排空回傳 `{"ok": True, "teardown_diagnostics": [<ErrorDetail>, ...]}`。
-- **`CONTROL_REQUEST`**：轉發跨工作區單飛協調控制（`flight_join` 回傳 `{"ok": True, "conflict": <bool>, ...}`、`flight_evict` 回傳 `{"ok": True, "evicted": <bool>}`、`flight_done` 回傳 `{"ok": True}`）。
+- **`CONTROL_REQUEST`**：已退役之跨倉轉發控制訊框，收到時直接回傳 `{"ok": False, "error": "codec_validation_failed", "message": <str>}`。
 - **格式驗證失敗**：未知欄位、未知動作、空白識別碼、型別不符或非法 `ModuleId` 一律回傳 `{"ok": False, "error": "codec_validation_failed", "message": <str>}`。
 
 ## 4. 必測驗收門檻 (Verification Gate — 對標 `verify_execution_live.py` `RC-01, RC-04, RC-05, RC-06`)
@@ -227,4 +223,4 @@ def query_daemon_control(
 1. **10 進程並發 `auto_spawn` 風暴與唯讀狀態查詢測試**：驗證僅誕生 1 個 Daemon、`daemon.json` 不被誤刪，且 `CONTROL_STATUS` 不續命 TTL。
 2. **Idle TTL 邊界同毫秒連入與空閒長連線休眠壓測**：驗證空閒長連線不阻擋到期休眠，且 `_cond` 保證 0 次假收單斷線。
 3. **`WARMING` 期間組態/模組異動不漏接、延遲預熱排程自動刷新與 `PeriodicTriggerLoop` 動態啟停 / `fixed-delay` 防堆積測試**。
-4. **`core` 自重啟先釋鎖交棒（含啟動鎖競爭期間升級 `core`）、逐模組獨立靜默租約、無阻塞局部恢復與 `CONTROL_STOP` 釋放診斷回傳測試**。
+4. **`core` 自重啟先釋鎖交棒（含啟動鎖競爭期間升級 `core`）、單一全域靜默租約與租約逾期自癒恢復，以及 `CONTROL_STOP` 釋放扁平診斷回傳測試**。

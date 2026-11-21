@@ -4,16 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import threading
-from typing import Callable, Optional, Sequence
+from types import MappingProxyType
+from typing import Mapping, Optional, Sequence, Callable
 
 from core.execution.lifecycle import ContainerState, LifoResourceStack, WorkerContainerLifecycle
 from core.execution.runtime.contracts import (
     INSTALLER_LOCK_FILENAME,
     LOCKS_SUBDIR,
+    MODULES_DIRNAME,
     ModuleDescriptor,
     ModuleProviderPort,
     SubscriptionRouteSpec,
     TaskRouteSpec,
+    YscbModule,
 )
 from core.execution.runtime.gates import LifecycleReloadGate
 from core.execution.runtime.module_slot import LocalModuleSlotRegistry
@@ -59,6 +62,7 @@ class RouteIndexRegistry:
         tier0_slots: LocalModuleSlotRegistry,
         container: WorkerContainerLifecycle,
         gates: LifecycleReloadGate,
+        in_memory_modules: Mapping[ModuleId, YscbModule] = MappingProxyType({}),
     ) -> None:
         self._workspace_root = tier0_slots.workspace_root
         self._cache_dir = cache_dir
@@ -67,6 +71,7 @@ class RouteIndexRegistry:
         self._tier0_slots = tier0_slots
         self._container = container
         self._gates = gates
+        self._in_memory_modules = MappingProxyType(dict(in_memory_modules))
         self._lock = threading.RLock()
         self._route_index: dict[TaskId, tuple[ModuleDescriptor, TaskRouteSpec]] = {}
         self._route_specs: tuple[TaskRouteSpec, ...] = ()
@@ -154,19 +159,26 @@ class RouteIndexRegistry:
         has_retiring_fn: Callable[[str, str, str], bool],
         turn_id: str,
         call_tree_id: str,
-        coalesce_turns: Sequence[tuple[str, str]],
     ) -> bool:
         found = self.lookup(task_id)
         desc = found[0] if found is not None else self._module_provider.get_module(task_id.module_id)
         if desc is None or desc.venv_python is None:
             return False
-        gkey = tier1_group_key_for(desc)
-        if has_retiring_fn(gkey, turn_id, call_tree_id):
-            return True
-        return any(has_retiring_fn(gkey, c_tid, c_tree) for c_tid, c_tree in coalesce_turns)
+        return has_retiring_fn(tier1_group_key_for(desc), turn_id, call_tree_id)
 
     def rebuild(self, *, manifest_only: bool = False) -> None:
         descriptors = list(self._module_provider.list_modules())
+        existing_mids = {d.module_id for d in descriptors}
+        for mid, mod_inst in self._in_memory_modules.items():
+            if mid not in existing_mids:
+                mod_dir = self._workspace_root.join(MODULES_DIRNAME, mid.value)
+                descriptors.append(
+                    ModuleDescriptor(
+                        module_id=mid,
+                        module_dir=mod_dir,
+                        declared_tasks=tuple(bt.route_spec for bt in mod_inst.tasks()),
+                    )
+                )
         tier0_descs = [d for d in descriptors if d.venv_python is None]
         self._tier0_slots.register_descriptors(tier0_descs)
         present_mods = {d.module_id for d in descriptors}
@@ -201,14 +213,14 @@ class RouteIndexRegistry:
             if not manifest_only:
                 self._deferred_boot_index = False
 
-    def _should_skip_dynamic_introspection(self, mod_id: ModuleId, manifest_only: bool) -> bool:
+    def _should_skip_dynamic_introspection(self, manifest_only: bool) -> bool:
         if manifest_only:
             return True
         if not self._is_daemon_host:
             return False
         if self._container.state in (ContainerState.DRAINING, ContainerState.STOPPED):
             return True
-        return self._gates.is_module_quiesced(mod_id)
+        return self._gates.is_globally_quiesced()
 
     def _collect_descriptor_routes(
         self,
@@ -222,7 +234,7 @@ class RouteIndexRegistry:
             return desc.declared_tasks
         if desc.venv_python is not None:
             return ()
-        if self._should_skip_dynamic_introspection(desc.module_id, manifest_only):
+        if self._should_skip_dynamic_introspection(manifest_only):
             if desc.module_id in prev_errors:
                 next_errors[desc.module_id] = prev_errors[desc.module_id]
             return prev_by_mod.get(desc.module_id, ())
@@ -236,7 +248,11 @@ class RouteIndexRegistry:
         if self._is_daemon_host:
             return _load_routes_from_slots(self._tier0_slots, descriptor.module_id, next_errors)
         temp_stack = LifoResourceStack()
-        temp_slots = LocalModuleSlotRegistry(self._workspace_root, temp_stack)
+        temp_slots = LocalModuleSlotRegistry(
+            self._workspace_root,
+            temp_stack,
+            in_memory_modules=self._in_memory_modules,
+        )
         temp_slots.register_descriptors([descriptor])
         try:
             return _load_routes_from_slots(temp_slots, descriptor.module_id, next_errors)

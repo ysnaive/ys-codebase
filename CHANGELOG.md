@@ -1,5 +1,13 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_20_1740_core_v2_kernel_simplification_and_sdk (Completed)
+
+- **Core 2.0 內核減法精簡、單向 5 階段運行管道聚合、`core.surface.sdk` 方案 B 門面落地與分域驗證套件拆整 (`FR-01` ~ `FR-06`, `EC-01` ~ `EC-06`, `NFR-01` ~ `NFR-04`)**：
+  - **Foundation 減重與 Windows 背景無窗訊號防護 (`foundation/codec.py`, `foundation/proc.py`, `foundation.md`)**：移除 MRO `TypeVar` 重映射、多維 Union/MapKey 特異度評分、靜態衝突格點證明器、脫水快取與 `inspect.currentframe()` 堆疊反射（`codec.py` `2,965 -> 1,433 LOC`，保留全公開簽名與 `<locals>` 未定型編碼回退）；將 `SignalWakeupGuard` 收斂為 `95 LOC` 單主執行緒註冊器，並於 `spawn_detached` 與 `ManagedProcessTree` 補齊 Windows `CREATE_NO_WINDOW` 及 `GetConsoleWindow`/`GenerateConsoleCtrlEvent` 保護以根除跳窗搶焦點與 Python 3.12 無主控台 `os.kill` `SystemError`。
+  - **Execution Runtime / Daemon 5 階段聚合、同倉單飛與單一全域 `QUIESCE` (`execution/runtime/*`, `execution/daemon/service.py`, `{runtime,daemon}.md`)**：物理刪除 `lineage_join.py`（移除 `FlightCascade`/`.turn.lock`/`.turn.json`/`CoalesceCallerView`/`handle_remote_flight_control`/`CONTROL_REQUEST`），將 `COALESCE` 收斂為同工作區頂層單飛（巢狀與事件鏈自動降級 `SERIALIZE` 並保留 `CrossProcessLockPaths` 重入與 `RC-03` 語意）、`CallPropagationContext` 縮為 10 欄位並預留 3 系統 `EventId` 常數（`core.workspace_reloaded`、`core.module_installed`、`core.module_removing`）；將 `LifecycleReloadGate`/`RuntimeDispatcher`/`WorkspaceDaemon` 收斂為單一全域 `QUIESCE` 屏障與扁平 `deque[ErrorDetail]` 診斷，修正 `_CoreFileSig` 忽略純時間戳與 `_spawn_handoff_successor` 忽略自身 PID 租約，並新增 `DispatcherHostOptions.in_memory_modules` 支撐無磁碟 SDK 執行（`runtime` `15,351 -> 8,607 LOC`、`daemon/service.py` `2,342 -> 1,366 LOC`，既有 Wave 1.1 實裁 `-9,685 LOC`）。
+  - **Domain 6 `core.surface.sdk` 25 符號零反射門面 (`surface/sdk/{__init__,declarative,client}.py`, `surface/{sdk,cli}.md`)**：實作零反射 `_DeclarativeMeta` 獨立 `Module` + 靜態 `TaskGroup`、可任意順序疊加 `@task`/`@on_event`/`@periodic`、`Arg`/`Option`、`HumanRenderable`/`ExitCodeProvider`/`format_output`、`ModuleEnv` LIFO 橋接、`define_event`、`InMemoryModule` 與 `YscbClient`（精準 25 符號 `__all__` 並納入 Gate 0 1:1 活規格校驗，`surface/cli.md` 登記為 `Draft`）。
+  - **分域測試套件拆整與實機全綠 (`core_v2/tests/*`, `core_v2/verify_execution_live.py`)**：將 `25,167 LOC` 單檔測試拆整為 `core_v2/tests/`（8 檔）與 `145 LOC` 薄入口（共 `9,541 LOC`，`-62.1%`，支援 `--suite` 秒級執行），裁剪退役探針並完整保留有毒 `__str__` 異常隔離與 `RC-01 ~ RC-08`，實機全量跑測 `Gate 0 + foundation_fs + surface_sdk + runtime_daemon + RC-01~RC-08` 100% 通過（`95.95s`, `0 ResourceWarning`），且基準 Tag `archive/core-v2-maximalist`（`9847b1a`）與 `1.x` 主線源碼零異動。
+
 ## 2026_11_14_1030_ast_deadlock_hotfix (Completed)
 
 - **Core 2.0 上線前 AST 跨執行緒與跨消費端防死鎖過渡止血修復及並行壓力測試驗收 (`[FP-02:DR-01]`)**：

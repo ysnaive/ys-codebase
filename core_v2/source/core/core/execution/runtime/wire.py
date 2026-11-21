@@ -16,7 +16,7 @@ from core.execution.runtime.contracts import (
     ModuleDescriptor,
 )
 from core.foundation.errors import ErrorDetail, safe_exception_summary
-from core.foundation.primitives import MAX_USER_JSON_DEPTH, EventId, HostPath, JsonObject, JsonValue, ModuleId, TaskId, require_pure_bool, require_pure_str, require_typed_tuple, validate_wire_json_object
+from core.foundation.primitives import MAX_USER_JSON_DEPTH, EventId, HostPath, JsonObject, JsonValue, ModuleId, TaskId, require_pure_bool, require_typed_tuple, validate_wire_json_object
 
 
 
@@ -59,22 +59,6 @@ class WorkerStopControl:
 class WorkerStopAck:
     ok: bool = True
     teardown_diagnostics: tuple[ErrorDetail, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class EmittedEventHop:
-    """Scoped event hop paired with the exact emitting task for cross-workspace causal cycle attribution."""
-
-    workspace_scope: str
-    event_id: EventId
-    source_task: Optional[str] = None
-
-    def __post_init__(self) -> None:
-        require_pure_str(self.workspace_scope, "EmittedEventHop.workspace_scope")
-        if not isinstance(self.event_id, EventId):
-            raise ValueError(f"EmittedEventHop.event_id must be EventId, got {self.event_id!r}")
-        if self.source_task is not None:
-            require_pure_str(self.source_task, "EmittedEventHop.source_task", non_empty=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,7 +190,7 @@ class DaemonRpcInvokeEnvelope:
 
 @dataclass(frozen=True, slots=True)
 class DaemonRpcInvokeReply:
-    """Typed WorkspaceDaemon -> Client RPC invocation reply carrying transitive invoked_tasks and emitted_hops."""
+    """Typed WorkspaceDaemon -> Client RPC invocation reply carrying transitive invoked_tasks."""
 
     ok: bool
     raw_value: JsonValue = None
@@ -214,7 +198,6 @@ class DaemonRpcInvokeReply:
     event_diagnostics: tuple[ErrorDetail, ...] = ()
     teardown_diagnostics: tuple[ErrorDetail, ...] = ()
     invoked_tasks: tuple[tuple[HostPath, TaskId], ...] = ()
-    emitted_hops: tuple[EmittedEventHop, ...] = ()
     coalesced: bool = False
 
     def __post_init__(self) -> None:
@@ -233,4 +216,3 @@ class DaemonRpcInvokeReply:
         object.__setattr__(self, "event_diagnostics", require_typed_tuple(self.event_diagnostics, ErrorDetail, "event_diagnostics"))
         object.__setattr__(self, "teardown_diagnostics", require_typed_tuple(self.teardown_diagnostics, ErrorDetail, "teardown_diagnostics"))
         object.__setattr__(self, "invoked_tasks", validate_host_task_pairs(self.invoked_tasks, "DaemonRpcInvokeReply.invoked_tasks"))
-        object.__setattr__(self, "emitted_hops", require_typed_tuple(self.emitted_hops, EmittedEventHop, "emitted_hops"))

@@ -11,9 +11,9 @@
 
 1. **不可變基礎值物件與跨平台路徑區段安全（`primitives.py`）**：提供 `ModuleId`、`TaskId`、`EventId`、`HostPath`、嚴格 int64/UTF-8/有限浮點 JSON 解析與複製原語，以及跨平台相對路徑區段守衛（`is_valid_relative_segment` / `validate_relative_segment`，統一封鎖 `..`、路徑分隔符、NTFS `:` 替代資料流、尾隨點號／空白別名與 Windows 保留裝置名稱）。
 2. **結構化錯誤階層（`errors.py`）**：定義 `ErrorCode`、`ErrorDetail`、`YscbError`、`EventCycleError`、`CallCycleError` 與協作式 `TaskCancelledException`。
-3. **純標準庫強型別編解碼器（`codec.py`）**：提供支援遞迴型別、泛型替換、嚴格欄位校驗與熱重載弱引用自動回收之 `DataclassCodec`。
+3. **純標準庫強型別編解碼器（`codec.py`）**：提供支援遞迴型別、基礎泛型參數替換、宣告序聯合型別解碼、嚴格欄位校驗與弱引用自動回收之 `DataclassCodec` 與 `infer_sequence_element_dataclass`。
 4. **協作取消、截止時間守衛與執行緒局部標準輸出隔離（`observability.py`）**：提供 `CancellationToken`、`DeadlineGuard`、`ProgressEvent` 與 `guard_standard_streams`。
-5. **跨平台進程樹監管與 FIFO 屏障訊號協調（`proc.py`）**：提供 `ManagedProcessTree`（Windows Job Object 含 `BREAKAWAY_OK` / POSIX Session+PGID）、`spawn_detached`（經 `stdin` 安全傳遞負載）、防殭屍誤判之 `is_process_alive` / `get_process_start_tag`，以及確保排空屏障完成後才還原 OS 預設訊號處理器之 `SignalWakeupGuard`。
+5. **跨平台進程樹監管與主執行緒訊號協調（`proc.py`）**：提供 `ManagedProcessTree`（Windows Job Object 含 `BREAKAWAY_OK` / POSIX Session+PGID）、`spawn_detached`（經 `stdin` 安全傳遞負載）、防殭屍誤判之 `is_process_alive` / `get_process_start_tag`，以及基於單主執行緒 `signal.signal` 註冊與生命週期還原之 `SignalWakeupGuard`。
 
 ## 2. 公開契約規格 (`core.foundation.__all__` 完整快照)
 
@@ -366,10 +366,6 @@ class ProgressEvent:
 
 class SignalWakeupGuard:
 
-    @classmethod
-    def drain_retired_on_main(cls) -> None:
-        ...
-
     def __init__(self, sig_nums: Sequence[int], on_signal: Callable[[], None], *, on_second_signal: Optional[Callable[[], None]]=None) -> None:
         ...
 
@@ -379,21 +375,7 @@ class SignalWakeupGuard:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         ...
 
-    @property
-    def is_installed(self) -> bool:
-        ...
-
-    def mark_inactive(self) -> None:
-        ...
-
-    def dispatch_signal(self, sig_num: int) -> None:
-        ...
-
     def install(self) -> None:
-        ...
-
-    @property
-    def sig_nums(self) -> frozenset[int]:
         ...
 
     def close(self) -> None:
@@ -420,3 +402,16 @@ class YscbError(Exception):
     def __init__(self, code: ErrorCode, message: str, *, remediation: Optional[str]=None, source_task: Optional[str]=None) -> None:
         ...
 ```
+
+---
+
+## 3. OS 環境變數與系統常數命名憲法（Env & Constant Naming Constitution）
+
+為避免隨 Wave 1.2（`cli` / `config` / `packaging` / `dev 2.0`）擴張造成 OS 環境變數與魔術旗標混雜，全生態系統一遵守以下三條命名與存取邊界（後續納入 `Gate 0` / `dev check 2.0` 靜態守門）：
+
+| 分類 | 命名慣例 | 語意定位與存取規範 |
+| :--- | :--- | :--- |
+| **公開環境覆寫旗標** | `YSCB_*`（無前導底線） | **僅限使用者或 CI 在讀取組態前需要生效之極少數覆寫開關**（如停用常駐、除錯日誌層級）。須集中登記於受控清冊，未登記者禁止任意 `os.environ.get()`；一般業務開關一律優先走 `config` 或強型別 `Enum`。 |
+| **內核／工具私有變數** | `_YSCB_*`（前導底線） | **僅供內核與工具鏈跨進程傳遞之內部訊號、憑證或沙盒標記**（如 `_YSCB_TREE_ID`、`_YSCB_TEST_SANDBOX`）。`sanitize_caller_env` 應依 `_YSCB_` 前綴整批封殺外部注入；既有 `YSCB_WORKER_AUTH_TOKEN` 列入 Wave 1.2 統一對齊為 `_YSCB_*` 前綴。 |
+| **模組常數與上限門檻** | `_UPPER_CASE` / `Final[...]` | 單檔內部調校門檻維持 `_UPPER_CASE` 私有；跨檔共享之協定、系統目錄／檔名與保留識別符須顯式宣告 `Final[...]` 並收錄於所屬功能域 Living Spec。 |
+

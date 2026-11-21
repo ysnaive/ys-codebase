@@ -563,47 +563,23 @@ class _StepTaskContext(TaskContext):
     ) -> TaskOutcome[JsonValue]: ...
 
     def invoke_task(
-        self,
-        task_id: TaskId | str,
-        input_obj: object,
-        *,
-        output_type: Optional[type[TOut]] = None,
-        target_workspace: Optional[HostPath] = None,
-        routing_policy: Optional[ClientRoutingPolicy] = None,
+        self, task_id: TaskId | str, input_obj: object, *, output_type: Optional[type[TOut]] = None,
+        target_workspace: Optional[HostPath] = None, routing_policy: Optional[ClientRoutingPolicy] = None,
     ) -> TaskOutcome[TOut] | TaskOutcome[JsonValue]:
         try:
             tid = task_id if isinstance(task_id, TaskId) else TaskId(task_id)
         except ValueError as exc:
-            return TaskOutcome(
-                ok=False,
-                error=ErrorDetail(ErrorCode.CODEC_VALIDATION_FAILED, safe_exception_summary(exc), source_task=str(self._spec.task_id)),
-            )
+            return TaskOutcome(ok=False, error=ErrorDetail(ErrorCode.CODEC_VALIDATION_FAILED, safe_exception_summary(exc), source_task=str(self._spec.task_id)))
         if target_workspace is not None and not isinstance(target_workspace, HostPath):
-            return TaskOutcome(
-                ok=False,
-                error=ErrorDetail(
-                    ErrorCode.CODEC_VALIDATION_FAILED,
-                    f"target_workspace must be HostPath or None, got {target_workspace!r}",
-                    source_task=str(tid),
-                ),
-            )
+            return TaskOutcome(ok=False, error=ErrorDetail(ErrorCode.CODEC_VALIDATION_FAILED, f"target_workspace must be HostPath or None, got {target_workspace!r}", source_task=str(tid)))
         if routing_policy is not None and not isinstance(routing_policy, ClientRoutingPolicy):
-            return TaskOutcome(
-                ok=False,
-                error=ErrorDetail(
-                    ErrorCode.CODEC_VALIDATION_FAILED,
-                    f"routing_policy must be ClientRoutingPolicy or None, got {routing_policy!r}",
-                    source_task=str(tid),
-                ),
-            )
+            return TaskOutcome(ok=False, error=ErrorDetail(ErrorCode.CODEC_VALIDATION_FAILED, f"routing_policy must be ClientRoutingPolicy or None, got {routing_policy!r}", source_task=str(tid)))
         try:
             encoded_in = DataclassCodec.encode_object(input_obj)
         except YscbError as exc:
             return TaskOutcome(ok=False, error=exc.detail.with_fallback_task(str(tid)))
         raw_out = self._spec.callbacks.on_invoke_task(tid, encoded_in, target_workspace, routing_policy)
-        if output_type is not None:
-            return decode_outcome_as(raw_out, output_type, source_task=str(tid))
-        return raw_out
+        return decode_outcome_as(raw_out, output_type, source_task=str(tid)) if output_type is not None else raw_out
 
     def report_progress(self, progress: ProgressEvent) -> None:
         encoded = DataclassCodec.encode_object(progress, expected_type=ProgressEvent)
@@ -700,6 +676,7 @@ class LocalModuleSlotRegistry:
         is_module_quiesced: Optional[Callable[[ModuleId], bool]] = None,
         require_eager_start: bool = False,
         on_module_initialized: Optional[Callable[[ModuleId], None]] = None,
+        in_memory_modules: Mapping[ModuleId, YscbModule] = types.MappingProxyType({}),
     ) -> None:
         self._workspace_root = workspace_root
         self._loader = ProtectedModuleLoader(workspace_root)
@@ -708,6 +685,7 @@ class LocalModuleSlotRegistry:
         self._is_quiesced_fn = is_module_quiesced
         self._require_eager_start = require_eager_start
         self._on_module_initialized = on_module_initialized
+        self._in_memory_modules = types.MappingProxyType(dict(in_memory_modules))
         self._lock = threading.RLock()
         self._drain_cond = threading.Condition(self._lock)
         self._slots: dict[ModuleId, _ModuleSlot] = {}
@@ -822,13 +800,8 @@ class LocalModuleSlotRegistry:
             if slot.artifact is not None:
                 return slot.artifact.instance
             load_lk = slot.load_lock
-
         with load_lk:
-            deg = (
-                self._container.get_degraded(module_id)
-                if record_runtime_degraded
-                else self._container.get_runtime_degraded(module_id)
-            )
+            deg = self._container.get_degraded(module_id) if record_runtime_degraded else self._container.get_runtime_degraded(module_id)
             if deg is not None:
                 raise YscbError(deg.code, deg.message, remediation=deg.remediation, source_task=deg.source_task)
             for _attempt in range(3):
@@ -837,12 +810,7 @@ class LocalModuleSlotRegistry:
                     return loaded
             raise YscbError(ErrorCode.DAEMON_UNAVAILABLE, f"Module '{module_id}' concurrently reloaded during load.")
 
-    def _try_load_artifact_once(
-        self,
-        module_id: ModuleId,
-        *,
-        record_runtime_degraded: bool = True,
-    ) -> Optional[YscbModule]:
+    def _try_load_artifact_once(self, module_id: ModuleId, *, record_runtime_degraded: bool = True) -> Optional[YscbModule]:
         with self._lock:
             slot = self._slot_locked(module_id)
             if self._is_unavailable_locked(slot):
@@ -852,9 +820,7 @@ class LocalModuleSlotRegistry:
             desc, start_ep = slot.descriptor, slot.epoch
         if desc is None:
             raise YscbError(ErrorCode.TASK_NOT_FOUND, f"Module '{module_id}' is not registered.")
-        art, bound_tasks = self._load_and_bind_tasks(
-            module_id, desc, record_runtime_degraded=record_runtime_degraded
-        )
+        art, bound_tasks = self._load_and_bind_tasks(module_id, desc, record_runtime_degraded=record_runtime_degraded)
         return self._commit_loaded_artifact(module_id, slot, art, bound_tasks, start_ep)
 
     def introspect_bound_route_specs(self, module_id: ModuleId) -> tuple[TaskRouteSpec, ...]:
@@ -864,14 +830,11 @@ class LocalModuleSlotRegistry:
             return tuple(t.route_spec for t in slot.tasks.values()) if slot is not None else ()
 
     def _load_and_bind_tasks(
-        self,
-        module_id: ModuleId,
-        desc: ModuleDescriptor,
-        *,
-        record_runtime_degraded: bool,
+        self, module_id: ModuleId, desc: ModuleDescriptor, *, record_runtime_degraded: bool,
     ) -> tuple[LoadedModuleArtifact, dict[TaskId, BoundTask]]:
         try:
-            art = self._loader.load_module_artifact(desc)
+            in_mem = self._in_memory_modules.get(module_id)
+            art = LoadedModuleArtifact(instance=in_mem, package_key="") if in_mem is not None else self._loader.load_module_artifact(desc)
             try:
                 return (art, _validate_and_bind_module_tasks(module_id, desc, art.instance))
             except BaseException:
@@ -913,21 +876,10 @@ class LocalModuleSlotRegistry:
             slot = self._slot_locked(module_id)
             if self._is_unavailable_locked(slot):
                 raise YscbError(ErrorCode.DAEMON_UNAVAILABLE, f"Module '{module_id}' is quiesced.")
-            eager_unstarted = (
-                self._require_eager_start
-                and slot.descriptor is not None
-                and slot.descriptor.eager_warmup
-                and slot.phase != _SlotPhase.STARTED
-            )
-            if (
-                not slot.starting
-                and not eager_unstarted
-                and slot.artifact is not None
-                and slot.phase in (_SlotPhase.INITIALIZED, _SlotPhase.STARTED)
-            ):
+            eager_unstarted = self._require_eager_start and slot.descriptor is not None and slot.descriptor.eager_warmup and slot.phase != _SlotPhase.STARTED
+            if not slot.starting and not eager_unstarted and slot.artifact is not None and slot.phase in (_SlotPhase.INITIALIZED, _SlotPhase.STARTED):
                 return slot.artifact.instance
             load_lk = slot.load_lock
-
         with load_lk:
             return self._load_and_init_under_slot_lock(module_id)
 
@@ -935,10 +887,7 @@ class LocalModuleSlotRegistry:
         for _attempt in range(3):
             self._raise_if_degraded(module_id)
             inst = self.ensure_module_artifact_loaded(module_id)
-            need_init = False
-            need_start = False
-            start_ep = 0
-            pinned_art: Optional[LoadedModuleArtifact] = None
+            start_ep, pinned_art = 0, None
             with self._drain_cond:
                 slot = self._slot_locked(module_id)
                 if slot.artifact is None or slot.artifact.instance is not inst:
@@ -946,36 +895,20 @@ class LocalModuleSlotRegistry:
                 if slot.phase == _SlotPhase.STARTED:
                     return slot.artifact.instance
                 need_init = slot.phase != _SlotPhase.INITIALIZED
-                need_start = (
-                    self._require_eager_start
-                    and not slot.starting
-                    and slot.descriptor is not None
-                    and slot.descriptor.eager_warmup
-                )
-                start_ep = slot.epoch
-                pinned_art = slot.artifact
+                need_start = self._require_eager_start and not slot.starting and slot.descriptor is not None and slot.descriptor.eager_warmup
+                start_ep, pinned_art = slot.epoch, slot.artifact
                 pinned_art.in_flight += 1
             try:
                 if need_init:
-                    inst = self._run_slot_lifecycle_hook(
-                        module_id, inst, start_ep, _SlotPhase.INITIALIZED, "on_init"
-                    )
+                    inst = self._run_slot_lifecycle_hook(module_id, inst, start_ep, _SlotPhase.INITIALIZED, "on_init")
                 if need_start:
-                    self._run_slot_lifecycle_hook(
-                        module_id, inst, start_ep, _SlotPhase.STARTED, "on_start"
-                    )
+                    self._run_slot_lifecycle_hook(module_id, inst, start_ep, _SlotPhase.STARTED, "on_start")
                 return inst
             finally:
                 self._release_artifact_in_flight(module_id, pinned_art)
         raise YscbError(ErrorCode.DAEMON_UNAVAILABLE, f"Module '{module_id}' concurrently reloaded during init.")
 
-    def _release_artifact_in_flight(
-        self,
-        mod_id: ModuleId,
-        art: LoadedModuleArtifact,
-        *,
-        attach_to_step: bool = False,
-    ) -> tuple[ErrorDetail, ...]:
+    def _release_artifact_in_flight(self, mod_id: ModuleId, art: LoadedModuleArtifact, *, attach_to_step: bool = False) -> tuple[ErrorDetail, ...]:
         to_clean: list[tuple[LoadedModuleArtifact, tuple[TaggedCloser, ...]]] = []
         with self._drain_cond:
             slot = self._slot_locked(mod_id)
@@ -1005,19 +938,10 @@ class LocalModuleSlotRegistry:
         return tuple(retire_diags)
 
     def _run_slot_lifecycle_hook(
-        self,
-        module_id: ModuleId,
-        inst: YscbModule,
-        start_ep: int,
-        target_phase: _SlotPhase,
-        hook_tag: str,
+        self, module_id: ModuleId, inst: YscbModule, start_ep: int, target_phase: _SlotPhase, hook_tag: str,
     ) -> YscbModule:
         try:
-            close_fn = (
-                inst.on_init(self._workspace_root)
-                if target_phase == _SlotPhase.INITIALIZED
-                else inst.on_start(self._workspace_root)
-            )
+            close_fn = inst.on_init(self._workspace_root) if target_phase == _SlotPhase.INITIALIZED else inst.on_start(self._workspace_root)
         except TaskCancelledException:
             self._evict_failed_slot(module_id, start_ep)
             raise
@@ -1038,25 +962,13 @@ class LocalModuleSlotRegistry:
         return self._commit_phase_or_abort(module_id, inst, start_ep, target_phase, close_fn, hook_tag)
 
     def _commit_phase_or_abort(
-        self,
-        module_id: ModuleId,
-        inst: YscbModule,
-        start_ep: int,
-        target_phase: _SlotPhase,
-        close_fn: Optional[Callable[[], None]],
-        hook_tag: str,
+        self, module_id: ModuleId, inst: YscbModule, start_ep: int, target_phase: _SlotPhase,
+        close_fn: Optional[Callable[[], None]], hook_tag: str,
     ) -> YscbModule:
         committed = False
         with self._lock:
             slot = self._slot_locked(module_id)
-            quiesced = self._is_unavailable_locked(slot)
-            valid = (
-                not quiesced
-                and slot.epoch == start_ep
-                and slot.artifact is not None
-                and slot.artifact.instance is inst
-            )
-            if valid:
+            if not self._is_unavailable_locked(slot) and slot.epoch == start_ep and slot.artifact is not None and slot.artifact.instance is inst:
                 slot.phase = target_phase
                 if close_fn is not None:
                     self._lifo_stack.push_closeable(f"{module_id}.{hook_tag}", close_fn)
@@ -1084,17 +996,11 @@ class LocalModuleSlotRegistry:
             for pkg in to_purge:
                 ProtectedModuleLoader.cleanup_package(pkg)
 
-    def warmup_modules(
-        self,
-        only_modules: Optional[frozenset[ModuleId]] = None,
-    ) -> Mapping[ModuleId, Callable[[], None]]:
+    def warmup_modules(self, only_modules: Optional[frozenset[ModuleId]] = None) -> Mapping[ModuleId, Callable[[], None]]:
         with self._lock:
             mod_ids = [
-                m
-                for m, s in self._slots.items()
-                if s.descriptor is not None
-                and s.descriptor.eager_warmup
-                and not self._container.has_index_degraded(m)
+                m for m, s in self._slots.items()
+                if s.descriptor is not None and s.descriptor.eager_warmup and not self._container.has_index_degraded(m)
                 and (only_modules is None or m in only_modules)
             ]
         return {mid: self._build_idempotent_start_hook(mid) for mid in mod_ids}
@@ -1140,24 +1046,14 @@ class LocalModuleSlotRegistry:
                 self.ensure_module_artifact_loaded(task_id.module_id)
             with self._lock:
                 slot = self._slot_locked(task_id.module_id)
-                ready = slot.artifact is not None and (
-                    not require_initialized or slot.phase in (_SlotPhase.INITIALIZED, _SlotPhase.STARTED)
-                )
+                ready = slot.artifact is not None and (not require_initialized or slot.phase in (_SlotPhase.INITIALIZED, _SlotPhase.STARTED))
                 task = slot.tasks.get(task_id) if ready else None
             if not ready:
                 continue
             if task is None:
-                raise YscbError(
-                    ErrorCode.TASK_NOT_FOUND,
-                    f"Task '{task_id}' not found in module '{task_id.module_id}'.",
-                    source_task=str(task_id),
-                )
+                raise YscbError(ErrorCode.TASK_NOT_FOUND, f"Task '{task_id}' not found in module '{task_id.module_id}'.", source_task=str(task_id))
             return task
-        raise YscbError(
-            ErrorCode.DAEMON_UNAVAILABLE,
-            f"Module '{task_id.module_id}' concurrently reloaded during lookup.",
-            source_task=str(task_id),
-        )
+        raise YscbError(ErrorCode.DAEMON_UNAVAILABLE, f"Module '{task_id.module_id}' concurrently reloaded during lookup.", source_task=str(task_id))
 
     def compute_equiv_locally(self, task_id: TaskId, raw_input: JsonObject) -> WorkerEquivReply:
         try:
@@ -1166,64 +1062,34 @@ class LocalModuleSlotRegistry:
         except (TaskCancelledException, YscbError) as exc:
             return WorkerEquivReply(ok=False, error=exc.detail.with_fallback_task(str(task_id)))
         except (Exception, SystemExit, GeneratorExit) as exc:
-            det = ErrorDetail(
-                ErrorCode.BUSINESS_FAILURE,
-                f"Equivalence failed for '{task_id}': {safe_exception_summary(exc)}",
-                source_task=str(task_id),
-            )
-            return WorkerEquivReply(ok=False, error=det)
+            return WorkerEquivReply(ok=False, error=ErrorDetail(ErrorCode.BUSINESS_FAILURE, f"Equivalence failed for '{task_id}': {safe_exception_summary(exc)}", source_task=str(task_id)))
 
-    def map_batch_locally(
-        self,
-        task_id: TaskId,
-        event_id: EventId,
-        event_payloads: Sequence[JsonObject],
-    ) -> WorkerMapBatchReply:
+    def map_batch_locally(self, task_id: TaskId, event_id: EventId, event_payloads: Sequence[JsonObject]) -> WorkerMapBatchReply:
         try:
-            task = self.lookup_task(task_id, require_initialized=False)
-            skip, mapped_obj = task.map_subscription_batch(event_id, event_payloads)
+            skip, mapped_obj = self.lookup_task(task_id, require_initialized=False).map_subscription_batch(event_id, event_payloads)
             return WorkerMapBatchReply(ok=True, skip=skip, mapped_input=mapped_obj)
         except (TaskCancelledException, YscbError) as exc:
             return WorkerMapBatchReply(ok=False, error=exc.detail.with_fallback_task(str(task_id)))
         except (Exception, SystemExit, GeneratorExit) as exc:
-            err = ErrorDetail(
-                code=ErrorCode.BUSINESS_FAILURE,
-                message=f"Event batch_mapper failed in '{task_id}': {safe_exception_summary(exc)}",
-                source_task=str(task_id),
-            )
-            return WorkerMapBatchReply(ok=False, error=err)
+            return WorkerMapBatchReply(ok=False, error=ErrorDetail(ErrorCode.BUSINESS_FAILURE, f"Event batch_mapper failed in '{task_id}': {safe_exception_summary(exc)}", source_task=str(task_id)))
 
     def unload_all_modules(self, *, grace_sec: float = 0.2) -> tuple[ErrorDetail, ...]:
         with self._lock:
             all_ids = frozenset(self._slots.keys())
-        diags: list[ErrorDetail] = []
         if all_ids:
-            diags.extend(self.unload_modules(all_ids, drain_in_flight=True, grace_sec=grace_sec, force_retire=True))
-        else:
-            diags.extend(self.drain_pending_teardown_diagnostics())
-        return tuple(diags)
-
+            return self.unload_modules(all_ids, drain_in_flight=True, grace_sec=grace_sec, force_retire=True)
+        return self.drain_pending_teardown_diagnostics()
 
     def unload_modules(
-        self,
-        modules: frozenset[ModuleId],
-        *,
-        drain_in_flight: bool = False,
-        grace_sec: float = 2.0,
-        force_retire: bool = False,
+        self, modules: frozenset[ModuleId], *, drain_in_flight: bool = False, grace_sec: float = 2.0, force_retire: bool = False,
     ) -> tuple[ErrorDetail, ...]:
-        safe_grace = require_non_none(clamp_wait_sec(grace_sec, min_sec=0.05))
-        deadline = time.monotonic() + safe_grace
+        deadline = time.monotonic() + require_non_none(clamp_wait_sec(grace_sec, min_sec=0.05))
         forced_retiring: list[tuple[LoadedModuleArtifact, tuple[TaggedCloser, ...]]] = []
         with self._drain_cond:
             target_slots = [self._slot_locked(m) for m in modules]
             for s in target_slots:
                 s.epoch += 1
-            while (
-                drain_in_flight
-                and any(s.has_active_or_retiring_work() for s in target_slots)
-                and time.monotonic() < deadline
-            ):
+            while drain_in_flight and any(s.has_active_or_retiring_work() for s in target_slots) and time.monotonic() < deadline:
                 self._drain_cond.wait(timeout=0.02)
             immediate_closers, evicted_pkgs = self._detach_slots_batch_locked(target_slots)
             if force_retire:
@@ -1268,24 +1134,15 @@ class LocalModuleSlotRegistry:
             self.ensure_module_loaded_and_initialized(task_id.module_id)
             with self._drain_cond:
                 slot = self._slot_locked(task_id.module_id)
-                ready = slot.artifact is not None and slot.phase in (_SlotPhase.INITIALIZED, _SlotPhase.STARTED)
-                if not ready:
+                if slot.artifact is None or slot.phase not in (_SlotPhase.INITIALIZED, _SlotPhase.STARTED):
                     continue
                 task = slot.tasks.get(task_id)
                 if task is None:
-                    raise YscbError(
-                        ErrorCode.TASK_NOT_FOUND,
-                        f"Task '{task_id}' not found in module '{task_id.module_id}'.",
-                        source_task=str(task_id),
-                    )
+                    raise YscbError(ErrorCode.TASK_NOT_FOUND, f"Task '{task_id}' not found in module '{task_id.module_id}'.", source_task=str(task_id))
                 art = require_non_none(slot.artifact)
                 art.in_flight += 1
                 return (task, art)
-        raise YscbError(
-            ErrorCode.DAEMON_UNAVAILABLE,
-            f"Module '{task_id.module_id}' concurrently reloaded during lookup.",
-            source_task=str(task_id),
-        )
+        raise YscbError(ErrorCode.DAEMON_UNAVAILABLE, f"Module '{task_id.module_id}' concurrently reloaded during lookup.", source_task=str(task_id))
 
     def execute_step_locally(self, spec: LocalStepExecutionSpec) -> WorkerStepReply:
         pinned_box: list[LoadedModuleArtifact] = []
@@ -1294,63 +1151,25 @@ class LocalModuleSlotRegistry:
             step_reply = self._run_counted_local_step(spec, pinned_box)
         finally:
             if pinned_box:
-                retire_diags = self._release_artifact_in_flight(
-                    spec.task_id.module_id, pinned_box[0], attach_to_step=(step_reply is not None)
-                )
+                retire_diags = self._release_artifact_in_flight(spec.task_id.module_id, pinned_box[0], attach_to_step=(step_reply is not None))
                 if step_reply is not None and retire_diags:
-                    step_reply = replace(
-                        step_reply,
-                        teardown_diagnostics=(*step_reply.teardown_diagnostics, *retire_diags),
-                    )
+                    step_reply = replace(step_reply, teardown_diagnostics=(*step_reply.teardown_diagnostics, *retire_diags))
         return require_non_none(step_reply)
 
-    def _run_counted_local_step(
-        self,
-        spec: LocalStepExecutionSpec,
-        pinned_box: list[LoadedModuleArtifact],
-    ) -> WorkerStepReply:
-        outbox = TaskLocalOutbox(
-            spec.task_id,
-            spec.base_lineage,
-            workspace_scope=self._workspace_root.comparison_key,
-        )
+    def _run_counted_local_step(self, spec: LocalStepExecutionSpec, pinned_box: list[LoadedModuleArtifact]) -> WorkerStepReply:
+        outbox = TaskLocalOutbox(spec.task_id, spec.base_lineage, workspace_scope=self._workspace_root.comparison_key)
         ctx = _StepTaskContext(self._workspace_root, spec, outbox)
         try:
             spec.cancel_token.raise_if_cancelled()
             task, pinned_art = self._acquire_pinned_task(spec.task_id)
             pinned_box.append(pinned_art)
-            allow_tty = task.interactive_tty or spec.interactive_tty
-            with guard_standard_streams(allow_interactive_tty=allow_tty):
+            with guard_standard_streams(allow_interactive_tty=(task.interactive_tty or spec.interactive_tty)):
                 raw_out = task.execute_encoded(spec.raw_input, ctx)
-            return WorkerStepReply(
-                ok=True,
-                raw_output=raw_out,
-                committed_events=outbox.drain_committed(),
-            )
-        except TaskCancelledException as exc:
+            return WorkerStepReply(ok=True, raw_output=raw_out, committed_events=outbox.drain_committed())
+        except (TaskCancelledException, YscbError) as exc:
             outbox.discard()
-            return WorkerStepReply(
-                ok=False,
-                preempted=(exc.detail.code == ErrorCode.TASK_PREEMPTED),
-                fatal_abort_turn=False,
-                error=exc.detail.with_fallback_task(str(spec.task_id)),
-            )
-        except YscbError as exc:
-            outbox.discard()
-            is_fatal = is_fatal_error_code(exc.detail.code)
-            return WorkerStepReply(
-                ok=False,
-                preempted=(exc.detail.code == ErrorCode.TASK_PREEMPTED),
-                fatal_abort_turn=is_fatal,
-                error=exc.detail.with_fallback_task(str(spec.task_id)),
-            )
+            is_fatal = False if isinstance(exc, TaskCancelledException) else is_fatal_error_code(exc.detail.code)
+            return WorkerStepReply(ok=False, preempted=(exc.detail.code == ErrorCode.TASK_PREEMPTED), fatal_abort_turn=is_fatal, error=exc.detail.with_fallback_task(str(spec.task_id)))
         except (Exception, SystemExit, GeneratorExit) as exc:
             outbox.discard()
-            return WorkerStepReply(
-                ok=False,
-                error=ErrorDetail(
-                    code=ErrorCode.BUSINESS_FAILURE,
-                    message=safe_exception_summary(exc),
-                    source_task=str(spec.task_id),
-                ),
-            )
+            return WorkerStepReply(ok=False, error=ErrorDetail(ErrorCode.BUSINESS_FAILURE, safe_exception_summary(exc), source_task=str(spec.task_id)))

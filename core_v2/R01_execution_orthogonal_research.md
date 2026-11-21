@@ -4,7 +4,7 @@
 > **目標功能域**：`Domain 5 — 執行與常駐調度域 (core.execution.{event, lifecycle, rpc, runtime, daemon})`
 > **關聯設計文件**：[`ROADMAP.md`](./ROADMAP.md)、[`sub_module_design/execution/`](./sub_module_design/execution/)
 > **狀態**：`Active Verification Benchmark (Living Document)`
-> **最後更新**：`2026-11-16`
+> **最後更新**：`2026-11-21`
 
 ## 1. 調研動機與方法論 (Motivation & Orthogonal Methodology)
 
@@ -143,7 +143,7 @@
 - **覆蓋水準**：`A1:INTERNAL_TRIGGER`, `A3:TIER_1_SHARED_GROUP`, `A4:EAGER_WARM_SINGLETON`, `A5:PREEMPT`, `A6:COOPERATIVE`, `B1:DAEMON_FS_WATCHER+EVENT_SUB_DEFERRED`, `B3:BACKGROUND`, `C1:READY`, `C2:HELD_BY_INMEM_BG`, `C3:WARM_IN_SYNC`, `D1:SIBLING_MULTI_EMIT`, `D2:DEFERRED_OUTBOX`, `D3:UNORDERED_FOLD`, `D4:STATIC_TIER0_FILTER+DYNAMIC_WORKER_MAPPER_DROP`, `E1:PREEMPT_ABORT+BUSINESS_ERROR`, `E2:P1_INIT_OR_WARMUP`。
 
 ### `RC-03`：前景快照無鎖秒回、優先級繼承与帶參 `COALESCE` 等價分流
-- **劇本**：背景索引持鎖執行期間：① 前景查詢無鎖 `<5ms` 秒回快照；② 兩前景並發執行相同無參索引任務，觸發背景鎖優先級繼承與 `COALESCE` 單飛合併（並模擬宿主 Step 5 `P4` 衍生異常驗證精準傳播予所有搭便車者，不誤回 `Exit 0`）；③ 另一前景帶 `--force --export ./out.json` 因 `equivalence_key` 不同自動轉為 `SERIALIZE` 排隊接續執行並回推 `PROGRESS`（含 `--sync` 前置 `NESTED_INVOKE_TASK` 對齊鏈）。
+- **劇本**：背景索引持鎖執行期間：① 前景查詢無鎖 `<5ms` 秒回快照；② 兩前景並發執行相同無參索引任務，觸發背景鎖優先級繼承與同工作區頂層 `COALESCE` 單飛合併（並模擬宿主 Step 5 `P4` 衍生異常驗證精準傳播予所有搭便車者，不誤回 `Exit 0`）；③ 另一前景帶 `--force --export ./out.json` 因 `equivalence_key` 不同自動轉為 `SERIALIZE` 排隊接續執行並回推 `PROGRESS`（含 `--sync` 前置 `NESTED_INVOKE_TASK` 對齊鏈；依內核精簡不變量，巢狀與事件鏈內之 `COALESCE` 請求一律確定性降級為 `SERIALIZE` 執行不跨層合併）。
 - **覆蓋水準**：`A5:COALESCE+SERIALIZE`, `B1:NESTED_INVOKE_TASK`, `B3:FOREGROUND`, `B6:PROGRESS_STREAMING`, `C2:HELD_BY_INMEM_FG`, `D1:LINEAR_REENTRANT_CHAIN`, `E2:P4_EVENT_DRAIN_LOOP`。
 
 ### `RC-04`：IDE 長連線多路亂序並發、單流精準取消與跨 Idle TTL 休眠透明重連
@@ -154,8 +154,8 @@
 - **劇本**：① 執行 `INTERACTIVE_TTY` 授權任務驗證強制 `COLD_ONLY` 與壓制 `auto_spawn`；② 直接手改磁碟 `config` JSON 將 `auto_sync` 由 `false` 改為 `true`，驗證 `DaemonWatcherConfig` 搭配 `PollingDirectoryWatcher` 熱感知啟動 `fixed-delay` 定時任務（空轉不續命 TTL 且慢執行不重疊堆積）；③ 攜帶暫態環境變數執行外部非冪等 I/O 任務與定時任務互斥排隊，分別於 Worker `P0` 收單前與 `P3` 收單後注入 `SIGKILL` 硬崩潰及 `TIMEOUT_EXCEEDED`，驗證 `P0` 透明重拉成功而 `P3` 嚴格回報 `TRANSPORT_LOST` 絕不重跑。
 - **覆蓋水準**：`A2:COLD_ONLY`, `A4:STATELESS`, `A6:OPAQUE_NATIVE_OR_IO`, `A7:NON_IDEMPOTENT_EXTERNAL`, `A9:CONDITIONAL`, `B1:DAEMON_PERIODIC`, `B5:CALLER_ENV_SENSITIVE`, `B6:INTERACTIVE_TTY`, `B7:ISOLATED_SINGLE`, `C3:DISK_CONFIG_EDITED`, `E1:HARD_CRASH_OR_EOF+TIMEOUT_EXCEEDED`。
 
-### `RC-06`：套件安裝/卸載、`emit_imm` 有序清理、`QUIESCED` 排隊自癒與 `core` 釋鎖交棒重啟
-- **劇本**：常駐與 Tier 1 Worker 在線持句柄下：① 執行模組移除與安裝（`MUTATES_MODULES`），發送 `CONTROL_QUIESCE` 釋鎖；期間連入之外部 `HYBRID` 請求於 `QUIESCED` 閘門安全排隊等待 `RESUME`（冷啟動讀者則等待共享 `installer.lock`），移除前以 `emit_imm` + `ORDERED_FIFO` 同步執行設定還原，完成後同呼叫棧 `SERIALIZE` 重入 `reload` 扇出 `FANOUT_DIAMOND_DAG`（並模擬安裝器崩潰驗證租約到期自癒恢復 `READY` 與 `.modules/<mod>` 熱重載）；② 執行 `core` 內核更新（`MUTATES_CORE`），驗證舊 Daemon 排空、刪除 `daemon.json` 並釋放 `daemon.lock` 後成功交棒新 Daemon。
+### `RC-06`：套件安裝/卸載、`emit_imm` 有序清理、全域 `QUIESCED` 排隊自癒與 `core` 釋鎖交棒重啟
+- **劇本**：常駐與 Tier 1 Worker 在線持句柄下：① 執行模組移除與安裝（`MUTATES_MODULES`），發送全域單一屏障 `CONTROL_QUIESCE` 釋鎖（不支援逐模組局部租約）；期間連入之外部 `HYBRID` 請求於 `QUIESCED` 閘門安全排隊等待 `RESUME`（冷啟動讀者則等待共享 `installer.lock`），移除前以 `emit_imm` + `ORDERED_FIFO` 同步執行設定還原，完成後同呼叫棧 `SERIALIZE` 重入 `reload` 扇出 `FANOUT_DIAMOND_DAG`（並模擬安裝器崩潰驗證單調租約到期自癒恢復 `READY` 與 `.modules/<mod>` 熱重載）；② 執行 `core` 內核更新（`MUTATES_CORE`），驗證舊 Daemon 排空、刪除 `daemon.json` 並釋放 `daemon.lock` 後成功交棒新 Daemon。
 - **覆蓋水準**：`A8:MUTATES_MODULES+MUTATES_CORE`, `A9:GATED`, `B1:EVENT_SUB_IMMEDIATE`, `C1:QUIESCED+DRAINING_CORE_HANDOFF`, `C2:HELD_BY_INSTALLER+HELD_BY_SAME_CALLSTACK`, `C3:DISK_CODE_OR_PROTO_UPDATED`, `D1:FANOUT_DIAMOND_DAG`, `D2:IMMEDIATE_SYNC+MIXED_BOTH`, `D3:ORDERED_FIFO`, `D4:UNCONDITIONAL`, `E1:SYSTEM_DRAIN_OR_QUIESCE`。
 
 ### `RC-07`：跨倉隔離沙盒並行跑測、OS 子進程樹 `Ctrl+C` 清場與 Step 6 LIFO 卸載隔離

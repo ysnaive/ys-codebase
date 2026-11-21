@@ -15,7 +15,6 @@ from core.execution.event import (
     BoundEventSubscription,
     CausalLineage,
     EventMetadata,
-    ScopedHop,
     normalize_payload_filter,
 )
 from core.foundation.codec import DataclassCodec
@@ -78,6 +77,9 @@ DEFAULT_CACHE_DIRNAME: str = ".cache"
 CORE_MODULE_ID: ModuleId = ModuleId("core")
 WATCHER_TASK_ID: TaskId = TaskId("core.watcher")
 CONFIG_CHANGED_EVENT_ID: EventId = EventId("core.config_changed")
+WORKSPACE_RELOADED_EVENT_ID: EventId = EventId("core.workspace_reloaded")
+MODULE_INSTALLED_EVENT_ID: EventId = EventId("core.module_installed")
+MODULE_REMOVING_EVENT_ID: EventId = EventId("core.module_removing")
 
 _ALLOWED_ENV_PREFIXES: tuple[str, ...] = ("LC_", "YSCB_")
 _FORBIDDEN_ENV_UPPER: frozenset[str] = frozenset(
@@ -396,41 +398,6 @@ class TaskMetadata(Generic[TIn, TOut]):
         _ = self.to_route_spec()
 
 
-def _validate_scoped_hops_tuple(raw: object) -> tuple[ScopedHop, ...]:
-    if isinstance(raw, (str, bytes, bytearray, memoryview)) or not isinstance(raw, Sequence):
-        raise ValueError("CoalesceCallerView.caller_hops must be a Sequence of (str, EventId).")
-    out: list[ScopedHop] = []
-    for item in raw:
-        if isinstance(item, (str, bytes, bytearray, memoryview)) or not isinstance(item, Sequence) or len(item) != 2:
-            raise ValueError("caller_hops entry must be a (str, EventId) pair.")
-        sc, eid = item[0], item[1]
-        require_pure_str(sc, "caller_hops scope")
-        if not isinstance(eid, EventId):
-            raise ValueError("caller_hops entry requires (str, EventId).")
-        out.append((sc, eid))
-    return tuple(out)
-
-
-@dataclass(frozen=True, slots=True)
-class CoalesceCallerView:
-    """Propagated snapshot of a live StepFlight caller for cross-step and cross-process reentrancy/cycle checks."""
-
-    turn_id: str
-    call_tree_id: str
-    call_stack: tuple[tuple[HostPath, TaskId], ...] = ()
-    caller_hops: tuple[ScopedHop, ...] = ()
-    flight_ids: tuple[str, ...] = ()
-    in_event_chain: bool = False
-
-    def __post_init__(self) -> None:
-        require_pure_str(self.turn_id, "CoalesceCallerView.turn_id")
-        require_pure_str(self.call_tree_id, "CoalesceCallerView.call_tree_id")
-        require_pure_bool(self.in_event_chain, "CoalesceCallerView.in_event_chain")
-        object.__setattr__(self, "call_stack", validate_host_task_pairs(self.call_stack, "call_stack"))
-        object.__setattr__(self, "caller_hops", _validate_scoped_hops_tuple(self.caller_hops))
-        object.__setattr__(self, "flight_ids", require_typed_tuple(self.flight_ids, str, "flight_ids"))
-
-
 @dataclass(frozen=True, slots=True)
 class CallPropagationContext:
     """Immutable cross-hop call tree, causal lineage, and container reentrancy state."""
@@ -445,8 +412,6 @@ class CallPropagationContext:
     from_hot_container: bool = False
     hot_workspaces: frozenset[HostPath] = frozenset()
     cold_shared_workspaces: frozenset[HostPath] = frozenset()
-    coalesce_callers: tuple[CoalesceCallerView, ...] = ()
-    coalesce_flights: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for opt_txt, label in ((self.turn_id, "turn_id"), (self.call_tree_id, "call_tree_id")):
@@ -467,15 +432,6 @@ class CallPropagationContext:
             self,
             "cold_shared_workspaces",
             require_typed_frozenset(self.cold_shared_workspaces, HostPath, "cold_shared_workspaces"),
-        )
-        if isinstance(self.coalesce_callers, (str, bytes)) or not isinstance(self.coalesce_callers, Sequence):
-            raise ValueError("CallPropagationContext.coalesce_callers must be a Sequence of CoalesceCallerView.")
-        cc_tup = tuple(self.coalesce_callers)
-        if any(not isinstance(c, CoalesceCallerView) for c in cc_tup):
-            raise ValueError("CallPropagationContext.coalesce_callers elements must be CoalesceCallerView.")
-        object.__setattr__(self, "coalesce_callers", cc_tup)
-        object.__setattr__(
-            self, "coalesce_flights", require_typed_tuple(self.coalesce_flights, str, "coalesce_flights")
         )
 
 
@@ -867,7 +823,6 @@ class CoordinatorPort(Protocol):
     """Read-only and control-plane management port over ResourceCoordinator."""
 
     def coalesce_participant_count(self, resource_key: str) -> int: ...
-    def handle_remote_flight_control(self, payload: JsonObject) -> JsonObject: ...
 
 
 class Tier1WorkerPool(Protocol):

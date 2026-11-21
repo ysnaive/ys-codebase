@@ -2,23 +2,18 @@
 
 from __future__ import annotations
 
-import atexit
-from collections import deque
-from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import errno
 import functools
 import json
 import os
 from pathlib import Path
-import selectors
 import signal
-import socket
 import subprocess
 import sys
 import threading
 import time
-from typing import Callable, ClassVar, Final, Iterator, Mapping, Optional, Sequence
+from typing import Callable, ClassVar, Final, Mapping, Optional, Sequence
 import uuid
 
 from core.foundation.errors import safe_exception_summary
@@ -113,6 +108,14 @@ if IS_WINDOWS:
     _WIN_TERM_JOB = _WIN_K32.TerminateJobObject
     _WIN_TERM_JOB.argtypes = [wintypes.HANDLE, wintypes.UINT]
     _WIN_TERM_JOB.restype = wintypes.BOOL
+
+    _WIN_GET_CONSOLE_WINDOW = _WIN_K32.GetConsoleWindow
+    _WIN_GET_CONSOLE_WINDOW.argtypes = []
+    _WIN_GET_CONSOLE_WINDOW.restype = wintypes.HWND
+
+    _WIN_GEN_CTRL_EVENT = _WIN_K32.GenerateConsoleCtrlEvent
+    _WIN_GEN_CTRL_EVENT.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    _WIN_GEN_CTRL_EVENT.restype = wintypes.BOOL
 
     _WIN_NTDLL = ctypes.WinDLL("ntdll", use_last_error=True)
     _WIN_RESUME_PROC = _WIN_NTDLL.NtResumeProcess
@@ -404,7 +407,7 @@ def spawn_detached(
                     input=payload,
                     cwd=str(cwd),
                     env=outer_env,
-                    creationflags=0x00000200 | 0x01000000,
+                    creationflags=0x00000200 | 0x01000000 | 0x08000000,
                     capture_output=True,
                     text=True,
                     timeout=10.0,
@@ -416,7 +419,7 @@ def spawn_detached(
                     input=payload,
                     cwd=str(cwd),
                     env=outer_env,
-                    creationflags=0x00000200,
+                    creationflags=0x00000200 | 0x08000000,
                     capture_output=True,
                     text=True,
                     timeout=10.0,
@@ -836,422 +839,62 @@ def _validate_signal_numbers(sig_nums: Sequence[int]) -> frozenset[int]:
         validated.append(sig_num)
     return frozenset(validated)
 
+class _SignalRegState:
+    """Process-wide main-thread signal handler registry state."""
 
-def _close_sock_quietly(s: Optional[socket.socket]) -> None:
-    if s is None:
-        return
-    try:
-        s.close()
-    except OSError:
-        pass
-
-
-@dataclass(frozen=True, slots=True)
-class _MuxWorkItem:
-    targets: tuple[SignalWakeupGuard, ...]
-    sig_byte: int
-    barrier: Optional[tuple[SignalWakeupGuard, threading.Event]] = None
-
-
-@dataclass(slots=True)
-class _SignalMuxState:
-    _INSTANCE: ClassVar[Optional[_SignalMuxState]] = None
+    _INSTANCE: ClassVar[Optional[_SignalRegState]] = None
     _INIT_LOCK: ClassVar[threading.Lock] = threading.Lock()
 
-    lock: threading.Lock = field(default_factory=threading.Lock)
-    active_guards: list[SignalWakeupGuard] = field(default_factory=list)
-    retiring_barriers: deque[tuple[SignalWakeupGuard, threading.Event]] = field(default_factory=deque)
-    dispatch_queue: deque[_MuxWorkItem] = field(default_factory=deque)
-    in_flight_guards: tuple[SignalWakeupGuard, ...] = ()
-    dispatch_wake: threading.Event = field(default_factory=threading.Event)
-    absorbed_credits: dict[int, int] = field(default_factory=dict)
-    orig_handlers: dict[int, object] = field(default_factory=dict)
-    deferred_main_signals: deque[tuple[int, object]] = field(default_factory=deque)
-    main_active_tokens: list[int] = field(default_factory=list)
-    rsock: Optional[socket.socket] = None
-    wsock: Optional[socket.socket] = None
-    prev_wakeup_fd: int = -1
-    watcher_thread: Optional[threading.Thread] = None
-    pipe_eof: bool = False
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.guards_by_sig: dict[int, list[SignalWakeupGuard]] = {}
+        self.orig_handlers: dict[int, object] = {}
 
     @classmethod
-    def instance(cls) -> _SignalMuxState:
-        inst = cls._INSTANCE
-        if inst is not None:
-            return inst
+    def instance(cls) -> _SignalRegState:
+        if cls._INSTANCE is not None:
+            return cls._INSTANCE
         with cls._INIT_LOCK:
             if cls._INSTANCE is None:
                 cls._INSTANCE = cls()
-                atexit.register(SignalWakeupGuard.drain_retired_on_main)
             return cls._INSTANCE
 
 
-def _guarded_mux_sigs_locked(mux: _SignalMuxState) -> set[int]:
-    sigs = {s for g in mux.active_guards for s in g.sig_nums}
-    for rg, _ev in mux.retiring_barriers:
-        sigs.update(rg.sig_nums)
-    for ig in mux.in_flight_guards:
-        if ig.is_installed:
-            sigs.update(ig.sig_nums)
-    for item in mux.dispatch_queue:
-        for tg in item.targets:
-            if tg.is_installed:
-                sigs.update(tg.sig_nums)
-        if item.barrier is not None:
-            sigs.update(item.barrier[0].sig_nums)
-    return sigs
-
-
-def _needed_mux_sigs_locked(mux: _SignalMuxState) -> set[int]:
-    sigs = _guarded_mux_sigs_locked(mux)
-    for sig_num, cnt in mux.absorbed_credits.items():
-        if cnt > 0:
-            sigs.add(sig_num)
-    return sigs
-
-
-@dataclass(frozen=True, slots=True)
-class _MainDrainHandles:
-    wsock: Optional[socket.socket] = None
-    watcher: Optional[threading.Thread] = None
-
-
-def _forward_wakeup_bytes(prev_fd: int, data: bytes) -> None:
-    if prev_fd < 0 or not data:
-        return
-    if IS_WINDOWS:
-        try:
-            borrowed = socket.socket(fileno=prev_fd)
-        except OSError:
-            borrowed = None
-        if borrowed is not None:
-            try:
-                borrowed.send(data)
-            except OSError:
-                pass
-            finally:
-                borrowed.detach()
-            return
-    try:
-        os.write(prev_fd, data)
-    except OSError:
-        pass
-
-
-def _pump_pipe_bytes_into_queue_locked(mux: _SignalMuxState) -> None:
-    rs = mux.rsock
-    if rs is None:
-        return
-    while True:
-        try:
-            data = rs.recv(128)
-        except BlockingIOError:
-            break
-        except OSError:
-            mux.pipe_eof = True
-            break
-        if not data:
-            mux.pipe_eof = True
-            break
-        for b_val in data:
-            if b_val == 0:
-                if mux.retiring_barriers:
-                    bar = mux.retiring_barriers.popleft()
-                    mux.dispatch_queue.append(_MuxWorkItem((), 0, bar))
-                    mux.dispatch_wake.set()
-            else:
-                _forward_wakeup_bytes(mux.prev_wakeup_fd, bytes((b_val,)))
-                candidates: list[SignalWakeupGuard] = []
-                for g in (*mux.active_guards, *(rg for rg, _ev in mux.retiring_barriers), *mux.in_flight_guards):
-                    if g not in candidates and g.is_installed and b_val in g.sig_nums:
-                        candidates.append(g)
-                targets = tuple(candidates)
-                if targets:
-                    mux.absorbed_credits[b_val] = mux.absorbed_credits.get(b_val, 0) + 1
-                    mux.dispatch_queue.append(_MuxWorkItem(targets, b_val, None))
-                    mux.dispatch_wake.set()
-
-
-def _restore_unused_mux_handlers_locked(mux: _SignalMuxState, needed: set[int]) -> None:
-    for sig_num in [s for s in mux.orig_handlers if s not in needed]:
-        old_h = mux.orig_handlers.pop(sig_num)
-        try:
-            if signal.getsignal(sig_num) is _handle_signal_on_main:
-                signal.signal(sig_num, old_h)
-        except (OSError, ValueError):
-            continue
-
-
-def _detach_mux_on_main_locked(mux: _SignalMuxState) -> _MainDrainHandles:
-    _pump_pipe_bytes_into_queue_locked(mux)
-    while mux.retiring_barriers:
-        mux.dispatch_queue.append(_MuxWorkItem((), 0, mux.retiring_barriers.popleft()))
-    mux.dispatch_wake.set()
-    _restore_unused_mux_handlers_locked(mux, set())
-    ws, wt, prev_fd = mux.wsock, mux.watcher_thread, mux.prev_wakeup_fd
-    if ws is not None:
-        try:
-            cur_fd = signal.set_wakeup_fd(-1)
-            if cur_fd != ws.fileno() and cur_fd >= 0:
-                signal.set_wakeup_fd(cur_fd)
-            elif prev_fd >= 0:
-                signal.set_wakeup_fd(prev_fd)
-        except (OSError, ValueError):
-            pass
-    mux.prev_wakeup_fd = -1
-    mux.rsock = None
-    mux.wsock = None
-    mux.watcher_thread = None
-    mux.pipe_eof = True
-    return _MainDrainHandles(ws, wt)
-
-
-def _finish_main_drain(handles: _MainDrainHandles, *, join_watcher: bool = True) -> None:
-    ws = handles.wsock
-    try:
-        if ws is not None:
-            try:
-                ws.shutdown(socket.SHUT_WR)
-            except OSError:
-                pass
-        wt = handles.watcher
-        if join_watcher and wt is not None and wt is not threading.current_thread() and wt.is_alive():
-            wt.join(timeout=1.0)
-    finally:
-        if ws is not None:
-            _close_sock_quietly(ws)
-
-
-def _ensure_mux_pipe_locked(mux: _SignalMuxState) -> tuple[bool, _MainDrainHandles]:
-    if mux.wsock is not None and mux.rsock is not None and mux.watcher_thread is not None and mux.watcher_thread.is_alive():
-        return (True, _MainDrainHandles())
-    stale = _detach_mux_on_main_locked(mux)
-    rsock, wsock = socket.socketpair()
-    rsock.setblocking(False)
-    wsock.setblocking(False)
-    try:
-        prev_fd = signal.set_wakeup_fd(wsock.fileno(), warn_on_full_buffer=False)
-    except (OSError, ValueError):
-        _close_sock_quietly(wsock)
-        _close_sock_quietly(rsock)
-        return (False, stale)
-    mux.pipe_eof = False
-    mux.rsock = rsock
-    mux.wsock = wsock
-    mux.prev_wakeup_fd = prev_fd
-    wt = threading.Thread(target=_mux_watch_loop, args=(mux, rsock), name="yscb-sig-wakeup", daemon=True)
-    mux.watcher_thread = wt
-    try:
-        wt.start()
-    except BaseException:
-        mux.rsock = None
-        mux.wsock = None
-        mux.prev_wakeup_fd = -1
-        mux.watcher_thread = None
-        mux.pipe_eof = True
-        try:
-            signal.set_wakeup_fd(prev_fd if prev_fd >= 0 else -1)
-        except (OSError, ValueError):
-            pass
-        _close_sock_quietly(wsock)
-        _close_sock_quietly(rsock)
-        raise
-    return (True, stale)
-
-
-def _register_mux_signals_locked(mux: _SignalMuxState, sig_nums: frozenset[int]) -> bool:
-    any_ok = False
-    for sig_num in sig_nums:
-        try:
-            cur_h = signal.getsignal(sig_num)
-            if cur_h is _handle_signal_on_main:
-                mux.orig_handlers.setdefault(sig_num, signal.SIG_DFL)
-                any_ok = True
-                continue
-            mux.orig_handlers[sig_num] = cur_h
-            signal.signal(sig_num, _handle_signal_on_main)
-            any_ok = True
-        except (OSError, ValueError):
-            mux.orig_handlers.pop(sig_num, None)
-    return any_ok
-
-
-def _mux_watch_loop(mux: _SignalMuxState, my_rsock: socket.socket) -> None:
-    try:
-        with selectors.DefaultSelector() as sel:
-            try:
-                sel.register(my_rsock, selectors.EVENT_READ)
-            except (OSError, ValueError):
-                return
-            try:
-                while True:
-                    item: Optional[_MuxWorkItem] = None
-                    exit_loop = False
-                    with _locked_mux(mux):
-                        if mux.rsock is my_rsock:
-                            _pump_pipe_bytes_into_queue_locked(mux)
-                        if mux.dispatch_queue:
-                            item = mux.dispatch_queue.popleft()
-                            if item.barrier is None:
-                                mux.in_flight_guards = item.targets
-                        else:
-                            mux.dispatch_wake.clear()
-                            exit_loop = (mux.rsock is not my_rsock) or mux.pipe_eof
-                    if item is not None:
-                        if item.barrier is not None:
-                            item.barrier[0].mark_inactive()
-                            item.barrier[1].set()
-                        else:
-                            try:
-                                for guard in item.targets:
-                                    guard.dispatch_signal(item.sig_byte)
-                            finally:
-                                with _locked_mux(mux):
-                                    if mux.rsock is my_rsock:
-                                        _pump_pipe_bytes_into_queue_locked(mux)
-                                    mux.in_flight_guards = ()
-                        continue
-                    if exit_loop:
-                        return
-                    try:
-                        sel.select(timeout=0.04)
-                    except (OSError, ValueError):
-                        return
-            finally:
-                try:
-                    sel.unregister(my_rsock)
-                except (KeyError, OSError, ValueError):
-                    pass
-    finally:
-        leftover: list[_MuxWorkItem] = []
-        with _locked_mux(mux):
-            if mux.rsock is my_rsock or mux.rsock is None:
-                while mux.retiring_barriers:
-                    leftover.append(_MuxWorkItem((), 0, mux.retiring_barriers.popleft()))
-                while mux.dispatch_queue:
-                    leftover.append(mux.dispatch_queue.popleft())
-        for rem in leftover:
-            if rem.barrier is not None:
-                rem.barrier[0].mark_inactive()
-                rem.barrier[1].set()
-            else:
-                for guard in rem.targets:
-                    guard.dispatch_signal(rem.sig_byte)
-        _close_sock_quietly(my_rsock)
-
-
-@contextmanager
-def _locked_mux(mux: _SignalMuxState) -> Iterator[_SignalMuxState]:
-    is_main = threading.current_thread() is threading.main_thread()
-    if is_main:
-        mux.main_active_tokens.append(1)
-    try:
-        mux.lock.acquire()
-        try:
-            yield mux
-        finally:
-            mux.lock.release()
-    finally:
-        if is_main:
-            mux.main_active_tokens.pop()
-    if is_main and not mux.main_active_tokens and mux.deferred_main_signals:
-        _drain_deferred_main_signals(mux)
-
-
-def _process_main_signal_once(mux: _SignalMuxState, sig_num: int, frame: object) -> None:
-    absorbed = False
-    orig: object = signal.SIG_DFL
-    handles = _MainDrainHandles()
-    mux.lock.acquire()
-    try:
-        _pump_pipe_bytes_into_queue_locked(mux)
-        orig = mux.orig_handlers.get(sig_num, signal.SIG_DFL)
-        cur_cred = mux.absorbed_credits.get(sig_num, 0)
-        guarded_sigs = _guarded_mux_sigs_locked(mux)
-        has_more_def = any(s_n == sig_num for s_n, _f in mux.deferred_main_signals)
-        if cur_cred > 0:
-            absorbed = True
-            new_cred = (cur_cred - 1) if (sig_num in guarded_sigs or has_more_def) else 0
-            if new_cred > 0:
-                mux.absorbed_credits[sig_num] = new_cred
-            else:
-                mux.absorbed_credits.pop(sig_num, None)
-        needed = _needed_mux_sigs_locked(mux)
-        if needed:
-            _restore_unused_mux_handlers_locked(mux, needed)
-        elif not mux.dispatch_queue and (bool(mux.orig_handlers) or mux.wsock is not None):
-            handles = _detach_mux_on_main_locked(mux)
-    finally:
-        mux.lock.release()
-    _finish_main_drain(handles, join_watcher=False)
-    if absorbed:
-        return
-    if callable(orig) and orig is not _handle_signal_on_main:
-        orig(sig_num, frame)
-        return
-    if orig == signal.SIG_DFL:
-        try:
-            if signal.getsignal(sig_num) is _handle_signal_on_main:
-                signal.signal(sig_num, signal.SIG_DFL)
-        except (OSError, ValueError):
-            return
-        signal.raise_signal(sig_num)
-
-
-def _drain_deferred_main_signals(mux: _SignalMuxState) -> None:
-    while mux.deferred_main_signals:
-        mux.main_active_tokens.append(1)
-        try:
-            while mux.deferred_main_signals:
-                try:
-                    s_num, s_frame = mux.deferred_main_signals.popleft()
-                except IndexError:
-                    break
-                _process_main_signal_once(mux, s_num, s_frame)
-        finally:
-            mux.main_active_tokens.pop()
-
-
-def _handle_signal_on_main(sig_num: int, frame: object) -> None:
-    mux = _SignalMuxState.instance()
-    mux.deferred_main_signals.append((sig_num, frame))
-    if mux.main_active_tokens:
-        return
-    _drain_deferred_main_signals(mux)
-
-
 class SignalWakeupGuard:
-    """Routes main-thread OS signals through a single FIFO-barrier C-level set_wakeup_fd coordinator."""
+    """Single-main-thread OS signal handler registrar with LIFO restoration and second-signal escalation."""
 
-    @classmethod
-    def drain_retired_on_main(cls) -> None:
-        if threading.current_thread() is not threading.main_thread():
-            return
-        handles = _MainDrainHandles()
+    @staticmethod
+    def _restore_if_owned(sig_num: int, orig_h: object) -> None:
         try:
-            with _locked_mux(_SignalMuxState.instance()) as mux:
-                _pump_pipe_bytes_into_queue_locked(mux)
-                needed = _needed_mux_sigs_locked(mux)
-                if needed:
-                    _restore_unused_mux_handlers_locked(mux, needed)
-                elif bool(mux.orig_handlers) or mux.wsock is not None:
-                    handles = _detach_mux_on_main_locked(mux)
-        finally:
-            _finish_main_drain(handles)
+            if signal.getsignal(sig_num) is SignalWakeupGuard._os_signal_handler:
+                signal.signal(sig_num, orig_h)
+        except (OSError, ValueError):
+            pass
 
-    def __init__(
-        self,
-        sig_nums: Sequence[int],
-        on_signal: Callable[[], None],
-        *,
-        on_second_signal: Optional[Callable[[], None]] = None,
-    ) -> None:
+    @staticmethod
+    def _os_signal_handler(sig_num: int, frame: object) -> None:
+        st = _SignalRegState.instance()
+        orig: object = None
+        with st.lock:
+            targets = tuple(g for g in st.guards_by_sig.get(sig_num, ()) if g._installed)
+            if not targets:
+                st.guards_by_sig.pop(sig_num, None)
+                orig = st.orig_handlers.pop(sig_num, None)
+        if targets:
+            for guard in targets:
+                guard._fire()
+            return
+        if orig is not None:
+            SignalWakeupGuard._restore_if_owned(sig_num, orig)
+            if callable(orig) and orig is not SignalWakeupGuard._os_signal_handler:
+                orig(sig_num, frame)
+            elif orig == signal.SIG_DFL:
+                signal.raise_signal(sig_num)
+
+    def __init__(self, sig_nums: Sequence[int], on_signal: Callable[[], None], *, on_second_signal: Optional[Callable[[], None]] = None) -> None:
         self._sig_nums = _validate_signal_numbers(sig_nums)
-        self._on_signal = on_signal
-        self._on_second_signal = on_second_signal
-        self._state_lock = threading.Lock()
-        self._installed = False
-        self._seen_hits = 0
+        self._on_signal, self._on_second_signal = on_signal, on_second_signal
+        self._installed, self._seen_hits = False, 0
 
     def __enter__(self) -> SignalWakeupGuard:
         self.install()
@@ -1261,132 +904,57 @@ class SignalWakeupGuard:
         _ = (exc_type, exc, tb)
         self.close()
 
-    @contextmanager
-    def _locked_guard_state(self) -> Iterator[None]:
-        is_main = threading.current_thread() is threading.main_thread()
-        mux = _SignalMuxState.instance() if is_main else None
-        if mux is not None:
-            mux.main_active_tokens.append(1)
-        try:
-            self._state_lock.acquire()
-            try:
-                yield
-            finally:
-                self._state_lock.release()
-        finally:
-            if mux is not None:
-                mux.main_active_tokens.pop()
-        if mux is not None and not mux.main_active_tokens and mux.deferred_main_signals:
-            _drain_deferred_main_signals(mux)
-
-    @property
-    def is_installed(self) -> bool:
-        return self._installed
-
-    def mark_inactive(self) -> None:
-        self._installed = False
-
-    def dispatch_signal(self, sig_num: int) -> None:
-        if sig_num not in self._sig_nums or not self._installed:
+    def _fire(self) -> None:
+        if not self._installed:
             return
-        with self._locked_guard_state():
-            if not self._installed:
-                return
-            was_first = self._seen_hits == 0
-            self._seen_hits += 1
+        was_first = self._seen_hits == 0
+        self._seen_hits += 1
         if was_first:
             invoke_observer_safely(self._on_signal)
-            return
-        if self._on_second_signal is not None and self._installed:
+        elif self._on_second_signal is not None:
             invoke_observer_safely(self._on_second_signal)
-
-    def _activate_guard_locked(self, mux: _SignalMuxState) -> _MainDrainHandles:
-        with self._state_lock:
-            self._seen_hits = 0
-            self._installed = True
-        mux.active_guards.append(self)
-        if _register_mux_signals_locked(mux, self._sig_nums):
-            return _MainDrainHandles()
-        mux.active_guards.remove(self)
-        self.mark_inactive()
-        return _detach_mux_on_main_locked(mux) if not _needed_mux_sigs_locked(mux) else _MainDrainHandles()
 
     def install(self) -> None:
         if threading.current_thread() is not threading.main_thread() or not self._sig_nums:
             return
-        stale = _MainDrainHandles()
-        abort_drain = _MainDrainHandles()
-        try:
-            with _locked_mux(_SignalMuxState.instance()) as mux:
-                _pump_pipe_bytes_into_queue_locked(mux)
-                if self in mux.active_guards:
-                    return
-                pipe_ok, stale = _ensure_mux_pipe_locked(mux)
-                if pipe_ok:
-                    abort_drain = self._activate_guard_locked(mux)
-        finally:
-            try:
-                _finish_main_drain(stale)
-            finally:
-                _finish_main_drain(abort_drain)
-
-    def _enqueue_retire_barrier_locked(self, mux: _SignalMuxState, on_watcher: bool) -> Optional[threading.Event]:
-        if on_watcher or mux.wsock is None or mux.watcher_thread is None or not mux.watcher_thread.is_alive():
-            self.mark_inactive()
-            return None
-        done_ev = threading.Event()
-        mux.retiring_barriers.append((self, done_ev))
-        try:
-            mux.wsock.send(b"\x00")
-            _pump_pipe_bytes_into_queue_locked(mux)
-            return done_ev
-        except OSError:
-            if (self, done_ev) in mux.retiring_barriers:
-                mux.retiring_barriers.remove((self, done_ev))
-            self.mark_inactive()
-            return None
-
-    @property
-    def sig_nums(self) -> frozenset[int]:
-        return self._sig_nums
+        st = _SignalRegState.instance()
+        with st.lock:
+            if self._installed:
+                return
+            self._seen_hits, self._installed, registered = 0, True, 0
+            for sig_num in self._sig_nums:
+                bucket = st.guards_by_sig.setdefault(sig_num, [])
+                bucket[:] = [g for g in bucket if g._installed]
+                try:
+                    cur_h = signal.getsignal(sig_num)
+                    if cur_h is not SignalWakeupGuard._os_signal_handler:
+                        st.orig_handlers[sig_num] = cur_h
+                        signal.signal(sig_num, SignalWakeupGuard._os_signal_handler)
+                    if self not in bucket:
+                        bucket.append(self)
+                    registered += 1
+                except (OSError, ValueError):
+                    if not bucket:
+                        st.guards_by_sig.pop(sig_num, None)
+                        st.orig_handlers.pop(sig_num, None)
+            if registered == 0:
+                self._installed = False
 
     def close(self) -> None:
-        cur_th = threading.current_thread()
-        is_main = cur_th is threading.main_thread()
-        barrier_ev: Optional[threading.Event] = None
-        with _locked_mux(_SignalMuxState.instance()) as mux:
-            _pump_pipe_bytes_into_queue_locked(mux)
-            on_watcher = cur_th is mux.watcher_thread
-            if self in mux.active_guards:
-                mux.active_guards.remove(self)
-                barrier_ev = self._enqueue_retire_barrier_locked(mux, on_watcher)
-            else:
-                self.mark_inactive()
-        try:
-            if barrier_ev is not None:
-                barrier_ev.wait(timeout=1.0)
-                if is_main:
-                    time.sleep(0.0)
-        finally:
-            self.mark_inactive()
-            handles = _MainDrainHandles()
-            try:
-                with _locked_mux(_SignalMuxState.instance()) as mux:
-                    _pump_pipe_bytes_into_queue_locked(mux)
-                    if barrier_ev is not None and (self, barrier_ev) in mux.retiring_barriers:
-                        mux.retiring_barriers.remove((self, barrier_ev))
-                    if is_main:
-                        still_guarded = _guarded_mux_sigs_locked(mux)
-                        def_sigs = {sn for sn, _f in mux.deferred_main_signals}
-                        for s_k in [k for k in mux.absorbed_credits if k not in still_guarded and k not in def_sigs]:
-                            mux.absorbed_credits.pop(s_k, None)
-                        needed = _needed_mux_sigs_locked(mux)
-                        if needed:
-                            _restore_unused_mux_handlers_locked(mux, needed)
-                        elif bool(mux.orig_handlers) or mux.wsock is not None:
-                            handles = _detach_mux_on_main_locked(mux)
-            finally:
-                _finish_main_drain(handles)
+        is_main, st = threading.current_thread() is threading.main_thread(), _SignalRegState.instance()
+        with st.lock:
+            was_installed, self._installed = self._installed, False
+            if not was_installed and not is_main:
+                return
+            for sig_num in self._sig_nums:
+                bucket = st.guards_by_sig.get(sig_num)
+                if bucket is not None:
+                    bucket[:] = [g for g in bucket if g is not self and g._installed]
+                    if not bucket:
+                        st.guards_by_sig.pop(sig_num, None)
+            if is_main:
+                for stale_sig in [s for s in st.orig_handlers if not st.guards_by_sig.get(s)]:
+                    SignalWakeupGuard._restore_if_owned(stale_sig, st.orig_handlers.pop(stale_sig))
 
 
 
@@ -1440,7 +1008,9 @@ class ManagedProcessTree:
         stream_target = None if inherit_tty else subprocess.DEVNULL
         env_map = _build_managed_child_env(env, tok_hex)
         if IS_WINDOWS:
-            flags = 0x00000004 | (0 if inherit_tty else subprocess.CREATE_NEW_PROCESS_GROUP)
+            flags = 0x00000004 | (
+                0 if inherit_tty else (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
+            )
             self._proc = subprocess.Popen(
                 clean_argv,
                 cwd=str(cwd),
@@ -1637,11 +1207,8 @@ class ManagedProcessTree:
 
     def _send_graceful_group_signal(self) -> None:
         if IS_WINDOWS:
-            if self._owns_process_group:
-                try:
-                    self._proc.send_signal(signal.CTRL_BREAK_EVENT)
-                except (AttributeError, OSError):
-                    pass
+            if self._owns_process_group and bool(_WIN_GET_CONSOLE_WINDOW()):
+                _WIN_GEN_CTRL_EVENT(1, int(self._proc.pid))
             return
         targets = self._refresh_posix_descendants_unlocked()
         if self._owns_process_group:

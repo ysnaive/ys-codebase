@@ -31,10 +31,10 @@
 1. **`ctx.emit(event_meta, payload)`（預設延遲入列 — Post-Success Sub-Buffer + 入站基準分支推進）**：
    - 每個單步執行器初始化 `TaskLocalOutbox(emitter_task, base_lineage, workspace_scope=...)` 時，固定綁定該步入站之不可變基準祖先鏈 `base_lineage` 與當前正規化工作區識別碼 `workspace_scope`。
    - **同單步多發防假自環保證（`SIBLING_MULTI_EMIT`）**：當同一 `Task` 單步內連續呼叫多次 `ctx.emit()` 時，`TaskLocalOutbox.stage()` **每次皆基於該步固定之 `self._base_lineage.advance(event_id, workspace_scope=...)` 計算平行子鏈，絕不在單步內原地覆寫累進 `self._base_lineage`**，確保同單步連發多顆同 `EventId` 事件完全合法不誤報自環，而下游訂閱者若在同一工作區再次發射回祖先 `EventId` 則立即精確攔截（跨不同子工作區的相同 `EventId` 則因 `workspace_scope` 互異而合法放行）。
-   - **單步成功即提交**：唯有當該 `Task` 單步正常返回時，局部暫存區的事件紀錄才會經 `drain_committed()` 移交至宿主 `TurnScope` 的 `DoubleBufferedEventQueue.append_committed()`（或對稱 `FlightCascade`）；若該單步拋錯或被取消，呼叫 `discard()` 直接銷毀局部暫存區。
+   - **單步成功即提交**：唯有當該 `Task` 單步正常返回時，局部暫存區的事件紀錄才會經 `drain_committed()` 移交至宿主 `TurnScope` 的 `DoubleBufferedEventQueue.append_committed()`（含同工作區頂層單飛 `StepFlight`）；若該單步拋錯或被取消，呼叫 `discard()` 直接銷毀局部暫存區。
 2. **`ctx.emit_imm(event_meta, payload, *, strict: bool = False)`（單顆立即同步派發）**：
    - **絕不觸碰或提前沖刷 `staging_list` 中任何其他待處理事件**。
-   - 透過 `TaskLocalOutbox.compute_immediate_lineage(event_id)` 基於當前單步入站 `base_lineage` 產生子因果鏈（不污染後續平行 `emit` 之基準鏈），攜帶當前 `CallPropagationContext` 立即同步請求 `runtime` 依序執行該事件的訂閱 `Task`（若身處對稱 `COALESCE` 中性單飛內且所有存活參與者皆與該立即因果鏈衝突，派發前立即拋出 `EventCycleError`），完成後返回呼叫端下一行。
+   - 透過 `TaskLocalOutbox.compute_immediate_lineage(event_id)` 基於當前單步入站 `base_lineage` 產生子因果鏈（不污染後續平行 `emit` 之基準鏈），攜帶當前 `CallPropagationContext` 立即同步請求 `runtime` 依序執行該事件的訂閱 `Task`（若身處同工作區頂層 `COALESCE` 單飛內且所有存活參與者皆與該立即因果鏈衝突，派發前立即拋出 `EventCycleError`），完成後返回呼叫端下一行。
 
 ### 2.3 宣告式前置過濾器（防「未過濾先搶占」與因果污染）
 
@@ -45,7 +45,7 @@
 ### 2.4 工作區範圍因果環路偵測（`ScopedHop` & `CausalLineage`）與致命異常傳播
 
 1. **單點推進精確閉環攔截與空範圍全域萬用語意**：每顆事件封套及跨任務 `CallPropagationContext` 全程傳遞 `CausalLineage`（`UNORDERED` 批次折疊與菱形匯流 `FANOUT_DIAMOND_DAG` 時透過 `CausalLineage.merge()` 取保序去重聯集）。一旦 `hop_conflicts()` 發現目標 `(workspace_scope, EventId)` 已存在於當前祖先鏈中，**第 1 次閉環瞬間立即拋出致命 `EventCycleError` 並中止整個 Turn**。其中 `workspace_scope=""`（空字串）為顯式**全域萬用範圍（Wildcard Scope）**，於 `hop_conflicts()` 與任何具名工作區範圍皆視為衝突，且在 `CausalLineage.merge()` 合併同 `EventId` 跳點時自動將具名範圍收斂升級為全域萬用跳點；跨子工作區隔離派發時由 `runtime` 一律傳入正規化 `workspace_root.comparison_key`。
-2. **一般訂閱者故障隔離**：非環路之一般業務異常僅作廢該失敗訂閱者自身的局部事件並記錄於 `TurnScope.record_event_diagnostic()`（對稱 `StepFlight` / `FlightCascade` 等待者亦同步收到對應診斷），不中斷同輪其他獨立訂閱者。
+2. **一般訂閱者故障隔離**：非環路之一般業務異常僅作廢該失敗訂閱者自身的局部事件並記錄於 `TurnScope.record_event_diagnostic()`（同工作區頂層 `StepFlight` 等待者亦同步收到對應診斷），不中斷同輪其他獨立訂閱者。
 
 ## 3. 核心 OOP 類別與強型別契約規格 (`core/execution/event/engine.py`)
 
@@ -182,5 +182,5 @@ class DoubleBufferedEventQueue:
 
 1. **同單步多發同型事件（`SIBLING_MULTI_EMIT`）與 `UNORDERED` 折疊測試**：驗證同一單步連發多顆同 `EventId` 事件不誤報假自環，且於下輪折疊為單一 `EventBatchEnvelope` 僅觸發訂閱者 1 次。
 2. **靜態前置過濾防誤搶占與逐筆因果隔離測試**：驗證未命中 `payload_filter` 之事件直接於主控端略過，不觸發 `PREEMPT` 亦不將過濾排除紀錄之因果鏈混入命中訂閱者。
-3. **菱形匯流合法放行、跨子工作區同事件名放行與同工作區因果閉環攔截測試**：驗證 `FANOUT_DIAMOND_DAG` 正常合流，而同工作區真實因果閉環（含跨 `COALESCE` 對稱 `FlightCascade` 合流與嵌套 `emit_imm`）瞬間拋出 `EventCycleError` 立即中止全 Turn。
+3. **菱形匯流合法放行、跨子工作區同事件名放行與同工作區因果閉環攔截測試**：驗證 `FANOUT_DIAMOND_DAG` 正常合流，而同工作區真實因果閉環（含同工作區頂層 `COALESCE` `StepFlight` 合流與嵌套 `emit_imm`）瞬間拋出 `EventCycleError` 立即中止全 Turn。
 4. **訂閱故障隔離與對稱 `COALESCE` 錯誤傳播測試**：驗證一般業務異常不中斷同輪獨立訂閱者，且錯誤診斷正確傳播予所有關聯 `COALESCE` 等待者。
