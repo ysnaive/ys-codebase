@@ -1,49 +1,139 @@
-# 子模組架構設計規格：`core.surface.cli`（靜態索引命令列轉接與雙軌輸出草案）
+# 子模組架構設計規格：`core.surface.cli`（靜態索引零匯入命令列、1.x 成熟 Help 引擎與 4×3 安全守門）
 
 > **所屬功能域**：`Domain 6 — 對外門面域 (surface/)`
-> **模組路徑**：`core_v2/source/core/core/surface/cli/`（規劃中）
-> **依賴上限（Allowed Imports）**：`foundation/*`、`execution.runtime`、`surface.sdk`
-> **禁止反向依賴（Forbidden Imports）**：嚴禁於冷啟動 `--help` 或參數驗證期間匯入任何 `module://` 業務源碼
-> **狀態**：`Draft`（排入 Wave 1.2 實作；Schema 原語 `Arg`、`Option` 與 `format_output` 已先於 `core.surface.sdk` 落地）
+> **模組路徑**：`core_v2/source/core/core/surface/cli/`
+> **建議內部切分**：`index.py`、`caller_mode.py`、`approval.py`、`parser.py`、`help_renderer.py`、`entrypoint.py`、`__init__.py`
+> **依賴上限（Allowed Imports）**：`Domain 1 ~ 5`、`surface.sdk`
+> **禁止反向依賴（Forbidden Imports）**：冷啟動 `--help`、拼寫建議與參數預驗階段嚴禁匯入任何 `module://` 業務源碼
+> **狀態**：`Draft — Design Frozen for Wave 1.2 Implementation`
 
-## 1. 模組定位與職責邊界 (Positioning & Scope)
+> [!NOTE]
+> **實作彈性邊界**：`tasks.index.json` 檔案 Schema、`CallerMode` 5 層環境分類、4×3 安全矩陣、兩段式單次 `--approve=<token>` 協議、全域統一旗標（`--help`/`-h`/`--json`/`--cold`/`--approve`）與 1.x `HelpRenderer` 輸出特性屬硬契約；內部詞法解析器與排版輔助函式可由實作端微調。
 
-`core.surface.cli` 負責 Domain 6 面向終端機之極薄命令列轉接層（`core/surface/cli/`），統一接管命令列參數解析、基於靜態索引的 `--help` 說明卡片渲染、輸出序列化（`--json` 與人類排版雙軌分流）以及經由 `RuntimeDispatcher` 發起之 `CallerSurface.CLI` 呼叫，確保下游業務模組完全免除 CLI 解析與輸出樣板碼。
+---
 
-## 2. 消費自 `core.surface.sdk` 之 Schema 與輸出原語
+## 1. 模組定位與核心目標
 
-| 符號 | 來源 | CLI 層職責 |
-| :--- | :--- | :--- |
-| `Arg(summary, name)` | `core.surface.sdk` | 自 `typing.Annotated[T, Arg(...)]` 萃取位置參數定義 |
-| `Option(short, summary, long_name)` | `core.surface.sdk` | 自 `typing.Annotated[T, Option(...)]` 萃取 `--long` / `-s` 具名選項 |
-| `HumanRenderable` | `core.surface.sdk` | 選配 `render_text() -> str` 協定，提供非 `--json` 模式下之人類可讀排版 |
-| `ExitCodeProvider` | `core.surface.sdk` | 選配 `exit_code() -> int` 協定，直接映射至行程語意退出碼（預設 `0`） |
-| `format_output(output)` | `core.surface.sdk` | 非 `--json` 模式下統一萃取 `(rendered_text, exit_code)` |
+`core.surface.cli` 為 Domain 6 面向終端機之統一命令列轉接層，實現：
+1. **零匯入毫秒級靜態路由與自省**：直讀隨包 `.modules/<mod>/tasks.index.json`（並由 `.cache/tasks.index.json` 聚合加速），於 `< 10ms` 內完成指令樹解析、正交選項衝突驗證、`-h` 說明卡片渲染與 `Did you mean` 拼寫建議，全程零載入任何業務模組 Python 代碼（對 Tier 1 模組尤為關鍵）。
+2. **100% 承繼 1.x 成熟 `HelpRenderer` 體驗**：保留安全分級標籤、`ARGUMENTS`（含 choice 枚舉提示）、正交 `OPTIONS` 群組互斥標記、`RECOMMENDED USAGE (Pros)`、`RESTRICTIONS & GATES (Cons)`、模組別名、群組預設動作（`DN-13`）與模糊拼寫建議。
+3. **5 層 `CallerMode` 運行環境辨識 + 4×3 安全守門**：解決 AI Agent 跑在 PTY 時 `isatty() == True` 誤判問題，並以兩段式單次確認碼 `--approve=<token>` 徹底根除 Compact 後的 `-y` 記憶慣性風險。
+4. **雙軌輸出與非阻塞可觀測整合**：支援人類排版（`format_output`）與嚴格 `--json`（`TaskOutcome`），於出口整合 `SessionTelemetryWriter` 與非阻塞 12 小時 `UpdateChecker`（`--json` / 沙盒 / 離線時自動靜音）。
 
-### CLI DTO 註解綁定規則
-1. 標註 `Arg` 之位置欄位依宣告順序綁定；`name` 省略時預設沿用 Dataclass 欄位名稱。
-2. 標註 `Option` 之具名欄位綁定 `--<long_name>`（省略時預設轉為 kebab-case 欄位名）與選配 `-<short>` 短旗標。
-3. 未標註 `Arg` 之純量 `bool` 欄位映射為 `--flag` / `--no-flag` 布林開關；尾端帶 `Arg` 之 `Sequence[T]` 欄位接收可變長位置參數。
+---
 
-## 3. 規劃之命令路由與全域統一旗標（Wave 1.2）
+## 2. `tasks.index.json` 靜態索引契約（由 `core` 統一編譯）
 
-- **零匯入靜態路由探測**：直讀 `<workspace_root>/.cache/tasks.index.json`（由 `packaging` / `dev 2.0` 編譯產出）組建指令樹、`--help` 卡片與別名查詢（`CliBindingSpec.command_path` / `aliases`），於 `--help` 或未知指令拼寫建議期間零載入任何模組 Python 代碼。
-- **入口統一接管旗標**：
-  - `--help` / `-h`：依靜態路由與 DTO Schema 渲染模組／群組／任務摘要、位置參數與選項清單並以退出碼 `0` 結束。
-  - `--json`：經 `DataclassCodec.encode` 直接於 `stdout` 輸出嚴格 JSON 化之 `TaskOutcome`（`ok`、`value`、`error`），壓制 `HumanRenderable.render_text()`，同時保留 `ExitCodeProvider.exit_code()` 或錯誤碼映射。
-  - `--cold`：強制於 `InvokeRequest` 注入 `ClientRoutingPolicy.FORCE_COLD`，覆寫 `@task(dispatch_mode=...)` 預設路由以執行冷啟動隔離派發。
-- **TTY 與安全守門**：互動式標準輸入提示與 `SecurityTier.GATED` 破壞性授權確認僅於 CLI 邊界（`CallerSurface.CLI`）進行，通過確認後填寫 `approval_scope` 再送交 `RuntimeDispatcher.invoke`。
+編譯函式 `compile_tasks_index(module_cls)` 歸屬 `core`（`dev build` 僅作為薄呼叫端產出隨包 `.modules/<mod>/tasks.index.json`）。工作區聚合檔 `.cache/tasks.index.json` 以各已安裝模組 `tasks.index.json` 之 `(mtime_ns, size)` 指紋為鍵按需自動重建。
 
-```text
-argv -> 解析入口統一旗標 (--help / --json / --cold)
-     -> 透過 tasks.index.json 解析 command_path 與父層範圍別名
-     -> 依任務 Input DTO (Arg / Option) 解碼其餘參數
-     -> 建立 InvokeRequest(caller_surface=CallerSurface.CLI, ...)
-     -> 經 RuntimeDispatcher 派發 -> format_output / --json -> sys.exit(code)
+```json
+{
+  "schema_version": 2,
+  "module_id": "core",
+  "module_aliases": [],
+  "description": "YS-Codebase Core Microkernel",
+  "tasks": [
+    {
+      "task_id": "core.remove",
+      "command_path": ["remove"],
+      "aliases": ["rm"],
+      "summary": "Uninstall module(s) while preserving config and storage",
+      "usage_pros": ["移除不再使用之擴充模組"],
+      "usage_cons": ["若欲連同設定與資料永久清除，請改由人類終端執行 critical 指令 yscb purge"],
+      "exposure": "cli_and_sdk",
+      "security_tier": "gated",
+      "dispatch_mode": "cold_only",
+      "interactive_tty": false,
+      "args": [
+        {"field": "modules", "name": "module", "type": "list[str]", "required": true, "summary": "Target module ID(s)"}
+      ],
+      "options": [
+        {"field": "clean", "long_name": "clean", "short": null, "type": "bool", "required": false, "default": false, "group": null, "choices": null, "summary": "Also clear cache:// and storage.local://"},
+        {"field": "force", "long_name": "force", "short": "f", "type": "bool", "required": false, "default": false, "group": null, "choices": null, "summary": "Force removal"}
+      ],
+      "subscriptions": [],
+      "periodic": null
+    }
+  ]
+}
 ```
 
-## 4. 依賴邊界與轉正門檻
+### CLI DTO 解析與綁定規則
+1. 標註 `Arg` 之位置欄位依宣告順序消耗位置參數；尾端帶 `Arg` 之 `Sequence[T]` 接收可變長位置參數。
+2. 標註 `Option` 之具名欄位綁定 `--<long_name>`（預設轉 kebab-case）與選配 `-<short>`；純量 `bool` 欄位映射為 `--flag` / `--no-flag`（亦相容 `--flag=true|false`）；`Enum` / `Literal` 欄位自動轉為 `choices` 並在錯誤時報 `InvalidChoice`。
+3. **正交群組互斥（承繼 1.x `OptionResolver`）**：同一 `Option.group`（非 `None`）下若同時傳入 2 個以上選項，於解析階段立即拒絕並列出衝突選項。
+4. **群組無參數預設動作 vs 未知子命令（承繼 `DN-13`）**：若群組節點自身綁定預設任務（如 `plan` $\to$ `plan status`），無剩餘參數時執行該預設任務；但若傳入未知子命令且該預設任務不接受位置參數，強制阻斷並以 `difflib.get_close_matches` 輸出 `Did you mean '<cmd>'?`。
 
-- 冷啟動 `--help` 渲染與參數驗證階段嚴禁匯入任何 `module://` 業務代碼。
-- 僅允許依賴 `core.foundation`、`core.execution.runtime` 與 `core.surface.sdk` 公開門面。
-- 自 `Draft` 晉升為 `Active` 須待 Wave 1.2 鎖定 `tasks.index.json` Schema 並納入 `verify_execution_live.py` Gate 0 1:1 活規格校驗。
+---
+
+## 3. 5 層 `CallerMode` 環境辨識與 4×3 安全守門矩陣
+
+### 3.1 `CallerMode` 確定性 5 層分類（高優先覆蓋低優先）
+| 優先序 | 判定條件 | 判定結果 (`CallerMode`) |
+| :---: | :--- | :--- |
+| **1** | 環境變數 `YSCB_CALLER_MODE`（`agent` / `ci` / `human`）；若 `not (stdin.isatty() and stdout.isatty())`，**禁止覆寫為 `human`** | 顯式模式（受 TTY 防偽守衛約束） |
+| **2** | 命中標準 CI 環境變數（`CI`、`GITHUB_ACTIONS`、`GITLAB_CI`、`JENKINS_URL`、`TF_BUILD`、`BUILDKITE`、`CIRCLECI`、`TRAVIS`、`BITBUCKET_BUILD_NUMBER`） | `CI_PIPELINE` |
+| **3** | 命中 AI Agent / IDE 宿主環境變數（`ANTIGRAVITY_*`、`AGY_*`、`CLAUDECODE`、`CLAUDE_CODE_*`、`CODEX_*`、`CURSOR_AGENT`、`WINDSURF_AGENT`、`GEMINI_CLI`、`OPENCODE`、`AIDER_*`，以及 `config://core` 擴充之 `security.agent_env_prefixes`）——**優先於 `isatty()`，即便跑在 PTY 內仍判為 `AGENT`** | `AGENT` |
+| **4** | `not stdin.isatty()` 或 `not stdout.isatty()` 或 `TERM == "dumb"` | `NON_TTY` |
+| **5** | 其餘條件（真實雙向互動終端且無 CI／Agent 標記） | `HUMAN_TTY` |
+
+> `CallerMode` 偵測器同步為 `LocaleCatalog` 提供 AI 宿主 Dialect 辨識（如 `ANTIGRAVITY_*` $\to$ `nouns-antigravity`、`CLAUDECODE` $\to$ `nouns-claude`、`CODEX_*` $\to$ `nouns-codex`），全系統單一真理來源。
+
+
+### 3.2 4×3 安全守門矩陣（`SecurityTier` × `CallerMode`）
+| `SecurityTier` | `HUMAN_TTY` | `AGENT` / `NON_TTY` | `CI_PIPELINE` |
+| :---: | :--- | :--- | :--- |
+| **`SAFE`** | 直接執行 | 直接執行 | 直接執行 |
+| **`CONDITIONAL`** | 直接執行 | 前景本倉直接執行 | 前景本倉直接執行 |
+| **`GATED`** | 印出影響摘要 + 互動 `[y/N]` 確認，同意後簽發 `approval_scope` | **嚴禁靜態 `-y`！** 強制兩段式單次確認碼 `--approve=<token>`（見 §3.3） | 預設阻斷；僅當命中 `CI_PIPELINE` 且組態或 `YSCB_CI_APPROVE_GATED=1` 顯式授權時放行（或走 `--approve`） |
+| **`CRITICAL`** | 印出醒目警告 + **要求輸入明確確認詞**（如目標模組名或 `CONFIRM`，Enter 預設取消） | **一律硬阻斷**（不簽發 `--approve` 碼，提示交由開發者於人類終端親自執行） | **預設一律硬阻斷**（防 CI 腳本誤刪永久資料） |
+
+### 3.3 兩段式單次確認碼協議（`ApprovalTokenStore`，防 Compact `-y` 記憶慣性）
+1. 當 `AGENT` 或 `NON_TTY` 呼叫 `SecurityTier.GATED` 任務且未攜帶有效 `--approve=<token>` 時：
+   - 計算本次請求正規化指紋：`args_hash = SHA-256(canonical_json({task_id, normalized_input}))`。
+   - 產生 6~8 碼隨機十六進位單次權杖 `token`，原子寫入 `cache://core/pending_approvals.json`（記錄 `token`、`task_id`、`args_hash`、`expires_at_epoch = now + 300.0`，並順手清理過期條目）。
+   - 立即以非零退出碼退出並輸出結構化 `ErrorCode.SECURITY_GATED` 錯誤與警語：明確列出本次操作影響摘要，指示 Agent **先向開發者請示取得當次授權**，獲准後帶 `--approve=<token>` 單行重跑。
+2. 當再次帶入 `--approve=<token>` 執行時：
+   - 驗證 `token` 存在、未過期且 `(task_id, args_hash)` 100% 一致；驗證通過後**立即自 `pending_approvals.json` 刪除該權杖（用過即焚）**，將 `task_id` 寫入 `InvokeRequest.approval_scope` 放行至 `RuntimeDispatcher`。
+   - 若組態設定 `security.allow_noninteractive_approve = false`，則 `AGENT`/`NON_TTY` 連確認碼亦不簽發，全面退回人類終端執行。
+
+---
+
+## 4. 統一入口旗標、1.x `HelpRenderer` 特性與出口管線
+
+### 4.1 全域統一保留旗標
+| 旗標 | 行為說明 |
+| :--- | :--- |
+| `--help` / `-h` | 零匯入業務源碼，依 `tasks.index.json` 渲染完整 1.x 風格幫助卡並以退出碼 `0` 結束 |
+| `--json` | 強制於 `stdout` 輸出嚴格單一 JSON 物件（編碼自 `TaskOutcome`），壓制人類排版與更新提示；退出碼仍依 `ExitCodeProvider` 或錯誤碼映射 |
+| `--cold` | 注入 `ClientRoutingPolicy.FORCE_COLD` 強制本地冷派發 |
+| `--approve=<token>` | 消費 `ApprovalTokenStore` 單次確認碼以授權單次 `GATED` 任務 |
+
+### 4.2 1.x 成熟 `HelpRenderer` 必備特性（100% 攜帶至 2.0）
+- **頂部標頭**：完整命令路徑、任務摘要、`Security : [SAFE] / [CONDITIONAL] / [GATED] / [CRITICAL]`、`Dispatch : [HYBRID] / [COLD_ONLY] / [DAEMON_ONLY]`。
+- **`ARGUMENTS` 區塊**：標示 `<required>` / `[optional]`、`choices` 枚舉（`<mode=[auto | safe]>`）與說明。
+- **`OPTIONS` 區塊**：按 `Option.group` 分組渲染，標註同組互斥規則、短/長旗標別名（`-f, --force`）、型別、預設值與 `choices`。
+- **`RECOMMENDED USAGE (Pros)` & `RESTRICTIONS & GATES (Cons)`**：直接渲染 `@task(usage_pros=..., usage_cons=...)`。
+- **子命令與別名**：頂層與群組 `-h` 列出子命令摘要表與 `aliases`；`CallerMode.AGENT` / `NON_TTY` 採純 ASCII 精簡排版節約 Token，`HUMAN_TTY` 採對齊視覺排版。
+
+### 4.3 執行與出口管線
+```text
+argv -> CallerMode 5 層分類 -> 萃取全域旗標 (--help / --json / --cold / --approve)
+     -> 零匯入載入 tasks.index.json (核對指紋自動重建 .cache/tasks.index.json)
+     -> 解析 command_path / 群組預設動作 / 拼寫建議 / DTO 參數與互斥檢核
+     -> 依 4×3 安全矩陣執行授權守門 (TTY 互動確認 或 --approve 單次確認碼)
+     -> 組裝 InvokeRequest(caller_surface=CallerSurface.CLI, ...) -> RuntimeDispatcher.invoke()
+     -> 雙軌渲染 (--json 或 format_output) + stderr 進度串流
+     -> 寫入 SessionTelemetryWriter (沙盒 / --help 略過)
+     -> 若非 --json / 非沙盒 / 非離線：檢查 UpdateChecker 12h 節流並輸出非阻塞更新提示至 stderr
+     -> 以語意退出碼 (0 / ExitCodeProvider / ErrorCode 映射，取消為 130) 結束
+```
+
+---
+
+## 5. 必測驗收門檻 (Verification Gate)
+
+1. **零匯入冷自省驗證**：於測試中攔截所有非 `core` 模組 `import`，驗證 `yscb --help`、`yscb <mod> -h`、未知指令拼寫建議與非法參數報錯全程零匯入任何業務模組。
+2. **1.x `HelpRenderer` 完整對齊**：驗證 `Security` 標籤、正交互斥群組碰撞報錯、`Pros`/`Cons` 區塊、群組預設動作（`DN-13`）與 `Did you mean` 建議。
+3. **`CallerMode` 與 4×3 安全矩陣**：模擬 PTY（`isatty=True`）搭配 `ANTIGRAVITY_SESSION=1` / `CLAUDECODE=1` 必判為 `AGENT` 而絕不呼叫 `input()`；模擬 `GATED` 兩段式 `--approve=<tok>` 正常放行、重放第二次失敗（用過即焚）、改參數 `args_hash` 不符失敗、過期失敗；`CRITICAL` 於 `AGENT` / `NON_TTY` / `CI_PIPELINE` 一律硬阻斷。
+4. **`--json` 純淨度**：驗證 `--json` 模式下 `stdout` 100% 為合法單一 JSON，進度事件與更新提示絕不污染 `stdout`。

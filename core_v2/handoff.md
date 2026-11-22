@@ -1,52 +1,41 @@
-# Core 2.0 跨對話進度交接快照 (`core_v2/handoff.md`)
+# Core 2.0 跨對話與遠端異步開發交接快照 (`core_v2/handoff.md`)
 
-> **建立時間**：`2026-11-21`
-> **當前狀態**：**Wave 1.1 內核簡化與 SDK 門面已完成且全綠驗收，開發暫停於架構消化與設計對齊階段**
+> **最後更新**：`2026-11-22`
+> **當前狀態**：**Wave 1.1 實作全綠 + Wave 1.2 剩餘全內核 11 份設計書已全數討論定案凍結（`Design Frozen`），就緒交付遠端異步實作**
 > **關聯總路線圖**：[ROADMAP.md](./ROADMAP.md)
 > **封存完整版基線 Tag**：`archive/core-v2-maximalist`（`9847b1a`）
 
 ---
 
-## 1. 目前已完成基線（Wave 1.1）
+## 1. 目前已完成基線（Wave 1.1 實作）
 
 * **實作規模**：`core_v2/source/core/core/` 共 37 支 `.py`、**20,753 LOC**
-  - `foundation/`（4,013 LOC）：`primitives` / `errors` / `observability` / `codec`（1,433L）/ `proc`（1,239L，含 `SignalWakeupGuard`、Windows `CREATE_NO_WINDOW` 與 `GetConsoleWindow` 守衛）。
+  - `foundation/`（4,013 LOC）：`primitives` / `errors` / `observability` / `codec`（1,433L）/ `proc`（1,239L）。
   - `filesystem/fs/`（2,033 LOC）：`atomic` / `lock` / `watcher`。
-  - `execution/`（13,706 LOC）：`event`（495L）/ `lifecycle`（834L）/ `rpc`（2,370L）/ `runtime`（8,607L，5 段管線、頂層同工作區 `COALESCE`、單一全域 `QUIESCE`、10 欄位 `CallPropagationContext`、記憶體模組註冊）/ `daemon`（1,397L）。
-  - `surface/sdk/`（998 LOC）：零反射方案 B 公開門面（精準 25 符號 `__all__`、`Module`/`TaskGroup`/`@task`/`@on_event`/`@periodic`/`InMemoryModule`/`YscbClient`）。
-* **驗證體系**：[verify_execution_live.py](./verify_execution_live.py)（145L，`--suite` 入口）+ `core_v2/tests/` 共 **9,541 LOC**（全線 `python -B -W error::ResourceWarning core_v2/verify_execution_live.py` 實測 **PASSED，`95.95s`，`0 ResourceWarning`**）。
-* **文檔對齊**：`core_v2/` 下 8 份 Active Living Specs + 2 份 Draft Specs（[surface/cli.md](./sub_module_design/surface/cli.md)、[dev/dev.md](./sub_module_design/dev/dev.md)）+ [ROADMAP.md](./ROADMAP.md) + [R01_execution_orthogonal_research.md](./R01_execution_orthogonal_research.md) 已完成同步與清查。
-* **計畫與 Git 狀態**：
-  - 計畫 `plans/2026_11_20_1740_core_v2_kernel_simplification_and_sdk` 已達 **`P07 Completed`** 且 `[REV-01]` 文檔清查完成（`plan verify`: PASSED）。
-  - Wave 1.1 成果與本輪設計文檔已提交至版控（`ys_codebase/source/*` 與 `.vscode/settings.json` 均未改動；計畫目錄尚未執行 `plan archive`）。
+  - `execution/`（13,706 LOC）：`event` / `lifecycle` / `rpc` / `runtime`（8,607L，5 段管線、頂層同倉 `COALESCE`、單一全域 `QUIESCE`、10 欄位上下文、記憶體模組註冊）/ `daemon`（1,397L）。
+  - `surface/sdk/`（998 LOC）：零反射方案 B 公開門面（精準 25 符號 `__all__`）。
+* **驗證體系**：[verify_execution_live.py](./verify_execution_live.py)（`--suite` 入口）+ `core_v2/tests/`（`9,541 LOC`）；全線 `Gate 0 + foundation_fs + surface_sdk + runtime_daemon + RC-01~RC-08` 全綠（`0 ResourceWarning`）。
+* **計畫與觀察項**：Wave 1.1 計畫 `plans/2026_11_20_1740_core_v2_kernel_simplification_and_sdk` 已達 `P07 Completed`（尚未 `plan archive`）；`[TODO-29]` 保留於 `plans/roadmap/TODO.md`；`ys_codebase/source/*` 與 `.vscode/settings.json` 零異動。
 
 ---
 
-## 2. 本輪 5 步架構走讀與驗收結論
+## 2. 本輪完成：Wave 1.2 全內核設計書清冊（Ready for External / Remote Implementation）
 
-已完成 `core_v2` 全 6 區塊（A～F）由底向上的原理拆解與驗收：
-* **整體評估**：依賴 DAG 嚴格無環、無全域業務單例（僅 3 處底層進程單例：`_StdoutProxyState`、`_SignalRegState`、`_CodecMetadataCache` 與 SDK 編譯期 `_SdkStateRegistry`），現有結構保留運作良好。
-* **已登記／記錄之觀察項**：
-  - **`[TODO-29]`**（已入 `plans/roadmap/TODO.md`）：評估 [atomic.py](./source/core/core/filesystem/fs/atomic.py) 的 Windows `ctypes` ACL/SID 模擬 `0o600` 權限之必要性。
-  - **純未來維護觀察（目前皆保留不動）**：`rpc/channel.py`（2,315L）日後可純內部拆檔；`runtime/dispatcher.py`（1,152L）未來擴充前注意勿膨脹；`tests/_harness.py`（2,341L）後續新域測試各自拆治具。
+> **實作授權與契約紅線**：**唯有 `core.surface.sdk` 對外公開契約、磁碟／JSON 檔案格式（`manifest.json` 2.0、`tasks.index.json`、`contributes/_schema.json`、`config.schema.json`、`*.tmpl`、`yscb.config.json`）、六域單向 DAG 與環境變數憲法必須嚴格統一**；各子模組內部 API 與檔案切分允許遠端實作端依實務微調。
 
----
-
-## 3. 本輪新增已拍板方向 & 暫留開放議題
-
-1. **OS 環境變數與系統常數命名憲法（已拍板，落檔於 [foundation.md](./sub_module_design/foundation/foundation.md) §3）**：
-   - 公開使用者覆寫一律 `YSCB_*`（須登記，一般開關優先走 `config`/`Enum`）；內核／工具私有跨進程變數一律 `_YSCB_*`（整批按前綴封殺外部注入；既有 `YSCB_WORKER_AUTH_TOKEN` 列入 Wave 1.2 統一改名與加進 `Gate 0` 檢核）。
-2. **`dev 2.0` 雛型設計草案（已落檔於 [dev/dev.md](./sub_module_design/dev/dev.md)，狀態 `Draft`）**：
-   - **已對齊方向**：維持 `dev` 為 **Tier 0 純標準庫 `unittest`** 零依賴底座；正式淘汰 `scripts/hook.dev.py` 與 `self.mark_passed()`（改由 `TestResult` 判定失敗保留現場）；測試分化為 **層級 1（共用沙盒 + `yscb.config` 依賴閉包非受測模組 + 受測 `@build`）** 與 **層級 2（獨立空白沙盒 + 下游宣告 CI 建置／測試指令，允許下游自選工具如 `pytest`）**。
-   - **待下次繼續討論之開放題**：
-     1. 層級 1 `unittest` helper 與共用沙盒細部契約（唯讀邊界、快速微測、`@build` 更新策略）。
-     2. 層級 2 獨立部署測試宣告格式與 Tier 1 快取策略（**待設計 CI 格式時一併定案**）。
+| 批次 | 功能域 | 設計書（皆已登記於 `test_gate0.py` `_DRAFT_SPECS`） | 核心拍板決策摘要 |
+| :---: | :--- | :--- | :--- |
+| **1** | Domain 1 補完 | [foundation_wave12.md](./sub_module_design/foundation/foundation_wave12.md) | `SemVer4`/`VersionConstraint`/`SemanticUri`/`SpaceId`/`SpacePath`/`SnapshotGen`/`EnvHash`；`SchemaExporter`；`LogRotator`/`StructuredLogger`/`LocaleCatalog`（保留供全生態系使用）/`SessionTelemetryWriter`；受控 `YSCB_*` 白名單與 `_YSCB_WORKER_AUTH_TOKEN` 更名 |
+| **1** | Domain 2 剩餘 | [vfs.md](./sub_module_design/filesystem/vfs.md)<br>[storage.md](./sub_module_design/filesystem/storage.md)<br>[space.md](./sub_module_design/filesystem/space.md) | 借鏡 `uitk.net`：`VfsCapabilities(Flag)` + `VfsProvider`（`PhysicalDirectoryProvider` + `MemoryVfsProvider`）、Scheme B 15 協議、雙層 `ReadonlyPolicy`（VFS + OS 唯讀穿隧）、`ScopedVfs` 跨模組寫隔離；`ModuleDatabase` SQLite WAL + `BlobVault` **嚴格僅限 `storage.local://`**（禁 `cache://` 與 `storage://`）；`space -> storage` SQLite WAL 取代 `YFP2`、支援持久化動態空間與 `GitignoreMaterializer` |
+| **2** | Domain 3 | [config.md](./sub_module_design/metadata/config.md)<br>[contributes.md](./sub_module_design/metadata/contributes.md) | `manifest.json` 2.0（12 欄）；2×2 強型別組態 + `DeepInfiller` + 智能 `SnapshotVault`（預設 3 份／7 天／60s 防連點折疊，排除 `storage.local://` 與 `cache://`）；`Contributes 2.0` 100% 邏輯歸屬 `core`（Python `@dataclass` SSOT + 靜態 `_schema.json` + 離帶 `ProvenanceGraph` + `BUCKET_BY_DONOR` + 純記憶體聚合不落盤 + `contribute.json` 同構免剝殼） |
+| **3** | Domain 4 | [env.md](./sub_module_design/packaging/env.md)<br>[installer.md](./sub_module_design/packaging/installer.md) | 方案 B `.venv/<group>_<py_tag>_<hash16>/`、`--only-binary=:all:`、E3-A 回滾友善 GC（7 天 / 每組保留 1 份歷史環境）；純離線 `OfflinePackageEngine`、`configurable/*.tmpl` 強制後綴並於 Staging 無條件整目錄剝離、跨版遷移改回傳 `UpgradeTransition` 交上層派發 `@on_migrate` `Task`、三級 `remove` / `--clean` / 獨立 `purge` |
+| **4** | Domain 6 & 自舉 | [sdk_wave12.md](./sub_module_design/surface/sdk_wave12.md)<br>[cli.md](./sub_module_design/surface/cli.md)<br>[composition_and_bootstrap.md](./sub_module_design/surface/composition_and_bootstrap.md) | **唯一強制統一對外契約**：`Module` 追加 `config_type` / `extension_points` / `@on_migrate`、`ModuleEnv`（含 `open_database` 自動 LIFO 關閉）+ `TaskContext` 注入、單一 `from core.surface.sdk import ...` 匯出；`surface.cli` 零匯入 `tasks.index.json`、100% 承繼 1.x `HelpRenderer`、5 層 `CallerMode`（防 PTY Agent 誤判）+ 4 級 `SecurityTier`（`SAFE`/`CONDITIONAL`/`GATED`/`CRITICAL`，1 Task = 1 固定等級，`GATED` 非 TTY 採兩段式單次 `--approve=<tok>` 根除 Compact `-y` 慣性，`CRITICAL` 鎖人類終端）；組裝根、內建系統 `Task`、`core_v2/yscb.py` 雙原語自舉與 `Wave 1.2a ~ 1.2d` 遠端實作指南 |
+| — | 工具鏈草案 | [dev/dev.md](./sub_module_design/dev/dev.md) | `Draft — Prototype Design`（開放議題待 Wave 1.2 實作後配合 CI 格式再深化） |
 
 ---
 
-## 4. 下次對話建議入口（Pick Next）
+## 3. 下次對話／遠端實作建議入口（Pick Next）
 
-接手本進度時，請直接從以下 3 條路線向開發者確認優先順序：
-1. **封存 Wave 1.1 計畫（選配）**：確認後對已完成的 `2026_11_20_1740_core_v2_kernel_simplification_and_sdk` 執行 `plan archive`。
-2. **繼續深化 `dev 2.0` 與 CI 宣告格式**：針對 [dev/dev.md](./sub_module_design/dev/dev.md) §4 的開放議題逐一拍板，決定是否先落地 Phase 1 薄 Demo（`dev.checker` + `dev.testing`）。
-3. **啟動 Wave 1.2 剩餘內核域設計**：補齊 `foundation` 剩餘值物件、`filesystem/{vfs,space,storage}`、`metadata/{config,contributes}`、`packaging/{env,installer}`、`surface/cli` 規格設計。
+1. **交付遠端異步開發執行 Wave 1.2（主線）**：直接以本檔與 [composition_and_bootstrap.md](./sub_module_design/surface/composition_and_bootstrap.md) §4 為入口，按 `Wave 1.2a -> 1.2b -> 1.2c -> 1.2d` 分波實作完整 `core 2.0` 內核，完成後拉回本地驗收優化。
+2. **封存 Wave 1.1 計畫（選配）**：對已結案的 `2026_11_20_1740_core_v2_kernel_simplification_and_sdk` 執行 `plan archive`。
+3. **後續深化 `dev 2.0` 與 CI 格式**：待 Wave 1.2 內核落地或並行期間，拍板 [dev/dev.md](./sub_module_design/dev/dev.md) §4 開放議題。

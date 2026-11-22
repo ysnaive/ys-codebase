@@ -3,7 +3,7 @@
 > **狀態**：`Active Architecture Constitution`
 > **工作區位置**：`./core_v2/`（潔淨室隔離重構空間）
 > **目標範疇**：`core 2.0` 六大正交功能域微內核（內化原 `server` 與 `file-space`）、`dev 2.0` 工具鏈，以及全生態系模組強型別 OOP 遷移
-> **最後更新**：`2026-11-21`
+> **最後更新**：`2026-11-22`
 
 ## 1. 核心願景與重構動機 (Vision & Motivation)
 
@@ -50,7 +50,7 @@ Domain 4: 套件環境域 (packaging/)   [installer -> env]      ── 允許�
 Domain 3: 組態擴充域 (metadata/)    [contributes <- config] ── 允許依賴: Domain 1 + filesystem.fs (嚴禁依賴 vfs/space!)
    │
    ▼
-Domain 2: 檔案儲存域 (filesystem/)  [space | storage <- vfs <- fs] ── 僅依賴: Domain 1 (100% 獨立可測!)
+Domain 2: 檔案儲存域 (filesystem/)  [space -> storage -> vfs -> fs] ── 僅依賴: Domain 1 (100% 獨立可測!)
    │
    ▼
 Domain 1: 基礎底座域 (foundation/)  [codec | observability | proc <- primitives | errors] ── 僅依賴: Python 標準庫!
@@ -96,12 +96,13 @@ Domain 1: 基礎底座域 (foundation/)  [codec | observability | proc <- primit
 ./core_v2/
 ├── ROADMAP.md                # 本宏觀架構憲法與四波段遷移總路線圖
 ├── sub_module_design/        # 六大正交功能域子模組深度架構設計規格（多輪交叉複查演進）
-│   ├── foundation/           # foundation.md
-│   ├── filesystem/           # fs.md, vfs.md, space.md, storage.md
-│   ├── metadata/             # config.md, contributes.md
-│   ├── packaging/            # env.md, installer.md
-│   ├── execution/            # event.md, lifecycle.md, rpc.md, runtime.md, daemon.md
-│   └── surface/              # sdk.md, cli.md
+│   ├── foundation/           # foundation.md (Active), foundation_wave12.md (Frozen Draft)
+│   ├── filesystem/           # fs.md (Active), vfs.md, storage.md, space.md (Frozen Drafts)
+│   ├── metadata/             # config.md, contributes.md (Frozen Drafts)
+│   ├── packaging/            # env.md, installer.md (Frozen Drafts)
+│   ├── execution/            # event.md, lifecycle.md, rpc.md, runtime.md, daemon.md (Active)
+│   ├── surface/              # sdk.md (Active), sdk_wave12.md, cli.md, composition_and_bootstrap.md (Frozen Drafts)
+│   └── dev/                  # dev.md (Prototype Draft)
 ├── yscb.py                   # 2.0 超薄自舉啟動器（僅保留 init / self-update 自舉豁免，餘 100% 交棒 surface.cli）
 ├── source/                   # 2.0 模組唯一真理源碼區（100% OOP + Strict Typing）
 │   ├── core/                 # Wave 1：六大功能域微內核
@@ -123,7 +124,7 @@ Domain 1: 基礎底座域 (foundation/)  [codec | observability | proc <- primit
 
 | 波段 | 目標範疇 | 核心交付內容與架構任務 | 出場驗收門檻 (Exit Gate) |
 | :--- | :--- | :--- | :--- |
-| **Wave 1：<br>內核與工具鏈地基** | `core 2.0` (6 大功能域)<br>`dev 2.0`<br>`core_v2/yscb.py` | 1. **已完成 Wave 1.1 精簡收斂基線與 `surface.sdk` 門面**：`Domain 5 (execution)` 5 階段精簡版（同倉頂層 `COALESCE`、單一全域 `QUIESCE`、10 欄位上下文與 3 系統預留 `EventId`）、`Domain 1 (foundation)` 執行內核子集（`foundation.md`）、`Domain 2.fs`（`fs.md`）、`Domain 6.sdk`（25 符號零反射方案 B 門面與 `surface/sdk.md` 1:1 活規格、`surface/cli.md` `Draft` 草案），以及分域驗證套件 `core_v2/tests/*` 與薄入口 `verify_execution_live.py --suite`（`Gate 0 + RC-01~RC-08` 全綠）均已落地（完整版基線封存於 `archive/core-v2-maximalist` Tag）。<br>2. **Wave 1.2 待補完規格與跨功能域 Port 複審**：補齊 `Domain 1 (foundation)` 剩餘版本/空間/日誌組件、`Domain 2.{vfs,space,storage}`、`Domain 3 (metadata)`、`Domain 4 (packaging)`、`Domain 6.cli`（將 `surface/cli.md` 轉正實作）規格並完成盲審，依消費端 Port 契約複審 `ModuleProviderPort` / `ConfigViewPort` / `VfsEchoGuardPort` 並在 `surface` 落地組裝轉接層，再完成剩餘功能域實作與逐域獨立拔除測試（Unplug Test）。<br>3. 完成 `dev build` 靜態 `tasks.index.json` 自動提取、`dev check 2.0` 與 `core_v2/yscb.py` 啟動器。 | • `0 Any` 洩漏、`0 ResourceWarning`、6 大功能域嚴格單向無環、派發 100% 鎖死於 `execution.runtime`。<br>• 壓測驗證：多工重入零死鎖、跨進程 `resource_key` 零衝突、Tier 1 子進程熱替換零句柄鎖死。 |
+| **Wave 1：<br>內核與工具鏈地基** | `core 2.0` (6 大功能域)<br>`dev 2.0`<br>`core_v2/yscb.py` | 1. **已完成 Wave 1.1 精簡收斂基線與 `surface.sdk` 門面**：`Domain 5 (execution)` 5 階段精簡版（同倉頂層 `COALESCE`、單一全域 `QUIESCE`、10 欄位上下文與 3 系統預留 `EventId`）、`Domain 1 (foundation)` 執行內核子集（`foundation.md`）、`Domain 2.fs`（`fs.md`）、`Domain 6.sdk`（25 符號零反射方案 B 門面與 `surface/sdk.md` 1:1 活規格），以及分域驗證套件 `core_v2/tests/*` 與薄入口 `verify_execution_live.py --suite`（`Gate 0 + RC-01~RC-08` 全綠）均已落地（完整版基線封存於 `archive/core-v2-maximalist` Tag）。<br>2. **Wave 1.2 全內核剩餘設計書已凍結定案（Ready for Remote Async Implementation）**：已全數完成 `foundation_wave12.md`、`filesystem/{vfs,storage,space}.md`、`metadata/{config,contributes}.md`、`packaging/{env,installer}.md`、`surface/{sdk_wave12,cli,composition_and_bootstrap}.md` 共 11 份 Implementation-Ready 設計書（強制統一對外 `surface.sdk` 與磁碟契約，內部 API 保留實作端微調彈性），待遠端依 `Wave 1.2a ~ 1.2d` 分波落地實作、逐域拔除測試（Unplug Test）並轉正為 Active Living Spec 後進本地驗收優化。<br>3. 完成 `dev build` 靜態 `tasks.index.json` 自動提取、`dev check 2.0` 與 `core_v2/yscb.py` 啟動器。 | • `0 Any` 洩漏、`0 ResourceWarning`、6 大功能域嚴格單向無環、派發 100% 鎖死於 `execution.runtime`。<br>• 壓測驗證：多工重入零死鎖、跨進程 `resource_key` 零衝突、Tier 1 子進程熱替換零句柄鎖死。 |
 | **Wave 2：<br>Tier 0 輕模組移植** | `vscode-support`<br>`agents-workflow`<br>`gdrive-support` | 1. 保留既有模板/技能資產、投影邏輯與三方同步帳本演算法。<br>2. 將所有外部與背景能力全面收斂為 `Task[TIn, TOut]`，拔除自管背景執行緒、`hook.*.py` 與裸字串路徑。 | • Tier 0 全模組 0 `.venv` 秒速運行。<br>• 工作流產物編譯與 Google Drive 離線沙盒同步 100% 通過契約測試。 |
 | **Wave 3：<br>Tier 1 雙引擎削殼** | `ast`<br>`knowledge-db` | 1. 刪除舊版自管 `.bin.gz` 快取、`.kdb_index.lock`、前景 JIT 修補、自管前景活動旗標與動態 `pip`。<br>2. 以 `space -> ast -> kdb` 事件鏈重構更新流，`kdb index` 透過 SDK 調用上游更新並核對世代水位，無變更天然短路。 | • 下游業務模組 0 自管鎖、代碼大幅精簡。<br>• 連續大量改檔背景索引期間，前景查詢恆定毫秒級秒回且零世代撕裂。 |
 | **Wave 4：<br>宿主原子切換與退役** | 根目錄切換至 `2.0.0.0` | 1. 完成本機 Windows 與雲端 Linux VM 全套實機端到端驗收與組態平滑遷移驗證。<br>2. 將 `./core_v2` 扶正為正式主幹，退役 `1.x` 舊源碼及獨立的 `server`、`file-space` 模組（收斂為 7 大模組）。 | • 全倉 7 大模組 100% 運行於 `Core 2.0` 基座，正式發布 `2.0.0.0`。 |

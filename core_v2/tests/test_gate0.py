@@ -1604,7 +1604,20 @@ def _build_spec_eval_ns(kernel_mods: Sequence[object]) -> dict[str, object]:
     return merged
 
 
-_DRAFT_SPECS: Final[frozenset[str]] = frozenset({"surface/cli.md", "dev/dev.md"})
+_DRAFT_SPECS: Final[frozenset[str]] = frozenset({
+    "foundation/foundation_wave12.md",
+    "filesystem/vfs.md",
+    "filesystem/storage.md",
+    "filesystem/space.md",
+    "metadata/config.md",
+    "metadata/contributes.md",
+    "packaging/env.md",
+    "packaging/installer.md",
+    "surface/sdk_wave12.md",
+    "surface/cli.md",
+    "surface/composition_and_bootstrap.md",
+    "dev/dev.md",
+})
 
 
 def _verify_execution_living_specs_parity() -> None:
