@@ -19,7 +19,6 @@ from core.foundation.errors import ErrorDetail, safe_exception_summary
 from core.foundation.primitives import MAX_USER_JSON_DEPTH, EventId, HostPath, JsonObject, JsonValue, ModuleId, TaskId, require_pure_bool, require_typed_tuple, validate_wire_json_object
 
 
-
 class WorkerCommandKind(Enum):
     WARMUP = "warmup"
     UNLOAD_MODULES = "unload_modules"
@@ -71,6 +70,7 @@ class WorkerBootstrapConfig:
     workspace_root: HostPath
     modules: tuple[ModuleDescriptor, ...]
     is_hot_container: bool = True
+    host_dir: Optional[HostPath] = None
 
 
 @dataclass(frozen=True, slots=True)

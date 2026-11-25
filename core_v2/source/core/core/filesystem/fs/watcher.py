@@ -7,13 +7,24 @@ from dataclasses import dataclass
 import stat
 import threading
 import time
-from typing import Callable, Mapping, Optional, Sequence
+from typing import Callable, Final, Mapping, Optional, Sequence
 
 from core.filesystem.fs.atomic import IGNORED_FS_PREFIXES, is_atomic_staging_filename, is_contained_nonsymlink_path, is_symlink_or_reparse, walk_nonsymlink_dir_tree
 from core.foundation.observability import MAX_SAFE_WAIT_SEC, validate_non_negative_sec
-from core.foundation.primitives import HostPath, require_typed_tuple
+from core.foundation.primitives import HostPath, require_typed_frozenset, require_typed_tuple
 
 EchoSuppressionHook = Callable[[HostPath, int, int, int], bool]
+DEFAULT_WATCHER_IGNORED_DIRS: Final[frozenset[str]] = frozenset(
+    {
+        ".git",
+        "node_modules",
+        ".venv",
+        ".cache",
+        "build",
+        "dist",
+        "target",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,9 +78,20 @@ def _diff_stat_snapshots(
     return cands
 
 
-def _stat_watchable_file(hp: HostPath, roots: Sequence[HostPath]) -> Optional[_FileStatStamp]:
+def _stat_watchable_file(
+    hp: HostPath,
+    roots: Sequence[HostPath],
+    ignored_dir_names: frozenset[str],
+) -> Optional[_FileStatStamp]:
     if is_atomic_staging_filename(hp.path.name) or not any(
-        is_contained_nonsymlink_path(root, hp, allow_equal=True, is_dir=False, ignored_dir_prefixes=IGNORED_FS_PREFIXES)
+        is_contained_nonsymlink_path(
+            root,
+            hp,
+            allow_equal=True,
+            is_dir=False,
+            ignored_dir_prefixes=IGNORED_FS_PREFIXES,
+            ignored_dir_names=ignored_dir_names,
+        )
         for root in roots
     ):
         return None
@@ -85,6 +107,7 @@ def _scan_resync_candidates(
     roots: Sequence[HostPath],
     root_prefixes: tuple[tuple[str, str], ...],
     prev_snap: Mapping[HostPath, _FileStatStamp],
+    ignored_dir_names: frozenset[str],
 ) -> dict[HostPath, _FileStatStamp]:
     raw_partial: dict[HostPath, _FileStatStamp] = {}
     for hp in under_roots:
@@ -96,11 +119,25 @@ def _scan_resync_candidates(
         except OSError:
             continue
         if stat.S_ISREG(mode):
-            stamp = _stat_watchable_file(hp, roots)
+            stamp = _stat_watchable_file(hp, roots, ignored_dir_names)
             if stamp is not None:
                 raw_partial[hp] = stamp
-        elif stat.S_ISDIR(mode) and any(is_contained_nonsymlink_path(root, hp, allow_equal=True, is_dir=True, ignored_dir_prefixes=IGNORED_FS_PREFIXES) for root in roots):
-            for _cur_dir, entries in walk_nonsymlink_dir_tree(raw_r, ignored_dir_prefixes=IGNORED_FS_PREFIXES):
+        elif stat.S_ISDIR(mode) and any(
+            is_contained_nonsymlink_path(
+                root,
+                hp,
+                allow_equal=True,
+                is_dir=True,
+                ignored_dir_prefixes=IGNORED_FS_PREFIXES,
+                ignored_dir_names=ignored_dir_names,
+            )
+            for root in roots
+        ):
+            for _cur_dir, entries in walk_nonsymlink_dir_tree(
+                raw_r,
+                ignored_dir_prefixes=IGNORED_FS_PREFIXES,
+                ignored_dir_names=ignored_dir_names,
+            ):
                 for entry in entries:
                     _record_regular_watch_entry(entry, raw_partial, prev_snap)
     return {k: v for k, v in raw_partial.items() if _is_under_any_prefix(k, root_prefixes)}
@@ -117,6 +154,7 @@ class PollingDirectoryWatcher:
         debounce_sec: float = 0.2,
         poll_interval_sec: float = 0.05,
         is_suppressed: Optional[EchoSuppressionHook] = None,
+        ignored_dir_names: frozenset[str] = DEFAULT_WATCHER_IGNORED_DIRS,
     ) -> None:
         safe_deb = validate_non_negative_sec(debounce_sec, label="debounce_sec")
         safe_poll = validate_non_negative_sec(poll_interval_sec, label="poll_interval_sec")
@@ -127,6 +165,7 @@ class PollingDirectoryWatcher:
         self._debounce_sec = max(0.02, safe_deb)
         self._poll_interval_sec = max(0.02, safe_poll)
         self._is_suppressed = is_suppressed
+        self._ignored_dir_names = require_typed_frozenset(ignored_dir_names, str, "ignored_dir_names")
         self._state_lock = threading.Lock()
         self._scan_lock = threading.Lock()
         self._callback_lock = threading.Lock()
@@ -210,11 +249,15 @@ class PollingDirectoryWatcher:
             except OSError:
                 continue
             if stat.S_ISREG(mode):
-                stamp = _stat_watchable_file(root, self._roots)
+                stamp = _stat_watchable_file(root, self._roots, self._ignored_dir_names)
                 if stamp is not None:
                     state[root] = stamp
             elif stat.S_ISDIR(mode):
-                for _cur_dir, entries in walk_nonsymlink_dir_tree(raw_root, ignored_dir_prefixes=IGNORED_FS_PREFIXES):
+                for _cur_dir, entries in walk_nonsymlink_dir_tree(
+                    raw_root,
+                    ignored_dir_prefixes=IGNORED_FS_PREFIXES,
+                    ignored_dir_names=self._ignored_dir_names,
+                ):
                     for entry in entries:
                         _record_regular_watch_entry(entry, state, prev_snap)
         return {k: v for k, v in state.items() if _is_under_any_prefix(k, root_prefixes)}
@@ -239,7 +282,13 @@ class PollingDirectoryWatcher:
         with self._scan_lock:
             with self._state_lock:
                 prev_snap = dict(self._snapshot)
-            partial = _scan_resync_candidates(under_roots, self._roots, root_prefixes, prev_snap)
+            partial = _scan_resync_candidates(
+                under_roots,
+                self._roots,
+                root_prefixes,
+                prev_snap,
+                self._ignored_dir_names,
+            )
             with self._state_lock:
                 prev_under = {k: v for k, v in self._snapshot.items() if _is_under_any_prefix(k, prefixes)}
             unsuppressed = self._filter_unsuppressed_unlocked(_diff_stat_snapshots(prev_under, partial))

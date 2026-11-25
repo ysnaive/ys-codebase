@@ -1,0 +1,17 @@
+{
+  "schema_version": 2,
+  "id": "core",
+  "version": "2.0.0.0",
+  "description": "YS-Codebase 2.0 Core Microkernel",
+  "entry": "core/__init__.py",
+  "dependencies": {},
+  "optional": {},
+  "pip_dependencies": {},
+  "eager_warmup": false,
+  "onboarding": [],
+  "release": {
+    "type": "major",
+    "urgency": "recommended",
+    "summary": "Core 2.0 microkernel release"
+  }
+}

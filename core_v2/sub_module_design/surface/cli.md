@@ -5,7 +5,7 @@
 > **建議內部切分**：`index.py`、`caller_mode.py`、`approval.py`、`parser.py`、`help_renderer.py`、`entrypoint.py`、`__init__.py`
 > **依賴上限（Allowed Imports）**：`Domain 1 ~ 5`、`surface.sdk`
 > **禁止反向依賴（Forbidden Imports）**：冷啟動 `--help`、拼寫建議與參數預驗階段嚴禁匯入任何 `module://` 業務源碼
-> **狀態**：`Draft — Design Frozen for Wave 1.2 Implementation`
+> **狀態**：`Active Living Spec — Implementation-Aligned SSOT`
 
 > [!NOTE]
 > **實作彈性邊界**：`tasks.index.json` 檔案 Schema、`CallerMode` 5 層環境分類、4×3 安全矩陣、兩段式單次 `--approve=<token>` 協議、全域統一旗標（`--help`/`-h`/`--json`/`--cold`/`--approve`）與 1.x `HelpRenderer` 輸出特性屬硬契約；內部詞法解析器與排版輔助函式可由實作端微調。
@@ -71,13 +71,13 @@
 ### 3.1 `CallerMode` 確定性 5 層分類（高優先覆蓋低優先）
 | 優先序 | 判定條件 | 判定結果 (`CallerMode`) |
 | :---: | :--- | :--- |
-| **1** | 環境變數 `YSCB_CALLER_MODE`（`agent` / `ci` / `human`）；若 `not (stdin.isatty() and stdout.isatty())`，**禁止覆寫為 `human`** | 顯式模式（受 TTY 防偽守衛約束） |
-| **2** | 命中標準 CI 環境變數（`CI`、`GITHUB_ACTIONS`、`GITLAB_CI`、`JENKINS_URL`、`TF_BUILD`、`BUILDKITE`、`CIRCLECI`、`TRAVIS`、`BITBUCKET_BUILD_NUMBER`） | `CI_PIPELINE` |
-| **3** | 命中 AI Agent / IDE 宿主環境變數（`ANTIGRAVITY_*`、`AGY_*`、`CLAUDECODE`、`CLAUDE_CODE_*`、`CODEX_*`、`CURSOR_AGENT`、`WINDSURF_AGENT`、`GEMINI_CLI`、`OPENCODE`、`AIDER_*`，以及 `config://core` 擴充之 `security.agent_env_prefixes`）——**優先於 `isatty()`，即便跑在 PTY 內仍判為 `AGENT`** | `AGENT` |
+| **1** | 環境變數 `YSCB_CALLER_MODE`（`agent` / `ci` / `non_tty` / `human`）；僅當真實雙向 TTY 且**無任何活躍 AI Agent 或 CI 標記**時才放行 `human`（嚴禁 Agent／CI 於 PTY 下自我降級）；`ci` 顯式覆寫保留最高權 | 顯式模式（受 TTY 與防降級守衛約束） |
+| **2** | 命中精準 AI Agent 活躍 Session 鍵（`ANTIGRAVITY_AGENT`、`ANTIGRAVITY_CONVERSATION_ID`、`ANTIGRAVITY_TRAJECTORY_ID`、`ANTIGRAVITY_SESSION`、`AGY_AGENT`、`AGY_SESSION`、`CLAUDECODE`、`CLAUDE_CODE_ENTRYPOINT`、`CLAUDE_CODE_SESSION_ID`、`CLAUDE_CODE_SSE_PORT`、`CODEX_SANDBOX`、`CODEX_THREAD_ID`、`CODEX_CI`、`AIDER_SESSION`、`CURSOR_AGENT`、`WINDSURF_AGENT`、`GEMINI_CLI`、`OPENCODE`，以及 `config://core` 擴充之 `security.agent_env_prefixes`）——**優先於 `CI` 與 `isatty()`**，不誤判人類組態鍵（如 `CLAUDE_CODE_USE_VERTEX`、`CODEX_HOME`、`AIDER_MODEL`） | `AGENT` |
+| **3** | 命中標準 CI 環境變數（`CI`、`GITHUB_ACTIONS`、`GITLAB_CI`、`JENKINS_URL`、`TF_BUILD`、`BUILDKITE`、`CIRCLECI`、`TRAVIS`、`BITBUCKET_BUILD_NUMBER`） | `CI_PIPELINE` |
 | **4** | `not stdin.isatty()` 或 `not stdout.isatty()` 或 `TERM == "dumb"` | `NON_TTY` |
-| **5** | 其餘條件（真實雙向互動終端且無 CI／Agent 標記） | `HUMAN_TTY` |
+| **5** | 其餘條件（真實雙向互動終端且無 Agent／CI 標記） | `HUMAN_TTY` |
 
-> `CallerMode` 偵測器同步為 `LocaleCatalog` 提供 AI 宿主 Dialect 辨識（如 `ANTIGRAVITY_*` $\to$ `nouns-antigravity`、`CLAUDECODE` $\to$ `nouns-claude`、`CODEX_*` $\to$ `nouns-codex`），全系統單一真理來源。
+> `CallerMode` 偵測器同步為 `LocaleCatalog` 提供 AI 宿主 Dialect 辨識（如 `ANTIGRAVITY_AGENT`/`ANTIGRAVITY_SESSION` $\to$ `nouns-antigravity`、`CLAUDECODE`/`CLAUDE_CODE_SESSION_ID` $\to$ `nouns-claude`、`CODEX_SANDBOX`/`CODEX_THREAD_ID` $\to$ `nouns-codex`），全系統單一真理來源。
 
 
 ### 3.2 4×3 安全守門矩陣（`SecurityTier` × `CallerMode`）
@@ -131,7 +131,323 @@ argv -> CallerMode 5 層分類 -> 萃取全域旗標 (--help / --json / --cold /
 
 ---
 
-## 5. 必測驗收門檻 (Verification Gate)
+## 5. 公開契約與門面簽名（1:1 Parity）
+
+```python
+from __future__ import annotations
+from abc import ABC, abstractmethod
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from enum import Enum, Flag
+import io
+import os
+from pathlib import Path
+import sqlite3
+import subprocess
+import sys
+import threading
+from typing import Annotated, BinaryIO, Callable, ClassVar, Final, Generic, Literal, Optional, Protocol, TextIO, TypeAlias, TypeVar, overload, runtime_checkable
+from core.execution.event import normalize_payload_filter
+from core.execution.runtime import BoundTask, CORE_MODULE_ID, CallerSurface, CliBindingSpec, ClientRoutingPolicy, ConcurrencyMode, DEFAULT_CACHE_DIRNAME, DispatchMode, InvokeRequest, LOCKS_SUBDIR, MODULES_DIRNAME, PeriodicScheduleSpec, RuntimeDispatcher, SecurityTier, SelfMutationScope, SubscriptionRouteSpec, TaskExposure, TaskMetadata, TaskOutcome, TaskRouteSpec, YscbModule, sanitize_caller_env
+from core.filesystem.fs import FileLock, MAX_JSON_FILE_BYTES, atomic_write_json, has_symlink_raw_path, is_symlink_or_reparse, read_json_dict, read_nofollow_regular_bytes, resolve_contained_subpath, try_resolve_contained_subpath
+from core.foundation import CancellationToken, DataclassCodec, EnvHash, ErrorCode, ErrorDetail, EventId, HostPath, INT64_MAX, INT64_MIN, JsonObject, JsonPrimitive, JsonValue, LogRotator, ModuleId, MutableJsonObject, SemVer4, SemanticUri, SessionTelemetryRecord, SessionTelemetryWriter, SignalWakeupGuard, SnapshotGen, SpaceId, SpacePath, TEST_SANDBOX_ENV_KEY, TaskId, VersionConstraint, YscbError, clamp_positive_sec, clone_strict_json_object, guard_standard_streams, require_pure_bool, require_pure_int, require_pure_str, require_typed_frozenset, require_typed_tuple, resolve_dataclass_init_hints, safe_exception_summary, safe_real_to_float, strict_parse_json_object
+from core.metadata.config import ConfigStore, lookup_compiled_module_root_default_tasks, lookup_compiled_module_surface_meta, parse_locale_chain_tokens
+from core.packaging.installer import ProviderClient, UpdateCheckReport, UpdateChecker
+from core.surface.sdk import Arg, Empty, ExitCodeProvider, HumanRenderable, Module, Option, format_output
+CLI_DEFAULT_PROVIDER_URL: Final[str] = 'https://raw.githubusercontent.com/ysnaive/ys-codebase/releases'
+CLI_DEFAULT_SELF_UPDATE_URL: Final[str] = 'https://raw.githubusercontent.com/ysnaive/ys-codebase/releases/yscb.py'
+CliKernelFactoryFn = Callable[[HostPath, HostPath, bool], CliKernelSession]
+TASKS_INDEX_SCHEMA_VERSION: Final[int] = 2
+
+def build_cli_command_tree(indices: Sequence[ModuleTasksIndex]) -> CliCommandNode:
+    ...
+
+def compile_tasks_index(module_source: type[Module] | Module | YscbModule) -> ModuleTasksIndex:
+    ...
+
+def compute_approval_args_hash(task_id: TaskId, normalized_input: JsonObject) -> str:
+    ...
+
+def detect_caller_environment(*, env: Optional[Mapping[str, str]]=None, stdin_stream: Optional[CliInputStream]=None, stdout_stream: Optional[CliOutputStream]=None, extra_agent_env_prefixes: Sequence[str]=()) -> CallerEnvironment:
+    ...
+
+def detect_caller_mode(*, env: Optional[Mapping[str, str]]=None, stdin_stream: Optional[CliInputStream]=None, stdout_stream: Optional[CliOutputStream]=None, extra_agent_env_prefixes: Sequence[str]=()) -> CallerMode:
+    ...
+
+def evaluate_security_gate(*, task_id: TaskId, security_tier: SecurityTier, caller_mode: CallerMode, normalized_input: JsonObject, summary: str, token_store: ApprovalTokenStore, approve_token: Optional[str]=None, allow_noninteractive_approve: bool=True, ci_approve_gated: bool=False, stdin_stream: Optional[CliInputStream]=None, stderr_stream: Optional[CliOutputStream]=None) -> SecurityGateResult:
+    ...
+
+def extract_global_flags(argv: Sequence[str]) -> GlobalCliFlags:
+    ...
+
+def main(argv: Sequence[str], *, host_dir: HostPath, yscb_root: HostPath, caller_cwd: Optional[HostPath]=None, env: Optional[Mapping[str, str]]=None, stdin_stream: Optional[CliInputStream]=None, stdout_stream: Optional[CliOutputStream]=None, stderr_stream: Optional[CliOutputStream]=None, kernel_factory: Optional[CliKernelFactoryFn]=None, builtin_indices: Optional[Sequence[ModuleTasksIndex]]=None, install_signal_guard: bool=True) -> int:
+    ...
+
+def register_cli_kernel_factory(factory: Optional[CliKernelFactoryFn], *, builtin_indices_fn: Optional[Callable[[], Sequence[ModuleTasksIndex]]]=None) -> None:
+    ...
+
+def render_task_help(task_entry: IndexedTaskEntry, *, caller_mode: CallerMode=CallerMode.HUMAN_TTY, module_prefix: Optional[str]=None) -> str:
+    ...
+
+def resolve_cli_invocation(flags: GlobalCliFlags, indices: Sequence[ModuleTasksIndex]) -> CliRouteResolution:
+    ...
+
+class ApprovalTokenStore:
+
+    def __init__(self, cache_dir: HostPath, *, ttl_sec: float=...) -> None:
+        ...
+
+    def issue_token(self, task_id: TaskId, normalized_input: JsonObject, *, summary: str='', now_epoch: Optional[float]=None) -> PendingApprovalRecord:
+        ...
+
+    def consume_token(self, token: str, task_id: TaskId, normalized_input: JsonObject, *, now_epoch: Optional[float]=None) -> PendingApprovalRecord:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class CallerEnvironment:
+    mode: CallerMode
+    dialect: Optional[str] = None
+    stdin_isatty: bool = False
+    stdout_isatty: bool = False
+
+class CallerMode(Enum):
+    HUMAN_TTY = 'human'
+    NON_TTY = 'non_tty'
+    AGENT = 'agent'
+    CI_PIPELINE = 'ci'
+
+@dataclass(frozen=True, slots=True)
+class CliArgSpec:
+    field: str
+    name: str
+    type_name: str
+    required: bool
+    summary: str = ''
+    choices: Optional[tuple[str, ...]] = None
+    default: JsonValue = None
+
+    @property
+    def is_variadic(self) -> bool:
+        ...
+
+    def to_json_dict(self) -> JsonObject:
+        ...
+
+    @classmethod
+    def from_json_dict(cls, doc: Mapping[str, object]) -> CliArgSpec:
+        ...
+
+@dataclass(slots=True)
+class CliCommandNode:
+    canonical_path: tuple[str, ...]
+    summary: str = ''
+    aliases: tuple[str, ...] = ()
+    owner_module: Optional[ModuleId] = None
+    default_task: Optional[IndexedTaskEntry] = None
+    children: dict[str, CliCommandNode] = field(default_factory=dict)
+    alias_to_child: dict[str, str] = field(default_factory=dict)
+
+class CliInputStream(Protocol):
+
+    def isatty(self) -> bool:
+        ...
+
+    def readline(self) -> str:
+        ...
+
+class CliKernelSession(Protocol):
+
+    @property
+    def dispatcher(self) -> RuntimeDispatcher:
+        ...
+
+    @property
+    def config_store(self) -> Optional[ConfigStore]:
+        ...
+
+    def apply_caller_dialect(self, dialect: Optional[str], raw_env_locale: Optional[str]=None) -> None:
+        ...
+
+    def resolve_task_output_type(self, task_id: TaskId) -> Optional[object]:
+        ...
+
+    def resolve_task_presentation(self, task_entry: IndexedTaskEntry, raw_value: JsonValue, *, render_human: bool) -> tuple[Optional[str], Optional[int]]:
+        ...
+
+    def has_deferred_daemon(self) -> bool:
+        ...
+
+    def run_deferred_daemon(self, *, on_ready: Optional[Callable[[], None]]=None) -> tuple[bool, int]:
+        ...
+
+    def consume_post_close_exit_code(self) -> Optional[int]:
+        ...
+
+    def close(self) -> None:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class CliOptionSpec:
+    field: str
+    long_name: str
+    short: Optional[str]
+    type_name: str
+    required: bool
+    default: JsonValue = None
+    group: Optional[str] = None
+    choices: Optional[tuple[str, ...]] = None
+    summary: str = ''
+
+    @property
+    def is_multi(self) -> bool:
+        ...
+
+    def to_json_dict(self) -> JsonObject:
+        ...
+
+    @classmethod
+    def from_json_dict(cls, doc: Mapping[str, object]) -> CliOptionSpec:
+        ...
+
+class CliOutputStream(Protocol):
+
+    def isatty(self) -> bool:
+        ...
+
+    def write(self, s: str) -> object:
+        ...
+
+    def flush(self) -> None:
+        ...
+
+class CliRouteKind(Enum):
+    HELP = 'help'
+    TASK = 'task'
+
+@dataclass(frozen=True, slots=True)
+class CliRouteResolution:
+    kind: CliRouteKind
+    node: CliCommandNode
+    task_entry: Optional[IndexedTaskEntry] = None
+    normalized_input: JsonObject = field(default_factory=dict)
+
+@dataclass(frozen=True, slots=True)
+class CliSubscriptionSpec:
+    event_id: EventId
+    payload_filter: Optional[Mapping[str, tuple[JsonPrimitive, ...]]] = None
+
+    def to_json_dict(self) -> JsonObject:
+        ...
+
+    @classmethod
+    def from_json_dict(cls, doc: Mapping[str, object]) -> CliSubscriptionSpec:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class GlobalCliFlags:
+    help_requested: bool = False
+    json_output: bool = False
+    force_cold: bool = False
+    approve_token: Optional[str] = None
+    remaining_args: tuple[str, ...] = ()
+
+class HelpRenderer:
+
+    def __init__(self, caller_mode: CallerMode=CallerMode.HUMAN_TTY) -> None:
+        ...
+
+    @property
+    def compact_mode(self) -> bool:
+        ...
+
+    def render_node(self, node: CliCommandNode) -> str:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class IndexedTaskEntry:
+    task_id: TaskId
+    command_path: tuple[str, ...]
+    aliases: tuple[str, ...]
+    summary: str
+    usage_pros: tuple[str, ...]
+    usage_cons: tuple[str, ...]
+    exposure: TaskExposure
+    security_tier: SecurityTier
+    dispatch_mode: DispatchMode
+    interactive_tty: bool
+    args: tuple[CliArgSpec, ...] = ()
+    options: tuple[CliOptionSpec, ...] = ()
+    subscriptions: tuple[CliSubscriptionSpec, ...] = ()
+    periodic: Optional[PeriodicScheduleSpec] = None
+    mutation_scope: SelfMutationScope = SelfMutationScope.NONE
+    resource_key: Optional[str] = None
+    concurrency_mode: ConcurrencyMode = ConcurrencyMode.PARALLEL
+    timeout_ms: Optional[int] = None
+    void_output: bool = False
+    custom_render: bool = False
+    custom_exit_code: bool = False
+
+    def to_route_spec(self) -> TaskRouteSpec:
+        ...
+
+    def to_json_dict(self) -> JsonObject:
+        ...
+
+    @classmethod
+    def from_json_dict(cls, doc: Mapping[str, object]) -> IndexedTaskEntry:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class ModuleTasksIndex:
+    module_id: ModuleId
+    module_aliases: tuple[str, ...] = ()
+    description: str = ''
+    tasks: tuple[IndexedTaskEntry, ...] = ()
+    schema_version: int = TASKS_INDEX_SCHEMA_VERSION
+
+    def to_route_specs(self) -> tuple[TaskRouteSpec, ...]:
+        ...
+
+    def to_json_dict(self) -> JsonObject:
+        ...
+
+    @classmethod
+    def from_json_dict(cls, doc: Mapping[str, object]) -> ModuleTasksIndex:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class PendingApprovalRecord:
+    token: str
+    task_id: TaskId
+    args_hash: str
+    expires_at_epoch: float
+    summary: str = ''
+
+    def to_json_dict(self) -> JsonObject:
+        ...
+
+    @classmethod
+    def try_from_json(cls, doc: object) -> Optional[PendingApprovalRecord]:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class SecurityGateResult:
+    approval_scope: frozenset[TaskId] = frozenset()
+
+class WorkspaceTasksIndexCache:
+
+    def __init__(self, yscb_root: HostPath, *, builtin_indices: Sequence[ModuleTasksIndex]=()) -> None:
+        ...
+
+    def load_all(self, *, force_rebuild: bool=False) -> tuple[ModuleTasksIndex, ...]:
+        ...
+__all__: tuple[str, ...] = ('ApprovalTokenStore', 'CLI_DEFAULT_PROVIDER_URL', 'CLI_DEFAULT_SELF_UPDATE_URL', 'CallerEnvironment', 'CallerMode', 'CliArgSpec', 'CliCommandNode', 'CliInputStream', 'CliKernelFactoryFn', 'CliKernelSession', 'CliOptionSpec', 'CliOutputStream', 'CliRouteKind', 'CliRouteResolution', 'CliSubscriptionSpec', 'GlobalCliFlags', 'HelpRenderer', 'IndexedTaskEntry', 'ModuleTasksIndex', 'PendingApprovalRecord', 'SecurityGateResult', 'TASKS_INDEX_SCHEMA_VERSION', 'WorkspaceTasksIndexCache', 'build_cli_command_tree', 'compile_tasks_index', 'compute_approval_args_hash', 'detect_caller_environment', 'detect_caller_mode', 'evaluate_security_gate', 'extract_global_flags', 'main', 'register_cli_kernel_factory', 'render_task_help', 'resolve_cli_invocation')
+```
+
+---
+
+## 6. 必測驗收門檻 (Verification Gate)
 
 1. **零匯入冷自省驗證**：於測試中攔截所有非 `core` 模組 `import`，驗證 `yscb --help`、`yscb <mod> -h`、未知指令拼寫建議與非法參數報錯全程零匯入任何業務模組。
 2. **1.x `HelpRenderer` 完整對齊**：驗證 `Security` 標籤、正交互斥群組碰撞報錯、`Pros`/`Cons` 區塊、群組預設動作（`DN-13`）與 `Did you mean` 建議。

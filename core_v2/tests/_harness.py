@@ -635,7 +635,7 @@ class Tier0TimeoutTask(Task[HoldMsIn, SimpleOut]):
     def metadata(self) -> TaskMetadata[HoldMsIn, SimpleOut]:
         return TaskMetadata(
             TaskId("space.tier0_timeout"), HoldMsIn, SimpleOut,
-            resource_key="rc04_serial", concurrency_mode=ConcurrencyMode.SERIALIZE, timeout_ms=60,
+            resource_key="rc04_serial", concurrency_mode=ConcurrencyMode.SERIALIZE, timeout_ms=120,
         )
     def run(self, req: HoldMsIn, ctx: TaskContext) -> SimpleOut:
         if req.ignore_cancel:
@@ -2129,7 +2129,7 @@ def provision_core_tier0_modules(ws: Path) -> None:
                 {"task_id": "space.echo_tier0", "exposure": "cli_and_sdk", "cli_path": ["space", "echo"]},
                 {"task_id": "space.daemon_metrics", "exposure": "sdk_only", "dispatch_mode": "daemon_only"},
                 {"task_id": "space.hold_lock_ms", "resource_key": "rc04_serial", "concurrency_mode": "serialize"},
-                {"task_id": "space.tier0_timeout", "resource_key": "rc04_serial", "concurrency_mode": "serialize", "timeout_ms": 60},
+                {"task_id": "space.tier0_timeout", "resource_key": "rc04_serial", "concurrency_mode": "serialize", "timeout_ms": 120},
                 {"task_id": "space.giant_reply", "dispatch_mode": "daemon_only"},
                 {"task_id": "space.orchestrate_child_ws", "dispatch_mode": "daemon_only"},
                 {

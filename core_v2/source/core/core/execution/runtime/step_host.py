@@ -18,6 +18,8 @@ from core.execution.runtime.coordinator import PriorityHandle
 from core.execution.runtime.gates import LifecycleReloadGate, compute_coalesce_context_suffix
 from core.execution.runtime.module_slot import LocalStepExecutionSpec, StepContextCallbacks
 from core.execution.runtime.route_index import RouteIndexRegistry
+from core.execution.runtime.services import active_step_invocation_scope
+from core.metadata.contributes import active_cross_workspace_call_scope
 from core.execution.runtime.turn_session import ActiveStepBinding, TurnSessionRegistry, merge_deadlines
 from core.execution.runtime.wire import (
     DaemonRpcInvokeReply, WorkerCallbackContext, WorkerCallbackEnvelope, WorkerCallbackReply,
@@ -365,9 +367,15 @@ class StepHostRunner:
         escaped_base: list[BaseException] = []
         done_ev, wake_ev = threading.Event(), threading.Event()
 
+        c_stack = step_req.propagation.call_stack
+        is_cross_ws_caller = len(c_stack) >= 2 and c_stack[-2][0] != step_req.workspace_root
+        parent_mod = c_stack[-2][1].module_id if (len(c_stack) >= 2 and not is_cross_ws_caller) else None
+        eff_ctree_id = step_req.propagation.call_tree_id or turn.turn_id
+
         def _worker_main() -> None:
             try:
-                rep_w = slots.execute_step_locally(local_spec)
+                with active_step_invocation_scope(parent_mod, eff_ctree_id), active_cross_workspace_call_scope(is_cross_ws_caller):
+                    rep_w = slots.execute_step_locally(local_spec)
                 holder.append(rep_w)
                 self._sessions.record_step_teardown_diags(turn, rep_w.teardown_diagnostics)
             except BaseException as base_exc:
@@ -400,8 +408,9 @@ class StepHostRunner:
             return (StepExecutionResult(ok=False, error=exc.detail.with_fallback_task(str(spec.task_id))), None)
         prop, srid = step_req.propagation, uuid.uuid4().hex
         ctree = prop.call_tree_id or turn.turn_id
+        auth_prop = replace(prop, turn_id=turn.turn_id, call_tree_id=ctree)
         cb_ctx = WorkerCallbackContext(
-            propagation=replace(prop, turn_id=turn.turn_id, call_tree_id=ctree),
+            propagation=auth_prop,
             caller_cwd=step_req.caller_cwd, caller_env=step_req.caller_env,
             parent_routing_policy=step_req.routing_policy, step_run_id=srid,
         )
@@ -419,8 +428,14 @@ class StepHostRunner:
             bypass_reload_gate=self._gates.is_request_reload_exempt(parent_req, self.is_reentrant_retiring),
         )
         step_bind = ActiveStepBinding(
-            cancel_token=step_cancel, prio_handle=priority_getter, approval_scope=step_req.approval_scope,
-            allow_conditional=step_req.allow_conditional, deadline_fn=lambda: env.current_guard().deadline,
+            cancel_token=step_cancel,
+            prio_handle=priority_getter,
+            turn_id=turn.turn_id,
+            propagation=auth_prop,
+            parent_routing_policy=step_req.routing_policy,
+            approval_scope=step_req.approval_scope,
+            allow_conditional=step_req.allow_conditional,
+            deadline_fn=lambda: env.current_guard().deadline,
         )
         self._sessions.bind_active_step(srid, step_bind)
         try:

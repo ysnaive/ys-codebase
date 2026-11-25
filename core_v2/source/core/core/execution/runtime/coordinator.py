@@ -176,6 +176,25 @@ def wait_on_event_with_cancel(ev: threading.Event, cancel_token: CancellationTok
     cancel_token.raise_if_cancelled()
 
 
+def _wait_on_event_dynamic(
+    ev: threading.Event,
+    cancel_token: CancellationToken,
+    deadline_fn: Callable[[], Optional[float]],
+) -> None:
+    while not ev.is_set():
+        cancel_token.raise_if_cancelled()
+        dl = deadline_fn()
+        rem = 0.02
+        if dl is not None:
+            left = dl - time.monotonic()
+            if left <= 0.0:
+                cancel_token.raise_if_cancelled()
+                raise YscbError(ErrorCode.TASK_TIMEOUT, "Timed out waiting in ResourceCoordinator.")
+            rem = min(rem, left)
+        ev.wait(timeout=rem)
+    cancel_token.raise_if_cancelled()
+
+
 class StepFlight(Generic[TVal]):
     """Top-level same-workspace single-flight latch sharing cancellation, priority elevation, progress, and Step 5 drain."""
 
@@ -214,7 +233,14 @@ class StepFlight(Generic[TVal]):
                 c for pid, c in self._callers.items()
                 if not c.turn_cancel.is_cancelled and (post_step or (pid in self._slot_detachers and not c.step_cancel.is_cancelled))
             ]
+            all_cancelled = bool(self._callers) and all(
+                c.turn_cancel.is_cancelled or (not post_step and c.step_cancel.is_cancelled)
+                for c in self._callers.values()
+            )
         if not live:
+            host_tok = self.post_step_cancel.host_token if post_step else self.cancel_group.host_token
+            if host_tok.is_cancelled or all_cancelled:
+                return None
             return 0.0
         return None if any(c.deadline is None for c in live) else max(c.deadline for c in live if c.deadline is not None)
 
@@ -607,9 +633,16 @@ def _read_live_cross_proc_owner(owner_path: HostPath) -> Optional[tuple[HolderId
     return (ident, raw_mode if type(raw_mode) is str else "")
 
 
-def _try_acquire_incoming_cross_proc_reentry(locks_dir: HostPath, spec: ResourceAcquireSpec, timeout_sec: Optional[float]) -> Optional[FileLock]:
+def _try_acquire_incoming_cross_proc_reentry(
+    locks_dir: HostPath,
+    spec: ResourceAcquireSpec,
+    timeout_sec: Optional[float],
+    *,
+    cancel_token: Optional[CancellationToken] = None,
+) -> Optional[FileLock]:
     if not spec.resource_key:
         return None
+    eff_cancel = cancel_token if cancel_token is not None else spec.cancel_token
     paths = CrossProcessLockPaths.for_stem(locks_dir, f"res_{hashlib.sha256(spec.resource_key.encode('utf-8')).hexdigest()[:24]}", allow_transitions=False)
     live_owner = _read_live_cross_proc_owner(paths.owner_path)
     if live_owner is None or not _spec_matches_ident(spec.call_tree_id, spec.turn_id, spec.call_stack, live_owner[0]):
@@ -618,7 +651,7 @@ def _try_acquire_incoming_cross_proc_reentry(locks_dir: HostPath, spec: Resource
         return acquire_verified_cross_proc_pin(
             paths.owner_path, paths.pin_path,
             lambda ow: (lo := _read_live_cross_proc_owner(ow)) is not None and lo[1] == ConcurrencyMode.SERIALIZE.value and _spec_matches_ident(spec.call_tree_id, spec.turn_id, spec.call_stack, lo[0]),
-            timeout_sec=timeout_sec if timeout_sec is not None else 10.0, cancel_token=spec.cancel_token,
+            timeout_sec=timeout_sec if timeout_sec is not None else 10.0, cancel_token=eff_cancel,
         )
     src_tid = str(spec.call_stack[-1][1]) if spec.call_stack else None
     raise YscbError(ErrorCode.ILLEGAL_LOCK_REENTRANCY, f"Cannot re-enter resource_key '{spec.resource_key}' with {spec.mode.value} across process CallStack.", source_task=src_tid)
@@ -809,19 +842,64 @@ def _release_holder_if_active(
         _defer_lingering_release(bucket, holder, "yscb-local-lingering", lambda: None, lambda: _release_and_promote_next_locked(bucket, holder))
         return
     _release_and_promote_next_locked(bucket, holder)
+def _acquire_os_lock_dynamic(
+    lock_file: FileLock,
+    cancel_token: CancellationToken,
+    deadline_fn: Callable[[], Optional[float]],
+) -> None:
+    while True:
+        cancel_token.raise_if_cancelled()
+        dl = deadline_fn()
+        if dl is None:
+            try:
+                if lock_file.acquire(shared=False, blocking=True, timeout_sec=0.05, cancel_token=cancel_token):
+                    return
+            except YscbError as exc:
+                if exc.detail.code != ErrorCode.TASK_TIMEOUT:
+                    raise
+                continue
+        else:
+            rem = dl - time.monotonic()
+            if rem <= 0.0:
+                cancel_token.raise_if_cancelled()
+                raise YscbError(ErrorCode.TASK_TIMEOUT, f"Timed out waiting for file lock: {lock_file.lock_path}")
+            try:
+                if lock_file.acquire(shared=False, blocking=True, timeout_sec=min(0.05, rem), cancel_token=cancel_token):
+                    return
+            except YscbError as exc:
+                if exc.detail.code != ErrorCode.TASK_TIMEOUT:
+                    raise
+                cancel_token.raise_if_cancelled()
+                next_dl = deadline_fn()
+                if next_dl is not None and time.monotonic() >= next_dl:
+                    raise
+                continue
+
+
 def _acquire_or_reenter_os_lock(
     locks_dir: Optional[HostPath], spec: ResourceAcquireSpec, bucket: _ResourceBucket,
-    holder: _ActiveHolder, timeout_sec: Optional[float],
+    holder: _ActiveHolder, deadline_fn: Callable[[], Optional[float]],
 ) -> tuple[Optional[CrossProcessLockPaths], bool, Optional[FileLock]]:
     if locks_dir is None or not spec.resource_key:
         return (None, False, None)
+    eff_cancel = holder.cancel_token
     paths = CrossProcessLockPaths.for_stem(locks_dir, f"res_{hashlib.sha256(spec.resource_key.encode('utf-8')).hexdigest()[:24]}", allow_transitions=False)
-    pin_lk = _try_acquire_incoming_cross_proc_reentry(locks_dir, spec, timeout_sec)
+    cur_dl = deadline_fn()
+    reentry_rem = max(0.0, cur_dl - time.monotonic()) if cur_dl is not None else None
+    pin_lk = _try_acquire_incoming_cross_proc_reentry(locks_dir, spec, reentry_rem, cancel_token=eff_cancel)
     if pin_lk is not None:
         with bucket.cond:
             holder.os_lock_live = True
         return (paths, False, pin_lk)
-    paths.lock_file.acquire(shared=False, blocking=True, timeout_sec=timeout_sec, cancel_token=spec.cancel_token)
+    if holder.flight is not None:
+        _acquire_os_lock_dynamic(paths.lock_file, eff_cancel, deadline_fn)
+    else:
+        fixed_dl = deadline_fn()
+        fixed_rem = (fixed_dl - time.monotonic()) if fixed_dl is not None else None
+        if fixed_rem is not None and fixed_rem <= 0.0:
+            eff_cancel.raise_if_cancelled()
+            raise YscbError(ErrorCode.TASK_TIMEOUT, f"Timed out waiting for file lock: {paths.lock_file.lock_path}")
+        paths.lock_file.acquire(shared=False, blocking=True, timeout_sec=fixed_rem, cancel_token=eff_cancel)
     owner_doc: JsonObject = {
         "pid": os.getpid(), "call_tree_id": holder.call_tree_id or holder.turn_id, "turn_id": holder.turn_id,
         "mode": holder.mode.value, "call_stack": [[str(ws), str(tid)] for ws, tid in holder.call_stack],
@@ -839,10 +917,10 @@ def _acquire_or_reenter_os_lock(
 
 def _await_queued_promotion(
     bucket: _ResourceBucket, waiter: _QueuedWaiter, cancel_token: CancellationToken,
-    timeout_sec: Optional[float], resource_key: Optional[str],
+    deadline_fn: Callable[[], Optional[float]], resource_key: Optional[str],
 ) -> None:
     try:
-        wait_on_event_with_cancel(waiter.wake_event, cancel_token, timeout_sec)
+        _wait_on_event_dynamic(waiter.wake_event, cancel_token, deadline_fn)
     except BaseException:
         with bucket.cond:
             is_active = bucket.active is waiter.holder
@@ -864,10 +942,19 @@ def _run_bucket_holder_execution(
     holder = require_non_none(adm.holder if adm.holder is not None else (adm.waiter.holder if adm.waiter is not None else None))
     paths: Optional[CrossProcessLockPaths] = None
     owns_os_lock, pin_lk = False, None
+    own_deadline = holder.deadline if holder.deadline is not None else ((time.monotonic() + timeout_sec) if timeout_sec is not None else None)
+    deadline_fn: Callable[[], Optional[float]] = (
+        holder.flight.effective_deadline if holder.flight is not None else (lambda: own_deadline)
+    )
+    flight_completed = False
+    leader_timed_out_waiting = False
+    eff_dl_before_complete: Optional[float] = own_deadline
     try:
         if adm.waiter is not None:
-            _await_queued_promotion(bucket, adm.waiter, spec.cancel_token, timeout_sec, spec.resource_key)
-        paths, owns_os_lock, pin_lk = _acquire_or_reenter_os_lock(locks_dir, spec, bucket, holder, timeout_sec)
+            _await_queued_promotion(bucket, adm.waiter, holder.cancel_token, deadline_fn, spec.resource_key)
+        paths, owns_os_lock, pin_lk = _acquire_or_reenter_os_lock(locks_dir, spec, bucket, holder, deadline_fn)
+        if holder.flight is not None and own_deadline is not None and time.monotonic() >= own_deadline:
+            leader_timed_out_waiting = True
         with _serial_execution_turn(
             bucket, holder.turn_id, holder.call_tree_id, holder.call_stack, None,
             holder.cancel_token, timeout_sec, spec.resource_key, reset_root=True,
@@ -878,16 +965,28 @@ def _run_bucket_holder_execution(
             with bucket.cond:
                 holder.self_exit_guard = guard_ev
         if holder.flight is not None:
+            eff_dl_before_complete = holder.flight.effective_deadline()
             holder.flight.complete(outcome=res)
-        return CoordinatedExecution(False, adm.caller_slot_id, res)
+            flight_completed = True
     except BaseException as exc:
-        if holder.flight is not None:
+        if holder.flight is not None and not flight_completed:
             holder.flight.complete(raised_exc=exc)
         raise
     finally:
         if adm.detach_fn is not None:
             adm.detach_fn()
         _release_holder_if_active(bucket, holder, paths, owns_os_lock, pin_lk)
+    if holder.flight is not None:
+        if spec.cancel_token.is_cancelled:
+            holder.flight.detach_post_step(adm.caller_slot_id)
+            spec.cancel_token.raise_if_cancelled()
+        extended_by_peer = own_deadline is not None and (
+            eff_dl_before_complete is None or eff_dl_before_complete > own_deadline
+        )
+        if leader_timed_out_waiting or (extended_by_peer and own_deadline is not None and time.monotonic() >= own_deadline):
+            holder.flight.detach_post_step(adm.caller_slot_id)
+            raise YscbError(ErrorCode.TASK_TIMEOUT, "Timed out waiting in ResourceCoordinator.")
+    return CoordinatedExecution(False, adm.caller_slot_id, res)
 
 
 class ResourceCoordinator:

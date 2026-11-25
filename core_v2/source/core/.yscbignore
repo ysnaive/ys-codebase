@@ -1,0 +1,12 @@
+# Development and cache artifacts excluded from core release packages
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.tmp
+*.bak
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+tests/

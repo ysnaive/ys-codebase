@@ -5,7 +5,7 @@
 > **建議內部切分**：`models.py`、`provider.py`、`mirror.py`、`solver.py`、`deployer.py`、`update_checker.py`、`engine.py`、`__init__.py`
 > **依賴上限（Allowed Imports）**：`foundation/*`、`filesystem.{fs, vfs}`、`metadata.{config, contributes}`、`packaging.env`
 > **禁止反向依賴（Forbidden Imports）**：`execution/*`、`surface/*`（**100% 純離線引擎，嚴禁認識 `Task` / `Event` / `Daemon` / `QUIESCE`**）
-> **狀態**：`Draft — Design Frozen for Wave 1.2 Implementation`
+> **狀態**：`Active Living Spec — Implementation-Aligned SSOT`
 
 > [!NOTE]
 > **實作彈性邊界**：2.0 Zip 套件結構（`tasks.index.json`、`*.tmpl` 模板與完整剝除規則）、`index.json` 遠端協議、`UpgradeTransition` 與 `PurgeLevel` 語意屬硬契約；內部下載器與求解輔助結構可由遠端實作端微調。
@@ -35,58 +35,43 @@
 
 ```python
 from __future__ import annotations
-
-from dataclasses import dataclass
-from enum import Enum
-from typing import Mapping, Optional, Sequence
-
+from abc import ABC, abstractmethod
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from enum import Enum, Flag
+import io
+import os
+from pathlib import Path
+import sqlite3
+import subprocess
+import sys
+import threading
+from typing import Annotated, BinaryIO, Callable, ClassVar, Final, Generic, Literal, Optional, Protocol, TextIO, TypeAlias, TypeVar, overload, runtime_checkable
+from core.filesystem.fs import FileLock, IGNORED_FS_PREFIXES, MAX_JSON_FILE_BYTES, assert_no_symlink_raw_path, atomic_write_bytes, atomic_write_json, has_symlink_raw_path, is_atomic_staging_filename, is_symlink_or_reparse, read_json_dict, read_nofollow_regular_bytes, resolve_contained_subpath, silent_unlink, try_resolve_contained_subpath, walk_nonsymlink_dir_tree
 from core.filesystem.vfs import KernelVfs
-from core.foundation.observability import CancellationToken
-from core.foundation.primitives import HostPath, ModuleId, SemVer4, VersionConstraint
-from core.metadata.config import ConfigStore, ModuleManifest, ReleaseUrgency, SnapshotVault
+from core.foundation import CancellationToken, ErrorCode, HostPath, IS_WINDOWS, JsonObject, JsonValue, ModuleId, MutableJsonObject, SemVer4, SemanticUri, TEST_SANDBOX_ENV_KEY, VersionConstraint, YscbError, clamp_positive_sec, is_process_alive, is_public_env_truthy, is_valid_relative_segment, require_pure_bool, require_pure_str, require_typed_tuple, safe_exception_summary, strict_parse_json_object
+from core.metadata.config import ConfigStore, HostConfig, InstalledModuleRecord, ModuleManifest, ReleaseUrgency, SnapshotVault, parse_manifest_dict
 from core.packaging.env import EnvSpec, ImmutableVenvPool
 
+class AtomicPackageDeployer:
 
-class PurgeLevel(Enum):
-    NONE = "none"      # 僅移除 .modules/<mod> 與 yscb.config.json 登錄（保留設定與資料）
-    CLEAN = "clean"    # 額外清除本機衍生空間：cache://<mod> 與 storage.local://<mod>
-    PURGE = "purge"    # 全清五大資料空間：config / config.local / storage / storage.local / cache
+    def __init__(self, *, yscb_root: HostPath, config_store: ConfigStore, vfs: KernelVfs) -> None:
+        ...
 
+    def materialize_module(self, module_id: ModuleId, zip_path: HostPath, *, release_override: Optional[IndexReleaseRecord]=None) -> ModuleManifest:
+        ...
 
-@dataclass(frozen=True, slots=True)
-class IndexReleaseRecord:
-    version: SemVer4
-    sha256: str
-    status: str = "active"  # "active" | "pruned"
-    dependencies: Mapping[ModuleId, VersionConstraint] = ...
-    urgency: ReleaseUrgency = ReleaseUrgency.RECOMMENDED
-    summary: str = ""
-    yanked: bool = False
+    def remove_module(self, module_id: ModuleId, *, purge_level: PurgeLevel=PurgeLevel.NONE) -> None:
+        ...
 
+class DependencySolver:
 
-@dataclass(frozen=True, slots=True)
-class RemoteModuleIndex:
-    module_id: ModuleId
-    versions: tuple[SemVer4, ...]
-    releases: Mapping[str, IndexReleaseRecord]
+    def resolve_install_plan(self, requests: Sequence[PackageRequest], installed: Mapping[ModuleId, SemVer4], provider: ProviderClient, mirror: MirrorStore, *, same_major_only: bool=False) -> Mapping[ModuleId, tuple[SemVer4, Optional[IndexReleaseRecord]]]:
+        ...
 
-
-@dataclass(frozen=True, slots=True)
-class PackageRequest:
-    module_id: ModuleId
-    version_spec: Optional[str] = None  # 例 "2.1.0", "^2.0", "build"
-    is_build: bool = False
-    provider_override: Optional[str] = None
-
-
-@dataclass(frozen=True, slots=True)
-class UpgradeTransition:
-    """回報予上層系統 Task，供其經 RuntimeDispatcher 派發模組內部遷移 Task。"""
-    module_id: ModuleId
-    old_version: Optional[SemVer4]
-    new_version: SemVer4
-    is_upgrade: bool
-
+    def reconcile_installed_dependencies(self, installed: Mapping[ModuleId, SemVer4], provider: ProviderClient, mirror: MirrorStore) -> Mapping[ModuleId, SemVer4]:
+        ...
 
 @dataclass(frozen=True, slots=True)
 class DeploymentReport:
@@ -96,9 +81,97 @@ class DeploymentReport:
     env_specs: Mapping[ModuleId, EnvSpec]
     snapshot_id: Optional[str] = None
     reconciled_dependencies: tuple[ModuleId, ...] = ()
-    onboarding_hints: Mapping[ModuleId, tuple[str, ...]] = ...
-```
+    onboarding_hints: Mapping[ModuleId, tuple[str, ...]] = field(default_factory=dict)
 
+@dataclass(frozen=True, slots=True)
+class IndexReleaseRecord:
+    version: SemVer4
+    sha256: str
+    status: str = 'active'
+    dependencies: Mapping[ModuleId, VersionConstraint] = ...
+    urgency: ReleaseUrgency = ReleaseUrgency.RECOMMENDED
+    summary: str = ''
+    yanked: bool = False
+
+class MirrorStore:
+
+    def __init__(self, *, yscb_root: HostPath) -> None:
+        ...
+
+    def has_package(self, module_id: ModuleId, version: SemVer4) -> bool:
+        ...
+
+    def get_package_path(self, module_id: ModuleId, version: SemVer4) -> HostPath:
+        ...
+
+    def verify_zip_integrity(self, zip_path: HostPath, *, expected_sha256: Optional[str]=None, ignore_sha256: bool=False) -> None:
+        ...
+
+    def save_index_cache(self, index: RemoteModuleIndex) -> None:
+        ...
+
+    def load_index_cache(self, module_id: ModuleId) -> Optional[RemoteModuleIndex]:
+        ...
+
+class OfflinePackageEngine:
+
+    def __init__(self, *, host_dir: HostPath, yscb_root: HostPath, config_store: ConfigStore, snapshot_vault: SnapshotVault, env_pool: ImmutableVenvPool, vfs: KernelVfs) -> None:
+        ...
+
+    @contextmanager
+    def migration_rollback_scope(self) -> Iterator[Callable[[], None]]:
+        ...
+
+    def install(self, requests: Sequence[PackageRequest], *, force: bool=False, ignore_sha256: bool=False, offline: bool=False, cancel_token: Optional[CancellationToken]=None) -> DeploymentReport:
+        ...
+
+    def update(self, modules: Sequence[ModuleId]=(), *, provider: Optional[str]=None, ignore_sha256: bool=False, offline: bool=False, cancel_token: Optional[CancellationToken]=None) -> DeploymentReport:
+        ...
+
+    def restore(self, *, provider: Optional[str]=None, force: bool=False, ignore_sha256: bool=False, offline: bool=False, cancel_token: Optional[CancellationToken]=None) -> DeploymentReport:
+        ...
+
+    def validate_remove_targets(self, modules: Sequence[ModuleId], *, force: bool=False) -> tuple[ModuleId, ...]:
+        ...
+
+    def remove(self, modules: Sequence[ModuleId], *, purge_level: PurgeLevel=PurgeLevel.NONE, force: bool=False) -> DeploymentReport:
+        ...
+
+    def reload_from_mirror(self, *, offline: bool=True) -> DeploymentReport:
+        ...
+
+    def rollback(self, snapshot_id: Optional[str]=None) -> DeploymentReport:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class PackageRequest:
+    module_id: ModuleId
+    version_spec: Optional[str] = None
+    is_build: bool = False
+    provider_override: Optional[str] = None
+
+class ProviderClient:
+    MAX_REMOTE_PACKAGE_BYTES: int = 20 * 1024 * 1024
+
+    def __init__(self, *, yscb_root: HostPath, default_provider: str, offline: bool=False, timeout_sec: float=15.0, host_dir: Optional[HostPath]=None) -> None:
+        ...
+
+    def fetch_index(self, module_id: ModuleId, *, provider: Optional[str]=None) -> RemoteModuleIndex:
+        ...
+
+    def fetch_package_zip(self, module_id: ModuleId, version: SemVer4, dest_zip: HostPath, *, provider: Optional[str]=None, expected_sha256: Optional[str]=None, ignore_sha256: bool=False) -> HostPath:
+        ...
+
+class PurgeLevel(Enum):
+    NONE = 'none'
+    CLEAN = 'clean'
+    PURGE = 'purge'
+
+@dataclass(frozen=True, slots=True)
+class RemoteModuleIndex:
+    module_id: ModuleId
+    versions: tuple[SemVer4, ...]
+    releases: Mapping[str, IndexReleaseRecord]
 
 @dataclass(frozen=True, slots=True)
 class UpdateCandidate:
@@ -108,113 +181,30 @@ class UpdateCandidate:
     max_urgency: ReleaseUrgency
     summaries: tuple[str, ...] = ()
 
-
 @dataclass(frozen=True, slots=True)
 class UpdateCheckReport:
     candidates: tuple[UpdateCandidate, ...] = ()
     yscb_host_drift: bool = False
-    checked_at_utc: str = ""
+    checked_at_utc: str = ''
     throttled: bool = False
 
-
-class ProviderClient:
-    """多來源套件獲取器（本地目錄 / HTTP(S) / @build / 嚴格同版動態打包 / --offline 隔離）。"""
-    MAX_REMOTE_PACKAGE_BYTES: int = 20 * 1024 * 1024  # 20 MiB 串流下載上限
-
-    def __init__(
-        self, *, yscb_root: HostPath, default_provider: str, offline: bool = False,
-        timeout_sec: float = 15.0,
-    ) -> None: ...
-    def fetch_index(self, module_id: ModuleId, *, provider: Optional[str] = None) -> RemoteModuleIndex: ...
-    def fetch_package_zip(
-        self, module_id: ModuleId, version: SemVer4, dest_zip: HostPath, *,
-        provider: Optional[str] = None, expected_sha256: Optional[str] = None,
-        ignore_sha256: bool = False,
-    ) -> HostPath: ...
-
-
-class MirrorStore:
-    """不可變本機鏡像倉（.mirror/<mod>/<ver>.zip 與 index.json 離線快取）。"""
-    def __init__(self, *, yscb_root: HostPath) -> None: ...
-    def has_package(self, module_id: ModuleId, version: SemVer4) -> bool: ...
-    def get_package_path(self, module_id: ModuleId, version: SemVer4) -> HostPath: ...
-    def verify_zip_integrity(
-        self, zip_path: HostPath, *, expected_sha256: Optional[str] = None, ignore_sha256: bool = False,
-    ) -> None: ...
-    def save_index_cache(self, index: RemoteModuleIndex) -> None: ...
-    def load_index_cache(self, module_id: ModuleId) -> Optional[RemoteModuleIndex]: ...
-
-
-class DependencySolver:
-    """依賴約束交集求解與三態自癒引擎（core 先行、index.json releases 覆寫優先、同 Major 鎖定）。"""
-    def resolve_install_plan(
-        self,
-        requests: Sequence[PackageRequest],
-        installed: Mapping[ModuleId, SemVer4],
-        provider: ProviderClient,
-        mirror: MirrorStore,
-        *,
-        same_major_only: bool = False,
-    ) -> Mapping[ModuleId, tuple[SemVer4, Optional[IndexReleaseRecord]]]: ...
-
-    def reconcile_installed_dependencies(
-        self,
-        installed: Mapping[ModuleId, SemVer4],
-        provider: ProviderClient,
-        mirror: MirrorStore,
-    ) -> Mapping[ModuleId, SemVer4]: ...
-
-
-class AtomicPackageDeployer:
-    """Staging 預組裝、*.tmpl 模板部署與整目錄剝離、原子目錄替換與五大空間清理器。"""
-    def __init__(self, *, yscb_root: HostPath, config_store: ConfigStore, vfs: KernelVfs) -> None: ...
-    def materialize_module(
-        self,
-        module_id: ModuleId,
-        zip_path: HostPath,
-        *,
-        release_override: Optional[IndexReleaseRecord] = None,
-    ) -> ModuleManifest: ...
-    def remove_module(self, module_id: ModuleId, *, purge_level: PurgeLevel = PurgeLevel.NONE) -> None: ...
-
-
 class UpdateChecker:
-    """12 小時節流更新探測器（前置寫入 last_checked_at、跨 pruned 聚合 critical、yscb.py LF SHA-256 漂移）。"""
     DEFAULT_INTERVAL_SEC: float = 12 * 3600.0
     DEFAULT_TIMEOUT_SEC: float = 2.0
 
-    def __init__(
-        self, *, host_dir: HostPath, yscb_root: HostPath, config_store: ConfigStore,
-        provider: ProviderClient, self_update_url: str,
-    ) -> None: ...
-    def check_if_due(self, *, force: bool = False, offline: bool = False) -> UpdateCheckReport: ...
+    def __init__(self, *, host_dir: HostPath, yscb_root: HostPath, config_store: ConfigStore, provider: ProviderClient, self_update_url: str) -> None:
+        ...
 
+    def check_if_due(self, *, force: bool=False, offline: bool=False) -> UpdateCheckReport:
+        ...
 
-class OfflinePackageEngine:
-    """純離線批次交易套件引擎（組合 SnapshotVault / Provider / Mirror / Solver / EnvPool / Deployer）。"""
-    def __init__(
-        self, *, host_dir: HostPath, yscb_root: HostPath, config_store: ConfigStore,
-        snapshot_vault: SnapshotVault, env_pool: ImmutableVenvPool, vfs: KernelVfs,
-    ) -> None: ...
-
-    def install(
-        self, requests: Sequence[PackageRequest], *, force: bool = False,
-        ignore_sha256: bool = False, offline: bool = False, cancel_token: Optional[CancellationToken] = None,
-    ) -> DeploymentReport: ...
-    def update(
-        self, modules: Sequence[ModuleId] = (), *, provider: Optional[str] = None,
-        ignore_sha256: bool = False, offline: bool = False, cancel_token: Optional[CancellationToken] = None,
-    ) -> DeploymentReport: ...
-    def restore(
-        self, *, provider: Optional[str] = None, force: bool = False,
-        ignore_sha256: bool = False, offline: bool = False, cancel_token: Optional[CancellationToken] = None,
-    ) -> DeploymentReport: ...
-    def remove(
-        self, modules: Sequence[ModuleId], *, purge_level: PurgeLevel = PurgeLevel.NONE,
-        force: bool = False,
-    ) -> DeploymentReport: ...
-    def reload_from_mirror(self, *, offline: bool = True) -> DeploymentReport: ...
-    def rollback(self, snapshot_id: Optional[str] = None) -> DeploymentReport: ...
+@dataclass(frozen=True, slots=True)
+class UpgradeTransition:
+    module_id: ModuleId
+    old_version: Optional[SemVer4]
+    new_version: SemVer4
+    is_upgrade: bool
+__all__: tuple[str, ...] = ('AtomicPackageDeployer', 'DependencySolver', 'DeploymentReport', 'IndexReleaseRecord', 'MirrorStore', 'OfflinePackageEngine', 'PackageRequest', 'ProviderClient', 'PurgeLevel', 'RemoteModuleIndex', 'UpdateCandidate', 'UpdateCheckReport', 'UpdateChecker', 'UpgradeTransition')
 ```
 
 ---

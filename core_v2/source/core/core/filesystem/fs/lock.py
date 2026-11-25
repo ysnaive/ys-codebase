@@ -211,6 +211,10 @@ class FileLock:
         with self._guard:
             if self._phase == _LockPhase.RELEASING:
                 aborted = True
+                self._held_shared = None
+                self._phase = _LockPhase.IDLE
+                self._owner_tid = None
+                self._guard.notify_all()
             else:
                 self._fd = fd
                 self._held_shared = shared
@@ -218,7 +222,10 @@ class FileLock:
                 self._owner_tid = None
                 self._guard.notify_all()
         if aborted:
-            _os_unlock(fd)
+            try:
+                _os_unlock(fd)
+            finally:
+                _safe_close_fd(fd)
             raise TaskCancelledException(f"FileLock released during acquire: {self._lock_path}")
 
     def _wait_poll_slice(
@@ -258,6 +265,7 @@ class FileLock:
             if self._phase != _LockPhase.IDLE or self._fd is not None:
                 raise RuntimeError(f"FileLock already acquired or busy on this instance: {self._lock_path}")
             self._acquire_gen += 1
+            acq_gen = self._acquire_gen
             self._phase = _LockPhase.ACQUIRING
             self._owner_tid = threading.get_ident()
             self._release_cancel = CancellationToken()
@@ -278,7 +286,9 @@ class FileLock:
                     if self._phase == _LockPhase.RELEASING:
                         raise TaskCancelledException(f"FileLock aborted during acquire: {self._lock_path}")
                 if _try_acquire_under_xchg_fd(fd, xchg_fd, shared=shared):
-                    self._commit_acquired_fd(fd, shared=shared)
+                    committed_fd = fd
+                    fd = None
+                    self._commit_acquired_fd(committed_fd, shared=shared)
                     return True
                 if not blocking:
                     _safe_close_fd(fd)
@@ -295,12 +305,20 @@ class FileLock:
         except BaseException:
             if fd is not None:
                 _safe_close_fd(fd)
+            rollback_fd: Optional[int] = None
             with self._guard:
-                self._fd = None
-                self._held_shared = None
-                self._phase = _LockPhase.IDLE
-                self._owner_tid = None
-                self._guard.notify_all()
+                if self._acquire_gen == acq_gen:
+                    rollback_fd = self._fd
+                    self._fd = None
+                    self._held_shared = None
+                    self._phase = _LockPhase.IDLE
+                    self._owner_tid = None
+                    self._guard.notify_all()
+            if rollback_fd is not None:
+                try:
+                    _os_unlock(rollback_fd)
+                finally:
+                    _safe_close_fd(rollback_fd)
             raise
         finally:
             if xchg_fd is not None:

@@ -106,6 +106,9 @@ class DaemonWatcherConfig:
     on_space_changed_task: Optional[TaskId] = None
     on_config_changed_task: Optional[TaskId] = None
     watcher_debounce_sec: float = 0.5
+    poll_interval_sec: Optional[float] = None
+
+    def effective_poll_interval_sec(self) -> float: ...
 
 
 class SingleFlightDaemonSpawner(DaemonSpawner):

@@ -5,7 +5,7 @@
 > **建議內部切分**：`rules.py`、`registry.py`、`hasher.py`、`scanner.py`、`gitignore.py`、`__init__.py`
 > **依賴上限（Allowed Imports）**：`foundation/*`、`filesystem.{fs, vfs, storage}`
 > **禁止反向依賴（Forbidden Imports）**：`metadata/*`、`packaging/*`、`execution/*`、`surface/*`
-> **狀態**：`Draft — Design Frozen for Wave 1.2 Implementation`
+> **狀態**：`Active Living Spec — Implementation-Aligned SSOT`
 
 > [!NOTE]
 > **實作彈性邊界**：`SpaceSpec`、`HashPolicy`、`SpaceFileEntry`、`SpaceDiffBatch`、`SpaceMatchExplain`、規則對稱／剪枝／差集不變量與動態空間隔離語意屬強制統一契約；SQLite 內部表結構與掃描批次細節可由實作端按需微調。
@@ -55,61 +55,59 @@
 ```python
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
-from enum import Enum
-from typing import Iterator, Mapping, Optional, Sequence
+from dataclasses import dataclass, field
+from enum import Enum, Flag
+import io
+import os
+from pathlib import Path
+import sqlite3
+import subprocess
+import sys
+import threading
+from typing import Annotated, BinaryIO, Callable, ClassVar, Final, Generic, Literal, Optional, Protocol, TextIO, TypeAlias, TypeVar, overload, runtime_checkable
 
-from core.filesystem.storage import ModuleDatabase
-from core.filesystem.vfs import KernelVfs, ScopedVfs
-from core.foundation.observability import CancellationToken
-from core.foundation.primitives import HostPath, ModuleId, SemanticUri, SnapshotGen, SpaceId, SpacePath
+from core.filesystem.fs import IGNORED_FS_PREFIXES, has_symlink_raw_path, is_atomic_staging_filename, is_symlink_or_reparse
+from core.filesystem.storage import ModuleDatabase, SnapshotReader, WriteTransaction
+from core.filesystem.vfs import KernelVfs
+from core.foundation import CancellationToken, DataclassCodec, ErrorCode, HostPath, IS_WINDOWS, ModuleId, SemanticUri, SnapshotGen, SpaceId, SpacePath, YscbError, is_valid_relative_segment, require_non_none, require_pure_bool, require_pure_int, require_pure_str, strict_parse_json_object
 
+@dataclass(frozen=True, slots=True)
+class ConsumerCursor:
+    consumer_id: str
+    space_id: SpaceId
+    acked_gen: SnapshotGen
+    config_hash: str
+    merkle_root: str
+
+class GitignoreMaterializer:
+    BEGIN_MARKER: str = '# === YSCB MANAGED GITIGNORE BEGIN ==='
+    END_MARKER: str = '# === YSCB MANAGED GITIGNORE END ==='
+
+    def __init__(self, registry: SpaceRegistry, vfs: KernelVfs) -> None:
+        ...
+
+    def render_managed_block(self) -> tuple[str, dict[str, tuple[str, ...]]]:
+        ...
+
+    def sync(self) -> GitignoreSyncResult:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class GitignoreSyncResult:
+    changed: bool
+    target_uri: SemanticUri
+    groups: Mapping[str, tuple[str, ...]]
 
 class HashPolicy(Enum):
-    STAT_ONLY = "stat_only"
-    ADAPTIVE = "adaptive"    # 大檔（> 256 KiB）採頭/中/尾稀疏 Blake2b 取樣；小檔全量 Blake2b
-    FULL_HASH = "full_hash"  # 全檔 Blake2b-128 (16 bytes hex)
-
-
-@dataclass(frozen=True, slots=True)
-class SpaceSpec:
-    """單一邏輯空間之不可變宣告規格（entries 與 compose 允許皆為空以作為純規則模板）。"""
-    space_id: SpaceId
-    entries: tuple[SemanticUri, ...] = ()
-    include: tuple[str, ...] = ()
-    exclude: tuple[str, ...] = ()
-    presets: tuple[str, ...] = ()      # 支援 "!<space>" 反向規則引用
-    compose: tuple[str, ...] = ()      # 支援 "!<space>" 檔案集差集
-    watch: bool = True
-    hash_policy: HashPolicy = HashPolicy.ADAPTIVE
-    description: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class SpaceFileEntry:
-    rel_path: SpacePath
-    abs_path: HostPath
-    size_bytes: int
-    mtime_ns: int
-    content_hash: str
-
-
-@dataclass(frozen=True, slots=True)
-class SpaceMatchExplain:
-    space_id: SpaceId
-    matched: bool
-    matched_entry: Optional[SemanticUri] = None
-    matched_include: Optional[str] = None
-    matched_exclude: Optional[str] = None
-    source_space: Optional[SpaceId] = None
-    reason: str = ""
-```
-
+    STAT_ONLY = 'stat_only'
+    ADAPTIVE = 'adaptive'
+    FULL_HASH = 'full_hash'
 
 @dataclass(frozen=True, slots=True)
 class SpaceDiffBatch:
-    """空間增量變更批次（added / modified / deleted 嚴格兩兩正交）。"""
     space_id: SpaceId
     from_gen: SnapshotGen
     to_gen: SnapshotGen
@@ -120,19 +118,114 @@ class SpaceDiffBatch:
     deleted: tuple[SpacePath, ...] = ()
 
     @property
-    def has_changes(self) -> bool: ...
-    @property
-    def dirty_files(self) -> tuple[SpacePath, ...]: ...
+    def has_changes(self) -> bool:
+        ...
 
+    @property
+    def dirty_files(self) -> tuple[SpacePath, ...]:
+        ...
 
 @dataclass(frozen=True, slots=True)
-class ConsumerCursor:
-    consumer_id: str
-    space_id: SpaceId
-    acked_gen: SnapshotGen
-    config_hash: str
-    merkle_root: str
+class SpaceFileEntry:
+    rel_path: SpacePath
+    abs_path: HostPath
+    size_bytes: int
+    mtime_ns: int
+    content_hash: str
 
+@dataclass(frozen=True, slots=True)
+class SpaceMatchExplain:
+    space_id: SpaceId
+    matched: bool
+    matched_entry: Optional[SemanticUri] = None
+    matched_include: Optional[str] = None
+    matched_exclude: Optional[str] = None
+    source_space: Optional[SpaceId] = None
+    reason: str = ''
+
+class SpaceRegistry:
+
+    def __init__(self, vfs: KernelVfs, db: ModuleDatabase, *, static_specs: Sequence[SpaceSpec]=()) -> None:
+        ...
+
+    def reload(self, static_specs: Optional[Sequence[SpaceSpec]]=None) -> None:
+        ...
+
+    def with_overlay(self, extra_specs: Sequence[SpaceSpec]) -> SpaceRegistry:
+        ...
+
+    def set_dynamic_space(self, owner: ModuleId, name: str, spec: SpaceSpec) -> bool:
+        ...
+
+    def remove_dynamic_space(self, owner: ModuleId, name: str) -> bool:
+        ...
+
+    def clear_dynamic_spaces(self, owner: ModuleId) -> int:
+        ...
+
+    def list_spaces(self, *, owner: Optional[str]=None) -> tuple[SpaceSpec, ...]:
+        ...
+
+    def get_space(self, space_id: SpaceId | str) -> SpaceSpec:
+        ...
+
+    def config_hash(self, space_id: SpaceId | str) -> str:
+        ...
+
+    def match_path(self, space_id: SpaceId | str, target: HostPath | SemanticUri) -> SpaceMatchExplain:
+        ...
+
+    def iter_files(self, space_id: SpaceId | str, *, pattern: Optional[str]=None) -> Iterator[SpaceFileEntry]:
+        ...
+
+    def resolve_file_path(self, space_id: SpaceId | str, rel_path: SpacePath | str) -> HostPath:
+        ...
+
+    def collect_watch_roots(self) -> tuple[HostPath, ...]:
+        ...
+
+    @staticmethod
+    def build_stateless_readonly_matcher(vfs: KernelVfs, *, static_specs: Sequence[SpaceSpec]=(), dynamic_db_path: Optional[HostPath]=None, reserved_filter: Optional[Callable[[HostPath, str], bool]]=None) -> Callable[[HostPath], bool]:
+        ...
+
+class SpaceScanner:
+
+    def __init__(self, registry: SpaceRegistry, db: ModuleDatabase) -> None:
+        ...
+
+    def status(self, space_id: SpaceId | str) -> SpaceStatusSnapshot:
+        ...
+
+    def scan(self, space_id: SpaceId | str, *, force: bool=False, cancel_token: Optional[CancellationToken]=None) -> SpaceDiffBatch:
+        ...
+
+    def patch_paths(self, dirty_paths: frozenset[HostPath], *, cancel_token: Optional[CancellationToken]=None) -> tuple[SpaceDiffBatch, ...]:
+        ...
+
+    def diff(self, space_id: SpaceId | str, consumer_id: str) -> SpaceDiffBatch:
+        ...
+
+    def ack_cursor(self, space_id: SpaceId | str, consumer_id: str, batch: SpaceDiffBatch) -> bool:
+        ...
+
+    @contextmanager
+    def consume_diff(self, space_id: SpaceId | str, consumer_id: str) -> Iterator[SpaceDiffBatch]:
+        ...
+
+    def clean(self, space_id: Optional[SpaceId | str]=None, *, consumer_id: Optional[str]=None) -> int:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class SpaceSpec:
+    space_id: SpaceId
+    entries: tuple[SemanticUri, ...] = ()
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+    presets: tuple[str, ...] = ()
+    compose: tuple[str, ...] = ()
+    watch: bool = True
+    hash_policy: HashPolicy = HashPolicy.ADAPTIVE
+    description: str = ''
 
 @dataclass(frozen=True, slots=True)
 class SpaceStatusSnapshot:
@@ -143,60 +236,19 @@ class SpaceStatusSnapshot:
     file_count: int
     cursors: tuple[ConsumerCursor, ...] = ()
 
-
-class SpaceRegistry:
-    """邏輯空間編譯器與查詢註冊表（合併靜態規格 + state.db 動態空間 + 選配臨時覆蓋）。"""
-    def __init__(
-        self, vfs: KernelVfs, db: ModuleDatabase, *,
-        static_specs: Sequence[SpaceSpec] = (),
-    ) -> None: ...
-    def reload(self, static_specs: Optional[Sequence[SpaceSpec]] = None) -> None: ...
-    def with_overlay(self, extra_specs: Sequence[SpaceSpec]) -> SpaceRegistry: ...
-    def set_dynamic_space(self, owner: ModuleId, name: str, spec: SpaceSpec) -> bool: ...
-    def remove_dynamic_space(self, owner: ModuleId, name: str) -> bool: ...
-    def clear_dynamic_spaces(self, owner: ModuleId) -> int: ...
-    def list_spaces(self, *, owner: Optional[str] = None) -> tuple[SpaceSpec, ...]: ...
-    def get_space(self, space_id: SpaceId | str) -> SpaceSpec: ...
-    def config_hash(self, space_id: SpaceId | str) -> str: ...
-    def match_path(self, space_id: SpaceId | str, target: HostPath | SemanticUri) -> SpaceMatchExplain: ...
-    def iter_files(self, space_id: SpaceId | str, *, pattern: Optional[str] = None) -> Iterator[SpaceFileEntry]: ...
-    def resolve_file_path(self, space_id: SpaceId | str, rel_path: SpacePath | str) -> HostPath: ...
-    def collect_watch_roots(self) -> tuple[HostPath, ...]: ...
-
-
-class SpaceScanner:
-    """雙階段增量掃描、局部髒路徑修補與多消費者交易游標引擎（基於 SQLite WAL state.db）。"""
-    def __init__(self, registry: SpaceRegistry, db: ModuleDatabase) -> None: ...
-    def status(self, space_id: SpaceId | str) -> SpaceStatusSnapshot: ...
-    def scan(
-        self, space_id: SpaceId | str, *, force: bool = False,
-        cancel_token: Optional[CancellationToken] = None,
-    ) -> SpaceDiffBatch: ...
-    def patch_paths(
-        self, dirty_paths: frozenset[HostPath], *, cancel_token: Optional[CancellationToken] = None,
-    ) -> tuple[SpaceDiffBatch, ...]: ...
-    def diff(self, space_id: SpaceId | str, consumer_id: str) -> SpaceDiffBatch: ...
-    def ack_cursor(self, space_id: SpaceId | str, consumer_id: str, batch: SpaceDiffBatch) -> bool: ...
-    @contextmanager
-    def consume_diff(self, space_id: SpaceId | str, consumer_id: str) -> Iterator[SpaceDiffBatch]: ...
-    def clean(self, space_id: Optional[SpaceId | str] = None, *, consumer_id: Optional[str] = None) -> int: ...
-
-
-@dataclass(frozen=True, slots=True)
-class GitignoreSyncResult:
-    changed: bool
-    target_uri: SemanticUri
-    groups: Mapping[str, tuple[str, ...]]
-
-
-class GitignoreMaterializer:
-    """project://.gitignore 單檔託管區塊安全收斂器（由 <owner>/gitignore 靜態與動態空間驅動）。"""
-    BEGIN_MARKER: str = "# === YSCB MANAGED GITIGNORE BEGIN ==="
-    END_MARKER: str = "# === YSCB MANAGED GITIGNORE END ==="
-
-    def __init__(self, registry: SpaceRegistry, vfs: KernelVfs) -> None: ...
-    def render_managed_block(self) -> tuple[str, dict[str, tuple[str, ...]]]: ...
-    def sync(self) -> GitignoreSyncResult: ...
+__all__: tuple[str, ...] = (
+    "ConsumerCursor",
+    "GitignoreMaterializer",
+    "GitignoreSyncResult",
+    "HashPolicy",
+    "SpaceDiffBatch",
+    "SpaceFileEntry",
+    "SpaceMatchExplain",
+    "SpaceRegistry",
+    "SpaceScanner",
+    "SpaceSpec",
+    "SpaceStatusSnapshot",
+)
 ```
 
 ---

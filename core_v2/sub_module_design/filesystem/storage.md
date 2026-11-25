@@ -5,7 +5,7 @@
 > **建議內部切分**：`database.py`、`blob_vault.py`、`__init__.py`
 > **依賴上限（Allowed Imports）**：`foundation/*`、`filesystem.{fs, vfs}`
 > **禁止反向依賴（Forbidden Imports）**：`filesystem.space`、`metadata/*`、`packaging/*`、`execution/*`、`surface/*`
-> **狀態**：`Draft — Design Frozen for Wave 1.2 Implementation`
+> **狀態**：`Active Living Spec — Implementation-Aligned SSOT`
 
 > [!NOTE]
 > **實作彈性邊界**：`ModuleDatabase`、`SnapshotReader`、`WriteTransaction`、`BlobVault` 之公開契約、WAL MVCC 語意、單向遷移規則與嚴格限縮於 `storage.local://` 之路徑守門屬硬契約；連線池細節與內部表格輔助函式可由遠端實作端微調。
@@ -70,18 +70,134 @@ CREATE TABLE IF NOT EXISTS _yscb_watermarks (
 ```python
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
-from typing import BinaryIO, Callable, Iterator, Optional, Sequence, TypeAlias
+from dataclasses import dataclass, field
+from enum import Enum, Flag
+import io
+import os
+from pathlib import Path
+import sqlite3
+import subprocess
+import sys
+import threading
+from typing import Annotated, BinaryIO, Callable, ClassVar, Final, Generic, Literal, Optional, Protocol, TextIO, TypeAlias, TypeVar, overload, runtime_checkable
 
-from core.filesystem.vfs import ScopedVfs
-from core.foundation.observability import CancellationToken
-from core.foundation.primitives import HostPath, SemanticUri, SnapshotGen
+from core.filesystem.fs import IGNORED_FS_PREFIXES, assert_no_symlink_raw_path, atomic_write_bytes, has_symlink_raw_path, is_atomic_staging_filename, is_symlink_or_reparse, read_nofollow_regular_bytes, resolve_contained_subpath, walk_nonsymlink_dir_tree
+from core.filesystem.vfs import ScopedVfs, VfsCapabilities
+from core.foundation import CancellationToken, ErrorCode, HostPath, INT64_MAX, INT64_MIN, IS_WINDOWS, SemanticUri, SnapshotGen, YscbError, require_pure_bool, require_pure_int, require_pure_str, require_typed_frozenset, require_typed_tuple, safe_exception_summary, validate_relative_segment
 
 SqlParam: TypeAlias = None | bool | int | float | str | bytes
 SqlParams: TypeAlias = Sequence[SqlParam]
 SqlRow: TypeAlias = tuple[SqlParam, ...]
 
+class BlobVault:
+
+    def __init__(self, vfs: ScopedVfs, root_uri: SemanticUri | str) -> None:
+        ...
+
+    @property
+    def root_uri(self) -> SemanticUri:
+        ...
+
+    def put_content_addressed(self, data: bytes) -> str:
+        ...
+
+    def put_keyed(self, key: str, data: bytes) -> str:
+        ...
+
+    def exists(self, ref: str) -> bool:
+        ...
+
+    def get_bytes(self, ref: str) -> Optional[bytes]:
+        ...
+
+    def open_read(self, ref: str) -> Optional[BinaryIO]:
+        ...
+
+    def delete(self, ref: str) -> bool:
+        ...
+
+    def gc_unreferenced(self, live_refs: frozenset[str]) -> int:
+        ...
+
+class ModuleDatabase:
+
+    def __init__(self, vfs: ScopedVfs, db_uri: SemanticUri | str, *, migrations: Sequence[SchemaMigration]=(), options: StorageOpenOptions=StorageOpenOptions()) -> None:
+        ...
+
+    @property
+    def db_uri(self) -> SemanticUri:
+        ...
+
+    @property
+    def physical_path(self) -> HostPath:
+        ...
+
+    @property
+    def schema_version(self) -> int:
+        ...
+
+    @property
+    def is_closed(self) -> bool:
+        ...
+
+    @contextmanager
+    def read_snapshot(self) -> Iterator[SnapshotReader]:
+        ...
+
+    @contextmanager
+    def write_transaction(self, *, cancel_token: Optional[CancellationToken]=None) -> Iterator[WriteTransaction]:
+        ...
+
+    def committed_gen(self) -> SnapshotGen:
+        ...
+
+    def get_watermark(self, key: str) -> Optional[str]:
+        ...
+
+    def checkpoint(self, *, truncate: bool=False) -> tuple[int, int]:
+        ...
+
+    def verify_integrity(self) -> bool:
+        ...
+
+    def close(self) -> None:
+        ...
+
+    def __enter__(self) -> ModuleDatabase:
+        ...
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class SchemaMigration:
+    version: int
+    description: str
+    sql_statements: tuple[str, ...] = ()
+    migrate_fn: Optional[Callable[[WriteTransaction], None]] = None
+
+class SnapshotReader:
+
+    def committed_gen(self) -> SnapshotGen:
+        ...
+
+    def get_watermark(self, key: str) -> Optional[str]:
+        ...
+
+    def list_watermarks(self) -> dict[str, str]:
+        ...
+
+    def query_one(self, sql: str, params: SqlParams=()) -> Optional[SqlRow]:
+        ...
+
+    def query_all(self, sql: str, params: SqlParams=()) -> list[SqlRow]:
+        ...
+
+    def iter_rows(self, sql: str, params: SqlParams=(), *, batch_size: int=256) -> Iterator[SqlRow]:
+        ...
 
 @dataclass(frozen=True, slots=True)
 class StorageOpenOptions:
@@ -89,90 +205,47 @@ class StorageOpenOptions:
     wal_autocheckpoint_pages: int = 1000
     read_only_pool_size: int = 4
 
-
-@dataclass(frozen=True, slots=True)
-class SchemaMigration:
-    """單向增量 Schema 遷移步驟（嚴禁降級）。"""
-    version: int
-    description: str
-    sql_statements: tuple[str, ...] = ()
-    migrate_fn: Optional[Callable[[WriteTransaction], None]] = None
-
-
-class SnapshotReader:
-    """唯讀 MVCC 快照讀取器（毫秒零阻塞；離開 with 區塊自動結束讀取快照並歸還連線）。"""
-    def committed_gen(self) -> SnapshotGen: ...
-    def get_watermark(self, key: str) -> Optional[str]: ...
-    def list_watermarks(self) -> dict[str, str]: ...
-    def query_one(self, sql: str, params: SqlParams = ()) -> Optional[SqlRow]: ...
-    def query_all(self, sql: str, params: SqlParams = ()) -> list[SqlRow]: ...
-    def iter_rows(self, sql: str, params: SqlParams = (), *, batch_size: int = 256) -> Iterator[SqlRow]: ...
-
-
 class WriteTransaction:
-    """序列化寫入事務（BEGIN IMMEDIATE；遇異常或 CancellationToken 取消自動回滾）。"""
-    @property
-    def current_gen(self) -> SnapshotGen: ...
-    def execute(self, sql: str, params: SqlParams = ()) -> int: ...
-    def executemany(self, sql: str, param_seq: Sequence[SqlParams]) -> int: ...
-    def query_one(self, sql: str, params: SqlParams = ()) -> Optional[SqlRow]: ...
-    def query_all(self, sql: str, params: SqlParams = ()) -> list[SqlRow]: ...
-    def get_watermark(self, key: str) -> Optional[str]: ...
-    def set_watermark(self, key: str, value: str) -> None: ...
-    def delete_watermark(self, key: str) -> None: ...
-    def mark_generation_bumped(self) -> SnapshotGen: ...
-```
-
-
-class ModuleDatabase:
-    """模組級 SQLite WAL MVCC 持久化引擎（強制僅允許落點於 storage.local://）。"""
-    def __init__(
-        self,
-        vfs: ScopedVfs,
-        db_uri: SemanticUri | str,
-        *,
-        migrations: Sequence[SchemaMigration] = (),
-        options: StorageOpenOptions = StorageOpenOptions(),
-    ) -> None: ...
 
     @property
-    def db_uri(self) -> SemanticUri: ...
-    @property
-    def physical_path(self) -> HostPath: ...
-    @property
-    def schema_version(self) -> int: ...
-    @property
-    def is_closed(self) -> bool: ...
+    def current_gen(self) -> SnapshotGen:
+        ...
 
-    @contextmanager
-    def read_snapshot(self) -> Iterator[SnapshotReader]: ...
+    def execute(self, sql: str, params: SqlParams=()) -> int:
+        ...
 
-    @contextmanager
-    def write_transaction(
-        self, *, cancel_token: Optional[CancellationToken] = None,
-    ) -> Iterator[WriteTransaction]: ...
+    def executemany(self, sql: str, param_seq: Sequence[SqlParams]) -> int:
+        ...
 
-    def committed_gen(self) -> SnapshotGen: ...
-    def get_watermark(self, key: str) -> Optional[str]: ...
-    def checkpoint(self, *, truncate: bool = False) -> tuple[int, int]: ...
-    def verify_integrity(self) -> bool: ...
-    def close(self) -> None: ...
-    def __enter__(self) -> ModuleDatabase: ...
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None: ...
+    def query_one(self, sql: str, params: SqlParams=()) -> Optional[SqlRow]:
+        ...
 
+    def query_all(self, sql: str, params: SqlParams=()) -> list[SqlRow]:
+        ...
 
-class BlobVault:
-    """外部二進位大檔保險庫（強制落點於 storage.local://，避免大型向量／快取撐爆 SQLite WAL）。"""
-    def __init__(self, vfs: ScopedVfs, root_uri: SemanticUri | str) -> None: ...
-    @property
-    def root_uri(self) -> SemanticUri: ...
-    def put_content_addressed(self, data: bytes) -> str: ...
-    def put_keyed(self, key: str, data: bytes) -> str: ...
-    def exists(self, ref: str) -> bool: ...
-    def get_bytes(self, ref: str) -> Optional[bytes]: ...
-    def open_read(self, ref: str) -> Optional[BinaryIO]: ...
-    def delete(self, ref: str) -> bool: ...
-    def gc_unreferenced(self, live_refs: frozenset[str]) -> int: ...
+    def get_watermark(self, key: str) -> Optional[str]:
+        ...
+
+    def set_watermark(self, key: str, value: str) -> None:
+        ...
+
+    def delete_watermark(self, key: str) -> None:
+        ...
+
+    def mark_generation_bumped(self) -> SnapshotGen:
+        ...
+
+__all__: tuple[str, ...] = (
+    "BlobVault",
+    "ModuleDatabase",
+    "SchemaMigration",
+    "SnapshotReader",
+    "SqlParam",
+    "SqlParams",
+    "SqlRow",
+    "StorageOpenOptions",
+    "WriteTransaction",
+)
 ```
 
 ---
@@ -191,8 +264,8 @@ class BlobVault:
 3. **唯讀快照連線生命週期與 Windows 句柄清理**：
    - `read_snapshot()` 內部以 `PRAGMA query_only = ON` + `BEGIN DEFERRED` 確保快照一致，於 `finally` 執行 `ROLLBACK` 釋放讀取快照鎖（避免長開讀取事務卡住 WAL checkpoint 導致 `-wal` 檔無限增長）。
    - `close()` 關閉寫連線與所有池化唯讀連線，確保在 `Module.on_close()` / LIFO Teardown 後 Windows 可零衝突刪除資料庫目錄且 Python 測試零 `ResourceWarning`。
-4. **損毀偵測與不靜默吞錯**：
-   - 遭遇 `sqlite3.DatabaseError`（如磁碟頁損毀 `database disk image is malformed`）時，統一封裝為 `YscbError(ErrorCode.STORAGE_CORRUPT, ..., remediation=...)`，交由上層決定重建索引或報錯，絕不靜默刪庫或吞異常。
+4. **錯誤分類與損毀偵測不靜默吞錯**：
+   - 攔截所有 `sqlite3.Error` 並依 SQLite 錯誤碼與例外型別精準分類：`SQLITE_BUSY`／`SQLITE_LOCKED` 封裝為 `YscbError(ErrorCode.TASK_TIMEOUT)`；`IntegrityError`／`ProgrammingError`／`DataError`／`NotSupportedError`／`InterfaceError` 與非損毀型 `OperationalError`（如語法錯、查無表或磁碟空間不足）封裝為 `YscbError(ErrorCode.BUSINESS_FAILURE)`（遷移期間包裝為 `ErrorCode.SCHEMA_MIGRATION_ERROR`）；僅真實磁碟頁損毀、非資料庫檔或磁碟 I/O 異常（`SQLITE_IOERR`/`SQLITE_CORRUPT`/`SQLITE_NOTADB` 或未分類底層 `DatabaseError`）封裝為 `YscbError(ErrorCode.STORAGE_CORRUPT, ..., remediation=...)`，交由上層決定重建索引或報錯，絕不靜默刪庫或吞異常。
 5. **`BlobVault` 原子寫入與分片**：
    - `put_content_addressed(data)` 以 SHA-256 十六進位為鍵、前 2 字元作為子目錄分片（`<root>/<h[:2]>/<h>.blob`），若檔案已存在則內容定址冪等短路；寫入一律走 `fs.atomic_write_bytes`，`gc_unreferenced(live_refs)` 安全跳過 `.tmp_*` 暫存檔。
 

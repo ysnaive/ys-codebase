@@ -6,7 +6,7 @@ import ast
 import builtins
 import dataclasses
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, Flag
 import inspect
 import io
 import os
@@ -29,7 +29,16 @@ import core.execution.lifecycle as lifecycle_pkg
 import core.execution.rpc as rpc_pkg
 import core.execution.runtime as runtime_pkg
 import core.filesystem.fs as fs_pkg
+import core.filesystem.space as space_pkg
+import core.filesystem.storage as storage_pkg
+import core.filesystem.vfs as vfs_pkg
 import core.foundation as foundation_pkg
+import core.metadata.config as config_pkg
+import core.metadata.contributes as contributes_pkg
+import core.packaging.env as env_pkg
+import core.packaging.installer as installer_pkg
+import core.surface.bootstrap as bootstrap_pkg
+import core.surface.cli as cli_pkg
 import core.surface.sdk as sdk_pkg
 from tests import CORE_SRC_ROOT, CORE_V2_ROOT, TESTS_ROOT
 from tests._harness import EMBEDDED_MODULE_TEMPLATES, check
@@ -258,6 +267,23 @@ def _audit_single_kernel_ast(
             check(node.func.attr not in {"abspath", "cwd"}, lambda: f"Implicit cwd call .{node.func.attr}() forbidden in {rel_posix}:{node.lineno}")
         if isinstance(node, ast.Attribute) and node.attr in {"__dict__", "import_module"}:
             _assert_allowed_kernel_reflection(tree, rel_posix, node)
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "os"
+            and node.attr in {"environ", "getenv", "putenv", "unsetenv"}
+        ):
+            check(
+                rel_posix in _ALLOWED_KERNEL_ENVIRON_FILES,
+                lambda: f"Unauthorized os.{node.attr} access in kernel {rel_posix}:{node.lineno}",
+            )
+        if isinstance(node, ast.ImportFrom) and node.module == "os":
+            for imp_al in node.names:
+                check(
+                    imp_al.name not in {"environ", "getenv", "putenv", "unsetenv"}
+                    or rel_posix in _ALLOWED_KERNEL_ENVIRON_FILES,
+                    lambda: f"Unauthorized os.{imp_al.name} import in kernel {rel_posix}:{node.lineno}",
+                )
         if isinstance(node, ast.Assert):
             raise AssertionError(f"Bare assert forbidden in kernel {rel_posix}:{node.lineno}")
         if isinstance(node, ast.Lambda) and isinstance(node.body, ast.Tuple) and len(node.body.elts) >= 3:
@@ -268,6 +294,16 @@ def _audit_single_kernel_ast(
             _assert_no_unused_function_params(node, rel_posix)
         _check_dag_imports(node, rel_mod, forbidden_by_prefix)
 
+
+_ALLOWED_KERNEL_ENVIRON_FILES: Final[frozenset[str]] = frozenset(
+    {
+        "core/foundation/proc.py",
+        "core/execution/runtime/worker_entry.py",
+        "core/execution/runtime/worker_pool.py",
+        "core/surface/cli/caller_mode.py",
+        "core/surface/cli/entrypoint.py",
+    }
+)
 
 _ALLOWED_KERNEL_REFLECTION_FUNCS: Final[dict[str, frozenset[str]]] = {
     "core/foundation/codec.py": frozenset(
@@ -393,6 +429,8 @@ def _assert_rpc_readonly_fs_import(node: ast.AST, bound_targets: Sequence[str], 
 _ALLOWED_CORE_IMPORTS_BY_PREFIX: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
     ("core.__init__", ()),
     ("core.filesystem.__init__", ()),
+    ("core.metadata.__init__", ()),
+    ("core.packaging.__init__", ()),
     ("core.execution.__init__", ()),
     ("core.surface.__init__", ()),
     ("core.foundation.__init__", ("core.foundation",)),
@@ -409,6 +447,79 @@ _ALLOWED_CORE_IMPORTS_BY_PREFIX: Final[tuple[tuple[str, tuple[str, ...]], ...]] 
             "core.foundation.errors",
             "core.foundation.observability",
             "core.foundation.proc",
+        ),
+    ),
+    (
+        "core.filesystem.vfs",
+        (
+            "core.filesystem.vfs",
+            "core.filesystem.fs",
+            "core.foundation.primitives",
+            "core.foundation.errors",
+            "core.foundation.codec",
+        ),
+    ),
+    (
+        "core.filesystem.storage",
+        (
+            "core.filesystem.storage",
+            "core.filesystem.vfs",
+            "core.filesystem.fs",
+            "core.foundation.primitives",
+            "core.foundation.errors",
+            "core.foundation.observability",
+        ),
+    ),
+    (
+        "core.filesystem.space",
+        (
+            "core.filesystem.space",
+            "core.filesystem.storage",
+            "core.filesystem.vfs",
+            "core.filesystem.fs",
+            "core.foundation.primitives",
+            "core.foundation.errors",
+            "core.foundation.codec",
+            "core.foundation.observability",
+        ),
+    ),
+    (
+        "core.metadata.config",
+        (
+            "core.metadata.config",
+            "core.filesystem.fs",
+            "core.foundation",
+        ),
+    ),
+    (
+        "core.metadata.contributes",
+        (
+            "core.metadata.contributes",
+            "core.metadata.config",
+            "core.filesystem.fs",
+            "core.foundation",
+        ),
+    ),
+    (
+        "core.packaging.env",
+        (
+            "core.packaging.env",
+            "core.metadata.config",
+            "core.filesystem.vfs",
+            "core.filesystem.fs",
+            "core.foundation",
+        ),
+    ),
+    (
+        "core.packaging.installer",
+        (
+            "core.packaging.installer",
+            "core.packaging.env",
+            "core.metadata.contributes",
+            "core.metadata.config",
+            "core.filesystem.vfs",
+            "core.filesystem.fs",
+            "core.foundation",
         ),
     ),
     (
@@ -449,6 +560,10 @@ _ALLOWED_CORE_IMPORTS_BY_PREFIX: Final[tuple[tuple[str, tuple[str, ...]], ...]] 
             "core.execution.lifecycle",
             "core.execution.rpc",
             "core.filesystem.fs",
+            "core.filesystem.vfs",
+            "core.filesystem.space",
+            "core.metadata.config",
+            "core.metadata.contributes",
             "core.foundation",
         ),
     ),
@@ -471,6 +586,49 @@ _ALLOWED_CORE_IMPORTS_BY_PREFIX: Final[tuple[tuple[str, tuple[str, ...]], ...]] 
             "core.execution.rpc",
             "core.execution.event",
             "core.execution.lifecycle",
+            "core.filesystem.vfs",
+            "core.filesystem.storage",
+            "core.filesystem.space",
+            "core.metadata.config",
+            "core.metadata.contributes",
+            "core.foundation",
+        ),
+    ),
+    (
+        "core.surface.cli",
+        (
+            "core.surface.cli",
+            "core.surface.sdk",
+            "core.execution.runtime",
+            "core.execution.rpc",
+            "core.execution.event",
+            "core.execution.lifecycle",
+            "core.packaging.installer",
+            "core.metadata.config",
+            "core.filesystem.fs",
+            "core.filesystem.vfs",
+            "core.foundation",
+        ),
+    ),
+    (
+        "core.surface.bootstrap",
+        (
+            "core.surface.bootstrap",
+            "core.surface.cli",
+            "core.surface.sdk",
+            "core.execution.daemon",
+            "core.execution.runtime",
+            "core.execution.rpc",
+            "core.execution.lifecycle",
+            "core.execution.event",
+            "core.packaging.installer",
+            "core.packaging.env",
+            "core.metadata.contributes",
+            "core.metadata.config",
+            "core.filesystem.space",
+            "core.filesystem.storage",
+            "core.filesystem.vfs",
+            "core.filesystem.fs",
             "core.foundation",
         ),
     ),
@@ -811,12 +969,21 @@ _PUBLIC_DOMAIN_ROOTS: Final[dict[str, object]] = {
     "core": core,
     "core.foundation": foundation_pkg,
     "core.filesystem.fs": fs_pkg,
+    "core.filesystem.vfs": vfs_pkg,
+    "core.filesystem.storage": storage_pkg,
+    "core.filesystem.space": space_pkg,
+    "core.metadata.config": config_pkg,
+    "core.metadata.contributes": contributes_pkg,
+    "core.packaging.env": env_pkg,
+    "core.packaging.installer": installer_pkg,
     "core.execution.event": event_pkg,
     "core.execution.lifecycle": lifecycle_pkg,
     "core.execution.rpc": rpc_pkg,
     "core.execution.runtime": runtime_pkg,
     "core.execution.daemon": daemon_pkg,
     "core.surface.sdk": sdk_pkg,
+    "core.surface.cli": cli_pkg,
+    "core.surface.bootstrap": bootstrap_pkg,
 }
 
 
@@ -1203,10 +1370,24 @@ def _resolve_ast_expr_value(node: ast.expr, ns: Mapping[str, object]) -> object:
     if isinstance(node, ast.Attribute):
         base = _resolve_ast_expr_value(node.value, ns)
         return dict(inspect.getmembers_static(base))[node.attr]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        left = _resolve_ast_expr_value(node.left, ns)
+        right = _resolve_ast_expr_value(node.right, ns)
+        check(isinstance(left, Flag) and isinstance(right, Flag))
+        return left | right
     if isinstance(node, ast.Call) and not node.args and not node.keywords:
         fn = _resolve_ast_expr_value(node.func, ns)
         check(callable(fn))
         return fn()
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "MappingProxyType"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Dict)
+        and not node.args[0].keys
+    ):
+        return types.MappingProxyType({})
     raise AssertionError(f"Unsupported spec default AST expression: {ast.unparse(node)}")
 
 
@@ -1396,8 +1577,40 @@ def _build_kernel_ast_index() -> _ParsedModuleAstIndex:
     return idx
 
 
+_MD_OPEN_FENCE_RE: Final[re.Pattern[str]] = re.compile(r"^[ ]{0,3}(`{3,})(.*)$")
+_BARE_PY_DECL_RE: Final[re.Pattern[str]] = re.compile(r"^(?:async\s+def|def|class)\s+[A-Za-z_]")
+
+
+def _find_spec_fence_violation(md_txt: str, fname: str) -> Optional[str]:
+    fence_len: Optional[int] = None
+    for lineno, raw_line in enumerate(md_txt.splitlines(), 1):
+        if fence_len is None:
+            m_open = _MD_OPEN_FENCE_RE.match(raw_line)
+            if m_open is not None and "`" not in m_open.group(2):
+                fence_len = len(m_open.group(1))
+                continue
+            if _BARE_PY_DECL_RE.match(raw_line) is not None:
+                return f"Unfenced top-level Python declaration in {fname}:{lineno}: {raw_line.strip()!r}"
+        else:
+            stripped = raw_line.lstrip(" ")
+            lead_spaces = len(raw_line) - len(stripped)
+            trimmed = stripped.rstrip()
+            if lead_spaces <= 3 and len(trimmed) >= fence_len and set(trimmed) == {"`"}:
+                fence_len = None
+    if fence_len is not None:
+        return f"Unclosed markdown code fence in {fname}"
+    return None
+
+
+def _assert_living_spec_fence_hygiene(md_txt: str, fname: str) -> None:
+    err = _find_spec_fence_violation(md_txt, fname)
+    check(err is None, lambda: str(err))
+
+
 def _build_spec_ast_index(md_path: Path) -> _ParsedModuleAstIndex:
-    blocks = re.findall(r"```python\n(.*?)```", md_path.read_text(encoding="utf-8"), flags=re.DOTALL)
+    md_txt = md_path.read_text(encoding="utf-8")
+    _assert_living_spec_fence_hygiene(md_txt, md_path.name)
+    blocks = re.findall(r"```python\n(.*?)```", md_txt, flags=re.DOTALL)
     check(blocks, lambda: f"No python contract block found in {md_path.name}")
     ignored = frozenset({"TIn", "TOut", "TOut_co", "TPayload", "TReq", "TReqContra"})
     idx = _ParsedModuleAstIndex()
@@ -1522,10 +1735,11 @@ def _assert_class_full_parity(
     cls_obj: type[object],
     spec_cls: ast.ClassDef,
     impl_cls: ast.ClassDef,
-    spec_idx: _ParsedModuleAstIndex,
+    spec_indices: tuple[_ParsedModuleAstIndex, _ParsedModuleAstIndex],
     kernel_idx: _ParsedModuleAstIndex,
 ) -> None:
-    alias_map = {**kernel_idx.aliases, **spec_idx.aliases}
+    spec_idx, all_specs_idx = spec_indices
+    alias_map = {**kernel_idx.aliases, **all_specs_idx.aliases, **spec_idx.aliases}
     if typing.Protocol not in cls_obj.__mro__ and not issubclass(cls_obj, Enum):
         init_priv = [p for p in inspect.signature(cls_obj).parameters if p.startswith("_")]
         check(not init_priv, lambda: f"Spec class {label} leaks private __init__ params: {init_priv}")
@@ -1544,14 +1758,17 @@ def _assert_class_full_parity(
             if isinstance(ch, ast.Assign) and len(ch.targets) == 1 and isinstance(ch.targets[0], ast.Name)
         }
         if s_enum:
-            check({m.name: m.value for m in cls_obj} == s_enum, lambda: f"Enum drift on {label}")
+            check({nm: m.value for nm, m in cls_obj.__members__.items()} == s_enum, lambda: f"Enum drift on {label}")
     spec_own_m = set(spec_idx.cls_methods.get(spec_cls.name, {}).keys())
     impl_own_m = set(kernel_idx.cls_methods.get(impl_cls.name, {}).keys())
     check(impl_own_m == spec_own_m, lambda: f"Own method/dunder drift on {label}: impl={sorted(impl_own_m)} vs spec={sorted(spec_own_m)}")
+    mro_spec_idx = _ParsedModuleAstIndex(
+        cls_methods={**all_specs_idx.cls_methods, **spec_idx.cls_methods},
+    )
     spec_pub_m = {
         mn
         for base_c in cls_obj.__mro__
-        for mn in spec_idx.cls_methods.get(base_c.__name__, {}).keys()
+        for mn in mro_spec_idx.cls_methods.get(base_c.__name__, {}).keys()
         if _is_public_or_spec_dunder(mn) and mn != "__init__"
     }
     impl_pub_m = {
@@ -1562,7 +1779,7 @@ def _assert_class_full_parity(
     }
     check(impl_pub_m == spec_pub_m, lambda: f"Public method surface drift on {label}: impl={sorted(impl_pub_m)} vs spec={sorted(spec_pub_m)}")
     for pub_m in spec_pub_m:
-        s_m_ast = _lookup_mro_method_ast(cls_obj, pub_m, spec_idx)
+        s_m_ast = _lookup_mro_method_ast(cls_obj, pub_m, mro_spec_idx)
         i_m_ast = _lookup_mro_method_ast(cls_obj, pub_m, kernel_idx)
         check(
             _method_decorator_tags(s_m_ast) == _method_decorator_tags(i_m_ast),
@@ -1592,12 +1809,21 @@ def _build_spec_eval_ns(kernel_mods: Sequence[object]) -> dict[str, object]:
     for mod in (
         foundation_pkg,
         fs_pkg,
+        vfs_pkg,
+        storage_pkg,
+        space_pkg,
+        config_pkg,
+        contributes_pkg,
+        env_pkg,
+        installer_pkg,
         event_pkg,
         lifecycle_pkg,
         rpc_pkg,
         runtime_pkg,
         daemon_pkg,
         sdk_pkg,
+        cli_pkg,
+        bootstrap_pkg,
         *kernel_mods,
     ):
         merged.update(dict(inspect.getmembers_static(mod)))
@@ -1605,22 +1831,16 @@ def _build_spec_eval_ns(kernel_mods: Sequence[object]) -> dict[str, object]:
 
 
 _DRAFT_SPECS: Final[frozenset[str]] = frozenset({
-    "foundation/foundation_wave12.md",
-    "filesystem/vfs.md",
-    "filesystem/storage.md",
-    "filesystem/space.md",
-    "metadata/config.md",
-    "metadata/contributes.md",
-    "packaging/env.md",
-    "packaging/installer.md",
-    "surface/sdk_wave12.md",
-    "surface/cli.md",
-    "surface/composition_and_bootstrap.md",
     "dev/dev.md",
 })
 
 
 def _verify_execution_living_specs_parity() -> None:
+    check(_find_spec_fence_violation("```python\nx = 1\n", "sample.md") is not None, "Fence guard must catch unclosed fence")
+    check(
+        _find_spec_fence_violation("```python\nx = 1\n```\nclass Orphan:\n    pass\n", "sample.md") is not None,
+        "Fence guard must catch unfenced top-level class declaration",
+    )
     design_root = CORE_V2_ROOT / "sub_module_design"
     root_orphans = sorted(p.name for p in design_root.glob("*.md"))
     check(not root_orphans, lambda: f"Orphan root spec files forbidden in sub_module_design/: {root_orphans}")
@@ -1628,12 +1848,21 @@ def _verify_execution_living_specs_parity() -> None:
     pairs: tuple[tuple[str, object], ...] = (
         ("foundation/foundation.md", foundation_pkg),
         ("filesystem/fs.md", fs_pkg),
+        ("filesystem/vfs.md", vfs_pkg),
+        ("filesystem/storage.md", storage_pkg),
+        ("filesystem/space.md", space_pkg),
+        ("metadata/config.md", config_pkg),
+        ("metadata/contributes.md", contributes_pkg),
+        ("packaging/env.md", env_pkg),
+        ("packaging/installer.md", installer_pkg),
         ("execution/event.md", event_pkg),
         ("execution/lifecycle.md", lifecycle_pkg),
         ("execution/rpc.md", rpc_pkg),
         ("execution/runtime.md", runtime_pkg),
         ("execution/daemon.md", daemon_pkg),
         ("surface/sdk.md", sdk_pkg),
+        ("surface/cli.md", cli_pkg),
+        ("surface/composition_and_bootstrap.md", bootstrap_pkg),
     )
     actual_all_specs = {p.relative_to(design_root).as_posix() for p in design_root.rglob("*.md")}
     expected_all_specs = {rel_p for rel_p, _ in pairs}
@@ -1645,9 +1874,17 @@ def _verify_execution_living_specs_parity() -> None:
         draft_txt = (design_root / draft_rel).read_text(encoding="utf-8")
         check("Draft" in draft_txt, lambda: f"Draft spec {draft_rel} missing 'Draft' status marker")
     eval_ns = _build_spec_eval_ns([m for _, m in pairs])
+    spec_by_file = {fname: _build_spec_ast_index(design_root / fname) for fname, _ in pairs}
+    all_specs_idx = _ParsedModuleAstIndex()
+    for s_idx in spec_by_file.values():
+        all_specs_idx.aliases.update(s_idx.aliases)
+        for c_nm, c_ms in s_idx.cls_methods.items():
+            all_specs_idx.cls_methods.setdefault(c_nm, {}).update(c_ms)
     for fname, mod in pairs:
-        spec_idx = _build_spec_ast_index(design_root / fname)
-        alias_map = {**kernel_idx.aliases, **spec_idx.aliases}
+        active_txt = (design_root / fname).read_text(encoding="utf-8")
+        check("Active" in active_txt, lambda: f"Active living spec {fname} missing 'Active' status marker")
+        spec_idx = spec_by_file[fname]
+        alias_map = {**kernel_idx.aliases, **all_specs_idx.aliases, **spec_idx.aliases}
         ns_map = dict(inspect.getmembers_static(mod))
         all_tuple = ns_map.get("__all__")
         check(isinstance(all_tuple, tuple))
@@ -1678,7 +1915,7 @@ def _verify_execution_living_specs_parity() -> None:
             if not isinstance(cls_obj, type):
                 continue
             impl_cls = kernel_idx.classes[cls_obj.__name__]
-            _assert_class_full_parity(f"{fname}:{cname}", cls_obj, spec_idx.classes[cname], impl_cls, spec_idx, kernel_idx)
+            _assert_class_full_parity(f"{fname}:{cname}", cls_obj, spec_idx.classes[cname], impl_cls, (spec_idx, all_specs_idx), kernel_idx)
             for m_name, s_m in m_dict.items():
                 rt_m = _lookup_mro_static_member(cls_obj, m_name)
                 i_m = _lookup_mro_method_ast(cls_obj, m_name, kernel_idx)
@@ -1696,6 +1933,8 @@ def _verify_dag_guard_rejects_violations(
         ("core.execution.runtime.dispatcher", "from core.surface import sdk"),
         ("core.foundation.primitives", "from core.surface.sdk import Module"),
         ("core.surface.sdk.client", "from core.execution.daemon import WorkspaceDaemon"),
+        ("core.surface.sdk.client", "from core.packaging.env import ImmutableVenvPool"),
+        ("core.surface.sdk.declarative", "from core.filesystem.fs import FileLock"),
         ("core.execution.event.engine", "from core.filesystem.fs import FileLock"),
         ("core.execution.rpc.channel", "from core.foundation.codec import DataclassCodec"),
         ("core.execution.rpc.channel", "from core.filesystem.fs import FileLock"),
@@ -1706,6 +1945,14 @@ def _verify_dag_guard_rejects_violations(
         ("core.execution.rpc.channel", "from core.foundation import DataclassCodec"),
         ("core.foundation.proc", "from core.foundation.observability import clamp_wait_sec"),
         ("core.foundation.observability", "from core.foundation.proc import is_process_alive"),
+        ("core.filesystem.vfs.mount", "from core.filesystem.space import SpaceRegistry"),
+        ("core.filesystem.storage.database", "from core.filesystem.space import SpaceScanner"),
+        ("core.filesystem.fs.atomic", "from core.filesystem.vfs import ScopedVfs"),
+        ("core.metadata.config.matrix", "from core.filesystem.vfs import ScopedVfs"),
+        ("core.metadata.config.matrix", "from core.metadata.contributes import MergeStrategy"),
+        ("core.metadata.contributes.aggregator", "from core.packaging.env import EnvSpec"),
+        ("core.packaging.env.pool", "from core.packaging.installer import MirrorStore"),
+        ("core.packaging.installer.engine", "from core.execution.runtime import TaskId"),
         ("core.unknown.mod", "from core.foundation.primitives import HostPath"),
     )
     for mod_name, bad_stmt in cases:
@@ -1724,12 +1971,21 @@ def _verify_cross_package_public_exports(py_files: Sequence[Path]) -> None:
     facade_pairs = (
         ("core.foundation", foundation_pkg.__all__),
         ("core.filesystem.fs", fs_pkg.__all__),
+        ("core.filesystem.vfs", vfs_pkg.__all__),
+        ("core.filesystem.storage", storage_pkg.__all__),
+        ("core.filesystem.space", space_pkg.__all__),
+        ("core.metadata.config", config_pkg.__all__),
+        ("core.metadata.contributes", contributes_pkg.__all__),
+        ("core.packaging.env", env_pkg.__all__),
+        ("core.packaging.installer", installer_pkg.__all__),
         ("core.execution.event", event_pkg.__all__),
         ("core.execution.lifecycle", lifecycle_pkg.__all__),
         ("core.execution.rpc", rpc_pkg.__all__),
         ("core.execution.runtime", runtime_pkg.__all__),
         ("core.execution.daemon", daemon_pkg.__all__),
         ("core.surface.sdk", sdk_pkg.__all__),
+        ("core.surface.cli", cli_pkg.__all__),
+        ("core.surface.bootstrap", bootstrap_pkg.__all__),
     )
     facades = tuple(name for name, _ in facade_pairs)
     pub_all = {name: set(exports) for name, exports in facade_pairs}
@@ -1753,12 +2009,20 @@ def verify_gate0_ast_architecture(include_runner: bool = True) -> None:
     forbidden_by_prefix: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("core.foundation", ("core.filesystem", "core.metadata", "core.packaging", "core.execution", "core.surface")),
         ("core.filesystem", ("core.metadata", "core.packaging", "core.execution", "core.surface")),
+        ("core.filesystem.fs", ("core.filesystem.vfs", "core.filesystem.storage", "core.filesystem.space")),
+        ("core.filesystem.vfs", ("core.filesystem.storage", "core.filesystem.space")),
+        ("core.filesystem.storage", ("core.filesystem.space",)),
+        ("core.metadata", ("core.filesystem.vfs", "core.filesystem.storage", "core.filesystem.space", "core.packaging", "core.execution", "core.surface")),
+        ("core.metadata.config", ("core.metadata.contributes",)),
+        ("core.packaging", ("core.filesystem.storage", "core.filesystem.space", "core.execution", "core.surface")),
+        ("core.packaging.env", ("core.metadata.contributes", "core.packaging.installer")),
         ("core.execution.event", ("core.filesystem", "core.foundation.observability", "core.foundation.proc", "core.execution.lifecycle", "core.execution.rpc", "core.execution.runtime", "core.execution.daemon", "core.surface")),
         ("core.execution.rpc", ("core.foundation.codec", "core.execution.event", "core.execution.lifecycle", "core.execution.runtime", "core.execution.daemon", "core.surface")),
         ("core.execution.lifecycle", ("core.execution.rpc", "core.execution.runtime", "core.execution.daemon", "core.surface")),
-        ("core.execution.runtime", ("core.execution.daemon", "core.surface")),
-        ("core.execution.daemon", ("core.metadata", "core.packaging", "core.execution.event", "core.surface", "core.execution.runtime.contracts", "core.execution.runtime.coordinator", "core.execution.runtime.dispatcher", "core.execution.runtime.gates", "core.execution.runtime.module_slot", "core.execution.runtime.route_index", "core.execution.runtime.step_host", "core.execution.runtime.turn_session", "core.execution.runtime.wire", "core.execution.runtime.worker_entry", "core.execution.runtime.worker_pool")),
-        ("core.surface.sdk", ("core.execution.daemon", "core.filesystem")),
+        ("core.execution.runtime", ("core.execution.daemon", "core.packaging", "core.surface")),
+        ("core.execution.daemon", ("core.metadata", "core.packaging", "core.execution.event", "core.surface", "core.execution.runtime.contracts", "core.execution.runtime.coordinator", "core.execution.runtime.dispatcher", "core.execution.runtime.gates", "core.execution.runtime.module_slot", "core.execution.runtime.route_index", "core.execution.runtime.services", "core.execution.runtime.step_host", "core.execution.runtime.turn_session", "core.execution.runtime.wire", "core.execution.runtime.worker_entry", "core.execution.runtime.worker_pool")),
+        ("core.surface.sdk", ("core.execution.daemon", "core.packaging", "core.filesystem.fs", "core.surface.cli", "core.surface.bootstrap")),
+        ("core.surface.cli", ("core.execution.daemon", "core.surface.bootstrap")),
     )
     py_files = sorted(core_pkg.rglob("*.py"))
     check(len(py_files) >= 27)

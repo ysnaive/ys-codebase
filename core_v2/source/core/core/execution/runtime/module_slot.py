@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 import types
-from typing import Callable, ClassVar, Mapping, Optional, Sequence, TypeVar, overload
+from typing import Callable, ClassVar, Mapping, Optional, Sequence, TypeVar, cast, overload
 import uuid
 
 from core.execution.event import CausalLineage, EventMetadata, TaskLocalOutbox
@@ -30,13 +30,20 @@ from core.execution.runtime.contracts import (
     ClientRoutingPolicy,
     ExecutionPriority,
     ModuleDescriptor,
+    ModuleRuntimeServices,
     TaskContext,
     TaskOutcome,
     TaskRouteSpec,
     YscbModule,
     decode_outcome_as,
 )
+from core.execution.runtime.services import (
+    active_module_services_scope,
+    active_step_caller_env_scope,
+    build_default_module_services,
+)
 from core.execution.runtime.wire import WorkerEquivReply, WorkerMapBatchReply, WorkerStepReply
+from core.filesystem.vfs import ScopedVfs
 from core.filesystem.fs import (
     IGNORED_FS_PREFIXES,
     is_contained_nonsymlink_path,
@@ -48,7 +55,8 @@ from core.filesystem.fs import (
 )
 from core.foundation.codec import DataclassCodec
 from core.foundation.errors import ErrorCode, ErrorDetail, TaskCancelledException, YscbError, is_fatal_error_code, safe_exception_summary
-from core.foundation.observability import CancellationToken, ProgressEvent, clamp_wait_sec, guard_standard_streams
+from core.foundation.observability import CancellationToken, LocaleCatalog, ProgressEvent, StructuredLogger, clamp_wait_sec, guard_standard_streams
+from core.metadata.contributes import AggregatedContributes
 from core.foundation.primitives import (
     EventId,
     HostPath,
@@ -62,6 +70,7 @@ from core.foundation.primitives import (
 
 TOut = TypeVar("TOut")
 TPayload = TypeVar("TPayload")
+TConfig = TypeVar("TConfig")
 
 _SCOPED_PKG_PREFIX = "_yscb_v2_mod_"
 TaggedCloser = tuple[str, Callable[[], Sequence[ErrorDetail]]]
@@ -433,17 +442,21 @@ class ProtectedModuleLoader:
             sys.modules[unique_pkg] = pkg_mod
             rel_parts = entry_path.path.relative_to(mod_dir).parts[:-1]
             parent_pkg = ".".join((unique_pkg, *rel_parts)) if rel_parts else unique_pkg
-            if rel_parts:
-                importlib.import_module(parent_pkg)
-            entry_mod_name = f"{parent_pkg}.__entry__"
-            loader = _ScopedSourceLoader(entry_mod_name, str(entry_path), unique_pkg, mod_dir)
-            spec = spec_from_file_location(entry_mod_name, str(entry_path), loader=loader)
-            if spec is None:
-                raise YscbError(ErrorCode.MODULE_DEGRADED, f"Cannot create module spec for {entry_path}")
-            py_mod = importlib.util.module_from_spec(spec)
-            py_mod.__package__ = parent_pkg
-            sys.modules[entry_mod_name] = py_mod
-            loader.exec_module(py_mod)
+            if entry_path.path.name == "__init__.py" and rel_parts:
+                py_mod = importlib.import_module(parent_pkg)
+                entry_mod_name = parent_pkg
+            else:
+                if rel_parts:
+                    importlib.import_module(parent_pkg)
+                entry_mod_name = f"{parent_pkg}.__entry__"
+                loader = _ScopedSourceLoader(entry_mod_name, str(entry_path), unique_pkg, mod_dir)
+                spec = spec_from_file_location(entry_mod_name, str(entry_path), loader=loader)
+                if spec is None:
+                    raise YscbError(ErrorCode.MODULE_DEGRADED, f"Cannot create module spec for {entry_path}")
+                py_mod = importlib.util.module_from_spec(spec)
+                py_mod.__package__ = parent_pkg
+                sys.modules[entry_mod_name] = py_mod
+                loader.exec_module(py_mod)
             factory = py_mod.__dict__.get("create_module")
             if not callable(factory):
                 raise YscbError(
@@ -488,13 +501,26 @@ class ProtectedModuleLoader:
 
 
 class _StepTaskContext(TaskContext):
-    """Concrete per-step TaskContext forwarding emit, emit_imm, invoke_task, and progress."""
+    """Concrete per-step TaskContext forwarding emit, emit_imm, invoke_task, progress, and module services."""
 
-    def __init__(self, workspace_root: HostPath, spec: LocalStepExecutionSpec, outbox: TaskLocalOutbox) -> None:
+    def __init__(
+        self,
+        workspace_root: HostPath,
+        spec: LocalStepExecutionSpec,
+        outbox: TaskLocalOutbox,
+        services_getter: Callable[[], ModuleRuntimeServices],
+    ) -> None:
         self._workspace_root = workspace_root
         self._spec = spec
         self._caller_env: Mapping[str, str] = types.MappingProxyType(dict(spec.caller_env))
         self._outbox = outbox
+        self._services_getter = services_getter
+        self._cached_services: Optional[ModuleRuntimeServices] = None
+
+    def _svc(self) -> ModuleRuntimeServices:
+        if self._cached_services is None:
+            self._cached_services = self._services_getter()
+        return self._cached_services
 
     @property
     def workspace_root(self) -> HostPath:
@@ -515,6 +541,24 @@ class _StepTaskContext(TaskContext):
     @property
     def effective_priority(self) -> ExecutionPriority:
         return self._spec.priority_getter()
+
+    @property
+    def vfs(self) -> ScopedVfs:
+        return self._svc().vfs
+
+    @property
+    def logger(self) -> StructuredLogger:
+        return self._svc().logger
+
+    @property
+    def locale(self) -> LocaleCatalog:
+        return self._svc().locale
+
+    def load_config(self, config_cls: type[TConfig]) -> TConfig:
+        return cast(TConfig, self._svc().config_loader(config_cls))
+
+    def load_contributes(self) -> AggregatedContributes:
+        return self._svc().contributes_loader()
 
     def _encode_typed_event_payload(self, event_meta: EventMetadata[TPayload], payload: object) -> JsonObject:
         if not isinstance(event_meta, EventMetadata):
@@ -613,9 +657,6 @@ class _ModuleSlot:
         return any(r_art.in_flight > 0 for r_art, _rc in self.retiring)
 
 
-
-
-
 def _routes_match_manifest(declared: TaskRouteSpec, actual: TaskRouteSpec) -> bool:
     if actual.cli is not None and declared.cli != actual.cli:
         return False
@@ -664,6 +705,14 @@ def _validate_and_bind_module_tasks(
     return bound
 
 
+def _wrap_guarded_closer(close_fn: Callable[[], None]) -> Callable[[], None]:
+    def _guarded() -> None:
+        with guard_standard_streams():
+            close_fn()
+
+    return _guarded
+
+
 class LocalModuleSlotRegistry:
     """Manages loaded YscbModule instances with epoch-checked load/unload transitions and shared container SSOT."""
 
@@ -677,6 +726,7 @@ class LocalModuleSlotRegistry:
         require_eager_start: bool = False,
         on_module_initialized: Optional[Callable[[ModuleId], None]] = None,
         in_memory_modules: Mapping[ModuleId, YscbModule] = types.MappingProxyType({}),
+        module_services_factory: Optional[Callable[[ModuleId], ModuleRuntimeServices]] = None,
     ) -> None:
         self._workspace_root = workspace_root
         self._loader = ProtectedModuleLoader(workspace_root)
@@ -686,10 +736,23 @@ class LocalModuleSlotRegistry:
         self._require_eager_start = require_eager_start
         self._on_module_initialized = on_module_initialized
         self._in_memory_modules = types.MappingProxyType(dict(in_memory_modules))
+        self._module_services_factory = module_services_factory
+        self._default_services_cache: dict[ModuleId, ModuleRuntimeServices] = {}
         self._lock = threading.RLock()
         self._drain_cond = threading.Condition(self._lock)
         self._slots: dict[ModuleId, _ModuleSlot] = {}
         self._pending_teardown_diags: deque[ErrorDetail] = deque(maxlen=256)
+
+    def _resolve_module_services(self, module_id: ModuleId) -> ModuleRuntimeServices:
+        if self._module_services_factory is not None:
+            return self._module_services_factory(module_id)
+        with self._lock:
+            cached = self._default_services_cache.get(module_id)
+        if cached is not None:
+            return cached
+        built = build_default_module_services(self._workspace_root, module_id)
+        with self._lock:
+            return self._default_services_cache.setdefault(module_id, built)
 
     @property
     def workspace_root(self) -> HostPath:
@@ -754,7 +817,9 @@ class LocalModuleSlotRegistry:
             self._container.clear_degraded(cleared_mods)
         try:
             if to_close:
-                self._record_pending_teardown_diags(LifoResourceStack.run_closers(to_close))
+                with guard_standard_streams():
+                    ev_diags = LifoResourceStack.run_closers(to_close)
+                self._record_pending_teardown_diags(ev_diags)
         finally:
             for pkg in to_purge:
                 ProtectedModuleLoader.cleanup_package(pkg)
@@ -772,6 +837,7 @@ class LocalModuleSlotRegistry:
             slot.artifact = None
             slot.phase = _SlotPhase.UNLOADED
             slot.tasks.clear()
+            self._default_services_cache.pop(slot.module_id, None)
             prefix = str(slot.module_id)
             if art is not None and art.in_flight > 0:
                 slot.retiring.append((art, self._lifo_stack.pop_tagged_by_prefixes(frozenset({prefix}))))
@@ -834,12 +900,13 @@ class LocalModuleSlotRegistry:
     ) -> tuple[LoadedModuleArtifact, dict[TaskId, BoundTask]]:
         try:
             in_mem = self._in_memory_modules.get(module_id)
-            art = LoadedModuleArtifact(instance=in_mem, package_key="") if in_mem is not None else self._loader.load_module_artifact(desc)
-            try:
-                return (art, _validate_and_bind_module_tasks(module_id, desc, art.instance))
-            except BaseException:
-                ProtectedModuleLoader.cleanup_package(art.package_key)
-                raise
+            with guard_standard_streams():
+                art = LoadedModuleArtifact(instance=in_mem, package_key="") if in_mem is not None else self._loader.load_module_artifact(desc)
+                try:
+                    return (art, _validate_and_bind_module_tasks(module_id, desc, art.instance))
+                except BaseException:
+                    ProtectedModuleLoader.cleanup_package(art.package_key)
+                    raise
         except TaskCancelledException:
             raise
         except YscbError as exc:
@@ -925,7 +992,8 @@ class LocalModuleSlotRegistry:
         deferred_base: Optional[BaseException] = None
         for r_art, r_closers in to_clean:
             try:
-                retire_diags.extend(LifoResourceStack.run_closers(r_closers))
+                with guard_standard_streams():
+                    retire_diags.extend(LifoResourceStack.run_closers(r_closers))
             except BaseException as base_exc:
                 if deferred_base is None:
                     deferred_base = base_exc
@@ -941,7 +1009,22 @@ class LocalModuleSlotRegistry:
         self, module_id: ModuleId, inst: YscbModule, start_ep: int, target_phase: _SlotPhase, hook_tag: str,
     ) -> YscbModule:
         try:
-            close_fn = inst.on_init(self._workspace_root) if target_phase == _SlotPhase.INITIALIZED else inst.on_start(self._workspace_root)
+            with guard_standard_streams():
+                if self._require_eager_start:
+                    with active_step_caller_env_scope({}):
+                        with active_module_services_scope(self._resolve_module_services(module_id)):
+                            close_fn = (
+                                inst.on_init(self._workspace_root)
+                                if target_phase == _SlotPhase.INITIALIZED
+                                else inst.on_start(self._workspace_root)
+                            )
+                else:
+                    with active_module_services_scope(self._resolve_module_services(module_id)):
+                        close_fn = (
+                            inst.on_init(self._workspace_root)
+                            if target_phase == _SlotPhase.INITIALIZED
+                            else inst.on_start(self._workspace_root)
+                        )
         except TaskCancelledException:
             self._evict_failed_slot(module_id, start_ep)
             raise
@@ -965,20 +1048,23 @@ class LocalModuleSlotRegistry:
         self, module_id: ModuleId, inst: YscbModule, start_ep: int, target_phase: _SlotPhase,
         close_fn: Optional[Callable[[], None]], hook_tag: str,
     ) -> YscbModule:
+        guarded_closer = _wrap_guarded_closer(close_fn) if close_fn is not None else None
         committed = False
         with self._lock:
             slot = self._slot_locked(module_id)
             if not self._is_unavailable_locked(slot) and slot.epoch == start_ep and slot.artifact is not None and slot.artifact.instance is inst:
                 slot.phase = target_phase
-                if close_fn is not None:
-                    self._lifo_stack.push_closeable(f"{module_id}.{hook_tag}", close_fn)
+                if guarded_closer is not None:
+                    self._lifo_stack.push_closeable(f"{module_id}.{hook_tag}", guarded_closer)
                 committed = True
         if committed:
-            if target_phase == _SlotPhase.INITIALIZED and self._on_module_initialized is not None:
-                self._on_module_initialized(module_id)
+            init_cb = self._on_module_initialized
+            if target_phase == _SlotPhase.INITIALIZED and init_cb is not None:
+                invoke_observer_safely(lambda: init_cb(module_id))
             return inst
-        if close_fn is not None:
-            self._record_pending_teardown_diags(LifoResourceStack.run_void_closer(f"{module_id}.{hook_tag}", close_fn))
+        if guarded_closer is not None:
+            void_diags = LifoResourceStack.run_void_closer(f"{module_id}.{hook_tag}", guarded_closer)
+            self._record_pending_teardown_diags(void_diags)
         raise YscbError(ErrorCode.DAEMON_UNAVAILABLE, f"Module '{module_id}' invalidated during {hook_tag}.")
 
     def _evict_failed_slot(self, module_id: ModuleId, expected_epoch: int) -> None:
@@ -991,7 +1077,8 @@ class LocalModuleSlotRegistry:
                 to_close, to_purge = self._detach_slots_batch_locked((slot,))
         try:
             if to_close:
-                self._record_pending_teardown_diags(LifoResourceStack.run_closers(to_close))
+                with guard_standard_streams():
+                    self._record_pending_teardown_diags(LifoResourceStack.run_closers(to_close))
         finally:
             for pkg in to_purge:
                 ProtectedModuleLoader.cleanup_package(pkg)
@@ -1057,8 +1144,10 @@ class LocalModuleSlotRegistry:
 
     def compute_equiv_locally(self, task_id: TaskId, raw_input: JsonObject) -> WorkerEquivReply:
         try:
-            task = self.lookup_task(task_id, require_initialized=False)
-            return WorkerEquivReply(ok=True, equiv_key=task.compute_normalized_equivalence(raw_input))
+            with guard_standard_streams():
+                task = self.lookup_task(task_id, require_initialized=False)
+                eq_val = task.compute_normalized_equivalence(raw_input)
+            return WorkerEquivReply(ok=True, equiv_key=eq_val)
         except (TaskCancelledException, YscbError) as exc:
             return WorkerEquivReply(ok=False, error=exc.detail.with_fallback_task(str(task_id)))
         except (Exception, SystemExit, GeneratorExit) as exc:
@@ -1066,7 +1155,8 @@ class LocalModuleSlotRegistry:
 
     def map_batch_locally(self, task_id: TaskId, event_id: EventId, event_payloads: Sequence[JsonObject]) -> WorkerMapBatchReply:
         try:
-            skip, mapped_obj = self.lookup_task(task_id, require_initialized=False).map_subscription_batch(event_id, event_payloads)
+            with guard_standard_streams():
+                skip, mapped_obj = self.lookup_task(task_id, require_initialized=False).map_subscription_batch(event_id, event_payloads)
             return WorkerMapBatchReply(ok=True, skip=skip, mapped_input=mapped_obj)
         except (TaskCancelledException, YscbError) as exc:
             return WorkerMapBatchReply(ok=False, error=exc.detail.with_fallback_task(str(task_id)))
@@ -1109,7 +1199,8 @@ class LocalModuleSlotRegistry:
         deferred_base: Optional[BaseException] = None
         try:
             if immediate_closers:
-                diags.extend(LifoResourceStack.run_closers(immediate_closers))
+                with guard_standard_streams():
+                    diags.extend(LifoResourceStack.run_closers(immediate_closers))
         except BaseException as base_exc:
             deferred_base = base_exc
         finally:
@@ -1118,7 +1209,8 @@ class LocalModuleSlotRegistry:
         for r_art, r_closers in forced_retiring:
             try:
                 if r_closers:
-                    diags.extend(LifoResourceStack.run_closers(r_closers))
+                    with guard_standard_streams():
+                        diags.extend(LifoResourceStack.run_closers(r_closers))
             except BaseException as base_exc:
                 if deferred_base is None:
                     deferred_base = base_exc
@@ -1158,13 +1250,14 @@ class LocalModuleSlotRegistry:
 
     def _run_counted_local_step(self, spec: LocalStepExecutionSpec, pinned_box: list[LoadedModuleArtifact]) -> WorkerStepReply:
         outbox = TaskLocalOutbox(spec.task_id, spec.base_lineage, workspace_scope=self._workspace_root.comparison_key)
-        ctx = _StepTaskContext(self._workspace_root, spec, outbox)
+        ctx = _StepTaskContext(self._workspace_root, spec, outbox, lambda: self._resolve_module_services(spec.task_id.module_id))
         try:
             spec.cancel_token.raise_if_cancelled()
-            task, pinned_art = self._acquire_pinned_task(spec.task_id)
-            pinned_box.append(pinned_art)
-            with guard_standard_streams(allow_interactive_tty=(task.interactive_tty or spec.interactive_tty)):
-                raw_out = task.execute_encoded(spec.raw_input, ctx)
+            with active_step_caller_env_scope(spec.caller_env):
+                task, pinned_art = self._acquire_pinned_task(spec.task_id)
+                pinned_box.append(pinned_art)
+                with guard_standard_streams(allow_interactive_tty=(task.interactive_tty or spec.interactive_tty)):
+                    raw_out = task.execute_encoded(spec.raw_input, ctx)
             return WorkerStepReply(ok=True, raw_output=raw_out, committed_events=outbox.drain_committed())
         except (TaskCancelledException, YscbError) as exc:
             outbox.discard()

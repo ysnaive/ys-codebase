@@ -6,9 +6,9 @@ from abc import ABC, abstractmethod
 import dataclasses
 from dataclasses import dataclass, field
 from enum import Enum
+import math
 import re
 from types import MappingProxyType
-import math
 from typing import Callable, Generic, Mapping, Optional, Protocol, Sequence, TypeVar, get_origin, overload
 
 from core.execution.event import (
@@ -17,12 +17,16 @@ from core.execution.event import (
     EventMetadata,
     normalize_payload_filter,
 )
+from core.filesystem.vfs import ScopedVfs
 from core.foundation.codec import DataclassCodec
 from core.foundation.errors import ErrorCode, ErrorDetail, YscbError, safe_exception_summary
-from core.foundation.observability import CancellationToken, ProgressEvent, safe_real_to_float
+from core.foundation.observability import CancellationToken, LocaleCatalog, ProgressEvent, StructuredLogger
 from core.foundation.primitives import (
-    clone_strict_json_object,
-    is_valid_type_annotation,
+    INT64_MAX,
+    MAX_PARSE_JSON_DEPTH,
+    PRIVATE_ENV_PREFIX,
+    PYTHON_LAUNCHER_HIJACK_ENV_KEYS,
+    TREE_ID_ENV_KEY,
     EventId,
     HostPath,
     JsonObject,
@@ -30,21 +34,25 @@ from core.foundation.primitives import (
     JsonValue,
     ModuleId,
     TaskId,
-    INT64_MAX,
-    MAX_PARSE_JSON_DEPTH,
-    PYTHON_LAUNCHER_HIJACK_ENV_KEYS,
-    TREE_ID_ENV_KEY,
+    clone_strict_json_object,
+    is_valid_type_annotation,
     require_pure_bool,
     require_pure_int,
     require_pure_str,
     require_typed_frozenset,
     require_typed_tuple,
+    safe_real_to_float,
 )
+from core.metadata.contributes import AggregatedContributes
 
 TIn = TypeVar("TIn")
 TOut = TypeVar("TOut")
 TOut_co = TypeVar("TOut_co", covariant=True)
 TPayload = TypeVar("TPayload")
+TConfig = TypeVar("TConfig")
+
+EnvLeaseAcquireFn = Callable[[HostPath], Optional[Callable[[], None]]]
+EnvTouchUsedFn = Callable[[HostPath], None]
 
 _ALLOWED_ENV_EXACT: frozenset[str] = frozenset(
     {
@@ -68,7 +76,7 @@ _ALLOWED_ENV_EXACT: frozenset[str] = frozenset(
         "NO_COLOR",
     }
 )
-WORKER_AUTH_ENV_KEY: str = "YSCB_WORKER_AUTH_TOKEN"
+WORKER_AUTH_ENV_KEY: str = "_YSCB_WORKER_AUTH_TOKEN"
 LOCKS_SUBDIR: str = "locks"
 INSTALLER_LOCK_STEM: str = "installer"
 INSTALLER_LOCK_FILENAME: str = "installer.lock"
@@ -110,7 +118,8 @@ def sanitize_caller_env(raw_env: Mapping[str, str]) -> dict[str, str]:
             continue
         k_up = k.upper()
         if (
-            k_up not in _FORBIDDEN_ENV_UPPER
+            not k_up.startswith(PRIVATE_ENV_PREFIX)
+            and k_up not in _FORBIDDEN_ENV_UPPER
             and (k in _ALLOWED_ENV_EXACT or k.startswith(_ALLOWED_ENV_PREFIXES))
             and _is_valid_env_str(k, forbid_eq=True)
             and _is_valid_env_str(v)
@@ -151,6 +160,7 @@ class SecurityTier(Enum):
     SAFE = "safe"
     CONDITIONAL = "conditional"
     GATED = "gated"
+    CRITICAL = "critical"
 
 
 class ConcurrencyMode(Enum):
@@ -202,13 +212,19 @@ class CliBindingSpec:
     command_path: tuple[str, ...]
     summary: str
     aliases: tuple[str, ...] = ()
+    usage_pros: tuple[str, ...] = ()
+    usage_cons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         cp_tup = require_typed_tuple(self.command_path, str, "CliBindingSpec.command_path")
         al_tup = require_typed_tuple(self.aliases, str, "CliBindingSpec.aliases")
+        pros_tup = require_typed_tuple(self.usage_pros, str, "CliBindingSpec.usage_pros")
+        cons_tup = require_typed_tuple(self.usage_cons, str, "CliBindingSpec.usage_cons")
         require_pure_str(self.summary, "CliBindingSpec.summary", non_empty=True)
         object.__setattr__(self, "command_path", cp_tup)
         object.__setattr__(self, "aliases", al_tup)
+        object.__setattr__(self, "usage_pros", pros_tup)
+        object.__setattr__(self, "usage_cons", cons_tup)
         if not self.command_path or any(
             (not seg.strip() or any(ch.isspace() for ch in seg) or not _is_valid_env_str(seg))
             for seg in self.command_path
@@ -224,6 +240,9 @@ class CliBindingSpec:
             raise ValueError("CliBindingSpec command_path segments and aliases must not start with '-'.")
         if len(self.command_path) == 1 and self.command_path[0] in self.aliases:
             raise ValueError("CliBindingSpec single-segment command_path must not duplicate an alias.")
+        for note_seq, note_label in ((self.usage_pros, "usage_pros"), (self.usage_cons, "usage_cons")):
+            if any((not line.strip() or not _is_valid_env_str(line)) for line in note_seq):
+                raise ValueError(f"CliBindingSpec {note_label} entries must be non-empty valid UTF-8 strings.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,9 +289,9 @@ def _validate_route_invariants(spec: TaskRouteSpec) -> None:
         require_pure_int(spec.timeout_ms, f"Task '{spec.task_id}' timeout_ms", min_val=1, max_val=INT64_MAX)
     if spec.dispatch_mode == DispatchMode.COLD_ONLY and (spec.periodic is not None or spec.subscriptions):
         raise ValueError(f"COLD_ONLY Task '{spec.task_id}' cannot bind daemon periodic timer or event subscriptions.")
-    if spec.security_tier == SecurityTier.GATED:
+    if spec.security_tier in (SecurityTier.GATED, SecurityTier.CRITICAL):
         if spec.exposure == TaskExposure.INTERNAL_TRIGGER or spec.subscriptions or spec.periodic is not None:
-            raise ValueError(f"GATED Task '{spec.task_id}' cannot bind INTERNAL_TRIGGER, events, or periodic timers.")
+            raise ValueError(f"{spec.security_tier.name} Task '{spec.task_id}' cannot bind INTERNAL_TRIGGER, events, or periodic timers.")
     if spec.cli is not None and spec.exposure != TaskExposure.CLI_AND_SDK:
         raise ValueError(f"Task '{spec.task_id}' with exposure={spec.exposure} cannot bind a CLI command.")
     if len({s.event_id for s in spec.subscriptions}) != len(spec.subscriptions):
@@ -525,6 +544,37 @@ class TaskOutcome(Generic[TOut_co]):
             object.__setattr__(self, attr_nm, require_typed_tuple(diag_seq, ErrorDetail, f"TaskOutcome.{attr_nm}"))
 
 
+@dataclass(frozen=True, slots=True)
+class ModuleRuntimeServices:
+    """Managed module runtime service bundle symmetrically injected across Tier 0 and Tier 1."""
+
+    module_id: ModuleId
+    workspace_root: HostPath
+    vfs: ScopedVfs
+    logger: StructuredLogger
+    locale: LocaleCatalog
+    config_loader: Callable[[type[object]], object]
+    contributes_loader: Callable[[], AggregatedContributes]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.module_id, ModuleId):
+            raise ValueError(f"ModuleRuntimeServices.module_id must be ModuleId, got {self.module_id!r}")
+        if not isinstance(self.workspace_root, HostPath):
+            raise ValueError(f"ModuleRuntimeServices.workspace_root must be HostPath, got {self.workspace_root!r}")
+        if not isinstance(self.vfs, ScopedVfs):
+            raise ValueError(f"ModuleRuntimeServices.vfs must be ScopedVfs, got {self.vfs!r}")
+        if not isinstance(self.locale, LocaleCatalog):
+            raise ValueError(f"ModuleRuntimeServices.locale must be LocaleCatalog, got {self.locale!r}")
+        try:
+            log_m = self.logger.log
+        except AttributeError as exc:
+            raise ValueError(f"Invalid StructuredLogger on ModuleRuntimeServices: {self.logger!r}") from exc
+        if not callable(log_m):
+            raise ValueError(f"Invalid StructuredLogger.log on ModuleRuntimeServices: {self.logger!r}")
+        if not callable(self.config_loader) or not callable(self.contributes_loader):
+            raise ValueError("ModuleRuntimeServices config_loader and contributes_loader must be callable.")
+
+
 class TaskContext(ABC):
     """Explicit execution context passed into Task.run(req, ctx) with zero global singletons."""
 
@@ -547,6 +597,24 @@ class TaskContext(ABC):
     @property
     @abstractmethod
     def effective_priority(self) -> ExecutionPriority: ...
+
+    @property
+    @abstractmethod
+    def vfs(self) -> ScopedVfs: ...
+
+    @property
+    @abstractmethod
+    def logger(self) -> StructuredLogger: ...
+
+    @property
+    @abstractmethod
+    def locale(self) -> LocaleCatalog: ...
+
+    @abstractmethod
+    def load_config(self, config_cls: type[TConfig]) -> TConfig: ...
+
+    @abstractmethod
+    def load_contributes(self) -> AggregatedContributes: ...
 
     @abstractmethod
     def emit(self, event_meta: EventMetadata[TPayload], payload: TPayload) -> None: ...

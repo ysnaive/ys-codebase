@@ -4,28 +4,45 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import hashlib
 import json
 import os
 import socket
 import sys
 import threading
 import time
-from typing import Callable, Optional, Sequence
+from types import MappingProxyType
+from typing import Callable, Final, Mapping, Optional, Sequence
 import uuid
 
 from core.execution.lifecycle import LifoResourceStack
 from core.execution.rpc import FrameKind, InboundCallHandler, MultiplexedChannel, RemoteCallOutcome, accept_worker_handshake, bind_loopback_ephemeral
-from core.execution.runtime.contracts import WORKER_AUTH_ENV_KEY, ExecutionPriority, ModuleDescriptor, WorkerProcessSnapshot
+from core.execution.runtime.contracts import (
+    WORKER_AUTH_ENV_KEY,
+    EnvLeaseAcquireFn,
+    EnvTouchUsedFn,
+    ExecutionPriority,
+    ModuleDescriptor,
+    WorkerProcessSnapshot,
+)
+from core.execution.runtime.services import HOST_DIALECT_ENV_KEY, resolve_explicit_workspace_host_dialect
 from core.execution.runtime.coordinator import PriorityHandle, wait_on_event_with_cancel
 from core.execution.runtime.wire import (
     WorkerBootstrapConfig, WorkerCommandEnvelope, WorkerCommandKind, WorkerControlAction, WorkerElevateControl,
     WorkerModInitControl, WorkerStopAck, WorkerStopControl, WorkerUnloadReply, WorkerWarmupReply,
 )
+from core.filesystem.fs import (
+    has_symlink_raw_path,
+    hash_nofollow_regular_sha256,
+    is_symlink_or_reparse,
+    walk_nonsymlink_dir_tree,
+)
 from core.foundation.codec import DataclassCodec
 from core.foundation.errors import ErrorCode, ErrorDetail, TaskCancelledException, YscbError, safe_exception_summary
 from core.foundation.observability import MAX_SAFE_WAIT_SEC, MAX_TIMEOUT_MS, CancellationToken, DeadlineGuard, ms_to_safe_sec
-from core.foundation.primitives import PYTHON_LAUNCHER_HIJACK_ENV_KEYS, decrement_ref_count, HostPath, JsonObject, ModuleId, require_non_none
+from core.foundation.primitives import PYTHON_LAUNCHER_HIJACK_ENV_KEYS, decrement_ref_count, HostPath, JsonObject, ModuleId, invoke_observer_safely, require_non_none
 from core.foundation.proc import ManagedProcessTree
+from core.metadata.contributes import BoundLocaleDialect, lookup_cold_workspace_dialect_state
 
 
 class RetiringGroupBusyError(Exception):
@@ -64,8 +81,11 @@ class _ActiveWorkerHandle(InboundCallHandler):
     def __init__(
         self, proc_tree: ManagedProcessTree, group_key: str, delegate: InboundCallHandler,
         on_module_init: Optional[Callable[[_ActiveWorkerHandle, ModuleId], None]] = None,
+        *, venv_python: Optional[HostPath] = None, env_lease_release: Optional[Callable[[], None]] = None,
     ) -> None:
         self.proc_tree, self.group_key, self._delegate, self._on_module_init = proc_tree, group_key, delegate, on_module_init
+        self.venv_python: Optional[HostPath] = venv_python
+        self._env_lease_release: Optional[Callable[[], None]] = env_lease_release
         self._channel: Optional[MultiplexedChannel] = None
         self.boot_fingerprint: str = ""
         self.bound_modules: frozenset[ModuleId] = frozenset()
@@ -265,6 +285,13 @@ class _ActiveWorkerHandle(InboundCallHandler):
                 return ()
             self._diags_consumed = True
             return self._shutdown_diags
+    def _release_env_lease_locked(self) -> None:
+        rel = self._env_lease_release
+        if rel is None:
+            return
+        self._env_lease_release = None
+        invoke_observer_safely(rel)
+
     def shutdown(self, *, grace_sec: float = 1.0) -> tuple[ErrorDetail, ...]:
         with self._cond:
             self._enter_closing_phase_locked()
@@ -285,6 +312,7 @@ class _ActiveWorkerHandle(InboundCallHandler):
                     self._channel.close()
                 self.proc_tree.terminate_tree(grace_sec=grace_sec)
             finally:
+                self._release_env_lease_locked()
                 self._stopped_event.set()
         return self.consume_shutdown_diagnostics()
 
@@ -300,6 +328,7 @@ class _ActiveWorkerHandle(InboundCallHandler):
                     self._channel.close()
                 self.proc_tree.kill_tree_now()
             finally:
+                self._release_env_lease_locked()
                 self._stopped_event.set()
 
 
@@ -331,12 +360,46 @@ def _decode_stop_diagnostics(reply: Optional[JsonObject]) -> tuple[ErrorDetail, 
         return ()
 
 
+def _fingerprint_tier1_descriptor_files(desc: ModuleDescriptor) -> str:
+    h = hashlib.sha256()
+    if desc.venv_python is not None:
+        try:
+            vp_st = os.lstat(desc.venv_python.path)
+            h.update(f"vp:{vp_st.st_mtime_ns}:{vp_st.st_size}\n".encode("utf-8"))
+        except OSError:
+            pass
+    root_s = str(desc.module_dir)
+    if has_symlink_raw_path(root_s) or is_symlink_or_reparse(root_s):
+        return h.hexdigest()
+    file_hashes: list[tuple[str, str]] = []
+    for _cur_dir, entries in walk_nonsymlink_dir_tree(root_s, ignored_dir_prefixes=(".", "__pycache__")):
+        for ent in entries:
+            if ent.name.startswith(".") or ent.name in ("__pycache__", ".git", ".venv") or ent.is_symlink() or is_symlink_or_reparse(ent.path):
+                continue
+            if not (ent.name == "manifest.json" or ent.name.endswith(".py")):
+                continue
+            try:
+                if not ent.is_file(follow_symlinks=False):
+                    continue
+                digest = hash_nofollow_regular_sha256(ent.path)
+                if not digest:
+                    continue
+                rel_name = os.path.relpath(ent.path, root_s).replace("\\", "/")
+                file_hashes.append((rel_name, digest))
+            except (OSError, ValueError, YscbError):
+                continue
+    for rel_name, digest in sorted(file_hashes):
+        h.update(f"f:{rel_name}:{digest}\n".encode("utf-8"))
+    return h.hexdigest()
+
+
 def _compute_group_desc_fingerprint(descs: Sequence[ModuleDescriptor]) -> str:
     items = sorted(
         [
             str(d.module_id), d.module_dir.comparison_key, d.entry_file, d.venv_group or "",
             d.venv_python.comparison_key if d.venv_python is not None else "",
             d.eager_warmup, [DataclassCodec.encode_object(t) for t in d.declared_tasks],
+            _fingerprint_tier1_descriptor_files(d),
         ]
         for d in descs
     )
@@ -377,21 +440,127 @@ class _WorkerSpawnOpts:
     is_hot: bool = True
     inherit_tty: bool = False
     on_module_init: Optional[Callable[[_ActiveWorkerHandle, ModuleId], None]] = None
+    host_dir: Optional[HostPath] = None
+    bound_dialect: Optional[BoundLocaleDialect] = None
+    env_lease_acquire: Optional[EnvLeaseAcquireFn] = None
 
 
 _STRIPPED_WORKER_PYTHON_ENV_UPPER: frozenset[str] = frozenset(
     k.upper() for k in (*PYTHON_LAUNCHER_HIJACK_ENV_KEYS, "PYTHONHOME", "VIRTUAL_ENV", "PYTHONUSERBASE")
 )
+_FALSY_ENV_TOKENS: frozenset[str] = frozenset({"", "0", "false", "no", "off"})
 
 
-def _build_worker_subproc_env(auth_token: str) -> dict[str, str]:
+_WORKER_ANTIGRAVITY_ENV_KEYS: frozenset[str] = frozenset({
+    "ANTIGRAVITY_AGENT",
+    "ANTIGRAVITY_CONVERSATION_ID",
+    "ANTIGRAVITY_TRAJECTORY_ID",
+    "ANTIGRAVITY_SESSION",
+    "AGY_AGENT",
+    "AGY_SESSION",
+})
+_WORKER_CLAUDE_ENV_KEYS: frozenset[str] = frozenset({
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_SSE_PORT",
+})
+_WORKER_CODEX_ENV_KEYS: frozenset[str] = frozenset({
+    "CODEX_SANDBOX",
+    "CODEX_THREAD_ID",
+    "CODEX_CI",
+})
+_WORKER_GEMINI_ENV_KEYS: frozenset[str] = frozenset({"GEMINI_CLI"})
+_WORKER_CURSOR_ENV_KEYS: frozenset[str] = frozenset({"CURSOR_AGENT"})
+_WORKER_SUPPRESS_DIALECT_MODES: frozenset[str] = frozenset({"ci", "ci_pipeline", "non_tty"})
+_WORKER_EXPLICIT_MODE_RANK: Final[Mapping[str, int]] = MappingProxyType({
+    "agent": 3,
+    "ci": 3,
+    "ci_pipeline": 3,
+    "non_tty": 2,
+    "human": 1,
+})
+
+
+def _resolve_worker_explicit_caller_mode(env_map: dict[str, str]) -> str:
+    exact_raw = env_map.get("YSCB_CALLER_MODE")
+    if isinstance(exact_raw, str):
+        exact_tok = exact_raw.strip().lower()
+        if exact_tok in _WORKER_EXPLICIT_MODE_RANK:
+            return exact_tok
+    best_tok = ""
+    best_rank = 0
+    for k, v in env_map.items():
+        if k.upper() == "YSCB_CALLER_MODE":
+            cand = v.strip().lower()
+            rank = _WORKER_EXPLICIT_MODE_RANK.get(cand, 0)
+            if rank > best_rank:
+                best_rank = rank
+                best_tok = cand
+    return best_tok
+
+
+def _infer_env_host_dialect(env_map: dict[str, str]) -> Optional[str]:
+    if _resolve_worker_explicit_caller_mode(env_map) in _WORKER_SUPPRESS_DIALECT_MODES:
+        return None
+    upper_keys = {
+        k.upper(): v.strip()
+        for k, v in env_map.items()
+        if v.strip().lower() not in _FALSY_ENV_TOKENS
+    }
+    if any(k in upper_keys for k in _WORKER_ANTIGRAVITY_ENV_KEYS):
+        return "nouns-antigravity"
+    if any(k in upper_keys for k in _WORKER_CLAUDE_ENV_KEYS):
+        return "nouns-claude"
+    if any(k in upper_keys for k in _WORKER_CODEX_ENV_KEYS):
+        return "nouns-codex"
+    if any(k in upper_keys for k in _WORKER_GEMINI_ENV_KEYS):
+        return "nouns-gemini"
+    if any(k in upper_keys for k in _WORKER_CURSOR_ENV_KEYS):
+        return "nouns-cursor"
+    return None
+
+
+def _strip_env_key_ci(env_map: dict[str, str], target_key: str) -> None:
+    target_up = target_key.upper()
+    for existing_k in [k for k in env_map if k.upper() == target_up]:
+        env_map.pop(existing_k, None)
+
+
+def _build_worker_subproc_env(auth_token: str, workspace_root: HostPath, opts: _WorkerSpawnOpts) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k.upper() not in _STRIPPED_WORKER_PYTHON_ENV_UPPER}
     env["PYTHONPATH"] = str(HostPath(__file__).path.parents[3])
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     if sys.flags.optimize > 0:
         env["PYTHONOPTIMIZE"] = str(sys.flags.optimize)
     env[WORKER_AUTH_ENV_KEY] = auth_token
+    _strip_env_key_ci(env, HOST_DIALECT_ENV_KEY)
+    if opts.is_hot:
+        return env
+    bd = opts.bound_dialect
+    if bd is not None:
+        if not bd.is_daemon_host and bd.dialect is not None:
+            env[HOST_DIALECT_ENV_KEY] = bd.dialect
+        if bd.is_daemon_host or not bd.inherit_host_env_locale or bd.raw_env_locale_override is not None:
+            _strip_env_key_ci(env, "YSCB_LOCALE")
+            if bd.raw_env_locale_override:
+                env["YSCB_LOCALE"] = bd.raw_env_locale_override
+        return env
+    explicit_dial = resolve_explicit_workspace_host_dialect(workspace_root)
+    if explicit_dial is not None:
+        env[HOST_DIALECT_ENV_KEY] = explicit_dial
+        return env
+    cold_state = lookup_cold_workspace_dialect_state(workspace_root)
+    if cold_state.has_active_kernel:
+        if cold_state.dialect is not None:
+            env[HOST_DIALECT_ENV_KEY] = cold_state.dialect
+        return env
+    inferred_dialect = _infer_env_host_dialect(env)
+    if inferred_dialect is not None:
+        env[HOST_DIALECT_ENV_KEY] = inferred_dialect
     return env
+
+
 def _spawn_connected_worker(
     *, workspace_root: HostPath, descriptors: Sequence[ModuleDescriptor],
     master_callback_handler: InboundCallHandler, opts: _WorkerSpawnOpts, guard: DeadlineGuard,
@@ -401,39 +570,66 @@ def _spawn_connected_worker(
     if len(py_paths) != 1:
         raise YscbError(ErrorCode.MODULE_DEGRADED, f"Conflicting venv_python interpreters in Tier 1 group '{group_key}'.")
     venv_python = next(iter(py_paths))
-    listen_sock = bind_loopback_ephemeral(backlog=16)
+    env_lease_release: Optional[Callable[[], None]] = None
+    listen_sock: Optional[socket.socket] = None
     proc_tree: Optional[ManagedProcessTree] = None
     channel: Optional[MultiplexedChannel] = None
+    handle: Optional[_ActiveWorkerHandle] = None
     try:
+        if opts.env_lease_acquire is not None:
+            env_lease_release = opts.env_lease_acquire(venv_python)
+        listen_sock = bind_loopback_ephemeral(backlog=16)
         port = int(listen_sock.getsockname()[1])
         boot_id, auth_token = uuid.uuid4().hex, uuid.uuid4().hex
         mods = tuple(
             ModuleDescriptor(module_id=d.module_id, module_dir=d.module_dir, entry_file=d.entry_file, eager_warmup=d.eager_warmup, declared_tasks=d.declared_tasks)
             for d in descriptors
         )
-        cfg_arg = json.dumps(DataclassCodec.encode_object(WorkerBootstrapConfig("127.0.0.1", port, boot_id, workspace_root, mods, opts.is_hot)), separators=(",", ":"), ensure_ascii=False)
+        cfg_arg = json.dumps(DataclassCodec.encode_object(WorkerBootstrapConfig("127.0.0.1", port, boot_id, workspace_root, mods, opts.is_hot, opts.host_dir)), separators=(",", ":"), ensure_ascii=False)
         argv = [str(venv_python), "-c", "from core.execution.runtime.worker_entry import worker_main; raise SystemExit(worker_main())", cfg_arg]
         try:
-            proc_tree = ManagedProcessTree(argv, cwd=workspace_root, env=_build_worker_subproc_env(auth_token), inherit_tty=opts.inherit_tty)
+            proc_tree = ManagedProcessTree(
+                argv,
+                cwd=workspace_root,
+                env=_build_worker_subproc_env(auth_token, workspace_root, opts),
+                inherit_tty=opts.inherit_tty,
+            )
         except OSError as exc:
-            raise YscbError(ErrorCode.WORKER_CRASHED, f"Failed to spawn Tier 1 worker '{group_key}': {safe_exception_summary(exc)}") from exc
-        handle = _ActiveWorkerHandle(proc_tree, group_key, master_callback_handler, opts.on_module_init)
+            raise YscbError(
+                ErrorCode.WORKER_CRASHED,
+                f"Failed to spawn Tier 1 worker '{group_key}' ({venv_python}): {safe_exception_summary(exc)}",
+            ) from exc
+        handle = _ActiveWorkerHandle(
+            proc_tree,
+            group_key,
+            master_callback_handler,
+            opts.on_module_init,
+            venv_python=venv_python,
+            env_lease_release=env_lease_release,
+        )
+        env_lease_release = None
         channel = _accept_authenticated_worker_channel(listen_sock, proc_tree, handle, group_key, auth_token, boot_id, workspace_root, guard)
         handle.bind_channel(channel)
         handle.boot_fingerprint = _compute_group_desc_fingerprint(descriptors)
         handle.bound_modules = frozenset(d.module_id for d in descriptors)
         return handle
     except BaseException:
-        if channel is not None:
-            channel.close()
-        if proc_tree is not None:
-            proc_tree.kill_tree_now()
+        if handle is not None:
+            handle.kill_immediately()
+        else:
+            if channel is not None:
+                channel.close()
+            if proc_tree is not None:
+                proc_tree.kill_tree_now()
+            if env_lease_release is not None:
+                invoke_observer_safely(env_lease_release)
         raise
     finally:
-        try:
-            listen_sock.close()
-        except OSError:
-            pass
+        if listen_sock is not None:
+            try:
+                listen_sock.close()
+            except OSError:
+                pass
 
 
 def _execute_rpc_call_with_watchdog(
@@ -504,6 +700,8 @@ class PoolHostCallbacks:
     is_group_reloading: Optional[Callable[[Sequence[ModuleDescriptor]], bool]] = None
     resolve_group_descriptors: Optional[Callable[[str, Sequence[ModuleDescriptor]], Sequence[ModuleDescriptor]]] = None
     on_teardown_diagnostics: Optional[Callable[[Sequence[ErrorDetail]], None]] = None
+    env_lease_acquire: Optional[EnvLeaseAcquireFn] = None
+    env_touch_used: Optional[EnvTouchUsedFn] = None
 
 
 def _invoke_worker_handle_with_taint(
@@ -546,12 +744,15 @@ class HotWorkerPool:
     def __init__(
         self, workspace_root: HostPath, master_callback_handler: InboundCallHandler, *,
         host_callbacks: PoolHostCallbacks = PoolHostCallbacks(), lifo_stack: Optional[LifoResourceStack] = None,
+        host_dir: Optional[HostPath] = None,
     ) -> None:
         self._workspace_root, self._callback_handler, self._lifo_stack = workspace_root, master_callback_handler, lifo_stack
+        self._host_dir = host_dir
         self._on_warmup_reply, self._on_module_crashed = host_callbacks.on_warmup_reply, host_callbacks.on_module_crashed
         self._is_module_degraded, self._is_module_quiesced = host_callbacks.is_module_degraded, host_callbacks.is_module_quiesced
         self._is_group_reloading, self._resolve_group_descs = host_callbacks.is_group_reloading, host_callbacks.resolve_group_descriptors
         self._on_teardown_diags = host_callbacks.on_teardown_diagnostics
+        self._env_lease_acquire, self._env_touch_used = host_callbacks.env_lease_acquire, host_callbacks.env_touch_used
         self._state_cond = threading.Condition()
         self._gate_seq, self._closed, self._shutdown_grace_sec = 0, False, 1.0
         self._group_epochs: dict[str, int] = {}
@@ -717,12 +918,23 @@ class HotWorkerPool:
         return next((c for c in candidates if c.can_accept_reentrant_turn(turn_id, call_tree_id, allow_drain_bypass=allow_drain_bypass)), None)
 
     def _commit_spawned_worker_or_abort(
-        self, group_key: str, descriptors: Sequence[ModuleDescriptor], spawned: _ActiveWorkerHandle, start_epoch: int,
+        self,
+        group_key: str,
+        descriptors: Sequence[ModuleDescriptor],
+        spawned: _ActiveWorkerHandle,
+        start_epoch: int,
+        flight: _GroupBootFlight,
     ) -> Optional[_ActiveWorkerHandle]:
         quiesced_now = self._any_quiesced(descriptors)
         with self._state_cond:
             closed_or_q = self._closed or quiesced_now
-            if not closed_or_q and self._group_epochs.get(group_key, 0) == start_epoch:
+            if (
+                not closed_or_q
+                and not flight.cancel_token.is_cancelled
+                and self._boot_flights.get(group_key) is flight
+                and self._group_epochs.get(group_key, 0) == start_epoch
+                and group_key not in self._workers
+            ):
                 self._workers[group_key] = spawned
                 self._register_spawned_worker_lifo(group_key, spawned)
                 return spawned
@@ -739,6 +951,7 @@ class HotWorkerPool:
         with self._state_cond:
             cur_h = self._workers.get(group_key)
             if cur_h is not None and cur_h.is_alive and cur_h.boot_fingerprint != target_fp:
+                self._group_epochs[group_key] = self._group_epochs.get(group_key, 0) + 1
                 self._workers.pop(group_key, None)
                 cur_h.mark_closing_for_reload()
                 self._retiring_workers.setdefault(group_key, []).append(cur_h)
@@ -770,10 +983,12 @@ class HotWorkerPool:
                     retry_later = True
                 else:
                     stale_handle = self._workers.pop(group_key, None) if existing is not None else None
-                    start_epoch = self._group_epochs.get(group_key, 0)
                     flight = self._boot_flights.get(group_key)
                     if flight is not None and not flight.done_event.is_set() and flight.target_fp != target_fp:
                         superseded_flight, flight = flight, None
+                    if stale_handle is not None or superseded_flight is not None:
+                        self._group_epochs[group_key] = self._group_epochs.get(group_key, 0) + 1
+                    start_epoch = self._group_epochs.get(group_key, 0)
                     if flight is None or flight.done_event.is_set():
                         flight = _GroupBootFlight(target_fp=target_fp)
                         self._boot_flights[group_key] = flight
@@ -817,7 +1032,7 @@ class HotWorkerPool:
         pool_guard = DeadlineGuard.from_timeout_ms(_GROUP_WARMUP_TIMEOUT_MS, flight.cancel_token)
         try:
             spawned = self._spawn_and_warmup_worker(group_key, descriptors, pool_guard)
-            _ = self._commit_spawned_worker_or_abort(group_key, descriptors, spawned, start_epoch)
+            _ = self._commit_spawned_worker_or_abort(group_key, descriptors, spawned, start_epoch, flight)
         except BaseException as exc:
             if not flight.cancel_token.is_cancelled:
                 flight.error = exc
@@ -828,10 +1043,22 @@ class HotWorkerPool:
                 self._state_cond.notify_all()
             flight.done_event.set()
 
+    def _notify_env_touch_used(self, handle: _ActiveWorkerHandle) -> None:
+        touch_fn = self._env_touch_used
+        if touch_fn is not None and handle.venv_python is not None:
+            vp = handle.venv_python
+            invoke_observer_safely(lambda: touch_fn(vp))
+
     def _spawn_and_warmup_worker(self, group_key: str, descriptors: Sequence[ModuleDescriptor], guard: DeadlineGuard) -> _ActiveWorkerHandle:
         spawned = _spawn_connected_worker(
             workspace_root=self._workspace_root, descriptors=descriptors, master_callback_handler=self._callback_handler,
-            opts=_WorkerSpawnOpts(group_key, on_module_init=lambda h, mid: self._claim_and_push_hot_lifo(group_key, h, mid)), guard=guard,
+            opts=_WorkerSpawnOpts(
+                group_key,
+                on_module_init=lambda h, mid: self._claim_and_push_hot_lifo(group_key, h, mid),
+                host_dir=self._host_dir,
+                env_lease_acquire=self._env_lease_acquire,
+            ),
+            guard=guard,
         )
         try:
             eager_mods = _filter_non_degraded_eager(descriptors, self._is_module_degraded, self._is_module_quiesced)
@@ -896,7 +1123,13 @@ class HotWorkerPool:
                 if probe_h is None:
                     probe_h = _spawn_connected_worker(
                         workspace_root=self._workspace_root, descriptors=descriptors, master_callback_handler=self._callback_handler,
-                        opts=_WorkerSpawnOpts(group_key, on_module_init=lambda h, mid: self._claim_and_push_hot_lifo(group_key, h, mid)), guard=guard,
+                        opts=_WorkerSpawnOpts(
+                            group_key,
+                            on_module_init=lambda h, mid: self._claim_and_push_hot_lifo(group_key, h, mid),
+                            host_dir=self._host_dir,
+                            env_lease_acquire=self._env_lease_acquire,
+                        ),
+                        guard=guard,
                     )
                 alive, mod_ok = self._probe_single_eager_module(probe_h, mod_id, guard)
                 if not alive:
@@ -918,7 +1151,13 @@ class HotWorkerPool:
             raise
         fresh = _spawn_connected_worker(
             workspace_root=self._workspace_root, descriptors=descriptors, master_callback_handler=self._callback_handler,
-            opts=_WorkerSpawnOpts(group_key, on_module_init=lambda h, mid: self._claim_and_push_hot_lifo(group_key, h, mid)), guard=guard,
+            opts=_WorkerSpawnOpts(
+                group_key,
+                on_module_init=lambda h, mid: self._claim_and_push_hot_lifo(group_key, h, mid),
+                host_dir=self._host_dir,
+                env_lease_acquire=self._env_lease_acquire,
+            ),
+            guard=guard,
         )
         try:
             eager_mods = _filter_non_degraded_eager(descriptors, self._is_module_degraded, self._is_module_quiesced)
@@ -1060,6 +1299,7 @@ class HotWorkerPool:
                 return (RemoteCallOutcome(was_accepted=False, transport_lost=is_lost, error_code=exc.detail.code, error_message=exc.detail.message), None)
             if not handle.try_enter_call(spec.turn_id, spec.call_tree_id, allow_reentrant=(reentrant is not None), allow_drain_bypass=spec.bypass_reload_gate):
                 continue
+            self._notify_env_touch_used(handle)
             outcome, release_guard = _invoke_worker_handle_with_taint(handle, wire_payload, spec, rem_ms, lambda h=handle: self._detach_worker_only(gkey, h), drain_wait_sec=3.0)
             if outcome.error_code == ErrorCode.TASK_TIMEOUT:
                 return (outcome, release_guard)
@@ -1163,19 +1403,116 @@ def _acquire_lock_interruptible(lock: threading.Lock, guard: DeadlineGuard) -> N
 def _push_cold_module_lifo(prefix: str, handle: _ActiveWorkerHandle, mod_id: ModuleId, lifo_stack: LifoResourceStack) -> None:
     if handle.record_or_claim_lifo_module(mod_id, is_committed=True):
         lifo_stack.push_diagnostic_closeable(f"{prefix}.{mod_id}", lambda m=mod_id, h=handle: _unload_module_on_handle(h, m, timeout_sec=0.4))
+@dataclass(frozen=True, slots=True)
+class _ColdGroupHandleEntry:
+    group_key: str
+    handle: _ActiveWorkerHandle
+    tag_prefix: str
+
+
 class OneShotVenvHost:
     """Executes Cold Turn Tier 1 steps, reusing per-Turn venv_group sessions with TurnScope LIFO teardown."""
 
-    def __init__(self, workspace_root: HostPath, master_callback_handler: InboundCallHandler) -> None:
-        self._workspace_root, self._callback_handler = workspace_root, master_callback_handler
+    def __init__(
+        self,
+        workspace_root: HostPath,
+        master_callback_handler: InboundCallHandler,
+        *,
+        host_dir: Optional[HostPath] = None,
+        dialect_resolver: Optional[Callable[[], Optional[BoundLocaleDialect]]] = None,
+        on_teardown_diagnostics: Optional[Callable[[Sequence[ErrorDetail]], None]] = None,
+        env_lease_acquire: Optional[EnvLeaseAcquireFn] = None,
+        env_touch_used: Optional[EnvTouchUsedFn] = None,
+    ) -> None:
+        self._workspace_root, self._callback_handler, self._host_dir = workspace_root, master_callback_handler, host_dir
+        self._dialect_resolver = dialect_resolver
+        self._on_teardown_diags = on_teardown_diagnostics
+        self._env_lease_acquire = env_lease_acquire
+        self._env_touch_used = env_touch_used
         self._lock = threading.Lock()
         self._group_locks: dict[str, threading.Lock] = {}
-        self._handles: dict[str, _ActiveWorkerHandle] = {}
+        self._handles: dict[str, _ColdGroupHandleEntry] = {}
+
+    def _notify_env_touch_used(self, handle: _ActiveWorkerHandle) -> None:
+        touch_fn = self._env_touch_used
+        if touch_fn is not None and handle.venv_python is not None:
+            vp = handle.venv_python
+            invoke_observer_safely(lambda: touch_fn(vp))
+
+    def _current_bound_dialect(self) -> Optional[BoundLocaleDialect]:
+        return self._dialect_resolver() if self._dialect_resolver is not None else None
+
+    def _emit_async_diags(self, diags: Sequence[ErrorDetail]) -> None:
+        if diags and self._on_teardown_diags is not None:
+            self._on_teardown_diags(diags)
+
+    def _retire_cold_handle(
+        self,
+        entry: _ColdGroupHandleEntry,
+        lifo_stack: Optional[LifoResourceStack],
+        *,
+        grace_sec: float,
+    ) -> tuple[ErrorDetail, ...]:
+        if lifo_stack is not None:
+            lifo_stack.pop_tagged_by_prefixes(frozenset({entry.tag_prefix}))
+        _done_sync, diags = entry.handle.shutdown_when_healthy_drained(
+            grace_sec=grace_sec,
+            max_wait_sec=min(MAX_SAFE_WAIT_SEC, max(5.0, grace_sec)),
+            on_drained=self._emit_async_diags,
+        )
+        return diags
+
+    def sync_on_reload(
+        self,
+        unload_mods: frozenset[ModuleId],
+        fresh_descriptors: Sequence[ModuleDescriptor],
+        lifo_stack: LifoResourceStack,
+        *,
+        grace_sec: float = 0.4,
+        evict_all: bool = False,
+    ) -> tuple[ErrorDetail, ...]:
+        grouped: dict[str, list[ModuleDescriptor]] = {}
+        for desc in fresh_descriptors:
+            if desc.venv_python is not None:
+                grouped.setdefault(tier1_group_key_for(desc), []).append(desc)
+        fresh_fps = {gk: _compute_group_desc_fingerprint(ds) for gk, ds in grouped.items()}
+        evicted: list[_ColdGroupHandleEntry] = []
+        with self._lock:
+            for hkey, entry in list(self._handles.items()):
+                fresh_fp = fresh_fps.get(entry.group_key)
+                if (
+                    evict_all
+                    or bool(entry.handle.bound_modules & unload_mods)
+                    or fresh_fp is None
+                    or entry.handle.boot_fingerprint != fresh_fp
+                ):
+                    self._handles.pop(hkey, None)
+                    self._group_locks.pop(hkey, None)
+                    evicted.append(entry)
+        diags: list[ErrorDetail] = []
+        for entry in evicted:
+            diags.extend(self._retire_cold_handle(entry, lifo_stack, grace_sec=grace_sec))
+        return tuple(diags)
+
+    def close_all(
+        self,
+        *,
+        grace_sec: float = 0.4,
+        lifo_stack: Optional[LifoResourceStack] = None,
+    ) -> tuple[ErrorDetail, ...]:
+        with self._lock:
+            entries = list(self._handles.values())
+            self._handles.clear()
+            self._group_locks.clear()
+        diags: list[ErrorDetail] = []
+        for entry in entries:
+            diags.extend(self._retire_cold_handle(entry, lifo_stack, grace_sec=grace_sec))
+        return tuple(diags)
 
     def run_once_with_guard(
         self, spec: WorkerCallSpec, lifo_stack: LifoResourceStack,
     ) -> tuple[RemoteCallOutcome, Optional[threading.Event]]:
-        return (self._run_ephemeral_tty(spec, lifo_stack), None) if spec.inherit_tty else self._call_in_turn(spec, lifo_stack)
+        return self._run_ephemeral_tty(spec, lifo_stack) if spec.inherit_tty else self._call_in_turn(spec, lifo_stack)
 
     def _call_in_turn(
         self, spec: WorkerCallSpec, lifo_stack: LifoResourceStack,
@@ -1196,6 +1533,7 @@ class OneShotVenvHost:
                 return (RemoteCallOutcome(was_accepted=False, transport_lost=is_lost, error_code=exc.detail.code, error_message=exc.detail.message), None)
             if not handle.try_enter_call(spec.turn_id, spec.call_tree_id, allow_reentrant=True):
                 continue
+            self._notify_env_touch_used(handle)
             return _invoke_worker_handle_with_taint(
                 handle, wire_payload, spec, rem_ms, lambda h=handle: self._detach_turn_handle(hkey, h), drain_wait_sec=10.0,
             )
@@ -1203,7 +1541,8 @@ class OneShotVenvHost:
 
     def _detach_turn_handle(self, hkey: str, handle: _ActiveWorkerHandle) -> None:
         with self._lock:
-            if self._handles.get(hkey) is handle:
+            cur = self._handles.get(hkey)
+            if cur is not None and cur.handle is handle:
                 self._handles.pop(hkey, None)
 
     def _acquire_turn_handle(
@@ -1211,28 +1550,37 @@ class OneShotVenvHost:
     ) -> _ActiveWorkerHandle:
         target_fp = _compute_group_desc_fingerprint(spec.group_descriptors)
         with self._lock:
-            fast = self._handles.get(hkey)
-            if fast is not None and fast.is_alive and fast.boot_fingerprint == target_fp:
-                return fast
+            fast_entry = self._handles.get(hkey)
+            if fast_entry is not None and fast_entry.handle.is_alive and fast_entry.handle.boot_fingerprint == target_fp:
+                return fast_entry.handle
             glk = self._group_locks.setdefault(hkey, threading.Lock())
         _acquire_lock_interruptible(glk, guard)
         try:
             with self._lock:
-                existing = self._handles.get(hkey)
-                if existing is not None and existing.is_alive and existing.boot_fingerprint == target_fp:
-                    return existing
-                stale = self._handles.pop(hkey, None)
-            if stale is not None:
-                stale.terminate_when_healthy_drained(max_wait_sec=5.0)
+                existing_entry = self._handles.get(hkey)
+                if existing_entry is not None and existing_entry.handle.is_alive and existing_entry.handle.boot_fingerprint == target_fp:
+                    return existing_entry.handle
+                stale_entry = self._handles.pop(hkey, None)
+            if stale_entry is not None:
+                stale_diags = self._retire_cold_handle(stale_entry, lifo_stack, grace_sec=0.4)
+                self._emit_async_diags(stale_diags)
             tag_prefix = f"cold_venv.{gkey}"
+            bd = self._current_bound_dialect()
             spawned = _spawn_connected_worker(
                 workspace_root=self._workspace_root, descriptors=spec.group_descriptors, master_callback_handler=self._callback_handler,
-                opts=_WorkerSpawnOpts(f"cold_{gkey}", is_hot=False, on_module_init=lambda h, mid: _push_cold_module_lifo(tag_prefix, h, mid, lifo_stack)),
+                opts=_WorkerSpawnOpts(
+                    f"cold_{gkey}",
+                    is_hot=False,
+                    on_module_init=lambda h, mid: _push_cold_module_lifo(tag_prefix, h, mid, lifo_stack),
+                    host_dir=self._host_dir,
+                    bound_dialect=bd,
+                    env_lease_acquire=self._env_lease_acquire,
+                ),
                 guard=guard,
             )
             try:
                 with self._lock:
-                    self._handles[hkey] = spawned
+                    self._handles[hkey] = _ColdGroupHandleEntry(group_key=gkey, handle=spawned, tag_prefix=tag_prefix)
                 lifo_stack.push_diagnostic_closeable(tag_prefix, lambda: self._close_turn_handle(hkey, spawned))
                 return spawned
             except BaseException:
@@ -1243,34 +1591,64 @@ class OneShotVenvHost:
 
     def _close_turn_handle(self, hkey: str, handle: _ActiveWorkerHandle) -> tuple[ErrorDetail, ...]:
         with self._lock:
-            if self._handles.get(hkey) is handle:
+            cur = self._handles.get(hkey)
+            if cur is not None and cur.handle is handle:
                 self._handles.pop(hkey, None)
             if hkey not in self._handles:
                 self._group_locks.pop(hkey, None)
         return handle.shutdown(grace_sec=0.4)
 
-    def _run_ephemeral_tty(self, spec: WorkerCallSpec, lifo_stack: LifoResourceStack) -> RemoteCallOutcome:
+    def _run_ephemeral_tty(
+        self, spec: WorkerCallSpec, lifo_stack: LifoResourceStack,
+    ) -> tuple[RemoteCallOutcome, Optional[threading.Event]]:
         try:
             gkey_base, guard, wire_payload = _prepare_worker_call(spec)
         except YscbError as exc:
-            return RemoteCallOutcome(was_accepted=False, error_code=exc.detail.code, error_message=exc.detail.message)
-        gkey = f"oneshot_{gkey_base}_{uuid.uuid4().hex[:6]}"
-        tag_prefix = f"cold_tty.{gkey}"
+            return (RemoteCallOutcome(was_accepted=False, error_code=exc.detail.code, error_message=exc.detail.message), None)
+        eph_key = f"oneshot_{gkey_base}_{uuid.uuid4().hex[:6]}"
+        tag_prefix = f"cold_tty.{eph_key}"
         try:
+            bd = self._current_bound_dialect()
             handle = _spawn_connected_worker(
                 workspace_root=self._workspace_root, descriptors=spec.group_descriptors, master_callback_handler=self._callback_handler,
-                opts=_WorkerSpawnOpts(gkey, is_hot=False, inherit_tty=True, on_module_init=lambda h, mid: _push_cold_module_lifo(tag_prefix, h, mid, lifo_stack)),
+                opts=_WorkerSpawnOpts(
+                    eph_key,
+                    is_hot=False,
+                    inherit_tty=True,
+                    on_module_init=lambda h, mid: _push_cold_module_lifo(tag_prefix, h, mid, lifo_stack),
+                    host_dir=self._host_dir,
+                    bound_dialect=bd,
+                    env_lease_acquire=self._env_lease_acquire,
+                ),
                 guard=guard,
             )
             try:
-                lifo_stack.push_diagnostic_closeable(tag_prefix, lambda: handle.shutdown(grace_sec=0.4))
+                with self._lock:
+                    self._handles[eph_key] = _ColdGroupHandleEntry(
+                        group_key=gkey_base,
+                        handle=handle,
+                        tag_prefix=tag_prefix,
+                    )
+                lifo_stack.push_diagnostic_closeable(tag_prefix, lambda: self._close_turn_handle(eph_key, handle))
                 rem_ms = guard.remaining_ms(spec.timeout_ms, expired_message="Timed out before TTY Tier 1 call.")
             except BaseException:
+                with self._lock:
+                    self._handles.pop(eph_key, None)
                 handle.kill_immediately()
                 raise
         except TaskCancelledException as exc:
-            return RemoteCallOutcome(was_accepted=False, error_code=exc.detail.code, error_message=exc.detail.message)
+            return (RemoteCallOutcome(was_accepted=False, error_code=exc.detail.code, error_message=exc.detail.message), None)
         except YscbError as exc:
             is_lost = exc.detail.code == ErrorCode.WORKER_CRASHED
-            return RemoteCallOutcome(was_accepted=False, transport_lost=is_lost, error_code=exc.detail.code, error_message=exc.detail.message)
-        return _execute_rpc_call_with_watchdog(handle, wire_payload, spec, rem_ms, handle.kill_immediately)
+            return (RemoteCallOutcome(was_accepted=False, transport_lost=is_lost, error_code=exc.detail.code, error_message=exc.detail.message), None)
+        if not handle.try_enter_call(spec.turn_id, spec.call_tree_id, allow_reentrant=True):
+            return (RemoteCallOutcome(was_accepted=False, transport_lost=True, error_code=ErrorCode.WORKER_CRASHED), None)
+        self._notify_env_touch_used(handle)
+        return _invoke_worker_handle_with_taint(
+            handle,
+            wire_payload,
+            spec,
+            rem_ms,
+            lambda h=handle: self._detach_turn_handle(eph_key, h),
+            drain_wait_sec=10.0,
+        )

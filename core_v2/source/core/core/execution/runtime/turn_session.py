@@ -16,9 +16,13 @@ from core.execution.rpc import InboundCallHandler
 from core.execution.runtime.contracts import (
     MODULES_DIRNAME,
     CallPropagationContext,
+    ClientRoutingPolicy,
+    EnvLeaseAcquireFn,
+    EnvTouchUsedFn,
     ExecutionPriority,
     ModuleDescriptor,
     ModuleProviderPort,
+    ModuleRuntimeServices,
     YscbModule,
 )
 from core.execution.runtime.coordinator import PriorityHandle
@@ -27,6 +31,7 @@ from core.execution.runtime.worker_pool import OneShotVenvHost
 from core.foundation.errors import ErrorCode, ErrorDetail, YscbError
 from core.foundation.observability import CancellationToken
 from core.foundation.primitives import HostPath, JsonObject, ModuleId, TaskId
+from core.metadata.contributes import BoundLocaleDialect
 
 
 def merge_deadlines(d1: Optional[float], d2: Optional[float]) -> Optional[float]:
@@ -50,6 +55,7 @@ class ActiveTurnSession:
     primary_task_id: str = ""
     inherit_call_tree: bool = False
     turn_deadline: Optional[float] = None
+    turn_deadline_fn: Optional[Callable[[], Optional[float]]] = None
     hot_workspaces: frozenset[HostPath] = frozenset()
     cold_shared_workspaces: frozenset[HostPath] = frozenset()
     effective_deadline: Optional[float] = None
@@ -58,12 +64,21 @@ class ActiveTurnSession:
     closing: bool = False
     invoked_tasks: dict[tuple[HostPath, TaskId], None] = field(default_factory=dict)
     extra_teardown_diags: list[ErrorDetail] = field(default_factory=list)
+    nested_committed_events: list[RawEventRecord] = field(default_factory=list)
+
+    def current_turn_deadline(self) -> Optional[float]:
+        if self.turn_deadline_fn is not None:
+            return merge_deadlines(self.turn_deadline, self.turn_deadline_fn())
+        return self.turn_deadline
 
 
 @dataclass(frozen=True, slots=True)
 class ActiveStepBinding:
     cancel_token: CancellationToken
     prio_handle: PriorityHandle
+    turn_id: str = ""
+    propagation: CallPropagationContext = field(default_factory=CallPropagationContext)
+    parent_routing_policy: ClientRoutingPolicy = ClientRoutingPolicy.AUTO_SPAWN
     approval_scope: frozenset[TaskId] = frozenset()
     allow_conditional: bool = True
     deadline_fn: Optional[Callable[[], Optional[float]]] = None
@@ -83,17 +98,28 @@ class TurnSessionRegistry:
         tier0_slots: LocalModuleSlotRegistry,
         callback_bridge: InboundCallHandler,
         in_memory_modules: Mapping[ModuleId, YscbModule] = MappingProxyType({}),
+        module_services_factory: Optional[Callable[[ModuleId], ModuleRuntimeServices]] = None,
+        worker_host_dir: Optional[HostPath] = None,
+        cold_dialect_resolver: Optional[Callable[[], Optional[BoundLocaleDialect]]] = None,
+        env_lease_acquire: Optional[EnvLeaseAcquireFn] = None,
+        env_touch_used: Optional[EnvTouchUsedFn] = None,
     ) -> None:
         self._workspace_root = workspace_root
         self._module_provider = module_provider
         self._tier0_slots = tier0_slots
         self._callback_bridge = callback_bridge
         self._in_memory_modules = MappingProxyType(dict(in_memory_modules))
+        self._module_services_factory = module_services_factory
+        self._worker_host_dir = worker_host_dir
+        self._cold_dialect_resolver = cold_dialect_resolver
+        self._env_lease_acquire = env_lease_acquire
+        self._env_touch_used = env_touch_used
         self._lock = threading.Lock()
         self._sessions: dict[str, ActiveTurnSession] = {}
         self._closed_turn_ids: OrderedDict[str, None] = OrderedDict()
         self._active_steps: dict[str, ActiveStepBinding] = {}
         self._pending_host_teardown_diags: deque[ErrorDetail] = deque(maxlen=256)
+        self._reload_seq: int = 0
 
     @property
     def active_turn_count(self) -> int:
@@ -217,9 +243,12 @@ class TurnSessionRegistry:
         with self._lock:
             cold_reg = session.cold_slots
             session.cold_slots = None
+            cold_venv = session.cold_venv_host
+            session.cold_venv_host = None
         cold_diags = cold_reg.unload_all_modules() if cold_reg is not None else ()
+        venv_diags = cold_venv.close_all(grace_sec=0.4, lifo_stack=session.scope.scoped_stack) if cold_venv is not None else ()
         with self._lock:
-            extra = (*session.extra_teardown_diags, *cold_diags)
+            extra = (*session.extra_teardown_diags, *cold_diags, *venv_diags)
             session.extra_teardown_diags.clear()
             return extra
 
@@ -278,14 +307,12 @@ class TurnSessionRegistry:
             if late:
                 self.record_host_teardown_diags(late)
 
-    def slots_for_turn(self, turn: Optional[TurnScope]) -> LocalModuleSlotRegistry:
-        if turn is None or turn.kind != TurnKind.COLD:
-            return self._tier0_slots
-        sess = self.get_or_bind_turn_session(turn)
-        with self._lock:
-            if sess.cold_slots is not None:
-                return sess.cold_slots
-        tier0 = [d for d in self._module_provider.list_modules() if d.venv_python is None]
+    def _build_cold_tier0_descriptors(
+        self,
+        provider_descriptors: Optional[Sequence[ModuleDescriptor]] = None,
+    ) -> list[ModuleDescriptor]:
+        src = provider_descriptors if provider_descriptors is not None else self._module_provider.list_modules()
+        tier0 = [d for d in src if d.venv_python is None]
         existing_mids = {d.module_id for d in tier0}
         for mid, mod_inst in self._in_memory_modules.items():
             if mid not in existing_mids:
@@ -296,22 +323,112 @@ class TurnSessionRegistry:
                         declared_tasks=tuple(bt.route_spec for bt in mod_inst.tasks()),
                     )
                 )
-        with self._lock:
-            if sess.cold_slots is None:
+        return tier0
+
+    def slots_for_turn(self, turn: Optional[TurnScope]) -> LocalModuleSlotRegistry:
+        if turn is None or turn.kind != TurnKind.COLD:
+            return self._tier0_slots
+        sess = self.get_or_bind_turn_session(turn)
+        for _ in range(3):
+            with self._lock:
+                if sess.closing:
+                    raise YscbError(ErrorCode.TASK_CANCELLED, f"Turn '{turn.turn_id}' is closing.")
+                if sess.cold_slots is not None:
+                    return sess.cold_slots
+                seq_before = self._reload_seq
+            tier0 = self._build_cold_tier0_descriptors()
+            with self._lock:
+                if sess.closing:
+                    raise YscbError(ErrorCode.TASK_CANCELLED, f"Turn '{turn.turn_id}' is closing.")
+                if sess.cold_slots is not None:
+                    return sess.cold_slots
+                if self._reload_seq != seq_before:
+                    continue
                 reg = LocalModuleSlotRegistry(
                     self._workspace_root,
                     turn.scoped_stack,
                     in_memory_modules=self._in_memory_modules,
+                    module_services_factory=self._module_services_factory,
                 )
                 reg.register_descriptors(tier0)
                 sess.cold_slots = reg
-            return sess.cold_slots
+                return sess.cold_slots
+        raise YscbError(ErrorCode.DAEMON_UNAVAILABLE, f"Cold slot initialization raced with reload in turn '{turn.turn_id}'.")
+
+    def sync_cold_slots_on_reload(
+        self,
+        unload_mods: frozenset[ModuleId],
+        fresh_descriptors: Sequence[ModuleDescriptor],
+        *,
+        grace_sec: float = 0.2,
+        evict_all: bool = False,
+    ) -> tuple[ErrorDetail, ...]:
+        with self._lock:
+            self._reload_seq += 1
+            cold_regs = [
+                sess.cold_slots
+                for sess in self._sessions.values()
+                if not sess.closing and sess.cold_slots is not None
+            ]
+            cold_venvs = [
+                (sess.cold_venv_host, sess.scope.scoped_stack)
+                for sess in self._sessions.values()
+                if not sess.closing and sess.cold_venv_host is not None
+            ]
+        if not cold_regs and not cold_venvs:
+            return ()
+        diags: list[ErrorDetail] = []
+        for venv_host, scoped_stack in cold_venvs:
+            diags.extend(
+                venv_host.sync_on_reload(
+                    unload_mods,
+                    fresh_descriptors,
+                    scoped_stack,
+                    grace_sec=max(0.2, grace_sec),
+                    evict_all=evict_all,
+                )
+            )
+        if cold_regs:
+            tier0_descs = self._build_cold_tier0_descriptors(fresh_descriptors)
+            for reg in cold_regs:
+                if evict_all or unload_mods:
+                    eff_unload = (
+                        frozenset(d.module_id for d in tier0_descs if d.module_id not in self._in_memory_modules)
+                        | unload_mods
+                    ) if evict_all else unload_mods
+                    if eff_unload:
+                        diags.extend(reg.unload_modules(eff_unload, drain_in_flight=False, grace_sec=grace_sec))
+                reg.register_descriptors(tier0_descs)
+                diags.extend(reg.drain_pending_teardown_diagnostics())
+        return tuple(diags)
+
+    def evict_cold_tier1_for_quiesce(self, *, grace_sec: float = 0.4) -> tuple[ErrorDetail, ...]:
+        with self._lock:
+            cold_venvs = [
+                (sess.cold_venv_host, sess.scope.scoped_stack)
+                for sess in self._sessions.values()
+                if not sess.closing and sess.cold_venv_host is not None
+            ]
+        diags: list[ErrorDetail] = []
+        for venv_host, scoped_stack in cold_venvs:
+            diags.extend(venv_host.close_all(grace_sec=grace_sec, lifo_stack=scoped_stack))
+        return tuple(diags)
 
     def cold_venv_for_turn(self, turn: TurnScope) -> OneShotVenvHost:
         sess = self.get_or_bind_turn_session(turn)
         with self._lock:
+            if sess.closing:
+                raise YscbError(ErrorCode.TASK_CANCELLED, f"Turn '{turn.turn_id}' is closing.")
             if sess.cold_venv_host is None:
-                sess.cold_venv_host = OneShotVenvHost(self._workspace_root, self._callback_bridge)
+                sess.cold_venv_host = OneShotVenvHost(
+                    self._workspace_root,
+                    self._callback_bridge,
+                    host_dir=self._worker_host_dir,
+                    dialect_resolver=self._cold_dialect_resolver,
+                    on_teardown_diagnostics=lambda diags, t=turn: self.record_step_teardown_diags(t, diags),
+                    env_lease_acquire=self._env_lease_acquire,
+                    env_touch_used=self._env_touch_used,
+                )
             return sess.cold_venv_host
 
     def record_session_invoked_frame(self, sess: ActiveTurnSession, frame: tuple[HostPath, TaskId]) -> None:
@@ -336,8 +453,21 @@ class TurnSessionRegistry:
         turn: TurnScope,
         events: tuple[RawEventRecord, ...],
     ) -> None:
-        if events:
-            turn.event_queue.append_committed(events)
+        if not events:
+            return
+        with self._lock:
+            sess = self._sessions.get(turn.turn_id)
+            if sess is not None and not sess.closing:
+                sess.nested_committed_events.extend(events)
+        turn.event_queue.append_committed(events)
+
+    def drain_session_nested_events(self, session: ActiveTurnSession) -> tuple[RawEventRecord, ...]:
+        with self._lock:
+            if not session.nested_committed_events:
+                return ()
+            out = tuple(session.nested_committed_events)
+            session.nested_committed_events.clear()
+            return out
 
     def record_imm_or_turn_diagnostic(
         self,

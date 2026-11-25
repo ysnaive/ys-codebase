@@ -8,7 +8,7 @@ from typing import Final, NoReturn, Optional
 
 
 class ErrorCode(Enum):
-    """Canonical error codes across runtime, transport, security, and lifecycle."""
+    """Canonical error codes across runtime, transport, security, storage, packaging, and lifecycle."""
 
     TASK_NOT_FOUND = "task_not_found"
     EXPOSURE_DENIED = "exposure_denied"
@@ -30,6 +30,19 @@ class ErrorCode(Enum):
     MODULE_DEGRADED = "module_degraded"
     TEARDOWN_ERROR = "teardown_error"
     BUSINESS_FAILURE = "business_failure"
+    URI_UNDEFINED = "uri_undefined"
+    URI_CYCLE = "uri_cycle"
+    ACCESS_DENIED = "access_denied"
+    READONLY_VIOLATION = "readonly_violation"
+    SPACE_CYCLE = "space_cycle"
+    SPACE_NOT_FOUND = "space_not_found"
+    STORAGE_CORRUPT = "storage_corrupt"
+    SCHEMA_MIGRATION_ERROR = "schema_migration_error"
+    CONFIG_INVALID = "config_invalid"
+    CONTRIBUTES_INVALID = "contributes_invalid"
+    DEPENDENCY_CONFLICT = "dependency_conflict"
+    PACKAGE_INTEGRITY_ERROR = "package_integrity_error"
+    ENV_BUILD_FAILED = "env_build_failed"
 
 
 def sanitize_utf8_text(text: str) -> str:

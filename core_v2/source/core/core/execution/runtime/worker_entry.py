@@ -7,7 +7,7 @@ import os
 import signal
 import sys
 import threading
-from typing import MutableMapping, Callable, Optional, Sequence
+from typing import Callable, MutableMapping, Optional, Sequence
 
 from core.execution.event import CausalLineage
 from core.execution.lifecycle import WorkerContainerLifecycle
@@ -19,8 +19,20 @@ from core.execution.rpc import (
     RpcEndpointInfo,
     connect_and_handshake,
 )
-from core.execution.runtime.contracts import WORKER_AUTH_ENV_KEY, ClientRoutingPolicy, ExecutionPriority, ModuleDescriptor, TaskOutcome
+from core.execution.runtime.contracts import (
+    WORKER_AUTH_ENV_KEY,
+    ClientRoutingPolicy,
+    ExecutionPriority,
+    ModuleDescriptor,
+    ModuleRuntimeServices,
+    TaskOutcome,
+)
 from core.execution.runtime.module_slot import LocalModuleSlotRegistry, LocalStepExecutionSpec, StepContextCallbacks
+from core.execution.runtime.services import (
+    HOST_DIALECT_ENV_KEY,
+    build_default_module_services,
+    build_worker_module_services_factory,
+)
 from core.execution.runtime.wire import (
     WorkerBootstrapConfig,
     WorkerCallbackContext,
@@ -31,18 +43,17 @@ from core.execution.runtime.wire import (
     WorkerCommandKind,
     WorkerControlAction,
     WorkerElevateControl,
+    WorkerEquivReply,
+    WorkerMapBatchReply,
     WorkerModInitControl,
     WorkerStopAck,
     WorkerStopControl,
-    WorkerEquivReply,
-    WorkerMapBatchReply,
     WorkerUnloadReply,
     WorkerWarmupReply,
 )
 from core.foundation.codec import DataclassCodec
 from core.foundation.errors import ErrorCode, ErrorDetail, TaskCancelledException, YscbError, safe_exception_summary
 from core.foundation.observability import CancellationToken, ms_to_safe_sec
-from core.foundation.proc import SignalWakeupGuard
 from core.foundation.primitives import (
     IS_WINDOWS,
     EventId,
@@ -53,6 +64,47 @@ from core.foundation.primitives import (
     TaskId,
     strict_parse_json_object,
 )
+from core.foundation.proc import SignalWakeupGuard
+from core.metadata.contributes import probe_workspace_host_dir
+
+
+def _resolve_worker_services_factory(
+    workspace_root: HostPath,
+    host_dir: Optional[HostPath],
+    dialect: Optional[str] = None,
+    *,
+    is_hot_container: bool = False,
+) -> Callable[[ModuleId], ModuleRuntimeServices]:
+    eff_dial = None if is_hot_container else dialect
+    if host_dir is not None:
+        return build_worker_module_services_factory(
+            host_dir,
+            workspace_root,
+            dialect=eff_dial,
+            is_hot_container=is_hot_container,
+        )
+    init_lock = threading.Lock()
+    bound_factory: list[Callable[[ModuleId], ModuleRuntimeServices]] = []
+
+    def _lazy_worker_services(mod_id: ModuleId) -> ModuleRuntimeServices:
+        if not bound_factory:
+            with init_lock:
+                if not bound_factory:
+                    probed = probe_workspace_host_dir(workspace_root)
+                    if probed is not None:
+                        bound_factory.append(
+                            build_worker_module_services_factory(
+                                probed,
+                                workspace_root,
+                                dialect=eff_dial,
+                                is_hot_container=is_hot_container,
+                            )
+                        )
+        if bound_factory:
+            return bound_factory[0](mod_id)
+        return build_default_module_services(workspace_root, mod_id)
+
+    return _lazy_worker_services
 
 
 def _unwrap_emit_imm_callback(cb_out: RemoteCallOutcome, parent_tid: TaskId) -> None:
@@ -117,19 +169,30 @@ class WorkerSubprocessHandler(InboundCallHandler):
         *,
         is_hot_container: bool = True,
         expect_channel: bool = False,
+        host_dir: Optional[HostPath] = None,
+        dialect: Optional[str] = None,
     ) -> None:
         self._expect_channel = expect_channel
         self._container = WorkerContainerLifecycle()
+        svc_factory = _resolve_worker_services_factory(
+            workspace_root,
+            host_dir,
+            dialect=dialect,
+            is_hot_container=is_hot_container,
+        )
         self._slots = LocalModuleSlotRegistry(
             workspace_root,
             self._container.resource_stack,
             container=self._container,
             require_eager_start=is_hot_container,
             on_module_initialized=self._notify_runtime_module_initialized,
+            module_services_factory=svc_factory,
         )
         self._slots.register_descriptors(descriptors)
         self.channel: Optional[MultiplexedChannel] = None
         self._channel_ready = threading.Event()
+        self._close_lock = threading.Lock()
+        self._closed_diags: Optional[tuple[ErrorDetail, ...]] = None
         self._prio_lock = threading.Lock()
         self._active_step_priorities: dict[str, ExecutionPriority] = {}
         self._pre_elevated_steps: OrderedDict[str, None] = OrderedDict()
@@ -167,14 +230,18 @@ class WorkerSubprocessHandler(InboundCallHandler):
         )
 
     def close(self, *, grace_ms: int = 1000) -> tuple[ErrorDetail, ...]:
-        slot_diags: list[ErrorDetail] = []
-        cont_diags = self._container.drain_and_stop(
-            grace_period_ms=grace_ms,
-            on_drain=lambda rem_ms: slot_diags.extend(
-                self._slots.unload_all_modules(grace_sec=ms_to_safe_sec(rem_ms, min_sec=0.05))
-            ),
-        )
-        return (*slot_diags, *cont_diags)
+        with self._close_lock:
+            if self._closed_diags is not None:
+                return self._closed_diags
+            slot_diags: list[ErrorDetail] = []
+            cont_diags = self._container.drain_and_stop(
+                grace_period_ms=grace_ms,
+                on_drain=lambda rem_ms: slot_diags.extend(
+                    self._slots.unload_all_modules(grace_sec=ms_to_safe_sec(rem_ms, min_sec=0.05))
+                ),
+            )
+            self._closed_diags = (*slot_diags, *cont_diags)
+            return self._closed_diags
 
     def on_call(
         self,
@@ -390,6 +457,7 @@ def worker_main(
     """Subprocess entrypoint consuming auth token from injected or process environment."""
     eff_env = os.environ if env is None else env
     auth_token = eff_env.pop(WORKER_AUTH_ENV_KEY, "")
+    host_dialect = eff_env.pop(HOST_DIALECT_ENV_KEY, "").strip() or None
     if not auth_token:
         return 1
     eff_argv = sys.argv if argv is None else argv
@@ -406,6 +474,8 @@ def worker_main(
         descriptors,
         is_hot_container=cfg.is_hot_container,
         expect_channel=True,
+        host_dir=cfg.host_dir,
+        dialect=host_dialect,
     )
     ep = RpcEndpointInfo(
         pid=os.getpid(),

@@ -5,7 +5,7 @@
 > **建議內部切分**：`capabilities.py`、`provider.py`、`mount.py`、`readonly.py`、`echo.py`、`scoped.py`、`__init__.py`
 > **依賴上限（Allowed Imports）**：`foundation/*`、`filesystem.fs`
 > **禁止反向依賴（Forbidden Imports）**：`filesystem.{space, storage}`、`metadata/*`、`packaging/*`、`execution/*`、`surface/*`
-> **狀態**：`Draft — Design Frozen for Wave 1.2 Implementation`
+> **狀態**：`Active Living Spec — Implementation-Aligned SSOT`
 
 > [!NOTE]
 > **實作彈性邊界**：`VfsCapabilities`、`VfsStat`、`ScopedVfs` 公開操作語意、Scheme B 15 組標準協議與 `VfsEchoGuardPort` 結構相容性屬強制統一契約；內部檔案切分與 Provider 輔助實作細節可由實作端按需微調。
@@ -58,24 +58,361 @@
 ```python
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
-from enum import Flag, auto
-from typing import BinaryIO, Callable, Iterator, Mapping, Optional, Protocol, Sequence
+from dataclasses import dataclass, field
+from enum import Enum, Flag
+import io
+import os
+from pathlib import Path
+import sqlite3
+import subprocess
+import sys
+import threading
+from typing import Annotated, BinaryIO, Callable, ClassVar, Final, Generic, Literal, Optional, Protocol, TextIO, TypeAlias, TypeVar, overload, runtime_checkable
 
-from core.filesystem.fs import BeforeReplaceHook
-from core.foundation.primitives import HostPath, JsonObject, JsonValue, ModuleId, SemanticUri
+from core.filesystem.fs import BeforeReplaceHook, MAX_JSON_FILE_BYTES, atomic_write_bytes, has_symlink_raw_path, is_atomic_staging_filename, is_contained_nonsymlink_path, is_symlink_or_reparse, read_nofollow_regular_bytes, resolve_contained_subpath, walk_nonsymlink_dir_tree
+from core.foundation import ErrorCode, HostPath, IS_WINDOWS, JsonObject, JsonValue, MAX_USER_JSON_DEPTH, ModuleId, MutableJsonObject, SemanticUri, YscbError, clone_strict_json_object, is_valid_relative_segment, require_pure_bool, require_pure_int, require_pure_str, require_typed_frozenset, require_typed_tuple, safe_exception_summary, safe_real_to_float, validate_wire_json_object
 
+def build_standard_mount_rules(host_dir: HostPath, yscb_root: HostPath, *, project_root: Optional[HostPath]=None, extra_rules: Sequence[MountRule]=()) -> tuple[MountRule, ...]:
+    ...
+
+@dataclass(frozen=True, slots=True)
+class AccessPolicy:
+    extra_writable_schemes: Mapping[ModuleId, frozenset[str]] = field(default_factory=dict)
+    readonly_tunnel_modules: frozenset[ModuleId] = frozenset()
+
+class KernelVfs(ScopedVfs):
+
+    def write_bytes_through_readonly(self, uri: SemanticUri | str, data: bytes) -> None:
+        ...
+
+    def write_text_through_readonly(self, uri: SemanticUri | str, text: str, *, encoding: str='utf-8') -> None:
+        ...
+
+class MemoryVfsProvider:
+
+    def __init__(self, scheme: str, *, base_capabilities: VfsCapabilities=VfsCapabilities.READABLE | VfsCapabilities.WRITABLE | VfsCapabilities.ENUMERABLE, description: str='') -> None:
+        ...
+
+    @property
+    def scheme(self) -> str:
+        ...
+
+    @property
+    def base_capabilities(self) -> VfsCapabilities:
+        ...
+
+    @property
+    def description(self) -> str:
+        ...
+
+    def get_capabilities(self, uri: SemanticUri) -> VfsCapabilities:
+        ...
+
+    def exists(self, uri: SemanticUri) -> bool:
+        ...
+
+    def stat(self, uri: SemanticUri) -> VfsStat:
+        ...
+
+    def read_bytes(self, uri: SemanticUri) -> bytes:
+        ...
+
+    def open_read(self, uri: SemanticUri) -> BinaryIO:
+        ...
+
+    def write_bytes_atomic(self, uri: SemanticUri, data: bytes, *, before_replace: Optional[BeforeReplaceHook]=None) -> None:
+        ...
+
+    def delete(self, uri: SemanticUri, *, recursive: bool=False) -> bool:
+        ...
+
+    def move(self, src: SemanticUri, dst: SemanticUri) -> None:
+        ...
+
+    def mkdir(self, uri: SemanticUri, *, parents: bool=True) -> None:
+        ...
+
+    def iter_entries(self, uri: SemanticUri, *, recursive: bool=False) -> Iterator[SemanticUri]:
+        ...
+
+    def try_get_physical_path(self, uri: SemanticUri) -> Optional[HostPath]:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class MountHealthEntry:
+    scheme: str
+    healthy: bool
+    detail: str
+
+@dataclass(frozen=True, slots=True)
+class MountRule:
+    scheme: str
+    target_path: Optional[HostPath] = None
+    target_uri: Optional[SemanticUri] = None
+    capabilities: VfsCapabilities = VfsCapabilities.READABLE | VfsCapabilities.ENUMERABLE
+    provider_module: Optional[ModuleId] = None
+    config_binding: Optional[str] = None
+    description: str = ''
+
+class PhysicalDirectoryProvider:
+
+    def __init__(self, scheme: str, root_dir: HostPath, *, base_capabilities: VfsCapabilities, description: str='') -> None:
+        ...
+
+    @property
+    def scheme(self) -> str:
+        ...
+
+    @property
+    def base_capabilities(self) -> VfsCapabilities:
+        ...
+
+    @property
+    def description(self) -> str:
+        ...
+
+    def get_capabilities(self, uri: SemanticUri) -> VfsCapabilities:
+        ...
+
+    def exists(self, uri: SemanticUri) -> bool:
+        ...
+
+    def stat(self, uri: SemanticUri) -> VfsStat:
+        ...
+
+    def read_bytes(self, uri: SemanticUri) -> bytes:
+        ...
+
+    def open_read(self, uri: SemanticUri) -> BinaryIO:
+        ...
+
+    def write_bytes_atomic(self, uri: SemanticUri, data: bytes, *, before_replace: Optional[BeforeReplaceHook]=None) -> None:
+        ...
+
+    def delete(self, uri: SemanticUri, *, recursive: bool=False) -> bool:
+        ...
+
+    def move(self, src: SemanticUri, dst: SemanticUri) -> None:
+        ...
+
+    def mkdir(self, uri: SemanticUri, *, parents: bool=True) -> None:
+        ...
+
+    def iter_entries(self, uri: SemanticUri, *, recursive: bool=False) -> Iterator[SemanticUri]:
+        ...
+
+    def try_get_physical_path(self, uri: SemanticUri) -> Optional[HostPath]:
+        ...
+
+class ReadonlyPolicy:
+
+    def __init__(self, matcher: Optional[Callable[[HostPath], bool]]=None) -> None:
+        ...
+
+    def update_matcher(self, matcher: Callable[[HostPath], bool]) -> None:
+        ...
+
+    def is_protected(self, path: HostPath) -> bool:
+        ...
+
+    def is_os_readonly(self, path: HostPath) -> bool:
+        ...
+
+    def lock_file(self, path: HostPath) -> bool:
+        ...
+
+    def unlock_file(self, path: HostPath) -> bool:
+        ...
+
+    def sync_files(self, protected_paths: Sequence[HostPath]) -> ReadonlySyncResult:
+        ...
+
+    @contextmanager
+    def authorized_write_tunnel(self, path: HostPath) -> Iterator[None]:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class ReadonlySyncResult:
+    locked_count: int
+    already_locked_count: int
+    unlocked_count: int
+    failed_paths: tuple[tuple[HostPath, str], ...] = ()
+
+class ScopedVfs:
+
+    @property
+    def module_id(self) -> ModuleId:
+        ...
+
+    def bind_uri(self, uri: SemanticUri | str) -> SemanticUri:
+        ...
+
+    def get_capabilities(self, uri: SemanticUri | str) -> VfsCapabilities:
+        ...
+
+    def can_read(self, uri: SemanticUri | str) -> bool:
+        ...
+
+    def can_write(self, uri: SemanticUri | str) -> bool:
+        ...
+
+    def exists(self, uri: SemanticUri | str) -> bool:
+        ...
+
+    def stat(self, uri: SemanticUri | str) -> VfsStat:
+        ...
+
+    def read_bytes(self, uri: SemanticUri | str) -> bytes:
+        ...
+
+    def read_text(self, uri: SemanticUri | str, *, encoding: str='utf-8') -> str:
+        ...
+
+    def read_json(self, uri: SemanticUri | str) -> JsonValue:
+        ...
+
+    def open_read(self, uri: SemanticUri | str) -> BinaryIO:
+        ...
+
+    def write_bytes(self, uri: SemanticUri | str, data: bytes) -> None:
+        ...
+
+    def write_text(self, uri: SemanticUri | str, text: str, *, encoding: str='utf-8', normalize_lf: bool=True) -> None:
+        ...
+
+    def write_json(self, uri: SemanticUri | str, payload: JsonObject, *, indent: int=2) -> None:
+        ...
+
+    def mkdir(self, uri: SemanticUri | str, *, parents: bool=True) -> None:
+        ...
+
+    def delete(self, uri: SemanticUri | str, *, recursive: bool=False) -> bool:
+        ...
+
+    def move(self, src: SemanticUri | str, dst: SemanticUri | str) -> None:
+        ...
+
+    def iter_entries(self, uri: SemanticUri | str, *, recursive: bool=False) -> Iterator[SemanticUri]:
+        ...
+
+    def try_get_physical_path(self, uri: SemanticUri | str) -> Optional[HostPath]:
+        ...
+
+class UriMountTable:
+
+    def __init__(self, rules: Sequence[MountRule], *, providers: Optional[Mapping[str, VfsProvider]]=None) -> None:
+        ...
+
+    def list_rules(self) -> tuple[MountRule, ...]:
+        ...
+
+    def get_provider(self, scheme: str) -> VfsProvider:
+        ...
+
+    def resolve_physical(self, uri: SemanticUri) -> HostPath:
+        ...
+
+    def to_uri(self, abs_path: HostPath) -> Optional[SemanticUri]:
+        ...
+
+    def iter_covering_mounts(self, host_path: HostPath) -> tuple[tuple[str, SemanticUri], ...]:
+        ...
+
+    def check_health(self) -> tuple[MountHealthEntry, ...]:
+        ...
 
 class VfsCapabilities(Flag):
     NONE = 0
-    READABLE = auto()
-    WRITABLE = auto()
-    PERSISTENT = auto()
-    GIT_TRACKED = auto()
-    ENUMERABLE = auto()
-    PHYSICAL_PATH = auto()
+    READABLE = 1
+    WRITABLE = 2
+    PERSISTENT = 4
+    GIT_TRACKED = 8
+    ENUMERABLE = 16
+    PHYSICAL_PATH = 32
 
+class VfsEchoGuard:
+
+    def __init__(self, *, ttl_sec: float=5.0, max_entries: int=2048) -> None:
+        ...
+
+    def record_write(self, path: HostPath, mtime_ns: int, size: int, ino: int) -> None:
+        ...
+
+    def is_suppressed(self, path: HostPath, mtime_ns: int, size: int, ino: int) -> bool:
+        ...
+
+class VfsHub:
+
+    def __init__(self, mount_table: UriMountTable, *, readonly_policy: Optional[ReadonlyPolicy]=None, echo_guard: Optional[VfsEchoGuard]=None, access_policy: Optional[AccessPolicy]=None) -> None:
+        ...
+
+    @property
+    def mount_table(self) -> UriMountTable:
+        ...
+
+    @property
+    def readonly_policy(self) -> ReadonlyPolicy:
+        ...
+
+    @property
+    def echo_guard(self) -> VfsEchoGuard:
+        ...
+
+    def for_module(self, module_id: ModuleId) -> ScopedVfs:
+        ...
+
+    def for_kernel(self) -> KernelVfs:
+        ...
+
+class VfsProvider(Protocol):
+
+    @property
+    def scheme(self) -> str:
+        ...
+
+    @property
+    def base_capabilities(self) -> VfsCapabilities:
+        ...
+
+    @property
+    def description(self) -> str:
+        ...
+
+    def get_capabilities(self, uri: SemanticUri) -> VfsCapabilities:
+        ...
+
+    def exists(self, uri: SemanticUri) -> bool:
+        ...
+
+    def stat(self, uri: SemanticUri) -> VfsStat:
+        ...
+
+    def read_bytes(self, uri: SemanticUri) -> bytes:
+        ...
+
+    def open_read(self, uri: SemanticUri) -> BinaryIO:
+        ...
+
+    def write_bytes_atomic(self, uri: SemanticUri, data: bytes, *, before_replace: Optional[BeforeReplaceHook]=None) -> None:
+        ...
+
+    def delete(self, uri: SemanticUri, *, recursive: bool=False) -> bool:
+        ...
+
+    def move(self, src: SemanticUri, dst: SemanticUri) -> None:
+        ...
+
+    def mkdir(self, uri: SemanticUri, *, parents: bool=True) -> None:
+        ...
+
+    def iter_entries(self, uri: SemanticUri, *, recursive: bool=False) -> Iterator[SemanticUri]:
+        ...
+
+    def try_get_physical_path(self, uri: SemanticUri) -> Optional[HostPath]:
+        ...
 
 @dataclass(frozen=True, slots=True)
 class VfsStat:
@@ -86,149 +423,24 @@ class VfsStat:
     mtime_ns: int
     ino: int
 
-
-@dataclass(frozen=True, slots=True)
-class MountRule:
-    """純值物件掛載規則（由頂層組裝根建構，vfs 零匯入 metadata）。"""
-    scheme: str
-    target_path: Optional[HostPath] = None        # None 表示 !undefined
-    target_uri: Optional[SemanticUri] = None      # 指向另一協議之子目錄（需防循環）
-    capabilities: VfsCapabilities = VfsCapabilities.READABLE | VfsCapabilities.ENUMERABLE
-    provider_module: Optional[ModuleId] = None    # 供 URI_UNDEFINED 生成 remediation
-    config_binding: Optional[str] = None          # 供 URI_UNDEFINED 生成 remediation
-    description: str = ""
-
-
-class VfsProvider(Protocol):
-    @property
-    def scheme(self) -> str: ...
-    @property
-    def base_capabilities(self) -> VfsCapabilities: ...
-    @property
-    def description(self) -> str: ...
-    def get_capabilities(self, uri: SemanticUri) -> VfsCapabilities: ...
-    def exists(self, uri: SemanticUri) -> bool: ...
-    def stat(self, uri: SemanticUri) -> VfsStat: ...
-    def read_bytes(self, uri: SemanticUri) -> bytes: ...
-    def open_read(self, uri: SemanticUri) -> BinaryIO: ...
-    def write_bytes_atomic(
-        self, uri: SemanticUri, data: bytes, *, before_replace: Optional[BeforeReplaceHook] = None,
-    ) -> None: ...
-    def delete(self, uri: SemanticUri, *, recursive: bool = False) -> bool: ...
-    def move(self, src: SemanticUri, dst: SemanticUri) -> None: ...
-    def mkdir(self, uri: SemanticUri, *, parents: bool = True) -> None: ...
-    def iter_entries(self, uri: SemanticUri, *, recursive: bool = False) -> Iterator[SemanticUri]: ...
-    def try_get_physical_path(self, uri: SemanticUri) -> Optional[HostPath]: ...
-```
-
-
-class PhysicalDirectoryProvider:
-    """1:1 沙盒目錄 Provider：封裝 filesystem.fs 原子寫入、防穿越、LF 換行與跨平台重試。"""
-    def __init__(
-        self, scheme: str, root_dir: HostPath, *,
-        base_capabilities: VfsCapabilities, description: str = "",
-    ) -> None: ...
-
-
-class MemoryVfsProvider:
-    """純標準庫記憶體 Provider（無 PHYSICAL_PATH）：專供單元測試零磁碟隔離驗證。"""
-    def __init__(
-        self, scheme: str, *,
-        base_capabilities: VfsCapabilities = VfsCapabilities.READABLE | VfsCapabilities.WRITABLE | VfsCapabilities.ENUMERABLE,
-        description: str = "",
-    ) -> None: ...
-
-
-class UriMountTable:
-    """語意 URI 路由與掛載表（零全域狀態；禁止 project:// 隱式回退 os.getcwd()）。"""
-    def __init__(self, rules: Sequence[MountRule], *, providers: Optional[Mapping[str, VfsProvider]] = None) -> None: ...
-    def list_rules(self) -> tuple[MountRule, ...]: ...
-    def get_provider(self, scheme: str) -> VfsProvider: ...
-    def resolve_physical(self, uri: SemanticUri) -> HostPath: ...
-    def to_uri(self, abs_path: HostPath) -> Optional[SemanticUri]: ...
-    def check_health(self) -> tuple[tuple[str, bool, str], ...]: ...
-
-
-@dataclass(frozen=True, slots=True)
-class ReadonlySyncResult:
-    locked_count: int
-    already_locked_count: int
-    unlocked_count: int
-    failed_paths: tuple[tuple[HostPath, str], ...] = ()
-
-
-class ReadonlyPolicy:
-    """雙層唯讀保護策略（以規範 HostPath 為鍵，跨協議一致；零匯入 filesystem.space）。"""
-    def __init__(self, matcher: Optional[Callable[[HostPath], bool]] = None) -> None: ...
-    def update_matcher(self, matcher: Callable[[HostPath], bool]) -> None: ...
-    def is_protected(self, path: HostPath) -> bool: ...
-    def is_os_readonly(self, path: HostPath) -> bool: ...
-    def lock_file(self, path: HostPath) -> bool: ...
-    def unlock_file(self, path: HostPath) -> bool: ...
-    def sync_files(self, protected_paths: Sequence[HostPath]) -> ReadonlySyncResult: ...
-    @contextmanager
-    def authorized_write_tunnel(self, path: HostPath) -> Iterator[None]: ...
-
-
-class VfsEchoGuard:
-    """實作 execution.runtime.VfsEchoGuardPort 協定（結構匹配，零匯入 execution）。"""
-    def __init__(self, *, ttl_sec: float = 5.0, max_entries: int = 2048) -> None: ...
-    def record_write(self, path: HostPath, mtime_ns: int, size: int, ino: int) -> None: ...
-    def is_suppressed(self, path: HostPath, mtime_ns: int, size: int, ino: int) -> bool: ...
-
-
-@dataclass(frozen=True, slots=True)
-class AccessPolicy:
-    """模組級寫入權限白名單策略（支援特例模組如 dev 獲授 module.{source,build,release}:// 寫權）。"""
-    extra_writable_schemes: Mapping[ModuleId, frozenset[str]] = ...
-    readonly_tunnel_modules: frozenset[ModuleId] = frozenset()
-
-
-class VfsHub:
-    """工作區級 VFS 協調根（顯式建構子注入，供頂層組裝根派生 ScopedVfs 與 KernelVfs）。"""
-    def __init__(
-        self, mount_table: UriMountTable, *,
-        readonly_policy: Optional[ReadonlyPolicy] = None,
-        echo_guard: Optional[VfsEchoGuard] = None,
-        access_policy: Optional[AccessPolicy] = None,
-    ) -> None: ...
-    @property
-    def mount_table(self) -> UriMountTable: ...
-    @property
-    def readonly_policy(self) -> ReadonlyPolicy: ...
-    @property
-    def echo_guard(self) -> VfsEchoGuard: ...
-    def for_module(self, module_id: ModuleId) -> ScopedVfs: ...
-    def for_kernel(self) -> KernelVfs: ...
-
-
-class ScopedVfs:
-    """面向業務模組之受限 VFS 門面（自動展開 @/、強制跨模組寫入隔離與唯讀保護）。"""
-    @property
-    def module_id(self) -> ModuleId: ...
-    def bind_uri(self, uri: SemanticUri | str) -> SemanticUri: ...
-    def get_capabilities(self, uri: SemanticUri | str) -> VfsCapabilities: ...
-    def can_read(self, uri: SemanticUri | str) -> bool: ...
-    def can_write(self, uri: SemanticUri | str) -> bool: ...
-    def exists(self, uri: SemanticUri | str) -> bool: ...
-    def stat(self, uri: SemanticUri | str) -> VfsStat: ...
-    def read_bytes(self, uri: SemanticUri | str) -> bytes: ...
-    def read_text(self, uri: SemanticUri | str, *, encoding: str = "utf-8") -> str: ...
-    def read_json(self, uri: SemanticUri | str) -> JsonValue: ...
-    def write_bytes(self, uri: SemanticUri | str, data: bytes) -> None: ...
-    def write_text(self, uri: SemanticUri | str, text: str, *, encoding: str = "utf-8", normalize_lf: bool = True) -> None: ...
-    def write_json(self, uri: SemanticUri | str, payload: JsonObject, *, indent: int = 2) -> None: ...
-    def mkdir(self, uri: SemanticUri | str, *, parents: bool = True) -> None: ...
-    def delete(self, uri: SemanticUri | str, *, recursive: bool = False) -> bool: ...
-    def move(self, src: SemanticUri | str, dst: SemanticUri | str) -> None: ...
-    def iter_entries(self, uri: SemanticUri | str, *, recursive: bool = False) -> Iterator[SemanticUri]: ...
-    def try_get_physical_path(self, uri: SemanticUri | str) -> Optional[HostPath]: ...
-
-
-class KernelVfs(ScopedVfs):
-    """內核特權 VFS（供 installer / config / gitignore / file-lock 等內建系統任務使用）。"""
-    def write_bytes_through_readonly(self, uri: SemanticUri | str, data: bytes) -> None: ...
-    def write_text_through_readonly(self, uri: SemanticUri | str, text: str, *, encoding: str = "utf-8") -> None: ...
+__all__: tuple[str, ...] = (
+    "AccessPolicy",
+    "KernelVfs",
+    "MemoryVfsProvider",
+    "MountHealthEntry",
+    "MountRule",
+    "PhysicalDirectoryProvider",
+    "ReadonlyPolicy",
+    "ReadonlySyncResult",
+    "ScopedVfs",
+    "UriMountTable",
+    "VfsCapabilities",
+    "VfsEchoGuard",
+    "VfsHub",
+    "VfsProvider",
+    "VfsStat",
+    "build_standard_mount_rules",
+)
 ```
 
 ---
@@ -244,7 +456,9 @@ class KernelVfs(ScopedVfs):
 4. **雙層唯讀防護與跨協議一致**：
    - **層 1（VFS 守衛）**：一般 `ScopedVfs` 寫入受 `ReadonlyPolicy` 保護之 `HostPath` 一律拋 `YscbError(ErrorCode.READONLY_VIOLATION)`。
    - **層 2（OS 唯讀位元 + 授權穿隧）**：`ReadonlyPolicy` 以 POSIX `0o444` / Windows `FILE_ATTRIBUTE_READONLY` 保護實體檔案，防外部工具或 AI Agent 繞過 VFS 誤改編譯產物；具授權（`AccessPolicy.readonly_tunnel_modules` 或 `KernelVfs`）之寫入於 `authorized_write_tunnel` 內自動執行「解鎖 $\to$ 原子替換 $\to$ `finally` 強制重鎖」。
-5. **跨模組寫入邊界隔離**：`ScopedVfs(mod)` 對 `config.local://`、`cache://`、`storage://`、`storage.local://` 僅允許寫入首段等於 `mod.value` 之子路徑（含 `@/` 展開），寫入他模組目錄或唯讀核心協議一律拋 `YscbError(ErrorCode.ACCESS_DENIED)`。
+5. **全覆蓋掛載最嚴格寫入守門與跨模組讀寫隔離**：
+   - `UriMountTable.iter_covering_mounts(host_path)` 列舉所有實體根覆蓋目標路徑之掛載（含基礎協議與別名）；`ScopedVfs` 執行任何寫入前檢驗所有覆蓋掛載並採最嚴格權限（封堵同址工作區 `project://yscb.py` 等宿主控制檔覆寫與唯讀別名穿透，拋 `ACCESS_DENIED` 或 `READONLY_VIOLATION`）。
+   - `ScopedVfs(mod)` 對 `config.local://`、`cache://`、`storage://`、`storage.local://` 僅允許寫入首段等於 `mod.value` 之子路徑（含 `@/` 展開），且對 `config.local://` 與 `storage.local://`（含別名終點與跨協議覆蓋路徑）同步強制跨模組**讀取隔離**（涵蓋 `read_bytes`/`read_text`/`read_json`/`open_read`/`exists`/`stat`/`iter_entries` 與 `try_get_physical_path`，特例保留 `try_get_physical_path(SemanticUri("storage.local", ""))` 空相對路徑供 `storage` 模組驗界）；違規一律拋 `YscbError(ErrorCode.ACCESS_DENIED)`。
 
 ---
 

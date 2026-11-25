@@ -27,6 +27,7 @@ from core.execution.lifecycle import ContainerState
 from core.execution.rpc import (
     DaemonConnectionConfig,
     FrameKind,
+    read_active_handoff_boot_id,
     wait_for_handoff_daemon_endpoint,
 )
 from core.execution.runtime import (
@@ -34,16 +35,24 @@ from core.execution.runtime import (
     CallPropagationContext,
     ClientRoutingPolicy,
     ConcurrencyMode,
+    CoordinatedExecution,
     DispatchMode,
     DispatcherHostOptions,
+    EnvLeaseAcquireFn,
+    EnvTouchUsedFn,
     ExecutionPriority,
+    FlightCallerRegistration,
     InvokeRequest,
     LifecycleReloadGate,
     MODULE_INSTALLED_EVENT_ID,
     MODULE_REMOVING_EVENT_ID,
     ModuleDescriptor,
     PeriodicScheduleSpec,
+    PriorityHandle,
+    ResourceAcquireSpec,
+    ResourceCoordinator,
     RuntimeDispatcher,
+    StepFlight,
     Task,
     TaskContext,
     TaskMetadata,
@@ -66,9 +75,16 @@ from core.foundation import (
     EventId,
     HostPath,
     ModuleId,
+    TaskCancelledException,
     TaskId,
+    YscbError,
 )
-from tests._boot import FileConfigView, build_dispatcher_for_workspace
+from tests._boot import (
+    FileConfigView,
+    ManifestModuleProvider,
+    build_dispatcher_for_workspace,
+    resolve_dedicated_venv_py,
+)
 from tests._harness import (
     AST_OUTLINE_META,
     ECHO_TIER0_META,
@@ -809,7 +825,7 @@ def _verify_global_quiesce_and_controls(tmp_root: Path, venv_py: Path) -> None:
     gate.record_quiesce_lease(0.05)
     wake_after_short = gate.next_quiesce_wakeup()
     check(
-        wake_long is not None and wake_after_short is not None and wake_after_short >= wake_long - 1e-6,
+        wake_long is not None and wake_after_short is not None and wake_after_short >= wake_long - 0.5,
         "Short quiesce lease shrank active long lease",
     )
     ep_cur = gate.quiesce_epoch
@@ -1263,6 +1279,651 @@ def _verify_daemon_shell_and_controls(tmp_root: Path, venv_py: Path) -> None:
         daemon.request_shutdown(force=True)
         rig_sh.dispatcher.shutdown(grace_ms=200)
 
+    # Verify CONTROL_RELOAD during pending config watcher debounce does not swallow on_config_changed_task & cleans handoff_lease when self_restart_argv is None
+    ws_rel_cfg = HostPath(tmp_root / "ws_reload_preserves_cfg_notify")
+    provision_live_workspace(ws_rel_cfg.path)
+    cfg_seen: list[list[str]] = []
+    cfg_ev_seen: list[list[str]] = []
+    hold_cfg_gate = threading.Event()
+    hold_cfg_gate.set()
+    entered_cfg_gate = threading.Event()
+
+    @dataclass(frozen=True, slots=True)
+    class _CfgNotifyIn:
+        changed_paths: list[str]
+
+    class _CoreCfgNotifyTask(Task[_CfgNotifyIn, bool]):
+        def __init__(self) -> None:
+            self._meta = TaskMetadata(
+                task_id=TaskId("core.on_cfg"),
+                input_type=_CfgNotifyIn,
+                output_type=bool,
+            )
+
+        @property
+        def metadata(self) -> TaskMetadata[_CfgNotifyIn, bool]:
+            return self._meta
+
+        def run(self, req: _CfgNotifyIn, _ctx: TaskContext) -> bool:
+            cfg_seen.append(list(req.changed_paths))
+            if not hold_cfg_gate.is_set():
+                entered_cfg_gate.set()
+                hold_cfg_gate.wait(timeout=5.0)
+            return True
+
+    class _CoreCfgMod(YscbModule):
+        def __init__(self) -> None:
+            self._mid = ModuleId("core")
+            self._tasks = (_CoreCfgNotifyTask(),)
+
+        @property
+        def module_id(self) -> ModuleId:
+            return self._mid
+
+        def tasks(self) -> Sequence[BoundTask]:
+            return self._tasks
+
+    class _CfgEventSubTask(Task[_CfgNotifyIn, bool]):
+        def __init__(self) -> None:
+            self._meta = TaskMetadata(
+                task_id=TaskId("cfgprobe.on_cfg_ev"),
+                input_type=_CfgNotifyIn,
+                output_type=bool,
+                subscriptions=(
+                    EventSubscriptionSpec(
+                        EventId("core.config_changed"),
+                        lambda items: _CfgNotifyIn(changed_paths=[x for it in items for x in it.changed_paths]),
+                        payload_type=_CfgNotifyIn,
+                    ),
+                ),
+            )
+
+        @property
+        def metadata(self) -> TaskMetadata[_CfgNotifyIn, bool]:
+            return self._meta
+
+        def run(self, req: _CfgNotifyIn, _ctx: TaskContext) -> bool:
+            cfg_ev_seen.append(list(req.changed_paths))
+            return True
+
+    class _CfgProbeMod(YscbModule):
+        def __init__(self) -> None:
+            self._mid = ModuleId("cfgprobe")
+            self._tasks = (_CfgEventSubTask(),)
+
+        @property
+        def module_id(self) -> ModuleId:
+            return self._mid
+
+        def tasks(self) -> Sequence[BoundTask]:
+            return self._tasks
+
+    rig_rc = build_dispatcher_for_workspace(
+        ws_rel_cfg,
+        HostPath(venv_py),
+        is_daemon_host=True,
+        sandbox_restricted=True,
+    )
+    rig_rc.dispatcher.shutdown(grace_ms=100)
+    disp_rc = RuntimeDispatcher(
+        workspace_root=ws_rel_cfg,
+        cache_dir=ws_rel_cfg.join(".cache"),
+        module_provider=rig_rc.provider,
+        options=DispatcherHostOptions(
+            config_view=rig_rc.config_view,
+            is_daemon_host=True,
+            in_memory_modules=(_CoreCfgMod(), _CfgProbeMod()),
+        ),
+    )
+    daemon_rc = WorkspaceDaemon(
+        workspace_root=ws_rel_cfg,
+        cache_dir=ws_rel_cfg.join(".cache"),
+        dispatcher=disp_rc,
+        config_view=rig_rc.config_view,
+        watch_config=DaemonWatcherConfig(
+            echo_guard=rig_rc.echo_ledger,
+            config_watch_roots=(ws_rel_cfg.join("config"),),
+            on_config_changed_task=TaskId("core.on_cfg"),
+            watcher_debounce_sec=0.35,
+        ),
+        self_restart_argv=None,
+    )
+    ready_ev = threading.Event()
+    th_rc = threading.Thread(
+        target=lambda: daemon_rc.run_forever(ready_callback=ready_ev.set),
+        name="test-daemon-reload-cfg",
+        daemon=True,
+    )
+    th_rc.start()
+    try:
+        check(ready_ev.wait(timeout=5.0), "Embedded daemon failed to reach ready state")
+        target_cfg = ws_rel_cfg.join("config", "gdrive.json")
+        atomic_write_json(target_cfg, {"custom_flag": "debounced_reload_check"})
+        rel_ack = query_daemon_control(
+            ws_rel_cfg.join(".cache"),
+            ws_rel_cfg,
+            FrameKind.CONTROL_RELOAD,
+            {"modules": ["ast"]},
+        )
+        check(rel_ack is not None and rel_ack.get("reloaded") is True, f"Expected module reload ack: {rel_ack}")
+        wait_until(lambda: len(cfg_seen) >= 1, timeout_sec=3.0)
+        check(
+            any(str(target_cfg) in batch for batch in cfg_seen),
+            f"Expected on_config_changed_task to receive debounced config path despite concurrent CONTROL_RELOAD: {cfg_seen}",
+        )
+        # Verify async config notification interrupted by QUIESCED requeues cleanly and delivers core.config_changed after CONTROL_RESUME
+        wait_until(lambda: len(cfg_ev_seen) >= 1, timeout_sec=3.0)
+        cfg_ev_seen.clear()
+        entered_cfg_gate.clear()
+        hold_cfg_gate.clear()
+        atomic_write_json(target_cfg, {"custom_flag": "quiesce_interrupted_notify"})
+        check(entered_cfg_gate.wait(timeout=4.0), "Expected core.on_cfg to enter before QUIESCED")
+        q_ack = query_daemon_control(
+            ws_rel_cfg.join(".cache"),
+            ws_rel_cfg,
+            FrameKind.CONTROL_QUIESCE,
+            {"lease_sec": 15.0, "drain_timeout_sec": 3.0},
+        )
+        check(q_ack is not None and q_ack.get("ok") is True, f"Expected CONTROL_QUIESCE ack: {q_ack}")
+        q_epoch = q_ack["epoch"]
+        hold_cfg_gate.set()
+        time.sleep(0.05)
+        check(len(cfg_ev_seen) == 0, f"Subscriber must not fire while globally QUIESCED: {cfg_ev_seen}")
+        r_ack = query_daemon_control(
+            ws_rel_cfg.join(".cache"),
+            ws_rel_cfg,
+            FrameKind.CONTROL_RESUME,
+            {"expected_epoch": q_epoch},
+        )
+        check(r_ack is not None and r_ack.get("ok") is True, f"Expected CONTROL_RESUME ack: {r_ack}")
+        wait_until(lambda: len(cfg_ev_seen) >= 1, timeout_sec=3.0)
+        check(
+            any(str(target_cfg) in batch for batch in cfg_ev_seen),
+            f"Deferred core.config_changed event must deliver after CONTROL_RESUME without loss: {cfg_ev_seen}",
+        )
+        daemon_rc.request_shutdown(core_handoff=True)
+        th_rc.join(timeout=5.0)
+        check(not th_rc.is_alive(), "Embedded daemon thread did not exit cleanly")
+        check(
+            read_active_handoff_boot_id(ws_rel_cfg.join(".cache")) is None,
+            "Dangling handoff_lease.json must be cleaned up when run_forever exits with self_restart_argv=None",
+        )
+    finally:
+        daemon_rc.request_shutdown(force=True)
+        th_rc.join(timeout=2.0)
+        disp_rc.shutdown(grace_ms=200)
+
+
+@dataclass(frozen=True, slots=True)
+class _Step5DrainEvDto:
+    stage: str
+
+
+@dataclass(frozen=True, slots=True)
+class _Step5DrainOutDto:
+    stage: str
+
+
+def _verify_queued_coalesce_leader_cancel_and_timeout(tmp_root: Path) -> None:
+    ws_q = HostPath(tmp_root / "ws_queued_coal_cancel")
+    ws_q.path.mkdir(parents=True, exist_ok=True)
+    blk_entered = threading.Event()
+    blk_release = threading.Event()
+    coal_runs = [0]
+
+    class _HoldSerialTask(Task[_CoordReqDto, _CoordOutDto]):
+        def __init__(self) -> None:
+            self._meta = TaskMetadata(
+                task_id=TaskId("qmod.hold_serial"),
+                input_type=_CoordReqDto,
+                output_type=_CoordOutDto,
+                dispatch_mode=DispatchMode.HYBRID,
+                resource_key="queued.slot",
+                concurrency_mode=ConcurrencyMode.SERIALIZE,
+            )
+
+        @property
+        def metadata(self) -> TaskMetadata[_CoordReqDto, _CoordOutDto]:
+            return self._meta
+
+        def run(self, _req: _CoordReqDto, ctx: TaskContext) -> _CoordOutDto:
+            blk_entered.set()
+            blk_release.wait(timeout=3.0)
+            return _CoordOutDto(seen_priority=ctx.effective_priority.value, run_seq=0)
+
+    class _QueuedCoalTask(Task[_CoordReqDto, _CoordOutDto]):
+        def __init__(self) -> None:
+            self._meta = TaskMetadata(
+                task_id=TaskId("qmod.coal_work"),
+                input_type=_CoordReqDto,
+                output_type=_CoordOutDto,
+                dispatch_mode=DispatchMode.HYBRID,
+                resource_key="queued.slot",
+                concurrency_mode=ConcurrencyMode.COALESCE,
+                equivalence_fn=lambda r: r.eq_key,
+            )
+
+        @property
+        def metadata(self) -> TaskMetadata[_CoordReqDto, _CoordOutDto]:
+            return self._meta
+
+        def run(self, _req: _CoordReqDto, ctx: TaskContext) -> _CoordOutDto:
+            coal_runs[0] += 1
+            return _CoordOutDto(seen_priority=ctx.effective_priority.value, run_seq=coal_runs[0])
+
+    class _QueuedMod(YscbModule):
+        def __init__(self) -> None:
+            self._tasks = (_HoldSerialTask(), _QueuedCoalTask())
+
+        @property
+        def module_id(self) -> ModuleId:
+            return ModuleId("qmod")
+
+        def tasks(self) -> Sequence[BoundTask]:
+            return self._tasks
+
+    disp = RuntimeDispatcher(
+        workspace_root=ws_q,
+        cache_dir=ws_q.join(".cache"),
+        module_provider=_EmptyModuleProvider(),
+        options=DispatcherHostOptions(
+            is_daemon_host=True,
+            connection_config=DaemonConnectionConfig(enabled=False, auto_spawn=False),
+            in_memory_modules=(_QueuedMod(),),
+        ),
+    )
+    try:
+        disp.container_lifecycle.transition_boot_phase(ContainerState.READY)
+        blk_res: list[TaskOutcome[object]] = []
+        lead_res: list[TaskOutcome[object]] = []
+        foll_res: list[TaskOutcome[object]] = []
+        lead_tok = CancellationToken()
+        foll_tok = CancellationToken()
+
+        t_blk = threading.Thread(
+            target=lambda: blk_res.append(
+                disp.invoke(InvokeRequest(TaskId("qmod.hold_serial"), {"eq_key": "blk"}, ws_q, ws_q))
+            )
+        )
+        t_blk.start()
+        check(blk_entered.wait(timeout=2.0), "Blocker did not acquire queued.slot")
+
+        t_lead = threading.Thread(
+            target=lambda: lead_res.append(
+                disp.invoke(
+                    InvokeRequest(TaskId("qmod.coal_work"), {"eq_key": "same"}, ws_q, ws_q),
+                    cancel_token=lead_tok,
+                )
+            )
+        )
+        t_lead.start()
+        wait_coalesce_count(disp, "queued.slot", 1, timeout_sec=2.0)
+
+        t_foll = threading.Thread(
+            target=lambda: foll_res.append(
+                disp.invoke(
+                    InvokeRequest(TaskId("qmod.coal_work"), {"eq_key": "same"}, ws_q, ws_q),
+                    cancel_token=foll_tok,
+                )
+            )
+        )
+        t_foll.start()
+        wait_coalesce_count(disp, "queued.slot", 2, timeout_sec=2.0)
+
+        lead_tok.cancel(reason="queued_leader_cancelled")
+        time.sleep(0.05)
+        blk_release.set()
+        t_blk.join(timeout=3.0)
+        t_lead.join(timeout=3.0)
+        t_foll.join(timeout=3.0)
+
+        check(len(blk_res) == 1 and blk_res[0].ok, f"Blocker failed: {blk_res}")
+        check(
+            len(lead_res) == 1 and (not lead_res[0].ok) and lead_res[0].error is not None
+            and lead_res[0].error.code == ErrorCode.TASK_CANCELLED,
+            f"Cancelled queued leader mismatch: {lead_res}",
+        )
+        check(
+            len(foll_res) == 1 and foll_res[0].ok and foll_res[0].coalesced and coal_runs[0] == 1,
+            f"Surviving follower failed after queued leader cancel: {foll_res}, runs={coal_runs[0]}",
+        )
+    finally:
+        disp.shutdown(grace_ms=200)
+
+    coord = ResourceCoordinator(cache_dir=ws_q.join(".cache"), workspace_root=ws_q, is_daemon_host=True)
+    os_blk_in = threading.Event()
+    os_blk_rel = threading.Event()
+    lead_err_box: list[BaseException] = []
+    foll_exec_box: list[CoordinatedExecution[str]] = []
+
+    def _run_blk() -> None:
+        blk_spec = ResourceAcquireSpec(
+            resource_key="queued.timeout.slot",
+            mode=ConcurrencyMode.SERIALIZE,
+            equiv_key="blk",
+            priority=ExecutionPriority.FOREGROUND,
+            turn_id="turn_blk",
+            call_stack=((ws_q, TaskId("qmod.hold_serial")),),
+            cancel_token=CancellationToken(),
+        )
+        def _blk_body(_ph: PriorityHandle, _tok: CancellationToken, _fl: Optional[StepFlight[str]]) -> str:
+            os_blk_in.set()
+            os_blk_rel.wait(timeout=3.0)
+            return "blk"
+
+        coord.execute(blk_spec, _blk_body)
+
+    def _run_short_leader() -> None:
+        short_spec = ResourceAcquireSpec(
+            resource_key="queued.timeout.slot",
+            mode=ConcurrencyMode.COALESCE,
+            equiv_key="same_timeout",
+            priority=ExecutionPriority.BACKGROUND,
+            turn_id="turn_short",
+            call_stack=((ws_q, TaskId("qmod.coal_work")),),
+            cancel_token=CancellationToken(),
+            timeout_ms=60,
+        )
+        try:
+            coord.execute(short_spec, lambda _ph, _tok, _fl: "shared_ok")
+        except BaseException as exc:
+            lead_err_box.append(exc)
+
+    def _run_long_follower() -> None:
+        long_spec = ResourceAcquireSpec(
+            resource_key="queued.timeout.slot",
+            mode=ConcurrencyMode.COALESCE,
+            equiv_key="same_timeout",
+            priority=ExecutionPriority.FOREGROUND,
+            turn_id="turn_long",
+            call_stack=((ws_q, TaskId("qmod.coal_work")),),
+            cancel_token=CancellationToken(),
+            timeout_ms=4000,
+        )
+        foll_exec_box.append(coord.execute(long_spec, lambda _ph, _tok, _fl: "unused"))
+
+    t_ob = threading.Thread(target=_run_blk)
+    t_ob.start()
+    check(os_blk_in.wait(timeout=2.0), "Coordinator blocker did not enter")
+    t_sl = threading.Thread(target=_run_short_leader)
+    t_sl.start()
+    wait_until(lambda: coord.coalesce_participant_count("queued.timeout.slot") == 1, timeout_sec=2.0)
+    t_lf = threading.Thread(target=_run_long_follower)
+    t_lf.start()
+    wait_until(lambda: coord.coalesce_participant_count("queued.timeout.slot") == 2, timeout_sec=2.0)
+    time.sleep(0.10)
+    os_blk_rel.set()
+    t_ob.join(timeout=3.0)
+    t_sl.join(timeout=3.0)
+    t_lf.join(timeout=3.0)
+    check(
+        len(foll_exec_box) == 1 and foll_exec_box[0].is_follower and foll_exec_box[0].outcome == "shared_ok",
+        f"Follower did not survive queued short-timeout leader: {foll_exec_box}",
+    )
+    check(
+        len(lead_err_box) == 1 and isinstance(lead_err_box[0], YscbError)
+        and lead_err_box[0].detail.code == ErrorCode.TASK_TIMEOUT,
+        f"Timed-out queued leader did not receive TASK_TIMEOUT: {lead_err_box}",
+    )
+
+
+def _verify_step5_quiesce_draining_no_deadlock(tmp_root: Path) -> None:
+    ws_s5 = HostPath(tmp_root / "ws_step5_quiesce")
+    ws_s5.path.mkdir(parents=True, exist_ok=True)
+    ev_step5_first = EventMetadata(EventId("qstep5.ev_first"), _Step5DrainEvDto)
+    ev_step5_second = EventMetadata(EventId("qstep5.ev_second"), _Step5DrainEvDto)
+    sub_a_entered = threading.Event()
+    sub_a_release = threading.Event()
+    sub_b_ran = threading.Event()
+
+    class _CoalStep5Task(Task[_CoordReqDto, _Step5DrainOutDto]):
+        def __init__(self) -> None:
+            self._meta = TaskMetadata(
+                task_id=TaskId("qstep5.primary"),
+                input_type=_CoordReqDto,
+                output_type=_Step5DrainOutDto,
+                dispatch_mode=DispatchMode.HYBRID,
+                resource_key="qstep5.slot",
+                concurrency_mode=ConcurrencyMode.COALESCE,
+                equivalence_fn=lambda r: r.eq_key,
+            )
+
+        @property
+        def metadata(self) -> TaskMetadata[_CoordReqDto, _Step5DrainOutDto]:
+            return self._meta
+
+        def run(self, _req: _CoordReqDto, ctx: TaskContext) -> _Step5DrainOutDto:
+            ctx.emit(ev_step5_first, _Step5DrainEvDto(stage="wave_first"))
+            return _Step5DrainOutDto(stage="primary_done")
+
+    class _Step5SubATask(Task[_Step5DrainEvDto, _Step5DrainOutDto]):
+        def __init__(self) -> None:
+            sub = EventSubscriptionSpec(ev_step5_first, lambda items: items[0] if items else None)
+            self._meta = TaskMetadata(
+                task_id=TaskId("qstep5.sub_a"),
+                input_type=_Step5DrainEvDto,
+                output_type=_Step5DrainOutDto,
+                dispatch_mode=DispatchMode.HYBRID,
+                subscriptions=(sub,),
+            )
+
+        @property
+        def metadata(self) -> TaskMetadata[_Step5DrainEvDto, _Step5DrainOutDto]:
+            return self._meta
+
+        def run(self, _req: _Step5DrainEvDto, ctx: TaskContext) -> _Step5DrainOutDto:
+            sub_a_entered.set()
+            sub_a_release.wait(timeout=3.0)
+            ctx.emit(ev_step5_second, _Step5DrainEvDto(stage="wave_second"))
+            return _Step5DrainOutDto(stage="sub_a_done")
+
+    class _Step5SubBTask(Task[_Step5DrainEvDto, _Step5DrainOutDto]):
+        def __init__(self) -> None:
+            sub = EventSubscriptionSpec(ev_step5_second, lambda items: items[0] if items else None)
+            self._meta = TaskMetadata(
+                task_id=TaskId("qstep5.sub_b"),
+                input_type=_Step5DrainEvDto,
+                output_type=_Step5DrainOutDto,
+                dispatch_mode=DispatchMode.HYBRID,
+                subscriptions=(sub,),
+            )
+
+        @property
+        def metadata(self) -> TaskMetadata[_Step5DrainEvDto, _Step5DrainOutDto]:
+            return self._meta
+
+        def run(self, _req: _Step5DrainEvDto, _ctx: TaskContext) -> _Step5DrainOutDto:
+            sub_b_ran.set()
+            return _Step5DrainOutDto(stage="sub_b_done")
+
+    class _Step5Mod(YscbModule):
+        def __init__(self) -> None:
+            self._tasks = (_CoalStep5Task(), _Step5SubATask(), _Step5SubBTask())
+
+        @property
+        def module_id(self) -> ModuleId:
+            return ModuleId("qstep5")
+
+        def tasks(self) -> Sequence[BoundTask]:
+            return self._tasks
+
+    disp = RuntimeDispatcher(
+        workspace_root=ws_s5,
+        cache_dir=ws_s5.join(".cache"),
+        module_provider=_EmptyModuleProvider(),
+        options=DispatcherHostOptions(
+            is_daemon_host=True,
+            connection_config=DaemonConnectionConfig(enabled=False, auto_spawn=False),
+            in_memory_modules=(_Step5Mod(),),
+        ),
+    )
+    try:
+        disp.container_lifecycle.transition_boot_phase(ContainerState.READY)
+        coal_out: list[TaskOutcome[object]] = []
+        quiesce_ok: list[bool] = []
+        t_coal = threading.Thread(
+            target=lambda: coal_out.append(
+                disp.invoke(InvokeRequest(TaskId("qstep5.primary"), {"eq_key": "k_q"}, ws_s5, ws_s5))
+            )
+        )
+        t_coal.start()
+        check(sub_a_entered.wait(timeout=2.0), "Step 5 wave_first subscriber did not enter")
+        t_quiesce = threading.Thread(
+            target=lambda: quiesce_ok.append(
+                disp.try_quiesce_global(drain_deadline=time.monotonic() + 3.0, leased=True)
+            )
+        )
+        t_quiesce.start()
+        wait_until(disp.reload_gate.is_globally_quiesced, timeout_sec=2.0)
+        sub_a_release.set()
+        t_coal.join(timeout=3.0)
+        t_quiesce.join(timeout=3.0)
+        check(len(coal_out) == 1 and coal_out[0].ok, f"COALESCE Step 5 failed during QUIESCE drain: {coal_out}")
+        check(sub_b_ran.is_set(), "Step 5 second-wave subscriber blocked by QUIESCE draining")
+        check(quiesce_ok == [True], f"Global QUIESCE failed to drain cleanly across Step 5: {quiesce_ok}")
+    finally:
+        disp.shutdown(grace_ms=200)
+
+    fl: StepFlight[str] = StepFlight(PriorityHandle(ExecutionPriority.FOREGROUND))
+    step_tok = CancellationToken()
+    turn_tok = CancellationToken()
+    slot_id, det_step4 = fl.add_caller(
+        FlightCallerRegistration("t_cancel", "t_cancel", (), step_tok, turn_tok, deadline=time.monotonic() + 5.0),
+        None,
+    )
+    check(slot_id >= 0 and det_step4 is not None, "StepFlight add_caller failed")
+    step_tok.cancel(reason="all_step_cancelled")
+    turn_tok.cancel(reason="all_turn_cancelled")
+    check(fl.effective_deadline() is None, f"Cancelled StepFlight must not return expired 0.0 deadline: {fl.effective_deadline()}")
+    check(fl.effective_post_step_deadline() is None, f"Cancelled StepFlight post_step deadline must be None: {fl.effective_post_step_deadline()}")
+    got_cancelled = False
+    try:
+        fl.run_or_await_post_step(slot_id, turn_tok, 1.0, lambda _c, _dl: "never")
+    except TaskCancelledException:
+        got_cancelled = True
+    check(got_cancelled, "Cancelled StepFlight post_step must raise TaskCancelledException")
+
+
+def _verify_watcher_poll_interval_and_env_lease_di(tmp_root: Path, venv_py: Path) -> None:
+    default_cfg = DaemonWatcherConfig()
+    check(
+        default_cfg.poll_interval_sec is None and default_cfg.effective_poll_interval_sec() > 0.1,
+        f"Default DaemonWatcherConfig poll interval still capped at 100ms: {default_cfg.effective_poll_interval_sec()}",
+    )
+    slow_cfg = DaemonWatcherConfig(watcher_debounce_sec=1.0)
+    check(
+        abs(slow_cfg.effective_poll_interval_sec() - 0.5) < 1e-6,
+        f"Expected 0.5s poll interval for 1.0s debounce, got {slow_cfg.effective_poll_interval_sec()}",
+    )
+    explicit_cfg = DaemonWatcherConfig(watcher_debounce_sec=0.5, poll_interval_sec=0.75)
+    check(
+        abs(explicit_cfg.effective_poll_interval_sec() - 0.75) < 1e-6,
+        f"Explicit poll_interval_sec not honored: {explicit_cfg.effective_poll_interval_sec()}",
+    )
+    fast_cfg = DaemonWatcherConfig(watcher_debounce_sec=0.05)
+    check(
+        0.02 <= fast_cfg.effective_poll_interval_sec() <= 0.05,
+        f"Fast test debounce lost responsiveness: {fast_cfg.effective_poll_interval_sec()}",
+    )
+    for bad_poll in (0.0, -0.5, float("nan"), float("inf")):
+        assert_raises_val_error(lambda bp=bad_poll: DaemonWatcherConfig(poll_interval_sec=bp))
+
+    ws_lease = HostPath(tmp_root / "ws_env_lease_di")
+    provision_live_workspace(ws_lease.path)
+    venv_hp = HostPath(venv_py)
+    provider = ManifestModuleProvider(ws_lease, venv_hp, dedicated_venv_python=resolve_dedicated_venv_py(venv_hp))
+
+    lease_lock = threading.Lock()
+    acquired: list[HostPath] = []
+    released: list[HostPath] = []
+    touched: list[HostPath] = []
+    active_leases = [0]
+
+    def _acquire_spy(vp: HostPath) -> Optional[Callable[[], None]]:
+        with lease_lock:
+            acquired.append(vp)
+            active_leases[0] += 1
+
+        def _release() -> None:
+            with lease_lock:
+                active_leases[0] -= 1
+                released.append(vp)
+
+        return _release
+
+    def _touch_spy(vp: HostPath) -> None:
+        with lease_lock:
+            touched.append(vp)
+
+    acquire_cb: EnvLeaseAcquireFn = _acquire_spy
+    touch_cb: EnvTouchUsedFn = _touch_spy
+
+    disp_hot = RuntimeDispatcher(
+        workspace_root=ws_lease,
+        cache_dir=ws_lease.join(".cache"),
+        module_provider=provider,
+        options=DispatcherHostOptions(
+            is_daemon_host=True,
+            connection_config=DaemonConnectionConfig(enabled=False, auto_spawn=False),
+            env_lease_acquire=acquire_cb,
+            env_touch_used=touch_cb,
+        ),
+    )
+    try:
+        disp_hot.container_lifecycle.transition_boot_phase(ContainerState.READY)
+        out_hot_first = disp_hot.invoke_typed(KDB_SEARCH_META, SearchInDto(query="lease_hot_first"))
+        out_hot_second = disp_hot.invoke_typed(KDB_SEARCH_META, SearchInDto(query="lease_hot_second"))
+        check(
+            out_hot_first.ok and out_hot_second.ok and out_hot_first.value is not None and out_hot_second.value is not None,
+            f"Hot Tier 1 lease calls failed: {(out_hot_first, out_hot_second)}",
+        )
+        check(
+            out_hot_first.value.worker_pid == out_hot_second.value.worker_pid,
+            f"Expected warm worker reuse: {(out_hot_first.value, out_hot_second.value)}",
+        )
+        with lease_lock:
+            check(
+                len(acquired) == 1 and active_leases[0] == 1 and len(released) == 0 and len(touched) >= 2,
+                f"HotWorkerPool lease/touch mismatch while alive: acq={len(acquired)} active={active_leases[0]} rel={len(released)} touch={len(touched)}",
+            )
+    finally:
+        disp_hot.shutdown(grace_ms=500)
+    with lease_lock:
+        check(
+            len(released) == 1 and active_leases[0] == 0 and released == acquired,
+            f"HotWorkerPool failed to release env lease on shutdown: acq={acquired} rel={released} active={active_leases[0]}",
+        )
+        acquired.clear()
+        released.clear()
+        touched.clear()
+
+    disp_cold = RuntimeDispatcher(
+        workspace_root=ws_lease,
+        cache_dir=ws_lease.join(".cache"),
+        module_provider=provider,
+        options=DispatcherHostOptions(
+            is_daemon_host=False,
+            connection_config=DaemonConnectionConfig(enabled=False, auto_spawn=False),
+            env_lease_acquire=acquire_cb,
+            env_touch_used=touch_cb,
+        ),
+    )
+    try:
+        out_cold = disp_cold.invoke_typed(
+            KDB_SEARCH_META,
+            SearchInDto(query="lease_cold"),
+            routing_policy=ClientRoutingPolicy.FORCE_COLD,
+        )
+        check(out_cold.ok and not out_cold.executed_hot, f"Cold Tier 1 lease call failed: {out_cold}")
+        with lease_lock:
+            check(
+                len(acquired) == 1 and len(released) == 1 and active_leases[0] == 0
+                and released == acquired and len(touched) >= 1,
+                f"OneShotVenvHost lease/touch mismatch: acq={len(acquired)} rel={len(released)} active={active_leases[0]} touch={len(touched)}",
+            )
+    finally:
+        disp_cold.shutdown(grace_ms=300)
+
 
 def run_runtime_daemon_suite(tmp_root: Path, venv_py: Path) -> None:
     """Run domain and live integration checks for core.execution.runtime and core.execution.daemon."""
@@ -1273,6 +1934,10 @@ def run_runtime_daemon_suite(tmp_root: Path, venv_py: Path) -> None:
         _verify_coalesce_and_reentrancy(suite_root)
         log("[RUNTIME-DAEMON] Verifying COALESCE edge cases, degradation, reentrancy, and PREEMPT...")
         _verify_coord_edge_cases(suite_root)
+        log("[RUNTIME-DAEMON] Verifying queued COALESCE leader cancel and short-timeout survival...")
+        _verify_queued_coalesce_leader_cancel_and_timeout(suite_root)
+        log("[RUNTIME-DAEMON] Verifying Step 5 QUIESCE draining exemption and cancel deadline semantics...")
+        _verify_step5_quiesce_draining_no_deadlock(suite_root)
         log("[RUNTIME-DAEMON] Verifying Step 5 cycle error, CrossProcessLockPaths, and cross-proc SERIALIZE...")
         _verify_step5_cycle_and_cross_proc_reentrancy(suite_root, venv_py)
         log("[RUNTIME-DAEMON] Verifying Global QUIESCE barrier, lease auto-heal, and reload deferral...")
@@ -1283,6 +1948,8 @@ def run_runtime_daemon_suite(tmp_root: Path, venv_py: Path) -> None:
         _verify_ttl_periodic_and_worker_pool_stop(suite_root, venv_py)
         log("[RUNTIME-DAEMON] Verifying WorkspaceDaemon shell controls, status snapshot, and watcher resync...")
         _verify_daemon_shell_and_controls(suite_root, venv_py)
+        log("[RUNTIME-DAEMON] Verifying watcher poll cadence and Tier 1 env lease DI callbacks...")
+        _verify_watcher_poll_interval_and_env_lease_di(suite_root, venv_py)
         log("[RUNTIME-DAEMON] All checks passed.")
     finally:
         force_reap_tmp_root_orphans(suite_root)

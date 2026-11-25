@@ -9,9 +9,9 @@
 
 ## 1. 核心職責與設計不變量
 
-1. **零符號連結／重解析點穿越與原子寫入（`atomic.py`）**：所有受管檔案寫入均透過同目錄 `.tmp_*` 暫存、`fsync` 與 `os.replace` 原子替換完成；`resolve_contained_subpath`、`resolve_contained_child_dir`、`is_contained_nonsymlink_path` 與 `walk_nonsymlink_dir_tree` 全鏈路拒絕符號連結、Windows 重解析點、NTFS `:` 資料流與保留裝置逃逸。
+1. **零符號連結／重解析點穿越與原子寫入（`atomic.py`）**：所有受管檔案寫入均透過同目錄 `.tmp_*` 暫存、`fsync` 與 `os.replace` 原子替換完成；`resolve_contained_subpath`、`resolve_contained_child_dir`、`is_contained_nonsymlink_path` 與 `walk_nonsymlink_dir_tree` 全鏈路拒絕符號連結、Windows Symlink／Mount Point 重解析點（經 `core.foundation.is_disallowed_reparse_tag` 精準放行 OneDrive／WOF）、NTFS `:` 資料流與保留裝置逃逸，並支援僅針對監聽根以下相對子目錄之選配 `ignored_dir_names` 剪枝。
 2. **支援升降級防死鎖與純 OS 存活校驗之跨進程檔案鎖（`lock.py`）**：`FileLock` 追蹤共享／排他持鎖狀態（`is_shared`），以 `.upg` 升級預約鎖即時攔截雙共享持有者同時升級死鎖並保留 POSIX 既有共享鎖不被中斷摧毀；`read_live_owner_dict` 與 `write_cross_proc_owner_json` 僅檢驗純 OS `pid` 存活與 `start_tag` 防重用，零耦合上層 `execution` 呼叫樹欄位。
-3. **純標準庫防抖與免回音目錄監聽器（`watcher.py`）**：`PollingDirectoryWatcher` 支援遞迴快照比對、防抖合併、`EchoSuppressionHook` 自寫抑制與 `resync_paths` 即時同步。
+3. **純標準庫防抖與免回音目錄監聽器（`watcher.py`）**：`PollingDirectoryWatcher` 支援遞迴快照比對、防抖合併、`EchoSuppressionHook` 自寫抑制、`resync_paths` 即時同步，並預設透過 `DEFAULT_WATCHER_IGNORED_DIRS` 剪枝監聽根以下之大型衍生目錄（`.git`、`node_modules`、`.venv`、`.cache`、`build`、`dist`、`target`）。
 
 ## 2. 公開契約規格 (`core.filesystem.fs.__all__` 完整快照)
 
@@ -26,6 +26,15 @@ from typing import Callable, Final, Optional
 
 from core.foundation import CancellationToken, HostPath, JsonObject, MutableJsonObject
 
+DEFAULT_WATCHER_IGNORED_DIRS: Final[frozenset[str]] = frozenset({
+    ".git",
+    "node_modules",
+    ".venv",
+    ".cache",
+    "build",
+    "dist",
+    "target",
+})
 IGNORED_FS_PREFIXES: Final[tuple[str, ...]] = (".tmp_", ".staging_", "__pycache__")
 MAX_JSON_FILE_BYTES: Final[int] = 4 * 1024 * 1024
 
@@ -54,7 +63,7 @@ def hash_nofollow_regular_sha256(raw_path: str, *, expected_stat: Optional[os.st
 def is_atomic_staging_filename(name: str) -> bool:
     ...
 
-def is_contained_nonsymlink_path(root: HostPath | Path | str, candidate: HostPath | Path | str, *, allow_equal: bool=False, is_dir: bool=False, ignored_dir_prefixes: tuple[str, ...]=()) -> bool:
+def is_contained_nonsymlink_path(root: HostPath | Path | str, candidate: HostPath | Path | str, *, allow_equal: bool=False, is_dir: bool=False, ignored_dir_prefixes: tuple[str, ...]=(), ignored_dir_names: frozenset[str]=frozenset()) -> bool:
     ...
 
 def is_symlink_or_reparse(raw_path: str) -> bool:
@@ -90,7 +99,7 @@ def try_resolve_contained_subpath(root: HostPath, *parts: str) -> Optional[HostP
 def unlink_owner_under_pin(owner_path: HostPath, pin_path: HostPath, after_unlink: Callable[[], None], *, grace_timeout_sec: float=5.0) -> None:
     ...
 
-def walk_nonsymlink_dir_tree(root_dir: str, *, ignored_dir_prefixes: tuple[str, ...]=('.tmp_', '.staging_', '__pycache__')) -> Iterator[tuple[str, tuple[os.DirEntry[str], ...]]]:
+def walk_nonsymlink_dir_tree(root_dir: str, *, ignored_dir_prefixes: tuple[str, ...]=('.tmp_', '.staging_', '__pycache__'), ignored_dir_names: frozenset[str]=frozenset()) -> Iterator[tuple[str, tuple[os.DirEntry[str], ...]]]:
     ...
 
 def write_cross_proc_owner_json(owner_path: HostPath, payload: JsonObject) -> None:
@@ -143,7 +152,7 @@ class FileLock:
 
 class PollingDirectoryWatcher:
 
-    def __init__(self, roots: Sequence[HostPath], on_changed: Callable[[frozenset[HostPath]], None], *, debounce_sec: float=0.2, poll_interval_sec: float=0.05, is_suppressed: Optional[EchoSuppressionHook]=None) -> None:
+    def __init__(self, roots: Sequence[HostPath], on_changed: Callable[[frozenset[HostPath]], None], *, debounce_sec: float=0.2, poll_interval_sec: float=0.05, is_suppressed: Optional[EchoSuppressionHook]=None, ignored_dir_names: frozenset[str]=DEFAULT_WATCHER_IGNORED_DIRS) -> None:
         ...
 
     @property

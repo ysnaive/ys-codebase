@@ -26,9 +26,10 @@ from core.execution.runtime import (
     InvokeRequest, RuntimeDispatcher, TaskRouteSpec, VfsEchoGuardPort, WorkerProcessSnapshot,
 )
 from core.filesystem.fs import (
-    IGNORED_FS_PREFIXES, FileLock, PollingDirectoryWatcher, atomic_write_json, hash_nofollow_regular_sha256,
-    is_atomic_staging_filename, is_symlink_or_reparse, read_json_dict, resolve_contained_subpath,
-    silent_unlink_contained, try_acquire_contained_lock, try_resolve_contained_subpath, walk_nonsymlink_dir_tree,
+    IGNORED_FS_PREFIXES, FileLock, PollingDirectoryWatcher, atomic_write_json, has_symlink_raw_path,
+    hash_nofollow_regular_sha256, is_atomic_staging_filename, is_symlink_or_reparse, read_json_dict,
+    resolve_contained_subpath, silent_unlink_contained, try_acquire_contained_lock,
+    try_resolve_contained_subpath, walk_nonsymlink_dir_tree,
 )
 from core.foundation.codec import DataclassCodec
 from core.foundation.errors import ErrorCode, ErrorDetail, YscbError, safe_exception_summary
@@ -136,6 +137,7 @@ class DaemonWatcherConfig:
     on_space_changed_task: Optional[TaskId] = None
     on_config_changed_task: Optional[TaskId] = None
     watcher_debounce_sec: float = 0.5
+    poll_interval_sec: Optional[float] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "space_watch_roots", require_typed_tuple(self.space_watch_roots, HostPath, "space_watch_roots"))
@@ -147,6 +149,17 @@ class DaemonWatcherConfig:
         if safe_deb is None or safe_deb <= 0.0:
             raise ValueError(f"watcher_debounce_sec must be finite and > 0, got {self.watcher_debounce_sec!r}")
         object.__setattr__(self, "watcher_debounce_sec", safe_deb)
+        if self.poll_interval_sec is not None:
+            safe_poll = validate_non_negative_sec(self.poll_interval_sec, label="poll_interval_sec")
+            if safe_poll is None or safe_poll <= 0.0:
+                raise ValueError(f"poll_interval_sec must be finite and > 0, got {self.poll_interval_sec!r}")
+            object.__setattr__(self, "poll_interval_sec", safe_poll)
+
+    def effective_poll_interval_sec(self) -> float:
+        """Compute the polling cadence honoring explicit overrides without a 100ms hard cap."""
+        if self.poll_interval_sec is not None:
+            return max(0.02, self.poll_interval_sec)
+        return max(0.02, min(2.0, self.watcher_debounce_sec * 0.5))
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +237,12 @@ class _DirtyPathsAccumulator:
             cfg = frozenset(self._config_paths)
             self._config_paths.clear()
             return cfg
+
+    def drain_notify_config_paths(self) -> frozenset[HostPath]:
+        with self._lock:
+            ncfg = frozenset(self._notify_config_paths)
+            self._notify_config_paths.clear()
+            return ncfg
 
     def clear_all_modules(self) -> None:
         with self._lock:
@@ -583,6 +602,7 @@ class WorkspaceDaemon(InboundCallHandler):
         self._workspace_root, self._cache_dir, self._dispatcher, self._config_view, self._watch_cfg = workspace_root, cache_dir, dispatcher, config_view, watch_config
         self._self_restart_argv = tuple(self_restart_argv) if self_restart_argv else None
         self._cond, self._handoff_lease_lock = threading.Condition(), threading.Lock()
+        self._space_watcher_lock = threading.Lock()
         dispatcher.container_lifecycle.transition_boot_phase(ContainerState.BOOTING)
         self._active_fg_calls = self._active_bg_turns = self._lifecycle_ops_in_flight = self._tasks_handled = self._quiesce_waiters = 0
         self._stopping = self._stopped = self._explicit_stop_latched = self._pending_core_handoff = False
@@ -591,6 +611,8 @@ class WorkspaceDaemon(InboundCallHandler):
         self._shutdown_diagnostics: tuple[ErrorDetail, ...] = ()
         self._bg_teardown_diags: deque[ErrorDetail] = deque(maxlen=256)
         self._bg_error_diags: deque[ErrorDetail] = deque(maxlen=256)
+        self._cfg_notify_queue: deque[frozenset[HostPath]] = deque()
+        self._cfg_notify_worker_running = False
         self._started_at, self._dirty = time.monotonic(), _DirtyPathsAccumulator()
         self._inst_wait_cancels: set[CancellationToken] = set()
         self._pending_ready_callback: Optional[Callable[[], None]] = None
@@ -607,6 +629,8 @@ class WorkspaceDaemon(InboundCallHandler):
         self._watchers: list[PollingDirectoryWatcher] = []
         self._modules_watcher: Optional[PollingDirectoryWatcher] = None
         self._config_watcher: Optional[PollingDirectoryWatcher] = None
+        self._space_watcher: Optional[PollingDirectoryWatcher] = None
+        self._active_space_watch_roots: tuple[HostPath, ...] = ()
         self._boot_core_snapshot = _scan_core_module_tree(workspace_root)
         self._dispatcher.reload_gate.register_gate_listener(self._wake_cond)
 
@@ -679,13 +703,15 @@ class WorkspaceDaemon(InboundCallHandler):
         eff_ttl = ttl_override_sec if ttl_override_sec is not None else (None if console_mode else self._resolve_default_idle_ttl())
         norm_ttl = _normalize_idle_ttl_sec(eff_ttl)
         got_lock = self._daemon_lock.acquire(blocking=False)
-        if not got_lock and read_active_handoff_boot_id(self._cache_dir) is not None:
+        if not got_lock:
+            retry_sec = 0.25 if read_active_handoff_boot_id(self._cache_dir) is not None else 0.05
             try:
-                got_lock = self._daemon_lock.acquire(shared=False, blocking=True, timeout_sec=0.25)
+                got_lock = self._daemon_lock.acquire(shared=False, blocking=True, timeout_sec=retry_sec)
             except YscbError:
                 got_lock = False
         if not got_lock:
             return 0
+        pending_handoff = False
         handoff_argv: Optional[tuple[str, ...]] = None
         sig_guard: Optional[SignalWakeupGuard] = None
         try:
@@ -700,8 +726,6 @@ class WorkspaceDaemon(InboundCallHandler):
                 force_drain = self._force_shutdown
             self._execute_full_shutdown(force=force_drain)
             self._listener.flush_inbound_controls(timeout_sec=2.0)
-            with self._cond:
-                handoff_argv = self._self_restart_argv if self._pending_core_handoff else None
         finally:
             try:
                 if sig_guard is not None:
@@ -713,13 +737,15 @@ class WorkspaceDaemon(InboundCallHandler):
                 self._execute_full_shutdown(force=force_end)
                 self._listener.close_all()
                 with self._cond:
+                    pending_handoff = self._pending_core_handoff and not self._explicit_stop_latched
+                    handoff_argv = self._self_restart_argv if pending_handoff else None
                     self._stopping = self._stopped = True
                     self._cond.notify_all()
             finally:
                 silent_unlink_contained(self._cache_dir, DAEMON_SUBDIR, DAEMON_ENDPOINT_FILENAME)
                 self._daemon_lock.release()
-        if handoff_argv is not None:
-            self._spawn_handoff_successor(handoff_argv)
+        if pending_handoff:
+            self._spawn_handoff_successor(handoff_argv or ())
         return 0
 
     def _run_supervisor_loop(self) -> None:
@@ -774,6 +800,8 @@ class WorkspaceDaemon(InboundCallHandler):
                     self._run_async_config_notifications(pending_cfg)
                 continue
             if not probe_deferred_boot and due_epoch is None:
+                if not gate.is_globally_gated():
+                    self._sync_space_watcher(resync_existing=False)
                 continue
             probe_lk = try_acquire_contained_lock(self._cache_dir, LOCKS_SUBDIR, INSTALLER_LOCK_FILENAME, shared=True)
             locked_excl = probe_lk is None
@@ -787,34 +815,116 @@ class WorkspaceDaemon(InboundCallHandler):
             with self._cond:
                 self._cond.wait(timeout=0.05)
 
+    def _requeue_config_notifications_from_worker(self, current_paths: frozenset[HostPath]) -> None:
+        with self._cond:
+            if not (self._stopping or self._stopped):
+                self._dirty.add_paths("notify_config", current_paths)
+                while self._cfg_notify_queue:
+                    self._dirty.add_paths("notify_config", self._cfg_notify_queue.popleft())
+            else:
+                self._cfg_notify_queue.clear()
+            self._cfg_notify_worker_running = False
+            self._active_bg_turns = max(0, self._active_bg_turns - 1)
+            self._cond.notify_all()
+        self._periodic_loop.wake()
+
+    def _drain_async_config_notifications_worker(self) -> None:
+        gate = self._dispatcher.reload_gate
+        try:
+            while True:
+                with self._cond:
+                    if not self._cfg_notify_queue:
+                        self._cfg_notify_worker_running = False
+                        self._active_bg_turns = max(0, self._active_bg_turns - 1)
+                        self._cond.notify_all()
+                        return
+                    if self._stopping or self._stopped:
+                        self._cfg_notify_queue.clear()
+                        self._cfg_notify_worker_running = False
+                        self._active_bg_turns = max(0, self._active_bg_turns - 1)
+                        self._cond.notify_all()
+                        return
+                    if self._base_phase_locked() != ContainerState.READY or self._deferred_boot_warmup or gate.is_globally_gated():
+                        while self._cfg_notify_queue:
+                            self._dirty.add_paths("notify_config", self._cfg_notify_queue.popleft())
+                        self._cfg_notify_worker_running = False
+                        self._active_bg_turns = max(0, self._active_bg_turns - 1)
+                        self._cond.notify_all()
+                        return
+                    cfg_paths = self._cfg_notify_queue.popleft()
+                path_strs = [str(p) for p in sorted(cfg_paths, key=str)]
+                cfg_task = self._watch_cfg.on_config_changed_task
+                if cfg_task is not None:
+                    if gate.is_call_gated_for_quiesce(cfg_task.module_id):
+                        self._requeue_config_notifications_from_worker(cfg_paths)
+                        return
+                    self._run_acquired_bg_task(cfg_task, {"changed_paths": path_strs})
+                self._sync_space_watcher(resync_existing=False)
+                with self._cond:
+                    if self._stopping or self._stopped:
+                        self._cfg_notify_queue.clear()
+                        self._cfg_notify_worker_running = False
+                        self._active_bg_turns = max(0, self._active_bg_turns - 1)
+                        self._cond.notify_all()
+                        return
+                cfg_subs = self._dispatcher.subscribed_modules(CONFIG_CHANGED_EVENT_ID)
+                if gate.is_globally_gated() or any(gate.is_call_gated_for_quiesce(mid) for mid in cfg_subs):
+                    self._requeue_config_notifications_from_worker(cfg_paths)
+                    return
+                rep = self._dispatcher.emit_background_event(CONFIG_CHANGED_EVENT_ID, {"changed_paths": path_strs})
+                self._record_bg_diags(rep.teardown_diagnostics, rep.event_diagnostics, rep.fatal_event_error or rep.primary_result.error)
+        except BaseException:
+            with self._cond:
+                if self._cfg_notify_worker_running:
+                    if not (self._stopping or self._stopped):
+                        while self._cfg_notify_queue:
+                            self._dirty.add_paths("notify_config", self._cfg_notify_queue.popleft())
+                    else:
+                        self._cfg_notify_queue.clear()
+                    self._cfg_notify_worker_running = False
+                    self._active_bg_turns = max(0, self._active_bg_turns - 1)
+                    self._cond.notify_all()
+            raise
+
     def _run_async_config_notifications(self, cfg_paths: frozenset[HostPath]) -> None:
         if not cfg_paths:
             return
+        gate = self._dispatcher.reload_gate
+        spawn_worker = False
         with self._cond:
-            if self._base_phase_locked() != ContainerState.READY or self._deferred_boot_warmup:
+            if self._stopping or self._stopped:
                 return
-            self._active_bg_turns += 1
-        try:
-            gate = self._dispatcher.reload_gate
-            if gate.is_globally_gated():
-                return
-            path_strs = [str(p) for p in sorted(cfg_paths, key=str)]
-            cfg_subs = self._dispatcher.subscribed_modules(CONFIG_CHANGED_EVENT_ID)
-            if not any(gate.is_call_gated_for_quiesce(mid) for mid in cfg_subs):
-                rep = self._dispatcher.emit_background_event(CONFIG_CHANGED_EVENT_ID, {"changed_paths": path_strs})
-                self._record_bg_diags(rep.teardown_diagnostics, rep.event_diagnostics, rep.fatal_event_error or rep.primary_result.error)
-            cfg_task = self._watch_cfg.on_config_changed_task
-            if cfg_task is not None and not gate.is_call_gated_for_quiesce(cfg_task.module_id):
-                self._run_acquired_bg_task(cfg_task, {"changed_paths": path_strs})
-        finally:
-            with self._cond:
-                self._active_bg_turns = max(0, self._active_bg_turns - 1)
+            if self._base_phase_locked() != ContainerState.READY or self._deferred_boot_warmup or gate.is_globally_gated():
+                self._dirty.add_paths("notify_config", cfg_paths)
                 self._cond.notify_all()
+                return
+            self._cfg_notify_queue.append(cfg_paths)
+            if not self._cfg_notify_worker_running:
+                self._cfg_notify_worker_running = True
+                self._active_bg_turns += 1
+                spawn_worker = True
+        if spawn_worker:
+            try:
+                threading.Thread(
+                    target=self._drain_async_config_notifications_worker,
+                    name="yscb-daemon-cfg-notify",
+                    daemon=True,
+                ).start()
+            except BaseException:
+                with self._cond:
+                    if not (self._stopping or self._stopped):
+                        while self._cfg_notify_queue:
+                            self._dirty.add_paths("notify_config", self._cfg_notify_queue.popleft())
+                    else:
+                        self._cfg_notify_queue.clear()
+                    self._cfg_notify_worker_running = False
+                    self._active_bg_turns = max(0, self._active_bg_turns - 1)
+                    self._cond.notify_all()
+                raise
 
     def _spawn_handoff_successor(self, handoff_argv: Sequence[str]) -> None:
-        if not handoff_argv:
-            return
         lock: Optional[FileLock] = None
+        can_cleanup_handoff = False
         try:
             lock = FileLock(resolve_contained_subpath(self._cache_dir, DAEMON_SUBDIR, _SPAWN_LOCK_FILENAME), allow_transitions=False)
             if not lock.acquire(shared=False, blocking=True, timeout_sec=0.5):
@@ -825,9 +935,16 @@ class WorkspaceDaemon(InboundCallHandler):
             now_epoch = time.time()
             if _is_spawn_lease_active(read_json_dict(lease_path), now_epoch, 1.5, ignore_pid=os.getpid()):
                 return
+            if not handoff_argv:
+                silent_unlink_contained(self._cache_dir, *_HANDOFF_LEASE_SUBPATH)
+                return
+            can_cleanup_handoff = True
             spawned_pid = spawn_detached(list(handoff_argv), cwd=self._workspace_root)
+            can_cleanup_handoff = False
             atomic_write_json(lease_path, {"spawned_epoch": now_epoch, "pid": spawned_pid})
         except (OSError, ValueError, YscbError) as exc:
+            if can_cleanup_handoff:
+                silent_unlink_contained(self._cache_dir, *_HANDOFF_LEASE_SUBPATH)
             self._record_bg_diags(error=ErrorDetail(ErrorCode.TRANSPORT_LOST, f"Core handoff successor spawn failed: {safe_exception_summary(exc)}"))
         finally:
             if lock is not None:
@@ -909,7 +1026,9 @@ class WorkspaceDaemon(InboundCallHandler):
                 if CORE_MODULE_ID in mods or (queued.reload_all and self._has_deferred_core_mutation()):
                     self.request_shutdown(core_handoff=True)
                     return
-                self._apply_locked_module_reload(mods, reload_all=queued.reload_all)
+                confirmed_boot_cfg = self._apply_locked_module_reload(mods, reload_all=queued.reload_all)
+                if confirmed_boot_cfg:
+                    self._dirty.add_paths("notify_config", confirmed_boot_cfg)
                 queued = self._dirty.drain(modules_only=True)
         finally:
             with self._cond:
@@ -933,30 +1052,56 @@ class WorkspaceDaemon(InboundCallHandler):
             inst_lk.release()
 
     def _execute_full_shutdown(self, *, force: bool = False) -> None:
+        already_started = False
         with self._cond:
+            if force:
+                self._force_shutdown = True
+            eff_force = force or self._force_shutdown
             if self._shutdown_started:
+                already_started = True
+            else:
+                self._shutdown_started = self._stopping = True
+                for tok in tuple(self._inst_wait_cancels):
+                    tok.cancel(reason="Daemon shutdown requested.")
+            self._cond.notify_all()
+        if already_started:
+            if eff_force:
+                self._dispatcher.cancel_all_active_turns("Daemon forced shutdown")
+            with self._cond:
                 while not self._dispatcher_stopped:
                     self._cond.wait(timeout=0.05)
-                return
-            self._shutdown_started = self._stopping = True
-            for tok in tuple(self._inst_wait_cancels):
-                tok.cancel(reason="Daemon shutdown requested.")
-            self._cond.notify_all()
+            return
         self._listener.stop_accepting()
-        if force:
+        if self._dispatcher.reload_gate.is_globally_quiesced():
+            self._dispatcher.quiesce_global(grace_ms=50)
+        if eff_force:
             self._dispatcher.cancel_all_active_turns("Daemon forced shutdown")
         for w in tuple(self._watchers):
             w.stop()
-        self._periodic_loop.stop(drain_timeout_sec=0.2 if force else 1.0)
-        deadline = time.monotonic() + (0.2 if force else 3.0)
+        with self._cond:
+            eff_force = eff_force or self._force_shutdown
+        self._periodic_loop.stop(drain_timeout_sec=0.2 if eff_force else 1.0)
+        deadline = time.monotonic() + (0.2 if eff_force else 3.0)
+        escalated_force = False
         with self._cond:
             while (self._active_fg_calls > 0 or self._active_bg_turns > 0) and time.monotonic() < deadline:
+                if not eff_force and self._force_shutdown:
+                    eff_force = escalated_force = True
+                    deadline = min(deadline, time.monotonic() + 0.2)
+                    break
                 self._cond.wait(timeout=min(0.02, max(0.001, deadline - time.monotonic())))
-        if force:
+        if escalated_force:
+            self._dispatcher.cancel_all_active_turns("Daemon forced shutdown")
+            with self._cond:
+                while (self._active_fg_calls > 0 or self._active_bg_turns > 0) and time.monotonic() < deadline:
+                    self._cond.wait(timeout=min(0.02, max(0.001, deadline - time.monotonic())))
+        with self._cond:
+            eff_force = eff_force or self._force_shutdown
+        if eff_force:
             self._dispatcher.cancel_all_active_turns("Daemon shutdown deadline")
         disp_diags: tuple[ErrorDetail, ...] = ()
         try:
-            disp_diags = self._dispatcher.shutdown(grace_ms=200 if force else 3000)
+            disp_diags = self._dispatcher.shutdown(grace_ms=200 if eff_force else 3000)
         finally:
             with self._cond:
                 bg_diags = tuple(self._bg_teardown_diags)
@@ -971,29 +1116,31 @@ class WorkspaceDaemon(InboundCallHandler):
         require_pure_bool(force, "WorkspaceDaemon.request_shutdown.force")
         require_pure_bool(core_handoff, "WorkspaceDaemon.request_shutdown.core_handoff")
         ep = self._listener.endpoint
-        write_handoff = unlink_handoff = False
-        with self._cond:
-            if self._stopped:
-                return
-            self._stopping = True
-            if force:
-                self._force_shutdown = True
-            if core_handoff and not self._explicit_stop_latched:
-                self._pending_core_handoff = write_handoff = True
-            elif not core_handoff:
-                self._explicit_stop_latched, self._pending_core_handoff, unlink_handoff = True, False, True
-            for tok in tuple(self._inst_wait_cancels):
-                tok.cancel(reason="Daemon shutdown requested.")
-            self._cond.notify_all()
-        if write_handoff:
-            with self._handoff_lease_lock:
-                with self._cond:
-                    still_handoff = self._pending_core_handoff and not self._explicit_stop_latched
-                if still_handoff:
-                    _write_handoff_lease(self._cache_dir, ep.boot_id if ep is not None else "boot", 10.0)
-        elif unlink_handoff:
-            with self._handoff_lease_lock:
+        with self._handoff_lease_lock:
+            with self._cond:
+                if self._stopped:
+                    return
+                can_handoff = core_handoff and not self._explicit_stop_latched
+                unlink_handoff = not core_handoff
+            if can_handoff:
+                _write_handoff_lease(self._cache_dir, ep.boot_id if ep is not None else "boot", 10.0)
+            elif unlink_handoff:
                 silent_unlink_contained(self._cache_dir, *_HANDOFF_LEASE_SUBPATH)
+            with self._cond:
+                if self._stopped:
+                    if can_handoff:
+                        silent_unlink_contained(self._cache_dir, *_HANDOFF_LEASE_SUBPATH)
+                    return
+                self._stopping = True
+                if force:
+                    self._force_shutdown = True
+                if core_handoff and not self._explicit_stop_latched:
+                    self._pending_core_handoff = True
+                elif not core_handoff:
+                    self._explicit_stop_latched, self._pending_core_handoff = True, False
+                for tok in tuple(self._inst_wait_cancels):
+                    tok.cancel(reason="Daemon shutdown requested.")
+                self._cond.notify_all()
         self._listener.stop_accepting()
         if force:
             self._dispatcher.cancel_all_active_turns("Forced shutdown requested")
@@ -1037,10 +1184,14 @@ class WorkspaceDaemon(InboundCallHandler):
         self._resync_modules_watcher(None)
         if self._config_watcher is not None:
             self._config_watcher.resync_paths(self._watch_cfg.config_watch_roots)
+        self._sync_space_watcher(resync_existing=True)
         self._dirty.drain_config_paths()
         with self._cond:
+            was_deferred_boot = self._deferred_boot_warmup
             self._deferred_boot_warmup = False
             self._cond.notify_all()
+        if was_deferred_boot:
+            self._dirty.drain_notify_config_paths()
 
     def _execute_resume_under_lock(self, expected_epoch: Optional[int]) -> bool:
         res = self._dispatcher.execute_daemon_quiesce_resume(
@@ -1127,6 +1278,11 @@ class WorkspaceDaemon(InboundCallHandler):
             if not ack_accepted():
                 return (False, {"ok": False})
             reply: DaemonRpcInvokeReply = self._dispatcher.invoke_daemon_rpc(payload, peer_cancel_token, emit_progress, pre_turn_id=call_id)
+            if reply.ok and (
+                target_mod == CORE_MODULE_ID
+                or any(tid.module_id == CORE_MODULE_ID for _ws, tid in reply.invoked_tasks)
+            ):
+                self._sync_space_watcher(resync_existing=False)
             return (True, DataclassCodec.encode_envelope(reply))
         finally:
             self._dispatcher.reload_gate.exit_rpc_call(target_mod, call_id)
@@ -1194,6 +1350,17 @@ class WorkspaceDaemon(InboundCallHandler):
         reload_all = not mods
         immediate_handoff = False
         with self._cond:
+            warm_dl = time.monotonic() + 1.0
+            while (
+                self._boot_warming_active
+                and not self._deferred_boot_warmup
+                and not self._dispatcher.reload_gate.is_globally_quiesced()
+                and self._base_phase_locked() not in (ContainerState.DRAINING, ContainerState.STOPPED)
+            ):
+                rem_w = warm_dl - time.monotonic()
+                if rem_w <= 0.0:
+                    break
+                self._cond.wait(timeout=min(0.02, rem_w))
             if self._base_phase_locked() in (ContainerState.DRAINING, ContainerState.STOPPED):
                 return {"ok": False, "state": self._effective_state_locked().value, "error": "daemon_stopping"}
             if self._boot_warming_active or self._deferred_boot_warmup or self._dispatcher.reload_gate.is_globally_quiesced():
@@ -1220,7 +1387,9 @@ class WorkspaceDaemon(InboundCallHandler):
                 if reload_all and self._has_deferred_core_mutation():
                     self.request_shutdown(core_handoff=True)
                     return {"ok": True, "handoff": True}
-                self._apply_locked_module_reload(mods, reload_all=reload_all)
+                confirmed_cfg = self._apply_locked_module_reload(mods, reload_all=reload_all)
+                if confirmed_cfg:
+                    self._dirty.add_paths("notify_config", confirmed_cfg)
                 return {"ok": True, "reloaded": True, "teardown_diagnostics": [DataclassCodec.encode_envelope(d) for d in self._dispatcher.drain_teardown_diagnostics()]}
             finally:
                 inst_lk.release()
@@ -1229,18 +1398,92 @@ class WorkspaceDaemon(InboundCallHandler):
                 self._lifecycle_ops_in_flight = max(0, self._lifecycle_ops_in_flight - 1)
                 self._cond.notify_all()
 
+    def _resolve_effective_space_watch_roots(self) -> tuple[HostPath, ...]:
+        if self._config_view is not None:
+            try:
+                raw_roots = self._config_view.get_module_value(CORE_MODULE_ID, "_yscb_space_watch_roots", None)
+            except (Exception, SystemExit, GeneratorExit):
+                raw_roots = None
+            if isinstance(raw_roots, (list, tuple)):
+                resolved: list[HostPath] = []
+                for item in raw_roots:
+                    if isinstance(item, HostPath):
+                        resolved.append(item)
+                    elif type(item) is str:
+                        clean = item.strip()
+                        if not clean:
+                            continue
+                        cand = Path(clean)
+                        if not cand.is_absolute() or ((cand.drive or cand.anchor) and not cand.is_absolute()):
+                            continue
+                        try:
+                            if has_symlink_raw_path(clean) or is_symlink_or_reparse(clean):
+                                continue
+                            resolved.append(HostPath(clean))
+                        except (OSError, RuntimeError, ValueError):
+                            continue
+                return tuple(resolved)
+        return self._watch_cfg.space_watch_roots
+
+    def _sync_space_watcher(self, *, resync_existing: bool) -> None:
+        with self._space_watcher_lock:
+            desired = self._resolve_effective_space_watch_roots()
+            with self._cond:
+                if self._stopping or self._stopped:
+                    return
+                cur_watcher = self._space_watcher
+                cur_roots = self._active_space_watch_roots
+            if desired == cur_roots:
+                if resync_existing and cur_watcher is not None and desired:
+                    cur_watcher.resync_paths(desired)
+                return
+            echo_guard, deb = self._watch_cfg.echo_guard, self._watch_cfg.watcher_debounce_sec
+            supp, poll = (echo_guard.is_suppressed if echo_guard is not None else None), self._watch_cfg.effective_poll_interval_sec()
+            new_watcher: Optional[PollingDirectoryWatcher] = None
+            if desired:
+                new_watcher = PollingDirectoryWatcher(
+                    desired,
+                    lambda ps: self._record_watched_dirty("space", ps),
+                    debounce_sec=deb,
+                    poll_interval_sec=poll,
+                    is_suppressed=supp,
+                )
+                new_watcher.start()
+            stop_new = False
+            old_w: Optional[PollingDirectoryWatcher] = None
+            with self._cond:
+                if self._stopping or self._stopped:
+                    stop_new = True
+                else:
+                    old_w = self._space_watcher
+                    if old_w is not None and old_w in self._watchers:
+                        self._watchers.remove(old_w)
+                    if new_watcher is not None:
+                        self._watchers.append(new_watcher)
+                    self._space_watcher = new_watcher
+                    self._active_space_watch_roots = desired
+            if stop_new:
+                if new_watcher is not None:
+                    new_watcher.stop()
+                return
+            if old_w is not None:
+                old_w.stop()
+
     def _start_watchers_only(self) -> None:
         echo_guard, deb = self._watch_cfg.echo_guard, self._watch_cfg.watcher_debounce_sec
-        supp, poll = (echo_guard.is_suppressed if echo_guard is not None else None), max(0.02, min(0.1, deb * 0.5))
+        supp, poll = (echo_guard.is_suppressed if echo_guard is not None else None), self._watch_cfg.effective_poll_interval_sec()
         mods_hp = try_resolve_contained_subpath(self._workspace_root, MODULES_DIRNAME)
         if mods_hp is not None and os.path.isdir(str(mods_hp)):
             self._modules_watcher = PollingDirectoryWatcher((mods_hp,), lambda ps: self._record_watched_dirty("module", ps), debounce_sec=deb, poll_interval_sec=poll, is_suppressed=supp)
             self._watchers.append(self._modules_watcher)
         if self._watch_cfg.config_watch_roots:
-            self._config_watcher = PollingDirectoryWatcher(self._watch_cfg.config_watch_roots, lambda ps: self._record_watched_dirty("config_both", ps), debounce_sec=deb, poll_interval_sec=poll, is_suppressed=supp)
+            self._config_watcher = PollingDirectoryWatcher(self._watch_cfg.config_watch_roots, lambda ps: self._record_watched_dirty("config", ps), debounce_sec=deb, poll_interval_sec=poll, is_suppressed=supp)
             self._watchers.append(self._config_watcher)
-        if self._watch_cfg.space_watch_roots:
-            self._watchers.append(PollingDirectoryWatcher(self._watch_cfg.space_watch_roots, lambda ps: self._record_watched_dirty("space", ps), debounce_sec=deb, poll_interval_sec=poll, is_suppressed=supp))
+        eff_space_roots = self._resolve_effective_space_watch_roots()
+        if eff_space_roots:
+            self._space_watcher = PollingDirectoryWatcher(eff_space_roots, lambda ps: self._record_watched_dirty("space", ps), debounce_sec=deb, poll_interval_sec=poll, is_suppressed=supp)
+            self._active_space_watch_roots = eff_space_roots
+            self._watchers.append(self._space_watcher)
         started: list[PollingDirectoryWatcher] = []
         try:
             for w in self._watchers:
@@ -1258,11 +1501,7 @@ class WorkspaceDaemon(InboundCallHandler):
             if self._stopping or self._stopped:
                 return
             self._idle_monitor.record_external_activity()
-            if kind == "config_both":
-                self._dirty.add_paths("config", paths)
-                self._dirty.add_paths("notify_config", paths)
-            else:
-                self._dirty.add_paths(kind, paths)
+            self._dirty.add_paths(kind, paths)
             self._cond.notify_all()
 
     def _extract_touched_modules(self, batch: _DirtyBatch) -> frozenset[ModuleId]:
@@ -1283,14 +1522,34 @@ class WorkspaceDaemon(InboundCallHandler):
             if sub_roots := tuple(r for m in modules if (r := try_resolve_contained_subpath(self._workspace_root, MODULES_DIRNAME, str(m))) is not None):
                 self._modules_watcher.resync_paths(sub_roots)
 
-    def _apply_locked_module_reload(self, modules: frozenset[ModuleId], *, reload_all: bool) -> None:
+    def _apply_locked_module_reload(
+        self,
+        modules: frozenset[ModuleId],
+        *,
+        reload_all: bool,
+        extra_config_paths: frozenset[HostPath] = frozenset(),
+    ) -> frozenset[HostPath]:
         target_mods = frozenset() if reload_all else modules
         self._resync_modules_watcher(None if reload_all else target_mods)
-        self._dirty.drain_config_paths()
-        if self._config_watcher is not None and self._watch_cfg.config_watch_roots:
+        drained_cfg = self._dirty.drain_config_paths()
+        resynced_cfg = (
             self._config_watcher.resync_paths(self._watch_cfg.config_watch_roots)
+            if (self._config_watcher is not None and self._watch_cfg.config_watch_roots)
+            else frozenset()
+        )
+        touched_cfg = extra_config_paths | drained_cfg | resynced_cfg
+        cfg_changed = (
+            self._dispatcher.reload_config_and_contributes(
+                changed_paths=[str(p) for p in sorted(touched_cfg, key=str)],
+                emit_event=False,
+            )
+            if touched_cfg
+            else False
+        )
         self._dispatcher.reload_affected_modules(target_mods)
+        self._sync_space_watcher(resync_existing=False)
         self._periodic_loop.refresh_schedules()
+        return touched_cfg if cfg_changed else frozenset()
 
     def _process_dirty_batch(self, batch: _DirtyBatch) -> frozenset[HostPath]:
         inst_lk, cancelled = self._acquire_cancellable_shared_installer_lock(timeout_sec=0.1)
@@ -1314,16 +1573,30 @@ class WorkspaceDaemon(InboundCallHandler):
                 return frozenset()
             if CORE_MODULE_ID in touched_mods:
                 self._resync_modules_watcher(frozenset({CORE_MODULE_ID}))
-            non_core_mods, pending_notify = touched_mods - frozenset({CORE_MODULE_ID}), set()
+            non_core_mods = touched_mods - frozenset({CORE_MODULE_ID})
+            pending_notify = set(batch.notify_config_paths) | set(self._dirty.drain_notify_config_paths())
             if batch.reload_all or non_core_mods:
-                self._apply_locked_module_reload(non_core_mods, reload_all=batch.reload_all)
-                pending_notify.update(batch.notify_config_paths)
-            elif batch.config_paths or batch.notify_config_paths:
-                if self._config_watcher is not None and self._watch_cfg.config_watch_roots:
+                confirmed_cfg = self._apply_locked_module_reload(
+                    non_core_mods,
+                    reload_all=batch.reload_all,
+                    extra_config_paths=batch.config_paths,
+                )
+                pending_notify.update(confirmed_cfg)
+            elif batch.config_paths or pending_notify:
+                resynced_cfg = (
                     self._config_watcher.resync_paths(self._watch_cfg.config_watch_roots)
-                self._dirty.drain_config_paths()
-                if self._dispatcher.reload_config_and_contributes(changed_paths=[str(p) for p in sorted(batch.config_paths, key=str)], emit_event=False):
-                    pending_notify.update(batch.notify_config_paths or batch.config_paths)
+                    if (self._config_watcher is not None and self._watch_cfg.config_watch_roots)
+                    else frozenset()
+                )
+                drained_cfg = self._dirty.drain_config_paths()
+                touched_cfg = batch.config_paths | resynced_cfg | drained_cfg
+                if touched_cfg:
+                    if self._dispatcher.reload_config_and_contributes(
+                        changed_paths=[str(p) for p in sorted(touched_cfg, key=str)],
+                        emit_event=False,
+                    ):
+                        pending_notify.update(touched_cfg)
+                self._sync_space_watcher(resync_existing=False)
                 self._periodic_loop.refresh_schedules()
             sp_tid = self._watch_cfg.on_space_changed_task
             if batch.space_paths and sp_tid is not None and not self._dispatcher.reload_gate.is_call_gated_for_quiesce(sp_tid.module_id):
@@ -1363,4 +1636,6 @@ class WorkspaceDaemon(InboundCallHandler):
             task_id=task_id, raw_input=raw_input, workspace_root=self._workspace_root, caller_cwd=self._workspace_root,
             priority=ExecutionPriority.BACKGROUND, propagation=CallPropagationContext(is_internal_trigger=True),
         ))
+        if out.ok:
+            self._sync_space_watcher(resync_existing=False)
         self._record_bg_diags(out.teardown_diagnostics, out.event_diagnostics, out.error if not out.ok else None)

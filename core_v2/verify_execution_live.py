@@ -29,14 +29,22 @@ from tests._harness import (
 )
 from tests.test_foundation_fs import run_foundation_fs_suite
 from tests.test_gate0 import verify_gate0_ast_architecture
+from tests.test_metadata_packaging import run_metadata_packaging_suite
 from tests.test_rc_e2e import RC_SUITE_MAP, run_all_rc_e2e
 from tests.test_runtime_daemon import run_runtime_daemon_suite
+from tests.test_surface_cli_e2e import run_surface_cli_e2e_suite
 from tests.test_surface_sdk import run_surface_sdk_suite
+from tests.test_unplug import run_unplug_suite
+from tests.test_vfs_storage_space import run_vfs_storage_space_suite
 
 _ALL_ORDER: Final[tuple[str, ...]] = (
     "gate0",
     "foundation_fs",
+    "vfs_storage_space",
+    "metadata_packaging",
     "surface_sdk",
+    "surface_cli_e2e",
+    "unplug",
     "runtime_daemon",
     "rc_e2e",
 )
@@ -103,8 +111,16 @@ def _run_selected_suites(selected: Sequence[str]) -> None:
                 t_s = time.monotonic()
                 if suite_name == "foundation_fs":
                     run_foundation_fs_suite(tmp_root)
+                elif suite_name == "vfs_storage_space":
+                    run_vfs_storage_space_suite(tmp_root)
+                elif suite_name == "metadata_packaging":
+                    run_metadata_packaging_suite(tmp_root)
                 elif suite_name == "surface_sdk":
                     run_surface_sdk_suite(tmp_root)
+                elif suite_name == "surface_cli_e2e":
+                    run_surface_cli_e2e_suite(tmp_root)
+                elif suite_name == "unplug":
+                    run_unplug_suite(tmp_root)
                 elif suite_name == "runtime_daemon":
                     run_runtime_daemon_suite(tmp_root, venv_py)
                 elif suite_name == "rc_e2e":
@@ -124,7 +140,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--suite",
         action="append",
         default=[],
-        help="Suite(s) to execute: all, gate0, foundation_fs, surface_sdk, runtime_daemon, rc_e2e, rc01..rc08",
+        help="Suite(s) to execute: all, gate0, foundation_fs, vfs_storage_space, metadata_packaging, surface_sdk, surface_cli_e2e, unplug, runtime_daemon, rc_e2e, rc01..rc08",
     )
     return parser
 

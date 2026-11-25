@@ -19,8 +19,11 @@ import uuid
 from core.foundation.errors import safe_exception_summary
 from core.foundation.primitives import (
     IS_WINDOWS,
+    PUBLIC_ENV_ALLOWLIST,
     PYTHON_LAUNCHER_HIJACK_ENV_KEYS,
+    TEST_SANDBOX_ENV_KEY,
     TREE_ID_ENV_KEY,
+    require_pure_str,
     HostPath,
     clamp_wait_sec,
     invoke_observer_safely,
@@ -1237,3 +1240,73 @@ class ManagedProcessTree:
             os.killpg(self._proc.pid, signal.SIGKILL)
         except OSError:
             pass
+
+
+_ISOLATED_SYS_ENV_ALLOW_UPPER: Final[frozenset[str]] = frozenset(
+    {
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "PATH",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "HOME",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "USERNAME",
+        "USER",
+        "LOGNAME",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+    }
+)
+
+
+def read_public_env_value(key: str) -> Optional[str]:
+    """Read a trimmed non-empty value for an allowlisted YSCB environment variable, or None if unset."""
+    require_pure_str(key, "env key", non_empty=True)
+    if key not in PUBLIC_ENV_ALLOWLIST and key != TEST_SANDBOX_ENV_KEY:
+        raise ValueError(f"Environment key {key!r} is not in PUBLIC_ENV_ALLOWLIST.")
+    raw = os.environ.get(key, "").strip()
+    return raw if raw else None
+
+
+def is_public_env_truthy(key: str) -> bool:
+    """Return True when an allowlisted YSCB public environment flag is set to a truthy token."""
+    val = read_public_env_value(key)
+    return val is not None and val.lower() in ("1", "true", "yes", "on")
+
+
+def build_isolated_python_env() -> dict[str, str]:
+    """Construct a minimal OS-safe subprocess environment stripped of PYTHON*/PIP_*/VIRTUAL_ENV/_YSCB_*."""
+    hijack_upper = {k.upper() for k in PYTHON_LAUNCHER_HIJACK_ENV_KEYS}
+    clean: dict[str, str] = {}
+    for k, v in os.environ.items():
+        if not k or "\x00" in k or "\x00" in v:
+            continue
+        ku = k.upper()
+        if (
+            ku in hijack_upper
+            or ku.startswith(("PYTHON", "PIP_", "_YSCB_", "YSCB_"))
+            or ku == "VIRTUAL_ENV"
+        ):
+            continue
+        if ku in _ISOLATED_SYS_ENV_ALLOW_UPPER or ku.startswith("LC_"):
+            clean[k] = v
+    clean["PYTHONNOUSERSITE"] = "1"
+    clean["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    return clean

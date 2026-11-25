@@ -5,7 +5,7 @@
 > **建議內部切分**：`manifest.py`、`matrix.py`、`infill.py`、`snapshot.py`、`__init__.py`
 > **依賴上限（Allowed Imports）**：`foundation/*`、`filesystem.fs`
 > **禁止反向依賴（Forbidden Imports）**：`filesystem.{vfs, space, storage}`、`metadata.contributes`、`packaging/*`、`execution/*`、`surface/*`
-> **狀態**：`Draft — Design Frozen for Wave 1.2 Implementation`
+> **狀態**：`Active Living Spec — Implementation-Aligned SSOT`
 
 > [!NOTE]
 > **實作彈性邊界**：`manifest.json` 2.0 磁碟格式、2×2 組態檔路徑與覆疊語意、`ConfigViewPort` 結構相容性與 `SnapshotVault` 備份邊界屬硬契約；內部資料結構與輔助方法可由遠端實作端微調。
@@ -66,56 +66,86 @@
 ```python
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
-from typing import Mapping, Optional, Sequence, TypeVar
+from abc import ABC, abstractmethod
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from enum import Enum, Flag
+import io
+import os
+from pathlib import Path
+import sqlite3
+import subprocess
+import sys
+import threading
+from typing import Annotated, BinaryIO, Callable, ClassVar, Final, Generic, Literal, Optional, Protocol, TextIO, TypeAlias, TypeVar, overload, runtime_checkable
 
-from core.foundation.primitives import (
-    HostPath, JsonObject, JsonValue, ModuleId, MutableJsonObject, SemVer4, VersionConstraint,
-)
+from core.filesystem.fs import FileLock, IGNORED_FS_PREFIXES, MAX_JSON_FILE_BYTES, assert_no_symlink_raw_path, atomic_write_bytes, atomic_write_json, has_symlink_raw_path, hash_nofollow_regular_sha256, is_atomic_staging_filename, is_symlink_or_reparse, read_json_dict, read_nofollow_regular_bytes, resolve_contained_subpath, silent_unlink, walk_nonsymlink_dir_tree
+from core.foundation import DataclassCodec, ErrorCode, HostPath, IS_WINDOWS, JsonObject, JsonValue, MAX_USER_JSON_DEPTH, ModuleId, MutableJsonObject, SemVer4, TaskId, VersionConstraint, YscbError, clone_strict_json_object, is_process_alive, is_valid_relative_segment, require_pure_bool, require_pure_int, require_pure_str, require_typed_tuple, resolve_dataclass_init_hints, safe_exception_summary, safe_real_to_float, strict_parse_json_object, validate_relative_segment
 
-TConfig = TypeVar("TConfig")
+TConfig = TypeVar('TConfig')
 
+def lookup_compiled_module_root_default_tasks(yscb_module: object) -> frozenset[TaskId]:
+    ...
 
-class ReleaseUrgency(Enum):
-    OPTIONAL = "optional"
-    RECOMMENDED = "recommended"
-    CRITICAL = "critical"
+def lookup_compiled_module_surface_meta(yscb_module: object) -> tuple[tuple[str, ...], str]:
+    ...
 
+def parse_locale_chain_tokens(raw_env_locale: Optional[str], cfg_store: ConfigStore, *, dialect: Optional[str]=None) -> tuple[str, ...]:
+    ...
+
+def parse_manifest_dict(raw: Mapping[str, object], *, expected_id: Optional[ModuleId]=None) -> ModuleManifest:
+    ...
+
+def register_compiled_module_surface_meta(yscb_module: object, *, aliases: tuple[str, ...]=(), description: str='', root_default_tasks: frozenset[TaskId]=frozenset()) -> None:
+    ...
+
+class ConfigStore:
+
+    def __init__(self, *, host_dir: HostPath, yscb_root: HostPath) -> None:
+        ...
+
+    def load_host_config(self) -> HostConfig:
+        ...
+
+    def save_host_config(self, config: HostConfig) -> None:
+        ...
+
+    def get_module_dict(self, module_id: ModuleId) -> MutableJsonObject:
+        ...
+
+    def get_module_value(self, module_id: ModuleId, key: str, default: JsonValue=None) -> JsonValue:
+        ...
+
+    def load_typed(self, module_id: ModuleId, config_cls: type[TConfig]) -> TConfig:
+        ...
+
+    def set_value(self, module_id: ModuleId, key: str, value: JsonValue, *, local: bool=False, schema_cls: Optional[type[object]]=None) -> None:
+        ...
+
+    def unset_value(self, module_id: ModuleId, key: str, *, local: bool=False) -> bool:
+        ...
+
+    def deploy_configurable(self, module_id: ModuleId, staging_configurable_dir: HostPath, *, default_config_template: Optional[JsonObject]=None) -> tuple[str, ...]:
+        ...
+
+    def fingerprint(self) -> str:
+        ...
+
+    def reload(self) -> None:
+        ...
+
+class DeepInfiller:
+
+    @staticmethod
+    def infill(existing: JsonObject, template: JsonObject) -> tuple[MutableJsonObject, tuple[str, ...]]:
+        ...
 
 @dataclass(frozen=True, slots=True)
-class OptionalDependencySpec:
-    version: VersionConstraint
-    hint: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class ReleaseMeta:
-    release_type: str = "patch"
-    urgency: ReleaseUrgency = ReleaseUrgency.RECOMMENDED
-    summary: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class ModuleManifest:
-    """manifest.json 2.0 強型別不可變表示。"""
-    id: ModuleId
-    version: SemVer4
-    description: str
-    schema_version: int = 2
-    entry: str = "module_entry.py"
-    dependencies: Mapping[ModuleId, VersionConstraint] = ...
-    optional: Mapping[ModuleId, OptionalDependencySpec] = ...
-    pip_dependencies: Mapping[str, str] = ...
-    venv_group: Optional[str] = None
-    eager_warmup: bool = False
-    onboarding: tuple[str, ...] = ()
-    release: Optional[ReleaseMeta] = None
-
-    @property
-    def is_tier1(self) -> bool: ...
-```
-
+class HostConfig:
+    yscb_root: str
+    default_provider: str
+    installed_modules: Mapping[ModuleId, InstalledModuleRecord]
 
 @dataclass(frozen=True, slots=True)
 class InstalledModuleRecord:
@@ -123,53 +153,40 @@ class InstalledModuleRecord:
     installed_at: str
     provider: str
 
+@dataclass(frozen=True, slots=True)
+class ModuleManifest:
+    id: ModuleId
+    version: SemVer4
+    description: str
+    schema_version: int = 2
+    entry: str = 'module_entry.py'
+    dependencies: Mapping[ModuleId, VersionConstraint] = field(default_factory=dict)
+    optional: Mapping[ModuleId, OptionalDependencySpec] = field(default_factory=dict)
+    pip_dependencies: Mapping[str, str] = field(default_factory=dict)
+    venv_group: Optional[str] = None
+    eager_warmup: bool = False
+    onboarding: tuple[str, ...] = ()
+    release: Optional[ReleaseMeta] = None
+
+    @property
+    def is_tier1(self) -> bool:
+        ...
 
 @dataclass(frozen=True, slots=True)
-class HostConfig:
-    """yscb.config.json 與 yscb.config.local.json 合併後之宿主組態。"""
-    yscb_root: str
-    default_provider: str
-    installed_modules: Mapping[ModuleId, InstalledModuleRecord]
-
-
-class DeepInfiller:
-    """遞迴原地增量補齊工具（模組升級時僅補缺失鍵，100% 保留使用者既有值）。"""
-    @staticmethod
-    def infill(existing: JsonObject, template: JsonObject) -> tuple[MutableJsonObject, tuple[str, ...]]: ...
-
-
-class ConfigStore:
-    """2×2 組態矩陣管理與強型別讀取器；同時結構實作 execution.runtime.ConfigViewPort。"""
-    def __init__(self, *, host_dir: HostPath, yscb_root: HostPath) -> None: ...
-
-    # --- Host Config (yscb.config[.local].json) ---
-    def load_host_config(self) -> HostConfig: ...
-    def save_host_config(self, config: HostConfig) -> None: ...
-
-    # --- Module 2x2 Matrix & ConfigViewPort Parity ---
-    def get_module_dict(self, module_id: ModuleId) -> MutableJsonObject: ...
-    def get_module_value(self, module_id: ModuleId, key: str, default: JsonValue = None) -> JsonValue: ...
-    def load_typed(self, module_id: ModuleId, config_cls: type[TConfig]) -> TConfig: ...
-    def set_value(
-        self, module_id: ModuleId, key: str, value: JsonValue, *,
-        local: bool = False, schema_cls: Optional[type[object]] = None,
-    ) -> None: ...
-    def unset_value(self, module_id: ModuleId, key: str, *, local: bool = False) -> bool: ...
-    def deploy_configurable(
-        self, module_id: ModuleId, staging_configurable_dir: HostPath,
-        *, default_config_template: Optional[JsonObject] = None,
-    ) -> tuple[str, ...]: ...
-    def fingerprint(self) -> str: ...
-    def reload(self) -> None: ...
-
+class OptionalDependencySpec:
+    version: VersionConstraint
+    hint: str = ''
 
 @dataclass(frozen=True, slots=True)
-class SnapshotRetentionPolicy:
-    """智能快照保留與防連點去重策略。"""
-    max_snapshots: int = 3
-    max_age_days: float = 7.0
-    coalesce_window_sec: float = 60.0
+class ReleaseMeta:
+    release_type: str = 'patch'
+    urgency: ReleaseUrgency = ReleaseUrgency.RECOMMENDED
+    summary: str = ''
 
+class ReleaseUrgency(Enum):
+    OPTIONAL = 'optional'
+    RECOMMENDED = 'recommended'
+    CRITICAL = 'critical'
 
 @dataclass(frozen=True, slots=True)
 class SnapshotMeta:
@@ -180,18 +197,47 @@ class SnapshotMeta:
     state_fingerprint: str
     reused: bool = False
 
+@dataclass(frozen=True, slots=True)
+class SnapshotRetentionPolicy:
+    max_snapshots: int = 3
+    max_age_days: float = 7.0
+    coalesce_window_sec: float = 60.0
 
 class SnapshotVault:
-    """雙層組態原子快照庫（yscb.config.json + config/ + .config.local/ + storage/；嚴禁納入 .storage.local/ 與 .cache/）。"""
-    def __init__(
-        self, *, host_dir: HostPath, yscb_root: HostPath,
-        policy: SnapshotRetentionPolicy = SnapshotRetentionPolicy(),
-    ) -> None: ...
 
-    def create_snapshot(self, tag: str, *, force: bool = False) -> SnapshotMeta: ...
-    def list_snapshots(self) -> tuple[SnapshotMeta, ...]: ...
-    def restore_snapshot(self, snapshot_id: Optional[str] = None) -> SnapshotMeta: ...
-    def prune(self) -> tuple[str, ...]: ...
+    def __init__(self, *, host_dir: HostPath, yscb_root: HostPath, policy: SnapshotRetentionPolicy=SnapshotRetentionPolicy()) -> None:
+        ...
+
+    def create_snapshot(self, tag: str, *, force: bool=False) -> SnapshotMeta:
+        ...
+
+    def list_snapshots(self) -> tuple[SnapshotMeta, ...]:
+        ...
+
+    def restore_snapshot(self, snapshot_id: Optional[str]=None) -> SnapshotMeta:
+        ...
+
+    def prune(self) -> tuple[str, ...]:
+        ...
+
+__all__: tuple[str, ...] = (
+    "ConfigStore",
+    "DeepInfiller",
+    "HostConfig",
+    "InstalledModuleRecord",
+    "ModuleManifest",
+    "OptionalDependencySpec",
+    "ReleaseMeta",
+    "ReleaseUrgency",
+    "SnapshotMeta",
+    "SnapshotRetentionPolicy",
+    "SnapshotVault",
+    "lookup_compiled_module_root_default_tasks",
+    "lookup_compiled_module_surface_meta",
+    "parse_locale_chain_tokens",
+    "parse_manifest_dict",
+    "register_compiled_module_surface_meta",
+)
 ```
 
 ---
@@ -212,7 +258,7 @@ class SnapshotVault:
 
 ## 5. 必測驗收門檻 (Verification Gate)
 
-1. **`manifest.json` 2.0 解析與驗證**：合法 12 欄位精準解碼（含 `SemVer4`、`VersionConstraint`、`is_tier1` 判定）；缺必填鍵、非法 `ModuleId` 或未知鍵拋 `CONFIG_INVALID`。
+1. **`manifest.json` 2.0 解析與驗證**：由單一權威 `parse_manifest_dict` 精準解碼合法 12 欄位（含 `SemVer4`、`VersionConstraint`、`is_tier1` 判定與 `release.type` / `release.release_type` 相容正規化）；缺必填鍵、同時提供 `type` 與 `release_type`、非法 `ModuleId`、`expected_id` 不符或含未知鍵拋 `CONFIG_INVALID`。
 2. **2×2 覆疊與 `DeepInfiller`**：`config.local.json` 遞迴覆疊 `config.project.json` 且不覆寫其他兄弟鍵；`DeepInfiller` 補齊新增巢狀鍵同時 100% 保留使用者修改值；`ConfigStore.fingerprint()` 隨任一檔變動即時更新；零依賴 `project://`（`project_root = "!undefined"` 仍可完整讀寫）。
 3. **智能 `SnapshotVault`**：
    - 狀態無變動重複呼叫 `create_snapshot` 回傳 `reused=True` 且目錄數不變；

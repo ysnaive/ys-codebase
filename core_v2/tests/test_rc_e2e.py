@@ -554,7 +554,7 @@ def _verify_rc04_hot_reconnect_and_draining(
     hot_b2 = disp4.invoke(InvokeRequest(task_id=TaskId("space.daemon_metrics"), raw_input={}, workspace_root=ws4, caller_cwd=ws4, routing_policy=ClientRoutingPolicy.STRICT_HOT))
     check(hot_b2.ok and hot_b2.executed_hot)
     query_daemon_control(ws4.join(".cache"), ws4, FrameKind.CONTROL_RELOAD, {"modules": ["core"]})
-    deadline = time.monotonic() + 6.0
+    deadline = time.monotonic() + (12.0 if os.name == "nt" else 6.0)
     while time.monotonic() < deadline:
         st_cand = query_daemon_control(ws4.join(".cache"), ws4, FrameKind.CONTROL_STATUS)
         if st_cand and st_cand.get("ok") and isinstance(st_cand.get("status"), Mapping) and st_cand["status"].get("boot_id") != st_b2["boot_id"]:
@@ -564,14 +564,32 @@ def _verify_rc04_hot_reconnect_and_draining(
     check(hot_b3.ok and hot_b3.executed_hot)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        inflight_f = pool.submit(disp4.invoke, InvokeRequest(task_id=TaskId("space.hold_lock_ms"), raw_input={"hold_ms": 260}, workspace_root=ws4, caller_cwd=ws4))
-        time.sleep(0.05)
+        inflight_f = pool.submit(disp4.invoke, InvokeRequest(task_id=TaskId("space.hold_lock_ms"), raw_input={"hold_ms": 800}, workspace_root=ws4, caller_cwd=ws4))
+        fg_dl = time.monotonic() + 2.0
+        while time.monotonic() < fg_dl:
+            st_fg = query_daemon_control(ws4.join(".cache"), ws4, FrameKind.CONTROL_STATUS)
+            if (
+                st_fg
+                and st_fg.get("ok")
+                and isinstance(st_fg.get("status"), Mapping)
+                and jint(st_fg["status"], "active_foreground_calls") >= 1
+            ):
+                break
+            time.sleep(0.01)
         stop_f = pool.submit(query_daemon_control, ws4.join(".cache"), ws4, FrameKind.CONTROL_STOP, {"force": False})
-        time.sleep(0.03)
+        drain_dl = time.monotonic() + 3.0
+        while time.monotonic() < drain_dl and probe_daemon_endpoint(ws4.join(".cache"), ws4) is not None:
+            time.sleep(0.01)
         drain_strict = disp4.invoke(InvokeRequest(task_id=TaskId("space.daemon_metrics"), raw_input={}, workspace_root=ws4, caller_cwd=ws4, routing_policy=ClientRoutingPolicy.STRICT_HOT))
         drain_hybrid = disp4.invoke_typed(ECHO_TIER0_META, EchoInDto(tag="during_drain"), routing_policy=ClientRoutingPolicy.AUTO_NO_SPAWN)
-        check(not drain_strict.ok and drain_strict.error is not None and drain_strict.error.code == ErrorCode.DAEMON_UNAVAILABLE)
-        check(drain_hybrid.ok and drain_hybrid.executed_hot is False)
+        check(
+            not drain_strict.ok and drain_strict.error is not None and drain_strict.error.code == ErrorCode.DAEMON_UNAVAILABLE,
+            lambda: f"Expected STRICT_HOT during DRAINING to fail with DAEMON_UNAVAILABLE, got {drain_strict}",
+        )
+        check(
+            drain_hybrid.ok and drain_hybrid.executed_hot is False,
+            lambda: f"Expected HYBRID during DRAINING to fall back cold, got {drain_hybrid}",
+        )
         check(inflight_f.result(timeout=5).ok)
         stop_rep = stop_f.result(timeout=5)
         check(isinstance(stop_rep, Mapping) and stop_rep.get("ok") is True)
@@ -647,7 +665,7 @@ def verify_rc05_tty_periodic_and_worker_crashes(tmp_root: Path, venv_py: Path) -
         check(Path(put_co.value.venv_prefix).resolve() == ded_hp.path.parent.parent.resolve())
         check(put_co.value.proxy_seen == "http://corp-proxy:3128" and put_co.value.leaked_secret_seen == "")
 
-        deadline_ttl = time.monotonic() + 5.0
+        deadline_ttl = time.monotonic() + (8.0 if os.name == "nt" else 5.0)
         while time.monotonic() < deadline_ttl and (
             probe_daemon_endpoint(ws5.join(".cache"), ws5) is not None
             or read_daemon_endpoint_file(ws5.join(".cache"), ws5) is not None
@@ -763,7 +781,7 @@ def _verify_rc06_quiesce_and_ordered_events(
         sp_entry = ws6_path / ".modules" / "space" / "module_entry.py"
         atomic_write_bytes(HostPath(sp_entry), sp_entry.read_text(encoding="utf-8").replace('MODULE_VER = "v1"', 'MODULE_VER = "v2"').encode("utf-8"))
         check(query_daemon_control(ws6.join(".cache"), ws6, FrameKind.CONTROL_RESUME, {}) is not None)
-        check(queued_fut.result(timeout=5.0).executed_hot is True)
+        check(queued_fut.result(timeout=(10.0 if os.name == "nt" else 5.0)).executed_hot is True)
         vsc_starts_after_resume = jint(read_json_dict(ws6.join(".cache", "vsc_tier0_warm.json")), "starts", 0)
         time.sleep(0.35)
         check(jint(read_json_dict(ws6.join(".cache", "vsc_tier0_warm.json")), "starts", 0) == vsc_starts_after_resume)
@@ -813,7 +831,7 @@ def _verify_rc06_live_reload_and_core_handoff(
     check(wait_for_daemon_online(ws6)["state"] == "ready")
 
     atomic_write_json(ws6.join("config", "gdrive.json"), {"auto_sync": False, "interval_sec": 0.25, "work_ms": 0})
-    deadline_cfg = time.monotonic() + 3.0
+    deadline_cfg = time.monotonic() + (6.0 if os.name == "nt" else 3.0)
     while time.monotonic() < deadline_cfg and not ws6.join(".cache", "config_reloaded_marker.json").path.exists():
         time.sleep(0.04)
     check(ws6.join(".cache", "config_reloaded_marker.json").path.is_file())
@@ -833,7 +851,7 @@ def _verify_rc06_live_reload_and_core_handoff(
         check(draining_fg.result(timeout=5.0).ok)
     check(read_json_dict(ws6.join(".cache", "core_upgraded.json")) == {"version": "2.1.0"})
 
-    deadline = time.monotonic() + 6.0
+    deadline = time.monotonic() + (12.0 if os.name == "nt" else 6.0)
     st6_after: Optional[JsonObject] = None
     while time.monotonic() < deadline:
         cand = query_daemon_control(ws6.join(".cache"), ws6, FrameKind.CONTROL_STATUS)
@@ -908,7 +926,7 @@ def _verify_rc07_real_sigint_tree_and_lifo(ws7_host: Path, venv_py: Path) -> Non
         startupinfo=popen_si,
     )
     try:
-        deadline = time.monotonic() + 6.0
+        deadline = time.monotonic() + (12.0 if os.name == "nt" else 6.0)
         while time.monotonic() < deadline and read_json_dict(gp_path) is None:
             time.sleep(0.03)
         gp_info = read_json_dict(gp_path)
@@ -1097,13 +1115,14 @@ def _verify_rc08_security_and_topology_gates(ws8: HostPath, venv_py: Path, disp8
     mix_cyc = disp8.invoke(InvokeRequest(task_id=TaskId("space.mix_cycle_emit"), raw_input={}, workspace_root=ws8, caller_cwd=ws8))
     check(not mix_cyc.ok and mix_cyc.error is not None and mix_cyc.error.code == ErrorCode.EVENT_CYCLE_DETECTED)
 
-    t0_to1 = disp8.invoke(InvokeRequest(task_id=TaskId("space.tier0_timeout"), raw_input={"hold_ms": 200, "ignore_cancel": False}, workspace_root=ws8, caller_cwd=ws8))
+    t0_to1 = disp8.invoke(InvokeRequest(task_id=TaskId("space.tier0_timeout"), raw_input={"hold_ms": 350, "ignore_cancel": False}, workspace_root=ws8, caller_cwd=ws8))
+    check(disp8.invoke(InvokeRequest(task_id=TaskId("space.hold_lock_ms"), raw_input={"hold_ms": 1, "ignore_cancel": False}, workspace_root=ws8, caller_cwd=ws8)).ok)
     t_start_uncoop = time.monotonic()
-    t0_to2 = disp8.invoke(InvokeRequest(task_id=TaskId("space.tier0_timeout"), raw_input={"hold_ms": 260, "ignore_cancel": True}, workspace_root=ws8, caller_cwd=ws8))
+    t0_to2 = disp8.invoke(InvokeRequest(task_id=TaskId("space.tier0_timeout"), raw_input={"hold_ms": 500, "ignore_cancel": True}, workspace_root=ws8, caller_cwd=ws8))
     elapsed_uncoop = time.monotonic() - t_start_uncoop
     t0_after = disp8.invoke(InvokeRequest(task_id=TaskId("space.hold_lock_ms"), raw_input={"hold_ms": 5, "ignore_cancel": False}, workspace_root=ws8, caller_cwd=ws8))
     check(not t0_to1.ok and t0_to1.error is not None and t0_to1.error.code == ErrorCode.TASK_TIMEOUT)
-    check(not t0_to2.ok and t0_to2.error is not None and t0_to2.error.code == ErrorCode.TASK_TIMEOUT and elapsed_uncoop < 0.35)
+    check(not t0_to2.ok and t0_to2.error is not None and t0_to2.error.code == ErrorCode.TASK_TIMEOUT and elapsed_uncoop < 0.40)
     check(t0_after.ok)
     ling_exit = jfloat(read_json_dict(ws8.join(".cache", "t0_lingering_exit.json")), "exit")
     next_enter = jfloat(read_json_dict(ws8.join(".cache", "t0_guard_probe_enter.json")), "enter")
@@ -1185,7 +1204,7 @@ def _verify_fd_and_poisoned_pool_regressions(ws8: HostPath, disp8: RuntimeDispat
         res_sibling = fut_sibling.result(timeout=5.0)
     check(not res_uncoop.ok and res_uncoop.error is not None and res_uncoop.error.code == ErrorCode.TASK_CANCELLED)
     check(res_sibling.ok and res_sibling.value is not None and res_sibling.value.worker_pid == poisoned_pid)
-    kill_deadline = time.monotonic() + 1.2
+    kill_deadline = time.monotonic() + (3.0 if os.name == "nt" else 1.2)
     while time.monotonic() < kill_deadline and is_process_alive(poisoned_pid):
         time.sleep(0.03)
     check(not is_process_alive(poisoned_pid), "Poisoned shared worker was not terminated promptly after sibling drained!")

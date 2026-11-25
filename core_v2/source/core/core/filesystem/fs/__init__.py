@@ -30,11 +30,16 @@ from core.filesystem.fs.lock import (
     unlink_owner_under_pin,
     write_cross_proc_owner_json,
 )
-from core.filesystem.fs.watcher import EchoSuppressionHook, PollingDirectoryWatcher
+from core.filesystem.fs.watcher import (
+    DEFAULT_WATCHER_IGNORED_DIRS,
+    EchoSuppressionHook,
+    PollingDirectoryWatcher,
+)
 
 __all__ = (
     "BeforeReplaceHook",
     "CrossProcessLockPaths",
+    "DEFAULT_WATCHER_IGNORED_DIRS",
     "EchoSuppressionHook",
     "FileLock",
     "IGNORED_FS_PREFIXES",

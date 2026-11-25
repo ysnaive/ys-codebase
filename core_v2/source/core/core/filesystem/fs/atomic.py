@@ -24,6 +24,7 @@ from core.foundation.primitives import (
     JsonObject,
     MutableJsonObject,
     clone_strict_json_object,
+    is_disallowed_reparse_tag,
     is_valid_relative_segment,
     require_pure_int,
     strict_parse_json_object,
@@ -118,12 +119,15 @@ def is_atomic_staging_filename(name: str) -> bool:
 
 
 def is_symlink_or_reparse(raw_path: str) -> bool:
-    """Return True if ``raw_path`` is a symbolic link or Windows NTFS reparse point / junction."""
+    """Return True if ``raw_path`` is a symbolic link or Windows symlink/mount-point reparse point."""
     if os.path.islink(raw_path):
         return True
     if IS_WINDOWS:
         try:
-            return bool(os.lstat(raw_path).st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+            st = os.lstat(raw_path)
+            return bool(st.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT) and is_disallowed_reparse_tag(
+                st.st_reparse_tag
+            )
         except OSError:
             return False
     return False
@@ -191,34 +195,6 @@ def _step_nonsymlink_segment(cur: str, seg: str) -> Optional[str]:
     return nxt
 
 
-def _walk_nonsymlink_path(raw_path: str) -> Optional[str]:
-    if not raw_path or "\x00" in raw_path or is_symlink_or_reparse(raw_path):
-        return None
-    cand = Path(raw_path)
-    sep_pat = r"[\\/]+" if IS_WINDOWS else r"/+"
-    if cand.is_absolute():
-        anchor = cand.anchor
-        if is_symlink_or_reparse(anchor):
-            return None
-        cur: Optional[str] = os.path.realpath(anchor)
-        tail = raw_path[len(anchor):]
-    else:
-        cur = os.path.realpath(".")
-        tail = raw_path
-    for seg in (s for s in re.split(sep_pat, tail) if s):
-        if cur is None:
-            return None
-        cur = _step_nonsymlink_segment(cur, seg)
-    if cur is None:
-        return None
-    seps = ("/", "\\") if IS_WINDOWS else ("/",)
-    if raw_path.endswith(seps) and os.path.lexists(cur) and not os.path.isdir(cur):
-        return None
-    if os.path.lexists(raw_path) and os.path.normcase(os.path.realpath(raw_path)) != os.path.normcase(cur):
-        return None
-    return cur
-
-
 _DARWIN_SYSTEM_ROOT_LINKS: Final[tuple[tuple[str, str], ...]] = (
     ("tmp", "private/tmp"),
     ("var", "private/var"),
@@ -240,6 +216,37 @@ def _normalize_darwin_root_alias(abs_path: str) -> str:
     except OSError:
         return abs_path
     return f"/{mapped}/{rest}" if sep else f"/{mapped}"
+
+
+def _walk_nonsymlink_path(raw_path: str) -> Optional[str]:
+    if not raw_path or "\x00" in raw_path:
+        return None
+    walk_path = _normalize_darwin_root_alias(raw_path)
+    if is_symlink_or_reparse(walk_path):
+        return None
+    cand = Path(walk_path)
+    sep_pat = r"[\\/]+" if IS_WINDOWS else r"/+"
+    if cand.is_absolute():
+        anchor = cand.anchor
+        if is_symlink_or_reparse(anchor):
+            return None
+        cur: Optional[str] = os.path.realpath(anchor)
+        tail = walk_path[len(anchor):]
+    else:
+        cur = os.path.realpath(".")
+        tail = walk_path
+    for seg in (s for s in re.split(sep_pat, tail) if s):
+        if cur is None:
+            return None
+        cur = _step_nonsymlink_segment(cur, seg)
+    if cur is None:
+        return None
+    seps = ("/", "\\") if IS_WINDOWS else ("/",)
+    if walk_path.endswith(seps) and os.path.lexists(cur) and not os.path.isdir(cur):
+        return None
+    if os.path.lexists(walk_path) and os.path.normcase(os.path.realpath(walk_path)) != os.path.normcase(cur):
+        return None
+    return cur
 
 
 def _resolve_nonsymlink_root_spec(
@@ -322,6 +329,7 @@ def is_contained_nonsymlink_path(
     allow_equal: bool = False,
     is_dir: bool = False,
     ignored_dir_prefixes: tuple[str, ...] = (),
+    ignored_dir_names: frozenset[str] = frozenset(),
 ) -> bool:
     """Return True iff candidate stays strictly within root without traversing any symlink, reparse point, or ignored dir."""
     root_spec = _resolve_nonsymlink_root_spec(root)
@@ -358,7 +366,13 @@ def is_contained_nonsymlink_path(
     if not rel_parts or any(p == ".." for p in rel_parts):
         return False
     dir_parts = rel_parts if is_dir else rel_parts[:-1]
-    return not (ignored_dir_prefixes and any(p.startswith(ignored_dir_prefixes) for p in dir_parts))
+    if ignored_dir_prefixes and any(p.startswith(ignored_dir_prefixes) for p in dir_parts):
+        return False
+    if ignored_dir_names:
+        norm_ignored_names = frozenset(os.path.normcase(n) for n in ignored_dir_names)
+        if any(os.path.normcase(p) in norm_ignored_names for p in dir_parts):
+            return False
+    return True
 
 
 def resolve_contained_child_dir(
@@ -660,16 +674,16 @@ def _open_verified_nofollow_regular(
             yield None
             return
         l_st: Optional[os.stat_result] = expected_stat
-        if l_st is None and IS_WINDOWS:
+        if l_st is None:
             try:
                 l_st = os.stat(raw_path, follow_symlinks=False)
             except PermissionError:
-                if attempt + 1 < max_attempts and not has_symlink_raw_path(raw_path):
+                if IS_WINDOWS and attempt + 1 < max_attempts and not has_symlink_raw_path(raw_path):
                     time.sleep(0.005 * (attempt + 1))
                     continue
                 raise
             except FileNotFoundError:
-                if attempt + 1 < max_attempts and os.path.lexists(raw_path):
+                if IS_WINDOWS and attempt + 1 < max_attempts and os.path.lexists(raw_path):
                     continue
                 raise
         if l_st is not None and (not stat.S_ISREG(l_st.st_mode) or (max_bytes is not None and l_st.st_size > max_bytes)):
@@ -687,22 +701,32 @@ def _open_verified_nofollow_regular(
                 continue
             raise
         except OSError as exc:
-            if not IS_WINDOWS and exc.errno == errno.ELOOP:
+            if not IS_WINDOWS and exc.errno in (errno.ELOOP, errno.ENXIO, errno.EOPNOTSUPP, errno.EMLINK):
                 yield None
                 return
             raise
+        raw_io: Optional[io.BufferedReader] = None
+        fd_closed = False
         try:
             f_st = os.fstat(fd)
             if not stat.S_ISREG(f_st.st_mode) or (max_bytes is not None and f_st.st_size > max_bytes):
                 os.close(fd)
-                yield None
-                return
-            if not IS_WINDOWS:
-                os.set_blocking(fd, True)
-            raw_io = os.fdopen(fd, "rb")
+                fd_closed = True
+            else:
+                if not IS_WINDOWS:
+                    os.set_blocking(fd, True)
+                raw_io = os.fdopen(fd, "rb")
+                fd_closed = True
         except BaseException:
-            os.close(fd)
+            if not fd_closed:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
             raise
+        if raw_io is None:
+            yield None
+            return
         if has_symlink_raw_path(raw_path):
             raw_io.close()
             yield None
@@ -795,6 +819,7 @@ def walk_nonsymlink_dir_tree(
     root_dir: str,
     *,
     ignored_dir_prefixes: tuple[str, ...] = (".tmp_", ".staging_", "__pycache__"),
+    ignored_dir_names: frozenset[str] = frozenset(),
 ) -> Iterator[tuple[str, tuple[os.DirEntry[str], ...]]]:
     """Iteratively walk ``root_dir`` refusing symlinks, reparse points, containment escapes, and inode cycles."""
     visited_inodes: set[tuple[int, int]] = set()
@@ -802,6 +827,7 @@ def walk_nonsymlink_dir_tree(
     real_root = _try_admit_walk_dir(root_dir, None, visited_inodes, visited_paths)
     if real_root is None:
         return
+    norm_ignored_names = frozenset(os.path.normcase(n) for n in ignored_dir_names) if ignored_dir_names else frozenset()
     real_root_norm = os.path.normcase(real_root)
     stack: list[str] = [real_root]
     while stack:
@@ -814,7 +840,12 @@ def walk_nonsymlink_dir_tree(
         yield (cur_dir, entries)
         subdirs: list[str] = []
         for ent in entries:
-            if ent.name.startswith(ignored_dir_prefixes) or ent.is_symlink() or is_symlink_or_reparse(ent.path):
+            if (
+                ent.name.startswith(ignored_dir_prefixes)
+                or (norm_ignored_names and os.path.normcase(ent.name) in norm_ignored_names)
+                or ent.is_symlink()
+                or is_symlink_or_reparse(ent.path)
+            ):
                 continue
             try:
                 is_sub = ent.is_dir(follow_symlinks=False)

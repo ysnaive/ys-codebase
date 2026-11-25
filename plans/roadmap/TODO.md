@@ -1,10 +1,10 @@
 # 專案輕量級待辦與技術債帳本 (TODO Ledger)
 
 > 主題：專案輕量級待辦與技術債帳本  
-> 更新日期：2026-11-21  
+> 更新日期：2026-11-25  
 > 狀態：Active  
-> 最後分配編號：29  
-> 模型：Unknown  
+> 最後分配編號：31  
+> 模型：Gemini 4 Neon (XHigh)  
 
 ---
 
@@ -54,3 +54,13 @@
 - **建立日期**：2026-11-21
 - **目標範疇**：`core_v2/source/core/core/filesystem/fs/atomic.py`
 - **備忘與解法要點**：核對本機開發工具場景下 _WinSidAndAttributes 與 Win32 SD/ACL 防護是否值得保留或簡化
+
+### [TODO-30] 補齊 core_v2 測試框架 Windows 孤兒行程查殺
+- **建立日期**：2026-11-25
+- **目標範疇**：`core_v2/tests/_harness.py`
+- **備忘與解法要點**：_collect_live_tmp_root_orphans 在 os.name=='nt' 目前回傳空清單，改以 Win32 API 或 powershell/CIM 掃描帶 tmp_root 標記的殘留測試行程，防止 Windows 異常中斷時孤兒 Daemon 鎖檔
+
+### [TODO-31] 消除 Core 2.0 daemon start --supervisor 啟動期雙重 WorkspaceKernel 建置與全掃雜湊熱點
+- **建立日期**：2026-11-25
+- **目標範疇**：`core_v2/source/core/core/surface/bootstrap/factory.py`
+- **備忘與解法要點**：Windows -B 實測顯示 daemon start --supervisor 先於 CLI 會話建置一次 WorkspaceKernel 再於 run_deferred_daemon 重建一次且每次啟動全掃 .modules/core SHA-256，建議於 Wave B 瘦身時對 --supervisor 走輕量直啟路徑以縮短 Windows 冷啟動時間

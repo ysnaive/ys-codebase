@@ -1,4 +1,4 @@
-"""Pure-standard-library strict codec between dataclasses and JSON-safe structures."""
+"""Pure-standard-library strict codec and Draft 2020-12 JSON Schema exporter for Core 2.0."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import base64
 import binascii
 import collections.abc as cabc
 import dataclasses
+from dataclasses import dataclass
 from enum import Enum
 import functools
 import hashlib
@@ -22,6 +23,7 @@ from typing import (
     Annotated,
     Callable,
     ClassVar,
+    Final,
     ForwardRef,
     Literal,
     Mapping,
@@ -42,24 +44,71 @@ from core.foundation.primitives import (
     INT64_MAX,
     INT64_MIN,
     MAX_USER_JSON_DEPTH,
+    EnvHash,
     EventId,
     HostPath,
     JsonObject,
     JsonValue,
     ModuleId,
     MutableJsonObject,
+    SemVer4,
+    SemanticUri,
+    SnapshotGen,
+    SpaceId,
+    SpacePath,
     TaskId,
+    VersionConstraint,
+    clone_strict_json_object,
+    require_pure_str,
 )
 
 T = TypeVar("T")
-_CANONICAL_INT_KEY_RE = re.compile(r"(?:0|-?[1-9][0-9]*)")
-_MAX_CODEC_DEPTH = MAX_USER_JSON_DEPTH
-_ENVELOPE_DEPTH_HEADROOM = 8
-_SCALAR_VO_TYPES: frozenset[type[object]] = frozenset({ModuleId, TaskId, EventId, HostPath})
-_SCALAR_MAP_KEY_TYPES: frozenset[type[object]] = frozenset({bool, int, ModuleId, TaskId, EventId, HostPath})
-_SUPPORTED_SCALAR_CLASSES: tuple[type[object], ...] = (bool, int, float, str, bytes, ModuleId, TaskId, EventId, HostPath)
-_UNPARAM_SCHEMA_FORMS: tuple[object, ...] = (
-    JsonValue, JsonObject, MutableJsonObject, type(None), dict, cabc.Mapping, Mapping, list, cabc.Sequence, Sequence, tuple, Tuple, frozenset
+_JSON_SCHEMA_DRAFT_URI: Final[str] = "https://json-schema.org/draft/2020-12/schema"
+_CANONICAL_INT_KEY_RE: Final[re.Pattern[str]] = re.compile(r"(?:0|-?[1-9][0-9]*)")
+_MAX_CODEC_DEPTH: Final[int] = MAX_USER_JSON_DEPTH
+_ENVELOPE_DEPTH_HEADROOM: Final[int] = 8
+_STR_PARSE_ONLY_VO_TYPES: Final[frozenset[type[object]]] = frozenset(
+    {SemVer4, VersionConstraint, SemanticUri, SpaceId, SpacePath}
+)
+_STR_INIT_VO_TYPES: Final[frozenset[type[object]]] = frozenset(
+    {ModuleId, TaskId, EventId, HostPath, EnvHash}
+)
+_STR_VO_TYPES: Final[frozenset[type[object]]] = _STR_PARSE_ONLY_VO_TYPES | _STR_INIT_VO_TYPES
+_INT_VO_TYPES: Final[frozenset[type[object]]] = frozenset({SnapshotGen})
+_SCALAR_VO_TYPES: Final[frozenset[type[object]]] = _STR_VO_TYPES | _INT_VO_TYPES
+_SCALAR_MAP_KEY_TYPES: Final[frozenset[type[object]]] = frozenset({bool, int, *_SCALAR_VO_TYPES})
+_SUPPORTED_SCALAR_CLASSES: Final[tuple[type[object], ...]] = (
+    bool,
+    int,
+    float,
+    str,
+    bytes,
+    ModuleId,
+    TaskId,
+    EventId,
+    HostPath,
+    SemVer4,
+    VersionConstraint,
+    SemanticUri,
+    SpaceId,
+    SpacePath,
+    SnapshotGen,
+    EnvHash,
+)
+_UNPARAM_SCHEMA_FORMS: Final[tuple[object, ...]] = (
+    JsonValue,
+    JsonObject,
+    MutableJsonObject,
+    type(None),
+    dict,
+    cabc.Mapping,
+    Mapping,
+    list,
+    cabc.Sequence,
+    Sequence,
+    tuple,
+    Tuple,
+    frozenset,
 )
 
 FieldGetter = tuple[str, Callable[[object], object]]
@@ -156,6 +205,20 @@ def _first_match(candidates: tuple[object, ...], fn: Callable[[object], T], err_
         except YscbError:
             pass
     raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, err_msg)
+
+
+def _decode_str_vo_instance(tp: type[object], raw_str: str) -> object:
+    if tp is SemVer4:
+        return SemVer4.parse(raw_str)
+    if tp is VersionConstraint:
+        return VersionConstraint.parse(raw_str)
+    if tp is SemanticUri:
+        return SemanticUri.parse(raw_str)
+    if tp is SpaceId:
+        return SpaceId.parse(raw_str)
+    if tp is SpacePath:
+        return SpacePath.parse(raw_str)
+    return tp(raw_str)
 
 
 def _strict_json(
@@ -535,6 +598,17 @@ def _resolve_single_class_hints(
     return out
 
 
+def resolve_dataclass_init_hints(dc_cls: type[object]) -> dict[str, object]:
+    """Resolve init-field type annotations (preserving Annotated extras) across MRO, outer classes, and closures."""
+    if not isinstance(dc_cls, type) or not dataclasses.is_dataclass(dc_cls):
+        raise ValueError(f"Expected @dataclass type, got {dc_cls!r}")
+    init_names = {f.name for f in dataclasses.fields(dc_cls) if f.init}
+    try:
+        return _resolve_single_class_hints(dc_cls, init_names, None)
+    except _UnresolvedLocalHintError as exc:
+        raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, str(exc)) from exc
+
+
 def _is_dc_cyclic(dc_cls: type[object], hints: Mapping[str, object], localns: Optional[Mapping[str, object]]) -> bool:
     seen, stack = set(), list(hints.values())
     while stack:
@@ -635,7 +709,9 @@ def _canonical_map_key_str(val: object, *, path: str) -> str:
         return "true" if val else "false"
     if type(val) is int:
         return str(_assert_int64_range(val, path=path))
-    if type(val) is str or type(val) in _SCALAR_VO_TYPES:
+    if type(val) is SnapshotGen and isinstance(val, SnapshotGen):
+        return str(_assert_int64_range(val.value, path=path))
+    if type(val) is str or type(val) in _STR_VO_TYPES:
         return _check_str_valid_utf8(str(val), path=path)
     if isinstance(val, Enum):
         _get_enum_table(type(val))
@@ -886,9 +962,16 @@ def _decode_map_key(key_tp: object, raw_key: object, *, path: str, localns: Opti
         if _CANONICAL_INT_KEY_RE.fullmatch(raw_key) is None:
             raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Non-canonical int map key {raw_key!r} at {path}")
         return _assert_int64_range(int(raw_key), path=path)
-    if k in _SCALAR_VO_TYPES:
+    if k is SnapshotGen:
+        if _CANONICAL_INT_KEY_RE.fullmatch(raw_key) is None:
+            raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Non-canonical SnapshotGen map key {raw_key!r} at {path}")
         try:
-            return k(raw_key)
+            return SnapshotGen(_assert_int64_range(int(raw_key), path=path))
+        except ValueError as exc:
+            raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Invalid SnapshotGen map key at {path}: {safe_exception_summary(exc)}") from exc
+    if isinstance(k, type) and k in _STR_VO_TYPES:
+        try:
+            return _decode_str_vo_instance(k, raw_key)
         except (YscbError, ValueError, TypeError) as exc:
             raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Invalid {k.__name__} map key at {path}: {safe_exception_summary(exc)}") from exc
     if isinstance(k, type) and issubclass(k, Enum):
@@ -911,6 +994,13 @@ def _decode_scalar(tp: type[object], raw: object, *, path: str) -> object:
         if type(raw) is not int:
             raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Expected int at {path}, got {type(raw).__name__}")
         return _assert_int64_range(raw, path=path)
+    if tp is SnapshotGen:
+        if type(raw) is not int:
+            raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Expected int for SnapshotGen at {path}, got {type(raw).__name__}")
+        try:
+            return SnapshotGen(_assert_int64_range(raw, path=path))
+        except ValueError as exc:
+            raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Invalid SnapshotGen at {path}: {safe_exception_summary(exc)}") from exc
     if tp is float:
         if type(raw) is float:
             return _check_finite_float(raw, path=path)
@@ -928,7 +1018,7 @@ def _decode_scalar(tp: type[object], raw: object, *, path: str) -> object:
         raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Expected str for {tp.__name__} at {path}")
     _check_str_valid_utf8(raw, path=path)
     try:
-        return tp(raw)
+        return _decode_str_vo_instance(tp, raw)
     except (YscbError, ValueError, TypeError) as exc:
         raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Invalid {tp.__name__} at {path}: {safe_exception_summary(exc)}") from exc
 
@@ -1109,7 +1199,9 @@ def _encode_untyped_value(val: object, *, path: str, depth: int, max_depth: int,
     if isinstance(val, Enum):
         _get_enum_table(type(val))
         return val.value
-    if type(val) in _SCALAR_VO_TYPES:
+    if type(val) is SnapshotGen and isinstance(val, SnapshotGen):
+        return _assert_int64_range(val.value, path=path)
+    if type(val) in _STR_VO_TYPES:
         return _check_str_valid_utf8(str(val), path=path)
     if isinstance(val, (type, set)):
         raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Unsupported value type {type(val).__name__} at {path}")
@@ -1164,7 +1256,7 @@ def _encode_map_key(key_tp: object, val: object, *, path: str) -> str:
         if type(val) is not int:
             raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Expected int map key at {path}")
         return str(_assert_int64_range(val, path=path))
-    if k in _SCALAR_VO_TYPES or (isinstance(k, type) and issubclass(k, Enum)):
+    if isinstance(k, type) and (k in _SCALAR_VO_TYPES or issubclass(k, Enum)):
         if type(val) is not k:
             raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Expected {k.__name__} map key at {path}")
         return _canonical_map_key_str(val, path=path)
@@ -1181,6 +1273,8 @@ def _encode_scalar_typed(tp: type[object], val: object, *, path: str) -> JsonVal
         raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Expected {tp.__name__} at {path}")
     if tp is int:
         return _assert_int64_range(val, path=path)
+    if tp is SnapshotGen and isinstance(val, SnapshotGen):
+        return _assert_int64_range(val.value, path=path)
     if tp is float:
         return _check_finite_float(val, path=path)
     if tp is bytes:
@@ -1431,3 +1525,380 @@ class DataclassCodec:
             for cleanup in cleanups:
                 if callable(cleanup):
                     cleanup()
+
+
+@dataclass(slots=True)
+class _FndAnnotatedMetaInfo:
+    base_type: object
+    description: Optional[str] = None
+    merge_strategy: Optional[str] = None
+
+
+@dataclass(slots=True)
+class _FndSchemaExportCtx:
+    defs: dict[str, MutableJsonObject]
+    in_progress: set[str]
+    key_to_def: dict[object, str]
+    root_key: Optional[object] = None
+    root_referenced: bool = False
+
+
+def _extract_annotated_meta(tp: object) -> _FndAnnotatedMetaInfo:
+    cur = tp
+    desc: Optional[str] = None
+    merge_tag: Optional[str] = None
+    while get_origin(cur) is Annotated:
+        for meta in cur.__metadata__:
+            if type(meta) is str and meta.strip():
+                desc = meta.strip()
+            elif isinstance(meta, cabc.Mapping):
+                raw_d = meta.get("description")
+                if type(raw_d) is str and raw_d.strip():
+                    desc = raw_d.strip()
+            elif dataclasses.is_dataclass(meta) and not isinstance(meta, type):
+                for fld in dataclasses.fields(meta):
+                    f_val = operator.attrgetter(fld.name)(meta)
+                    if fld.name in ("description", "summary") and type(f_val) is str and f_val.strip():
+                        desc = f_val.strip()
+                    elif fld.name == "merge" and isinstance(f_val, Enum) and type(f_val.value) is str:
+                        merge_tag = f_val.value
+        args = get_args(cur)
+        if not args:
+            break
+        cur = args[0]
+    return _FndAnnotatedMetaInfo(base_type=cur, description=desc, merge_strategy=merge_tag)
+
+
+def _json_type_tag_for_wire_values(values: Sequence[JsonValue]) -> Optional[str]:
+    if not values:
+        return None
+    tags: set[str] = set()
+    for val in values:
+        if val is None:
+            tags.add("null")
+        elif type(val) is bool:
+            tags.add("boolean")
+        elif type(val) is int:
+            tags.add("integer")
+        elif type(val) is float:
+            tags.add("number")
+        elif type(val) is str:
+            tags.add("string")
+        else:
+            return None
+    return next(iter(tags)) if len(tags) == 1 else None
+
+
+def _short_schema_type_slug(tp: object) -> str:
+    unwrapped = _unwrap_annotated(tp)
+    if isinstance(unwrapped, type):
+        return unwrapped.__name__
+    orig = get_origin(unwrapped)
+    args = get_args(unwrapped)
+    if isinstance(orig, type) and args:
+        arg_slug = "_".join(_short_schema_type_slug(a) for a in args if a is not Ellipsis)
+        return f"{orig.__name__}_{arg_slug}" if arg_slug else orig.__name__
+    return re.sub(r"[^0-9A-Za-z_]+", "_", str(unwrapped)).strip("_") or "Type"
+
+
+def _allocate_def_name(dc_cls: type[object], type_args: tuple[object, ...], ctx: _FndSchemaExportCtx) -> str:
+    base_name = (
+        f"{dc_cls.__name__}_{'_'.join(_short_schema_type_slug(a) for a in type_args)}"
+        if type_args
+        else dc_cls.__name__
+    )
+    if base_name not in ctx.defs and base_name not in ctx.in_progress:
+        return base_name
+    qual_prefix = re.sub(r"[^0-9A-Za-z_]+", "_", f"{dc_cls.__module__}_{dc_cls.__qualname__}").strip("_")
+    cand = f"{qual_prefix}_{base_name}" if type_args else qual_prefix
+    seq_idx = 2
+    unique = cand
+    while unique in ctx.defs or unique in ctx.in_progress:
+        unique = f"{cand}_{seq_idx}"
+        seq_idx += 1
+    return unique
+
+
+def _export_scalar_schema(tp: type[object]) -> MutableJsonObject:
+    if issubclass(tp, Enum):
+        wire_vals: list[JsonValue] = [wv for wv, _ in _get_enum_table(tp)]
+        tp_tag = _json_type_tag_for_wire_values(wire_vals)
+        out: MutableJsonObject = {"enum": wire_vals}
+        if tp_tag is not None:
+            out["type"] = tp_tag
+        return out
+    if tp is bool:
+        return {"type": "boolean"}
+    if tp is int:
+        return {"type": "integer", "minimum": INT64_MIN, "maximum": INT64_MAX}
+    if tp is SnapshotGen:
+        return {"type": "integer", "minimum": 0, "maximum": INT64_MAX}
+    if tp is float:
+        return {"type": "number"}
+    if tp is str:
+        return {"type": "string"}
+    if tp is bytes:
+        return {"type": "string", "contentEncoding": "base64"}
+    if tp is ModuleId:
+        return {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"}
+    if tp in (TaskId, EventId):
+        return {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*(\\.[a-z0-9][a-z0-9_-]*)+$"}
+    if tp is SemanticUri:
+        return {"type": "string", "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*://.*$"}
+    if tp is SpaceId:
+        return {"type": "string", "pattern": "^([a-z0-9][a-z0-9_-]*)?/[a-z0-9][a-z0-9_-]*$"}
+    if tp is EnvHash:
+        return {"type": "string", "pattern": "^[0-9a-f]{16,64}$"}
+    if tp is SemVer4:
+        return {"type": "string", "minLength": 5}
+    return {"type": "string", "minLength": 1}
+
+
+def _export_literal_schema(tp: object) -> MutableJsonObject:
+    vals: list[JsonValue] = []
+    for arg in get_args(tp):
+        if isinstance(arg, Enum):
+            vals.append(_validate_enum_wire_val(arg.value, type(arg), arg.name))
+        elif type(arg) is bytes:
+            vals.append(base64.b64encode(arg).decode("ascii"))
+        elif arg is None or type(arg) in (bool, int, str):
+            vals.append(arg)
+    out: MutableJsonObject = {"enum": vals}
+    tp_tag = _json_type_tag_for_wire_values(vals)
+    if tp_tag is not None:
+        out["type"] = tp_tag
+    return out
+
+
+def _apply_annotated_extras(schema: MutableJsonObject, info: _FndAnnotatedMetaInfo) -> MutableJsonObject:
+    if info.description is None and info.merge_strategy is None:
+        return schema
+    enriched = dict(schema)
+    if info.description is not None:
+        enriched["description"] = info.description
+    if info.merge_strategy is not None:
+        enriched["x-yscb-merge"] = info.merge_strategy
+    return enriched
+
+
+def _try_encode_field_default(fld: dataclasses.Field[object], resolved_tp: object) -> tuple[bool, JsonValue]:
+    if fld.default is not dataclasses.MISSING:
+        try:
+            return (True, DataclassCodec.encode_typed(resolved_tp, fld.default))
+        except YscbError:
+            try:
+                return (True, DataclassCodec.encode(fld.default))
+            except YscbError:
+                return (False, None)
+    if fld.default_factory is not dataclasses.MISSING:
+        try:
+            sample = fld.default_factory()
+            return (True, DataclassCodec.encode_typed(resolved_tp, sample))
+        except (YscbError, Exception):
+            return (False, None)
+    return (False, None)
+
+
+def _export_dc_object_schema(
+    dc_cls: type[object],
+    tv_map: Mapping[object, object],
+    schema_title: str,
+    ctx: _FndSchemaExportCtx,
+) -> MutableJsonObject:
+    _, hints = _get_dc_meta(dc_cls, None)
+    props: MutableJsonObject = {}
+    required: list[JsonValue] = []
+    for fld in dataclasses.fields(dc_cls):
+        if not fld.init:
+            continue
+        raw_hint = hints[fld.name]
+        outer_meta = _extract_annotated_meta(raw_hint)
+        resolved_tp = _substitute_typevars(outer_meta.base_type, tv_map) if tv_map else outer_meta.base_type
+        field_schema = _apply_annotated_extras(_export_schema_node(resolved_tp, ctx), outer_meta)
+        is_req = fld.default is dataclasses.MISSING and fld.default_factory is dataclasses.MISSING
+        if is_req:
+            required.append(fld.name)
+        else:
+            has_dflt, enc_dflt = _try_encode_field_default(fld, resolved_tp)
+            if has_dflt:
+                field_schema = dict(field_schema)
+                field_schema["default"] = enc_dflt
+        props[fld.name] = field_schema
+    return {
+        "title": schema_title,
+        "type": "object",
+        "properties": props,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+def _freeze_schema_type_key(tp: object) -> object:
+    meta = _extract_annotated_meta(tp)
+    orig = get_origin(meta.base_type)
+    args = get_args(meta.base_type)
+    frozen_base: object
+    if orig is not None and args:
+        frozen_base = (orig, tuple(_freeze_schema_type_key(a) for a in args))
+    else:
+        try:
+            hash(meta.base_type)
+            frozen_base = meta.base_type
+        except TypeError:
+            frozen_base = repr(meta.base_type)
+    if meta.description is None and meta.merge_strategy is None:
+        return frozen_base
+    return (frozen_base, meta.description, meta.merge_strategy)
+
+
+def _export_dc_ref_schema(
+    dc_cls: type[object],
+    type_args: tuple[object, ...],
+    ctx: _FndSchemaExportCtx,
+) -> MutableJsonObject:
+    frozen_args = tuple(_freeze_schema_type_key(a) for a in type_args)
+    dc_key: object = (dc_cls, frozen_args) if frozen_args else dc_cls
+    if dc_key in ctx.key_to_def:
+        def_name = ctx.key_to_def[dc_key]
+        if dc_key == ctx.root_key:
+            ctx.root_referenced = True
+        return {"$ref": f"#/$defs/{def_name}"}
+    def_name = _allocate_def_name(dc_cls, type_args, ctx)
+    ctx.key_to_def[dc_key] = def_name
+    ctx.in_progress.add(def_name)
+    try:
+        tv_map = dict(zip(_generic_type_params(dc_cls), type_args)) if type_args else {}
+        ctx.defs[def_name] = _export_dc_object_schema(dc_cls, tv_map, def_name, ctx)
+    finally:
+        ctx.in_progress.discard(def_name)
+    return {"$ref": f"#/$defs/{def_name}"}
+
+
+def _export_schema_node(tp: object, ctx: _FndSchemaExportCtx) -> MutableJsonObject:
+    meta_info = _extract_annotated_meta(tp)
+    cur = _unwrap_ref_leaf(meta_info.base_type, localns=None)
+    inner_meta = _extract_annotated_meta(cur)
+    if inner_meta.description is not None and meta_info.description is None:
+        meta_info.description = inner_meta.description
+    if inner_meta.merge_strategy is not None and meta_info.merge_strategy is None:
+        meta_info.merge_strategy = inner_meta.merge_strategy
+    cur = inner_meta.base_type
+    schema: MutableJsonObject
+    if cur == JsonValue or _is_untyped_wildcard(cur):
+        schema = {}
+    elif cur is type(None):
+        schema = {"type": "null"}
+    elif cur in (JsonObject, MutableJsonObject, dict, cabc.Mapping, Mapping):
+        schema = {"type": "object", "additionalProperties": True}
+    elif cur in (list, cabc.Sequence, Sequence, tuple, Tuple):
+        schema = {"type": "array"}
+    elif cur is frozenset:
+        schema = {"type": "array", "uniqueItems": True}
+    elif _is_explicit_empty_tuple_type(cur):
+        schema = {"type": "array", "maxItems": 0}
+    elif isinstance(cur, TypeVar):
+        if cur.__constraints__:
+            schema = {"anyOf": [_export_schema_node(c, ctx) for c in cur.__constraints__]}
+        elif cur.__bound__ is not None:
+            schema = _export_schema_node(cur.__bound__, ctx)
+        else:
+            schema = {}
+    else:
+        origin, args = get_origin(cur), get_args(cur)
+        if origin is Literal:
+            schema = _export_literal_schema(cur)
+        elif origin in (Union, UnionType):
+            schema = {"anyOf": [_export_schema_node(b, ctx) for b in args]}
+        elif origin is tuple:
+            if len(args) == 2 and args[1] is Ellipsis:
+                schema = {"type": "array", "items": _export_schema_node(args[0], ctx)}
+            else:
+                prefix_items: list[JsonValue] = [_export_schema_node(item_tp, ctx) for item_tp in args]
+                schema = {
+                    "type": "array",
+                    "prefixItems": prefix_items,
+                    "minItems": len(prefix_items),
+                    "maxItems": len(prefix_items),
+                    "items": False,
+                }
+        elif origin in (list, Sequence, cabc.Sequence):
+            schema = {"type": "array", "items": _export_schema_node(args[0], ctx)}
+        elif origin is frozenset:
+            schema = {"type": "array", "items": _export_schema_node(args[0], ctx), "uniqueItems": True}
+        elif origin in (dict, Mapping, cabc.Mapping):
+            schema = {"type": "object", "additionalProperties": _export_schema_node(args[1], ctx)}
+        elif isinstance(origin, type) and origin not in _SCALAR_VO_TYPES and dataclasses.is_dataclass(origin):
+            schema = _export_dc_ref_schema(origin, args, ctx)
+        elif isinstance(cur, type) and (cur in _SUPPORTED_SCALAR_CLASSES or issubclass(cur, Enum)):
+            schema = _export_scalar_schema(cur)
+        elif isinstance(cur, type) and dataclasses.is_dataclass(cur):
+            schema = _export_dc_ref_schema(cur, (), ctx)
+        else:
+            raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Unsupported SchemaExporter type {cur!r}")
+    return _apply_annotated_extras(schema, meta_info)
+
+
+class SchemaExporter:
+    """Pure-standard-library JSON Schema (Draft 2020-12) exporter for Contributes 2.0 and IDE completion."""
+
+    @staticmethod
+    def export(target_cls: type[object], *, title: Optional[str] = None) -> MutableJsonObject:
+        if title is not None:
+            try:
+                require_pure_str(title, "SchemaExporter.export title", non_empty=True)
+            except ValueError as exc:
+                raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, str(exc)) from exc
+        cache = _CodecMetadataCache.instance()
+        act = cache.active
+        owns_act = act.dc_meta is None
+        if owns_act:
+            act.dc_meta, act.valid_schemas = {}, set()
+        try:
+            _ensure_schema_valid_once(target_cls, localns=None)
+            ctx = _FndSchemaExportCtx(defs={}, in_progress=set(), key_to_def={})
+            meta_info = _extract_annotated_meta(target_cls)
+            resolved_root = _unwrap_ref_leaf(meta_info.base_type, localns=None)
+            orig = get_origin(resolved_root)
+            args = get_args(resolved_root)
+            if isinstance(orig, type) and orig not in _SCALAR_VO_TYPES and dataclasses.is_dataclass(orig):
+                root_dc, root_args = orig, args
+            elif isinstance(resolved_root, type) and resolved_root not in _SCALAR_VO_TYPES and dataclasses.is_dataclass(resolved_root):
+                root_dc, root_args = resolved_root, ()
+            else:
+                eff_non_dc_title = title if title is not None else _short_schema_type_slug(resolved_root)
+                body = _apply_annotated_extras(_export_schema_node(target_cls, ctx), meta_info)
+                raw_non_dc: MutableJsonObject = {
+                    "$schema": _JSON_SCHEMA_DRAFT_URI,
+                    "title": eff_non_dc_title,
+                    **body,
+                    "$defs": ctx.defs,
+                }
+                return clone_strict_json_object(raw_non_dc, label="SchemaExporter output")
+
+            def_name = _allocate_def_name(root_dc, root_args, ctx)
+            eff_title = title if title is not None else def_name
+            frozen_root_args = tuple(_freeze_schema_type_key(a) for a in root_args)
+            root_key: object = (root_dc, frozen_root_args) if frozen_root_args else root_dc
+            ctx.root_key = root_key
+            ctx.key_to_def[root_key] = def_name
+            ctx.in_progress.add(def_name)
+            try:
+                tv_map = dict(zip(_generic_type_params(root_dc), root_args)) if root_args else {}
+                root_obj = _apply_annotated_extras(_export_dc_object_schema(root_dc, tv_map, eff_title, ctx), meta_info)
+            finally:
+                ctx.in_progress.discard(def_name)
+            if ctx.root_referenced:
+                def_copy = clone_strict_json_object(root_obj, label="SchemaExporter root def")
+                def_copy["title"] = def_name
+                ctx.defs[def_name] = def_copy
+            raw_root: MutableJsonObject = {
+                "$schema": _JSON_SCHEMA_DRAFT_URI,
+                **root_obj,
+                "$defs": ctx.defs,
+            }
+            return clone_strict_json_object(raw_root, label="SchemaExporter output")
+        except _UnresolvedLocalHintError as exc:
+            raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, str(exc)) from exc
+        finally:
+            if owns_act:
+                act.dc_meta, act.valid_schemas = None, None

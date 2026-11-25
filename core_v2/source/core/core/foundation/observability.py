@@ -1,28 +1,63 @@
-"""Cooperative cancellation tokens, monotonic deadline guards, progress reporting, and stdout purity."""
+"""Cooperative cancellation, deadline guards, structured logging, rotation, locale catalog, and telemetry."""
 
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
+import errno
 import io
+import json
 import math
+import os
+from pathlib import Path
+import re
+import secrets
+import stat
 import sys
 import threading
 import time
-from typing import BinaryIO, Callable, ClassVar, Final, Iterable, Iterator, Optional, Sequence, TextIO
+from types import MappingProxyType
+from typing import (
+    BinaryIO,
+    Callable,
+    ClassVar,
+    Final,
+    Iterable,
+    Iterator,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    TextIO,
+)
 
-from core.foundation.errors import ErrorCode, TaskCancelledException, YscbError
+from core.foundation.errors import ErrorCode, TaskCancelledException, YscbError, sanitize_utf8_text
 from core.foundation.primitives import (
     INT64_MAX,
     INT64_MIN,
+    IS_WINDOWS,
     MAX_SAFE_WAIT_SEC,
+    TEST_SANDBOX_ENV_KEY,
+    HostPath,
+    JsonObject,
+    ModuleId,
+    MutableJsonObject,
     clamp_wait_sec,
+    clone_strict_json_object,
+    is_disallowed_reparse_tag,
     require_pure_bool,
     require_pure_int,
     require_pure_str,
+    require_typed_tuple,
     safe_real_to_float,
+    strict_parse_json_object,
     validate_min_sec,
 )
+
+MAX_LOCALE_INTERPOLATION_DEPTH: Final[int] = 5
+_LOCALE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"\{\{|\}\}|\{([a-zA-Z0-9_.:-]+)\}")
+_ROT_TMP_INFIX: Final[str] = ".rot_tmp_"
 
 
 @dataclass(frozen=True, slots=True)
@@ -383,12 +418,26 @@ class _ThreadLocalStdoutProxy(io.TextIOBase):
 
     def isatty(self) -> bool:
         fb = self._fallback_detached()
-        cap = _StdoutProxyState.instance().capture_local.stack[-1] if (_StdoutProxyState.instance().total_active_guards > 0 and _StdoutProxyState.instance().capture_local.stack) else None
+        cap = (
+            _StdoutProxyState.instance().capture_local.stack[-1]
+            if (
+                _StdoutProxyState.instance().total_active_guards > 0
+                and _StdoutProxyState.instance().capture_local.stack
+            )
+            else None
+        )
         return bool(fb.isatty()) if (cap is None and fb is not None) else False
 
     def fileno(self) -> int:
         fb = self._fallback_detached()
-        cap = _StdoutProxyState.instance().capture_local.stack[-1] if (_StdoutProxyState.instance().total_active_guards > 0 and _StdoutProxyState.instance().capture_local.stack) else None
+        cap = (
+            _StdoutProxyState.instance().capture_local.stack[-1]
+            if (
+                _StdoutProxyState.instance().total_active_guards > 0
+                and _StdoutProxyState.instance().capture_local.stack
+            )
+            else None
+        )
         if cap is not None or fb is None:
             raise io.UnsupportedOperation("Captured task stdout does not expose raw OS fileno")
         return fb.fileno()
@@ -396,7 +445,14 @@ class _ThreadLocalStdoutProxy(io.TextIOBase):
     @property
     def buffer(self) -> BinaryIO:
         fb = self._fallback_detached()
-        cap = _StdoutProxyState.instance().capture_local.stack[-1] if (_StdoutProxyState.instance().total_active_guards > 0 and _StdoutProxyState.instance().capture_local.stack) else None
+        cap = (
+            _StdoutProxyState.instance().capture_local.stack[-1]
+            if (
+                _StdoutProxyState.instance().total_active_guards > 0
+                and _StdoutProxyState.instance().capture_local.stack
+            )
+            else None
+        )
         if cap is not None or fb is None:
             raise io.UnsupportedOperation("Captured task stdout does not expose binary buffer")
         return fb.buffer
@@ -444,3 +500,744 @@ def guard_standard_streams(*, allow_interactive_tty: bool = False) -> Iterator[i
     finally:
         if proxy is not None:
             _ThreadLocalStdoutProxy.leave_guard()
+
+
+class LogLevel(Enum):
+    """Canonical structured log severity levels."""
+
+    DEBUG = "debug"
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class LogRecord:
+    """Immutable structured log record."""
+
+    ts_utc: str
+    level: LogLevel
+    logger_name: str
+    message: str
+    fields: JsonObject = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        require_pure_str(self.ts_utc, "LogRecord.ts_utc", non_empty=True)
+        if not isinstance(self.level, LogLevel):
+            raise ValueError(f"LogRecord.level must be LogLevel, got {self.level!r}")
+        require_pure_str(self.logger_name, "LogRecord.logger_name", non_empty=True)
+        require_pure_str(self.message, "LogRecord.message")
+        cloned_fields = clone_strict_json_object(self.fields, label="LogRecord.fields")
+        object.__setattr__(self, "fields", MappingProxyType(cloned_fields))
+
+
+def _write_all_fd(fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    written = 0
+    total = len(view)
+    while written < total:
+        n_bytes = os.write(fd, view[written:])
+        if n_bytes <= 0:
+            raise OSError("Short or zero write on log file descriptor.")
+        written += n_bytes
+
+
+_OBS_POSIX_SYS_ROOT_LINKS: Final[frozenset[str]] = frozenset({"tmp", "var", "etc", "run"})
+
+
+def _obs_is_allowed_posix_root_link(anc: Path, st: os.stat_result) -> bool:
+    if IS_WINDOWS or anc.parent != Path("/") or anc.name not in _OBS_POSIX_SYS_ROOT_LINKS:
+        return False
+    if st.st_uid != 0:
+        return False
+    try:
+        resolved_st = os.stat(anc)
+    except OSError:
+        return False
+    return stat.S_ISDIR(resolved_st.st_mode)
+
+
+def _obs_is_reparse_stat(st: os.stat_result) -> bool:
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    if IS_WINDOWS:
+        return bool(st.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT) and is_disallowed_reparse_tag(
+            st.st_reparse_tag
+        )
+    return False
+
+
+def _obs_verify_or_create_ancestors(parent_dir: Path, *, create_missing: bool) -> None:
+    chain = (*reversed(parent_dir.parents[:-1]), parent_dir) if parent_dir.parents else ()
+    for anc in chain:
+        try:
+            a_st = os.lstat(anc)
+        except FileNotFoundError:
+            if not create_missing:
+                continue
+            try:
+                os.mkdir(anc, 0o700)
+            except FileExistsError:
+                pass
+            a_st = os.lstat(anc)
+        if _obs_is_reparse_stat(a_st):
+            if _obs_is_allowed_posix_root_link(anc, a_st):
+                continue
+            raise YscbError(ErrorCode.ACCESS_DENIED, f"LogRotator refuses symlinked ancestor directory: {anc}")
+        if not stat.S_ISDIR(a_st.st_mode):
+            raise YscbError(ErrorCode.ACCESS_DENIED, f"LogRotator ancestor is not a directory: {anc}")
+
+
+def _obs_verify_regular_or_missing(target: Path) -> Optional[os.stat_result]:
+    _obs_verify_or_create_ancestors(target.parent, create_missing=False)
+    try:
+        st = os.lstat(target)
+    except FileNotFoundError:
+        return None
+    if _obs_is_reparse_stat(st) or not stat.S_ISREG(st.st_mode):
+        raise YscbError(ErrorCode.ACCESS_DENIED, f"LogRotator refuses symlink or non-regular file: {target}")
+    return st
+
+
+def _open_non_inheritable_fd(target: Path, flags: int, mode: int = 0o600) -> int:
+    try:
+        fd = os.open(str(target), flags, mode)
+    except OSError as exc:
+        if not IS_WINDOWS and exc.errno in (errno.ELOOP, errno.ENXIO, errno.EOPNOTSUPP, errno.EMLINK):
+            raise YscbError(ErrorCode.ACCESS_DENIED, f"LogRotator refuses symlink or special file: {target}") from exc
+        raise
+    try:
+        f_st = os.fstat(fd)
+        if not stat.S_ISREG(f_st.st_mode):
+            raise YscbError(ErrorCode.ACCESS_DENIED, f"LogRotator requires regular file descriptor: {target}")
+        if not IS_WINDOWS and (flags & os.O_NONBLOCK):
+            os.set_blocking(fd, True)
+        os.set_inheritable(fd, False)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    return fd
+
+
+def _read_lf_lines_strict(target: Path) -> list[str]:
+    if _obs_verify_regular_or_missing(target) is None:
+        return []
+    read_flags = os.O_RDONLY | (os.O_BINARY if IS_WINDOWS else (os.O_NOFOLLOW | os.O_NONBLOCK))
+    try:
+        fd = _open_non_inheritable_fd(target, read_flags)
+    except FileNotFoundError:
+        return []
+    chunks: list[bytes] = []
+    try:
+        while True:
+            buf = os.read(fd, 65536)
+            if not buf:
+                break
+            chunks.append(buf)
+    finally:
+        os.close(fd)
+    if not chunks:
+        return []
+    raw_text = b"".join(chunks).decode("utf-8", errors="replace")
+    parts = raw_text.split("\n")
+    if parts and parts[-1] == "":
+        parts.pop()
+    return [ln[:-1] if ln.endswith("\r") else ln for ln in parts]
+
+
+def _replace_with_retry(src_path: Path, dst_path: Path) -> None:
+    _obs_verify_regular_or_missing(dst_path)
+    last_exc: Optional[OSError] = None
+    for attempt in range(5):
+        try:
+            os.replace(str(src_path), str(dst_path))
+            return
+        except PermissionError as exc:
+            last_exc = exc
+            if attempt < 4:
+                time.sleep(0.01 * (attempt + 1))
+    if last_exc is not None:
+        raise last_exc
+
+
+def _atomic_rewrite_lines(target_path: Path, lines: Sequence[str], *, seq_num: int) -> None:
+    parent_dir = target_path.parent
+    _obs_verify_or_create_ancestors(parent_dir, create_missing=True)
+    _obs_verify_regular_or_missing(target_path)
+    rand_hex = secrets.token_hex(6)
+    tmp_name = f".{target_path.name}{_ROT_TMP_INFIX}{os.getpid()}_{seq_num}_{rand_hex}"
+    tmp_path = parent_dir / tmp_name
+    encoded = ("\n".join(lines) + ("\n" if lines else "")).encode("utf-8")
+    tmp_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | (
+        os.O_BINARY if IS_WINDOWS else (os.O_NOFOLLOW | os.O_NONBLOCK)
+    )
+    fd = _open_non_inheritable_fd(tmp_path, tmp_flags, 0o600)
+    try:
+        _write_all_fd(fd, encoded)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        _replace_with_retry(tmp_path, target_path)
+    finally:
+        if os.path.lexists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+_STALE_ROT_TMP_MAX_AGE_SEC: Final[float] = 60.0
+_HEX12_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{12}$")
+
+
+def _cleanup_stale_rotation_temps(log_file: Path) -> None:
+    parent_dir = log_file.parent
+    try:
+        _obs_verify_or_create_ancestors(parent_dir, create_missing=False)
+    except (YscbError, OSError):
+        return
+    if not parent_dir.is_dir() or parent_dir.is_symlink():
+        return
+    prefix = f".{log_file.name}{_ROT_TMP_INFIX}"
+    cur_pid = os.getpid()
+    now_sec = time.time()
+    try:
+        with os.scandir(parent_dir) as it:
+            for entry in it:
+                if not entry.name.startswith(prefix) or entry.is_symlink():
+                    continue
+                tail = entry.name[len(prefix) :]
+                parts = tail.split("_")
+                if (
+                    len(parts) == 3
+                    and parts[0].isdigit()
+                    and parts[1].isdigit()
+                    and _HEX12_RE.fullmatch(parts[2]) is not None
+                ):
+                    if int(parts[0]) == cur_pid:
+                        continue
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                        if (now_sec - st.st_mtime) < _STALE_ROT_TMP_MAX_AGE_SEC:
+                            continue
+                    except OSError:
+                        continue
+                try:
+                    os.unlink(entry.path)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
+def _file_needs_newline_repair(log_file: Path) -> tuple[int, bool]:
+    if _obs_verify_regular_or_missing(log_file) is None:
+        return (0, False)
+    read_flags = os.O_RDONLY | (os.O_BINARY if IS_WINDOWS else (os.O_NOFOLLOW | os.O_NONBLOCK))
+    try:
+        fd = _open_non_inheritable_fd(log_file, read_flags)
+    except FileNotFoundError:
+        return (0, False)
+    try:
+        end_pos = os.lseek(fd, 0, os.SEEK_END)
+        if end_pos <= 0:
+            return (0, False)
+        os.lseek(fd, end_pos - 1, os.SEEK_SET)
+        tail_byte = os.read(fd, 1)
+        return (end_pos, tail_byte != b"\n")
+    finally:
+        os.close(fd)
+
+
+class LogRotator:
+    """Pure-stdlib rolling file recorder supporting byte/line atomic rotation, crash recovery, and non-inheritable FDs."""
+
+    def __init__(
+        self,
+        log_path: HostPath,
+        *,
+        max_bytes: int = 524288,
+        max_lines: Optional[int] = None,
+        keep_lines: Optional[int] = None,
+        max_history_files: int = 5,
+    ) -> None:
+        if not isinstance(log_path, HostPath):
+            raise ValueError(f"LogRotator.log_path must be HostPath, got {log_path!r}")
+        require_pure_int(max_bytes, "LogRotator.max_bytes", min_val=1, max_val=INT64_MAX)
+        if max_lines is not None:
+            require_pure_int(max_lines, "LogRotator.max_lines", min_val=1, max_val=INT64_MAX)
+        if keep_lines is not None:
+            require_pure_int(keep_lines, "LogRotator.keep_lines", min_val=1, max_val=INT64_MAX)
+            if max_lines is not None and keep_lines > max_lines:
+                raise ValueError(f"LogRotator.keep_lines ({keep_lines}) cannot exceed max_lines ({max_lines}).")
+        require_pure_int(max_history_files, "LogRotator.max_history_files", min_val=0, max_val=1000)
+        self._log_path = log_path
+        self._max_bytes = max_bytes
+        self._max_lines = max_lines
+        self._keep_lines = keep_lines
+        self._max_history_files = max_history_files
+        self._lock = threading.RLock()
+        self._rot_seq = 0
+        self._closed = False
+        _cleanup_stale_rotation_temps(self._log_path.path)
+
+    def _history_path(self, index: int) -> Path:
+        base = self._log_path.path
+        return base.parent / f"{base.name}.{index}"
+
+    def _rotate_history_files_locked(self) -> None:
+        base = self._log_path.path
+        if _obs_verify_regular_or_missing(base) is None:
+            return
+        parent_dir = base.parent
+        hist_prefix = f"{base.name}."
+        try:
+            with os.scandir(parent_dir) as it:
+                for entry in it:
+                    if entry.name.startswith(hist_prefix):
+                        suffix = entry.name[len(hist_prefix) :]
+                        if suffix.isdigit() and int(suffix) >= self._max_history_files:
+                            try:
+                                os.unlink(entry.path)
+                            except OSError:
+                                pass
+        except OSError:
+            pass
+        if self._max_history_files <= 0:
+            self._rot_seq += 1
+            _atomic_rewrite_lines(base, (), seq_num=self._rot_seq)
+            return
+        for idx in range(self._max_history_files - 1, 0, -1):
+            src_h = self._history_path(idx)
+            if _obs_verify_regular_or_missing(src_h) is not None:
+                _replace_with_retry(src_h, self._history_path(idx + 1))
+        _replace_with_retry(base, self._history_path(1))
+
+    def _compact_tail_lines_locked(self, target_keep: int, *, jsonl_mode: bool) -> None:
+        raw_lines = _read_lf_lines_strict(self._log_path.path)
+        if jsonl_mode:
+            valid_lines: list[str] = []
+            for ln in raw_lines:
+                if not ln.strip(" \t\r"):
+                    continue
+                try:
+                    strict_parse_json_object(ln)
+                    valid_lines.append(ln)
+                except ValueError:
+                    continue
+            kept = list(valid_lines[-target_keep:])
+        else:
+            kept = list(raw_lines[-target_keep:])
+
+        if len(kept) > 1:
+            line_sizes = [len(ln.encode("utf-8")) + 1 for ln in kept]
+            total_bytes = sum(line_sizes)
+            drop_idx = 0
+            while (len(kept) - drop_idx) > 1 and total_bytes > self._max_bytes:
+                total_bytes -= line_sizes[drop_idx]
+                drop_idx += 1
+            if drop_idx > 0:
+                kept = kept[drop_idx:]
+
+        if len(kept) == 1 and len(raw_lines) == 1 and kept[0] == raw_lines[0]:
+            return
+
+        self._rot_seq += 1
+        _atomic_rewrite_lines(self._log_path.path, kept, seq_num=self._rot_seq)
+
+    def _append_internal(self, clean_line: str, *, jsonl_mode: bool) -> None:
+        encoded_line = f"{clean_line}\n".encode("utf-8")
+        with self._lock:
+            if self._closed:
+                raise YscbError(ErrorCode.TEARDOWN_ERROR, "LogRotator is already closed.")
+            target = self._log_path.path
+            _obs_verify_or_create_ancestors(target.parent, create_missing=True)
+            in_place_keep: Optional[int] = self._keep_lines
+            if in_place_keep is None and self._max_lines is not None and self._max_history_files == 0:
+                in_place_keep = self._max_lines
+
+            cur_size, needs_nl = _file_needs_newline_repair(target)
+            if in_place_keep is None and cur_size > 0:
+                exceeds_bytes = (cur_size + (1 if needs_nl else 0) + len(encoded_line)) > self._max_bytes
+                exceeds_lines = (
+                    self._max_lines is not None and len(_read_lf_lines_strict(target)) >= self._max_lines
+                )
+                if exceeds_bytes or exceeds_lines:
+                    self._rotate_history_files_locked()
+                    cur_size, needs_nl = (0, False)
+
+            _obs_verify_regular_or_missing(target)
+            write_bytes = (b"\n" + encoded_line) if needs_nl else encoded_line
+            append_flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | (
+                os.O_BINARY if IS_WINDOWS else (os.O_NOFOLLOW | os.O_NONBLOCK)
+            )
+            fd = _open_non_inheritable_fd(target, append_flags, 0o600)
+            try:
+                _write_all_fd(fd, write_bytes)
+                new_size = os.fstat(fd).st_size
+            finally:
+                os.close(fd)
+
+            if in_place_keep is not None:
+                need_compact = new_size > self._max_bytes
+                if not need_compact and self._max_lines is not None:
+                    need_compact = len(_read_lf_lines_strict(target)) > self._max_lines
+                if need_compact:
+                    self._compact_tail_lines_locked(in_place_keep, jsonl_mode=jsonl_mode)
+
+    def append_line(self, line: str) -> None:
+        require_pure_str(line, "LogRotator.append_line line")
+        stripped = line[:-1] if line.endswith("\n") else line
+        if stripped.endswith("\r"):
+            stripped = stripped[:-1]
+        if "\n" in stripped or "\r" in stripped:
+            raise ValueError("LogRotator.append_line forbids embedded CR/LF newline characters.")
+        self._append_internal(stripped, jsonl_mode=False)
+
+    def append_jsonl(self, payload: JsonObject) -> None:
+        validated = clone_strict_json_object(payload, label="LogRotator.append_jsonl payload")
+        serialized = json.dumps(validated, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        self._append_internal(serialized, jsonl_mode=True)
+
+    def _collect_chronological_lines_locked(self) -> list[str]:
+        if self._keep_lines is None and self._max_history_files > 0:
+            merged: list[str] = []
+            for idx in range(self._max_history_files, 0, -1):
+                hist_p = self._history_path(idx)
+                merged.extend(_read_lf_lines_strict(hist_p))
+            merged.extend(_read_lf_lines_strict(self._log_path.path))
+            return merged
+        return _read_lf_lines_strict(self._log_path.path)
+
+    def read_tail_lines(self, limit: int = 100) -> tuple[str, ...]:
+        require_pure_int(limit, "LogRotator.read_tail_lines limit", min_val=0, max_val=INT64_MAX)
+        if limit == 0:
+            return ()
+        with self._lock:
+            all_lines = self._collect_chronological_lines_locked()
+            return tuple(all_lines[-limit:])
+
+    def read_jsonl(self, *, limit: Optional[int] = None) -> tuple[MutableJsonObject, ...]:
+        if limit is not None:
+            require_pure_int(limit, "LogRotator.read_jsonl limit", min_val=0, max_val=INT64_MAX)
+            if limit == 0:
+                return ()
+        with self._lock:
+            raw_lines = self._collect_chronological_lines_locked()
+        if limit is not None:
+            collected_rev: list[MutableJsonObject] = []
+            for ln in reversed(raw_lines):
+                if not ln.strip(" \t\r"):
+                    continue
+                try:
+                    collected_rev.append(strict_parse_json_object(ln))
+                except ValueError:
+                    continue
+                if len(collected_rev) >= limit:
+                    break
+            collected_rev.reverse()
+            return tuple(collected_rev)
+        parsed_all: list[MutableJsonObject] = []
+        for ln in raw_lines:
+            if not ln.strip(" \t\r"):
+                continue
+            try:
+                parsed_all.append(strict_parse_json_object(ln))
+            except ValueError:
+                continue
+        return tuple(parsed_all)
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+
+
+class StructuredLogger(Protocol):
+    """Explicitly injected structured logger protocol consumed via TaskContext and ModuleEnv."""
+
+    def log(self, level: LogLevel, message: str, *, fields: Optional[JsonObject] = None) -> None: ...
+    def debug(self, message: str, *, fields: Optional[JsonObject] = None) -> None: ...
+    def info(self, message: str, *, fields: Optional[JsonObject] = None) -> None: ...
+    def warning(self, message: str, *, fields: Optional[JsonObject] = None) -> None: ...
+    def error(self, message: str, *, fields: Optional[JsonObject] = None) -> None: ...
+
+
+def _normalize_explicit_locale_chain(chain: Sequence[str], *, label: str) -> tuple[str, ...]:
+    raw_tup = require_typed_tuple(chain, str, label)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in raw_tup:
+        cleaned = item.strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            ordered.append(cleaned)
+    return tuple(ordered)
+
+
+class LocaleCatalog:
+    """Pure-in-memory multi-locale and host proper-noun lookup engine with bounded recursive interpolation."""
+
+    def __init__(
+        self,
+        dictionaries_by_module: Mapping[ModuleId, Mapping[str, Mapping[str, str]]],
+        *,
+        default_chain: Sequence[str] = ("zh",),
+    ) -> None:
+        if not isinstance(dictionaries_by_module, Mapping):
+            raise ValueError("LocaleCatalog.dictionaries_by_module must be a Mapping.")
+        frozen_mods: dict[ModuleId, Mapping[str, Mapping[str, str]]] = {}
+        for mod_id, lang_table in dictionaries_by_module.items():
+            if not isinstance(mod_id, ModuleId):
+                raise ValueError(f"LocaleCatalog module key must be ModuleId, got {mod_id!r}")
+            if not isinstance(lang_table, Mapping):
+                raise ValueError(f"LocaleCatalog language table for '{mod_id}' must be a Mapping.")
+            frozen_langs: dict[str, Mapping[str, str]] = {}
+            for lang_id, kv_map in lang_table.items():
+                clean_lang = require_pure_str(lang_id, "LocaleCatalog lang_id", non_empty=True).strip()
+                if not isinstance(kv_map, Mapping):
+                    raise ValueError(f"LocaleCatalog entries for '{mod_id}:{clean_lang}' must be a Mapping.")
+                frozen_kv: dict[str, str] = {}
+                for k, v in kv_map.items():
+                    clean_k = require_pure_str(k, "LocaleCatalog entry key", non_empty=True).strip()
+                    clean_v = require_pure_str(v, "LocaleCatalog entry value")
+                    frozen_kv[clean_k] = clean_v
+                frozen_langs[clean_lang] = MappingProxyType(frozen_kv)
+            frozen_mods[mod_id] = MappingProxyType(frozen_langs)
+        self._dicts: Mapping[ModuleId, Mapping[str, Mapping[str, str]]] = MappingProxyType(frozen_mods)
+        self._sorted_modules: tuple[ModuleId, ...] = tuple(sorted(frozen_mods.keys(), key=lambda m: m.value))
+        self._default_chain: tuple[str, ...] = _normalize_explicit_locale_chain(
+            default_chain, label="LocaleCatalog.default_chain"
+        )
+
+    def _candidate_modules(self, primary: Optional[ModuleId]) -> tuple[ModuleId, ...]:
+        if primary is None or primary not in self._dicts:
+            return self._sorted_modules
+        return (primary, *(m for m in self._sorted_modules if m != primary))
+
+    def _lookup_entry(
+        self,
+        raw_key: str,
+        *,
+        caller_module: Optional[ModuleId],
+        active_chain: tuple[str, ...],
+    ) -> Optional[tuple[ModuleId, str, str]]:
+        stripped = raw_key.strip()
+        if not stripped:
+            return None
+        if ":" in stripped:
+            mod_str, sub_key = stripped.split(":", 1)
+            mod_clean, key_clean = mod_str.strip(), sub_key.strip()
+            if not mod_clean or not key_clean:
+                return None
+            try:
+                explicit_mod = ModuleId(mod_clean)
+            except ValueError:
+                return None
+            mod_table = self._dicts.get(explicit_mod)
+            if mod_table is None:
+                return None
+            for lang_id in active_chain:
+                lang_kv = mod_table.get(lang_id)
+                if lang_kv is not None and key_clean in lang_kv:
+                    return (explicit_mod, key_clean, lang_kv[key_clean])
+            return None
+
+        for cand_mod in self._candidate_modules(caller_module):
+            mod_table = self._dicts[cand_mod]
+            for lang_id in active_chain:
+                lang_kv = mod_table.get(lang_id)
+                if lang_kv is not None and stripped in lang_kv:
+                    return (cand_mod, stripped, lang_kv[stripped])
+        return None
+
+    def _interpolate(
+        self,
+        template: str,
+        *,
+        current_mod: Optional[ModuleId],
+        active_chain: tuple[str, ...],
+        params: Optional[Mapping[str, object]],
+        visited: frozenset[tuple[ModuleId, str]],
+        depth: int,
+    ) -> str:
+        if "{" not in template and "}" not in template:
+            return template
+
+        def _replace_tok(match: re.Match[str]) -> str:
+            whole = match.group(0)
+            if whole == "{{":
+                return "{"
+            if whole == "}}":
+                return "}"
+            token = match.group(1)
+            if params is not None and token in params and params[token] is not None:
+                return sanitize_utf8_text(str(params[token]))
+            if depth >= MAX_LOCALE_INTERPOLATION_DEPTH:
+                return whole
+            hit = self._lookup_entry(token, caller_module=current_mod, active_chain=active_chain)
+            if hit is None:
+                return whole
+            resolved_mod, resolved_key, sub_tpl = hit
+            visit_tag = (resolved_mod, resolved_key)
+            if visit_tag in visited:
+                return whole
+            return self._interpolate(
+                sub_tpl,
+                current_mod=resolved_mod,
+                active_chain=active_chain,
+                params=params,
+                visited=visited | {visit_tag},
+                depth=depth + 1,
+            )
+
+        return _LOCALE_TOKEN_RE.sub(_replace_tok, template)
+
+    def translate(
+        self,
+        key: str,
+        *,
+        caller_module: Optional[ModuleId] = None,
+        chain: Optional[Sequence[str]] = None,
+        params: Optional[Mapping[str, object]] = None,
+    ) -> str:
+        require_pure_str(key, "LocaleCatalog.translate key")
+        if caller_module is not None and not isinstance(caller_module, ModuleId):
+            raise ValueError(f"LocaleCatalog.translate caller_module must be ModuleId or None, got {caller_module!r}")
+        if params is not None:
+            if not isinstance(params, Mapping):
+                raise ValueError("LocaleCatalog.translate params must be a Mapping or None.")
+            for pk in params:
+                require_pure_str(pk, "LocaleCatalog.translate param key")
+        active_chain = (
+            _normalize_explicit_locale_chain(chain, label="LocaleCatalog.translate chain")
+            if chain is not None
+            else self._default_chain
+        )
+        hit = self._lookup_entry(key, caller_module=caller_module, active_chain=active_chain)
+        if hit is None:
+            return self._interpolate(
+                key,
+                current_mod=caller_module,
+                active_chain=active_chain,
+                params=params,
+                visited=frozenset(),
+                depth=0,
+            )
+        resolved_mod, resolved_key, raw_tpl = hit
+        return self._interpolate(
+            raw_tpl,
+            current_mod=resolved_mod,
+            active_chain=active_chain,
+            params=params,
+            visited=frozenset({(resolved_mod, resolved_key)}),
+            depth=0,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SessionTelemetryRecord:
+    """Immutable CLI execution flight record."""
+
+    ts_utc: str
+    epoch_ms: int
+    task_id: str
+    args: tuple[str, ...]
+    exit_code: int
+    duration_ms: int
+    executed_hot: bool
+    caller_cwd: str
+    error_hint: str = ""
+
+    def __post_init__(self) -> None:
+        require_pure_str(self.ts_utc, "SessionTelemetryRecord.ts_utc", non_empty=True)
+        require_pure_int(self.epoch_ms, "SessionTelemetryRecord.epoch_ms", min_val=0, max_val=INT64_MAX)
+        require_pure_str(self.task_id, "SessionTelemetryRecord.task_id", non_empty=True)
+        object.__setattr__(self, "args", require_typed_tuple(self.args, str, "SessionTelemetryRecord.args"))
+        require_pure_int(self.exit_code, "SessionTelemetryRecord.exit_code", min_val=INT64_MIN, max_val=INT64_MAX)
+        require_pure_int(self.duration_ms, "SessionTelemetryRecord.duration_ms", min_val=0, max_val=INT64_MAX)
+        require_pure_bool(self.executed_hot, "SessionTelemetryRecord.executed_hot")
+        require_pure_str(self.caller_cwd, "SessionTelemetryRecord.caller_cwd")
+        object.__setattr__(
+            self,
+            "error_hint",
+            sanitize_utf8_text(require_pure_str(self.error_hint, "SessionTelemetryRecord.error_hint")),
+        )
+
+
+def _parse_telemetry_dict(doc: Mapping[str, object]) -> Optional[SessionTelemetryRecord]:
+    try:
+        raw_args = doc.get("args")
+        if not isinstance(raw_args, list):
+            return None
+        return SessionTelemetryRecord(
+            ts_utc=require_pure_str(doc.get("ts_utc"), "ts_utc", non_empty=True),
+            epoch_ms=require_pure_int(doc.get("epoch_ms"), "epoch_ms", min_val=0, max_val=INT64_MAX),
+            task_id=require_pure_str(doc.get("task_id"), "task_id", non_empty=True),
+            args=require_typed_tuple(raw_args, str, "args"),
+            exit_code=require_pure_int(doc.get("exit_code"), "exit_code", min_val=INT64_MIN, max_val=INT64_MAX),
+            duration_ms=require_pure_int(doc.get("duration_ms"), "duration_ms", min_val=0, max_val=INT64_MAX),
+            executed_hot=require_pure_bool(doc.get("executed_hot"), "executed_hot"),
+            caller_cwd=require_pure_str(doc.get("caller_cwd"), "caller_cwd"),
+            error_hint=require_pure_str(doc.get("error_hint", ""), "error_hint"),
+        )
+    except ValueError:
+        return None
+
+
+class SessionTelemetryWriter:
+    """Lightweight CLI flight recorder writing to cache://core/telemetry.jsonl via LogRotator."""
+
+    def __init__(
+        self,
+        rotator: LogRotator,
+        *,
+        enabled: bool = True,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> None:
+        if not isinstance(rotator, LogRotator):
+            raise ValueError(f"SessionTelemetryWriter.rotator must be LogRotator, got {rotator!r}")
+        require_pure_bool(enabled, "SessionTelemetryWriter.enabled")
+        sandbox_off = False
+        if env is not None:
+            if not isinstance(env, Mapping):
+                raise ValueError("SessionTelemetryWriter.env must be a Mapping[str, str] or None.")
+            sandbox_off = env.get(TEST_SANDBOX_ENV_KEY) == "1"
+        self._rotator = rotator
+        self._enabled = enabled and (not sandbox_off)
+
+    def record(self, entry: SessionTelemetryRecord) -> None:
+        if not isinstance(entry, SessionTelemetryRecord):
+            raise ValueError(f"SessionTelemetryWriter.record requires SessionTelemetryRecord, got {entry!r}")
+        if not self._enabled:
+            return
+        payload: MutableJsonObject = {
+            "ts_utc": entry.ts_utc,
+            "epoch_ms": entry.epoch_ms,
+            "task_id": entry.task_id,
+            "args": list(entry.args),
+            "exit_code": entry.exit_code,
+            "duration_ms": entry.duration_ms,
+            "executed_hot": entry.executed_hot,
+            "caller_cwd": entry.caller_cwd,
+            "error_hint": entry.error_hint,
+        }
+        self._rotator.append_jsonl(payload)
+
+    def read_recent(self, limit: int = 100) -> tuple[SessionTelemetryRecord, ...]:
+        require_pure_int(limit, "SessionTelemetryWriter.read_recent limit", min_val=0, max_val=INT64_MAX)
+        if limit == 0:
+            return ()
+        raw_docs = self._rotator.read_jsonl()
+        parsed_rev: list[SessionTelemetryRecord] = []
+        for doc in reversed(raw_docs):
+            rec = _parse_telemetry_dict(doc)
+            if rec is not None:
+                parsed_rev.append(rec)
+                if len(parsed_rev) >= limit:
+                    break
+        parsed_rev.reverse()
+        return tuple(parsed_rev)

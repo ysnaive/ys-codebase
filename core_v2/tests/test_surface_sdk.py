@@ -7,42 +7,103 @@ from dataclasses import dataclass, replace
 import inspect
 import json
 from pathlib import Path
-from typing import Annotated, ClassVar, Optional, Sequence, get_args, get_type_hints
+import shutil
+import sys
+import threading
+from typing import Literal, Annotated, ClassVar, Optional, Sequence, TypeVar, cast, get_args, get_type_hints
 
 import core.surface.sdk as sdk
 from core.execution.event import EventOrdering, EventSubscriptionSpec
 from core.execution.runtime import (
+    CallPropagationContext,
     CliBindingSpec,
+    DispatcherHostOptions,
+    InvokeRequest,
+    ModuleDescriptor,
+    ModuleProviderPort,
     PeriodicScheduleSpec,
+    RuntimeDispatcher,
     Task,
     TaskExposure,
-    TaskMetadata,
     TaskRouteSpec,
+    build_default_module_services,
+    build_workspace_module_services_factory,
 )
-from core.foundation import ErrorCode, EventId, HostPath, ModuleId, TaskId
+from core.metadata.contributes import compile_extension_points
 from core.surface.sdk import (
+    CONFIG_CHANGED_EVENT_ID,
+    MODULE_INSTALLED_EVENT_ID,
+    MODULE_REMOVING_EVENT_ID,
+    SPACE_REGISTRY_CHANGED_EVENT_ID_STR,
+    SPACE_UPDATED_EVENT_ID_STR,
+    WORKSPACE_RELOADED_EVENT_ID,
+    AggregatedContributes,
     Arg,
+    BlobVault,
     CancellationToken,
+    ClearDynamicSpaceInput,
+    ClientRoutingPolicy,
     ConcurrencyMode,
+    ContribField,
     DispatchMode,
     Empty,
+    ErrorCode,
+    ErrorDetail,
+    EventId,
     EventMetadata,
+    ExecutionPriority,
     ExitCodeProvider,
+    ExtensionPointSpec,
+    HashPolicy,
+    HostPath,
     HumanRenderable,
     InMemoryModule,
+    JsonValue,
+    LocaleCatalog,
+    LogLevel,
+    MergeStrategy,
+    MigrationRequest,
     Module,
+    ModuleDatabase,
     ModuleEnv,
+    ModuleId,
     Option,
     ProgressEvent,
+    ProvenanceGraph,
+    SchemaMigration,
+    ScopedVfs,
     SecurityTier,
+    SemVer4,
+    SemanticUri,
+    SetDynamicSpaceInput,
+    SnapshotGen,
+    SnapshotReader,
+    SpaceAckCursorInput,
+    SpaceDiffBatch,
+    SpaceFileEntry,
+    SpaceId,
+    SpacePath,
+    SpaceScanInput,
+    SpaceSpec,
+    StorageOpenOptions,
+    StructuredLogger,
+    TaskCancelledException,
     TaskContext,
     TaskGroup,
+    TaskId,
+    TaskMetadata,
     TaskOutcome,
+    VersionConstraint,
+    VfsCapabilities,
+    VfsStat,
+    WriteTransaction,
     YscbClient,
+    YscbError,
     YscbModule,
     define_event,
     format_output,
     on_event,
+    on_migrate,
     periodic,
     task,
 )
@@ -515,38 +576,137 @@ class _SubscriberModule(Module):
 def _verify_facade_and_zero_leak() -> None:
     expected_exports = frozenset(
         {
+            "AggregatedContributes",
             "Arg",
+            "BlobVault",
+            "CONFIG_CHANGED_EVENT_ID",
             "CancellationToken",
+            "ClearDynamicSpaceInput",
+            "ClientRoutingPolicy",
             "ConcurrencyMode",
+            "ContribField",
             "DispatchMode",
             "Empty",
+            "ErrorCode",
+            "ErrorDetail",
+            "EventId",
             "EventMetadata",
+            "ExecutionPriority",
             "ExitCodeProvider",
+            "ExtensionPointSpec",
+            "HashPolicy",
             "HostPath",
             "HumanRenderable",
             "InMemoryModule",
+            "JsonValue",
+            "LocaleCatalog",
+            "LogLevel",
+            "MODULE_INSTALLED_EVENT_ID",
+            "MODULE_REMOVING_EVENT_ID",
+            "MergeStrategy",
+            "MigrationRequest",
             "Module",
+            "ModuleDatabase",
             "ModuleEnv",
+            "ModuleId",
             "Option",
             "ProgressEvent",
+            "ProvenanceGraph",
+            "SPACE_REGISTRY_CHANGED_EVENT_ID_STR",
+            "SPACE_UPDATED_EVENT_ID_STR",
+            "SchemaMigration",
+            "ScopedVfs",
             "SecurityTier",
+            "SemVer4",
+            "SemanticUri",
+            "SetDynamicSpaceInput",
+            "SnapshotGen",
+            "SnapshotReader",
+            "SpaceAckCursorInput",
+            "SpaceDiffBatch",
+            "SpaceFileEntry",
+            "SpaceId",
+            "SpacePath",
+            "SpaceScanInput",
+            "SpaceSpec",
+            "StorageOpenOptions",
+            "StructuredLogger",
+            "TaskCancelledException",
             "TaskContext",
             "TaskGroup",
+            "TaskId",
+            "TaskMetadata",
             "TaskOutcome",
+            "VersionConstraint",
+            "VfsCapabilities",
+            "VfsStat",
+            "WORKSPACE_RELOADED_EVENT_ID",
+            "WriteTransaction",
             "YscbClient",
+            "YscbError",
             "YscbModule",
             "define_event",
             "format_output",
             "on_event",
+            "on_migrate",
             "periodic",
             "task",
         }
     )
-    check(len(sdk.__all__) == 25)
-    check(len(set(sdk.__all__)) == 25)
+    check(len(sdk.__all__) == 75)
+    check(len(set(sdk.__all__)) == 75)
     check(frozenset(sdk.__all__) == expected_exports)
+    check(
+        all(
+            sym is not None
+            for sym in (
+                BlobVault,
+                CONFIG_CHANGED_EVENT_ID,
+                ClearDynamicSpaceInput,
+                ClientRoutingPolicy,
+                ContribField,
+                ErrorDetail,
+                ExecutionPriority,
+                ExtensionPointSpec,
+                HashPolicy,
+                JsonValue,
+                LogLevel,
+                MODULE_INSTALLED_EVENT_ID,
+                MODULE_REMOVING_EVENT_ID,
+                MergeStrategy,
+                MigrationRequest,
+                ModuleDatabase,
+                ProvenanceGraph,
+                SPACE_REGISTRY_CHANGED_EVENT_ID_STR,
+                SPACE_UPDATED_EVENT_ID_STR,
+                SchemaMigration,
+                SemVer4,
+                SemanticUri,
+                SetDynamicSpaceInput,
+                SnapshotGen,
+                SnapshotReader,
+                SpaceAckCursorInput,
+                SpaceDiffBatch,
+                SpaceFileEntry,
+                SpaceId,
+                SpacePath,
+                SpaceScanInput,
+                SpaceSpec,
+                StorageOpenOptions,
+                TaskCancelledException,
+                TaskMetadata,
+                VersionConstraint,
+                VfsCapabilities,
+                VfsStat,
+                WORKSPACE_RELOADED_EVENT_ID,
+                WriteTransaction,
+                YscbError,
+                on_migrate,
+            )
+        )
+    )
     tg_members = dict(inspect.getmembers_static(TaskGroup))
-    check("prefix" not in tg_members)
+    check("prefix" not in tg_members and "parent_module" in tg_members)
     sdk_members = dict(inspect.getmembers_static(sdk))
     for leaked in ("BoundTask", "_DeclarativeMeta", "_DecoratedMethod", "_SdkStateRegistry", "_SdkBoundTask", "_SdkYscbModule"):
         check(leaked not in sdk.__all__)
@@ -555,10 +715,14 @@ def _verify_facade_and_zero_leak() -> None:
     check(TaskOutcome is not None and YscbModule is not None)
 
 
+_TStubCfg = TypeVar("_TStubCfg")
+
+
 class _StubTaskContext(TaskContext):
     def __init__(self, ws: HostPath) -> None:
         self._ws = ws
         self._tok = CancellationToken()
+        self._svc = build_default_module_services(ws, ModuleId("demo"))
 
     @property
     def workspace_root(self) -> HostPath:
@@ -579,6 +743,24 @@ class _StubTaskContext(TaskContext):
     @property
     def effective_priority(self) -> object:
         raise NotImplementedError
+
+    @property
+    def vfs(self) -> ScopedVfs:
+        return self._svc.vfs
+
+    @property
+    def logger(self) -> StructuredLogger:
+        return self._svc.logger
+
+    @property
+    def locale(self) -> LocaleCatalog:
+        return self._svc.locale
+
+    def load_config(self, config_cls: type[_TStubCfg]) -> _TStubCfg:
+        return cast(_TStubCfg, self._svc.config_loader(config_cls))
+
+    def load_contributes(self) -> AggregatedContributes:
+        return self._svc.contributes_loader()
 
     def emit(self, event_meta: EventMetadata[object], payload: object) -> None:
         _ = (event_meta, payload)
@@ -992,13 +1174,16 @@ def _verify_lifecycle_and_lifo_isolation(tmp_root: Path) -> None:
     ws_tox_cli_p.mkdir(parents=True, exist_ok=True)
     ws_tox_cli = HostPath(ws_tox_cli_p)
     cli_tox = YscbClient.local(ws_tox_cli, _HealthySiblingModule(), _ToxicCloserModule())
-    healthy_tox = cli_tox.call("healthy.ping", output_type=_EchoOut)
-    check(healthy_tox.ok and not healthy_tox.teardown_diagnostics)
-    tox_out = cli_tox.call("toxic.ping", output_type=_EchoOut)
-    check(tox_out.ok and tox_out.value == _EchoOut(text="toxic_ready"))
-    check(any(d.code == ErrorCode.TEARDOWN_ERROR for d in tox_out.teardown_diagnostics))
-    cli_tox.close()
-    cli_tox.close()
+    try:
+        healthy_tox = cli_tox.call("healthy.ping", output_type=_EchoOut)
+        check(healthy_tox.ok and not healthy_tox.teardown_diagnostics)
+        tox_out = cli_tox.call("toxic.ping", output_type=_EchoOut)
+        check(tox_out.ok and tox_out.value == _EchoOut(text="toxic_ready"))
+        check(any(d.code == ErrorCode.TEARDOWN_ERROR for d in tox_out.teardown_diagnostics))
+        cli_tox.close()
+        cli_tox.close()
+    finally:
+        cli_tox.close()
     check(
         (ws_tox_cli_p / "toxic.log").read_text(encoding="utf-8").splitlines()
         == ["tg:closer", "tg:close_boom", "tm:closer_boom", "tm:closer_ok", "tm:close"]
@@ -1170,6 +1355,805 @@ def _verify_in_memory_and_client_e2e(tmp_root: Path) -> None:
     expect_yscb_code(lambda: conn.call("demo.ping"), ErrorCode.TEARDOWN_ERROR)
 
 
+@dataclass(frozen=True, slots=True)
+class _Wave12ModCfg:
+    greeting: str = "hello"
+    limit: int = 5
+
+
+@dataclass(frozen=True, slots=True)
+class _Wave12ExtItem:
+    tag: str
+    weight: int = 1
+
+
+class _Wave12StorageAndMigrateModule(Module):
+    id = "w12mod"
+    aliases = ("w12",)
+    description = "Wave 1.2 showcase module"
+    config_type = _Wave12ModCfg
+    extension_points = (
+        ExtensionPointSpec(
+            name="items",
+            payload_type=tuple[_Wave12ExtItem, ...],
+            merge_strategy=MergeStrategy.EXTEND,
+            description="Extension items",
+        ),
+    )
+
+    def __init__(self) -> None:
+        self._db: Optional[ModuleDatabase] = None
+        self._vault: Optional[BlobVault] = None
+
+    def is_db_closed(self) -> bool:
+        return self._db is not None and self._db.is_closed
+
+    def on_init(self, env: ModuleEnv) -> None:
+        check(env.module_id == ModuleId("w12mod"))
+        self._db = env.open_database(
+            "items",
+            migrations=(SchemaMigration(1, "init_kv", ("CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)",)),),
+        )
+        self._vault = env.open_blob_vault("blobs")
+        with self._db.write_transaction() as tx:
+            tx.execute("INSERT OR REPLACE INTO kv (k, v) VALUES (?, ?)", ("boot", env.load_config(_Wave12ModCfg).greeting))
+        _ = self._vault.put_keyed("seed/note.txt", b"vault-ok")
+
+    @task(
+        "w12 query",
+        usage_pros=("Fast snapshot read",),
+        usage_cons=("Read-only inspection",),
+    )
+    def query_state(self, ctx: TaskContext) -> _EchoOut:
+        assert_db = self._db
+        assert_vault = self._vault
+        check(assert_db is not None and assert_vault is not None)
+        if assert_db is None or assert_vault is None:
+            raise RuntimeError("uninitialized")
+        cfg = ctx.load_config(_Wave12ModCfg)
+        contrib = ctx.load_contributes()
+        ctx.logger.info("querying state", fields={"limit": cfg.limit})
+        msg = ctx.locale.translate("w12mod:hello_key")
+        ctx.vfs.write_text("cache://@/probe.txt", "cached")
+        cached = ctx.vfs.read_text("cache://@/probe.txt")
+        with assert_db.read_snapshot() as snap:
+            row = snap.query_one("SELECT v FROM kv WHERE k = ?", ("boot",))
+        raw_blob = assert_vault.get_bytes("seed/note.txt")
+        blob_txt = raw_blob.decode("utf-8") if raw_blob is not None else ""
+        pts = len(contrib.decode_point("items", tuple[_Wave12ExtItem, ...])) if contrib.has_point("items") else 0
+        return _EchoOut(text=f"{row[0] if row else ''}|{cfg.limit}|{pts}|{msg}|{cached}|{blob_txt}")
+
+    @task("w12 wipe", security=SecurityTier.CRITICAL)
+    def critical_wipe(self, ctx: TaskContext) -> _EchoOut:
+        _ = ctx
+        return _EchoOut(text="wiped")
+
+    @task("w12 nested-crit")
+    def nested_call_critical(self, ctx: TaskContext) -> _EchoOut:
+        out = ctx.invoke_task("w12mod.critical_wipe", {}, output_type=_EchoOut)
+        return _EchoOut(text=out.error.code.value if out.error is not None else "unexpected_ok")
+
+    @on_migrate()
+    def handle_upgrade(self, req: MigrationRequest, ctx: TaskContext) -> None:
+        assert_db = self._db
+        if assert_db is not None:
+            with assert_db.write_transaction() as tx:
+                tx.execute(
+                    "INSERT OR REPLACE INTO kv (k, v) VALUES (?, ?)",
+                    ("migrated", f"{req.old_version}->{req.new_version}:{ctx.load_config(_Wave12ModCfg).greeting}"),
+                )
+
+
+class _SingleDirModuleProvider(ModuleProviderPort):
+    def __init__(self, descriptors: Sequence[ModuleDescriptor]) -> None:
+        self._descs = tuple(descriptors)
+
+    def list_modules(self) -> Sequence[ModuleDescriptor]:
+        return self._descs
+
+    def get_module(self, module_id: ModuleId) -> Optional[ModuleDescriptor]:
+        return next((d for d in self._descs if d.module_id == module_id), None)
+
+    def reload(self) -> None:
+        return None
+
+
+def _verify_wave12_sdk_extensions(tmp_root: Path) -> None:
+    opt_grp = Option(short="-f", summary="Force", group="mode")
+    check(opt_grp.group == "mode")
+    assert_raises_val_error(lambda: Option(group="   "))
+
+    def _bad_mutable_cfg() -> None:
+        @dataclass
+        class _MutableCfg:
+            x: int = 1
+
+        class _BadCfgMod(Module):
+            id = "badcfg"
+            config_type = _MutableCfg
+
+    def _bad_dup_migrate() -> None:
+        class _BadDupMig(Module):
+            id = "dupmig"
+
+            @on_migrate()
+            def m1(self, req: MigrationRequest, ctx: TaskContext) -> None:
+                _ = (req, ctx)
+
+            @on_migrate()
+            def m2(self, req: MigrationRequest, ctx: TaskContext) -> None:
+                _ = (req, ctx)
+
+    def _bad_critical_event() -> None:
+        class _BadCritEv(Module):
+            id = "critev"
+
+            @on_event(_WEAK_PING_EV)
+            @task(security=SecurityTier.CRITICAL)
+            def op(self, ctx: TaskContext) -> None:
+                _ = ctx
+
+    def _bad_group_migrate() -> None:
+        class _BadMigGrp(TaskGroup):
+            @on_migrate()
+            def m1(self, req: MigrationRequest, ctx: TaskContext) -> None:
+                _ = (req, ctx)
+
+    for bad_w12 in (_bad_mutable_cfg, _bad_dup_migrate, _bad_critical_event, _bad_group_migrate):
+        assert_raises_val_error(bad_w12)
+
+    ws_db_p = tmp_root / "ws_w12_lifo_db"
+    ws_db_p.mkdir(parents=True, exist_ok=True)
+    ws_db = HostPath(ws_db_p)
+    w12_inst = _Wave12StorageAndMigrateModule()
+    with YscbClient.local(ws_db, w12_inst) as client:
+        q_out = client.call("w12mod.query_state", output_type=_EchoOut)
+        check(q_out.ok and q_out.value == _EchoOut(text="hello|5|0|w12mod:hello_key|cached|vault-ok"))
+        denied_crit = client.call("w12mod.critical_wipe", output_type=_EchoOut)
+        check(not denied_crit.ok and denied_crit.error is not None and denied_crit.error.code == ErrorCode.SECURITY_GATED)
+        nested_crit = client.call(
+            "w12mod.nested_call_critical",
+            approval_scope=frozenset({TaskId("w12mod.critical_wipe")}),
+            output_type=_EchoOut,
+        )
+        check(nested_crit.ok and nested_crit.value == _EchoOut(text=ErrorCode.SECURITY_GATED.value))
+        allowed_crit = client.call(
+            "w12mod.critical_wipe",
+            approval_scope=frozenset({TaskId("w12mod.critical_wipe")}),
+            output_type=_EchoOut,
+        )
+        check(allowed_crit.ok and allowed_crit.value == _EchoOut(text="wiped"))
+    check(w12_inst.is_db_closed())
+    shutil.rmtree(ws_db_p)
+    check(not ws_db_p.exists())
+
+    ws_tier_p = tmp_root / "ws_w12_cross_tier"
+    (ws_tier_p / "config" / "tmod").mkdir(parents=True, exist_ok=True)
+    (ws_tier_p / "config" / "core").mkdir(parents=True, exist_ok=True)
+    (ws_tier_p / "config" / "tmod" / "config.project.json").write_text(
+        json.dumps({"greeting": "configured", "limit": 42}),
+        encoding="utf-8",
+    )
+    (ws_tier_p / "config" / "tmod" / "contribute.json").write_text(
+        json.dumps({"items": [{"tag": "ext1", "weight": 9}]}),
+        encoding="utf-8",
+    )
+    (ws_tier_p / "yscb.config.json").write_text(
+        json.dumps(
+            {
+                "yscb_root": ".",
+                "default_provider": "./prov",
+                "installed_modules": {
+                    "tmod": {
+                        "version": "1.0.0.0",
+                        "installed_at": "2026-11-22T00:00:00Z",
+                        "provider": "./prov",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    mod_dir_p = ws_tier_p / ".modules" / "tmod"
+    (mod_dir_p / "locales").mkdir(parents=True, exist_ok=True)
+    (mod_dir_p / "locales" / "zh.json").write_text(json.dumps({"hello_key": "你好世界"}), encoding="utf-8")
+    (mod_dir_p / "manifest.json").write_text(
+        json.dumps(
+            {
+                "id": "tmod",
+                "version": "1.0.0.0",
+                "entry_file": "module_entry.py",
+                "eager_warmup": False,
+                "dependencies": {},
+                "optional_dependencies": {},
+                "pip_dependencies": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    mod_src = "\n".join(
+        (
+            "from dataclasses import dataclass",
+            "from core.surface.sdk import (",
+            "    ExtensionPointSpec, MergeStrategy, MigrationRequest, Module, SchemaMigration,",
+            "    SemVer4, TaskContext, on_migrate, task,",
+            ")",
+            "@dataclass(frozen=True, slots=True)",
+            "class TModCfg:",
+            "    greeting: str = 'dflt'",
+            "    limit: int = 1",
+            "@dataclass(frozen=True, slots=True)",
+            "class TExtItem:",
+            "    tag: str",
+            "    weight: int = 1",
+            "@dataclass(frozen=True, slots=True)",
+            "class TProbeOut:",
+            "    summary: str",
+            "class TMod(Module):",
+            "    id = 'tmod'",
+            "    config_type = TModCfg",
+            "    extension_points = (ExtensionPointSpec('items', tuple[TExtItem, ...], merge_strategy=MergeStrategy.EXTEND),)",
+            "    def on_init(self, env):",
+            "        self._db = env.open_database('state', migrations=(SchemaMigration(1, 'init_st', ('CREATE TABLE st (k TEXT PRIMARY KEY, v TEXT)',)),))",
+            "    @task('tmod inspect')",
+            "    def inspect_all(self, ctx: TaskContext) -> TProbeOut:",
+            "        cfg = ctx.load_config(TModCfg)",
+            "        items = ctx.load_contributes().decode_point('items', tuple[TExtItem, ...])",
+            "        loc = ctx.locale.translate('hello_key')",
+            "        ctx.logger.info('inspect_all_called')",
+            "        ctx.vfs.write_text('cache://@/ok.txt', 'v1')",
+            "        with self._db.read_snapshot() as snap:",
+            "            mig = snap.query_one('SELECT v FROM st WHERE k = ?', ('mig',))",
+            "        mig_txt = mig[0] if mig else 'none'",
+            "        cached_txt = ctx.vfs.read_text('cache://@/ok.txt')",
+            "        return TProbeOut(summary=f'{cfg.greeting}|{cfg.limit}|{items[0].tag}:{items[0].weight}|{loc}|{cached_txt}|{mig_txt}')",
+            "    @on_migrate()",
+            "    def upgrade(self, req: MigrationRequest, ctx: TaskContext) -> None:",
+            "        _ = ctx",
+            "        with self._db.write_transaction() as tx:",
+            "            tx.execute('INSERT OR REPLACE INTO st (k, v) VALUES (?, ?)', ('mig', f'{req.old_version}->{req.new_version}'))",
+            "def create_module():",
+            "    return TMod().to_yscb_module()",
+            "",
+        )
+    )
+    (mod_dir_p / "module_entry.py").write_text(mod_src, encoding="utf-8")
+    (mod_dir_p / "contributes").mkdir(parents=True, exist_ok=True)
+    bundle = compile_extension_points(
+        ModuleId("tmod"),
+        (ExtensionPointSpec("items", tuple[_Wave12ExtItem, ...], merge_strategy=MergeStrategy.EXTEND),),
+    )
+    (mod_dir_p / "contributes" / "_schema.json").write_text(
+        json.dumps(bundle.to_json(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    ws_hp = HostPath(ws_tier_p)
+    svc_factory = build_workspace_module_services_factory(ws_hp, ws_hp)
+    results: list[str] = []
+    for venv_py in (None, HostPath(sys.executable)):
+        desc = ModuleDescriptor(
+            module_id=ModuleId("tmod"),
+            module_dir=HostPath(mod_dir_p),
+            venv_python=venv_py,
+            declared_tasks=(
+                TaskRouteSpec(
+                    task_id=TaskId("tmod.inspect_all"),
+                    cli=CliBindingSpec(("tmod", "inspect"), "Execute tmod.inspect_all"),
+                ),
+                TaskRouteSpec(
+                    task_id=TaskId("tmod.yscb_on_migrate"),
+                    exposure=TaskExposure.INTERNAL_TRIGGER,
+                ),
+            ),
+        )
+        prov = _SingleDirModuleProvider((desc,))
+        disp = RuntimeDispatcher(
+            workspace_root=ws_hp,
+            cache_dir=ws_hp.join(".cache"),
+            module_provider=prov,
+            options=DispatcherHostOptions(module_services_factory=svc_factory, worker_host_dir=ws_hp),
+        )
+        try:
+            mig_out = disp.invoke(
+                InvokeRequest(
+                    task_id=TaskId("tmod.yscb_on_migrate"),
+                    raw_input={"old_version": "0.9.0.0", "new_version": "1.0.0.0"},
+                    workspace_root=ws_hp,
+                    caller_cwd=ws_hp,
+                    propagation=CallPropagationContext(is_internal_trigger=True),
+                )
+            )
+            check(mig_out.ok)
+            res = disp.invoke(
+                InvokeRequest(
+                    task_id=TaskId("tmod.inspect_all"),
+                    raw_input={},
+                    workspace_root=ws_hp,
+                    caller_cwd=ws_hp,
+                )
+            )
+            check(res.ok and isinstance(res.value, dict))
+            if isinstance(res.value, dict):
+                results.append(str(res.value.get("summary", "")))
+        finally:
+            disp.shutdown()
+    check(len(results) == 2 and results[0] == results[1])
+    check(results[0] == "configured|42|ext1:9|你好世界|v1|0.9.0.0->1.0.0.0")
+
+    ws_unready_p = tmp_root / "ws_unready_t1"
+    (ws_unready_p / ".modules" / "badt1").mkdir(parents=True, exist_ok=True)
+    (ws_unready_p / ".modules" / "badt1" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "id": "badt1",
+                "version": "1.0.0.0",
+                "description": "Unbuilt tier1 module",
+                "pip_dependencies": {"fakepkg": ">=1.0"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (ws_unready_p / ".modules" / "badt1" / "tasks.index.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "module_id": "badt1",
+                "module_aliases": [],
+                "description": "Unbuilt tier1",
+                "tasks": [
+                    {
+                        "task_id": "badt1.run",
+                        "command_path": ["run"],
+                        "aliases": [],
+                        "summary": "Run",
+                        "usage_pros": [],
+                        "usage_cons": [],
+                        "exposure": "cli_and_sdk",
+                        "security_tier": "safe",
+                        "dispatch_mode": "hybrid",
+                        "interactive_tty": False,
+                        "args": [],
+                        "options": [],
+                        "subscriptions": [],
+                        "periodic": None,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (ws_unready_p / ".modules" / "badt1" / "module_entry.py").write_text(
+        "raise RuntimeError('MUST_NEVER_IMPORT_IN_TIER0_HOST')\ndef create_module():\n    return None\n",
+        encoding="utf-8",
+    )
+    with YscbClient(HostPath(ws_unready_p), modules=(_HealthySiblingModule(),)) as unready_cli:
+        ok_sib = unready_cli.call("healthy.ping", output_type=_EchoOut)
+        check(ok_sib.ok and ok_sib.value == _EchoOut(text="healthy_ok"))
+        blocked_t1 = unready_cli.call("badt1.run")
+        check(
+            not blocked_t1.ok
+            and blocked_t1.error is not None
+            and blocked_t1.error.code == ErrorCode.WORKER_CRASHED
+            and ".yscb_unready_tier1_badt1" in blocked_t1.error.message,
+            f"Unverified Tier 1 module must fail closed via unready Tier 1 sentinel: {blocked_t1}",
+        )
+
+    def _bad_cli_scalar_vo_in() -> None:
+        class _BadCliVoMod(Module):
+            id = "badclivo"
+
+            @task("inspect mod")
+            def op(self, req: ModuleId, ctx: TaskContext) -> None:
+                _ = (req, ctx)
+
+    def _bad_sdk_scalar_vo_in() -> None:
+        class _BadSdkVoMod(Module):
+            id = "badsdkvo"
+
+            @task
+            def op(self, req: ModuleId, ctx: TaskContext) -> None:
+                _ = (req, ctx)
+
+    def _bad_sdk_prim_in() -> None:
+        class _BadSdkPrimMod(Module):
+            id = "badsdkprim"
+
+            @task
+            def op(self, req: int, ctx: TaskContext) -> None:
+                _ = (req, ctx)
+
+    for bad_in_fn in (_bad_cli_scalar_vo_in, _bad_sdk_scalar_vo_in, _bad_sdk_prim_in):
+        try:
+            bad_in_fn()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Expected ValueError for invalid task input_type in {bad_in_fn.__name__}")
+
+    class _DictInputSdkMod(Module):
+        id = "dictin"
+
+        @task
+        def count_keys(self, req: dict[str, object], ctx: TaskContext) -> int:
+            _ = ctx
+            return len(req)
+
+    ws_corrupt_p = tmp_root / "ws_sdk_corrupt_index"
+    (ws_corrupt_p / ".modules" / "corruptmod").mkdir(parents=True, exist_ok=True)
+    (ws_corrupt_p / ".modules" / "foreignmod").mkdir(parents=True, exist_ok=True)
+    for m_name in ("corruptmod", "foreignmod"):
+        (ws_corrupt_p / ".modules" / m_name / "manifest.json").write_text(
+            json.dumps({"id": m_name, "version": "1.0.0.0", "description": m_name}),
+            encoding="utf-8",
+        )
+    (ws_corrupt_p / ".modules" / "corruptmod" / "module_entry.py").write_text(
+        "\n".join(
+            (
+                "from core.execution.runtime import TaskContext",
+                "from core.surface.sdk import Module, task",
+                "class CMod(Module):",
+                "    id = 'corruptmod'",
+                "    @task",
+                "    def first(self, ctx: TaskContext) -> str:",
+                "        return 'ok_first'",
+                "    @task",
+                "    def second(self, ctx: TaskContext) -> str:",
+                "        return 'ok_second'",
+                "def create_module():",
+                "    return CMod().to_yscb_module()",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (ws_corrupt_p / ".modules" / "corruptmod" / "tasks.index.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "module_id": "corruptmod",
+                "tasks": [
+                    {
+                        "task_id": "corruptmod.first",
+                        "exposure": "sdk_only",
+                        "security_tier": "safe",
+                        "dispatch_mode": "hybrid",
+                    },
+                    "NOT_AN_OBJECT",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (ws_corrupt_p / ".modules" / "foreignmod" / "module_entry.py").write_text(
+        "\n".join(
+            (
+                "from core.execution.runtime import TaskContext",
+                "from core.surface.sdk import Module, task",
+                "class FMod(Module):",
+                "    id = 'foreignmod'",
+                "    @task",
+                "    def own(self, ctx: TaskContext) -> str:",
+                "        return 'ok_own'",
+                "def create_module():",
+                "    return FMod().to_yscb_module()",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (ws_corrupt_p / ".modules" / "foreignmod" / "tasks.index.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "module_id": "foreignmod",
+                "tasks": [
+                    {
+                        "task_id": "other.hijack",
+                        "exposure": "sdk_only",
+                        "security_tier": "safe",
+                        "dispatch_mode": "hybrid",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with YscbClient(HostPath(ws_corrupt_p), modules=(_DictInputSdkMod(),)) as c_cli:
+        d_out = c_cli.call("dictin.count_keys", {"a": 1, "b": 2}, output_type=int)
+        check(d_out.ok and d_out.value == 2, f"Expected SDK_ONLY dict input to succeed: {d_out}")
+        try:
+            _ = c_cli.call("dictin.count_keys", ModuleId("probe"))
+        except YscbError as exc_vo:
+            check(exc_vo.detail.code == ErrorCode.CODEC_VALIDATION_FAILED, f"Expected CODEC_VALIDATION_FAILED, got {exc_vo}")
+        else:
+            raise AssertionError("Expected YscbError(CODEC_VALIDATION_FAILED) when passing scalar VO to YscbClient.call")
+        c_second = c_cli.call("corruptmod.second", output_type=str)
+        check(
+            c_second.ok and c_second.value == "ok_second",
+            f"Corrupted tasks.index.json must be discarded atomically so Tier 0 dynamically discovers all tasks: {c_second}",
+        )
+        f_own = c_cli.call("foreignmod.own", output_type=str)
+        check(f_own.ok and f_own.value == "ok_own", f"Foreign task_id in tasks.index.json must not crash YscbClient: {f_own}")
+
+    # Reentrant close() guard & concurrent call/close drain safety on YscbClient
+    reentrant_mod = InMemoryModule("reent")
+    reentrant_client_holder: list[YscbClient] = []
+
+    def _reentrant_close_task(_ctx: TaskContext) -> str:
+        reentrant_client_holder[0].close()
+        return "unreachable"
+
+    call_entered = threading.Event()
+    allow_finish = threading.Event()
+
+    def _slow_drain_task(_ctx: TaskContext) -> str:
+        call_entered.set()
+        allow_finish.wait(timeout=5.0)
+        return "drained_ok"
+
+    reentrant_mod.add_task("self_close", _reentrant_close_task)
+    reentrant_mod.add_task("slow", _slow_drain_task)
+    ws_life = tmp_root / "ws_sdk_lifecycle_gate"
+    ws_life.mkdir(parents=True, exist_ok=True)
+    life_cli = YscbClient.local(HostPath(ws_life), reentrant_mod)
+    reentrant_client_holder.append(life_cli)
+    reent_out = life_cli.call("reent.self_close")
+    check(
+        not reent_out.ok and reent_out.error is not None and reent_out.error.code == ErrorCode.ILLEGAL_LOCK_REENTRANCY,
+        f"Reentrant YscbClient.close() inside active call must fail with ILLEGAL_LOCK_REENTRANCY: {reent_out}",
+    )
+    drain_res: list[object] = []
+    t_worker = threading.Thread(target=lambda: drain_res.append(life_cli.call("reent.slow", output_type=str)))
+    t_worker.start()
+    check(call_entered.wait(timeout=5.0), "Worker call failed to start")
+    close_done = threading.Event()
+
+    def _close_bg() -> None:
+        life_cli.close()
+        close_done.set()
+
+    t_closer = threading.Thread(target=_close_bg)
+    t_closer.start()
+    check(not close_done.wait(timeout=0.05), "close() must wait for in-flight call to drain")
+    try:
+        _ = life_cli.call("reent.slow")
+    except YscbError as exc_cl:
+        check(exc_cl.detail.code == ErrorCode.TEARDOWN_ERROR)
+    else:
+        raise AssertionError("New calls while closing must raise TEARDOWN_ERROR")
+    allow_finish.set()
+    t_worker.join(timeout=5.0)
+    t_closer.join(timeout=5.0)
+    check(close_done.is_set() and len(drain_res) == 1, "Expected drained call completion and clean close")
+
+    # Subclass omitting slots=True under a frozen+slots base must be rejected
+    @dataclass(frozen=True, slots=True)
+    class _BaseSlotsCfg:
+        alpha: int = 1
+
+    @dataclass(frozen=True)
+    class _SubMissingSlotsCfg(_BaseSlotsCfg):
+        beta: str = "x"
+
+    try:
+        class _BadInheritedConfigMod(Module):
+            id = "bad_inh_cfg"
+            config_type = _SubMissingSlotsCfg
+
+            @task
+            def noop(self, ctx: TaskContext) -> None:
+                _ = ctx
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Expected ValueError for config_type subclass missing slots=True")
+
+    # CLI DTO definition-time validation: optional Arg before required Arg, duplicate markers, fixed tuple, nested list
+    def _bad_opt_before_req_arg() -> None:
+        @dataclass(frozen=True, slots=True)
+        class _DtoOptBeforeReq:
+            first: Annotated[Optional[str], Arg()]
+            second: Annotated[str, Arg()]
+
+        class _M1(Module):
+            id = "bad_arg_ord"
+
+            @task(cli="run")
+            def run_it(self, req: _DtoOptBeforeReq, ctx: TaskContext) -> None:
+                _ = (req, ctx)
+
+    def _bad_dup_marker() -> None:
+        @dataclass(frozen=True, slots=True)
+        class _DtoDupMarker:
+            x: Annotated[str, Arg(), Option()]
+
+        class _M2(Module):
+            id = "bad_dup_mk"
+
+            @task(cli="run")
+            def run_it(self, req: _DtoDupMarker, ctx: TaskContext) -> None:
+                _ = (req, ctx)
+
+    def _bad_fixed_tuple() -> None:
+        @dataclass(frozen=True, slots=True)
+        class _DtoFixedTup:
+            pair: Annotated[tuple[int, str], Option()]
+
+        class _M3(Module):
+            id = "bad_fix_tup"
+
+            @task(cli="run")
+            def run_it(self, req: _DtoFixedTup, ctx: TaskContext) -> None:
+                _ = (req, ctx)
+
+    def _bad_nested_seq() -> None:
+        @dataclass(frozen=True, slots=True)
+        class _DtoNestedSeq:
+            matrix: Annotated[list[list[int]], Option()]
+
+        class _M4(Module):
+            id = "bad_nest_seq"
+
+            @task(cli="run")
+            def run_it(self, req: _DtoNestedSeq, ctx: TaskContext) -> None:
+                _ = (req, ctx)
+
+    def _bad_literal_true_neg_collision() -> None:
+        @dataclass(frozen=True, slots=True)
+        class _DtoLitTrueNeg:
+            force: Annotated[Literal[True], Option()] = True
+            no_force: Annotated[str, Option()] = ""
+
+        class _M5(Module):
+            id = "bad_lit_neg"
+
+            @task(cli="run")
+            def run_it(self, req: _DtoLitTrueNeg, ctx: TaskContext) -> None:
+                _ = (req, ctx)
+
+    for fn_bad_cli in (_bad_opt_before_req_arg, _bad_dup_marker, _bad_fixed_tuple, _bad_nested_seq, _bad_literal_true_neg_collision):
+        try:
+            fn_bad_cli()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Expected ValueError in {fn_bad_cli.__name__}")
+
+
+class _SharedWriterGroup(TaskGroup):
+    def on_init(self, env: ModuleEnv) -> None:
+        _ = env
+        owner = self.parent_module
+        check(isinstance(owner, _SharedParentModule))
+        if isinstance(owner, _SharedParentModule):
+            owner.append_trace("writer:init")
+
+    def on_close(self) -> None:
+        owner = self.parent_module
+        if isinstance(owner, _SharedParentModule):
+            owner.append_trace("writer:close")
+
+    @task("shared write")
+    def write_note(self, req: _EchoIn, ctx: TaskContext) -> _EchoOut:
+        owner = self.parent_module
+        check(isinstance(owner, _SharedParentModule))
+        if not isinstance(owner, _SharedParentModule):
+            raise RuntimeError("missing parent_module")
+        owner.append_trace(f"write:{req.tag}")
+        sub = ctx.invoke_task("shparent.read_trace", {}, output_type=_EchoOut)
+        check(sub.ok and sub.value is not None)
+        sub_txt = sub.value.text if sub.value is not None else ""
+        return _EchoOut(text=f"{owner.shared_label}:{req.tag}|{sub_txt}")
+
+
+class _SharedReaderGroup(TaskGroup):
+    def on_warmup(self) -> None:
+        owner = self.parent_module
+        if isinstance(owner, _SharedParentModule):
+            owner.append_trace("reader:warmup")
+
+    @task("shared read")
+    def read_trace(self, ctx: TaskContext) -> _EchoOut:
+        _ = ctx
+        owner = self.parent_module
+        check(isinstance(owner, _SharedParentModule))
+        if not isinstance(owner, _SharedParentModule):
+            raise RuntimeError("missing parent_module")
+        return _EchoOut(text=",".join(owner.trace_snapshot()))
+
+
+class _SharedParentModule(Module):
+    id = "shparent"
+    groups = (_SharedWriterGroup, _SharedReaderGroup)
+
+    def __init__(self, label: str = "init") -> None:
+        self._label = label
+        self._trace: list[str] = []
+
+    @property
+    def shared_label(self) -> str:
+        return self._label
+
+    def append_trace(self, entry: str) -> None:
+        self._trace.append(entry)
+
+    def trace_snapshot(self) -> tuple[str, ...]:
+        return tuple(self._trace)
+
+    def on_init(self, env: ModuleEnv) -> None:
+        _ = env
+        self._label = "ready"
+        self.append_trace("parent:init")
+
+    def on_close(self) -> None:
+        self.append_trace("parent:close")
+
+
+def _verify_taskgroup_parent_module_and_new_contracts(tmp_root: Path) -> None:
+    standalone_grp = _SharedWriterGroup()
+    check(standalone_grp.parent_module is None, "Standalone TaskGroup() must keep parent_module=None")
+
+    ws_shared_p = tmp_root / "ws_sdk_shared_parent"
+    ws_shared_p.mkdir(parents=True, exist_ok=True)
+    parent_mod = _SharedParentModule()
+    with YscbClient.local(HostPath(ws_shared_p), parent_mod) as client:
+        w_out = client.call("shparent.write_note", _EchoIn(tag="alpha"), output_type=_EchoOut)
+        check(
+            w_out.ok and w_out.value == _EchoOut(text="ready:alpha|parent:init,writer:init,write:alpha"),
+            f"Expected sibling TaskGroup to read shared parent state in same turn: {w_out}",
+        )
+    check(
+        parent_mod.trace_snapshot() == ("parent:init", "writer:init", "write:alpha", "writer:close", "parent:close"),
+        f"Unexpected shared parent lifecycle trace: {parent_mod.trace_snapshot()}",
+    )
+
+    check(SPACE_UPDATED_EVENT_ID_STR == "core.space_updated")
+    check(SPACE_REGISTRY_CHANGED_EVENT_ID_STR == "core.space_registry_changed")
+    check(WORKSPACE_RELOADED_EVENT_ID == EventId("core.workspace_reloaded"))
+    check(MODULE_INSTALLED_EVENT_ID == EventId("core.module_installed"))
+    check(MODULE_REMOVING_EVENT_ID == EventId("core.module_removing"))
+    check(CONFIG_CHANGED_EVENT_ID == EventId("core.config_changed"))
+    check(ClientRoutingPolicy.AUTO_SPAWN.value == "auto_spawn")
+    check(ExecutionPriority.FOREGROUND.value == "foreground")
+
+    ack_ok = SpaceAckCursorInput(
+        space="  core/workspace  ",
+        consumer="  ast_idx  ",
+        from_gen=0,
+        to_gen=3,
+        config_hash="cfg_abc",
+        merkle_root="mrk_123",
+    )
+    check(ack_ok.space == "core/workspace" and ack_ok.consumer == "ast_idx" and ack_ok.from_gen == 0 and ack_ok.to_gen == 3)
+    ack_same_gen = SpaceAckCursorInput(
+        space="core/workspace",
+        consumer="ast_idx",
+        from_gen=4,
+        to_gen=4,
+        config_hash="",
+        merkle_root="",
+    )
+    check(ack_same_gen.from_gen == 4 and ack_same_gen.to_gen == 4)
+    for bad_ack_fn in (
+        lambda: SpaceAckCursorInput(space="not-a-space", consumer="c", from_gen=0, to_gen=1, config_hash="", merkle_root=""),
+        lambda: SpaceAckCursorInput(space="core/workspace", consumer="   ", from_gen=0, to_gen=1, config_hash="", merkle_root=""),
+        lambda: SpaceAckCursorInput(space="core/workspace", consumer="c", from_gen=-1, to_gen=1, config_hash="", merkle_root=""),
+        lambda: SpaceAckCursorInput(space="core/workspace", consumer="c", from_gen=5, to_gen=4, config_hash="", merkle_root=""),
+        lambda: SpaceAckCursorInput(space="core/workspace", consumer="c", from_gen=True, to_gen=2, config_hash="", merkle_root=""),
+    ):
+        assert_raises_val_error(bad_ack_fn)
+
+    dyn_in = SetDynamicSpaceInput(
+        owner=ModuleId("core"),
+        name="tmp_sp",
+        spec=SpaceSpec(space_id=SpaceId("core", "tmp_sp"), entries=(SemanticUri("project", ""),)),
+    )
+    clr_in = ClearDynamicSpaceInput(owner=ModuleId("core"), name="tmp_sp")
+    scan_in = SpaceScanInput(space_id="core/workspace", force=True)
+    check(dyn_in.name == "tmp_sp" and clr_in.name == "tmp_sp" and scan_in.space_id == "core/workspace" and scan_in.force)
+
+
 def run_surface_sdk_suite(tmp_root: Path) -> None:
     """Execute the full Surface SDK test suite covering DSL, lifecycle, and YscbClient."""
     ws_base_p = tmp_root / "ws_sdk_base"
@@ -1182,6 +2166,8 @@ def run_surface_sdk_suite(tmp_root: Path) -> None:
     _verify_dual_track_rendering(ws_base)
     _verify_lifecycle_and_lifo_isolation(tmp_root)
     _verify_in_memory_and_client_e2e(tmp_root)
+    _verify_wave12_sdk_extensions(tmp_root)
+    _verify_taskgroup_parent_module_and_new_contracts(tmp_root)
     log("[SURFACE-SDK] Surface SDK verification suite PASSED")
 
 

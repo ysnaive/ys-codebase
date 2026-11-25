@@ -7,10 +7,10 @@ from enum import Enum
 import json
 import math
 import os
+from pathlib import Path, PurePosixPath, PureWindowsPath
+import re
 import sys
 import threading
-from pathlib import Path, PureWindowsPath
-import re
 from typing import (
     Callable,
     Final,
@@ -29,7 +29,25 @@ JsonPrimitive: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonPrimitive | Sequence["JsonValue"] | Mapping[str, "JsonValue"]
 JsonObject: TypeAlias = Mapping[str, JsonValue]
 IS_WINDOWS: Final[bool] = sys.platform == "win32"
+IO_REPARSE_TAG_MOUNT_POINT: Final[int] = 0xA0000003
+IO_REPARSE_TAG_SYMLINK: Final[int] = 0xA000000C
+PRIVATE_ENV_PREFIX: Final[str] = "_YSCB_"
 TREE_ID_ENV_KEY: Final[str] = "_YSCB_TREE_ID"
+TEST_SANDBOX_ENV_KEY: Final[str] = "_YSCB_TEST_SANDBOX"
+HOST_DIR_ENV_KEY: Final[str] = "_YSCB_HOST_DIR"
+ROOT_DIR_ENV_KEY: Final[str] = "_YSCB_ROOT_DIR"
+PUBLIC_ENV_ALLOWLIST: Final[frozenset[str]] = frozenset(
+    {
+        "YSCB_NO_DAEMON",
+        "YSCB_FORCE_DAEMON",
+        "YSCB_LOG_LEVEL",
+        "YSCB_NO_UPDATE_CHECK",
+        "YSCB_LOCALE",
+        "YSCB_OFFLINE",
+        "YSCB_CALLER_MODE",
+        "YSCB_CI_APPROVE_GATED",
+    }
+)
 PYTHON_LAUNCHER_HIJACK_ENV_KEYS: Final[tuple[str, ...]] = (
     "__PYVENV_LAUNCHER__",
     "PYTHONSTARTUP",
@@ -89,8 +107,25 @@ def validate_relative_segment(segment: str, *, label: str = "path segment") -> s
         raise ValueError(f"Invalid {label}: {segment!r}")
     return segment
 
-_MODULE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-_QUALIFIED_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$")
+
+def is_disallowed_reparse_tag(reparse_tag: int) -> bool:
+    """Return True iff ``reparse_tag`` is a Windows symlink or mount-point/junction reparse tag."""
+    clean_tag = require_pure_int(reparse_tag, "reparse_tag", min_val=0)
+    return clean_tag in (IO_REPARSE_TAG_SYMLINK, IO_REPARSE_TAG_MOUNT_POINT)
+
+
+_MODULE_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+_QUALIFIED_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$")
+_URI_SCHEME_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)*$")
+_SEMVER4_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:v|V)?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
+    r"(?:\.(?P<rev>0|[1-9]\d*|build))?"
+    r"(?:-(?P<pre>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
+)
+_PRERELEASE_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*$")
+_NON_NEG_INT_SEG_RE: Final[re.Pattern[str]] = re.compile(r"^(?:0|[1-9]\d*)$")
+_ENV_HASH_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{16,64}$")
+_CONSTRAINT_OPS: Final[tuple[str, ...]] = (">=", "<=", "!=", "==", "~=", "^=", "^", ">", "<", "=")
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +279,465 @@ class HostPath:
 
     def __hash__(self) -> int:
         return hash(self.comparison_key)
+
+
+def _compare_prerelease_tags(left_pre: str, right_pre: str) -> int:
+    if left_pre == right_pre:
+        return 0
+    left_parts = left_pre.split(".")
+    right_parts = right_pre.split(".")
+    for left_tok, right_tok in zip(left_parts, right_parts):
+        if left_tok == right_tok:
+            continue
+        left_num = left_tok.isdigit()
+        right_num = right_tok.isdigit()
+        if left_num and right_num:
+            left_i = int(left_tok)
+            right_i = int(right_tok)
+            if left_i != right_i:
+                return 1 if left_i > right_i else -1
+            continue
+        if left_num and not right_num:
+            return -1
+        if not left_num and right_num:
+            return 1
+        return 1 if left_tok > right_tok else -1
+    if len(left_parts) == len(right_parts):
+        return 0
+    return 1 if len(left_parts) > len(right_parts) else -1
+
+
+@dataclass(frozen=True, slots=True)
+class SemVer4:
+    """Four-segment semantic version: major.minor.patch.revision[-prerelease] or major.minor.patch.build."""
+
+    major: int
+    minor: int
+    patch: int
+    revision: int = 0
+    is_build: bool = False
+    prerelease: str = ""
+
+    def __post_init__(self) -> None:
+        require_pure_int(self.major, "SemVer4.major", min_val=0, max_val=INT64_MAX)
+        require_pure_int(self.minor, "SemVer4.minor", min_val=0, max_val=INT64_MAX)
+        require_pure_int(self.patch, "SemVer4.patch", min_val=0, max_val=INT64_MAX)
+        require_pure_int(self.revision, "SemVer4.revision", min_val=0, max_val=INT64_MAX)
+        require_pure_bool(self.is_build, "SemVer4.is_build")
+        require_pure_str(self.prerelease, "SemVer4.prerelease")
+        if self.is_build and self.revision != 0:
+            raise ValueError("SemVer4 with is_build=True requires revision=0.")
+        if self.is_build and self.prerelease:
+            raise ValueError("SemVer4 with is_build=True cannot carry a prerelease tag.")
+        if self.prerelease:
+            if _PRERELEASE_RE.fullmatch(self.prerelease) is None:
+                raise ValueError(f"Invalid SemVer4 prerelease tag: {self.prerelease!r}")
+            if any(seg.isdigit() and len(seg) > 1 and seg.startswith("0") for seg in self.prerelease.split(".")):
+                raise ValueError(f"Leading zero forbidden in numeric SemVer4 prerelease identifier: {self.prerelease!r}")
+
+    @classmethod
+    def parse(cls, raw: str) -> SemVer4:
+        require_pure_str(raw, "SemVer4", non_empty=True)
+        cleaned = raw.strip()
+        m = _SEMVER4_RE.fullmatch(cleaned)
+        if m is None:
+            raise ValueError(f"Invalid SemVer4 string: {raw!r}")
+        major = int(m.group("major"))
+        minor = int(m.group("minor"))
+        patch = int(m.group("patch"))
+        raw_rev = m.group("rev")
+        prerelease = m.group("pre") or ""
+        if raw_rev == "build":
+            return cls(major=major, minor=minor, patch=patch, revision=0, is_build=True, prerelease=prerelease)
+        revision = int(raw_rev) if raw_rev is not None else 0
+        return cls(major=major, minor=minor, patch=patch, revision=revision, is_build=False, prerelease=prerelease)
+
+    def triple(self) -> tuple[int, ...]:
+        return (self.major, self.minor, self.patch)
+
+    def compare_precedence(self, other: SemVer4) -> int:
+        if not isinstance(other, SemVer4):
+            raise ValueError(f"SemVer4.compare_precedence requires SemVer4, got {other!r}")
+        self_trip = (self.major, self.minor, self.patch)
+        other_trip = (other.major, other.minor, other.patch)
+        if self_trip > other_trip:
+            return 1
+        if self_trip < other_trip:
+            return -1
+        if not self.prerelease and other.prerelease:
+            return 1
+        if self.prerelease and not other.prerelease:
+            return -1
+        if self.prerelease and other.prerelease:
+            pre_cmp = _compare_prerelease_tags(self.prerelease, other.prerelease)
+            if pre_cmp != 0:
+                return pre_cmp
+        if not self.is_build and other.is_build:
+            return 1
+        if self.is_build and not other.is_build:
+            return -1
+        if self.revision > other.revision:
+            return 1
+        if self.revision < other.revision:
+            return -1
+        return 0
+
+    def __lt__(self, other: SemVer4) -> bool:
+        if not isinstance(other, SemVer4):
+            return NotImplemented
+        return self.compare_precedence(other) < 0
+
+    def __le__(self, other: SemVer4) -> bool:
+        if not isinstance(other, SemVer4):
+            return NotImplemented
+        return self.compare_precedence(other) <= 0
+
+    def __gt__(self, other: SemVer4) -> bool:
+        if not isinstance(other, SemVer4):
+            return NotImplemented
+        return self.compare_precedence(other) > 0
+
+    def __ge__(self, other: SemVer4) -> bool:
+        if not isinstance(other, SemVer4):
+            return NotImplemented
+        return self.compare_precedence(other) >= 0
+
+    def __str__(self) -> str:
+        if self.is_build:
+            return f"{self.major}.{self.minor}.{self.patch}.build"
+        if self.prerelease:
+            rev_part = f".{self.revision}" if self.revision != 0 else ""
+            return f"{self.major}.{self.minor}.{self.patch}{rev_part}-{self.prerelease}"
+        return f"{self.major}.{self.minor}.{self.patch}.{self.revision}"
+
+
+@dataclass(frozen=True, slots=True)
+class _FndConstraintClause:
+    op: str
+    wildcard_prefix: Optional[tuple[int, ...]] = None
+    target: Optional[SemVer4] = None
+    explicit_fourth: bool = False
+
+
+def _parse_single_constraint_clause(raw_clause: str) -> _FndConstraintClause:
+    clause = raw_clause.strip()
+    if not clause:
+        raise ValueError("Empty VersionConstraint clause.")
+    if clause == "*":
+        return _FndConstraintClause(op="*")
+    op = "=="
+    target_text = clause
+    for cand_op in _CONSTRAINT_OPS:
+        if clause.startswith(cand_op):
+            op = "==" if cand_op == "=" else ("^=" if cand_op == "^" else cand_op)
+            target_text = clause[len(cand_op) :].strip()
+            break
+    if not target_text:
+        raise ValueError(f"Missing target version in VersionConstraint clause: {raw_clause!r}")
+    if target_text == "*":
+        if op == "==":
+            return _FndConstraintClause(op="*")
+        raise ValueError(f"Wildcard '*' cannot combine with operator {op!r}: {raw_clause!r}")
+    if target_text == "build":
+        if op in ("==", "!="):
+            return _FndConstraintClause(op="build_eq" if op == "==" else "build_ne")
+        raise ValueError(f"Tag 'build' only supports equality operators, got {raw_clause!r}")
+    if target_text.endswith(".*"):
+        if op not in ("==", "!="):
+            raise ValueError(f"Wildcard prefix {target_text!r} only supports == or !=, got {raw_clause!r}")
+        raw_segs = target_text[:-2].lstrip("vV").split(".")
+        if not (1 <= len(raw_segs) <= 3) or any(_NON_NEG_INT_SEG_RE.fullmatch(s) is None for s in raw_segs):
+            raise ValueError(f"Invalid wildcard prefix in VersionConstraint: {raw_clause!r}")
+        prefix_ints = tuple(int(s) for s in raw_segs)
+        return _FndConstraintClause(op="wild_eq" if op == "==" else "wild_ne", wildcard_prefix=prefix_ints)
+    parsed_ver = SemVer4.parse(target_text)
+    core_part = target_text.lstrip("vV").partition("-")[0]
+    has_fourth = core_part.count(".") >= 3
+    return _FndConstraintClause(op=op, target=parsed_ver, explicit_fourth=has_fourth)
+
+
+def _eval_constraint_clause(clause: _FndConstraintClause, ver: SemVer4) -> bool:
+    if clause.op == "*":
+        return True
+    if clause.op == "build_eq":
+        return ver.is_build
+    if clause.op == "build_ne":
+        return not ver.is_build
+    if clause.op in ("wild_eq", "wild_ne"):
+        prefix = require_non_none(clause.wildcard_prefix)
+        matched = (not ver.prerelease) and (not ver.is_build) and ver.triple()[: len(prefix)] == prefix
+        return matched if clause.op == "wild_eq" else (not matched)
+    target = require_non_none(clause.target)
+    is_three_seg = (not clause.explicit_fourth) and (not target.prerelease) and (not target.is_build)
+    in_three_family = is_three_seg and (not ver.prerelease) and (not ver.is_build) and ver.triple() == target.triple()
+    if clause.op == "==":
+        return in_three_family if is_three_seg else (ver.compare_precedence(target) == 0)
+    if clause.op == "!=":
+        return (not in_three_family) if is_three_seg else (ver.compare_precedence(target) != 0)
+    if clause.op == ">":
+        return ((not in_three_family) and ver.compare_precedence(target) > 0) if is_three_seg else (ver.compare_precedence(target) > 0)
+    if clause.op == ">=":
+        return ver.compare_precedence(target) >= 0
+    if clause.op == "<":
+        if (not target.prerelease) and (not target.is_build) and (ver.prerelease or ver.is_build):
+            return ver.triple() < target.triple()
+        return ver.compare_precedence(target) < 0
+    if clause.op == "<=":
+        return (in_three_family or ver.compare_precedence(target) <= 0) if is_three_seg else (ver.compare_precedence(target) <= 0)
+    if clause.op in ("~=", "^="):
+        return ver.compare_precedence(target) >= 0 and ver.major == target.major
+    return False
+
+
+@dataclass(frozen=True, slots=True)
+class VersionConstraint:
+    """Dependency version constraint supporting ==, =, !=, >, >=, <, <=, ~=, ^, * and comma conjunctions."""
+
+    raw: str
+
+    def __post_init__(self) -> None:
+        require_pure_str(self.raw, "VersionConstraint", non_empty=True)
+        cleaned = self.raw.strip()
+        parts = [p.strip() for p in cleaned.split(",")]
+        if not parts or any(not p for p in parts):
+            raise ValueError(f"Invalid VersionConstraint: {self.raw!r}")
+        for part in parts:
+            _parse_single_constraint_clause(part)
+        object.__setattr__(self, "raw", cleaned)
+
+    @classmethod
+    def parse(cls, raw: str) -> VersionConstraint:
+        return cls(raw=raw)
+
+    @classmethod
+    def compatible_same_major(cls, ver: SemVer4) -> VersionConstraint:
+        if not isinstance(ver, SemVer4):
+            raise ValueError(f"compatible_same_major requires SemVer4, got {ver!r}")
+        return cls(raw=f"^{ver}")
+
+    def satisfies(self, ver: SemVer4) -> bool:
+        if not isinstance(ver, SemVer4):
+            raise ValueError(f"VersionConstraint.satisfies requires SemVer4, got {ver!r}")
+        clauses = [_parse_single_constraint_clause(part) for part in self.raw.split(",")]
+        return all(_eval_constraint_clause(cl, ver) for cl in clauses)
+
+    def __str__(self) -> str:
+        return self.raw
+
+
+def _normalize_semantic_rel_path(raw_rel: str, *, allow_leading_at: bool) -> str:
+    require_pure_str(raw_rel, "SemanticUri.rel_path")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw_rel):
+        raise ValueError(f"Control characters forbidden in SemanticUri path: {raw_rel!r}")
+    norm_slashes = raw_rel.replace("\\", "/")
+    parts = [seg for seg in norm_slashes.split("/") if seg]
+    for idx, seg in enumerate(parts):
+        if seg == "@":
+            if idx == 0 and allow_leading_at:
+                continue
+            raise ValueError(f"Module placeholder '@' is only allowed as the first path segment: {raw_rel!r}")
+        validate_relative_segment(seg, label="SemanticUri segment")
+    return "/".join(parts)
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticUri:
+    """Immutable semantic URI value object requiring an explicit scheme:// without path traversal."""
+
+    scheme: str
+    rel_path: str = ""
+
+    def __post_init__(self) -> None:
+        require_pure_str(self.scheme, "SemanticUri.scheme", non_empty=True)
+        clean_scheme = self.scheme.strip().lower()
+        if _URI_SCHEME_RE.fullmatch(clean_scheme) is None:
+            raise ValueError(f"Invalid SemanticUri scheme: {self.scheme!r}")
+        clean_rel = _normalize_semantic_rel_path(self.rel_path, allow_leading_at=True)
+        object.__setattr__(self, "scheme", clean_scheme)
+        object.__setattr__(self, "rel_path", clean_rel)
+
+    @classmethod
+    def parse(cls, raw: str) -> SemanticUri:
+        require_pure_str(raw, "SemanticUri", non_empty=True)
+        if "://" not in raw:
+            raise ValueError(f"SemanticUri requires explicit '<scheme>://': {raw!r}")
+        scheme_part, rel_part = raw.split("://", 1)
+        if not scheme_part or scheme_part != scheme_part.strip():
+            raise ValueError(f"Invalid SemanticUri scheme in {raw!r}")
+        return cls(scheme=scheme_part, rel_path=rel_part)
+
+    @property
+    def uses_module_placeholder(self) -> bool:
+        return self.rel_path == "@" or self.rel_path.startswith("@/")
+
+    @property
+    def name(self) -> str:
+        if not self.rel_path:
+            return ""
+        return PurePosixPath(self.rel_path).name
+
+    @property
+    def suffix(self) -> str:
+        if not self.rel_path or self.rel_path == "@":
+            return ""
+        return PurePosixPath(self.rel_path).suffix
+
+    @property
+    def parent(self) -> Optional[SemanticUri]:
+        if not self.rel_path:
+            return None
+        if "/" not in self.rel_path:
+            return SemanticUri(scheme=self.scheme, rel_path="")
+        parent_rel = self.rel_path.rsplit("/", 1)[0]
+        return SemanticUri(scheme=self.scheme, rel_path=parent_rel)
+
+    def bind_module(self, module_id: ModuleId) -> SemanticUri:
+        if not isinstance(module_id, ModuleId):
+            raise ValueError(f"SemanticUri.bind_module requires ModuleId, got {module_id!r}")
+        if not self.uses_module_placeholder:
+            return self
+        if self.rel_path == "@":
+            return SemanticUri(scheme=self.scheme, rel_path=module_id.value)
+        return SemanticUri(scheme=self.scheme, rel_path=f"{module_id.value}/{self.rel_path[2:]}")
+
+    def join(self, *parts: str) -> SemanticUri:
+        if not parts:
+            return self
+        joined_segs: list[str] = self.rel_path.split("/") if self.rel_path else []
+        for idx, part in enumerate(parts):
+            require_pure_str(part, "SemanticUri.join part", non_empty=True)
+            if part.startswith(("/", "\\")) or ":" in part or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in part):
+                raise ValueError(f"Invalid SemanticUri.join segment: {part!r}")
+            sub_segs = [s for s in part.replace("\\", "/").split("/") if s]
+            if not sub_segs:
+                raise ValueError(f"Empty SemanticUri.join segment: {part!r}")
+            for sub_idx, seg in enumerate(sub_segs):
+                if seg == "@":
+                    if not joined_segs and idx == 0 and sub_idx == 0:
+                        joined_segs.append(seg)
+                        continue
+                    raise ValueError(f"Module placeholder '@' forbidden in non-leading SemanticUri.join: {part!r}")
+                validate_relative_segment(seg, label="SemanticUri.join segment")
+                joined_segs.append(seg)
+        return SemanticUri(scheme=self.scheme, rel_path="/".join(joined_segs))
+
+    def __truediv__(self, part: str) -> SemanticUri:
+        return self.join(part)
+
+    def __str__(self) -> str:
+        return f"{self.scheme}://{self.rel_path}"
+
+
+@dataclass(frozen=True, slots=True)
+class SpaceId:
+    """Logical file space identifier: named '<owner>/<name>' or synthetic union '/<name>' (owner='')."""
+
+    owner: str
+    name: str
+
+    def __post_init__(self) -> None:
+        require_pure_str(self.owner, "SpaceId.owner")
+        require_pure_str(self.name, "SpaceId.name", non_empty=True)
+        clean_owner = self.owner.strip()
+        if self.owner and not clean_owner:
+            raise ValueError(f"SpaceId.owner cannot be whitespace-only: {self.owner!r}")
+        if clean_owner and _MODULE_ID_RE.fullmatch(clean_owner) is None:
+            raise ValueError(f"Invalid SpaceId.owner: {self.owner!r}")
+        clean_name = self.name.strip()
+        if not clean_name or _MODULE_ID_RE.fullmatch(clean_name) is None:
+            raise ValueError(f"Invalid SpaceId.name: {self.name!r}")
+        object.__setattr__(self, "owner", clean_owner)
+        object.__setattr__(self, "name", clean_name)
+
+    @classmethod
+    def parse(cls, raw: str) -> SpaceId:
+        require_pure_str(raw, "SpaceId", non_empty=True)
+        cleaned = raw.strip()
+        if "/" not in cleaned:
+            raise ValueError(f"Invalid SpaceId (expected '<owner>/<name>' or '/<name>'): {raw!r}")
+        owner_part, name_part = cleaned.split("/", 1)
+        if "/" in name_part or not name_part:
+            raise ValueError(f"Invalid SpaceId format: {raw!r}")
+        return cls(owner=owner_part, name=name_part)
+
+    @property
+    def is_synthetic(self) -> bool:
+        return self.owner == ""
+
+    def __str__(self) -> str:
+        return f"/{self.name}" if not self.owner else f"{self.owner}/{self.name}"
+
+
+@dataclass(frozen=True, slots=True)
+class SpacePath:
+    """Normalized POSIX relative path inside a logical space without leading slash or traversal."""
+
+    rel_path: str
+
+    def __post_init__(self) -> None:
+        require_pure_str(self.rel_path, "SpacePath.rel_path", non_empty=True)
+        if self.rel_path.startswith(("/", "\\")) or self.rel_path.endswith(("/", "\\")):
+            raise ValueError(f"SpacePath forbids leading or trailing slashes: {self.rel_path!r}")
+        norm = self.rel_path.replace("\\", "/")
+        segs = norm.split("/")
+        if not segs or any(not s for s in segs):
+            raise ValueError(f"SpacePath forbids empty segments: {self.rel_path!r}")
+        for seg in segs:
+            validate_relative_segment(seg, label="SpacePath segment")
+        object.__setattr__(self, "rel_path", "/".join(segs))
+
+    @classmethod
+    def parse(cls, raw: str) -> SpacePath:
+        return cls(rel_path=raw)
+
+    def __str__(self) -> str:
+        return self.rel_path
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotGen:
+    """Monotonically non-decreasing non-negative integer snapshot generation (>= 0)."""
+
+    value: int
+
+    def __post_init__(self) -> None:
+        require_pure_int(self.value, "SnapshotGen.value", min_val=0, max_val=INT64_MAX)
+
+    def next(self) -> SnapshotGen:
+        return SnapshotGen(self.value + 1)
+
+    def __lt__(self, other: SnapshotGen) -> bool:
+        if not isinstance(other, SnapshotGen):
+            return NotImplemented
+        return self.value < other.value
+
+    def __le__(self, other: SnapshotGen) -> bool:
+        if not isinstance(other, SnapshotGen):
+            return NotImplemented
+        return self.value <= other.value
+
+
+@dataclass(frozen=True, slots=True)
+class EnvHash:
+    """Immutable virtual environment hash identifier (lowercase hex, 16..64 chars)."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        require_pure_str(self.value, "EnvHash.value", non_empty=True)
+        cleaned = self.value.strip()
+        if _ENV_HASH_RE.fullmatch(cleaned) is None:
+            raise ValueError(f"EnvHash requires 16..64 lowercase hex characters, got {self.value!r}")
+        object.__setattr__(self, "value", cleaned)
+
+    def short(self, length: int = 16) -> str:
+        require_pure_int(length, "EnvHash.short length", min_val=1, max_val=64)
+        if length > len(self.value):
+            raise ValueError(f"Requested short length {length} exceeds EnvHash length {len(self.value)}.")
+        return self.value[:length]
+
+    def __str__(self) -> str:
+        return self.value
 
 
 def _validate_windows_path_str(path_str: str) -> None:

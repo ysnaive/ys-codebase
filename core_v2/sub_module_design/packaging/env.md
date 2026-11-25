@@ -5,7 +5,7 @@
 > **建議內部切分**：`spec.py`、`pool.py`、`probe.py`、`gc.py`、`__init__.py`
 > **依賴上限（Allowed Imports）**：`foundation/*`、`filesystem.{fs, vfs}`、`metadata.config`
 > **禁止反向依賴（Forbidden Imports）**：`packaging.installer`、`execution/*`、`surface/*`
-> **狀態**：`Draft — Design Frozen for Wave 1.2 Implementation`
+> **狀態**：`Active Living Spec — Implementation-Aligned SSOT`
 
 > [!NOTE]
 > **實作彈性邊界**：`.venv/<group>_<py_tag>_<hash16>/` 目錄契約、`.yscb_env_meta.json` 格式、`EnvSpec` / `EnvHealthReport` / `EnvGcPolicy` 語意與 `--only-binary=:all:` 防線屬硬契約；內部 `pip` 呼叫細節與重試輔助函式可由遠端實作端微調。
@@ -52,39 +52,32 @@
 ```python
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Mapping, Optional, Sequence
+from abc import ABC, abstractmethod
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from enum import Enum, Flag
+import io
+import os
+from pathlib import Path
+import sqlite3
+import subprocess
+import sys
+import threading
+from typing import Annotated, BinaryIO, Callable, ClassVar, Final, Generic, Literal, Optional, Protocol, TextIO, TypeAlias, TypeVar, overload, runtime_checkable
 
-from core.foundation.observability import CancellationToken
-from core.foundation.primitives import EnvHash, HostPath, ModuleId
+from core.filesystem.fs import FileLock, atomic_write_json, is_symlink_or_reparse, read_json_dict, read_nofollow_regular_bytes, resolve_contained_subpath, silent_unlink, try_resolve_contained_subpath
+from core.foundation import CancellationToken, EnvHash, ErrorCode, HostPath, IS_WINDOWS, JsonObject, ManagedProcessTree, ModuleId, TaskCancelledException, YscbError, build_isolated_python_env, is_process_alive, is_public_env_truthy, require_non_negative_sec, require_pure_bool, require_pure_int, require_pure_str, require_typed_tuple, safe_exception_summary, safe_real_to_float, validate_relative_segment
 from core.metadata.config import ModuleManifest
 
+def acquire_env_lease_for_python(pool: ImmutableVenvPool, venv_python: HostPath) -> Optional[FileLock]:
+    ...
 
-@dataclass(frozen=True, slots=True)
-class EnvSpec:
-    """不可變 Tier 1 虛擬環境規格描述。"""
-    group: str
-    py_tag: str
-    platform_tag: str
-    pip_specs: tuple[str, ...]
-    env_hash: EnvHash
+def acquire_env_shared_lease(pool: ImmutableVenvPool, env_hash: EnvHash) -> Optional[FileLock]:
+    ...
 
-    @property
-    def dirname(self) -> str: ...  # "{group}_{py_tag}_{env_hash.short(16)}"
-
-
-@dataclass(frozen=True, slots=True)
-class EnvMetadata:
-    """落盤於 <env_dir>/.yscb_env_meta.json 之完成標記與審計元數據。"""
-    group: str
-    env_hash: EnvHash
-    py_tag: str
-    platform_tag: str
-    pip_specs: tuple[str, ...]
-    created_at_utc: str
-    last_used_epoch_sec: float
-    complete: bool = True
-
+def touch_env_last_used(env_dir: HostPath, *, min_interval_sec: float=3600.0) -> bool:
+    ...
 
 @dataclass(frozen=True, slots=True)
 class EnvBuildResult:
@@ -94,23 +87,18 @@ class EnvBuildResult:
     reused: bool
     duration_ms: int
 
+class EnvGarbageCollector:
 
-@dataclass(frozen=True, slots=True)
-class EnvHealthReport:
-    spec: Optional[EnvSpec]
-    env_dir: HostPath
-    quick_ok: bool
-    deep_import_ok: Optional[bool] = None
-    issues: tuple[str, ...] = ()
-```
+    def __init__(self, pool: ImmutableVenvPool, *, policy: EnvGcPolicy=EnvGcPolicy()) -> None:
+        ...
 
+    def collect(self, active_specs: Sequence[EnvSpec], *, force_all: bool=False) -> EnvGcResult:
+        ...
 
 @dataclass(frozen=True, slots=True)
 class EnvGcPolicy:
-    """回滾友善孤兒環境回收策略（與 SnapshotVault 7 天視窗對齊，退化為即時回收僅需設為 0）。"""
     grace_days: float = 7.0
     keep_inactive_per_group: int = 1
-
 
 @dataclass(frozen=True, slots=True)
 class EnvGcResult:
@@ -119,52 +107,96 @@ class EnvGcResult:
     retained_rollback_dirs: tuple[HostPath, ...] = ()
     cleaned_staging_dirs: tuple[HostPath, ...] = ()
 
+class EnvHealthProbe:
+
+    def __init__(self, pool: ImmutableVenvPool) -> None:
+        ...
+
+    def check_quick(self, spec: EnvSpec) -> EnvHealthReport:
+        ...
+
+    def check_deep(self, spec: EnvSpec, *, import_modules: Sequence[str]=(), timeout_sec: float=15.0) -> EnvHealthReport:
+        ...
+
+    def repair(self, spec: EnvSpec, *, offline: bool=False, wheel_cache_dir: Optional[HostPath]=None, cancel_token: Optional[CancellationToken]=None) -> EnvBuildResult:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class EnvHealthReport:
+    spec: Optional[EnvSpec]
+    env_dir: HostPath
+    quick_ok: bool
+    deep_import_ok: Optional[bool] = None
+    issues: tuple[str, ...] = ()
+
+@dataclass(frozen=True, slots=True)
+class EnvMetadata:
+    group: str
+    env_hash: EnvHash
+    py_tag: str
+    platform_tag: str
+    pip_specs: tuple[str, ...]
+    created_at_utc: str
+    last_used_epoch_sec: float
+    complete: bool = True
+
+@dataclass(frozen=True, slots=True)
+class EnvSpec:
+    group: str
+    py_tag: str
+    platform_tag: str
+    pip_specs: tuple[str, ...]
+    env_hash: EnvHash
+
+    @property
+    def dirname(self) -> str:
+        ...
 
 class ImmutableVenvPool:
-    """不可變內容雜湊 .venv 池管理器（純標準庫建置，零執行期隱式 pip）。"""
-    def __init__(self, *, yscb_root: HostPath, cache_dir: HostPath) -> None: ...
+
+    def __init__(self, *, yscb_root: HostPath, cache_dir: HostPath) -> None:
+        ...
 
     @staticmethod
-    def compute_env_spec(group: str, pip_dependencies: Mapping[str, str]) -> EnvSpec: ...
+    def compute_env_spec(group: str, pip_dependencies: Mapping[str, str]) -> EnvSpec:
+        ...
+
     @staticmethod
-    def resolve_group_specs(manifests: Sequence[ModuleManifest]) -> Mapping[ModuleId, EnvSpec]: ...
+    def resolve_group_specs(manifests: Sequence[ModuleManifest]) -> Mapping[ModuleId, EnvSpec]:
+        ...
 
-    def get_env_dir(self, spec: EnvSpec) -> HostPath: ...
-    def get_python_executable(self, spec: EnvSpec) -> Optional[HostPath]: ...
-    def is_env_ready(self, spec: EnvSpec) -> bool: ...
-    def list_envs(self) -> tuple[tuple[HostPath, Optional[EnvMetadata]], ...]: ...
-    def ensure_env(
-        self,
-        spec: EnvSpec,
-        *,
-        offline: bool = False,
-        wheel_cache_dir: Optional[HostPath] = None,
-        timeout_sec: float = 300.0,
-        cancel_token: Optional[CancellationToken] = None,
-    ) -> EnvBuildResult: ...
+    def get_env_dir(self, spec: EnvSpec) -> HostPath:
+        ...
 
+    def get_site_packages_dirs(self, spec: EnvSpec) -> tuple[HostPath, HostPath]:
+        ...
 
-class EnvHealthProbe:
-    """分級健康探針：日常 O(1) 標記檔快速檢查，異常或 env check 時才開子進程深度驗證。"""
-    def __init__(self, pool: ImmutableVenvPool) -> None: ...
-    def check_quick(self, spec: EnvSpec) -> EnvHealthReport: ...
-    def check_deep(
-        self, spec: EnvSpec, *, import_modules: Sequence[str] = (), timeout_sec: float = 15.0,
-    ) -> EnvHealthReport: ...
-    def repair(
-        self, spec: EnvSpec, *, offline: bool = False, wheel_cache_dir: Optional[HostPath] = None,
-        cancel_token: Optional[CancellationToken] = None,
-    ) -> EnvBuildResult: ...
+    def get_python_executable(self, spec: EnvSpec) -> Optional[HostPath]:
+        ...
 
+    def is_env_ready(self, spec: EnvSpec) -> bool:
+        ...
 
-class EnvGarbageCollector:
-    """非阻塞孤兒環境回收器（保留近期離線回滾環境；Windows 鎖檔跳過不阻斷升級）。"""
-    def __init__(
-        self, pool: ImmutableVenvPool, *, policy: EnvGcPolicy = EnvGcPolicy(),
-    ) -> None: ...
-    def collect(
-        self, active_specs: Sequence[EnvSpec], *, force_all: bool = False,
-    ) -> EnvGcResult: ...
+    def list_envs(self) -> tuple[tuple[HostPath, Optional[EnvMetadata]], ...]:
+        ...
+
+    def ensure_env(self, spec: EnvSpec, *, offline: bool=False, wheel_cache_dir: Optional[HostPath]=None, timeout_sec: float=300.0, cancel_token: Optional[CancellationToken]=None) -> EnvBuildResult:
+        ...
+
+__all__: tuple[str, ...] = (
+    "EnvBuildResult",
+    "EnvGarbageCollector",
+    "EnvGcPolicy",
+    "EnvGcResult",
+    "EnvHealthProbe",
+    "EnvHealthReport",
+    "EnvMetadata",
+    "EnvSpec",
+    "ImmutableVenvPool",
+    "acquire_env_lease_for_python",
+    "acquire_env_shared_lease",
+    "touch_env_last_used",
+)
 ```
 
 ---
@@ -177,8 +209,9 @@ class EnvGarbageCollector:
    - 固定附加 `--only-binary=:all:`、`--no-warn-script-location`、`--disable-pip-version-check`；若 `offline=True` 或環境變數 `YSCB_OFFLINE=1` 則強制加入 `--no-index`（並於提供 `wheel_cache_dir` 時附加 `--find-links`）。
 3. **`virtiofs` / Windows 符號連結降級（`DN-10`）**：
    - 建置 `.venv` 前於 `.venv/` 目錄內執行 `_can_symlink()` 實測（建立暫存 symlink、驗證 `realpath`、立即刪除）；探測失敗自動呼叫 `venv.EnvBuilder(symlinks=False, with_pip=False)`（即 `copies=True`）並自宿主 Python 補齊 `pip`。
-4. **回滾友善 GC 與 Windows 鎖檔容忍（E3-A）**：
+4. **回滾友善 GC、POSIX 活體共享鎖與節流 `last_used_epoch_sec`（E3-A）**：
    - `EnvGarbageCollector.collect(active_specs)` 優先清理所有孤兒 `.staging_*` 殘留目錄（跳過 PID 仍存活之建置中暫存目錄）。
+   - 運行中之 Tier 1 Worker 透過 `acquire_env_shared_lease` / `acquire_env_lease_for_python` 對 `{cache_dir}/locks/env_{hash16}.lock` 持有非阻塞共享鎖，並經 `touch_env_last_used(env_dir, min_interval_sec=3600.0)` 節流原子刷新 `.yscb_env_meta.json`；GC 執行非阻塞獨占鎖探測失敗時立即記入 `skipped_locked_dirs` 跳過，確保 POSIX 與 Windows 下皆絕不刪毀使用中 `.venv`。
    - 對非活躍且非當前 `active_specs` 之舊環境：若 `force_all=False`，每個 `group` 保留最新 `keep_inactive_per_group`（預設 `1`）份且未超過 `grace_days`（預設 `7` 天）之環境，讓 `yscb rollback` 可毫秒級離線切換回舊環境無須重跑 `pip`；超出門檻者以 `robust_rmtree` 清理，若於 Windows 上仍被舊 Worker 鎖定（`PermissionError`），記入 `skipped_locked_dirs` 並於下次啟動／`yscb env gc` 自動補清。
 5. **跨平台 IDE 路徑輔助**：提供 `get_site_packages_dirs(spec)` 同時輸出 POSIX (`lib/pythonX.Y/site-packages`) 與 Windows (`Lib/site-packages`) 雙候選路徑供 `vscode-support` 消費（`DN-09`）。
 

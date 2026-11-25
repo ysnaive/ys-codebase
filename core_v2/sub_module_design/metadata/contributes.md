@@ -5,7 +5,7 @@
 > **建議內部切分**：`spec.py`、`compiler.py`、`validator.py`、`provenance.py`、`aggregator.py`、`__init__.py`
 > **依賴上限（Allowed Imports）**：`foundation/*`、`filesystem.fs`、`metadata.config`
 > **禁止反向依賴（Forbidden Imports）**：`filesystem.{vfs, space, storage}`、`packaging/*`、`execution/*`、`surface/*`
-> **狀態**：`Draft — Design Frozen for Wave 1.2 Implementation`
+> **狀態**：`Active Living Spec — Implementation-Aligned SSOT`
 
 > [!NOTE]
 > **實作彈性邊界**：`MergeStrategy`、`ContribField`、`ExtensionPointSpec`、`ProvenanceGraph`、JSON 合併語意（`merge/extend/replace/unique/bucket_by_donor`）與 `contributes/<target>.json` / `config://<target>/contribute.json` 磁碟同構格式屬硬契約；內部驗證輔助實作可由遠端實作端微調。
@@ -56,85 +56,283 @@
 
 ```python
 from __future__ import annotations
+from abc import ABC, abstractmethod
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from enum import Enum, Flag
+import io
+import os
+from pathlib import Path
+import sqlite3
+import subprocess
+import sys
+import threading
+from typing import Annotated, BinaryIO, Callable, ClassVar, Final, Generic, Literal, Optional, Protocol, TextIO, TypeAlias, TypeVar, overload, runtime_checkable
+from core.filesystem.fs import MAX_JSON_FILE_BYTES, has_symlink_raw_path, is_symlink_or_reparse, read_nofollow_regular_bytes, resolve_contained_subpath, try_resolve_contained_subpath
+from core.foundation import DataclassCodec, EnvHash, ErrorCode, EventId, HostPath, INT64_MAX, INT64_MIN, JsonObject, JsonValue, LocaleCatalog, MAX_USER_JSON_DEPTH, ModuleId, MutableJsonObject, SchemaExporter, SemVer4, SemanticUri, SnapshotGen, SpaceId, SpacePath, TaskId, VersionConstraint, YscbError, clone_strict_json_object, is_valid_relative_segment, is_valid_type_annotation, require_pure_bool, require_pure_int, require_pure_str, require_typed_tuple, resolve_dataclass_init_hints, safe_exception_summary, sanitize_utf8_text, strict_parse_json_object
+from core.metadata.config import ConfigStore, ModuleManifest, parse_locale_chain_tokens
+TPoint = TypeVar('TPoint')
+SdkCoreSessionFactory: TypeAlias = Callable[[HostPath, HostPath], Optional[tuple[object, Callable[[], None]]]]
 
-from dataclasses import dataclass
-from enum import Enum
-from typing import Generic, Mapping, Optional, Sequence, TypeVar
+@contextmanager
+def active_cross_workspace_call_scope(is_cross_workspace: bool) -> Iterator[None]:
+    ...
 
-from core.foundation.primitives import HostPath, JsonObject, JsonValue, ModuleId, MutableJsonObject
-from core.metadata.config import ModuleManifest
+def bind_locale_getter_dialect(getter: object, yscb_root: HostPath, dialect: Optional[str], *, is_daemon_host: bool=False, register_cold_root: bool=True, inherit_host_env_locale: bool=True, raw_env_locale_override: Optional[str]=None) -> None:
+    ...
 
-TPoint = TypeVar("TPoint")
+def bind_locale_getter_owner(owner: object, getter: object) -> None:
+    ...
 
+def compile_extension_points(target_module: ModuleId, specs: Sequence[ExtensionPointSpec[object]]) -> ContributesSchemaBundle:
+    ...
 
-class MergeStrategy(Enum):
-    MERGE = "merge"
-    EXTEND = "extend"
-    REPLACE = "replace"
-    UNIQUE = "unique"
-    BUCKET_BY_DONOR = "bucket_by_donor"
+def core_builtin_extension_points() -> tuple[ExtensionPointSpec[object], ...]:
+    ...
 
+def discover_installed_manifests_map(yscb_root: HostPath) -> dict[ModuleId, ModuleManifest]:
+    ...
+
+def extract_parsed_space_contributions(core_agg: AggregatedContributes) -> tuple[ParsedSpaceContribution, ...]:
+    ...
+
+def extract_validated_uri_schemes(host_dir: HostPath, cfg_store: ConfigStore, core_agg: AggregatedContributes) -> tuple[ValidatedUriSchemeSpec, ...]:
+    ...
+
+def hash_json_dir_shallow(update_fn: Callable[[bytes], None], tag: str, dir_path: str) -> None:
+    ...
+
+def hash_workspace_surface_trees(update_fn: Callable[[bytes], None], yscb_root: HostPath, *, include_space_db: bool=False, include_tasks_index: bool=False) -> None:
+    ...
+
+def is_active_cross_workspace_call() -> bool:
+    ...
+
+def is_control_plane_reserved_path(hp: HostPath, *, yscb_root: HostPath, host_dir: HostPath, project_root: Optional[HostPath], project_root_disabled: bool=False, owner: Optional[str]=None, allow_any_module_storage: bool=False) -> bool:
+    ...
+
+def is_managed_child_dispatcher(dispatcher: object) -> bool:
+    ...
+
+def is_permitted_contributed_mount_root(resolved_hp: Optional[HostPath], *, owner: str, host_dir: HostPath, yscb_root: HostPath, proj_info: ResolvedProjectRoot) -> bool:
+    ...
+
+def load_workspace_locale_catalog(yscb_root: HostPath, cfg_store: ConfigStore, *, contributes_aggregator: Optional[ContributesAggregator]=None, dialect: Optional[str]=None, raw_env_locale: Optional[str]=None) -> LocaleCatalog:
+    ...
+
+def lookup_cold_workspace_dialect(yscb_root: HostPath) -> Optional[str]:
+    ...
+
+def lookup_cold_workspace_dialect_state(yscb_root: HostPath) -> ColdWorkspaceDialectState:
+    ...
+
+def lookup_locale_getter_dialect(getter: object) -> Optional[BoundLocaleDialect]:
+    ...
+
+def lookup_owner_locale_dialect(owner: object) -> Optional[BoundLocaleDialect]:
+    ...
+
+def probe_workspace_host_dir(target_ws: HostPath) -> Optional[HostPath]:
+    ...
+
+def register_managed_child_dispatcher(dispatcher: object) -> None:
+    ...
+
+def register_sdk_core_dispatcher_binder(core_module: object, binder: Callable[[object], None]) -> None:
+    ...
+
+def register_sdk_core_post_call_hook(core_module: object, hook: Callable[[], None]) -> None:
+    ...
+
+def register_sdk_core_session_factory(factory: Optional[SdkCoreSessionFactory]) -> None:
+    ...
+
+def resolve_sdk_core_dispatcher_binder(core_module: object) -> Optional[Callable[[object], None]]:
+    ...
+
+def resolve_sdk_core_post_call_hook(core_module: object) -> Optional[Callable[[], None]]:
+    ...
+
+def resolve_sdk_core_session_factory() -> Optional[SdkCoreSessionFactory]:
+    ...
+
+def resolve_workspace_project_root(host_dir: HostPath, cfg_store: ConfigStore) -> ResolvedProjectRoot:
+    ...
+
+def scan_workspace_locale_dictionaries(yscb_root: HostPath, *, contributes_aggregator: Optional[ContributesAggregator]=None) -> dict[ModuleId, dict[str, dict[str, str]]]:
+    ...
+
+def unbind_locale_getter_dialect(getter: object) -> None:
+    ...
+
+def unbind_locale_getter_owner(owner: object) -> None:
+    ...
+
+def validate_locale_bundle(donor_module: ModuleId, module_root: HostPath, locale_pointers: Mapping[str, str]) -> tuple[ValidationIssue, ...]:
+    ...
+
+@dataclass(frozen=True, slots=True)
+class AggregatedContributes:
+    target_module: ModuleId
+    raw_merged: JsonObject
+    provenance: ProvenanceGraph
+    warnings: tuple[ValidationIssue, ...] = ()
+
+    def has_point(self, point_name: str) -> bool:
+        ...
+
+    def decode_point(self, point_name: str, target_cls: type[TPoint]) -> TPoint:
+        ...
+
+    def decode_donor_bucket(self, point_name: str, item_cls: type[TPoint]) -> Mapping[str, TPoint]:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class BoundLocaleDialect:
+    dialect: Optional[str]
+    is_daemon_host: bool = False
+    inherit_host_env_locale: bool = True
+    raw_env_locale_override: Optional[str] = None
+
+@dataclass(frozen=True, slots=True)
+class ColdWorkspaceDialectState:
+    has_active_kernel: bool
+    dialect: Optional[str] = None
 
 @dataclass(frozen=True, slots=True)
 class ContribField:
-    """搭配 typing.Annotated[T, ContribField(...)] 標註擴充點欄位之合併策略與 IDE 說明。"""
     merge: Optional[MergeStrategy] = None
-    description: str = ""
+    description: str = ''
     dedupe: bool = True
 
+class ContributesAggregator:
 
-@dataclass(frozen=True, slots=True)
-class ExtensionPointSpec(Generic[TPoint]):
-    """Host 模組開放之單一強型別擴充點規格（唯一真理來源）。"""
-    name: str
-    payload_type: type[TPoint]
-    description: str = ""
-    merge_strategy: MergeStrategy = MergeStrategy.MERGE
-    strict_fields: bool = True
+    def __init__(self, *, yscb_root: HostPath, manifests: Sequence[ModuleManifest], live_specs: Mapping[ModuleId, Sequence[ExtensionPointSpec[object]]]=...) -> None:
+        ...
 
+    def reload(self, manifests: Optional[Sequence[ModuleManifest]]=None, live_specs: Optional[Mapping[ModuleId, Sequence[ExtensionPointSpec[object]]]]=None) -> None:
+        ...
+
+    def get_schema_bundle(self, target_module: ModuleId) -> Optional[ContributesSchemaBundle]:
+        ...
+
+    def list_extension_points(self, target_module: Optional[ModuleId]=None) -> Mapping[ModuleId, ContributesSchemaBundle]:
+        ...
+
+    def aggregate(self, target_module: ModuleId, *, strict: bool=False) -> AggregatedContributes:
+        ...
+
+    def validate_all(self, *, strict: bool=True) -> tuple[ValidationReport, ...]:
+        ...
+
+    def validate_donor_file(self, donor_label: str, target_module: ModuleId, raw_payload: JsonObject, *, strict: bool=True) -> ValidationReport:
+        ...
 
 @dataclass(frozen=True, slots=True)
 class ContributesSchemaBundle:
-    """由 core 編譯產出之靜態擴充契約包（可序列化為 contributes/_schema.json 供 Tier 0 / IDE 消費）。"""
     target_module: ModuleId
     schema_version: int
-    points_schema: JsonObject  # JSON Schema Draft 2020-12 含 x-yscb-merge / x-yscb-bucket-by-donor
+    points_schema: JsonObject
 
-    def to_json(self) -> MutableJsonObject: ...
+    def to_json(self) -> MutableJsonObject:
+        ...
+
     @classmethod
-    def from_json(cls, raw: JsonObject) -> ContributesSchemaBundle: ...
-```
+    def from_json(cls, raw: JsonObject) -> ContributesSchemaBundle:
+        ...
 
+@dataclass(frozen=True, slots=True)
+class CoreSpaceContribution:
+    entries: tuple[str, ...] = ()
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+    presets: tuple[str, ...] = ()
+    compose: tuple[str, ...] = ()
+    watch: Optional[bool] = None
+    hash_policy: str = 'adaptive'
+    description: str = ''
+
+@dataclass(frozen=True, slots=True)
+class CoreUriSchemeContribution:
+    token: Optional[str] = None
+    target_uri: Optional[str] = None
+    config_binding: Optional[str] = None
+    provider_module: Optional[str] = None
+    description: str = ''
+
+@dataclass(frozen=True, slots=True)
+class ExtensionPointSpec(Generic[TPoint]):
+    name: str
+    payload_type: type[TPoint]
+    description: str = ''
+    merge_strategy: MergeStrategy = MergeStrategy.MERGE
+    strict_fields: bool = True
+
+class MergeStrategy(Enum):
+    MERGE = 'merge'
+    EXTEND = 'extend'
+    REPLACE = 'replace'
+    UNIQUE = 'unique'
+    BUCKET_BY_DONOR = 'bucket_by_donor'
+
+@dataclass(frozen=True, slots=True)
+class ParsedSpaceContribution:
+    space_id: SpaceId
+    entries: tuple[SemanticUri, ...]
+    include: tuple[str, ...]
+    exclude: tuple[str, ...]
+    presets: tuple[str, ...]
+    compose: tuple[str, ...]
+    watch: bool
+    hash_policy_name: str
+    description: str
 
 @dataclass(frozen=True, slots=True)
 class ProvenanceEntry:
     json_pointer: str
-    contributors: tuple[str, ...]  # 依序累積之貢獻來源（模組 ID 或 "project"）
-    final_owner: str               # 最終生效覆寫方
-
+    contributors: tuple[str, ...]
+    final_owner: str
 
 class ProvenanceGraph:
-    """離帶（Out-of-Band）溯源圖：不向業務 JSON 注入魔術鍵，支援精確 JSON Pointer 來源查詢。"""
-    def __init__(self, entries: Mapping[str, ProvenanceEntry]) -> None: ...
-    def origin_for(self, json_pointer: str) -> Optional[ProvenanceEntry]: ...
-    def contributors_for(self, json_pointer: str) -> tuple[str, ...]: ...
-    def pointers_by_donor(self, donor: str) -> tuple[str, ...]: ...
-    def to_json(self) -> MutableJsonObject: ...
 
+    def __init__(self, entries: Mapping[str, ProvenanceEntry]) -> None:
+        ...
 
-class ValidationSeverity(Enum):
-    WARNING = "warning"
-    ERROR = "error"
+    def origin_for(self, json_pointer: str) -> Optional[ProvenanceEntry]:
+        ...
 
+    def contributors_for(self, json_pointer: str) -> tuple[str, ...]:
+        ...
+
+    def pointers_by_donor(self, donor: str) -> tuple[str, ...]:
+        ...
+
+    def to_json(self) -> MutableJsonObject:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class ResolvedProjectRoot:
+    project_root: Optional[HostPath]
+    disabled: bool
+
+@dataclass(frozen=True, slots=True)
+class ValidatedUriSchemeSpec:
+    scheme: str
+    owner: str
+    target_path: Optional[HostPath]
+    target_uri: Optional[SemanticUri]
+    provider_module: Optional[ModuleId]
+    config_binding: Optional[str]
+    description: str
 
 @dataclass(frozen=True, slots=True)
 class ValidationIssue:
     severity: ValidationSeverity
-    source_label: str              # 例 "module:dev/contributes/core.json" 或 "project:config/core/contribute.json"
+    source_label: str
     json_pointer: str
     message: str
-    suggestion: Optional[str] = None  # Did you mean '...'
-
+    suggestion: Optional[str] = None
 
 @dataclass(frozen=True, slots=True)
 class ValidationReport:
@@ -142,61 +340,21 @@ class ValidationReport:
     issues: tuple[ValidationIssue, ...] = ()
 
     @property
-    def ok(self) -> bool: ...
+    def ok(self) -> bool:
+        ...
+
     @property
-    def errors(self) -> tuple[ValidationIssue, ...]: ...
+    def errors(self) -> tuple[ValidationIssue, ...]:
+        ...
+
     @property
-    def warnings(self) -> tuple[ValidationIssue, ...]: ...
+    def warnings(self) -> tuple[ValidationIssue, ...]:
+        ...
 
-
-@dataclass(frozen=True, slots=True)
-class AggregatedContributes:
-    """目標模組單次聚合結果（純淨業務 JSON + 獨立 ProvenanceGraph + 強型別解碼入口）。"""
-    target_module: ModuleId
-    raw_merged: JsonObject
-    provenance: ProvenanceGraph
-    warnings: tuple[ValidationIssue, ...] = ()
-
-    def has_point(self, point_name: str) -> bool: ...
-    def decode_point(self, point_name: str, target_cls: type[TPoint]) -> TPoint: ...
-    def decode_donor_bucket(self, point_name: str, item_cls: type[TPoint]) -> Mapping[str, TPoint]: ...
-
-
-def compile_extension_points(
-    target_module: ModuleId,
-    specs: Sequence[ExtensionPointSpec[object]],
-) -> ContributesSchemaBundle: ...
-
-
-def validate_locale_bundle(
-    donor_module: ModuleId,
-    module_root: HostPath,
-    locale_pointers: Mapping[str, str],
-) -> tuple[ValidationIssue, ...]: ...
-
-
-class ContributesAggregator:
-    """純記憶體兩階拓撲聚合與雙重驗證引擎（100% 歸屬 core，零磁碟快取落盤）。"""
-    def __init__(
-        self,
-        *,
-        yscb_root: HostPath,
-        manifests: Sequence[ModuleManifest],
-        live_specs: Mapping[ModuleId, Sequence[ExtensionPointSpec[object]]] = ...,
-    ) -> None: ...
-
-    def reload(
-        self,
-        manifests: Optional[Sequence[ModuleManifest]] = None,
-        live_specs: Optional[Mapping[ModuleId, Sequence[ExtensionPointSpec[object]]]] = None,
-    ) -> None: ...
-    def get_schema_bundle(self, target_module: ModuleId) -> Optional[ContributesSchemaBundle]: ...
-    def list_extension_points(self, target_module: Optional[ModuleId] = None) -> Mapping[ModuleId, ContributesSchemaBundle]: ...
-    def aggregate(self, target_module: ModuleId, *, strict: bool = False) -> AggregatedContributes: ...
-    def validate_all(self, *, strict: bool = True) -> tuple[ValidationReport, ...]: ...
-    def validate_donor_file(
-        self, donor_label: str, target_module: ModuleId, raw_payload: JsonObject, *, strict: bool = True,
-    ) -> ValidationReport: ...
+class ValidationSeverity(Enum):
+    WARNING = 'warning'
+    ERROR = 'error'
+__all__: tuple[str, ...] = ('AggregatedContributes', 'BoundLocaleDialect', 'ColdWorkspaceDialectState', 'ContribField', 'ContributesAggregator', 'ContributesSchemaBundle', 'CoreSpaceContribution', 'CoreUriSchemeContribution', 'ExtensionPointSpec', 'MergeStrategy', 'ParsedSpaceContribution', 'ProvenanceEntry', 'ProvenanceGraph', 'ResolvedProjectRoot', 'SdkCoreSessionFactory', 'ValidatedUriSchemeSpec', 'ValidationIssue', 'ValidationReport', 'ValidationSeverity', 'active_cross_workspace_call_scope', 'bind_locale_getter_dialect', 'bind_locale_getter_owner', 'compile_extension_points', 'core_builtin_extension_points', 'discover_installed_manifests_map', 'extract_parsed_space_contributions', 'extract_validated_uri_schemes', 'hash_json_dir_shallow', 'hash_workspace_surface_trees', 'is_active_cross_workspace_call', 'is_control_plane_reserved_path', 'is_managed_child_dispatcher', 'is_permitted_contributed_mount_root', 'load_workspace_locale_catalog', 'lookup_cold_workspace_dialect', 'lookup_cold_workspace_dialect_state', 'lookup_locale_getter_dialect', 'lookup_owner_locale_dialect', 'parse_locale_chain_tokens', 'probe_workspace_host_dir', 'register_managed_child_dispatcher', 'register_sdk_core_dispatcher_binder', 'register_sdk_core_post_call_hook', 'register_sdk_core_session_factory', 'resolve_sdk_core_dispatcher_binder', 'resolve_sdk_core_post_call_hook', 'resolve_sdk_core_session_factory', 'resolve_workspace_project_root', 'scan_workspace_locale_dictionaries', 'unbind_locale_getter_dialect', 'unbind_locale_getter_owner', 'validate_locale_bundle')
 ```
 
 ---

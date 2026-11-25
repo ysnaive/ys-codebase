@@ -2,10 +2,10 @@
 
 > **所屬功能域**：`Domain 5 — 執行與常駐調度域 (execution/)`
 > **模組路徑**：`core_v2/source/core/core/execution/runtime/`
-> **內部模組職責切分**：`contracts.py`、`coordinator.py`、`gates.py`、`module_slot.py`、`route_index.py`、`turn_session.py`、`step_host.py`、`worker_entry.py`、`worker_pool.py`、`wire.py`、`dispatcher.py`
-> **依賴上限（Allowed Imports）**：`foundation/*`、`filesystem.fs`、`execution.{rpc, lifecycle, event}`
-> **禁止反向依賴（Forbidden Imports）**：`execution.daemon`、`surface/*`
-> **狀態**：`Active Living Spec — Single-Flight Top-Level Coalesce, Global Quiesce Barrier & In-Memory SDK Modules`
+> **內部模組職責切分**：`contracts.py`、`coordinator.py`、`gates.py`、`module_slot.py`、`route_index.py`、`services.py`、`turn_session.py`、`step_host.py`、`worker_entry.py`、`worker_pool.py`、`wire.py`、`dispatcher.py`
+> **依賴上限（Allowed Imports）**：`foundation/*`、`filesystem.{fs, vfs, storage, space}`、`metadata.{config, contributes}`、`execution.{rpc, lifecycle, event}`
+> **禁止反向依賴（Forbidden Imports）**：`execution.daemon`、`packaging/*`、`surface/*`
+> **狀態**：`Active Living Spec — Single-Flight Top-Level Coalesce, Global Quiesce Barrier & Symmetric Module Services`
 
 ## 1. 核心公理與單點封閉使命 (Core Axiom & Single-Point Mission)
 
@@ -13,16 +13,16 @@
 
 ### 1.1 萬物皆 `Task`、顯式傳播組合與零逆向依賴邊界
 1. **唯一公開執行單元**：全生態系所有可被 CLI、SDK、跨模組調用、事件、定時排程或升級遷移觸發的能力，**100% 實作為 `Task[TIn, TOut]` 並附帶強型別 `TaskMetadata`**。支援磁碟 `.modules/` 與無磁碟 `DispatcherHostOptions.in_memory_modules` 雙軌註冊；即便兩模組共置於同一 `venv_group` 子進程，跨模組呼叫 `ctx.invoke_task()` / `ctx.invoke_typed()` **仍必須經由主控端 `RuntimeDispatcher` 協調**。
-2. **顯式 10 欄位傳播上下文（`CallPropagationContext`）**：將跨單步/跨進程傳遞之 `turn_id`、`call_tree_id`、`call_stack`、`lineage`、`is_internal_trigger`、`is_nested_call`、`in_event_chain`、`from_hot_container`、`hot_workspaces`、`cold_shared_workspaces` 收斂為 10 欄位不可變值物件；公開套件表面（`core.execution.runtime.__all__`）明確匯出業務契約、系統保留事件常數（`WORKSPACE_RELOADED_EVENT_ID`、`MODULE_INSTALLED_EVENT_ID`、`MODULE_REMOVING_EVENT_ID`）與宿主協調門面（`RuntimeDispatcher`、`DispatcherHostOptions`、`LifecycleReloadGate`、`CoordinatorPort`、`Tier1WorkerPool`、`QuiesceResumeResult`、`DaemonRpcInvokeReply`、`WorkerProcessSnapshot`）。
+2. **顯式 10 欄位傳播上下文（`CallPropagationContext`）與跨 Tier 服務注入（`ModuleRuntimeServices`）**：將跨單步/跨進程傳遞之呼叫狀態收斂為 10 欄位不可變值物件；透過 `DispatcherHostOptions.module_services_factory` 與 `WorkerBootstrapConfig.host_dir` 對稱注入 `ScopedVfs`、`StructuredLogger`、`LocaleCatalog`、`ConfigStore` 與 `ContributesAggregator`。
 3. **頂層單工作區單飛合併（`StepFlight`）與全域 `QUIESCE` 單屏障（`LifecycleReloadGate`）**：
-   - **頂層同工作區 `StepFlight`**：`COALESCE` 僅於非事件鏈之頂層同工作區熱呼叫啟用對稱單飛合併；任何巢狀呼叫（`is_nested_call=True` 或非空父棧）與事件鏈呼叫（`in_event_chain=True`）自動降級為 `SERIALIZE`（同步重複持鎖仍觸發 `ILLEGAL_LOCK_REENTRANCY`）。單步本體以中性 `TurnScope` 執行唯一 1 次，支援 `PriorityHandle` 動態提權、僅全體等待者取消時中止執行，以及 Step 5 延遲事件/致命錯誤向全體合併等待者廣播。
-   - **全域單一 `QUIESCE` 屏障**：`LifecycleReloadGate` 以全域 `quiesce_epoch` 與單一租約門檻統一控管停止/重載與租約續期／逾時自癒恢復，消除逐模組靜默拼圖、共置遷移及 `WARMING` 中途交錯重入。
+   - **頂層同工作區 `StepFlight`**：`COALESCE` 僅於非事件鏈之頂層同工作區熱呼叫啟用對稱單飛合併；任何巢狀呼叫與事件鏈呼叫自動降級為 `SERIALIZE`。
+   - **全域單一 `QUIESCE` 屏障**：`LifecycleReloadGate` 以全域 `quiesce_epoch` 與單一租約門檻統一控管停止/重載與租約續期／逾時自癒恢復。
 4. **純淨 `sys.meta_path` 隔離套件與子模組載入（`module_slot.py`）**：透過 `_ScopedModuleFinder` 與直接呼叫幀限定之 `importlib.import_module` 轉發，零全域 `sys.path` / `sys.modules` 頂層污染。
 5. **與 `execution.daemon` 零逆向耦合**：`runtime` 透過 `execution.rpc` 唯讀探測線上 Daemon，並透過外層注入的 `DaemonSpawner(Protocol)` 按需背景拉起 Daemon，**`runtime` 內部 0 行匯入 `execution.daemon`**。
 6. **消費端擁有之 `ModuleProviderPort` 契約**：`ModuleProviderPort` 及 `ModuleDescriptor` / `TaskRouteSpec` 由 `execution.runtime` 定義並擁有。
-7. **跨進程 `SERIALIZE` 單跳 `.pin` 免死鎖重入與全回合逾時語意**：當外部進程已持有 `resource_key` 之 `SERIALIZE` 檔案鎖並透過 RPC 巢狀回呼常駐 Daemon 時，合法後代透過 `.pin` 共享鎖驗證擁有者身分後直接重入執行；`TaskMetadata.timeout_ms` 涵蓋主單步與同 Turn 事件訂閱鏈排空整體預算；`approval_scope` 與 `allow_conditional` 防止破壞性任務遭未確認或背景/事件鏈誤觸發。
+7. **跨進程 `SERIALIZE` 單跳 `.pin` 免死鎖重入與 4 階安全分級守門**：`SecurityTier.CRITICAL` 與 `SecurityTier.GATED` 強制要求 `approval_scope`，且 `CRITICAL` 額外阻斷任何非頂層前景呼叫。
 
-## 2. 核心契約規格 (`contracts.py` & `wire.py` 公開快照)
+## 2. 核心契約規格 (`contracts.py` & `services.py` 公開快照)
 
 ```python
 from abc import ABC, abstractmethod
@@ -30,17 +30,24 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Generic, Mapping, Optional, Protocol, Sequence, TypeVar, overload
 from core.execution.event import BoundEventSubscription, CausalLineage, EventMetadata
+from core.filesystem.vfs import ScopedVfs, VfsHub
 from core.foundation.errors import ErrorDetail
-from core.foundation.observability import CancellationToken, ProgressEvent
+from core.foundation.observability import CancellationToken, LocaleCatalog, ProgressEvent, StructuredLogger
 from core.foundation.primitives import EventId, HostPath, JsonObject, JsonPrimitive, JsonValue, ModuleId, TaskId
+from core.metadata.config import ConfigStore
+from core.metadata.contributes import AggregatedContributes, ContributesAggregator
 
 TIn = TypeVar("TIn")
 TOut = TypeVar("TOut")
 TOut_co = TypeVar("TOut_co", covariant=True)
 TPayload = TypeVar("TPayload")
+TConfig = TypeVar("TConfig")
+
+EnvLeaseAcquireFn = Callable[[HostPath], Optional[Callable[[], None]]]
+EnvTouchUsedFn = Callable[[HostPath], None]
 
 
-WORKER_AUTH_ENV_KEY: str = "YSCB_WORKER_AUTH_TOKEN"
+WORKER_AUTH_ENV_KEY: str = "_YSCB_WORKER_AUTH_TOKEN"
 LOCKS_SUBDIR: str = "locks"
 INSTALLER_LOCK_FILENAME: str = "installer.lock"
 MODULES_DIRNAME: str = ".modules"
@@ -83,6 +90,7 @@ class SecurityTier(Enum):
     SAFE = "safe"
     CONDITIONAL = "conditional"
     GATED = "gated"
+    CRITICAL = "critical"
 
 
 class ConcurrencyMode(Enum):
@@ -116,6 +124,10 @@ class CliBindingSpec:
     command_path: tuple[str, ...]
     summary: str
     aliases: tuple[str, ...] = ()
+    usage_pros: tuple[str, ...] = ()
+    usage_cons: tuple[str, ...] = ()
+
+
 @dataclass(frozen=True, slots=True)
 class SubscriptionRouteSpec:
     event_id: EventId
@@ -199,6 +211,40 @@ class TaskOutcome(Generic[TOut_co]):
     executed_hot: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ModuleRuntimeServices:
+    module_id: ModuleId
+    workspace_root: HostPath
+    vfs: ScopedVfs
+    logger: StructuredLogger
+    locale: LocaleCatalog
+    config_loader: Callable[[type[object]], object]
+    contributes_loader: Callable[[], AggregatedContributes]
+
+
+def build_default_module_services(workspace_root: HostPath, module_id: ModuleId) -> ModuleRuntimeServices: ...
+
+
+def build_workspace_module_services_factory(
+    host_dir: HostPath,
+    yscb_root: HostPath,
+    *,
+    config_store: Optional[ConfigStore] = None,
+    contributes_aggregator: Optional[ContributesAggregator] = None,
+    vfs_hub: Optional[VfsHub] = None,
+    locale_getter: Optional[Callable[[], LocaleCatalog]] = None,
+) -> Callable[[ModuleId], ModuleRuntimeServices]: ...
+
+
+def resolve_active_module_services(workspace_root: HostPath, module_id: ModuleId) -> ModuleRuntimeServices: ...
+
+
+def resolve_active_caller_module() -> Optional[ModuleId]: ...
+
+
+def resolve_active_call_tree_id() -> Optional[str]: ...
+
+
 class TaskContext(ABC):
     @property
     @abstractmethod
@@ -215,6 +261,19 @@ class TaskContext(ABC):
     @property
     @abstractmethod
     def effective_priority(self) -> ExecutionPriority: ...
+    @property
+    @abstractmethod
+    def vfs(self) -> ScopedVfs: ...
+    @property
+    @abstractmethod
+    def logger(self) -> StructuredLogger: ...
+    @property
+    @abstractmethod
+    def locale(self) -> LocaleCatalog: ...
+    @abstractmethod
+    def load_config(self, config_cls: type[TConfig]) -> TConfig: ...
+    @abstractmethod
+    def load_contributes(self) -> AggregatedContributes: ...
     @abstractmethod
     def emit(self, event_meta: EventMetadata[TPayload], payload: TPayload) -> None: ...
     @abstractmethod
@@ -240,6 +299,8 @@ class TaskContext(ABC):
     ) -> TaskOutcome[TOut]: ...
     @abstractmethod
     def report_progress(self, progress: ProgressEvent) -> None: ...
+
+
 class BoundTask(ABC):
     @property
     @abstractmethod
@@ -329,40 +390,7 @@ def decode_outcome_as(
 ) -> TaskOutcome[TOut]: ...
 ```
 
-## 3. 全統一 5 階段派發與執行協調流水線 (Unified 5-Stage Dispatch Pipeline)
-
-```text
-InvokeRequest (攜帶 caller_cwd、caller_env、approval_scope 與 10 欄位 CallPropagationContext)
-   │
-   ▼
-[Stage 1: Ingress, Global Barrier Gate & CallStack Check (gates.py)]
-   │ 1. 驗證全域 QUIESCE 屏障／降級狀態（LifecycleReloadGate / WorkerContainerLifecycle）、TaskId、Exposure 與 --cold 相容性
-   │ 2. 核驗 SecurityTier.GATED / CONDITIONAL（事件鏈與跨工作區自動收緊授權）
-   │ 3. 驗證物理互斥：interactive_tty 與 mutation_scope != NONE 僅限頂層前景冷呼叫（零 hot_workspaces、非事件鏈）
-   │ 4. 事件觸發先於 Tier 0 主控端執行 filter_for_subscription（未命中直接短路）
-   │ 5. 以 (workspace_root, task_id) 檢查同步任務呼叫環路（跨子工作區同 task_id 合法放行）
-   ▼
-[Stage 2: Master Route & Cold/Hot Turn Transport (dispatcher.py / route_index.py)]
-   ├── 外部呼叫 HYBRID / DAEMON_ONLY（routing_policy != FORCE_COLD）：
-   │      ├── PersistentRpcSession / call_ephemeral_daemon_rpc 連入線上 Daemon：
-   │      │     • was_accepted=True  -> 正常回傳；transport_lost=True 回報 TRANSPORT_LOST（嚴禁自動重跑）
-   │      │     • was_accepted=False -> 配合交棒或安全轉入本地 ColdTurn
-   │      └── Daemon 離線 -> STRICT_HOT/DAEMON_ONLY 報錯；HYBRID 本地跑 ColdTurn（AUTO_SPAWN 背景拉起 Daemon）
-   └── FORCE_COLD / COLD_ONLY：壓制 auto_spawn，於 ColdInstallerLockManager 保護下直連 TurnEngine 執行
-   │
-   ▼
-[Stage 3: Single-Flight & Reentrant Resource Coordinator (coordinator.py)]
-   │ • 同棧與單跳跨進程 .pin SERIALIZE 重入許可（非兩端皆 SERIALIZE 觸發 ILLEGAL_LOCK_REENTRANCY）
-   │ • 頂層非事件鏈 COALESCE 經 StepFlight 對稱合併（巢狀或事件鏈 COALESCE 自動降級為 SERIALIZE）
-   │ • 物理層統一持有 .cache/locks/res_<sha256>.lock/.owner.json/.pin 屏障與 PREEMPT 搶佔
-   ▼
-[Stage 4 & 5: Isolated Step Host & Turn Event Drain / LIFO Teardown]
-   ├── Tier 0 模組：LocalModuleSlotRegistry（.modules/ 或 in_memory_modules）+ _ScopedModuleFinder + guard_standard_streams
-   └── Tier 1 模組：HotWorkerPool 常駐複用 / OneShotVenvHost 單次排程 + TurnEngine 延遲事件與 LIFO 釋放收集
-   ▼
-TaskOutcome[TOut]
-```
-## 4. 對上層暴露之 `RuntimeDispatcher` 管理介面 (`dispatcher.py` / `gates.py`)
+## 3. 對上層暴露之 `RuntimeDispatcher` 管理介面 (`dispatcher.py` / `gates.py`)
 
 ```python
 from contextlib import contextmanager
@@ -421,6 +449,7 @@ class LifecycleReloadGate:
     def is_globally_quiesced(self) -> bool: ...
     def is_globally_gated(self) -> bool: ...
     def is_call_gated_for_quiesce(self, target_mod: Optional[ModuleId]) -> bool: ...
+    def is_module_slot_quiesced(self, target_mod: Optional[ModuleId]) -> bool: ...
     def is_rpc_call_gated(self, target_mod: Optional[ModuleId], prop: Optional[CallPropagationContext] = None) -> bool: ...
     def has_admitted_rpc_turn(self, call_id: str) -> bool: ...
     def enter_rpc_call(self, mod_id: ModuleId, call_id: str, prop: Optional[CallPropagationContext] = None) -> bool: ...
@@ -429,6 +458,8 @@ class LifecycleReloadGate:
     def exit_host_step(self, mod_id: ModuleId, turn_id: str, call_tree_id: str = "") -> None: ...
     @contextmanager
     def host_step_scope(self, mod_id: ModuleId, turn_id: str, call_tree_id: str = "") -> Iterator[None]: ...
+    @contextmanager
+    def register_draining_exempt_turn(self, turn_id: str) -> Iterator[None]: ...
     def try_begin_global_quiesce(
         self, drain_deadline: Optional[float] = None, *, leased: bool = False, pre_accepted_ids: frozenset[str] = frozenset(),
     ) -> bool: ...
@@ -467,6 +498,10 @@ class DispatcherHostOptions:
     peer_cache_dir_resolver: Optional[Callable[[HostPath], HostPath]] = None
     owns_child_dispatchers: bool = True
     in_memory_modules: tuple[YscbModule, ...] = ()
+    module_services_factory: Optional[Callable[[ModuleId], ModuleRuntimeServices]] = None
+    worker_host_dir: Optional[HostPath] = None
+    env_lease_acquire: Optional[EnvLeaseAcquireFn] = None
+    env_touch_used: Optional[EnvTouchUsedFn] = None
 
 
 class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
@@ -529,7 +564,6 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
     def emit_background_event(
         self, event_id: EventId, raw_payload: JsonObject, *, ordering: EventOrdering = EventOrdering.UNORDERED,
     ) -> TurnExecutionReport: ...
-    def drain_teardown_diagnostics(self) -> tuple[ErrorDetail, ...]: ...
     def cancel_all_active_turns(self, reason: str = "Forced shutdown") -> None: ...
     def shutdown(self, grace_ms: int = 3000) -> tuple[ErrorDetail, ...]: ...
     def run_primary_step(self, request: InvokeRequest, turn: TurnScope) -> StepExecutionResult[JsonValue]: ...
@@ -537,7 +571,7 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
     def finalize_turn_events(self, turn: TurnScope, *, abort_only: bool = False) -> Optional[ErrorDetail]: ...
 ```
 
-## 4.1 協調引擎與隔離模組槽契約 (`coordinator.py` / `module_slot.py` / `wire.py`)
+## 3.1 協調引擎與隔離模組槽契約 (`coordinator.py` / `module_slot.py` / `wire.py`)
 
 ```python
 from dataclasses import dataclass, field
@@ -588,6 +622,7 @@ class LocalModuleSlotRegistry:
         container: Optional[WorkerContainerLifecycle] = None, is_module_quiesced: Optional[Callable[[ModuleId], bool]] = None,
         require_eager_start: bool = False, on_module_initialized: Optional[Callable[[ModuleId], None]] = None,
         in_memory_modules: Mapping[ModuleId, YscbModule] = ...,
+        module_services_factory: Optional[Callable[[ModuleId], ModuleRuntimeServices]] = None,
     ) -> None: ...
     @property
     def workspace_root(self) -> HostPath: ...
@@ -618,6 +653,8 @@ class LocalStepExecutionSpec:
     priority_getter: Callable[[], ExecutionPriority]
     callbacks: StepContextCallbacks
     interactive_tty: bool = False
+
+
 class PriorityHandle:
     def __init__(self, initial: ExecutionPriority) -> None: ...
     @property
@@ -708,6 +745,7 @@ class WorkerBootstrapConfig:
     workspace_root: HostPath
     modules: tuple[ModuleDescriptor, ...]
     is_hot_container: bool = True
+    host_dir: Optional[HostPath] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -738,10 +776,3 @@ class WorkerStepReply:
 
 def worker_main(argv: Optional[Sequence[str]] = None, env: Optional[MutableMapping[str, str]] = None) -> int: ...
 ```
-
-## 5. 必測封閉性驗收門檻 (Verification Gate)
-
-1. **零逆向匯入、顯式六域匯入白名單、業務階段聚合與零跨協作者私有穿透檢查，以及共置 Worker 強制主控路由檢查**。
-2. **頂層同工作區 `COALESCE` `StepFlight` 對稱合併、巢狀／事件鏈降級 `SERIALIZE`、跨進程單跳 `.pin` 重入、動態截止預算、優先級傳遞、部分取消不誤殺與 Step 5 診斷/致命錯誤全體廣播**。
-3. **單一全域 `QUIESCE` 屏障（`LifecycleReloadGate`、`QuiesceResumeResult`）與 `DispatcherHostOptions.in_memory_modules` 雙軌執行驗證**。
-4. **`_ScopedModuleFinder` 合成套件世代熱重載隔離、不遮蔽標準庫匯入、並發動態匯入與中毒子進程實際退出後釋鎖測試**。

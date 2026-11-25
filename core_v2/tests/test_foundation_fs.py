@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 import math
 import os
 from pathlib import Path
@@ -13,7 +14,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Callable, Optional, Sequence, Union
+from typing import Annotated, Callable, Generic, Mapping, Optional, Sequence, TypeVar, Union
 
 from core.execution.event import (
     CausalLineage,
@@ -45,8 +46,10 @@ from core.execution.rpc import (
     bind_loopback_ephemeral,
     connect_and_handshake,
 )
+from core.execution.runtime import WORKER_AUTH_ENV_KEY, sanitize_caller_env
 from core.filesystem.fs import (
     CrossProcessLockPaths,
+    DEFAULT_WATCHER_IGNORED_DIRS,
     FileLock,
     IGNORED_FS_PREFIXES,
     PollingDirectoryWatcher,
@@ -63,23 +66,49 @@ from core.foundation import (
     CancellationToken,
     DataclassCodec,
     DeadlineGuard,
+    EnvHash,
     ErrorCode,
     ErrorDetail,
     EventId,
+    HOST_DIR_ENV_KEY,
     HostPath,
     INT64_MAX,
     INT64_MIN,
+    IO_REPARSE_TAG_MOUNT_POINT,
+    IO_REPARSE_TAG_SYMLINK,
     IS_WINDOWS,
+    JsonObject,
+    LocaleCatalog,
+    LogLevel,
+    LogRecord,
+    LogRotator,
+    MAX_LOCALE_INTERPOLATION_DEPTH,
     MAX_USER_JSON_DEPTH,
     ManagedProcessTree,
     ModuleId,
+    PRIVATE_ENV_PREFIX,
+    PUBLIC_ENV_ALLOWLIST,
+    ROOT_DIR_ENV_KEY,
+    SchemaExporter,
+    SemVer4,
+    SemanticUri,
+    SessionTelemetryRecord,
+    SessionTelemetryWriter,
     SignalWakeupGuard,
+    SnapshotGen,
+    SpaceId,
+    SpacePath,
+    StructuredLogger,
+    TEST_SANDBOX_ENV_KEY,
+    TREE_ID_ENV_KEY,
     TaskCancelledException,
     TaskId,
+    VersionConstraint,
     YscbError,
     clone_strict_json_object,
     get_process_start_tag,
     infer_sequence_element_dataclass,
+    is_disallowed_reparse_tag,
     is_process_alive,
     require_pure_bool,
     require_pure_int,
@@ -117,6 +146,92 @@ class _CodecCompositeDto:
     item: Optional[_CodecLeafDto]
     choice: Union[_UnionLeftDto, _UnionRightDto]
     extras: tuple[_CodecLeafDto, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _Wave12VoBundleDto:
+    version: SemVer4
+    constraint: VersionConstraint
+    uri: SemanticUri
+    space_id: SpaceId
+    space_path: SpacePath
+    gen: SnapshotGen
+    env_hash: EnvHash
+    deps: Mapping[ModuleId, VersionConstraint] = field(default_factory=dict)
+    space_gens: Mapping[SpaceId, SnapshotGen] = field(default_factory=dict)
+    gen_paths: Mapping[SnapshotGen, SpacePath] = field(default_factory=dict)
+
+
+class _SchemaMergeTag(Enum):
+    MERGE = "merge"
+    EXTEND = "extend"
+
+
+@dataclass(frozen=True, slots=True)
+class _SchemaFieldMeta:
+    description: str = ""
+    merge: Optional[_SchemaMergeTag] = None
+
+
+@dataclass(frozen=True, slots=True)
+class _SchemaTreeNodeDto:
+    name: Annotated[str, "Node display name"]
+    level: LogLevel = LogLevel.INFO
+    uri: Optional[SemanticUri] = None
+    gen: SnapshotGen = SnapshotGen(0)
+    children: Annotated[
+        tuple[_SchemaTreeNodeDto, ...],
+        _SchemaFieldMeta(description="Child tree nodes", merge=_SchemaMergeTag.EXTEND),
+    ] = ()
+    next_peer: Optional[_SchemaTreeNodeDto] = None
+
+
+_SchemaItemT = TypeVar("_SchemaItemT")
+
+
+@dataclass(frozen=True, slots=True)
+class _SchemaGenBoxDto(Generic[_SchemaItemT]):
+    payload: _SchemaItemT
+
+
+@dataclass(frozen=True, slots=True)
+class _SchemaRootEnvelopeDto:
+    module_id: ModuleId
+    version: SemVer4
+    env_hash: EnvHash
+    space: SpaceId
+    root_node: _SchemaTreeNodeDto
+    optional_leaf: Optional[_CodecLeafDto] = None
+
+
+class _MemoryStructuredLogger:
+    def __init__(self, name: str, rotator: LogRotator) -> None:
+        self.records: list[LogRecord] = []
+        self._name = name
+        self._rotator = rotator
+
+    def log(self, level: LogLevel, message: str, *, fields: Optional[JsonObject] = None) -> None:
+        rec = LogRecord(
+            ts_utc="2026-11-22T00:00:00Z",
+            level=level,
+            logger_name=self._name,
+            message=message,
+            fields=fields if fields is not None else {},
+        )
+        self.records.append(rec)
+        self._rotator.append_jsonl(DataclassCodec.encode_object(rec))
+
+    def debug(self, message: str, *, fields: Optional[JsonObject] = None) -> None:
+        self.log(LogLevel.DEBUG, message, fields=fields)
+
+    def info(self, message: str, *, fields: Optional[JsonObject] = None) -> None:
+        self.log(LogLevel.INFO, message, fields=fields)
+
+    def warning(self, message: str, *, fields: Optional[JsonObject] = None) -> None:
+        self.log(LogLevel.WARNING, message, fields=fields)
+
+    def error(self, message: str, *, fields: Optional[JsonObject] = None) -> None:
+        self.log(LogLevel.ERROR, message, fields=fields)
 
 
 class _ToxicStrError(RuntimeError):
@@ -213,13 +328,454 @@ def _verify_codec_contracts() -> None:
 
     ok_res, elem_cls = infer_sequence_element_dataclass(_sample_mapper, strict_unresolved=True)
     check(ok_res and elem_cls is _CodecLeafDto, f"Expected _CodecLeafDto inference, got {elem_cls!r}")
+    orig_ann = _unresolved_mapper_base.__annotations__.get("items", "object")
     _unresolved_mapper_base.__annotations__["items"] = "Sequence[MissingRefDto]"
-    ok_unres, unres_cls = infer_sequence_element_dataclass(_unresolved_mapper_base, strict_unresolved=False)
-    check((not ok_unres) and unres_cls is None, "Unresolved lenient inference should return (False, None)")
-    expect_yscb_code(
-        lambda: infer_sequence_element_dataclass(_unresolved_mapper_base, strict_unresolved=True),
-        ErrorCode.CODEC_VALIDATION_FAILED,
+    try:
+        ok_unres, unres_cls = infer_sequence_element_dataclass(_unresolved_mapper_base, strict_unresolved=False)
+        check((not ok_unres) and unres_cls is None, "Unresolved lenient inference should return (False, None)")
+        expect_yscb_code(
+            lambda: infer_sequence_element_dataclass(_unresolved_mapper_base, strict_unresolved=True),
+            ErrorCode.CODEC_VALIDATION_FAILED,
+        )
+    finally:
+        _unresolved_mapper_base.__annotations__["items"] = orig_ann
+
+
+def _verify_wave12_value_objects_and_env() -> None:
+    check(PRIVATE_ENV_PREFIX == "_YSCB_", f"Unexpected PRIVATE_ENV_PREFIX: {PRIVATE_ENV_PREFIX!r}")
+    check(WORKER_AUTH_ENV_KEY.startswith(PRIVATE_ENV_PREFIX), "WORKER_AUTH_ENV_KEY must carry PRIVATE_ENV_PREFIX")
+    for priv_key in (WORKER_AUTH_ENV_KEY, TREE_ID_ENV_KEY, TEST_SANDBOX_ENV_KEY, HOST_DIR_ENV_KEY, ROOT_DIR_ENV_KEY):
+        check(priv_key.startswith(PRIVATE_ENV_PREFIX), f"Private env key missing prefix: {priv_key!r}")
+    expected_allowlist = frozenset(
+        {
+            "YSCB_NO_DAEMON",
+            "YSCB_FORCE_DAEMON",
+            "YSCB_LOG_LEVEL",
+            "YSCB_NO_UPDATE_CHECK",
+            "YSCB_LOCALE",
+            "YSCB_OFFLINE",
+            "YSCB_CALLER_MODE",
+            "YSCB_CI_APPROVE_GATED",
+        }
     )
+    check(PUBLIC_ENV_ALLOWLIST == expected_allowlist, f"PUBLIC_ENV_ALLOWLIST mismatch: {PUBLIC_ENV_ALLOWLIST}")
+    sanitized = sanitize_caller_env(
+        {
+            WORKER_AUTH_ENV_KEY: "forged_auth",
+            WORKER_AUTH_ENV_KEY.lower(): "forged_lower",
+            TREE_ID_ENV_KEY: "forged_tree",
+            TEST_SANDBOX_ENV_KEY: "1",
+            f"{PRIVATE_ENV_PREFIX}INJECTED": "blocked",
+            "YSCB_LOCALE": "en,zh",
+            "YSCB_OFFLINE": "1",
+            "UNLISTED_RANDOM_VAR": "dropped",
+        }
+    )
+    check(sanitized == {"YSCB_LOCALE": "en,zh", "YSCB_OFFLINE": "1"}, f"sanitize_caller_env leak: {sanitized}")
+
+    wave12_codes = (
+        ErrorCode.URI_UNDEFINED,
+        ErrorCode.URI_CYCLE,
+        ErrorCode.ACCESS_DENIED,
+        ErrorCode.READONLY_VIOLATION,
+        ErrorCode.SPACE_CYCLE,
+        ErrorCode.SPACE_NOT_FOUND,
+        ErrorCode.STORAGE_CORRUPT,
+        ErrorCode.SCHEMA_MIGRATION_ERROR,
+        ErrorCode.CONFIG_INVALID,
+        ErrorCode.CONTRIBUTES_INVALID,
+        ErrorCode.DEPENDENCY_CONFLICT,
+        ErrorCode.PACKAGE_INTEGRITY_ERROR,
+        ErrorCode.ENV_BUILD_FAILED,
+    )
+    for err_code in wave12_codes:
+        det = ErrorDetail(err_code, "diagnostic", remediation="fix")
+        check(DataclassCodec.decode(ErrorDetail, DataclassCodec.encode(det)) == det, f"ErrorCode codec failed: {err_code}")
+
+    ver_norm = SemVer4.parse("1.2.3")
+    check(ver_norm == SemVer4(1, 2, 3, 0) and str(ver_norm) == "1.2.3.0", f"3-segment SemVer4 failed: {ver_norm!r}")
+    check(ver_norm.triple() == (1, 2, 3), f"SemVer4.triple mismatch: {ver_norm.triple()!r}")
+    ver_rev = SemVer4.parse("1.2.3.7")
+    ver_build = SemVer4.parse("1.2.3.build")
+    ver_pre = SemVer4.parse("1.2.3-beta.2")
+    ver_pre_ten = SemVer4.parse("1.2.3-beta.10")
+    ver_pre_rev = SemVer4.parse("1.2.3.4-alpha.1")
+    check(ver_build.is_build and ver_build.revision == 0 and str(ver_build) == "1.2.3.build", "SemVer4 .build mismatch")
+    check(str(ver_pre) == "1.2.3-beta.2" and str(ver_pre_rev) == "1.2.3.4-alpha.1", "SemVer4 prerelease __str__ mismatch")
+    check(SemVer4.parse("1.10.0") > SemVer4.parse("1.9.0"), "Numeric minor ordering failed")
+    check(ver_rev > ver_norm and ver_norm > ver_build and ver_norm > ver_pre, "SemVer4 precedence invariant failed")
+    check(ver_pre_ten > ver_pre and ver_pre <= ver_pre_ten and ver_rev >= ver_norm, "SemVer4 comparison operators failed")
+    check(ver_norm.compare_precedence(SemVer4(1, 2, 3, 0)) == 0, "SemVer4 equal precedence failed")
+    for bad_ver in ("", "1.2", "1.2.3.4.5", "01.2.3", "1.2.3.unknown", "1.2.3.build-rc.1", "1.2.3-beta..1", "1.2.3-01", "1.2.3-rc.02"):
+        assert_raises_val_error(lambda raw_v=bad_ver: SemVer4.parse(raw_v))
+    assert_raises_val_error(lambda: SemVer4(1, 2, 3, revision=1, is_build=True))
+    assert_raises_val_error(lambda: SemVer4(True, 0, 0))
+
+    eq_three = VersionConstraint.parse("==1.2.3")
+    ne_three = VersionConstraint.parse("!=1.2.3")
+    gt_three = VersionConstraint.parse(">1.2.3")
+    le_three = VersionConstraint.parse("<=1.2.3")
+    eq_four = VersionConstraint.parse("==1.2.3.0")
+    check(eq_three.satisfies(ver_norm) and eq_three.satisfies(ver_rev), "==1.2.3 must accept numeric revisions")
+    check((not ne_three.satisfies(ver_norm)) and (not ne_three.satisfies(ver_rev)), "!=1.2.3 must reject 1.2.3.x family")
+    check(ne_three.satisfies(ver_build) and ne_three.satisfies(ver_pre), "!=1.2.3 must accept build/prerelease")
+    check((not gt_three.satisfies(ver_rev)) and le_three.satisfies(ver_rev), "1.2.3.7 must satisfy <=1.2.3 and not >1.2.3")
+    check(gt_three.satisfies(SemVer4.parse("1.2.4-alpha.1")) and (not le_three.satisfies(SemVer4.parse("1.2.4-alpha.1"))), "1.2.4-alpha.1 must exceed <=1.2.3")
+    check((not eq_three.satisfies(ver_build)) and (not eq_three.satisfies(ver_pre)), "==1.2.3 must reject build/pre")
+    check(eq_four.satisfies(ver_norm) and (not eq_four.satisfies(ver_rev)), "==1.2.3.0 must require exact revision")
+    caret = VersionConstraint.compatible_same_major(SemVer4.parse("1.2.3"))
+    tilde = VersionConstraint.parse("~=1.2.3")
+    for maj_lock in (caret, tilde):
+        check(maj_lock.satisfies(SemVer4.parse("1.2.3.0")), "Same-major floor failed")
+        check(maj_lock.satisfies(SemVer4.parse("1.99.0.5")), "Same-major upgrade failed")
+        check(not maj_lock.satisfies(SemVer4.parse("1.2.2.9")), "Same-major lower bound failed")
+        check(not maj_lock.satisfies(SemVer4.parse("2.0.0.0")), "Same-major ceiling failed")
+        check(not maj_lock.satisfies(SemVer4.parse("2.0.0-alpha.1")), "Same-major next-major prerelease leaked")
+    conj = VersionConstraint.parse(">=1.2.0, <2.0.0, !=1.5.0.0")
+    check(conj.satisfies(SemVer4.parse("1.5.0.1")) and (not conj.satisfies(SemVer4.parse("1.5.0.0"))), "Conjunction failed")
+    check(VersionConstraint.parse("*").satisfies(ver_build), "Wildcard '*' failed")
+    check(VersionConstraint.parse("1.2.*").satisfies(ver_rev) and (not VersionConstraint.parse("1.2.*").satisfies(SemVer4.parse("1.3.0"))), "Prefix wildcard failed")
+    check(VersionConstraint.parse("build").satisfies(ver_build) and (not VersionConstraint.parse("build").satisfies(ver_norm)), "build constraint failed")
+    check(not VersionConstraint.parse("<2.0.0").satisfies(SemVer4.parse("2.0.0-alpha.1")), "<2.0.0 must reject 2.0.0-alpha.1")
+    check(not VersionConstraint.parse("<2.0.0.0").satisfies(SemVer4.parse("2.0.0.build")), "<2.0.0.0 must reject 2.0.0.build")
+    check(VersionConstraint.compatible_same_major(ver_build).satisfies(ver_build), "compatible_same_major(.build) must satisfy self")
+    for bad_cons in ("", "   ", ">=1.0.0,", ",<2.0.0", ">>1.0.0", "^1.2.*"):
+        assert_raises_val_error(lambda raw_c=bad_cons: VersionConstraint.parse(raw_c))
+
+    uri_mod = SemanticUri.parse("storage.local://@\\state//main.db/")
+    check(str(uri_mod) == "storage.local://@/state/main.db", f"SemanticUri normalization failed: {uri_mod}")
+    check(uri_mod.uses_module_placeholder and uri_mod.name == "main.db" and uri_mod.suffix == ".db", "SemanticUri props failed")
+    bound_uri = uri_mod.bind_module(ModuleId("knowledge-db"))
+    check(str(bound_uri) == "storage.local://knowledge-db/state/main.db" and (not bound_uri.uses_module_placeholder), "bind_module failed")
+    root_uri = SemanticUri.parse("project://")
+    check(root_uri.parent is None and root_uri.name == "" and root_uri.suffix == "", "Root SemanticUri props failed")
+    joined_uri = (root_uri / "src").join("core", "init.py")
+    check(str(joined_uri) == "project://src/core/init.py", f"SemanticUri join/truediv failed: {joined_uri}")
+    check(joined_uri.parent == SemanticUri.parse("project://src/core"), "SemanticUri.parent mismatch")
+    check(SemanticUri.parse("project://src").parent == root_uri, "Single-segment SemanticUri.parent mismatch")
+    for bad_uri in (
+        "",
+        "relative/no_scheme",
+        "://missing_scheme",
+        "1bad://path",
+        "project://../escape",
+        "project://a/../b",
+        "project://./dot",
+        "project://CON/file.txt",
+        "project://nul.json",
+        "project://bad:stream",
+        "project://sub/@/illegal_at",
+        "project://trail ",
+    ):
+        assert_raises_val_error(lambda raw_u=bad_uri: SemanticUri.parse(raw_u))
+    assert_raises_val_error(lambda: joined_uri.join("..", "x"))
+    assert_raises_val_error(lambda: joined_uri.join("@"))
+
+    named_sp = SpaceId.parse("core/gitignore")
+    synth_sp = SpaceId.parse("/gitignore")
+    check((not named_sp.is_synthetic) and named_sp.owner == "core" and str(named_sp) == "core/gitignore", "Named SpaceId failed")
+    check(synth_sp.is_synthetic and synth_sp.owner == "" and str(synth_sp) == "/gitignore", "Synthetic SpaceId failed")
+    for bad_sp in ("", "/", "core/", "bare_name", "a/b/c", "../gitignore", "core/BAD_CAPS"):
+        assert_raises_val_error(lambda raw_s=bad_sp: SpaceId.parse(raw_s))
+
+    sp_path = SpacePath.parse("src\\foundation/primitives.py")
+    check(str(sp_path) == "src/foundation/primitives.py", f"SpacePath normalization failed: {sp_path}")
+    check(str(SpacePath.parse(".gitignore")) == ".gitignore", "Dotfile SpacePath failed")
+    for bad_rel in ("", "/leading/slash", "trailing/slash/", "a//b", "../escape", "a/../b", "CON.py", "file:ads"):
+        assert_raises_val_error(lambda raw_p=bad_rel: SpacePath.parse(raw_p))
+
+    gen_zero = SnapshotGen(0)
+    gen_one = gen_zero.next()
+    check(gen_one == SnapshotGen(1) and gen_zero < gen_one and gen_zero <= gen_one and gen_one > gen_zero and gen_one >= gen_zero, "SnapshotGen ordering failed")
+    assert_raises_val_error(lambda: SnapshotGen(-1))
+    assert_raises_val_error(lambda: SnapshotGen(True))
+
+    eh = EnvHash("0123456789abcdef0123456789abcdef")
+    check(eh.short(16) == "0123456789abcdef" and str(eh) == "0123456789abcdef0123456789abcdef", "EnvHash failed")
+    for bad_eh in ("", "0123456789abcde", "0123456789ABCDEF", "0123456789abcdefg", "a" * 65):
+        assert_raises_val_error(lambda raw_h=bad_eh: EnvHash(raw_h))
+
+    vo_bundle = _Wave12VoBundleDto(
+        version=SemVer4.parse("2.1.0"),
+        constraint=VersionConstraint.parse("^2.0.0"),
+        uri=SemanticUri.parse("config://@/settings.json"),
+        space_id=synth_sp,
+        space_path=sp_path,
+        gen=SnapshotGen(7),
+        env_hash=eh,
+        deps={ModuleId("core"): VersionConstraint.parse(">=2.0.0.0")},
+        space_gens={named_sp: SnapshotGen(3), synth_sp: SnapshotGen(4)},
+        gen_paths={SnapshotGen(3): SpacePath.parse("README.md")},
+    )
+    vo_wire = DataclassCodec.encode_object(vo_bundle, expected_type=_Wave12VoBundleDto)
+    check(vo_wire["version"] == "2.1.0.0" and type(vo_wire["gen"]) is int and vo_wire["gen"] == 7, f"Unexpected VO wire format: {vo_wire}")
+    vo_round = DataclassCodec.decode(_Wave12VoBundleDto, vo_wire)
+    check(vo_round == vo_bundle, "Wave 1.2 VO bundle DataclassCodec round-trip mismatch")
+    _expect_codec_or_val_err(lambda: DataclassCodec.decode(SnapshotGen, True))
+    _expect_codec_or_val_err(lambda: DataclassCodec.decode(SnapshotGen, -1))
+    _expect_codec_or_val_err(lambda: DataclassCodec.decode(SnapshotGen, "7"))
+    _expect_codec_or_val_err(lambda: DataclassCodec.decode(SemanticUri, "missing_scheme"))
+
+
+def _verify_schema_exporter() -> None:
+    schema = SchemaExporter.export(_SchemaRootEnvelopeDto, title="CustomRootContract")
+    check(schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema", f"Missing Draft 2020-12 URI: {schema}")
+    check(schema.get("title") == "CustomRootContract" and schema.get("type") == "object", "Root schema metadata mismatch")
+    check(schema.get("additionalProperties") is False, "Root schema must set additionalProperties=False")
+    props = schema.get("properties")
+    defs = schema.get("$defs")
+    check(isinstance(props, dict) and isinstance(defs, dict), "Schema properties/$defs must be dicts")
+    if not isinstance(props, dict) or not isinstance(defs, dict):
+        return
+    check("_SchemaTreeNodeDto" in defs and "_CodecLeafDto" in defs, f"Expected nested $defs entries, got {list(defs.keys())}")
+    opt_leaf_sc = props.get("optional_leaf")
+    check(
+        isinstance(opt_leaf_sc, dict)
+        and opt_leaf_sc.get("anyOf") == [{"$ref": "#/$defs/_CodecLeafDto"}, {"type": "null"}],
+        f"Optional dataclass schema mismatch: {opt_leaf_sc}",
+    )
+    node_def = defs["_SchemaTreeNodeDto"]
+    check(isinstance(node_def, dict) and node_def.get("additionalProperties") is False, "Nested def additionalProperties must be False")
+    if isinstance(node_def, dict):
+        node_props = node_def.get("properties")
+        check(isinstance(node_props, dict), "Node properties missing")
+        if isinstance(node_props, dict):
+            nm_sc = node_props.get("name")
+            lvl_sc = node_props.get("level")
+            ch_sc = node_props.get("children")
+            peer_sc = node_props.get("next_peer")
+            check(isinstance(nm_sc, dict) and nm_sc.get("description") == "Node display name", f"Annotated str description missing: {nm_sc}")
+            check(
+                isinstance(lvl_sc, dict) and lvl_sc.get("enum") == ["debug", "info", "warning", "error"],
+                f"Enum schema mismatch: {lvl_sc}",
+            )
+            check(
+                isinstance(ch_sc, dict)
+                and ch_sc.get("description") == "Child tree nodes"
+                and ch_sc.get("x-yscb-merge") == "extend"
+                and ch_sc.get("items") == {"$ref": "#/$defs/_SchemaTreeNodeDto"},
+                f"Recursive tuple Annotated schema mismatch: {ch_sc}",
+            )
+            check(
+                isinstance(peer_sc, dict)
+                and peer_sc.get("anyOf") == [{"$ref": "#/$defs/_SchemaTreeNodeDto"}, {"type": "null"}],
+                f"Recursive Optional schema mismatch: {peer_sc}",
+            )
+
+    direct_rec_schema = SchemaExporter.export(_SchemaTreeNodeDto)
+    rec_defs = direct_rec_schema.get("$defs")
+    check(
+        isinstance(rec_defs, dict) and "_SchemaTreeNodeDto" in rec_defs,
+        f"Self-recursive root must populate $defs target: {direct_rec_schema}",
+    )
+    dict_meta_box_schema = SchemaExporter.export(_SchemaGenBoxDto[Annotated[str, {"description": "dict_meta_val"}]])
+    check(dict_meta_box_schema.get("type") == "object", f"Dict metadata Annotated generic export failed: {dict_meta_box_schema}")
+
+
+def _verify_observability_rotator_locale_telemetry(tmp_root: Path) -> None:
+    obs_dir = HostPath(tmp_root / "ws_obs_wave12")
+    obs_dir.path.mkdir(parents=True, exist_ok=True)
+
+    jsonl_path = obs_dir.join("unicode_events.jsonl")
+    stale_tmp = jsonl_path.path.parent / f".{jsonl_path.path.name}.rot_tmp_99999_1_abcdef012345"
+    stale_tmp.write_text("stale_crash_temp", encoding="utf-8")
+    old_epoch = time.time() - 120.0
+    os.utime(stale_tmp, (old_epoch, old_epoch))
+    fresh_tmp = jsonl_path.path.parent / f".{jsonl_path.path.name}.rot_tmp_99999_2_abcdef012345"
+    fresh_tmp.write_text("fresh_inflight_temp", encoding="utf-8")
+    own_tmp = jsonl_path.path.parent / f".{jsonl_path.path.name}.rot_tmp_{os.getpid()}_1_abcdef012345"
+    own_tmp.write_text("own_pid_temp", encoding="utf-8")
+    os.utime(own_tmp, (old_epoch, old_epoch))
+    jsonl_path.path.write_bytes(b'{"corrupt_partial":')
+    jsonl_rot = LogRotator(jsonl_path, max_bytes=140, keep_lines=3)
+    try:
+        check(not stale_tmp.exists(), "LogRotator failed to clean up aged 3-part crash rotation temp file")
+        check(fresh_tmp.exists(), "LogRotator prematurely deleted fresh (<60s) 3-part rotation temp file")
+        check(own_tmp.exists(), "LogRotator deleted own-PID 3-part rotation temp file")
+        fresh_tmp.unlink()
+        own_tmp.unlink()
+        for seq_i in range(5):
+            jsonl_rot.append_jsonl({"seq": seq_i, "text": f"alpha\u2028beta\u2029item_{seq_i}"})
+        all_rows = jsonl_rot.read_jsonl()
+        check(len(all_rows) == 3, f"Expected keep_lines=3 JSONL rows after rotation, got {len(all_rows)}: {all_rows}")
+        check([row["seq"] for row in all_rows] == [2, 3, 4], f"Unexpected JSONL sequence tail: {all_rows}")
+        check(all_rows[-1]["text"] == "alpha\u2028beta\u2029item_4", f"Unicode U+2028/U+2029 corrupted: {all_rows[-1]}")
+        lim_rows = jsonl_rot.read_jsonl(limit=2)
+        check([row["seq"] for row in lim_rows] == [3, 4], f"read_jsonl(limit=2) mismatch: {lim_rows}")
+    finally:
+        jsonl_rot.close()
+
+    hist_path = obs_dir.join("rolling_text.log")
+    hist_rot = LogRotator(hist_path, max_bytes=4096, max_lines=2, max_history_files=2)
+    try:
+        for idx in range(7):
+            hist_rot.append_line(f"line\u2028entry_{idx}")
+        check((hist_path.path.parent / f"{hist_path.path.name}.1").is_file(), "History .1 missing")
+        check((hist_path.path.parent / f"{hist_path.path.name}.2").is_file(), "History .2 missing")
+        check(not (hist_path.path.parent / f"{hist_path.path.name}.3").exists(), "History .3 exceeded max_history_files=2")
+        tail_txt = hist_rot.read_tail_lines(limit=4)
+        check(
+            tail_txt == ("line\u2028entry_3", "line\u2028entry_4", "line\u2028entry_5", "line\u2028entry_6"),
+            f"History read_tail_lines mismatch: {tail_txt}",
+        )
+    finally:
+        hist_rot.close()
+
+    struct_log_path = obs_dir.join("structured.jsonl")
+    struct_rot = LogRotator(struct_log_path)
+    logger: StructuredLogger = _MemoryStructuredLogger("core.test", struct_rot)
+    logger.info("boot_ok", fields={"step": 1})
+    logger.error("boom_err", fields={"fatal": False})
+    struct_rows = struct_rot.read_jsonl()
+    check(len(struct_rows) == 2 and struct_rows[0]["level"] == "info" and struct_rows[1]["level"] == "error", f"StructuredLogger rows mismatch: {struct_rows}")
+    struct_rot.close()
+    expect_yscb_code(lambda: struct_rot.append_line("after_close"), ErrorCode.TEARDOWN_ERROR)
+    expect_yscb_code(lambda: struct_rot.append_jsonl({"after": True}), ErrorCode.TEARDOWN_ERROR)
+    if not IS_WINDOWS:
+        ext_victim = obs_dir.join("victim.txt").path
+        ext_victim.write_text("do_not_overwrite\n", encoding="utf-8")
+        sym_log = obs_dir.join("sym_attack.log")
+        os.symlink(ext_victim, sym_log.path)
+        sym_rot = LogRotator(sym_log)
+        try:
+            expect_yscb_code(lambda: sym_rot.append_line("injected"), ErrorCode.ACCESS_DENIED)
+            check(ext_victim.read_text(encoding="utf-8") == "do_not_overwrite\n", "LogRotator followed symlink")
+        finally:
+            sym_rot.close()
+            os.unlink(sym_log.path)
+        anc_ext_dir = obs_dir.join("ext_anc_target").path
+        anc_ext_dir.mkdir(parents=True, exist_ok=True)
+        anc_base = obs_dir.join("anc_trap")
+        deep_log = anc_base.join("nested/escape.log")
+        anc_rot = LogRotator(deep_log)
+        os.symlink(anc_ext_dir, anc_base.path)
+        try:
+            expect_yscb_code(lambda: anc_rot.append_line("escaped"), ErrorCode.ACCESS_DENIED)
+            check(not (anc_ext_dir / "nested").exists(), "LogRotator traversed symlinked ancestor during mkdir")
+        finally:
+            anc_rot.close()
+            os.unlink(anc_base.path)
+        hist_sym = hist_path.path.parent / f"{hist_path.path.name}.1"
+        hist_sym.unlink(missing_ok=True)
+        os.symlink(ext_victim, hist_sym)
+        hist_chk_rot = LogRotator(hist_path, max_bytes=4096, max_lines=2, max_history_files=2)
+        try:
+            expect_yscb_code(lambda: hist_chk_rot.read_tail_lines(limit=4), ErrorCode.ACCESS_DENIED)
+        finally:
+            hist_chk_rot.close()
+            hist_sym.unlink(missing_ok=True)
+
+    check(MAX_LOCALE_INTERPOLATION_DEPTH == 5, f"Unexpected MAX_LOCALE_INTERPOLATION_DEPTH: {MAX_LOCALE_INTERPOLATION_DEPTH}")
+    mod_core = ModuleId("core")
+    mod_alpha = ModuleId("alpha")
+    mod_zeta = ModuleId("zeta")
+    catalog = LocaleCatalog(
+        {
+            mod_core: {
+                "nouns-agy": {"tool.view": "view_file"},
+                "zh-TW": {
+                    "msg.hint": "請使用 {tool.view} 檢視 {{literal}} {target}",
+                    "tool.view": "檢視器",
+                    "hop0": "{hop1}",
+                    "hop1": "{hop2}",
+                    "hop2": "{hop3}",
+                    "hop3": "{hop4}",
+                    "hop4": "{hop5}",
+                    "hop5": "{hop6}",
+                    "hop6": "too_deep",
+                    "cyc.a": "A->{cyc.b}",
+                    "cyc.b": "B->{cyc.a}",
+                },
+                "zh": {"only.zh": "中文保底"},
+                "en": {"only.zh": "english_fallback", "tool.view": "viewer"},
+            },
+            mod_alpha: {
+                "en": {"shared.key": "from_alpha"},
+            },
+            mod_zeta: {
+                "en": {"shared.key": "from_zeta"},
+            },
+        },
+        default_chain=("zh",),
+    )
+    rendered_agy = catalog.translate(
+        "msg.hint",
+        caller_module=mod_core,
+        chain=("nouns-agy", "zh-TW", "en"),
+        params={"target": "README {{raw}}"},
+    )
+    check(rendered_agy == "請使用 view_file 檢視 {literal} README {{raw}}", f"Locale interpolation/escape mismatch: {rendered_agy!r}")
+    no_implicit_parent = catalog.translate("only.zh", caller_module=mod_core, chain=("zh-TW", "en"))
+    check(no_implicit_parent == "english_fallback", f"LocaleCatalog must not split 'zh-TW' into 'zh': {no_implicit_parent!r}")
+    check(catalog.translate("shared.key", caller_module=mod_zeta, chain=("en",)) == "from_zeta", "caller_module priority failed")
+    check(catalog.translate("shared.key", chain=("en",)) == "from_alpha", "Alphabetical module fallback failed")
+    check(catalog.translate("zeta:shared.key", caller_module=mod_alpha, chain=("en",)) == "from_zeta", "Explicit <module>: prefix failed")
+    check(catalog.translate("hop0", caller_module=mod_core, chain=("zh-TW",)) == "{hop6}", "Depth 5 cap failed")
+    check(catalog.translate("hop1", caller_module=mod_core, chain=("zh-TW",)) == "too_deep", "Exact depth 5 resolution failed")
+    check(catalog.translate("cyc.a", caller_module=mod_core, chain=("zh-TW",)) == "A->B->{cyc.a}", "Cycle guard failed")
+
+    telem_off_path = obs_dir.join("telem_disabled.jsonl")
+    telem_sbx_path = obs_dir.join("telem_sandbox.jsonl")
+    telem_on_path = obs_dir.join("telem_active.jsonl")
+    sample_telem = SessionTelemetryRecord(
+        ts_utc="2026-11-22T01:00:00Z",
+        epoch_ms=1795309200000,
+        task_id="core.status",
+        args=("--json",),
+        exit_code=0,
+        duration_ms=12,
+        executed_hot=True,
+        caller_cwd=str(obs_dir),
+    )
+    writer_off = SessionTelemetryWriter(LogRotator(telem_off_path), enabled=False)
+    writer_off.record(sample_telem)
+    check((not telem_off_path.path.exists()) and writer_off.read_recent() == (), "Disabled telemetry must not write")
+
+    writer_sbx = SessionTelemetryWriter(LogRotator(telem_sbx_path), env={TEST_SANDBOX_ENV_KEY: "1"})
+    writer_sbx.record(sample_telem)
+    check((not telem_sbx_path.path.exists()) and writer_sbx.read_recent() == (), "Sandbox telemetry must auto-disable")
+
+    active_rot = LogRotator(telem_on_path, max_bytes=4096, keep_lines=10)
+    writer_on = SessionTelemetryWriter(active_rot, env={"YSCB_LOCALE": "en"})
+    second_telem = SessionTelemetryRecord(
+        ts_utc="2026-11-22T01:00:01Z",
+        epoch_ms=1795309201000,
+        task_id="core.list",
+        args=("--remote",),
+        exit_code=2,
+        duration_ms=45,
+        executed_hot=False,
+        caller_cwd=str(obs_dir),
+        error_hint="offline",
+    )
+    writer_on.record(sample_telem)
+    writer_on.record(second_telem)
+    check(writer_on.read_recent() == (sample_telem, second_telem), "Active SessionTelemetryWriter round-trip mismatch")
+    check(writer_on.read_recent(limit=1) == (second_telem,), "SessionTelemetryWriter limit=1 mismatch")
+    active_rot.close()
+
+    byte_cap_path = obs_dir.join("compact_byte_ceiling.log")
+    byte_cap_rot = LogRotator(byte_cap_path, max_bytes=110, keep_lines=20)
+    try:
+        for idx in range(8):
+            byte_cap_rot.append_line(f"payload_segment_number_{idx:02d}_abcdefghijklmnop")
+        disk_sz = byte_cap_path.path.stat().st_size
+        kept_tail = byte_cap_rot.read_tail_lines()
+        check(disk_sz <= 110, f"In-place keep_lines compaction exceeded max_bytes=110: {disk_sz}")
+        check(
+            kept_tail == (
+                "payload_segment_number_06_abcdefghijklmnop",
+                "payload_segment_number_07_abcdefghijklmnop",
+            ),
+            f"Unexpected tail after byte-capped compaction: {kept_tail}",
+        )
+        byte_cap_rot.append_line("oversized_single_line_" + ("x" * 160))
+        check(
+            len(byte_cap_rot.read_tail_lines()) == 1,
+            "Single oversized line must remain as sole surviving record",
+        )
+    finally:
+        byte_cap_rot.close()
 
 
 def _verify_foundation_primitives_errors_proc(tmp_root: Path) -> None:
@@ -265,6 +821,18 @@ def _verify_foundation_primitives_errors_proc(tmp_root: Path) -> None:
         assert_raises_val_error(lambda: ws_hp.join("CON"))
     rel_resolved = ws_hp.resolve_caller_relative("sub/item.txt")
     check(rel_resolved == ws_hp.join("sub", "item.txt"), "resolve_caller_relative mismatch")
+
+    check(IO_REPARSE_TAG_SYMLINK == 0xA000000C, "Unexpected IO_REPARSE_TAG_SYMLINK value")
+    check(IO_REPARSE_TAG_MOUNT_POINT == 0xA0000003, "Unexpected IO_REPARSE_TAG_MOUNT_POINT value")
+    check(is_disallowed_reparse_tag(IO_REPARSE_TAG_SYMLINK), "Symlink reparse tag must be disallowed")
+    check(is_disallowed_reparse_tag(IO_REPARSE_TAG_MOUNT_POINT), "Mount-point reparse tag must be disallowed")
+    for allowed_tag in (0, 0x9000001A, 0x80000017, 0x9000101A):
+        check(
+            not is_disallowed_reparse_tag(allowed_tag),
+            f"Benign Windows reparse tag 0x{allowed_tag:X} must be permitted",
+        )
+    for bad_tag in (True, -1, "0xA000000C"):
+        assert_raises_val_error(lambda raw_t=bad_tag: is_disallowed_reparse_tag(raw_t))
 
     mod_id = ModuleId("alpha_mod")
     tid = TaskId("alpha_mod.run")
@@ -492,8 +1060,72 @@ def _verify_filesystem_fs(tmp_root: Path) -> None:
         seen_paths = {p for batch in batches for p in batch}
         check(normal_file in seen_paths, f"Normal file missing in watcher batches: {seen_paths}")
         check(normal_file in watcher.tracked_paths, "Normal file missing from tracked_paths")
+
+        check(
+            DEFAULT_WATCHER_IGNORED_DIRS
+            == frozenset({".git", "node_modules", ".venv", ".cache", "build", "dist", "target"}),
+            f"Unexpected DEFAULT_WATCHER_IGNORED_DIRS: {DEFAULT_WATCHER_IGNORED_DIRS}",
+        )
+        batches.clear()
+        batch_evt.clear()
+        pruned_targets: list[HostPath] = []
+        for pruned_name in (".git", "node_modules", ".venv", ".cache", "build", "dist", "target"):
+            pruned_dir = watch_dir.path / pruned_name / "nested"
+            pruned_dir.mkdir(parents=True, exist_ok=True)
+            pruned_file = HostPath(pruned_dir / "ignored_artifact.txt")
+            atomic_write_bytes(pruned_file, b"derived_noise")
+            pruned_targets.append(pruned_file)
+        time.sleep(0.15)
+        check(not batches, f"Pruned derivative directories triggered watcher: {batches}")
+        resynced_pruned = watcher.resync_paths((watch_dir,))
+        for p_target in pruned_targets:
+            check(p_target not in watcher.tracked_paths, f"Pruned file leaked into tracked_paths: {p_target}")
+            check(p_target not in resynced_pruned, f"Pruned file leaked into resync_paths: {p_target}")
     finally:
         watcher.stop()
+
+    anc_watch_dir = fs_root.join("build", "watched_app")
+    anc_watch_dir.path.mkdir(parents=True, exist_ok=True)
+    anc_tracked_file = anc_watch_dir.join("main.py")
+    anc_nested_build_file = anc_watch_dir.join("build", "out.bin")
+    check(
+        is_contained_nonsymlink_path(
+            anc_watch_dir,
+            anc_tracked_file,
+            ignored_dir_names=DEFAULT_WATCHER_IGNORED_DIRS,
+        ),
+        "Ancestor directory named 'build' above watch root must not be pruned",
+    )
+    check(
+        not is_contained_nonsymlink_path(
+            anc_watch_dir,
+            anc_nested_build_file,
+            ignored_dir_names=DEFAULT_WATCHER_IGNORED_DIRS,
+        ),
+        "Relative child directory named 'build' under watch root must be pruned",
+    )
+    anc_batches: list[frozenset[HostPath]] = []
+    anc_evt = threading.Event()
+
+    def _on_anc_watch(paths: frozenset[HostPath]) -> None:
+        anc_batches.append(paths)
+        anc_evt.set()
+
+    anc_watcher = PollingDirectoryWatcher(
+        (anc_watch_dir,),
+        _on_anc_watch,
+        debounce_sec=0.04,
+        poll_interval_sec=0.02,
+    )
+    anc_watcher.start()
+    try:
+        atomic_write_bytes(anc_tracked_file, b"print_free = 1\n")
+        check(anc_evt.wait(timeout=2.5), "Watcher under ancestor 'build/' failed to emit event")
+        anc_seen = {p for batch in anc_batches for p in batch}
+        check(anc_tracked_file in anc_seen, f"Expected main.py under ancestor 'build/': {anc_seen}")
+        check(anc_tracked_file in anc_watcher.tracked_paths, "main.py missing from ancestor-build watcher tracked_paths")
+    finally:
+        anc_watcher.stop()
 
 
 class _SampleStepExecutor:
@@ -520,6 +1152,8 @@ class _SampleStepExecutor:
     def finalize_turn_events(self, _turn: TurnScope, *, abort_only: bool = False) -> Optional[ErrorDetail]:
         self.calls.append(f"finalize:{abort_only}")
         return None
+
+
 class _CustomFatalBaseError(BaseException):
     pass
 
@@ -653,6 +1287,8 @@ class _RpcProbeHandler(InboundCallHandler):
 
     def on_control(self, kind: FrameKind, payload: dict[str, object]) -> dict[str, object]:
         return {"ok": True, "kind": kind.value, "keys": list(payload.keys())}
+
+
 def _verify_execution_rpc(tmp_root: Path) -> None:
     check(MAX_FRAME_BYTES == 67108864, f"Unexpected MAX_FRAME_BYTES: {MAX_FRAME_BYTES}")
     rpc_ws = HostPath(tmp_root / "ws_rpc")
@@ -700,8 +1336,9 @@ def _verify_execution_rpc(tmp_root: Path) -> None:
     try:
         cli_ch = MultiplexedChannel(left_sock, is_initiator=True, handler=probe_handler, max_frame_bytes=512)
         srv_ch = MultiplexedChannel(right_sock, is_initiator=False, handler=probe_handler, max_frame_bytes=512)
-        nodelay_val = left_sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
-        check(nodelay_val != 0, f"TCP_NODELAY not enabled on MultiplexedChannel: {nodelay_val}")
+        if left_sock.family in (socket.AF_INET, socket.AF_INET6):
+            nodelay_val = left_sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
+            check(nodelay_val != 0, f"TCP_NODELAY not enabled on MultiplexedChannel: {nodelay_val}")
 
         big_out = cli_ch.call({"mode": "fast", "val": "x" * 1024})
         check(
@@ -784,6 +1421,10 @@ def run_foundation_fs_suite(tmp_root: Path) -> None:
     suite_root.mkdir(parents=True, exist_ok=True)
     log("[FOUNDATION-FS] Verifying DataclassCodec contracts...")
     _verify_codec_contracts()
+    log("[FOUNDATION-FS] Verifying Wave 1.2 value objects, SchemaExporter, LogRotator, and LocaleCatalog...")
+    _verify_wave12_value_objects_and_env()
+    _verify_schema_exporter()
+    _verify_observability_rotator_locale_telemetry(suite_root)
     log("[FOUNDATION-FS] Verifying foundation primitives, errors, signals, and process trees...")
     _verify_foundation_primitives_errors_proc(suite_root)
     log("[FOUNDATION-FS] Verifying filesystem atomic I/O, containment, locks, and watcher...")

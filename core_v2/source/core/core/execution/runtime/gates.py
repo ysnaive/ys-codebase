@@ -126,6 +126,17 @@ def check_exposure_and_security_gates(request: InvokeRequest, spec: TaskRouteSpe
             return ErrorDetail(ErrorCode.SECURITY_GATED, f"GATED Task '{request.task_id}' cannot run in background or event-triggered context.", source_task=sid)
         if request.task_id not in request.approval_scope:
             return ErrorDetail(ErrorCode.SECURITY_GATED, f"Task '{request.task_id}' requires explicit GATED approval token.", source_task=sid)
+    if spec.security_tier == SecurityTier.CRITICAL:
+        if (
+            prop.is_nested_call
+            or bool(prop.call_stack)
+            or prop.is_internal_trigger
+            or prop.in_event_chain
+            or request.priority != ExecutionPriority.FOREGROUND
+        ):
+            return ErrorDetail(ErrorCode.SECURITY_GATED, f"CRITICAL Task '{request.task_id}' requires top-level foreground invocation.", source_task=sid)
+        if request.task_id not in request.approval_scope:
+            return ErrorDetail(ErrorCode.SECURITY_GATED, f"Task '{request.task_id}' requires explicit CRITICAL approval token.", source_task=sid)
     return None
 def check_host_and_mutation_gates(
     request: InvokeRequest, spec: TaskRouteSpec, *, is_daemon_host: bool, conn_enabled: bool, in_cold_turn: bool = False,
@@ -183,6 +194,8 @@ class _GlobalQuiesceState:
     lease_deadline: Optional[float] = None
     deferred_resume: bool = False
     resuming: bool = False
+    last_resumed_epoch: int = -1
+    last_resume_handoff: bool = False
     pre_quiesce_ids: set[str] = field(default_factory=set)
 
 
@@ -198,6 +211,7 @@ class LifecycleReloadGate:
         self._in_flight_trees: dict[str, int] = {}
         self._in_flight_mods: dict[ModuleId, int] = {}
         self._admitted_rpc_turns: dict[tuple[str, ModuleId], int] = {}
+        self._draining_exempt_turns: dict[str, int] = {}
         self._q = _GlobalQuiesceState()
         self._reloading_mod_counts: dict[ModuleId, int] = {}
         self._reload_exempt_turns: dict[str, int] = {}
@@ -230,7 +244,11 @@ class LifecycleReloadGate:
 
     def has_any_active_work(self) -> bool:
         with self._cond:
-            return any(c > 0 for c in self._in_flight_mods.values()) or any(c > 0 for c in self._admitted_rpc_turns.values())
+            return (
+                any(c > 0 for c in self._in_flight_mods.values())
+                or any(c > 0 for c in self._admitted_rpc_turns.values())
+                or any(c > 0 for c in self._draining_exempt_turns.values())
+            )
 
     def has_any_quiesced(self) -> bool:
         with self._cond:
@@ -260,8 +278,20 @@ class LifecycleReloadGate:
             return False
         with self._cond:
             return self._q.quiesced or self._q.draining or self._q.resuming
+
+    def is_module_slot_quiesced(self, target_mod: Optional[ModuleId]) -> bool:
+        """Return True once module slots are quiesced/resuming, allowing draining turns to finish."""
+        if target_mod is None or target_mod == CORE_MODULE_ID:
+            return False
+        with self._cond:
+            return self._q.quiesced or self._q.resuming
     def _is_prop_reentrant_draining_locked(self, prop: CallPropagationContext) -> bool:
         tid, ctree = prop.turn_id or "", prop.call_tree_id or ""
+        if self._q.draining and (
+            (bool(tid) and tid in self._draining_exempt_turns)
+            or (bool(ctree) and ctree in self._draining_exempt_turns)
+        ):
+            return True
         if bool(tid) and self._q.draining and any(k_t == tid and cnt > 0 for (k_t, _m), cnt in self._admitted_rpc_turns.items()):
             return True
         if (bool(tid) and tid in self._in_flight_turns) or (bool(ctree) and ctree in self._in_flight_trees):
@@ -279,7 +309,7 @@ class LifecycleReloadGate:
             return True
         if self._q.draining and (prop is None or not self._is_prop_reentrant_draining_locked(prop)):
             return True
-        return self._q.quiesced and (not self._q.leased or prop is None or not self._is_prop_pre_quiesce_locked(prop))
+        return self._q.quiesced
 
     def is_rpc_call_gated(self, target_mod: Optional[ModuleId], prop: Optional[CallPropagationContext] = None) -> bool:
         if target_mod is None or target_mod == CORE_MODULE_ID:
@@ -329,9 +359,27 @@ class LifecycleReloadGate:
         finally:
             self.exit_host_step(mod_id, turn_id, call_tree_id)
 
+    @contextmanager
+    def register_draining_exempt_turn(self, turn_id: str) -> Iterator[None]:
+        """Exempt an active post-step turn from global QUIESCE draining gates while keeping drain aware of it."""
+        if not turn_id:
+            yield
+            return
+        with self._cond:
+            self._draining_exempt_turns[turn_id] = self._draining_exempt_turns.get(turn_id, 0) + 1
+            self._cond.notify_all()
+        try:
+            yield
+        finally:
+            with self._cond:
+                decrement_ref_count(self._draining_exempt_turns, turn_id)
+                self._cond.notify_all()
+
     def _has_non_core_active_work_locked(self) -> bool:
-        return any(m != CORE_MODULE_ID and c > 0 for m, c in self._in_flight_mods.items()) or any(
-            m != CORE_MODULE_ID and c > 0 for (_cid, m), c in self._admitted_rpc_turns.items()
+        return (
+            any(m != CORE_MODULE_ID and c > 0 for m, c in self._in_flight_mods.items())
+            or any(m != CORE_MODULE_ID and c > 0 for (_cid, m), c in self._admitted_rpc_turns.items())
+            or any(c > 0 for c in self._draining_exempt_turns.values())
         )
 
     def try_begin_global_quiesce(
@@ -356,9 +404,14 @@ class LifecycleReloadGate:
                     self._q.leased = True
                     live_ids = (
                         frozenset(self._in_flight_turns.keys()) | frozenset(self._in_flight_trees.keys())
+                        | frozenset(self._draining_exempt_turns.keys())
                         | frozenset(tid for tid, _m in self._admitted_rpc_turns.keys() if tid != "_") | pre_accepted_ids
                     )
                     self._q.pre_quiesce_ids.update(k for k in live_ids if k)
+                else:
+                    self._q.leased = False
+                    self._q.lease_deadline = None
+                    self._q.deferred_resume = False
             self._cond.notify_all()
         self._fire_gate_change()
         return not aborted_busy
@@ -393,8 +446,7 @@ class LifecycleReloadGate:
         require_pure_int(epoch, "epoch", min_val=0)
         bump_dl = time.monotonic() + clamp_positive_sec(delay_sec, min_sec=0.05, max_sec=3600.0, label="delay_sec")
         with self._cond:
-            if self._q.epoch == epoch and self._q.quiesced:
-                self._q.deferred_resume = False
+            if self._q.epoch == epoch and self._q.quiesced and not self._q.deferred_resume:
                 self._q.lease_deadline = max(self._q.lease_deadline or 0.0, bump_dl)
     def schedule_deferred_resume(self, expected_epoch: Optional[int]) -> None:
         if expected_epoch is not None:
@@ -411,16 +463,35 @@ class LifecycleReloadGate:
         if expected_epoch is not None:
             require_pure_int(expected_epoch, "expected_epoch", min_val=0)
         with self._cond:
+            if self._q.resuming and (expected_epoch is None or self._q.epoch == expected_epoch):
+                wait_ep = self._q.epoch
+                while self._q.resuming and self._q.epoch == wait_ep:
+                    self._cond.wait(timeout=0.02)
+                same_done = self._q.last_resumed_epoch == wait_ep
+                return QuiesceResumeResult(
+                    started=same_done,
+                    need_handoff=self._q.last_resume_handoff if same_done else False,
+                )
             target_ep = expected_epoch if expected_epoch is not None else self._q.epoch
-            if self._q.resuming or self._q.epoch != target_ep:
+            if self._q.epoch != target_ep:
+                return QuiesceResumeResult(started=False, need_handoff=False)
+            if not self._q.quiesced and expected_epoch is not None:
+                if self._q.last_resumed_epoch == expected_epoch:
+                    return QuiesceResumeResult(started=False, need_handoff=self._q.last_resume_handoff)
                 return QuiesceResumeResult(started=False, need_handoff=False)
             self._q.resuming = True
             self._cond.notify_all()
         self._fire_gate_change()
+        completed = False
+        need_handoff = False
         try:
-            need_handoff = body_fn()
+            need_handoff = bool(body_fn())
+            completed = True
         finally:
             with self._cond:
+                if completed:
+                    self._q.last_resumed_epoch = target_ep
+                    self._q.last_resume_handoff = need_handoff
                 self._q.resuming = False
                 self._cond.notify_all()
             self._fire_gate_change()
@@ -447,7 +518,11 @@ class LifecycleReloadGate:
     @contextmanager
     def module_reload_scope(self, reload_all: bool, initial_gated: frozenset[ModuleId]) -> Iterator[None]:
         with self._cond:
-            exempt_now = frozenset(k for k in self._in_flight_turns if k) | frozenset(k for k in self._in_flight_trees if k)
+            exempt_now = (
+                frozenset(k for k in self._in_flight_turns if k)
+                | frozenset(k for k in self._in_flight_trees if k)
+                | frozenset(k for k in self._draining_exempt_turns if k)
+            )
             if reload_all:
                 self._reloading_all_count += 1
             for m in initial_gated:
@@ -501,7 +576,7 @@ class LifecycleReloadGate:
             return False
         if self._q.resuming or (self._q.draining and not self._is_prop_reentrant_draining_locked(request.propagation)):
             return True
-        if self._q.quiesced and not self._is_prop_pre_quiesce_locked(request.propagation) and self._can_wait_leased_quiesce_locked(request):
+        if self._q.quiesced and self._can_wait_leased_quiesce_locked(request):
             return True
         return not self._is_reload_exempt_locked(request) and (self._reloading_all_count > 0 or target_mod in self._reloading_mod_counts)
 
@@ -509,7 +584,7 @@ class LifecycleReloadGate:
         if not is_daemon_host or target_mod == CORE_MODULE_ID:
             return False
         with self._cond:
-            if not self._q.quiesced or self._is_prop_pre_quiesce_locked(request.propagation):
+            if not self._q.quiesced:
                 return False
             return not self._can_wait_leased_quiesce_locked(request)
 
