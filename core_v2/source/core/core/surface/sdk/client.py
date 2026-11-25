@@ -54,6 +54,8 @@ from core.foundation import (
     EnvHash,
     ErrorCode,
     EventId,
+    FlightLogConfig,
+    FlightLogRouter,
     HostPath,
     IS_WINDOWS,
     JsonObject,
@@ -71,6 +73,8 @@ from core.foundation import (
     YscbError,
     clone_strict_json_object,
     is_disallowed_reparse_tag,
+    is_public_env_truthy,
+    read_flight_log_env,
     require_pure_bool,
     require_pure_int,
     require_pure_str,
@@ -967,6 +971,26 @@ class _LazySdkWorkspaceContext(ConfigViewPort):
         return build_default_module_services(self._workspace_root, module_id)
 
 
+_TRUTHY_SDK_ENV_VALUES: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
+
+
+def _build_sdk_flight_log_config(config_view: ConfigViewPort) -> FlightLogConfig:
+    try:
+        raw_obs = config_view.get_module_value(CORE_MODULE_ID, "observability", None)
+    except (OSError, ValueError, YscbError):
+        return FlightLogConfig()
+    if isinstance(raw_obs, Mapping):
+        try:
+            return DataclassCodec.decode(FlightLogConfig, raw_obs)
+        except (ValueError, TypeError, KeyError, YscbError):
+            return FlightLogConfig()
+    return FlightLogConfig()
+
+
+def _build_sdk_sandbox_env() -> dict[str, str]:
+    return read_flight_log_env()
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class _DispatcherBundle:
     dispatcher: RuntimeDispatcher
@@ -1062,6 +1086,18 @@ class YscbClient:
                         all_in_mem.insert(0, _UnboundCoreRouteStubModule(stub_routes))
 
             yscb_modules = tuple(all_in_mem)
+            flight_router: Optional[FlightLogRouter] = None
+            if (
+                disc_host is not None
+                and not _has_forbidden_symlink_in_path(self._cache_dir.path)
+                and not _is_symlink_or_reparse_path(self._cache_dir.path)
+            ):
+                flight_router = FlightLogRouter(
+                    self._cache_dir.join("logs"),
+                    config=_build_sdk_flight_log_config(self._lazy_ws_ctx),
+                    env=_build_sdk_sandbox_env(),
+                )
+                closers.append(flight_router.close)
             conn_cfg = DaemonConnectionConfig(
                 enabled=self._use_rpc,
                 auto_spawn=False,
@@ -1074,6 +1110,7 @@ class YscbClient:
                 in_memory_modules=yscb_modules,
                 module_services_factory=self._lazy_ws_ctx.resolve_module_services,
                 worker_host_dir=disc_host,
+                flight_log_router=flight_router,
             )
             in_mem_ids = frozenset(m.module_id for m in yscb_modules)
             disp = RuntimeDispatcher(
@@ -1261,6 +1298,15 @@ class YscbClient:
                     on_progress(decoded)
 
             progress_cb = _forward_progress
+        raw_env_pm: Optional[str] = None
+        for ek, ev in clean_env.items():
+            if ek.upper() == "YSCB_PROFILE_MEM":
+                raw_env_pm = ev
+        eff_profile_mem = (
+            raw_env_pm.strip().lower() in _TRUTHY_SDK_ENV_VALUES
+            if raw_env_pm is not None
+            else is_public_env_truthy("YSCB_PROFILE_MEM")
+        )
         request = InvokeRequest(
             task_id=tid,
             raw_input=encoded_input,
@@ -1270,7 +1316,8 @@ class YscbClient:
             caller_surface=CallerSurface.SDK,
             routing_policy=policy,
             approval_scope=scope,
-            propagation=CallPropagationContext(call_tree_id=call_tree_id),
+            propagation=CallPropagationContext(call_tree_id=call_tree_id, profile_mem=eff_profile_mem),
+            profile_mem=eff_profile_mem,
         )
         self._sync_local_state_from_disk(allow_module_unload=(self._current_in_flight_count() <= 1))
         try:

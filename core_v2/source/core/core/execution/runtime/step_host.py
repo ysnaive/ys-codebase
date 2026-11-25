@@ -18,7 +18,12 @@ from core.execution.runtime.coordinator import PriorityHandle
 from core.execution.runtime.gates import LifecycleReloadGate, compute_coalesce_context_suffix
 from core.execution.runtime.module_slot import LocalStepExecutionSpec, StepContextCallbacks
 from core.execution.runtime.route_index import RouteIndexRegistry
-from core.execution.runtime.services import active_step_invocation_scope
+from core.execution.runtime.services import (
+    InvocationCorrelationContext,
+    active_invocation_correlation_scope,
+    active_step_invocation_scope,
+    resolve_active_correlation,
+)
 from core.metadata.contributes import active_cross_workspace_call_scope
 from core.execution.runtime.turn_session import ActiveStepBinding, TurnSessionRegistry, merge_deadlines
 from core.execution.runtime.wire import (
@@ -30,6 +35,7 @@ from core.foundation.codec import DataclassCodec
 from core.foundation.errors import ErrorCode, ErrorDetail, TaskCancelledException, YscbError, safe_exception_summary
 from core.foundation.observability import MAX_SAFE_WAIT_SEC, CancellationToken, DeadlineGuard, ms_to_safe_sec
 from core.foundation.primitives import EventId, HostPath, JsonObject, JsonValue, TaskId, invoke_observer_safely, require_non_none
+from core.foundation.profiler import NullProfiler, ProfilerNodeSnapshot, ProfilerSession, decode_profiler_snapshot
 
 _TIER0_CANCEL_GRACE_SEC = 0.20
 _TRes = TypeVar("_TRes")
@@ -39,6 +45,7 @@ _TRes = TypeVar("_TRes")
 class RawInvokeResult:
     outcome: TaskOutcome[JsonValue]
     invoked_tasks: tuple[tuple[HostPath, TaskId], ...] = ()
+    profiler_tree: Optional[ProfilerNodeSnapshot] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +160,14 @@ def decode_tier1_mapper_outcome(out: RemoteCallOutcome, eff_cancel: Cancellation
     return reply
 
 
+def _strip_wire_profiler_tree(payload: JsonObject) -> tuple[JsonObject, Optional[JsonValue]]:
+    if "profiler_tree" not in payload:
+        return (payload, None)
+    raw_tree = payload["profiler_tree"]
+    cleaned = {k: v for k, v in payload.items() if k != "profiler_tree"}
+    return (cleaned, raw_tree)
+
+
 def translate_remote_daemon_outcome(
     outcome: Optional[RemoteCallOutcome], cancel_token: CancellationToken, fallback_task: str,
 ) -> Optional[RawInvokeResult]:
@@ -170,17 +185,20 @@ def translate_remote_daemon_outcome(
         return RawInvokeResult(TaskOutcome(ok=False, error=ErrorDetail(outcome.error_code, outcome.error_message or outcome.error_code.value, source_task=fallback_task), executed_hot=True))
     if outcome.result_payload is None:
         return None
+    cleaned_payload, raw_tree = _strip_wire_profiler_tree(outcome.result_payload)
     try:
-        reply = DataclassCodec.decode_envelope(DaemonRpcInvokeReply, outcome.result_payload)
+        reply = DataclassCodec.decode_envelope(DaemonRpcInvokeReply, cleaned_payload)
     except YscbError as exc:
         return RawInvokeResult(TaskOutcome(ok=False, error=exc.detail.with_fallback_task(fallback_task), executed_hot=True))
     err = reply.error.with_fallback_task(fallback_task) if reply.error is not None else None
+    decoded_tree = decode_profiler_snapshot(raw_tree)
     return RawInvokeResult(
         TaskOutcome(
             ok=reply.ok, value=reply.raw_value, error=err, event_diagnostics=reply.event_diagnostics,
             teardown_diagnostics=reply.teardown_diagnostics, coalesced=reply.coalesced, executed_hot=True,
         ),
         reply.invoked_tasks,
+        decoded_tree,
     )
 
 
@@ -196,8 +214,9 @@ def map_tier1_remote_outcome(
 ) -> tuple[StepExecutionResult[JsonValue], tuple[ErrorDetail, ...]]:
     decoded_reply: Optional[WorkerStepReply] = None
     if out.error_code is None and not out.transport_lost and out.result_payload is not None:
+        cleaned_payload, _raw_tree = _strip_wire_profiler_tree(out.result_payload)
         try:
-            decoded_reply = DataclassCodec.decode_envelope(WorkerStepReply, out.result_payload)
+            decoded_reply = DataclassCodec.decode_envelope(WorkerStepReply, cleaned_payload)
         except YscbError as exc:
             return (StepExecutionResult(ok=False, error=exc.detail.with_fallback_task(str(task_id))), ())
         if decoded_reply.fatal_abort_turn:
@@ -371,10 +390,30 @@ class StepHostRunner:
         is_cross_ws_caller = len(c_stack) >= 2 and c_stack[-2][0] != step_req.workspace_root
         parent_mod = c_stack[-2][1].module_id if (len(c_stack) >= 2 and not is_cross_ws_caller) else None
         eff_ctree_id = step_req.propagation.call_tree_id or turn.turn_id
+        parent_corr = resolve_active_correlation()
+        child_prof: Optional[ProfilerSession] = None
+        if parent_corr is not None and not isinstance(parent_corr.profiler, NullProfiler):
+            eff_track_mem = step_req.profile_mem or step_req.propagation.profile_mem or (
+                isinstance(parent_corr.profiler, ProfilerSession) and parent_corr.profiler.track_memory
+            )
+            child_prof = ProfilerSession(root_name="Tier0", track_memory=eff_track_mem)
+            step_corr = replace(parent_corr, task_id=spec.task_id.value, profiler=child_prof)
+        elif parent_corr is not None:
+            step_corr = replace(parent_corr, task_id=spec.task_id.value)
+        else:
+            step_corr = InvocationCorrelationContext(
+                trace_id=eff_ctree_id,
+                task_id=spec.task_id.value,
+                exec_mode="hot" if self._is_daemon_host else "cold",
+            )
 
         def _worker_main() -> None:
             try:
-                with active_step_invocation_scope(parent_mod, eff_ctree_id), active_cross_workspace_call_scope(is_cross_ws_caller):
+                with (
+                    active_invocation_correlation_scope(step_corr),
+                    active_step_invocation_scope(parent_mod, eff_ctree_id),
+                    active_cross_workspace_call_scope(is_cross_ws_caller),
+                ):
                     rep_w = slots.execute_step_locally(local_spec)
                 holder.append(rep_w)
                 self._sessions.record_step_teardown_diags(turn, rep_w.teardown_diagnostics)
@@ -391,7 +430,13 @@ class StepHostRunner:
         except BaseException:
             exit_coord.rollback_unspawned()
             raise
-        if not _wait_tier0_done_or_cancel(done_ev, wake_ev, step_cancel, ms_to_safe_sec(eff_tmo) if eff_tmo is not None else None):
+        finished = _wait_tier0_done_or_cancel(
+            done_ev, wake_ev, step_cancel, ms_to_safe_sec(eff_tmo) if eff_tmo is not None else None
+        )
+        if child_prof is not None and parent_corr is not None:
+            for sub_node in child_prof.snapshot().children:
+                parent_corr.profiler.merge_subtree(sub_node)
+        if not finished:
             return _handle_unfinished_tier0_step(replace(spec, timeout_ms=eff_tmo), turn, done_ev, step_cancel)
         if not holder:
             msg = safe_exception_summary(escaped_base[0]) if escaped_base else "Tier 0 worker exited without reply"
@@ -408,7 +453,8 @@ class StepHostRunner:
             return (StepExecutionResult(ok=False, error=exc.detail.with_fallback_task(str(spec.task_id))), None)
         prop, srid = step_req.propagation, uuid.uuid4().hex
         ctree = prop.call_tree_id or turn.turn_id
-        auth_prop = replace(prop, turn_id=turn.turn_id, call_tree_id=ctree)
+        eff_profile_mem = step_req.profile_mem or prop.profile_mem
+        auth_prop = replace(prop, turn_id=turn.turn_id, call_tree_id=ctree, profile_mem=eff_profile_mem)
         cb_ctx = WorkerCallbackContext(
             propagation=auth_prop,
             caller_cwd=step_req.caller_cwd, caller_env=step_req.caller_env,
@@ -418,6 +464,7 @@ class StepHostRunner:
             action=WorkerCommandKind.RUN_STEP, step_run_id=srid, task_id=spec.task_id,
             raw_input=step_req.raw_input, caller_cwd=step_req.caller_cwd, caller_env=step_req.caller_env,
             lineage=prop.lineage, priority=priority_getter(), interactive_tty=spec.interactive_tty, callback_context=cb_ctx,
+            profile_mem=eff_profile_mem, trace_id=ctree, exec_mode="worker",
         )
         parent_req = replace(step_req, propagation=replace(prop, call_stack=prop.call_stack[:-1]))
         call_spec = WorkerCallSpec(
@@ -436,6 +483,7 @@ class StepHostRunner:
             approval_scope=step_req.approval_scope,
             allow_conditional=step_req.allow_conditional,
             deadline_fn=lambda: env.current_guard().deadline,
+            correlation=resolve_active_correlation(),
         )
         self._sessions.bind_active_step(srid, step_bind)
         try:

@@ -86,7 +86,7 @@ from typing import Annotated, BinaryIO, Callable, ClassVar, Final, Generic, Lite
 
 from core.filesystem.fs import IGNORED_FS_PREFIXES, assert_no_symlink_raw_path, atomic_write_bytes, has_symlink_raw_path, is_atomic_staging_filename, is_symlink_or_reparse, read_nofollow_regular_bytes, resolve_contained_subpath, walk_nonsymlink_dir_tree
 from core.filesystem.vfs import ScopedVfs, VfsCapabilities
-from core.foundation import CancellationToken, ErrorCode, HostPath, INT64_MAX, INT64_MIN, IS_WINDOWS, SemanticUri, SnapshotGen, YscbError, require_pure_bool, require_pure_int, require_pure_str, require_typed_frozenset, require_typed_tuple, safe_exception_summary, validate_relative_segment
+from core.foundation import CancellationToken, ErrorCode, HostPath, INT64_MAX, INT64_MIN, IS_WINDOWS, Profiler, SemanticUri, SnapshotGen, YscbError, require_pure_bool, require_pure_int, require_pure_str, require_typed_frozenset, require_typed_tuple, safe_exception_summary, validate_relative_segment
 
 SqlParam: TypeAlias = None | bool | int | float | str | bytes
 SqlParams: TypeAlias = Sequence[SqlParam]
@@ -124,7 +124,7 @@ class BlobVault:
 
 class ModuleDatabase:
 
-    def __init__(self, vfs: ScopedVfs, db_uri: SemanticUri | str, *, migrations: Sequence[SchemaMigration]=(), options: StorageOpenOptions=StorageOpenOptions()) -> None:
+    def __init__(self, vfs: ScopedVfs, db_uri: SemanticUri | str, *, migrations: Sequence[SchemaMigration]=(), options: StorageOpenOptions=StorageOpenOptions(), profiler: Optional[Profiler]=None) -> None:
         ...
 
     @property

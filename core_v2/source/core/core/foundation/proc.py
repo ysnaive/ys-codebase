@@ -18,6 +18,7 @@ import uuid
 
 from core.foundation.errors import safe_exception_summary
 from core.foundation.primitives import (
+    FORCE_FLIGHT_LOGS_ENV_KEY,
     IS_WINDOWS,
     PUBLIC_ENV_ALLOWLIST,
     PYTHON_LAUNCHER_HIJACK_ENV_KEYS,
@@ -1289,6 +1290,25 @@ def is_public_env_truthy(key: str) -> bool:
     """Return True when an allowlisted YSCB public environment flag is set to a truthy token."""
     val = read_public_env_value(key)
     return val is not None and val.lower() in ("1", "true", "yes", "on")
+
+
+def read_flight_log_env() -> dict[str, str]:
+    """Return a bounded snapshot of flight-log sandbox and force-enable environment flags."""
+    allowed_upper = (
+        TEST_SANDBOX_ENV_KEY.upper(),
+        "YSCB_TEST_SANDBOX",
+        FORCE_FLIGHT_LOGS_ENV_KEY.upper(),
+    )
+    out: dict[str, str] = {}
+    for k, v in os.environ.items():
+        if not k or "\x00" in k or "\x00" in v:
+            continue
+        ku = k.upper()
+        if ku in allowed_upper:
+            trimmed = v.strip()
+            if trimmed:
+                out[ku] = trimmed
+    return out
 
 
 def build_isolated_python_env() -> dict[str, str]:

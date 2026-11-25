@@ -26,8 +26,10 @@ from types import ModuleType
 from typing import Annotated, Generic, Literal, Mapping, Optional, Sequence, TypeVar
 import zipfile
 
-from core.execution.daemon import DaemonRunState
+from core.execution.daemon import DaemonRunState, query_daemon_control
+from core.execution.rpc import FrameKind, probe_daemon_endpoint
 from core.execution.runtime import (
+    CallPropagationContext,
     ClientRoutingPolicy,
     DispatchMode,
     InvokeRequest,
@@ -56,6 +58,7 @@ from core.foundation import (
     EventId,
     HostPath,
     ModuleId,
+    ProfilerSession,
     ProgressEvent,
     SemanticUri,
     SpaceId,
@@ -71,6 +74,7 @@ from core.surface.bootstrap import (
     SpaceAckCursorInput,
     SpaceScanInput,
     SystemResultView,
+    WorkspaceKernel,
     WorkspaceKernelFactory,
 )
 from core.surface.cli import (
@@ -734,7 +738,16 @@ def _verify_caller_mode_and_security_matrix(tmp_root: Path) -> None:
     check(pure_json["ok"] is True and pure_json["value"]["text"] == "deployed:prod:fast:False")
     check("deploying-step" in prog_err.getvalue() and "deploying-step" not in json_ok_out.getvalue())
     check("[Update Available]" not in prog_err.getvalue(), "--json must suppress 12h update check notice")
-    check((root_hp.path / ".cache" / "core" / "telemetry.jsonl").is_file(), "Expected CLI telemetry record")
+    perf_files = list((root_hp.path / ".cache" / "logs" / "perf").glob("*.jsonl"))
+    daily_files = list((root_hp.path / ".cache" / "logs" / "daily").glob("*.jsonl"))
+    check(len(perf_files) == 1, f"Expected CLI perf flight log under .cache/logs/perf/, got {perf_files}")
+    check(len(daily_files) == 1, f"Expected CLI daily flight log under .cache/logs/daily/, got {daily_files}")
+    daily_rows = [json.loads(ln) for ln in daily_files[0].read_text(encoding="utf-8").splitlines() if ln.strip()]
+    check(
+        any(r.get("kind") == "IN" and r.get("task_id") == "alpha.deploy" for r in daily_rows)
+        and any(r.get("kind") == "OUT" and r.get("task_id") == "alpha.deploy" for r in daily_rows),
+        f"Expected [IN] and [OUT] daily flight log records for alpha.deploy: {daily_rows}",
+    )
 
     human_upd_err = _MockTtyOutput(is_tty=True)
     _ = cli_main(
@@ -6129,6 +6142,7 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
     )
 
     _verify_bootstrap_gate_ack_cursor_and_env_lease(wk_host_hp, wk_root_hp, t1_pool, t1_grp_specs[ModuleId("t1fd1")])
+    _verify_observability_profiler_and_fast_daemon_boot(suite_dir, boot_prov, wheel_house_hp)
     log("[SURFACE-CLI] All CLI, Bootstrap, and yscb.py E2E checks passed.")
 
 
@@ -6426,6 +6440,527 @@ def _verify_bootstrap_gate_ack_cursor_and_env_lease(
         t1_env_dir in gc_post.removed_dirs and not t1_env_dir.path.exists(),
         f"EnvGarbageCollector must reclaim venv after kernel closes and releases shared lease: {gc_post}",
     )
+
+
+def _collect_profiler_tree_names(node: Mapping[str, object]) -> set[str]:
+    names: set[str] = set()
+    raw_name = node.get("name")
+    if isinstance(raw_name, str) and raw_name:
+        names.add(raw_name)
+    raw_children = node.get("children")
+    if isinstance(raw_children, list):
+        for ch in raw_children:
+            if isinstance(ch, Mapping):
+                names.update(_collect_profiler_tree_names(ch))
+    return names
+
+
+def _verify_cli_profile_flags_and_pre_dispatch_redaction(obs_base: Path, prov_dir: Path) -> None:
+    empty_ws = obs_base / "uninit_empty_ws"
+    empty_ws.mkdir(parents=True, exist_ok=True)
+    for empty_argv in (["--profile", "--help"], ["--profile"]):
+        cp_empty = _run_yscb_subproc(
+            empty_ws,
+            empty_argv,
+            script_override=CORE_V2_ROOT / "yscb.py",
+        )
+        check(
+            cp_empty.returncode == 0 and list(empty_ws.iterdir()) == [],
+            f"Uninitialized workspace {empty_argv} must exit 0 with 0 disk writes: rc={cp_empty.returncode} files={list(empty_ws.iterdir())} err={cp_empty.stderr!r}",
+        )
+
+    ws_prof = obs_base / "cli_prof_ws"
+    ws_prof.mkdir(parents=True, exist_ok=True)
+    cp_init = _run_yscb_subproc(ws_prof, ["init", f"--provider={prov_dir}", "--json"])
+    check(cp_init.returncode == 0, f"cli_prof_ws init failed: {cp_init.stdout} {cp_init.stderr}")
+    logs_dir = ws_prof / ".yscb" / ".cache" / "logs"
+    if logs_dir.exists():
+        shutil.rmtree(logs_dir)
+
+    for help_argv in (["--help"], ["--profile", "--help"], ["status", "--profile", "-h"]):
+        cp_h = _run_yscb_subproc(ws_prof, help_argv)
+        check(cp_h.returncode == 0, f"Help command {help_argv} failed: {cp_h.stderr}")
+    check(not logs_dir.exists(), f"Cold --help must produce 0 flight-log writes, found {logs_dir}")
+
+    cp_prof = _run_yscb_subproc(ws_prof, ["status", "--profile", "--json", "--cold"])
+    check(cp_prof.returncode == 0, f"status --profile --json --cold failed: {cp_prof.stdout} {cp_prof.stderr}")
+    prof_doc = json.loads(cp_prof.stdout)
+    check(prof_doc.get("ok") is True, f"Expected pure JSON stdout on --profile --json: {prof_doc}")
+    check(
+        "Bootstrap" in cp_prof.stderr and "Launcher" in cp_prof.stderr and "Total ms" in cp_prof.stderr and "Self ms" in cp_prof.stderr and "core.status" in cp_prof.stderr,
+        f"Expected ImTK profiler waterfall tree on stderr: {cp_prof.stderr!r}",
+    )
+
+    cp_pmem = _run_yscb_subproc(ws_prof, ["status", "--profile-mem", "--json", "--cold"])
+    check(cp_pmem.returncode == 0, f"status --profile-mem --json --cold failed: {cp_pmem.stdout} {cp_pmem.stderr}")
+    pmem_doc = json.loads(cp_pmem.stdout)
+    check(pmem_doc.get("ok") is True, f"Expected pure JSON stdout on --profile-mem --json: {pmem_doc}")
+    check(
+        "Alloc KB" in cp_pmem.stderr and "Bootstrap" in cp_pmem.stderr and "Launcher" in cp_pmem.stderr,
+        f"Expected Alloc KB column in --profile-mem stderr output: {cp_pmem.stderr!r}",
+    )
+
+    cp_env_mem = _run_yscb_subproc(
+        ws_prof,
+        ["status", "--json", "--cold"],
+        extra_env={"YSCB_PROFILE_MEM": "1"},
+    )
+    check(cp_env_mem.returncode == 0 and json.loads(cp_env_mem.stdout).get("ok") is True)
+    check("Total ms" not in cp_env_mem.stderr, f"YSCB_PROFILE_MEM=1 alone must not print tree to stderr: {cp_env_mem.stderr!r}")
+
+    perf_files = sorted((logs_dir / "perf").glob("*.jsonl"))
+    check(len(perf_files) == 1, f"Expected perf flight log file, got {perf_files}")
+    perf_rows = [json.loads(ln) for ln in perf_files[0].read_text(encoding="utf-8").splitlines() if ln.strip()]
+    check(
+        sum(1 for r in perf_rows if r.get("task_id") == "core.status" and r.get("mem_tracked") is True) >= 2,
+        f"Expected --profile-mem and YSCB_PROFILE_MEM=1 traces with mem_tracked=True: {perf_rows}",
+    )
+
+    if logs_dir.exists():
+        shutil.rmtree(logs_dir)
+    cp_sec_fail = _run_yscb_subproc(ws_prof, ["remove", "demo", "--approve=secret_tok_999", "--json", "--cold"])
+    check(cp_sec_fail.returncode == 4, f"Expected security gate failure (4), got {cp_sec_fail.returncode}")
+    cp_parse_fail = _run_yscb_subproc(
+        ws_prof,
+        ["config", "set", "core", "api_token", "supersecretvalue123", "--unknown-flag", "--json", "--cold"],
+    )
+    check(cp_parse_fail.returncode == 2, f"Expected parse failure (2), got {cp_parse_fail.returncode}")
+
+    red_daily_files = sorted((logs_dir / "daily").glob("*.jsonl"))
+    red_perf_files = sorted((logs_dir / "perf").glob("*.jsonl"))
+    check(len(red_daily_files) == 1 and len(red_perf_files) == 1, "Expected daily and perf logs on pre-dispatch errors")
+    red_daily_txt = red_daily_files[0].read_text(encoding="utf-8")
+    red_perf_txt = red_perf_files[0].read_text(encoding="utf-8")
+    for raw_secret in ("secret_tok_999", "supersecretvalue123"):
+        check(raw_secret not in red_daily_txt, f"Raw secret {raw_secret!r} leaked into daily log!")
+        check(raw_secret not in red_perf_txt, f"Raw secret {raw_secret!r} leaked into perf log!")
+    check("[REDACTED]" in red_perf_txt, f"Expected [REDACTED] marker in perf log: {red_perf_txt}")
+    red_daily_rows = [json.loads(ln) for ln in red_daily_txt.splitlines() if ln.strip()]
+    red_perf_rows = [json.loads(ln) for ln in red_perf_txt.splitlines() if ln.strip()]
+    check(
+        len(red_perf_rows) == 2 and all(r.get("ok") is False for r in red_perf_rows),
+        f"Expected strictly 2 failed perf records for 2 pre-dispatch failures: {red_perf_rows}",
+    )
+    check(
+        sum(1 for r in red_daily_rows if r.get("kind") == "IN") == 2
+        and sum(1 for r in red_daily_rows if r.get("kind") == "OUT" and r.get("ok") is False) == 2,
+        f"Expected strictly 2 IN and 2 failed OUT daily records: {red_daily_rows}",
+    )
+
+
+def _setup_t1obs_workspace(obs_base: Path, prov_dir: Path, wheel_house_hp: HostPath) -> tuple[Path, Path]:
+    ws_obs = obs_base / "three_proc_obs_ws"
+    ws_obs.mkdir(parents=True, exist_ok=True)
+    cp_init = _run_yscb_subproc(ws_obs, ["init", f"--provider={prov_dir}", "--json"])
+    check(cp_init.returncode == 0, f"three_proc_obs_ws init failed: {cp_init.stdout} {cp_init.stderr}")
+    obs_root = ws_obs / ".yscb"
+    t1_dir = obs_root / ".modules" / "t1obs"
+    t1_dir.mkdir(parents=True, exist_ok=True)
+    (t1_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "id": "t1obs",
+                "version": "1.0.0.0",
+                "description": "Tier 1 observability probe module",
+                "venv_group": "obs_t1_grp",
+                "pip_dependencies": {"dummy-dial-pkg": "==1.0.0"},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (t1_dir / "module_entry.py").write_text(
+        "from core.surface.sdk import Module, TaskContext, task\n\n"
+        "class T1ObsMod(Module):\n"
+        "    id = 't1obs'\n"
+        "    @task(cli=('trace-work',), name='trace_work', summary='Emit Tier 1 spans and warning alert')\n"
+        "    def trace_work(self, ctx: TaskContext) -> dict[str, str]:\n"
+        "        with ctx.profiler.scope('WorkerPhase'):\n"
+        "            ctx.logger.info('t1_info_event', fields={'step': 1})\n"
+        "            with ctx.profiler.scope_relative('InnerCalc'):\n"
+        "                ctx.logger.warning('t1_warn_alert', fields={'code': 'W42'})\n"
+        "        return {'status': 'traced'}\n\n"
+        "def create_module():\n"
+        "    return T1ObsMod().to_yscb_module()\n",
+        encoding="utf-8",
+    )
+    host_cfg_p = ws_obs / "yscb.config.json"
+    host_cfg = json.loads(host_cfg_p.read_text(encoding="utf-8"))
+    host_cfg["installed_modules"]["t1obs"] = {
+        "version": "1.0.0.0",
+        "provider": "local",
+        "installed_at": "2026-11-25T00:00:00Z",
+    }
+    host_cfg_p.write_text(json.dumps(host_cfg, indent=2), encoding="utf-8")
+
+    obs_host_hp = HostPath(ws_obs)
+    obs_root_hp = HostPath(obs_root)
+    obs_pool = ImmutableVenvPool(yscb_root=obs_root_hp, cache_dir=HostPath(obs_root / ".cache"))
+    mfs_map = discover_installed_manifests_map(obs_root_hp)
+    grp_specs = ImmutableVenvPool.resolve_group_specs(tuple(mfs_map.values()))
+    obs_pool.ensure_env(grp_specs[ModuleId("t1obs")], offline=True, wheel_cache_dir=wheel_house_hp)
+    idx_k = WorkspaceKernelFactory.create(obs_host_hp, obs_root_hp, force_cold=True)
+    try:
+        idx_k.ensure_installed_tasks_indices((ModuleId("t1obs"),))
+        idx_k.rebuild_tasks_index_cache()
+    finally:
+        idx_k.close()
+    return (ws_obs, obs_root)
+
+
+def _verify_single_kernel_fast_daemon_boot(ws_obs: Path, obs_root: Path) -> None:
+    obs_host_hp = HostPath(ws_obs)
+    obs_root_hp = HostPath(obs_root)
+    cache_hp = HostPath(obs_root / ".cache")
+    logs_dir = obs_root / ".cache" / "logs"
+    if logs_dir.exists():
+        shutil.rmtree(logs_dir)
+
+    init_modes: list[bool] = []
+    init_lock = threading.Lock()
+    orig_init = WorkspaceKernel.__init__
+
+    def _counting_init(self: WorkspaceKernel, *args: object, **kwargs: object) -> None:
+        with init_lock:
+            init_modes.append(bool(kwargs.get("is_daemon_host", False)))
+        orig_init(self, *args, **kwargs)
+
+    stop_done = threading.Event()
+
+    def _stop_when_ready() -> None:
+        dl = time.monotonic() + 15.0
+        while time.monotonic() < dl:
+            if probe_daemon_endpoint(cache_hp, obs_root_hp) is not None:
+                _ = query_daemon_control(cache_hp, obs_root_hp, FrameKind.CONTROL_STOP, {"force": False}, timeout_ms=5000)
+                stop_done.set()
+                return
+            time.sleep(0.05)
+
+    WorkspaceKernel.__init__ = _counting_init
+    stopper = threading.Thread(target=_stop_when_ready, daemon=True)
+    stopper.start()
+    try:
+        sup_out = _MockTtyOutput(is_tty=False)
+        sup_err = _MockTtyOutput(is_tty=False)
+        rc_sup = cli_main(
+            ["daemon", "start", "--supervisor", "--json"],
+            host_dir=obs_host_hp,
+            yscb_root=obs_root_hp,
+            env={"YSCB_CALLER_MODE": "agent", "YSCB_OFFLINE": "1", "YSCB_NO_UPDATE_CHECK": "1"},
+            stdin_stream=_MockTtyInput(is_tty=False),
+            stdout_stream=sup_out,
+            stderr_stream=sup_err,
+            builtin_indices=WorkspaceKernelFactory.builtin_cli_indices(),
+            install_signal_guard=False,
+        )
+    finally:
+        WorkspaceKernel.__init__ = orig_init
+        stopper.join(timeout=5.0)
+        stop_daemon_cleanly(obs_root_hp)
+
+    check(stop_done.is_set(), "Timed out waiting for fast foreground daemon to become ready")
+    check(rc_sup == 0, f"Expected fast supervisor boot exit 0, got {rc_sup}: out={sup_out.getvalue()!r} err={sup_err.getvalue()!r}")
+    check(
+        init_modes == [True],
+        f"Foreground daemon start must instantiate WorkspaceKernel EXACTLY ONCE (is_daemon_host=True), got {init_modes}",
+    )
+    sig_cache_p = obs_root / ".cache" / "daemon" / "core_sig_cache.json"
+    check(sig_cache_p.is_file(), f"Expected core_sig_cache.json persisted at {sig_cache_p}")
+    sig_doc = json.loads(sig_cache_p.read_text(encoding="utf-8"))
+    check(isinstance(sig_doc, dict) and bool(sig_doc), f"Expected non-empty core_sig_cache.json, got {sig_doc}")
+
+
+def _verify_three_process_observability_e2e(ws_obs: Path, obs_root: Path) -> None:
+    logs_dir = obs_root / ".cache" / "logs"
+    if logs_dir.exists():
+        shutil.rmtree(logs_dir)
+    try:
+        cp_start = _run_yscb_subproc(ws_obs, ["daemon", "start", "-d", "--json"])
+        check(
+            cp_start.returncode == 0 and json.loads(cp_start.stdout).get("value", {}).get("data", {}).get("online") is True,
+            f"Background daemon start failed: rc={cp_start.returncode} out={cp_start.stdout!r} err={cp_start.stderr!r}",
+        )
+        ep_doc = json.loads((obs_root / ".cache" / "daemon" / "daemon.json").read_text(encoding="utf-8"))
+        live_boot_id = str(ep_doc["boot_id"])
+        check(bool(live_boot_id), f"Expected non-empty daemon boot_id in {ep_doc}")
+
+        cp_t1 = _run_yscb_subproc(ws_obs, ["t1obs", "trace-work", "--profile", "--json"])
+        check(cp_t1.returncode == 0, f"t1obs trace-work failed: rc={cp_t1.returncode} out={cp_t1.stdout!r} err={cp_t1.stderr!r}")
+        t1_doc = json.loads(cp_t1.stdout)
+        check(
+            t1_doc.get("ok") is True and t1_doc.get("executed_hot") is True and t1_doc.get("value") == {"status": "traced"},
+            f"Expected pure hot JSON outcome for t1obs.trace_work: {t1_doc}",
+        )
+        check(
+            "Bootstrap" in cp_t1.stderr and "Launcher" in cp_t1.stderr and "WorkerPhase" in cp_t1.stderr and "InnerCalc" in cp_t1.stderr,
+            f"Expected merged 3-process ImTK tree on stderr: {cp_t1.stderr!r}",
+        )
+
+        # Verify YscbClient -> Hot Daemon single-owner write matrix (no duplicate daily/perf writes)
+        with YscbClient.connect(HostPath(obs_root)) as sdk_hot_cli:
+            sdk_hot_out = sdk_hot_cli.call("t1obs.trace_work")
+            check(
+                sdk_hot_out.ok and sdk_hot_out.executed_hot and sdk_hot_out.value == {"status": "traced"},
+                f"Expected hot YscbClient call ok: {sdk_hot_out}",
+            )
+
+        # Verify nested active profiler mounts remote daemon subtree inside active scope without double-counting
+        nested_prof = ProfilerSession("NestedRpcRoot", track_memory=False)
+        nested_k = WorkspaceKernelFactory.create(HostPath(ws_obs), HostPath(obs_root), force_cold=False)
+        try:
+            with nested_prof.scope("OuterParent"):
+                nested_out = nested_k.dispatcher.invoke(
+                    InvokeRequest(
+                        task_id=TaskId("t1obs.trace_work"),
+                        raw_input={},
+                        workspace_root=HostPath(obs_root),
+                        caller_cwd=HostPath(ws_obs),
+                        routing_policy=ClientRoutingPolicy.AUTO_NO_SPAWN,
+                        external_flight_owner=True,
+                        active_profiler=nested_prof,
+                    )
+                )
+            check(nested_out.ok and nested_out.executed_hot, f"Expected nested hot RPC ok: {nested_out}")
+        finally:
+            nested_k.close()
+        nested_snap = nested_prof.snapshot()
+        top_names = {c.name for c in nested_snap.children}
+        check(
+            top_names == {"OuterParent"},
+            f"Nested RPC subtree must mount under OuterParent rather than leaking Root/Runtime/RpcCall: {top_names}",
+        )
+        outer_node = nested_snap.children[0]
+        outer_names = _collect_profiler_tree_names(DataclassCodec.encode_object(outer_node))
+        check(
+            {"Runtime", "RpcCall", "WorkerPhase", "InnerCalc"}.issubset(outer_names),
+            f"Expected nested RPC daemon+worker spans inside OuterParent: {sorted(outer_names)}",
+        )
+        check(
+            nested_snap.total_ms <= outer_node.total_ms + 1.0,
+            f"Nested RPC merge must not double-count wall time: root={nested_snap.total_ms} outer={outer_node.total_ms}",
+        )
+
+        cp_stop = _run_yscb_subproc(ws_obs, ["daemon", "stop", "--json"])
+        check(cp_stop.returncode == 0, f"daemon stop failed: {cp_stop.stdout} {cp_stop.stderr}")
+    finally:
+        stop_daemon_cleanly(HostPath(obs_root))
+
+    daily_files = sorted((logs_dir / "daily").glob("*.jsonl"))
+    perf_files = sorted((logs_dir / "perf").glob("*.jsonl"))
+    daemon_files = sorted((logs_dir / "daemon").glob("daemon_*.jsonl"))
+    mod_log_p = logs_dir / "modules" / "t1obs.jsonl"
+    check(len(daily_files) == 1 and len(perf_files) == 1, f"Missing daily/perf logs: {daily_files} / {perf_files}")
+    check(len(daemon_files) >= 1 and mod_log_p.is_file(), f"Missing daemon/module logs: {daemon_files} / {mod_log_p}")
+
+    daily_rows = [json.loads(ln) for ln in daily_files[0].read_text(encoding="utf-8").splitlines() if ln.strip()]
+    perf_rows = [json.loads(ln) for ln in perf_files[0].read_text(encoding="utf-8").splitlines() if ln.strip()]
+    daemon_rows = [json.loads(ln) for df in daemon_files for ln in df.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    mod_rows = [json.loads(ln) for ln in mod_log_p.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+    t1_perf = [r for r in perf_rows if r.get("task_id") == "t1obs.trace_work"]
+    check(
+        len(t1_perf) == 2,
+        f"Expected strictly 2 perf traces (1 CLI hot + 1 YscbClient hot, 0 daemon duplicates), got {len(t1_perf)}: {t1_perf}",
+    )
+    cli_t1_perf = [r for r in t1_perf if r.get("caller_mode") != "sdk"]
+    sdk_t1_perf = [r for r in t1_perf if r.get("caller_mode") == "sdk"]
+    check(len(cli_t1_perf) == 1 and len(sdk_t1_perf) == 1, f"Expected 1 CLI + 1 SDK perf trace: {t1_perf}")
+    trace_id = str(cli_t1_perf[0]["trace_id"])
+    sdk_trace_id = str(sdk_t1_perf[0]["trace_id"])
+    check(bool(trace_id) and cli_t1_perf[0].get("daemon_boot_id") == live_boot_id and cli_t1_perf[0].get("executed_hot") is True)
+    sdk_tr_daily = [r for r in daily_rows if r.get("trace_id") == sdk_trace_id]
+    check(
+        sum(1 for r in sdk_tr_daily if r.get("kind") == "IN") == 1
+        and sum(1 for r in sdk_tr_daily if r.get("kind") == "OUT" and r.get("ok") is True) == 1,
+        f"YscbClient->Hot Daemon must emit strictly 1 IN and 1 OUT in daily/ for trace_id={sdk_trace_id}: {sdk_tr_daily}",
+    )
+    tree_names = _collect_profiler_tree_names(cli_t1_perf[0]["profiler_tree"])
+    check(
+        {"Bootstrap", "Launcher", "WorkerPhase", "InnerCalc"}.issubset(tree_names),
+        f"Expected CLI + Daemon + Tier 1 spans merged into single perf profiler_tree, got {sorted(tree_names)}",
+    )
+    check(
+        any(r.get("task_id") == "daemon.boot" and r.get("daemon_boot_id") == live_boot_id and r.get("ok") is True for r in perf_rows),
+        f"Expected daemon.boot trace in perf log for boot_id={live_boot_id}",
+    )
+
+    tr_daily = [r for r in daily_rows if r.get("trace_id") == trace_id]
+    check(
+        sum(1 for r in tr_daily if r.get("kind") == "IN") == 1
+        and sum(1 for r in tr_daily if r.get("kind") == "OUT" and r.get("ok") is True) == 1,
+        f"Single-owner matrix must emit strictly 1 IN and 1 OUT in daily/ for trace_id={trace_id}: {tr_daily}",
+    )
+    check(
+        any(
+            r.get("kind") == "ALERT"
+            and r.get("daemon_boot_id") == live_boot_id
+            and "t1_warn_alert" in str(r.get("message", ""))
+            for r in tr_daily
+        ),
+        f"Expected Tier 1 WARNING to bubble as ALERT into daily/ with matching trace_id & daemon_boot_id: {tr_daily}",
+    )
+    check(
+        any(r.get("event") == "ready" and r.get("daemon_boot_id") == live_boot_id for r in daemon_rows)
+        and any(r.get("event") == "rpc_done" and r.get("trace_id") == trace_id and r.get("daemon_boot_id") == live_boot_id for r in daemon_rows),
+        f"Expected daemon lifecycle + rpc_done for trace_id={trace_id}: {daemon_rows}",
+    )
+    check(
+        any(r.get("trace_id") == trace_id and r.get("daemon_boot_id") == live_boot_id and "t1_info_event" in json.dumps(r) for r in mod_rows)
+        and any(r.get("trace_id") == trace_id and r.get("daemon_boot_id") == live_boot_id and "t1_warn_alert" in json.dumps(r) for r in mod_rows),
+        f"Expected modules/t1obs.jsonl stamped with matching trace_id & daemon_boot_id: {mod_rows}",
+    )
+
+
+def _verify_lazy_proxy_gates_and_sandbox_env_overrides(ws_obs: Path, obs_root: Path) -> None:
+    lazy_cases: tuple[tuple[str, InvokeRequest, ErrorCode], ...] = (
+        (
+            "allow_conditional=False",
+            InvokeRequest(
+                task_id=TaskId("core.daemon.start"),
+                raw_input={"supervisor": True},
+                workspace_root=HostPath(obs_root),
+                caller_cwd=HostPath(ws_obs),
+                allow_conditional=False,
+            ),
+            ErrorCode.SECURITY_GATED,
+        ),
+        (
+            "DaemonStartInput schema validation",
+            InvokeRequest(
+                task_id=TaskId("core.daemon.start"),
+                raw_input={"supervisor": True, "unexpected_key": 1},
+                workspace_root=HostPath(obs_root),
+                caller_cwd=HostPath(ws_obs),
+                allow_conditional=True,
+            ),
+            ErrorCode.CODEC_VALIDATION_FAILED,
+        ),
+        (
+            "in_event_chain=True",
+            InvokeRequest(
+                task_id=TaskId("core.daemon.start"),
+                raw_input={"supervisor": True},
+                workspace_root=HostPath(obs_root),
+                caller_cwd=HostPath(ws_obs),
+                allow_conditional=True,
+                propagation=CallPropagationContext(in_event_chain=True),
+            ),
+            ErrorCode.SECURITY_GATED,
+        ),
+        (
+            "from_hot_container=True",
+            InvokeRequest(
+                task_id=TaskId("core.daemon.start"),
+                raw_input={"supervisor": True},
+                workspace_root=HostPath(obs_root),
+                caller_cwd=HostPath(ws_obs),
+                allow_conditional=True,
+                propagation=CallPropagationContext(from_hot_container=True),
+            ),
+            ErrorCode.COLD_DISPATCH_FORBIDDEN,
+        ),
+        (
+            "STRICT_HOT COLD_ONLY",
+            InvokeRequest(
+                task_id=TaskId("core.daemon.start"),
+                raw_input={"supervisor": True},
+                workspace_root=HostPath(obs_root),
+                caller_cwd=HostPath(ws_obs),
+                allow_conditional=True,
+                routing_policy=ClientRoutingPolicy.STRICT_HOT,
+            ),
+            ErrorCode.COLD_DISPATCH_FORBIDDEN,
+        ),
+    )
+    for case_label, req_case, expected_code in lazy_cases:
+        lazy_sess = WorkspaceKernelFactory.open_cli_session(HostPath(ws_obs), HostPath(obs_root), force_cold=True)
+        try:
+            disp_proxy = lazy_sess.dispatcher
+            check(
+                type(disp_proxy).__name__ == "_LazyCliDispatcherProxy",
+                f"Expected unmaterialized _LazyCliDispatcherProxy for {case_label}, got {type(disp_proxy).__name__}",
+            )
+            case_out = disp_proxy.invoke(req_case)
+            check(
+                not case_out.ok and case_out.error is not None and case_out.error.code == expected_code,
+                f"Lazy daemon fast path must not bypass {case_label} gate (expected {expected_code}): {case_out}",
+            )
+        finally:
+            lazy_sess.close()
+
+    logs_dir = obs_root / ".cache" / "logs"
+    if logs_dir.exists():
+        shutil.rmtree(logs_dir)
+    sdk_probe_code = (
+        "import sys\n"
+        "from core.foundation import HostPath\n"
+        "from core.surface.sdk import YscbClient\n"
+        "with YscbClient(HostPath(sys.argv[1])) as cli:\n"
+        "    out = cli.call('t1obs.trace_work', force_cold=True)\n"
+        "    if not out.ok:\n"
+        "        raise SystemExit(str(out))\n"
+    )
+    legacy_sbx_env = _build_sanitized_subproc_env(
+        caller_mode=None,
+        extra_env={"PYTHONPATH": str(CORE_SRC_ROOT), "YSCB_TEST_SANDBOX": "1"},
+    )
+    legacy_sbx_env.pop("_YSCB_TEST_SANDBOX", None)
+    legacy_sbx_env.pop("_YSCB_FORCE_FLIGHT_LOGS", None)
+    cp_sbx = subprocess.run(
+        [sys.executable, "-X", "utf8", "-B", "-W", "error::ResourceWarning", "-c", sdk_probe_code, str(obs_root)],
+        cwd=str(ws_obs),
+        env=legacy_sbx_env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+        creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+    )
+    check(cp_sbx.returncode == 0, f"Legacy sandbox SDK probe failed: rc={cp_sbx.returncode} err={cp_sbx.stderr!r}")
+    check(
+        not (logs_dir / "daily").exists() and not (logs_dir / "perf").exists(),
+        f"Legacy YSCB_TEST_SANDBOX=1 must suppress SDK/Kernel daily/perf flight logs: {list(logs_dir.rglob('*')) if logs_dir.exists() else []}",
+    )
+
+    force_env = _build_sanitized_subproc_env(
+        caller_mode=None,
+        extra_env={
+            "PYTHONPATH": str(CORE_SRC_ROOT),
+            "_YSCB_TEST_SANDBOX": "1",
+            "_YSCB_FORCE_FLIGHT_LOGS": "1",
+        },
+    )
+    cp_force = subprocess.run(
+        [sys.executable, "-X", "utf8", "-B", "-W", "error::ResourceWarning", "-c", sdk_probe_code, str(obs_root)],
+        cwd=str(ws_obs),
+        env=force_env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+        creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+    )
+    check(cp_force.returncode == 0, f"Force-flight-logs SDK probe failed: rc={cp_force.returncode} err={cp_force.stderr!r}")
+    check(
+        bool(list((logs_dir / "daily").glob("*.jsonl"))) and bool(list((logs_dir / "perf").glob("*.jsonl"))),
+        f"_YSCB_FORCE_FLIGHT_LOGS=1 must override _YSCB_TEST_SANDBOX=1 for SDK/Kernel flight logs",
+    )
+
+
+def _verify_observability_profiler_and_fast_daemon_boot(
+    suite_dir: Path,
+    prov_dir: Path,
+    wheel_house_hp: HostPath,
+) -> None:
+    obs_base = suite_dir / "obs_profiler_e2e"
+    obs_base.mkdir(parents=True, exist_ok=True)
+    _verify_cli_profile_flags_and_pre_dispatch_redaction(obs_base, prov_dir)
+    ws_obs, obs_root = _setup_t1obs_workspace(obs_base, prov_dir, wheel_house_hp)
+    _verify_single_kernel_fast_daemon_boot(ws_obs, obs_root)
+    _verify_three_process_observability_e2e(ws_obs, obs_root)
+    _verify_lazy_proxy_gates_and_sandbox_env_overrides(ws_obs, obs_root)
 
 
 __all__ = ("run_surface_cli_e2e_suite",)

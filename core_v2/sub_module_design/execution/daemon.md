@@ -38,7 +38,8 @@
    - 依 `TaskRouteSpec.periodic`（`PeriodicScheduleSpec`）運作：若綁定之 `enabled_config_key` 為 `False`，完全靜默待機零觸發；組態開啟或週期變更時動態啟停。
    - 嚴格採用**「上一輪執行完畢後再起算間隔（`fixed-delay`）」**，杜絕慢任務造成背景排程重疊堆積。
 4. **模組熱重載與 `core` 自重啟交棒時序**：
-   - **啟動期固定核心內容雜湊基線（`_boot_core_snapshot`）**：於 `__init__` 擷取記憶體載入時之 `.modules/core` `sha256` 內容基線，忽略純時間戳 `touch` 雜訊並精確捕捉任何實質 `core` 變更。
+   - **啟動期固定核心內容雜湊基線（`_boot_core_snapshot`）與持久化快取（`.cache/daemon/core_sig_cache.json`）**：於 `__init__` 擷取記憶體載入時之 `.modules/core` `sha256` 內容基線，透過 `.cache/daemon/core_sig_cache.json`（含 20ms Racy-Clean 保護視窗）避免冷啟重複雜湊，同時忽略純時間戳 `touch` 雜訊並精確捕捉任何實質 `core` 變更。
+   - **Flight Recorder 生命週期事件流（Stream 1 `daemon/`）與執行期效能摘要（`ProfilerRingBuffer`）**：統一使用 `daemon_boot_id` 記錄 `boot_start / ready / rpc_done / watcher_dirty / reload_start / reload_done / quiesce / handoff / idle_ttl_stop / shutdown / crash`，並將最近執行軌跡收斂至 `DaemonStatusSnapshot.profiler_summary`。
    - **`core` 內核自身變動（先寫 `handoff_lease.json`、先釋鎖、後拉起新進程！）**：嚴格執行 **① 原子寫入 `.cache/daemon/handoff_lease.json` 並切換 `DRAINING` 停收新單、排空在途請求 $\rightarrow$ ② 關閉監聽埠、清除本身 `daemon.json` 並釋放 `daemon.lock` $\rightarrow$ ③ 在 `spawn.lock` 與 `spawn_lease.json` 保護下透過 `spawn_detached(self_restart_argv)` 啟動全新 Daemon 進程接手後立即退出舊進程**。
 
 ### 2.4 單一全域 `QUIESCE` 屏障、無阻塞恢復與崩潰自癒
@@ -49,7 +50,7 @@
 ## 3. 核心 OOP 類別與強型別契約規格 (`core/execution/daemon/`)
 
 ```python
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence
 from core.execution.lifecycle import ContainerState
 from core.execution.rpc import FrameKind, InboundCallHandler
@@ -57,6 +58,7 @@ from core.execution.runtime import ConfigViewPort, DaemonSpawner, RuntimeDispatc
 from core.foundation.observability import CancellationToken
 from core.foundation.errors import ErrorDetail
 from core.foundation.primitives import HostPath, JsonObject, ModuleId, TaskId
+from core.foundation.profiler import FlightLogRouter
 
 DaemonRunState = ContainerState
 
@@ -74,6 +76,7 @@ class DaemonStatusSnapshot:
     active_tier1_workers: tuple[WorkerProcessSnapshot, ...]
     degraded_modules: tuple[str, ...] = ()
     background_error_count: int = 0
+    profiler_summary: JsonObject = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +167,8 @@ class WorkspaceDaemon(InboundCallHandler):
         config_view: Optional[ConfigViewPort] = None,
         watch_config: DaemonWatcherConfig = DaemonWatcherConfig(),
         self_restart_argv: Optional[Sequence[str]] = None,
+        flight_log_router: Optional[FlightLogRouter] = None,
+        daemon_boot_id: str = "",
     ) -> None: ...
 
     @property

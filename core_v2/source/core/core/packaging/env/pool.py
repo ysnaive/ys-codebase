@@ -30,6 +30,7 @@ from core.foundation.primitives import (
     ModuleId,
     require_pure_bool,
     safe_real_to_float,
+    safe_realpath,
 )
 from core.foundation.proc import ManagedProcessTree, build_isolated_python_env, is_public_env_truthy
 from core.metadata.config import ModuleManifest
@@ -67,7 +68,7 @@ def _resolve_venv_subpath_nofollow(env_dir: HostPath, *parts: str) -> HostPath:
                     ErrorCode.SECURITY_GATED,
                     f"Non-directory intermediate path inside '{env_dir}': {nxt}",
                 )
-            real_nxt = os.path.realpath(nxt)
+            real_nxt = safe_realpath(nxt)
             if (
                 os.path.normcase(os.path.dirname(real_nxt)) != os.path.normcase(cur)
                 or os.path.basename(real_nxt).casefold() != seg.casefold()
@@ -91,8 +92,8 @@ def _probe_can_symlink(venv_root: HostPath) -> bool:
         os.symlink(str(target_path), str(link_path))
         if not os.path.islink(link_path):
             return False
-        real_link = os.path.normcase(os.path.realpath(link_path))
-        real_target = os.path.normcase(os.path.realpath(target_path))
+        real_link = os.path.normcase(safe_realpath(str(link_path)))
+        real_target = os.path.normcase(safe_realpath(str(target_path)))
         return real_link == real_target
     except (OSError, NotImplementedError):
         return False

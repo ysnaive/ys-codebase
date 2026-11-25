@@ -1,4 +1,4 @@
-"""Cooperative cancellation, deadline guards, structured logging, rotation, locale catalog, and telemetry."""
+"""Cooperative cancellation, deadline guards, structured logging, cross-process rotation, and locale catalog."""
 
 from __future__ import annotations
 
@@ -38,7 +38,6 @@ from core.foundation.primitives import (
     INT64_MIN,
     IS_WINDOWS,
     MAX_SAFE_WAIT_SEC,
-    TEST_SANDBOX_ENV_KEY,
     HostPath,
     JsonObject,
     ModuleId,
@@ -54,6 +53,45 @@ from core.foundation.primitives import (
     strict_parse_json_object,
     validate_min_sec,
 )
+
+if IS_WINDOWS:
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    _OBS_K32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    class _ObsOverlapped(ctypes.Structure):
+        _fields_ = [
+            ("Internal", ctypes.c_void_p),
+            ("InternalHigh", ctypes.c_void_p),
+            ("Offset", wintypes.DWORD),
+            ("OffsetHigh", wintypes.DWORD),
+            ("hEvent", wintypes.HANDLE),
+        ]
+
+    _OBS_LOCKFILE_EXCLUSIVE_LOCK: Final[int] = 0x00000002
+    _OBS_WIN_LOCK_EX = _OBS_K32.LockFileEx
+    _OBS_WIN_LOCK_EX.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(_ObsOverlapped),
+    ]
+    _OBS_WIN_LOCK_EX.restype = wintypes.BOOL
+    _OBS_WIN_UNLOCK_EX = _OBS_K32.UnlockFileEx
+    _OBS_WIN_UNLOCK_EX.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(_ObsOverlapped),
+    ]
+    _OBS_WIN_UNLOCK_EX.restype = wintypes.BOOL
+else:
+    import fcntl
 
 MAX_LOCALE_INTERPOLATION_DEPTH: Final[int] = 5
 _LOCALE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"\{\{|\}\}|\{([a-zA-Z0-9_.:-]+)\}")
@@ -513,13 +551,19 @@ class LogLevel(Enum):
 
 @dataclass(frozen=True, slots=True)
 class LogRecord:
-    """Immutable structured log record."""
+    """Immutable structured log record with optional distributed correlation fields."""
 
     ts_utc: str
     level: LogLevel
     logger_name: str
     message: str
     fields: JsonObject = field(default_factory=dict)
+    trace_id: str = ""
+    span_id: str = ""
+    task_id: str = ""
+    exec_mode: str = ""
+    daemon_boot_id: str = ""
+    pid: int = 0
 
     def __post_init__(self) -> None:
         require_pure_str(self.ts_utc, "LogRecord.ts_utc", non_empty=True)
@@ -529,6 +573,12 @@ class LogRecord:
         require_pure_str(self.message, "LogRecord.message")
         cloned_fields = clone_strict_json_object(self.fields, label="LogRecord.fields")
         object.__setattr__(self, "fields", MappingProxyType(cloned_fields))
+        require_pure_str(self.trace_id, "LogRecord.trace_id")
+        require_pure_str(self.span_id, "LogRecord.span_id")
+        require_pure_str(self.task_id, "LogRecord.task_id")
+        require_pure_str(self.exec_mode, "LogRecord.exec_mode")
+        require_pure_str(self.daemon_boot_id, "LogRecord.daemon_boot_id")
+        require_pure_int(self.pid, "LogRecord.pid", min_val=0, max_val=INT64_MAX)
 
 
 def _write_all_fd(fd: int, payload: bytes) -> None:
@@ -753,6 +803,71 @@ def _file_needs_newline_repair(log_file: Path) -> tuple[int, bool]:
         os.close(fd)
 
 
+def _acquire_os_advisory_lock(fd: int, *, exclusive: bool) -> None:
+    if IS_WINDOWS:
+        handle = wintypes.HANDLE(msvcrt.get_osfhandle(fd))
+        flags = _OBS_LOCKFILE_EXCLUSIVE_LOCK if exclusive else 0
+        ov = _ObsOverlapped()
+        if not _OBS_WIN_LOCK_EX(handle, flags, 0, 1, 0, ctypes.byref(ov)):
+            err_code = ctypes.get_last_error()
+            raise OSError(err_code, f"LockFileEx failed with winerror={err_code}")
+        return
+    mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+    while True:
+        try:
+            fcntl.flock(fd, mode)
+            return
+        except InterruptedError:
+            continue
+
+
+def _release_os_advisory_lock(fd: int) -> None:
+    if IS_WINDOWS:
+        handle = wintypes.HANDLE(msvcrt.get_osfhandle(fd))
+        ov = _ObsOverlapped()
+        _OBS_WIN_UNLOCK_EX(handle, 0, 1, 0, ctypes.byref(ov))
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
+@contextmanager
+def _cross_process_log_lock(lock_path: Path, *, create: bool, exclusive: bool) -> Iterator[None]:
+    if not create and not os.path.lexists(lock_path):
+        yield
+        return
+    _obs_verify_regular_or_missing(lock_path)
+    if create:
+        open_flags = os.O_RDWR | os.O_CREAT | (
+            os.O_BINARY if IS_WINDOWS else (os.O_NOFOLLOW | os.O_NONBLOCK)
+        )
+    else:
+        open_flags = os.O_RDONLY | (
+            os.O_BINARY if IS_WINDOWS else (os.O_NOFOLLOW | os.O_NONBLOCK)
+        )
+    try:
+        fd = _open_non_inheritable_fd(lock_path, open_flags, 0o600)
+    except FileNotFoundError:
+        if not create:
+            yield
+            return
+        raise
+    locked = False
+    try:
+        _acquire_os_advisory_lock(fd, exclusive=exclusive)
+        locked = True
+        yield
+    finally:
+        if locked:
+            _release_os_advisory_lock(fd)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
 class LogRotator:
     """Pure-stdlib rolling file recorder supporting byte/line atomic rotation, crash recovery, and non-inheritable FDs."""
 
@@ -788,6 +903,10 @@ class LogRotator:
     def _history_path(self, index: int) -> Path:
         base = self._log_path.path
         return base.parent / f"{base.name}.{index}"
+
+    def _lock_file_path(self) -> Path:
+        base = self._log_path.path
+        return base.parent / f".{base.name}.lock"
 
     def _rotate_history_files_locked(self) -> None:
         base = self._log_path.path
@@ -856,38 +975,40 @@ class LogRotator:
                 raise YscbError(ErrorCode.TEARDOWN_ERROR, "LogRotator is already closed.")
             target = self._log_path.path
             _obs_verify_or_create_ancestors(target.parent, create_missing=True)
-            in_place_keep: Optional[int] = self._keep_lines
-            if in_place_keep is None and self._max_lines is not None and self._max_history_files == 0:
-                in_place_keep = self._max_lines
-
-            cur_size, needs_nl = _file_needs_newline_repair(target)
-            if in_place_keep is None and cur_size > 0:
-                exceeds_bytes = (cur_size + (1 if needs_nl else 0) + len(encoded_line)) > self._max_bytes
-                exceeds_lines = (
-                    self._max_lines is not None and len(_read_lf_lines_strict(target)) >= self._max_lines
-                )
-                if exceeds_bytes or exceeds_lines:
-                    self._rotate_history_files_locked()
-                    cur_size, needs_nl = (0, False)
-
             _obs_verify_regular_or_missing(target)
-            write_bytes = (b"\n" + encoded_line) if needs_nl else encoded_line
-            append_flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | (
-                os.O_BINARY if IS_WINDOWS else (os.O_NOFOLLOW | os.O_NONBLOCK)
-            )
-            fd = _open_non_inheritable_fd(target, append_flags, 0o600)
-            try:
-                _write_all_fd(fd, write_bytes)
-                new_size = os.fstat(fd).st_size
-            finally:
-                os.close(fd)
+            with _cross_process_log_lock(self._lock_file_path(), create=True, exclusive=True):
+                in_place_keep: Optional[int] = self._keep_lines
+                if in_place_keep is None and self._max_lines is not None and self._max_history_files == 0:
+                    in_place_keep = self._max_lines
 
-            if in_place_keep is not None:
-                need_compact = new_size > self._max_bytes
-                if not need_compact and self._max_lines is not None:
-                    need_compact = len(_read_lf_lines_strict(target)) > self._max_lines
-                if need_compact:
-                    self._compact_tail_lines_locked(in_place_keep, jsonl_mode=jsonl_mode)
+                cur_size, needs_nl = _file_needs_newline_repair(target)
+                if in_place_keep is None and cur_size > 0:
+                    exceeds_bytes = (cur_size + (1 if needs_nl else 0) + len(encoded_line)) > self._max_bytes
+                    exceeds_lines = (
+                        self._max_lines is not None and len(_read_lf_lines_strict(target)) >= self._max_lines
+                    )
+                    if exceeds_bytes or exceeds_lines:
+                        self._rotate_history_files_locked()
+                        cur_size, needs_nl = (0, False)
+
+                _obs_verify_regular_or_missing(target)
+                write_bytes = (b"\n" + encoded_line) if needs_nl else encoded_line
+                append_flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | (
+                    os.O_BINARY if IS_WINDOWS else (os.O_NOFOLLOW | os.O_NONBLOCK)
+                )
+                fd = _open_non_inheritable_fd(target, append_flags, 0o600)
+                try:
+                    _write_all_fd(fd, write_bytes)
+                    new_size = os.fstat(fd).st_size
+                finally:
+                    os.close(fd)
+
+                if in_place_keep is not None:
+                    need_compact = new_size > self._max_bytes
+                    if not need_compact and self._max_lines is not None:
+                        need_compact = len(_read_lf_lines_strict(target)) > self._max_lines
+                    if need_compact:
+                        self._compact_tail_lines_locked(in_place_keep, jsonl_mode=jsonl_mode)
 
     def append_line(self, line: str) -> None:
         require_pure_str(line, "LogRotator.append_line line")
@@ -904,14 +1025,15 @@ class LogRotator:
         self._append_internal(serialized, jsonl_mode=True)
 
     def _collect_chronological_lines_locked(self) -> list[str]:
-        if self._keep_lines is None and self._max_history_files > 0:
-            merged: list[str] = []
-            for idx in range(self._max_history_files, 0, -1):
-                hist_p = self._history_path(idx)
-                merged.extend(_read_lf_lines_strict(hist_p))
-            merged.extend(_read_lf_lines_strict(self._log_path.path))
-            return merged
-        return _read_lf_lines_strict(self._log_path.path)
+        with _cross_process_log_lock(self._lock_file_path(), create=False, exclusive=False):
+            if self._keep_lines is None and self._max_history_files > 0:
+                merged: list[str] = []
+                for idx in range(self._max_history_files, 0, -1):
+                    hist_p = self._history_path(idx)
+                    merged.extend(_read_lf_lines_strict(hist_p))
+                merged.extend(_read_lf_lines_strict(self._log_path.path))
+                return merged
+            return _read_lf_lines_strict(self._log_path.path)
 
     def read_tail_lines(self, limit: int = 100) -> tuple[str, ...]:
         require_pure_int(limit, "LogRotator.read_tail_lines limit", min_val=0, max_val=INT64_MAX)
@@ -1136,108 +1258,3 @@ class LocaleCatalog:
             visited=frozenset({(resolved_mod, resolved_key)}),
             depth=0,
         )
-
-
-@dataclass(frozen=True, slots=True)
-class SessionTelemetryRecord:
-    """Immutable CLI execution flight record."""
-
-    ts_utc: str
-    epoch_ms: int
-    task_id: str
-    args: tuple[str, ...]
-    exit_code: int
-    duration_ms: int
-    executed_hot: bool
-    caller_cwd: str
-    error_hint: str = ""
-
-    def __post_init__(self) -> None:
-        require_pure_str(self.ts_utc, "SessionTelemetryRecord.ts_utc", non_empty=True)
-        require_pure_int(self.epoch_ms, "SessionTelemetryRecord.epoch_ms", min_val=0, max_val=INT64_MAX)
-        require_pure_str(self.task_id, "SessionTelemetryRecord.task_id", non_empty=True)
-        object.__setattr__(self, "args", require_typed_tuple(self.args, str, "SessionTelemetryRecord.args"))
-        require_pure_int(self.exit_code, "SessionTelemetryRecord.exit_code", min_val=INT64_MIN, max_val=INT64_MAX)
-        require_pure_int(self.duration_ms, "SessionTelemetryRecord.duration_ms", min_val=0, max_val=INT64_MAX)
-        require_pure_bool(self.executed_hot, "SessionTelemetryRecord.executed_hot")
-        require_pure_str(self.caller_cwd, "SessionTelemetryRecord.caller_cwd")
-        object.__setattr__(
-            self,
-            "error_hint",
-            sanitize_utf8_text(require_pure_str(self.error_hint, "SessionTelemetryRecord.error_hint")),
-        )
-
-
-def _parse_telemetry_dict(doc: Mapping[str, object]) -> Optional[SessionTelemetryRecord]:
-    try:
-        raw_args = doc.get("args")
-        if not isinstance(raw_args, list):
-            return None
-        return SessionTelemetryRecord(
-            ts_utc=require_pure_str(doc.get("ts_utc"), "ts_utc", non_empty=True),
-            epoch_ms=require_pure_int(doc.get("epoch_ms"), "epoch_ms", min_val=0, max_val=INT64_MAX),
-            task_id=require_pure_str(doc.get("task_id"), "task_id", non_empty=True),
-            args=require_typed_tuple(raw_args, str, "args"),
-            exit_code=require_pure_int(doc.get("exit_code"), "exit_code", min_val=INT64_MIN, max_val=INT64_MAX),
-            duration_ms=require_pure_int(doc.get("duration_ms"), "duration_ms", min_val=0, max_val=INT64_MAX),
-            executed_hot=require_pure_bool(doc.get("executed_hot"), "executed_hot"),
-            caller_cwd=require_pure_str(doc.get("caller_cwd"), "caller_cwd"),
-            error_hint=require_pure_str(doc.get("error_hint", ""), "error_hint"),
-        )
-    except ValueError:
-        return None
-
-
-class SessionTelemetryWriter:
-    """Lightweight CLI flight recorder writing to cache://core/telemetry.jsonl via LogRotator."""
-
-    def __init__(
-        self,
-        rotator: LogRotator,
-        *,
-        enabled: bool = True,
-        env: Optional[Mapping[str, str]] = None,
-    ) -> None:
-        if not isinstance(rotator, LogRotator):
-            raise ValueError(f"SessionTelemetryWriter.rotator must be LogRotator, got {rotator!r}")
-        require_pure_bool(enabled, "SessionTelemetryWriter.enabled")
-        sandbox_off = False
-        if env is not None:
-            if not isinstance(env, Mapping):
-                raise ValueError("SessionTelemetryWriter.env must be a Mapping[str, str] or None.")
-            sandbox_off = env.get(TEST_SANDBOX_ENV_KEY) == "1"
-        self._rotator = rotator
-        self._enabled = enabled and (not sandbox_off)
-
-    def record(self, entry: SessionTelemetryRecord) -> None:
-        if not isinstance(entry, SessionTelemetryRecord):
-            raise ValueError(f"SessionTelemetryWriter.record requires SessionTelemetryRecord, got {entry!r}")
-        if not self._enabled:
-            return
-        payload: MutableJsonObject = {
-            "ts_utc": entry.ts_utc,
-            "epoch_ms": entry.epoch_ms,
-            "task_id": entry.task_id,
-            "args": list(entry.args),
-            "exit_code": entry.exit_code,
-            "duration_ms": entry.duration_ms,
-            "executed_hot": entry.executed_hot,
-            "caller_cwd": entry.caller_cwd,
-            "error_hint": entry.error_hint,
-        }
-        self._rotator.append_jsonl(payload)
-
-    def read_recent(self, limit: int = 100) -> tuple[SessionTelemetryRecord, ...]:
-        require_pure_int(limit, "SessionTelemetryWriter.read_recent limit", min_val=0, max_val=INT64_MAX)
-        if limit == 0:
-            return ()
-        raw_docs = self._rotator.read_jsonl()
-        parsed_rev: list[SessionTelemetryRecord] = []
-        for doc in reversed(raw_docs):
-            rec = _parse_telemetry_dict(doc)
-            if rec is not None:
-                parsed_rev.append(rec)
-                if len(parsed_rev) >= limit:
-                    break
-        parsed_rev.reverse()
-        return tuple(parsed_rev)

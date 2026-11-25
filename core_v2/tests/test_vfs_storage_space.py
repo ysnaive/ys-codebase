@@ -57,6 +57,9 @@ from core.foundation import (
     ErrorCode,
     HostPath,
     ModuleId,
+    NullProfiler,
+    ProfilerNodeSnapshot,
+    ProfilerSession,
     SemanticUri,
     SnapshotGen,
     SpaceId,
@@ -2116,6 +2119,133 @@ def _verify_sqlite_error_classification_and_uri_globs(suite_root: Path) -> None:
         check(not sp_reg.match_path("project/uri_glob_check", HostPath(plans_dir / "y" / "out")).matched)
 
 
+def _find_profiler_node(root: ProfilerNodeSnapshot, path: str) -> Optional[ProfilerNodeSnapshot]:
+    cur = root
+    for seg in path.split("/"):
+        nxt = next((ch for ch in cur.children if ch.name == seg), None)
+        if nxt is None:
+            return None
+        cur = nxt
+    return cur
+
+
+def _assert_profiler_scope_recorded(root: ProfilerNodeSnapshot, path: str, *, min_calls: int = 1) -> None:
+    node = _find_profiler_node(root, path)
+    check(node is not None, f"Missing expected profiler scope node '{path}' under '{root.name}'")
+    if node is not None:
+        check(node.calls >= min_calls, f"Expected calls >= {min_calls} on '{path}', got {node.calls}")
+        check(node.total_ms >= 0.0 and node.self_ms >= 0.0, f"Negative timing on '{path}': {node}")
+
+
+def _verify_storage_and_space_profiler_hooks(suite_root: Path) -> None:
+    prof_root = suite_root / "profiler_hooks_suite"
+    fx = _provision_vfs_hub(prof_root, with_project=True)
+    kern = fx.hub.for_kernel()
+    mod_vfs = fx.hub.for_module(ModuleId("prof-mod"))
+    proj_hp = fx.project_root
+    check(proj_hp is not None)
+    if proj_hp is None:
+        return
+
+    src_dir = proj_hp.path / "pkg"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    alpha_py = src_dir / "alpha.py"
+    beta_py = src_dir / "beta.py"
+    atomic_write_bytes(HostPath(alpha_py), b"alpha = 1\n")
+    atomic_write_bytes(HostPath(beta_py), b"beta = 2\n")
+
+    kv_mig = SchemaMigration(
+        version=1,
+        description="Create metrics kv table",
+        sql_statements=("CREATE TABLE metrics_kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)",),
+    )
+
+    db_session = ProfilerSession("DbRoot")
+    with ModuleDatabase(
+        mod_vfs,
+        "storage.local://@/profiled.db",
+        migrations=(kv_mig,),
+        profiler=db_session,
+    ) as prof_db:
+        with prof_db.write_transaction() as tx:
+            tx.execute("INSERT INTO metrics_kv (k, v) VALUES (?, ?)", ("item", "val"))
+            tx.mark_generation_bumped()
+        with prof_db.read_snapshot() as snap:
+            row = snap.query_one("SELECT v FROM metrics_kv WHERE k = ?", ("item",))
+            check(row == ("val",), f"Profiled ModuleDatabase query mismatch: {row!r}")
+        _ = prof_db.checkpoint(truncate=True)
+
+    db_snap = db_session.snapshot()
+    check(isinstance(db_snap, ProfilerNodeSnapshot) and db_snap.total_ms >= 0.0)
+    _assert_profiler_scope_recorded(db_snap, "Storage/Open")
+    _assert_profiler_scope_recorded(db_snap, "Storage/Migrate")
+    _assert_profiler_scope_recorded(db_snap, "Storage/WriteTx")
+    _assert_profiler_scope_recorded(db_snap, "Storage/ReadSnap")
+    _assert_profiler_scope_recorded(db_snap, "Storage/Checkpoint")
+
+    pkg_spec = SpaceSpec(
+        space_id=SpaceId("project", "pkg_src"),
+        entries=(SemanticUri.parse("project://pkg"),),
+        include=("*.py",),
+        hash_policy=HashPolicy.FULL_HASH,
+    )
+
+    scan_session = ProfilerSession("ScanRoot")
+    with ModuleDatabase(kern, "storage.local://core/space/prof_scan.db") as default_db:
+        reg = SpaceRegistry(kern, default_db, static_specs=(pkg_spec,))
+        scanner = SpaceScanner(reg, default_db, profiler=scan_session)
+        first_batch = scanner.scan("project/pkg_src")
+        check(len(first_batch.added) == 2 and first_batch.to_gen == SnapshotGen(1))
+        diff_batch = scanner.diff("project/pkg_src", "idx-consumer")
+        check(len(diff_batch.added) == 2)
+        check(scanner.ack_cursor("project/pkg_src", "idx-consumer", diff_batch) is True)
+        atomic_write_bytes(HostPath(alpha_py), b"alpha = 2\n")
+        patched = scanner.patch_paths(frozenset({HostPath(alpha_py)}))
+        pkg_patch = next((b for b in patched if b.space_id == SpaceId("project", "pkg_src")), None)
+        check(
+            pkg_patch is not None and pkg_patch.modified == (SpacePath("pkg/alpha.py"),),
+            f"Expected patched SpaceDiffBatch for project/pkg_src, got {patched!r}",
+        )
+
+    scan_snap = scan_session.snapshot()
+    _assert_profiler_scope_recorded(scan_snap, "Space/Scan")
+    _assert_profiler_scope_recorded(scan_snap, "Space/Scan/WalkFiles")
+    _assert_profiler_scope_recorded(scan_snap, "Space/Scan/HashFiles")
+    _assert_profiler_scope_recorded(scan_snap, "Space/Scan/Commit")
+    _assert_profiler_scope_recorded(scan_snap, "Space/Diff")
+    _assert_profiler_scope_recorded(scan_snap, "Space/AckCursor")
+    _assert_profiler_scope_recorded(scan_snap, "Space/PatchPaths")
+    _assert_profiler_scope_recorded(scan_snap, "Space/PatchPaths/Commit")
+
+    shared_session = ProfilerSession("SharedRoot")
+    with ModuleDatabase(
+        kern,
+        "storage.local://core/space/prof_shared.db",
+        profiler=shared_session,
+    ) as shared_db:
+        shared_reg = SpaceRegistry(kern, shared_db, static_specs=(pkg_spec,))
+        shared_scanner = SpaceScanner(shared_reg, shared_db, profiler=shared_session)
+        with shared_session.scope("Turn"):
+            shared_batch = shared_scanner.scan("project/pkg_src")
+            check(len(shared_batch.added) == 2)
+
+    shared_snap = shared_session.snapshot()
+    _assert_profiler_scope_recorded(shared_snap, "Turn/Space/Scan")
+    _assert_profiler_scope_recorded(shared_snap, "Turn/Space/Scan/Storage/ReadSnap")
+    _assert_profiler_scope_recorded(shared_snap, "Turn/Space/Scan/Commit/Storage/WriteTx")
+
+    with ModuleDatabase(
+        kern,
+        "storage.local://core/space/prof_null.db",
+        profiler=NullProfiler(),
+    ) as null_db:
+        null_reg = SpaceRegistry(kern, null_db, static_specs=(pkg_spec,))
+        null_scanner = SpaceScanner(null_reg, null_db, profiler=NullProfiler())
+        null_batch = null_scanner.scan("project/pkg_src")
+        check(len(null_batch.added) == 2 and null_batch.to_gen == SnapshotGen(1))
+        check(null_scanner.ack_cursor("project/pkg_src", "null-consumer", null_batch) is True)
+
+
 def _execute_all_domain2_checks(base_root: Path) -> None:
     log("[VFS-STORAGE-SPACE] Verifying VFS 15-scheme capability matrix, !undefined, and URI_CYCLE...")
     _verify_vfs_scheme_matrix_and_mount_guards(base_root)
@@ -2130,6 +2260,8 @@ def _execute_all_domain2_checks(base_root: Path) -> None:
     _verify_cross_mount_boundaries_and_space_algebra_invariants(base_root)
     _verify_covering_mounts_open_read_and_local_isolation(base_root)
     _verify_sqlite_error_classification_and_uri_globs(base_root)
+    log("[VFS-STORAGE-SPACE] Verifying optional Profiler hooks on ModuleDatabase and SpaceScanner...")
+    _verify_storage_and_space_profiler_hooks(base_root)
     log("[VFS-STORAGE-SPACE] All Domain 2 checks passed.")
 
 

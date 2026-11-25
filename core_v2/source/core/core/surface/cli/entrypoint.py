@@ -1,4 +1,4 @@
-"""Unified CLI entrypoint orchestrating zero-import routing, 4x3 security gates, dual-track output, telemetry, and 12h update checks."""
+"""Unified CLI entrypoint orchestrating zero-import routing, 4x3 security gates, dual-track output, profiling, 3+1 flight logs, and 12h update checks."""
 
 from __future__ import annotations
 
@@ -6,14 +6,18 @@ from datetime import datetime, timezone
 import io
 import json
 import os
+import re
 import signal
 import sys
 import threading
 import time
 from typing import Callable, ClassVar, Final, Mapping, Optional, Protocol, Sequence
+import uuid
 
+from core.execution.rpc import read_daemon_endpoint_file
 from core.execution.runtime import (
     CORE_MODULE_ID,
+    CallPropagationContext,
     CallerSurface,
     ClientRoutingPolicy,
     DEFAULT_CACHE_DIRNAME,
@@ -25,20 +29,29 @@ from core.execution.runtime import (
 from core.filesystem.fs import has_symlink_raw_path, is_symlink_or_reparse, resolve_contained_subpath
 from core.foundation import (
     CancellationToken,
+    DailyEventRecord,
     DataclassCodec,
     ErrorCode,
     ErrorDetail,
+    ExecutionTraceRecord,
+    FlightLogConfig,
+    FlightLogRouter,
     HostPath,
     JsonObject,
     JsonValue,
-    LogRotator,
+    LogLevel,
+    MemoryTrackingGuard,
+    ProfilerNodeSnapshot,
+    ProfilerSession,
     SignalWakeupGuard,
-    SessionTelemetryRecord,
-    SessionTelemetryWriter,
     TEST_SANDBOX_ENV_KEY,
     TaskId,
     YscbError,
     guard_standard_streams,
+    read_process_rss_kb,
+    redact_cli_args,
+    redact_sensitive_value,
+    render_profiler_tree,
     require_pure_bool,
     require_pure_int,
     safe_exception_summary,
@@ -280,43 +293,199 @@ def _render_human_outcome(
     return exit_code
 
 
-def _record_cli_telemetry(
+def _now_utc_and_epoch_ms() -> tuple[str, int]:
+    now_dt = datetime.now(timezone.utc)
+    return (now_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), max(0, int(now_dt.timestamp() * 1000.0)))
+
+
+def _is_initialized_workspace(host_dir: HostPath, yscb_root: HostPath) -> bool:
+    raw_host = str(host_dir)
+    raw_root = str(yscb_root)
+    if not os.path.isdir(raw_host) or is_symlink_or_reparse(raw_host) or has_symlink_raw_path(raw_host):
+        return False
+    if not os.path.isdir(raw_root) or is_symlink_or_reparse(raw_root) or has_symlink_raw_path(raw_root):
+        return False
+    cfg_path = os.path.join(raw_host, "yscb.config.json")
+    return os.path.isfile(cfg_path) and not is_symlink_or_reparse(cfg_path)
+
+
+def _load_cli_flight_log_config(host_dir: HostPath, yscb_root: HostPath) -> FlightLogConfig:
+    try:
+        store = ConfigStore(host_dir=host_dir, yscb_root=yscb_root)
+        raw_obs = store.get_module_value(CORE_MODULE_ID, "observability", default=None)
+    except (OSError, ValueError, YscbError):
+        return FlightLogConfig()
+    if isinstance(raw_obs, Mapping):
+        try:
+            return DataclassCodec.decode(FlightLogConfig, raw_obs)
+        except (ValueError, TypeError, KeyError, YscbError):
+            return FlightLogConfig()
+    return FlightLogConfig()
+
+
+def _open_cli_flight_router(
+    host_dir: HostPath,
+    yscb_root: HostPath,
+    env_map: Mapping[str, str],
+    *,
+    config: FlightLogConfig,
+) -> Optional[FlightLogRouter]:
+    if not _is_initialized_workspace(host_dir, yscb_root):
+        return None
+    try:
+        logs_root = resolve_contained_subpath(yscb_root, DEFAULT_CACHE_DIRNAME, "logs")
+        return FlightLogRouter(logs_root, config=config, env=env_map)
+    except (OSError, ValueError, YscbError):
+        return None
+
+
+def _read_live_daemon_boot_id(yscb_root: HostPath) -> str:
+    try:
+        cache_dir = resolve_contained_subpath(yscb_root, DEFAULT_CACHE_DIRNAME)
+        ep = read_daemon_endpoint_file(cache_dir, yscb_root)
+        return ep.boot_id if ep is not None else ""
+    except (OSError, ValueError, YscbError):
+        return ""
+
+
+_INLINE_APPROVE_FLAG_RE: Final[re.Pattern[str]] = re.compile(r"(?i)(--approve(?:=|\s+))(\S+)")
+_INLINE_QUOTED_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"(?i)(\btoken\s+['\"])([^'\"]+)(['\"])")
+
+
+def _scrub_log_text(text: str, *, raw_approve_token: Optional[str] = None) -> str:
+    redacted = redact_sensitive_value(text)
+    out = redacted if isinstance(redacted, str) else text
+    out = _INLINE_APPROVE_FLAG_RE.sub(r"\1[REDACTED]", out)
+    out = _INLINE_QUOTED_TOKEN_RE.sub(r"\1[REDACTED]\3", out)
+    if isinstance(raw_approve_token, str):
+        for cand in dict.fromkeys((raw_approve_token, raw_approve_token.strip(), raw_approve_token.strip().lower())):
+            if cand:
+                out = out.replace(cand, "[REDACTED]")
+    return out
+
+
+def _redacted_error_detail_dict(
+    err: Optional[ErrorDetail],
+    *,
+    raw_approve_token: Optional[str] = None,
+) -> Optional[JsonObject]:
+    if err is None:
+        return None
+    raw = DataclassCodec.encode_object(err)
+    redacted = redact_sensitive_value(raw)
+    if not isinstance(redacted, Mapping):
+        return None
+    cleaned: dict[str, JsonValue] = dict(redacted)
+    for txt_key in ("message", "remediation"):
+        val = cleaned.get(txt_key)
+        if isinstance(val, str) and val:
+            cleaned[txt_key] = _scrub_log_text(val, raw_approve_token=raw_approve_token)
+    return cleaned
+
+
+def _collect_dispatched_tasks_from_tree(
+    primary_task_id: str,
+    snap: Optional[ProfilerNodeSnapshot],
+) -> tuple[str, ...]:
+    seen: list[str] = [primary_task_id]
+    if snap is None:
+        return tuple(seen)
+    stack: list[tuple[Optional[str], ProfilerNodeSnapshot]] = [(None, snap)]
+    while stack:
+        parent_name, node = stack.pop()
+        if parent_name in ("Task", "WorkerStep") and "." in node.name and node.name not in seen:
+            seen.append(node.name)
+        for child in reversed(node.children):
+            stack.append((node.name, child))
+    return tuple(seen)
+
+
+def _record_pre_dispatch_failure(
+    host_dir: HostPath,
     yscb_root: HostPath,
     env_map: Mapping[str, str],
     *,
     task_id_str: str,
     argv_tuple: tuple[str, ...],
-    exit_code: int,
-    started_mono: float,
-    executed_hot: bool,
+    caller_mode_str: str,
     caller_cwd: HostPath,
-    error_hint: str = "",
+    exit_code: int,
+    cli_entry_ns: int,
+    err_det: ErrorDetail,
+    raw_approve_token: Optional[str] = None,
 ) -> None:
-    if _lookup_env_case_insensitive(env_map, TEST_SANDBOX_ENV_KEY).lower() in _TRUTHY_ENV_VALUES:
-        return
-    if not os.path.isdir(str(yscb_root)) or is_symlink_or_reparse(str(yscb_root)) or has_symlink_raw_path(str(yscb_root)):
+    fl_cfg = _load_cli_flight_log_config(host_dir, yscb_root)
+    router = _open_cli_flight_router(host_dir, yscb_root, env_map, config=fl_cfg)
+    if router is None:
         return
     try:
-        telem_path = resolve_contained_subpath(yscb_root, DEFAULT_CACHE_DIRNAME, "core", "telemetry.jsonl")
-        rotator = LogRotator(telem_path, max_bytes=1048576, max_history_files=2)
-        writer = SessionTelemetryWriter(rotator, enabled=True, env=env_map)
-        now_dt = datetime.now(timezone.utc)
-        dur_ms = max(0, int((time.monotonic() - started_mono) * 1000.0))
-        writer.record(
-            SessionTelemetryRecord(
-                ts_utc=now_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-                epoch_ms=max(0, int(now_dt.timestamp() * 1000.0)),
+        if not router.enabled:
+            return
+        trace_id = uuid.uuid4().hex
+        ts_utc, epoch_ms = _now_utc_and_epoch_ms()
+        dur_ms = round(max(0.0, (time.perf_counter_ns() - cli_entry_ns) / 1_000_000.0), 4)
+        mod_name = task_id_str.split(".", 1)[0] if "." in task_id_str else "core"
+        pid = os.getpid()
+        router.record_daily(
+            DailyEventRecord(
+                ts_utc=ts_utc,
+                epoch_ms=epoch_ms,
+                kind="IN",
+                trace_id=trace_id,
+                daemon_boot_id="",
+                pid=pid,
+                exec_mode="cold",
+                module=mod_name,
                 task_id=task_id_str,
-                args=argv_tuple,
-                exit_code=exit_code,
-                duration_ms=dur_ms,
-                executed_hot=executed_hot,
-                caller_cwd=str(caller_cwd),
-                error_hint=error_hint,
+                level=LogLevel.INFO,
+                message=f"cli_start:{task_id_str}",
             )
         )
-    except (OSError, ValueError, YscbError):
-        pass
+        router.record_daily(
+            DailyEventRecord(
+                ts_utc=ts_utc,
+                epoch_ms=epoch_ms,
+                kind="OUT",
+                trace_id=trace_id,
+                daemon_boot_id="",
+                pid=pid,
+                exec_mode="cold",
+                module=mod_name,
+                task_id=task_id_str,
+                level=LogLevel.ERROR,
+                ok=False,
+                duration_ms=dur_ms,
+                exit_code=exit_code,
+                message=_scrub_log_text(err_det.message, raw_approve_token=raw_approve_token),
+            )
+        )
+        router.record_perf(
+            ExecutionTraceRecord(
+                ts_utc=ts_utc,
+                epoch_ms=epoch_ms,
+                trace_id=trace_id,
+                daemon_boot_id="",
+                pid=pid,
+                task_id=task_id_str,
+                args=redact_cli_args(argv_tuple),
+                caller_mode=caller_mode_str,
+                caller_cwd=str(caller_cwd),
+                executed_hot=False,
+                exit_code=exit_code,
+                ok=False,
+                duration_ms=dur_ms,
+                rss_kb=read_process_rss_kb(),
+                rss_delta_kb=0,
+                mem_tracked=False,
+                dispatched_tasks=(task_id_str,),
+                profiler_tree=None,
+                error_code=err_det.code.value,
+                error_detail=_redacted_error_detail_dict(err_det, raw_approve_token=raw_approve_token),
+                runtime_snapshot={"caller_mode": caller_mode_str, "phase": "pre_dispatch", "exit_code": exit_code},
+            )
+        )
+    finally:
+        router.close()
 
 
 def _maybe_emit_update_notice(
@@ -373,11 +542,15 @@ def main(
     kernel_factory: Optional[CliKernelFactoryFn] = None,
     builtin_indices: Optional[Sequence[ModuleTasksIndex]] = None,
     install_signal_guard: bool = True,
+    boot_start_ns: Optional[int] = None,
 ) -> int:
     """Execute the complete zero-import CLI routing, 4x3 security gate, dispatch, and exit pipeline."""
+    cli_entry_ns = time.perf_counter_ns()
     if not isinstance(host_dir, HostPath) or not isinstance(yscb_root, HostPath):
         raise TypeError("cli.main requires explicit HostPath host_dir and yscb_root")
     require_pure_bool(install_signal_guard, "install_signal_guard")
+    if boot_start_ns is not None:
+        require_pure_int(boot_start_ns, "boot_start_ns", min_val=0)
     if stdout_stream is None and isinstance(sys.stdout, io.TextIOWrapper):
         try:
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -389,7 +562,6 @@ def main(
         except (OSError, ValueError):
             pass
 
-    started_mono = time.monotonic()
     eff_cwd = caller_cwd if caller_cwd is not None else host_dir
     env_map: Mapping[str, str] = dict(env) if env is not None else dict(os.environ)
     eff_in: CliInputStream = stdin_stream if stdin_stream is not None else sys.stdin
@@ -438,16 +610,17 @@ def main(
             if err_det.remediation:
                 eff_err.write(f"Hint: {err_det.remediation}\n")
             eff_err.flush()
-        _record_cli_telemetry(
+        _record_pre_dispatch_failure(
+            host_dir,
             yscb_root,
             env_map,
             task_id_str=err_det.source_task or "cli.parse",
             argv_tuple=argv_tup,
-            exit_code=code,
-            started_mono=started_mono,
-            executed_hot=False,
+            caller_mode_str=caller_env.mode.value,
             caller_cwd=eff_cwd,
-            error_hint=err_det.message,
+            exit_code=code,
+            cli_entry_ns=cli_entry_ns,
+            err_det=err_det,
         )
         return code
 
@@ -513,16 +686,17 @@ def main(
         else:
             eff_err.write("Interrupted.\n")
             eff_err.flush()
-        _record_cli_telemetry(
+        _record_pre_dispatch_failure(
+            host_dir,
             yscb_root,
             env_map,
             task_id_str=task_entry.task_id.value,
             argv_tuple=argv_tup,
-            exit_code=130,
-            started_mono=started_mono,
-            executed_hot=False,
+            caller_mode_str=caller_env.mode.value,
             caller_cwd=eff_cwd,
-            error_hint=gate_cancel_err.message,
+            exit_code=130,
+            cli_entry_ns=cli_entry_ns,
+            err_det=gate_cancel_err,
         )
         return 130
     except YscbError as exc:
@@ -535,16 +709,18 @@ def main(
             if err_det.remediation:
                 eff_err.write(f"Hint: {err_det.remediation}\n")
             eff_err.flush()
-        _record_cli_telemetry(
+        _record_pre_dispatch_failure(
+            host_dir,
             yscb_root,
             env_map,
             task_id_str=task_entry.task_id.value,
             argv_tuple=argv_tup,
-            exit_code=code,
-            started_mono=started_mono,
-            executed_hot=False,
+            caller_mode_str=caller_env.mode.value,
             caller_cwd=eff_cwd,
-            error_hint=err_det.message,
+            exit_code=code,
+            cli_entry_ns=cli_entry_ns,
+            err_det=err_det,
+            raw_approve_token=flags.approve_token,
         )
         return code
 
@@ -566,64 +742,117 @@ def main(
             eff_err.write(" ".join(parts) + "\n")
             eff_err.flush()
 
-    outcome: TaskOutcome[JsonValue]
+    eff_profile_mem = bool(
+        flags.profile_mem
+        or _lookup_env_case_insensitive(env_map, "YSCB_PROFILE_MEM").lower() in _TRUTHY_ENV_VALUES
+    )
+    show_profile_stderr = bool(flags.profile or flags.profile_mem)
+    trace_id = uuid.uuid4().hex
+    flight_cfg = _load_cli_flight_log_config(host_dir, yscb_root)
+    flight_router = _open_cli_flight_router(host_dir, yscb_root, env_map, config=flight_cfg)
+    root_profiler = ProfilerSession(root_name=task_entry.task_id.value, track_memory=eff_profile_mem)
+    if boot_start_ns is not None:
+        launcher_ms = round(max(0.0, (cli_entry_ns - boot_start_ns) / 1_000_000.0), 4)
+        root_profiler.merge_subtree(
+            ProfilerNodeSnapshot(
+                name="Launcher",
+                self_ms=launcher_ms,
+                total_ms=launcher_ms,
+                calls=1,
+            ),
+            mount_path="Bootstrap",
+        )
+    rss_before = read_process_rss_kb()
+    initial_boot_id = _read_live_daemon_boot_id(yscb_root) if not flags.force_cold else ""
+    if flight_router is not None and flight_router.enabled:
+        in_ts, in_ms = _now_utc_and_epoch_ms()
+        flight_router.record_daily(
+            DailyEventRecord(
+                ts_utc=in_ts,
+                epoch_ms=in_ms,
+                kind="IN",
+                trace_id=trace_id,
+                daemon_boot_id=initial_boot_id,
+                pid=os.getpid(),
+                exec_mode="hot" if (not flags.force_cold and bool(initial_boot_id)) else "cold",
+                module=task_entry.task_id.module_id.value,
+                task_id=task_entry.task_id.value,
+                level=LogLevel.INFO,
+                message=f"cli_start:{task_entry.task_id.value}",
+            )
+        )
+
+    outcome: TaskOutcome[JsonValue] = TaskOutcome(
+        ok=False,
+        error=ErrorDetail(ErrorCode.BUSINESS_FAILURE, "Invocation aborted.", source_task=task_entry.task_id.value),
+    )
+    exit_code = 1
     post_close_rc: Optional[int] = None
     session: Optional[CliKernelSession] = None
     session_closed = False
     emitted_ready = False
     try:
-        session = eff_factory(host_dir, yscb_root, flags.force_cold)
-        sanitized_env = dict(sanitize_caller_env(env_map))
-        raw_user_loc = _lookup_env_case_insensitive(env_map, "YSCB_LOCALE") or sanitized_env.get("YSCB_LOCALE", "")
-        try:
-            session.apply_caller_dialect(caller_env.dialect, raw_user_loc)
-        except TypeError:
-            session.apply_caller_dialect(caller_env.dialect)
-        except AttributeError:
-            pass
-        cfg_for_loc = (
-            session.config_store
-            if session.config_store is not None
-            else ConfigStore(host_dir=host_dir, yscb_root=yscb_root)
-        )
-        eff_chain = parse_locale_chain_tokens(
-            raw_user_loc if raw_user_loc else None,
-            cfg_for_loc,
-            dialect=caller_env.dialect,
-        )
-        sanitized_env["YSCB_LOCALE"] = ",".join(eff_chain)
+        with MemoryTrackingGuard(eff_profile_mem):
+            with root_profiler.scope("Bootstrap/OpenSession"):
+                session = eff_factory(host_dir, yscb_root, flags.force_cold)
+            sanitized_env = dict(sanitize_caller_env(env_map))
+            raw_user_loc = _lookup_env_case_insensitive(env_map, "YSCB_LOCALE") or sanitized_env.get("YSCB_LOCALE", "")
+            try:
+                session.apply_caller_dialect(caller_env.dialect, raw_user_loc)
+            except TypeError:
+                session.apply_caller_dialect(caller_env.dialect)
+            except AttributeError:
+                pass
+            cfg_for_loc = (
+                session.config_store
+                if session.config_store is not None
+                else ConfigStore(host_dir=host_dir, yscb_root=yscb_root)
+            )
+            eff_chain = parse_locale_chain_tokens(
+                raw_user_loc if raw_user_loc else None,
+                cfg_for_loc,
+                dialect=caller_env.dialect,
+            )
+            sanitized_env["YSCB_LOCALE"] = ",".join(eff_chain)
 
-        req = InvokeRequest(
-            task_id=task_entry.task_id,
-            raw_input=route.normalized_input,
-            workspace_root=yscb_root,
-            caller_cwd=eff_cwd,
-            caller_env=sanitized_env,
-            caller_surface=CallerSurface.CLI,
-            routing_policy=(
-                ClientRoutingPolicy.FORCE_COLD if flags.force_cold else ClientRoutingPolicy.AUTO_SPAWN
-            ),
-            approval_scope=gate_res.approval_scope,
-            allow_conditional=True,
-        )
-        with guard_standard_streams(allow_interactive_tty=task_entry.interactive_tty):
-            if install_signal_guard and threading.current_thread() is threading.main_thread():
-                sig_guard = SignalWakeupGuard((int(signal.SIGINT),), lambda: cancel_token.cancel(reason="SIGINT"))
-                sig_guard.install()
-                try:
+            req = InvokeRequest(
+                task_id=task_entry.task_id,
+                raw_input=route.normalized_input,
+                workspace_root=yscb_root,
+                caller_cwd=eff_cwd,
+                caller_env=sanitized_env,
+                caller_surface=CallerSurface.CLI,
+                routing_policy=(
+                    ClientRoutingPolicy.FORCE_COLD if flags.force_cold else ClientRoutingPolicy.AUTO_SPAWN
+                ),
+                approval_scope=gate_res.approval_scope,
+                allow_conditional=True,
+                propagation=CallPropagationContext(
+                    call_tree_id=trace_id,
+                    profile_mem=eff_profile_mem,
+                ),
+                profile_mem=eff_profile_mem,
+                external_flight_owner=True,
+                active_profiler=root_profiler,
+            )
+            with guard_standard_streams(allow_interactive_tty=task_entry.interactive_tty):
+                if install_signal_guard and threading.current_thread() is threading.main_thread():
+                    sig_guard = SignalWakeupGuard((int(signal.SIGINT),), lambda: cancel_token.cancel(reason="SIGINT"))
+                    sig_guard.install()
+                    try:
+                        outcome = session.dispatcher.invoke(
+                            req,
+                            cancel_token=cancel_token,
+                            on_progress=_on_progress,
+                        )
+                    finally:
+                        sig_guard.close()
+                else:
                     outcome = session.dispatcher.invoke(
                         req,
                         cancel_token=cancel_token,
                         on_progress=_on_progress,
                     )
-                finally:
-                    sig_guard.close()
-            else:
-                outcome = session.dispatcher.invoke(
-                    req,
-                    cancel_token=cancel_token,
-                    on_progress=_on_progress,
-                )
 
         try:
             deferred_daemon = outcome.ok and session.has_deferred_daemon()
@@ -806,21 +1035,87 @@ def main(
                     except AttributeError:
                         post_close_rc = None
 
-    if post_close_rc is not None and outcome.ok:
-        exit_code = int(post_close_rc)
+        if post_close_rc is not None and outcome.ok:
+            exit_code = int(post_close_rc)
 
-    err_hint = outcome.error.message if (not outcome.ok and outcome.error is not None) else ""
-    _record_cli_telemetry(
-        yscb_root,
-        env_map,
-        task_id_str=task_entry.task_id.value,
-        argv_tuple=argv_tup,
-        exit_code=exit_code,
-        started_mono=started_mono,
-        executed_hot=outcome.executed_hot,
-        caller_cwd=eff_cwd,
-        error_hint=err_hint,
-    )
+        snap = root_profiler.snapshot()
+        duration_ms = round(max(0.0, (time.perf_counter_ns() - cli_entry_ns) / 1_000_000.0), 4)
+        rss_after = read_process_rss_kb()
+        eff_boot_id = (_read_live_daemon_boot_id(yscb_root) or initial_boot_id) if outcome.executed_hot else ""
+        exec_mode_out = "hot" if outcome.executed_hot else "cold"
+        dispatched_tasks = _collect_dispatched_tasks_from_tree(task_entry.task_id.value, snap)
+        err_obj = outcome.error if not outcome.ok else None
+        err_code = err_obj.code.value if err_obj is not None else ""
+        attach_diag = (not outcome.ok) or (duration_ms >= flight_cfg.slow_threshold_ms)
+        try:
+            if flight_router is not None and flight_router.enabled:
+                out_ts, out_ms = _now_utc_and_epoch_ms()
+                flight_router.record_daily(
+                    DailyEventRecord(
+                        ts_utc=out_ts,
+                        epoch_ms=out_ms,
+                        kind="OUT",
+                        trace_id=trace_id,
+                        daemon_boot_id=eff_boot_id,
+                        pid=os.getpid(),
+                        exec_mode=exec_mode_out,
+                        module=task_entry.task_id.module_id.value,
+                        task_id=task_entry.task_id.value,
+                        level=LogLevel.INFO if outcome.ok else LogLevel.ERROR,
+                        ok=outcome.ok,
+                        duration_ms=duration_ms,
+                        exit_code=exit_code,
+                        message=(
+                            _scrub_log_text(err_obj.message, raw_approve_token=flags.approve_token)
+                            if err_obj is not None
+                            else f"cli_done:{task_entry.task_id.value}"
+                        ),
+                    )
+                )
+                flight_router.record_perf(
+                    ExecutionTraceRecord(
+                        ts_utc=out_ts,
+                        epoch_ms=out_ms,
+                        trace_id=trace_id,
+                        daemon_boot_id=eff_boot_id,
+                        pid=os.getpid(),
+                        task_id=task_entry.task_id.value,
+                        args=redact_cli_args(argv_tup),
+                        caller_mode=caller_env.mode.value,
+                        caller_cwd=str(eff_cwd),
+                        executed_hot=outcome.executed_hot,
+                        exit_code=exit_code,
+                        ok=outcome.ok,
+                        duration_ms=duration_ms,
+                        rss_kb=rss_after,
+                        rss_delta_kb=rss_after - rss_before,
+                        mem_tracked=eff_profile_mem,
+                        dispatched_tasks=dispatched_tasks,
+                        profiler_tree=snap,
+                        error_code=err_code,
+                        error_detail=(
+                            _redacted_error_detail_dict(err_obj, raw_approve_token=flags.approve_token)
+                            if attach_diag
+                            else None
+                        ),
+                        runtime_snapshot=(
+                            {
+                                "caller_mode": caller_env.mode.value,
+                                "executed_hot": outcome.executed_hot,
+                                "exit_code": exit_code,
+                            }
+                            if attach_diag
+                            else None
+                        ),
+                    )
+                )
+        finally:
+            if flight_router is not None:
+                flight_router.close()
+        if show_profile_stderr:
+            eff_err.write(render_profiler_tree(snap, include_mem=eff_profile_mem) + "\n")
+            eff_err.flush()
+
     offline_cli_requested = bool(route.normalized_input.get("offline")) or any(
         tok == "--offline"
         or (tok.lower().startswith("--offline=") and tok.split("=", 1)[1].strip().lower() in {"1", "true", "yes", "on"})

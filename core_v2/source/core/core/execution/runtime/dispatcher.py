@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
+import math
+import os
 import threading
 import time
 from types import MappingProxyType
-from typing import Callable, Optional, Sequence, TypeVar, overload
+from typing import Callable, Mapping, Optional, Sequence, TypeVar, overload
 import uuid
 import weakref
 
@@ -18,7 +21,7 @@ from core.execution.lifecycle import (
 from core.execution.rpc import DaemonConnectionConfig, PersistentRpcSession, call_ephemeral_daemon_rpc
 from core.execution.runtime.contracts import (
     CONFIG_CHANGED_EVENT_ID, CORE_MODULE_ID, MODULES_DIRNAME, WATCHER_TASK_ID,
-    CallPropagationContext, ClientRoutingPolicy, ConcurrencyMode, ConfigViewPort, CoordinatorPort,
+    CallPropagationContext, CallerSurface, ClientRoutingPolicy, ConcurrencyMode, ConfigViewPort, CoordinatorPort,
     DaemonSpawner, DispatchMode, EnvLeaseAcquireFn, EnvTouchUsedFn, ExecutionPriority, InvokeRequest, ModuleDescriptor,
     ModuleProviderPort, ModuleRuntimeServices, SelfMutationScope, TaskMetadata, TaskOutcome, TaskRouteSpec,
     Tier1WorkerPool, YscbModule, decode_outcome_as, sanitize_caller_env,
@@ -32,6 +35,12 @@ from core.execution.runtime.gates import (
 )
 from core.execution.runtime.module_slot import LocalModuleSlotRegistry, StepContextCallbacks
 from core.execution.runtime.route_index import RouteIndexRegistry
+from core.execution.runtime.services import (
+    InvocationCorrelationContext,
+    active_invocation_correlation_scope,
+    resolve_active_correlation,
+    resolve_active_profiler,
+)
 from core.execution.runtime.step_host import (
     EquivCallContext, RawInvokeResult, StepExecutionEnv, StepHostRunner, WorkerCallbackBridge,
     cancelled_task_outcome, default_nested_routing_policy, report_to_outcome, safe_invoke_progress,
@@ -47,10 +56,22 @@ from core.foundation.codec import DataclassCodec
 from core.foundation.errors import (
     ErrorCode, ErrorDetail, TaskCancelledException, YscbError, is_fatal_error_code, safe_exception_summary,
 )
-from core.foundation.observability import MAX_TIMEOUT_MS, CancellationToken, DeadlineGuard, ms_to_safe_sec
+from core.foundation.observability import MAX_TIMEOUT_MS, CancellationToken, DeadlineGuard, LogLevel, ms_to_safe_sec
 from core.foundation.primitives import (
-    MAX_USER_JSON_DEPTH, EventId, HostPath, JsonObject, JsonValue, ModuleId, TaskId,
-    require_non_none, require_pure_int, require_pure_str, validate_wire_json_object,
+    MAX_USER_JSON_DEPTH, EventId, HostPath, JsonObject, JsonValue, ModuleId, MutableJsonObject, TaskId,
+    require_non_none, require_pure_int, require_pure_str, safe_real_to_float, validate_wire_json_object,
+)
+from core.foundation.profiler import (
+    DailyEventRecord,
+    ExecutionTraceRecord,
+    FlightLogConfig,
+    FlightLogRouter,
+    MemoryTrackingGuard,
+    Profiler,
+    ProfilerRingBuffer,
+    ProfilerSession,
+    read_process_rss_kb,
+    redact_sensitive_value,
 )
 from core.metadata.contributes import (
     BoundLocaleDialect,
@@ -62,6 +83,77 @@ from core.metadata.contributes import (
 
 TIn = TypeVar("TIn")
 TOut = TypeVar("TOut")
+
+
+def _now_utc_and_epoch_ms() -> tuple[str, int]:
+    now_dt = datetime.now(timezone.utc)
+    return (now_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), int(now_dt.timestamp() * 1000))
+
+
+def _read_observability_config_map(config_view: Optional[ConfigViewPort]) -> Optional[Mapping[str, JsonValue]]:
+    if config_view is None:
+        return None
+    try:
+        raw = config_view.get_module_value(CORE_MODULE_ID, "observability", None)
+    except (Exception, SystemExit, GeneratorExit):
+        return None
+    return raw if isinstance(raw, Mapping) else None
+
+
+def _resolve_slow_threshold_ms(config_view: Optional[ConfigViewPort]) -> float:
+    obs_map = _read_observability_config_map(config_view)
+    if obs_map is not None and "slow_threshold_ms" in obs_map:
+        try:
+            val = safe_real_to_float(obs_map["slow_threshold_ms"], label="slow_threshold_ms")
+            if math.isfinite(val) and val >= 0.0:
+                return val
+        except ValueError:
+            pass
+    return FlightLogConfig().slow_threshold_ms
+
+
+def _build_worker_flight_log_config(
+    config_view: Optional[ConfigViewPort],
+    router: Optional[FlightLogRouter],
+) -> Optional[JsonObject]:
+    obs_map = _read_observability_config_map(config_view)
+    if obs_map is None and router is None:
+        return None
+    base_cfg = FlightLogConfig()
+    if obs_map is not None:
+        try:
+            base_cfg = DataclassCodec.decode(FlightLogConfig, obs_map)
+        except (ValueError, TypeError, KeyError, YscbError):
+            base_cfg = FlightLogConfig()
+    if router is not None:
+        base_cfg = (
+            replace(base_cfg, enabled=True, respect_sandbox=False)
+            if router.enabled
+            else replace(base_cfg, enabled=False)
+        )
+    return DataclassCodec.encode_object(base_cfg)
+
+
+def _redacted_error_detail_dict(err: Optional[ErrorDetail]) -> Optional[JsonObject]:
+    if err is None:
+        return None
+    raw = DataclassCodec.encode_object(err)
+    redacted = redact_sensitive_value(raw)
+    return redacted if isinstance(redacted, Mapping) else None
+
+
+def _collect_dispatched_task_names(primary: TaskId, invoked: Sequence[tuple[HostPath, TaskId]]) -> tuple[str, ...]:
+    seen: list[str] = []
+    for _ws, tid in invoked:
+        s_tid = str(tid)
+        if s_tid not in seen:
+            seen.append(s_tid)
+    p_str = str(primary)
+    if not seen:
+        seen.append(p_str)
+    elif p_str not in seen:
+        seen.insert(0, p_str)
+    return tuple(seen)
 
 
 def _resolve_authoritative_child_lineage(base_lin: CausalLineage, candidate: CausalLineage) -> CausalLineage:
@@ -120,6 +212,9 @@ class DispatcherHostOptions:
     worker_host_dir: Optional[HostPath] = None
     env_lease_acquire: Optional[EnvLeaseAcquireFn] = None
     env_touch_used: Optional[EnvTouchUsedFn] = None
+    flight_log_router: Optional[FlightLogRouter] = None
+    daemon_boot_id: str = ""
+    profiler_ring_buffer: Optional[ProfilerRingBuffer] = None
 
     def __post_init__(self) -> None:
         if self.config_view is not None:
@@ -154,6 +249,11 @@ class DispatcherHostOptions:
             raise ValueError("DispatcherHostOptions.env_lease_acquire must be callable or None.")
         if self.env_touch_used is not None and not callable(self.env_touch_used):
             raise ValueError("DispatcherHostOptions.env_touch_used must be callable or None.")
+        if self.flight_log_router is not None and not isinstance(self.flight_log_router, FlightLogRouter):
+            raise ValueError("DispatcherHostOptions.flight_log_router must be FlightLogRouter or None.")
+        require_pure_str(self.daemon_boot_id, "DispatcherHostOptions.daemon_boot_id")
+        if self.profiler_ring_buffer is not None and not isinstance(self.profiler_ring_buffer, ProfilerRingBuffer):
+            raise ValueError("DispatcherHostOptions.profiler_ring_buffer must be ProfilerRingBuffer or None.")
         object.__setattr__(self, "in_memory_modules", _validate_in_memory_modules(self.in_memory_modules))
 @dataclass(slots=True)
 class _CoordinatedStepBundle:
@@ -207,6 +307,12 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
     ) -> None:
         self._workspace_root, self._cache_dir = workspace_root, cache_dir
         self._module_provider, self._opts = module_provider, options
+        self._flight_log_router: Optional[FlightLogRouter] = options.flight_log_router
+        self._daemon_boot_id: str = options.daemon_boot_id.strip() or (
+            options.flight_log_router.daemon_boot_id if options.flight_log_router is not None else ""
+        )
+        self._profiler_ring_buffer: Optional[ProfilerRingBuffer] = options.profiler_ring_buffer
+        init_fl_cfg = _build_worker_flight_log_config(options.config_view, self._flight_log_router)
         self._in_mem_map = MappingProxyType({m.module_id: m for m in options.in_memory_modules})
         self._cfg_tracker = ConfigFingerprintTracker(options.config_view)
         self._gates = LifecycleReloadGate(workspace_root)
@@ -245,10 +351,13 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
             module_services_factory=options.module_services_factory, worker_host_dir=options.worker_host_dir,
             cold_dialect_resolver=_resolve_cold_dialect_policy,
             env_lease_acquire=options.env_lease_acquire, env_touch_used=options.env_touch_used,
+            daemon_boot_id=self._daemon_boot_id, flight_log_config=init_fl_cfg,
         )
         self._tier1_pool = HotWorkerPool(
             workspace_root, self._callback_bridge, lifo_stack=self._container.resource_stack,
             host_dir=options.worker_host_dir,
+            daemon_boot_id=self._daemon_boot_id,
+            flight_log_config=init_fl_cfg,
             host_callbacks=PoolHostCallbacks(
                 on_warmup_reply=self._apply_tier1_warmup_reply,
                 on_module_crashed=self._container.record_degraded,
@@ -350,6 +459,39 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
     def active_turn_count(self) -> int:
         return self._sessions.active_turn_count
 
+    @property
+    def flight_log_router(self) -> Optional[FlightLogRouter]:
+        return self._flight_log_router
+
+    @property
+    def profiler_ring_buffer(self) -> Optional[ProfilerRingBuffer]:
+        return self._profiler_ring_buffer
+
+    def bind_daemon_observability(
+        self,
+        *,
+        daemon_boot_id: str = "",
+        flight_log_router: Optional[FlightLogRouter] = None,
+        profiler_ring_buffer: Optional[ProfilerRingBuffer] = None,
+    ) -> None:
+        """Attach daemon boot_id, flight log router, and profiler ring buffer when constructed externally."""
+        require_pure_str(daemon_boot_id, "daemon_boot_id")
+        if flight_log_router is not None and not isinstance(flight_log_router, FlightLogRouter):
+            raise ValueError("flight_log_router must be FlightLogRouter or None.")
+        if profiler_ring_buffer is not None and not isinstance(profiler_ring_buffer, ProfilerRingBuffer):
+            raise ValueError("profiler_ring_buffer must be ProfilerRingBuffer or None.")
+        with self._bind_lock:
+            clean_boot = daemon_boot_id.strip()
+            if clean_boot and not self._daemon_boot_id:
+                self._daemon_boot_id = clean_boot
+            if flight_log_router is not None and self._flight_log_router is None:
+                self._flight_log_router = flight_log_router
+            if profiler_ring_buffer is not None and self._profiler_ring_buffer is None:
+                self._profiler_ring_buffer = profiler_ring_buffer
+            fl_cfg = _build_worker_flight_log_config(self._opts.config_view, self._flight_log_router)
+            self._tier1_pool.update_observability(daemon_boot_id=self._daemon_boot_id, flight_log_config=fl_cfg)
+            self._sessions.update_observability(daemon_boot_id=self._daemon_boot_id, flight_log_config=fl_cfg)
+
     def drain_teardown_diagnostics(self) -> tuple[ErrorDetail, ...]:
         return self._sessions.drain_teardown_diagnostics()
 
@@ -442,6 +584,7 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
                     ok=False, error=ErrorDetail(ErrorCode.SECURITY_GATED, f"Cross-workspace top-level RPC rejected: expected {self._workspace_root}, got {rpc_env.workspace_root}", source_task=str(rpc_env.task_id)),
                 )
             prop = rpc_env.propagation
+            rpc_prof = ProfilerSession(root_name=f"Daemon/{rpc_env.task_id.value}", track_memory=prop.profile_mem)
             req = InvokeRequest(
                 task_id=rpc_env.task_id, raw_input=rpc_env.raw_input, workspace_root=rpc_env.workspace_root,
                 caller_cwd=rpc_env.caller_cwd, caller_env=rpc_env.caller_env, caller_surface=rpc_env.caller_surface,
@@ -452,16 +595,25 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
                     call_tree_id=prop.call_tree_id or (prop.turn_id if (prop.is_nested_call or bool(prop.call_stack)) else (pre_turn_id or None)),
                     is_internal_trigger=False, from_hot_container=True, hot_workspaces=prop.hot_workspaces | frozenset({self._workspace_root}),
                 ),
+                profile_mem=prop.profile_mem,
+                external_flight_owner=bool(rpc_env.client_owns_flight_logs or rpc_env.caller_surface == CallerSurface.CLI),
+                active_profiler=rpc_prof,
             )
-            turn_guard = DeadlineGuard.from_timeout_ms(rpc_env.timeout_ms, cancel_token)
+            _ = DeadlineGuard.from_timeout_ms(rpc_env.timeout_ms, cancel_token)
         except (YscbError, KeyError, ValueError, TypeError) as exc:
             err_d = exc.detail if isinstance(exc, YscbError) else ErrorDetail(ErrorCode.CODEC_VALIDATION_FAILED, f"Malformed RPC InvokeRequest: {safe_exception_summary(exc)}")
             return DaemonRpcInvokeReply(ok=False, error=err_d)
-        raw_res = self._invoke_raw(req, cancel_token=cancel_token, on_progress=on_progress, turn_guard=turn_guard)
+        raw_res = self._invoke_raw(
+            req,
+            cancel_token=cancel_token,
+            on_progress=on_progress,
+            initial_timeout_ms=rpc_env.timeout_ms,
+        )
         out = raw_res.outcome
         return DaemonRpcInvokeReply(
             ok=out.ok, raw_value=out.value, error=out.error, event_diagnostics=out.event_diagnostics,
             teardown_diagnostics=out.teardown_diagnostics, invoked_tasks=raw_res.invoked_tasks, coalesced=out.coalesced,
+            profiler_tree=DataclassCodec.encode_object(rpc_prof.snapshot()),
         )
 
     def invoke_typed(
@@ -481,8 +633,198 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
             caller_cwd=caller_cwd or self._workspace_root, routing_policy=routing_policy, approval_scope=approval_scope,
         )
         return self.invoke(envelope, output_type=task_meta.output_type, cancel_token=cancel_token)
+    def _build_runtime_snapshot(self) -> MutableJsonObject:
+        fg_cnt, bg_cnt = self._sessions.active_turn_breakdown()
+        return {
+            "is_daemon_host": self._opts.is_daemon_host,
+            "container_state": self._container.state.value,
+            "active_turns": self.active_turn_count,
+            "active_foreground_turns": fg_cnt,
+            "active_background_turns": bg_cnt,
+            "quiesced": self._gates.is_globally_quiesced(),
+            "quiesce_epoch": self._gates.quiesce_epoch,
+            "active_tier1_workers": len(self._tier1_pool.active_worker_snapshots()),
+            "degraded_module_count": len(self._container.degraded_modules),
+        }
+
+    def _record_flight_completion(
+        self,
+        *,
+        request: InvokeRequest,
+        eff_tree_id: str,
+        exec_mode: str,
+        eff_profile_mem: bool,
+        active_prof: Profiler,
+        rss_before: int,
+        t0_ns: int,
+        raw_res: Optional[RawInvokeResult],
+        raised_exc: Optional[BaseException],
+        write_disk: bool,
+        record_ring: bool,
+    ) -> None:
+        duration_ms = round(max(0.0, (time.perf_counter_ns() - t0_ns) / 1_000_000.0), 4)
+        rss_after = read_process_rss_kb()
+        out_ts, out_ms = _now_utc_and_epoch_ms()
+        if raw_res is not None:
+            ok = raw_res.outcome.ok
+            err = raw_res.outcome.error
+            executed_hot = raw_res.outcome.executed_hot
+            dispatched = _collect_dispatched_task_names(request.task_id, raw_res.invoked_tasks)
+        else:
+            ok = False
+            err = ErrorDetail(
+                ErrorCode.BUSINESS_FAILURE,
+                safe_exception_summary(raised_exc) if raised_exc is not None else "Invocation aborted",
+                source_task=str(request.task_id),
+            )
+            executed_hot = self._opts.is_daemon_host
+            dispatched = (str(request.task_id),)
+        exit_code = 0 if ok else 1
+        err_code = err.code.value if err is not None else ""
+        attach_diag = (not ok) or (duration_ms >= _resolve_slow_threshold_ms(self._opts.config_view))
+        trace_rec = ExecutionTraceRecord(
+            ts_utc=out_ts,
+            epoch_ms=out_ms,
+            trace_id=eff_tree_id,
+            daemon_boot_id=self._daemon_boot_id,
+            pid=os.getpid(),
+            task_id=str(request.task_id),
+            args=(),
+            caller_mode=request.caller_surface.value,
+            caller_cwd=str(request.caller_cwd),
+            executed_hot=executed_hot,
+            exit_code=exit_code,
+            ok=ok,
+            duration_ms=duration_ms,
+            rss_kb=rss_after,
+            rss_delta_kb=rss_after - rss_before,
+            mem_tracked=eff_profile_mem,
+            dispatched_tasks=dispatched,
+            profiler_tree=active_prof.snapshot(),
+            error_code=err_code,
+            error_detail=_redacted_error_detail_dict(err) if attach_diag else None,
+            runtime_snapshot=self._build_runtime_snapshot() if attach_diag else None,
+        )
+        ring = self._profiler_ring_buffer
+        if record_ring and ring is not None:
+            ring.record(trace_rec)
+        router = self._flight_log_router
+        if write_disk and router is not None and router.enabled:
+            router.record_daily(
+                DailyEventRecord(
+                    ts_utc=out_ts,
+                    epoch_ms=out_ms,
+                    kind="OUT",
+                    trace_id=eff_tree_id,
+                    daemon_boot_id=self._daemon_boot_id,
+                    pid=os.getpid(),
+                    exec_mode=exec_mode,
+                    module=request.task_id.module_id.value,
+                    task_id=str(request.task_id),
+                    level=LogLevel.INFO if ok else LogLevel.ERROR,
+                    ok=ok,
+                    duration_ms=duration_ms,
+                    exit_code=exit_code,
+                    message=err.message if err is not None else f"task_done:{request.task_id}",
+                )
+            )
+            router.record_perf(trace_rec)
+
     def _invoke_raw(
         self, request: InvokeRequest, *, cancel_token: Optional[CancellationToken] = None,
+        on_progress: Optional[Callable[[JsonObject], None]] = None, turn_guard: Optional[DeadlineGuard] = None,
+        initial_timeout_ms: Optional[int] = None,
+    ) -> RawInvokeResult:
+        prop = request.propagation
+        eff_tree_id = prop.call_tree_id or uuid.uuid4().hex
+        eff_profile_mem = request.profile_mem or prop.profile_mem
+        is_top_level = (not prop.is_nested_call) and (not prop.call_stack)
+        owns_flight_disk = (
+            is_top_level
+            and (not request.external_flight_owner)
+            and not (self._opts.is_daemon_host and request.caller_surface == CallerSurface.CLI)
+        )
+        exec_mode = "hot" if self._opts.is_daemon_host else "cold"
+        if request.active_profiler is not None:
+            active_prof: Profiler = request.active_profiler
+        elif not is_top_level and resolve_active_correlation() is not None:
+            active_prof = resolve_active_profiler()
+        else:
+            active_prof = ProfilerSession(root_name=str(request.task_id), track_memory=eff_profile_mem)
+        router = self._flight_log_router
+        write_disk = owns_flight_disk and router is not None and router.enabled
+        record_ring = is_top_level and self._profiler_ring_buffer is not None
+        corr = InvocationCorrelationContext(
+            trace_id=eff_tree_id,
+            task_id=str(request.task_id),
+            exec_mode=exec_mode,
+            daemon_boot_id=self._daemon_boot_id,
+            profiler=active_prof,
+            flight_log_router=router,
+        )
+        if write_disk and router is not None:
+            in_ts, in_ms = _now_utc_and_epoch_ms()
+            router.record_daily(
+                DailyEventRecord(
+                    ts_utc=in_ts,
+                    epoch_ms=in_ms,
+                    kind="IN",
+                    trace_id=eff_tree_id,
+                    daemon_boot_id=self._daemon_boot_id,
+                    pid=os.getpid(),
+                    exec_mode=exec_mode,
+                    module=request.task_id.module_id.value,
+                    task_id=str(request.task_id),
+                    level=LogLevel.INFO,
+                    message=f"task_start:{request.task_id}",
+                )
+            )
+        rss_before = read_process_rss_kb() if (write_disk or record_ring) else 0
+        eff_turn_guard = (
+            turn_guard
+            if turn_guard is not None
+            else (
+                DeadlineGuard.from_timeout_ms(initial_timeout_ms, cancel_token)
+                if initial_timeout_ms is not None
+                else None
+            )
+        )
+        t0_ns = time.perf_counter_ns()
+        raw_res: Optional[RawInvokeResult] = None
+        raised_exc: Optional[BaseException] = None
+        try:
+            with MemoryTrackingGuard(eff_profile_mem), active_invocation_correlation_scope(corr):
+                raw_res = self._invoke_raw_body(
+                    request,
+                    eff_tree_id=eff_tree_id,
+                    eff_profile_mem=eff_profile_mem,
+                    cancel_token=cancel_token,
+                    on_progress=on_progress,
+                    turn_guard=eff_turn_guard,
+                )
+                return raw_res
+        except BaseException as exc:
+            raised_exc = exc
+            raise
+        finally:
+            if write_disk or record_ring:
+                self._record_flight_completion(
+                    request=request,
+                    eff_tree_id=eff_tree_id,
+                    exec_mode=exec_mode,
+                    eff_profile_mem=eff_profile_mem,
+                    active_prof=active_prof,
+                    rss_before=rss_before,
+                    t0_ns=t0_ns,
+                    raw_res=raw_res,
+                    raised_exc=raised_exc,
+                    write_disk=write_disk,
+                    record_ring=record_ring,
+                )
+
+    def _invoke_raw_body(
+        self, request: InvokeRequest, *, eff_tree_id: str, eff_profile_mem: bool,
+        cancel_token: Optional[CancellationToken] = None,
         on_progress: Optional[Callable[[JsonObject], None]] = None, turn_guard: Optional[DeadlineGuard] = None,
     ) -> RawInvokeResult:
         token = cancel_token or CancellationToken()
@@ -495,11 +837,12 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
             err = ErrorDetail(ErrorCode.CODEC_VALIDATION_FAILED, f"Invalid InvokeRequest.raw_input: {safe_exception_summary(exc)}", source_task=fallback_tid)
             return RawInvokeResult(TaskOutcome(ok=False, error=err, executed_hot=self._opts.is_daemon_host))
         prop = request.propagation
-        eff_tree_id = prop.call_tree_id or uuid.uuid4().hex
         eff_hot_ws = prop.hot_workspaces | (frozenset({self._workspace_root}) if self._opts.is_daemon_host else frozenset())
         sanitized_req = replace(
-            request, caller_env=sanitize_caller_env(request.caller_env),
-            propagation=replace(prop, call_tree_id=eff_tree_id, hot_workspaces=eff_hot_ws),
+            request,
+            caller_env=sanitize_caller_env(request.caller_env),
+            profile_mem=eff_profile_mem,
+            propagation=replace(prop, call_tree_id=eff_tree_id, hot_workspaces=eff_hot_ws, profile_mem=eff_profile_mem),
         )
         if self._is_draining_or_stopped_for(sanitized_req.propagation):
             return RawInvokeResult(
@@ -525,20 +868,22 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
         if self._opts.is_daemon_host:
             try:
                 gate_tmo = eff_guard.remaining_ms() if eff_guard is not None else None
-                self._gates.wait_for_unquiesced(sanitized_req, token, self._step_host.is_reentrant_retiring, timeout_ms=gate_tmo)
+                with resolve_active_profiler().scope_relative("Runtime/QuiesceWait"):
+                    self._gates.wait_for_unquiesced(sanitized_req, token, self._step_host.is_reentrant_retiring, timeout_ms=gate_tmo)
             except (TaskCancelledException, YscbError) as exc:
                 return RawInvokeResult(TaskOutcome(ok=False, error=exc.detail.with_fallback_task(fallback_tid), executed_hot=True))
             if token.is_cancelled:
                 return RawInvokeResult(cancelled_task_outcome(token, fallback_tid))
-        gate_err, resolved = self._validate_stage1_gates(sanitized_req)
-        if gate_err is not None and gate_err.code in (ErrorCode.TASK_NOT_FOUND, ErrorCode.MODULE_DEGRADED) and not self._opts.is_daemon_host:
-            ref_err = self._cold_locks.refresh_cold_routes(token, eff_tree_id, deadline=eff_guard.deadline if eff_guard is not None else None)
-            if ref_err is not None:
-                return RawInvokeResult(TaskOutcome(ok=False, error=ref_err.with_fallback_task(fallback_tid)))
+        with resolve_active_profiler().scope_relative("Runtime/Route"):
             gate_err, resolved = self._validate_stage1_gates(sanitized_req)
-        if gate_err is not None:
-            return RawInvokeResult(TaskOutcome(ok=False, error=gate_err.with_fallback_task(fallback_tid)))
-        _mod_desc, spec = require_non_none(resolved)
+            if gate_err is not None and gate_err.code in (ErrorCode.TASK_NOT_FOUND, ErrorCode.MODULE_DEGRADED) and not self._opts.is_daemon_host:
+                ref_err = self._cold_locks.refresh_cold_routes(token, eff_tree_id, deadline=eff_guard.deadline if eff_guard is not None else None)
+                if ref_err is not None:
+                    return RawInvokeResult(TaskOutcome(ok=False, error=ref_err.with_fallback_task(fallback_tid)))
+                gate_err, resolved = self._validate_stage1_gates(sanitized_req)
+            if gate_err is not None:
+                return RawInvokeResult(TaskOutcome(ok=False, error=gate_err.with_fallback_task(fallback_tid)))
+            _mod_desc, spec = require_non_none(resolved)
         if eff_guard is None and spec.timeout_ms is not None:
             eff_guard = DeadlineGuard.from_timeout_ms(spec.timeout_ms, token)
         if not self._opts.is_daemon_host and not sanitized_req.propagation.is_nested_call:
@@ -768,17 +1113,110 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
             cold_shared_workspaces=frozenset() if self._opts.is_daemon_host else frozenset({self._workspace_root}),
         )
         rec = RawEventRecord(event_id=event_id, emitter_task=WATCHER_TASK_ID, raw_payload=raw_payload, ordering=ordering, lineage=CausalLineage().advance(event_id, workspace_scope=self._workspace_root.comparison_key))
+        ev_label = f"event:{event_id.value}"
+        ev_prof = ProfilerSession(root_name=ev_label)
+        exec_mode = "hot" if self._opts.is_daemon_host else "cold"
+        router = self._flight_log_router
+        write_disk = router is not None and router.enabled
+        record_ring = self._profiler_ring_buffer is not None
+        corr = InvocationCorrelationContext(
+            trace_id=tid,
+            task_id=ev_label,
+            exec_mode=exec_mode,
+            daemon_boot_id=self._daemon_boot_id,
+            profiler=ev_prof,
+            flight_log_router=router,
+        )
+        if write_disk and router is not None:
+            in_ts, in_ms = _now_utc_and_epoch_ms()
+            router.record_daily(
+                DailyEventRecord(
+                    ts_utc=in_ts,
+                    epoch_ms=in_ms,
+                    kind="IN",
+                    trace_id=tid,
+                    daemon_boot_id=self._daemon_boot_id,
+                    pid=os.getpid(),
+                    exec_mode=exec_mode,
+                    module=event_id.module_id.value,
+                    task_id=ev_label,
+                    level=LogLevel.INFO,
+                    message=f"event_start:{event_id.value}",
+                )
+            )
+        rss_before = read_process_rss_kb() if (write_disk or record_ring) else 0
+        t0_ns = time.perf_counter_ns()
+        report_out: Optional[TurnExecutionReport] = None
         try:
-            with self._sessions.managed_session(session):
+            with active_invocation_correlation_scope(corr), self._sessions.managed_session(session):
                 if self._opts.is_daemon_host:
-                    return self._turn_engine.execute_event_turn(scope, (rec,))
+                    report_out = self._turn_engine.execute_event_turn(scope, (rec,))
+                    return report_out
                 if self._container.state in (ContainerState.DRAINING, ContainerState.STOPPED):
-                    return TurnExecutionReport(turn_id=tid, primary_result=StepExecutionResult(ok=False, error=ErrorDetail(ErrorCode.DAEMON_UNAVAILABLE, self._draining_or_stopped_message())))
-                return self._cold_locks.run_cold_event_turn(scope, lambda: self._turn_engine.execute_event_turn(scope, (rec,)))
+                    report_out = TurnExecutionReport(turn_id=tid, primary_result=StepExecutionResult(ok=False, error=ErrorDetail(ErrorCode.DAEMON_UNAVAILABLE, self._draining_or_stopped_message())))
+                    return report_out
+                report_out = self._cold_locks.run_cold_event_turn(scope, lambda: self._turn_engine.execute_event_turn(scope, (rec,)))
+                return report_out
         finally:
             if detach_bg is not None:
                 detach_bg()
             turn_cg.close_all()
+            if write_disk or record_ring:
+                ev_dur_ms = round(max(0.0, (time.perf_counter_ns() - t0_ns) / 1_000_000.0), 4)
+                ev_rss = read_process_rss_kb()
+                out_ts, out_ms = _now_utc_and_epoch_ms()
+                ev_err = (
+                    (report_out.fatal_event_error or report_out.primary_result.error)
+                    if report_out is not None
+                    else None
+                )
+                ev_ok = report_out is not None and ev_err is None and report_out.primary_result.ok
+                ev_diag = (not ev_ok) or (ev_dur_ms >= _resolve_slow_threshold_ms(self._opts.config_view))
+                ev_trace = ExecutionTraceRecord(
+                    ts_utc=out_ts,
+                    epoch_ms=out_ms,
+                    trace_id=tid,
+                    daemon_boot_id=self._daemon_boot_id,
+                    pid=os.getpid(),
+                    task_id=ev_label,
+                    args=(),
+                    caller_mode="event",
+                    caller_cwd=str(self._workspace_root),
+                    executed_hot=self._opts.is_daemon_host,
+                    exit_code=0 if ev_ok else 1,
+                    ok=ev_ok,
+                    duration_ms=ev_dur_ms,
+                    rss_kb=ev_rss,
+                    rss_delta_kb=ev_rss - rss_before,
+                    mem_tracked=False,
+                    dispatched_tasks=(ev_label,),
+                    profiler_tree=ev_prof.snapshot(),
+                    error_code=ev_err.code.value if ev_err is not None else "",
+                    error_detail=_redacted_error_detail_dict(ev_err) if ev_diag else None,
+                    runtime_snapshot=self._build_runtime_snapshot() if ev_diag else None,
+                )
+                if record_ring and self._profiler_ring_buffer is not None:
+                    self._profiler_ring_buffer.record(ev_trace)
+                if write_disk and router is not None:
+                    router.record_daily(
+                        DailyEventRecord(
+                            ts_utc=out_ts,
+                            epoch_ms=out_ms,
+                            kind="OUT",
+                            trace_id=tid,
+                            daemon_boot_id=self._daemon_boot_id,
+                            pid=os.getpid(),
+                            exec_mode=exec_mode,
+                            module=event_id.module_id.value,
+                            task_id=ev_label,
+                            level=LogLevel.INFO if ev_ok else LogLevel.ERROR,
+                            ok=ev_ok,
+                            duration_ms=ev_dur_ms,
+                            exit_code=0 if ev_ok else 1,
+                            message=ev_err.message if ev_err is not None else f"event_done:{event_id.value}",
+                        )
+                    )
+                    router.record_perf(ev_trace)
     def cancel_all_active_turns(self, reason: str = "Forced shutdown") -> None:
         require_pure_str(reason, "reason")
         self._force_drain.set()
@@ -821,20 +1259,21 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
     def run_event_step(self, batch: EventBatchEnvelope, turn: TurnScope) -> Sequence[StepExecutionResult[JsonValue]]:
         results: list[StepExecutionResult[JsonValue]] = []
         session = self._sessions.get_or_bind_turn_session(turn)
-        for m in self._routes.find_matching_subscribers(batch.event_id):
-            if turn.cancel_token.is_cancelled:
-                break
-            if turn.kind == TurnKind.COLD and m.spec.dispatch_mode == DispatchMode.DAEMON_ONLY:
-                continue
-            filtered, sub_lineage = batch.filter_for_subscription(m.sub.payload_filter)
-            if not filtered:
-                continue
-            step_res = self._run_matched_event_subscriber(m.desc, m.spec, batch.event_id, filtered, sub_lineage, session)
-            if step_res is None:
-                continue
-            results.append(step_res)
-            if step_res.fatal_abort_turn:
-                break
+        with resolve_active_profiler().scope_relative("Runtime/EventDrain", batch.event_id.value):
+            for m in self._routes.find_matching_subscribers(batch.event_id):
+                if turn.cancel_token.is_cancelled:
+                    break
+                if turn.kind == TurnKind.COLD and m.spec.dispatch_mode == DispatchMode.DAEMON_ONLY:
+                    continue
+                filtered, sub_lineage = batch.filter_for_subscription(m.sub.payload_filter)
+                if not filtered:
+                    continue
+                step_res = self._run_matched_event_subscriber(m.desc, m.spec, batch.event_id, filtered, sub_lineage, session)
+                if step_res is None:
+                    continue
+                results.append(step_res)
+                if step_res.fatal_abort_turn:
+                    break
         return results
 
     def finalize_turn_events(self, turn: TurnScope, *, abort_only: bool = False) -> Optional[ErrorDetail]:
@@ -915,6 +1354,11 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
         turn_id = step_bind.turn_id
         turn = self._sessions.try_retain_session_scope(turn_id) if turn_id else None
         try:
+            if step_bind.correlation is not None:
+                with active_invocation_correlation_scope(step_bind.correlation):
+                    if env.callback == WorkerCallbackKind.EMIT_IMM:
+                        return self._on_worker_emit_imm(env, step_bind, turn, peer_cancel_token)
+                    return self._on_worker_invoke_task(env, step_bind, turn, peer_cancel_token)
             if env.callback == WorkerCallbackKind.EMIT_IMM:
                 return self._on_worker_emit_imm(env, step_bind, turn, peer_cancel_token)
             return self._on_worker_invoke_task(env, step_bind, turn, peer_cancel_token)
@@ -1038,22 +1482,31 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
     ) -> Optional[RawInvokeResult]:
         try:
             eff_req_tmo = turn_guard.remaining_ms(spec.timeout_ms) if turn_guard is not None else spec.timeout_ms
+            client_owns_flight = bool(
+                request.external_flight_owner
+                or (self._flight_log_router is not None and self._flight_log_router.enabled)
+            )
             wire_payload = DataclassCodec.encode_envelope(
                 DaemonRpcInvokeEnvelope(
                     task_id=request.task_id, raw_input=request.raw_input, workspace_root=request.workspace_root,
                     caller_cwd=request.caller_cwd, caller_env=request.caller_env, caller_surface=request.caller_surface,
                     priority=request.priority, approval_scope=request.approval_scope,
                     allow_conditional=request.allow_conditional, timeout_ms=eff_req_tmo, propagation=request.propagation,
+                    client_owns_flight_logs=client_owns_flight,
                 )
             )
         except YscbError as exc:
             return RawInvokeResult(TaskOutcome(ok=False, error=exc.detail.with_fallback_task(str(request.task_id))))
         rpc_tmo = None if eff_req_tmo is None else eff_req_tmo + 250
-        if self._opts.persistent_rpc_session is not None:
-            outcome = self._opts.persistent_rpc_session.call(wire_payload, on_progress=on_progress, cancel_token=cancel_token, timeout_ms=rpc_tmo)
-        else:
-            outcome = call_ephemeral_daemon_rpc((self._cache_dir, self._workspace_root), wire_payload, on_progress=on_progress, cancel_token=cancel_token, timeout_ms=rpc_tmo)
-        translated = translate_remote_daemon_outcome(outcome, cancel_token, str(request.task_id))
+        active_prof = resolve_active_profiler()
+        with active_prof.scope_relative("Runtime/RpcCall"):
+            if self._opts.persistent_rpc_session is not None:
+                outcome = self._opts.persistent_rpc_session.call(wire_payload, on_progress=on_progress, cancel_token=cancel_token, timeout_ms=rpc_tmo)
+            else:
+                outcome = call_ephemeral_daemon_rpc((self._cache_dir, self._workspace_root), wire_payload, on_progress=on_progress, cancel_token=cancel_token, timeout_ms=rpc_tmo)
+            translated = translate_remote_daemon_outcome(outcome, cancel_token, str(request.task_id))
+            if translated is not None and translated.profiler_tree is not None:
+                active_prof.merge_subtree(translated.profiler_tree)
         if translated is not None and translated.invoked_tasks:
             self._sessions.record_transitive_invoked_tasks(request.propagation, translated.invoked_tasks)
         return translated
@@ -1133,7 +1586,8 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
             pre_guard = DeadlineGuard(cancel_token=wait_tok, deadline=merge_deadlines(eff_outer_dl, (step_started + ms_to_safe_sec(pre_tmo)) if pre_tmo is not None else None))
             try:
                 wait_tok.raise_if_cancelled()
-                self._gates.wait_for_unquiesced(request, wait_tok, self._step_host.is_reentrant_retiring, timeout_ms=pre_guard.remaining_ms(pre_tmo))
+                with resolve_active_profiler().scope_relative("Runtime/QuiesceWait"):
+                    self._gates.wait_for_unquiesced(request, wait_tok, self._step_host.is_reentrant_retiring, timeout_ms=pre_guard.remaining_ms(pre_tmo))
             except (TaskCancelledException, YscbError) as exc:
                 return _failed_step_result(exc.detail, request.task_id, fatal=False)
             gate_err, resolved = self._validate_stage1_gates(request, in_cold_turn=(turn.kind == TurnKind.COLD))
@@ -1244,6 +1698,7 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
         neutral_prop = CallPropagationContext(
             turn_id=flight_tid, call_tree_id=flight_tid, call_stack=((env.step_req.workspace_root, env.spec.task_id),),
             is_nested_call=False, from_hot_container=self._opts.is_daemon_host, hot_workspaces=hot_ws, cold_shared_workspaces=cold_ws,
+            profile_mem=env.step_req.propagation.profile_mem,
         )
         exec_env = replace(
             env, turn=flight_scope, step_req=replace(env.step_req, propagation=neutral_prop), on_progress=flight.broadcast_progress,
@@ -1424,6 +1879,7 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
             call_stack=prop.call_stack, lineage=prop.lineage, is_internal_trigger=False, is_nested_call=not ext_route,
             in_event_chain=prop.in_event_chain, from_hot_container=False if ext_route else self._opts.is_daemon_host,
             hot_workspaces=prop.hot_workspaces, cold_shared_workspaces=prop.cold_shared_workspaces,
+            profile_mem=prop.profile_mem,
         )
         try:
             nested_req = InvokeRequest(
@@ -1432,6 +1888,8 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
                 priority=spec.parent_prio.current if spec.parent_prio is not None else spec.priority,
                 approval_scope=frozenset() if strip_scope else spec.approval_scope,
                 allow_conditional=spec.allow_conditional, propagation=nested_prop,
+                profile_mem=prop.profile_mem,
+                active_profiler=resolve_active_profiler() if ext_route else None,
             )
             validate_wire_json_object(nested_req.raw_input, max_depth=MAX_USER_JSON_DEPTH, label="InvokeRequest.raw_input")
         except (TypeError, ValueError) as exc:

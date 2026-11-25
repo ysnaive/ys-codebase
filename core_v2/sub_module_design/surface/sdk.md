@@ -4,11 +4,11 @@
 > **模組路徑**：`core_v2/source/core/core/surface/sdk/`（`declarative.py`、`client.py`、`__init__.py`）
 > **依賴上限（Allowed Imports）**：`foundation/*`、`filesystem.{vfs, space, storage}`、`metadata.{config, contributes}`、`execution.{event, lifecycle, rpc, runtime}`
 > **禁止反向依賴（Forbidden Imports）**：`execution.daemon`、`packaging/*`、`surface.{cli, bootstrap}`（所有下層域亦嚴禁反向匯入 `surface/*`）
-> **狀態**：`Active Living Spec — Scheme B 75-Symbol Zero-Reflection Unified SDK Facade`
+> **狀態**：`Active Living Spec — Scheme B 80-Symbol Zero-Reflection Unified SDK Facade`
 
 ## 1. 模組定位與架構邊界 (Positioning & Layering Overview)
 
-`core.surface.sdk` 為下游業務模組與程式化調用端提供**全生態系唯一公開匯入門面（精準鎖定 75 個完全自洽核心符號）**，在零全域單例與零執行期反射的前提下統一封裝 `Domain 1 ~ 5` 能力（`foundation`、`filesystem.{vfs, storage, space}`、`metadata.{config, contributes}`、`execution.{event, lifecycle, runtime, rpc}`）：
+`core.surface.sdk` 為下游業務模組與程式化調用端提供**全生態系唯一公開匯入門面（精準鎖定 80 個完全自洽核心符號）**，在零全域單例與零執行期反射的前提下統一封裝 `Domain 1 ~ 5` 能力（`foundation`、`filesystem.{vfs, storage, space}`、`metadata.{config, contributes}`、`execution.{event, lifecycle, runtime, rpc}`）：
 
 - **宣告式 DSL (`declarative.py`)**：透過內部零反射 Metaclass（`_DeclarativeMeta(ABCMeta)`）於類別定義期掃描 `Module`（含 `aliases`、`description`、`config_type`、`extension_points`）與靜態 `TaskGroup` 內之 `@task`、`@on_event`、`@periodic`、`@on_migrate` 方法並編譯為強型別 `TaskMetadata` 與 `YscbModule` 轉接器；`Module.to_yscb_module()` 透過內部 `WeakKeyDictionary` 將每個 `TaskGroup` 實例綁定至父 `Module` 並公開 `TaskGroup.parent_module` 唯讀屬性以供狀態共享；凡遇非法型別註解、非 `@dataclass(frozen=True, slots=True)` 組態類別、重複擴充點或 CLI 路徑、或 `GATED`/`CRITICAL`/`COLD_ONLY` 綁定事件/排程等違規，於類別定義期即確定性拋出 `ValueError`。
 - **零反射疊加描述符**：裝飾器疊加封裝於不可變可呼叫描述符（`_DecoratedMethod`），全程零 `.__dict__` / `setattr` / `hasattr` / `getattr`，保持實體與未綁定方法直接可呼叫且與裝飾器上下疊加順序無關。
@@ -57,6 +57,10 @@ from core.foundation import (
     LocaleCatalog,
     LogLevel,
     ModuleId,
+    NullProfiler,
+    Profiler,
+    ProfilerNodeSnapshot,
+    ProfilerSession,
     ProgressEvent,
     SemVer4,
     SemanticUri,
@@ -68,6 +72,7 @@ from core.foundation import (
     TaskId,
     VersionConstraint,
     YscbError,
+    render_profiler_tree,
 )
 from core.metadata.contributes import (
     AggregatedContributes,
@@ -166,6 +171,8 @@ class ModuleEnv:
     def logger(self) -> StructuredLogger: ...
     @property
     def locale(self) -> LocaleCatalog: ...
+    @property
+    def profiler(self) -> Profiler: ...
     def register_closer(self, fn: Callable[[], None]) -> None: ...
     def load_config(self, config_cls: type[TConfig]) -> TConfig: ...
     def load_contributes(self) -> AggregatedContributes: ...
@@ -362,7 +369,11 @@ __all__: tuple[str, ...] = (
     "ModuleDatabase",
     "ModuleEnv",
     "ModuleId",
+    "NullProfiler",
     "Option",
+    "Profiler",
+    "ProfilerNodeSnapshot",
+    "ProfilerSession",
     "ProgressEvent",
     "ProvenanceGraph",
     "SPACE_REGISTRY_CHANGED_EVENT_ID_STR",
@@ -403,6 +414,7 @@ __all__: tuple[str, ...] = (
     "on_event",
     "on_migrate",
     "periodic",
+    "render_profiler_tree",
     "task",
 )
 ```
@@ -418,11 +430,11 @@ __all__: tuple[str, ...] = (
    - `ModuleEnv.open_database(name)` 強制落點於 `storage.local://@/<name>.db` 並自動 `register_closer(db.close)`；卸載時嚴格逆序（LIFO）執行 `env.register_closer(...)`、`group.on_close()` 與 `module.on_close()`。
 
 
-## 4. 對外公開 75 符號分組總表（單一匯入邊界）
+## 4. 對外公開 80 符號分組總表（單一匯入邊界）
 
-| 分組 | 匯出符號（共 75 個） |
+| 分組 | 匯出符號（共 80 個） |
 | :--- | :--- |
 | **宣告與執行契約（28 個）** | `Arg`, `CancellationToken`, `ClientRoutingPolicy`, `ConcurrencyMode`, `DispatchMode`, `Empty`, `EventMetadata`, `ExecutionPriority`, `ExitCodeProvider`, `HostPath`, `HumanRenderable`, `InMemoryModule`, `Module`, `ModuleEnv`, `Option`, `ProgressEvent`, `SecurityTier`, `TaskContext`, `TaskGroup`, `TaskMetadata`, `TaskOutcome`, `YscbClient`, `YscbModule`, `define_event`, `format_output`, `on_event`, `periodic`, `task` |
-| **Foundation 值物件、錯誤與可觀測（17 個）** | `JsonValue`, `ModuleId`, `TaskId`, `EventId`, `SemVer4`, `VersionConstraint`, `SemanticUri`, `SpaceId`, `SpacePath`, `SnapshotGen`, `YscbError`, `ErrorCode`, `ErrorDetail`, `TaskCancelledException`, `LogLevel`, `StructuredLogger`, `LocaleCatalog` |
+| **Foundation 值物件、錯誤與可觀測（22 個）** | `JsonValue`, `ModuleId`, `TaskId`, `EventId`, `SemVer4`, `VersionConstraint`, `SemanticUri`, `SpaceId`, `SpacePath`, `SnapshotGen`, `YscbError`, `ErrorCode`, `ErrorDetail`, `TaskCancelledException`, `LogLevel`, `StructuredLogger`, `LocaleCatalog`, `Profiler`, `ProfilerSession`, `ProfilerNodeSnapshot`, `NullProfiler`, `render_profiler_tree` |
 | **VFS 與持久化儲存（9 個）** | `ScopedVfs`, `VfsCapabilities`, `VfsStat`, `ModuleDatabase`, `SnapshotReader`, `WriteTransaction`, `SchemaMigration`, `StorageOpenOptions`, `BlobVault` |
 | **邏輯空間、系統事件、擴充與遷移（21 個）** | `SpaceSpec`, `HashPolicy`, `SpaceFileEntry`, `SpaceDiffBatch`, `SetDynamicSpaceInput`, `ClearDynamicSpaceInput`, `SpaceScanInput`, `SpaceAckCursorInput`, `SPACE_UPDATED_EVENT_ID_STR`, `SPACE_REGISTRY_CHANGED_EVENT_ID_STR`, `WORKSPACE_RELOADED_EVENT_ID`, `MODULE_INSTALLED_EVENT_ID`, `MODULE_REMOVING_EVENT_ID`, `CONFIG_CHANGED_EVENT_ID`, `MergeStrategy`, `ContribField`, `ExtensionPointSpec`, `AggregatedContributes`, `ProvenanceGraph`, `MigrationRequest`, `on_migrate` |

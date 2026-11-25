@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import dataclass
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
+import inspect
+import os
 import threading
+import types
 from typing import Callable, ClassVar, Final, Iterator, Mapping, Optional
 
 from core.execution.runtime.contracts import CORE_MODULE_ID, ModuleRuntimeServices
@@ -29,8 +32,10 @@ from core.filesystem.vfs import (
     build_standard_mount_rules,
 )
 from core.foundation import (
+    DailyEventRecord,
     DataclassCodec,
     ErrorCode,
+    FlightLogRouter,
     HostPath,
     JsonObject,
     LocaleCatalog,
@@ -38,11 +43,15 @@ from core.foundation import (
     LogRecord,
     LogRotator,
     ModuleId,
+    NullProfiler,
+    Profiler,
+    ProfilerNodeSnapshot,
     SemanticUri,
     StructuredLogger,
     YscbError,
     clone_strict_json_object,
     read_public_env_value,
+    redact_sensitive_value,
     require_pure_str,
 )
 from core.metadata.config import ConfigStore
@@ -126,12 +135,25 @@ def resolve_workspace_host_dialect(yscb_root: HostPath) -> Optional[str]:
     return _HostDialectRegistry.resolve(yscb_root) or lookup_cold_workspace_dialect(yscb_root)
 
 
+@dataclass(frozen=True, slots=True)
+class InvocationCorrelationContext:
+    """Per-invocation correlation metadata and active profiler bound to thread-local runtime state."""
+
+    trace_id: str = ""
+    task_id: str = ""
+    exec_mode: str = ""
+    daemon_boot_id: str = ""
+    profiler: Profiler = field(default_factory=NullProfiler)
+    flight_log_router: Optional[FlightLogRouter] = None
+
+
 class _ActiveServicesTls(threading.local):
     def __init__(self) -> None:
         super().__init__()
         self.stack: list[ModuleRuntimeServices] = []
         self.invocations: list[tuple[Optional[ModuleId], Optional[str]]] = []
         self.step_env_locales: list[Optional[str]] = []
+        self.correlations: list[InvocationCorrelationContext] = []
 
 
 class _ActiveServicesHolder:
@@ -157,6 +179,79 @@ class _ActiveServicesHolder:
     @classmethod
     def step_env_locales(cls) -> list[Optional[str]]:
         return cls._tls().step_env_locales
+
+    @classmethod
+    def correlations(cls) -> list[InvocationCorrelationContext]:
+        return cls._tls().correlations
+
+
+def _capture_proxy_caller() -> Optional[str]:
+    cur = inspect.currentframe()
+    frame: Optional[types.FrameType] = None
+    try:
+        if cur is not None and cur.f_back is not None:
+            frame = cur.f_back.f_back
+        if frame is None:
+            return None
+        filename = frame.f_code.co_filename
+        base = os.path.basename(filename) if filename else "<unknown>"
+        return f"{base}:{frame.f_lineno}"
+    finally:
+        del frame
+        del cur
+
+
+class _ActiveBoundProfiler:
+    """Forwarding Profiler delegating to the active thread-local invocation Profiler or NullProfiler."""
+
+    __slots__ = ()
+
+    def scope(
+        self,
+        path: Optional[str] = None,
+        name: Optional[str] = None,
+        *,
+        caller: Optional[str] = None,
+    ) -> AbstractContextManager[None]:
+        target = resolve_active_profiler()
+        if isinstance(target, NullProfiler):
+            return target.scope(path, name, caller=caller)
+        eff_caller = caller if caller is not None else _capture_proxy_caller()
+        return target.scope(path, name, caller=eff_caller)
+
+    def scope_relative(
+        self,
+        path: str,
+        name: Optional[str] = None,
+        *,
+        caller: Optional[str] = None,
+    ) -> AbstractContextManager[None]:
+        target = resolve_active_profiler()
+        if isinstance(target, NullProfiler):
+            return target.scope_relative(path, name, caller=caller)
+        eff_caller = caller if caller is not None else _capture_proxy_caller()
+        return target.scope_relative(path, name, caller=eff_caller)
+
+    def merge_subtree(
+        self,
+        subtree: ProfilerNodeSnapshot,
+        *,
+        mount_path: Optional[str] = None,
+    ) -> None:
+        resolve_active_profiler().merge_subtree(subtree, mount_path=mount_path)
+
+    def snapshot(self) -> ProfilerNodeSnapshot:
+        return resolve_active_profiler().snapshot()
+
+    def current_span_path(self) -> str:
+        return resolve_active_profiler().current_span_path()
+
+
+def unwrap_active_profiler(profiler: Profiler) -> Profiler:
+    """Return the active thread-local Profiler when given a forwarding proxy, else the explicit Profiler."""
+    if isinstance(profiler, _ActiveBoundProfiler):
+        return resolve_active_profiler()
+    return profiler
 
 
 class _NullStructuredLogger:
@@ -197,15 +292,58 @@ class _RotatorStructuredLogger:
         self._rotator = LogRotator(log_path, max_bytes=524288, max_history_files=3)
 
     def log(self, level: LogLevel, message: str, *, fields: Optional[JsonObject] = None) -> None:
-        ts_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        if not isinstance(level, LogLevel):
+            raise ValueError(f"StructuredLogger.log level must be LogLevel, got {level!r}")
+        require_pure_str(message, "StructuredLogger.log message")
+        clean_fields = clone_strict_json_object(fields, label="StructuredLogger.log fields") if fields is not None else {}
+        redacted_fields_raw = redact_sensitive_value(clean_fields)
+        redacted_fields: JsonObject = redacted_fields_raw if isinstance(redacted_fields_raw, Mapping) else {}
+        redacted_msg_raw = redact_sensitive_value(message)
+        redacted_msg = redacted_msg_raw if isinstance(redacted_msg_raw, str) else message
+        now_dt = datetime.now(timezone.utc)
+        ts_utc = now_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        epoch_ms = int(now_dt.timestamp() * 1000)
+        corr = resolve_active_correlation()
+        active_prof = corr.profiler if corr is not None else NullProfiler()
+        trace_id = (corr.trace_id if corr is not None else "") or (resolve_active_call_tree_id() or "")
+        span_id = active_prof.current_span_path()
+        task_id = corr.task_id if corr is not None else ""
+        exec_mode = corr.exec_mode if corr is not None else ""
+        daemon_boot_id = corr.daemon_boot_id if corr is not None else ""
+        pid = os.getpid()
         rec = LogRecord(
             ts_utc=ts_utc,
             level=level,
             logger_name=self._name,
-            message=message,
-            fields=fields if fields is not None else {},
+            message=redacted_msg,
+            fields=redacted_fields,
+            trace_id=trace_id,
+            span_id=span_id,
+            task_id=task_id,
+            exec_mode=exec_mode,
+            daemon_boot_id=daemon_boot_id,
+            pid=pid,
         )
         self._rotator.append_jsonl(DataclassCodec.encode_object(rec))
+        if level in (LogLevel.WARNING, LogLevel.ERROR) and corr is not None:
+            router = corr.flight_log_router
+            if router is not None and router.enabled:
+                router.record_daily(
+                    DailyEventRecord(
+                        ts_utc=ts_utc,
+                        epoch_ms=epoch_ms,
+                        kind="ALERT",
+                        trace_id=trace_id,
+                        daemon_boot_id=daemon_boot_id,
+                        pid=pid,
+                        exec_mode=exec_mode,
+                        module=self._name,
+                        task_id=task_id,
+                        level=level,
+                        message=redacted_msg,
+                        fields=redacted_fields,
+                    )
+                )
 
     def debug(self, message: str, *, fields: Optional[JsonObject] = None) -> None:
         self.log(LogLevel.DEBUG, message, fields=fields)
@@ -292,6 +430,7 @@ def build_default_module_services(workspace_root: HostPath, module_id: ModuleId)
         locale=locale,
         config_loader=_load_cfg,
         contributes_loader=_load_contrib,
+        profiler=_ActiveBoundProfiler(),
     )
 
 
@@ -551,7 +690,7 @@ def _create_workspace_services_factory_impl(
             bundle = _resolve_hub_and_agg(base_fp, eff_raw_env_loc, eff_dial, pre_loc=direct_loc)
             hub, agg, loc = bundle.hub, bundle.agg, bundle.loc
             scoped_vfs = hub.for_module(module_id)
-            logs_hp = try_resolve_contained_subpath(yscb_root, ".cache", "logs", f"{module_id.value}.jsonl")
+            logs_hp = try_resolve_contained_subpath(yscb_root, ".cache", "logs", "modules", f"{module_id.value}.jsonl")
             if logs_hp is not None:
                 log_key = (module_id, logs_hp.comparison_key)
                 existing_logger = loggers_by_module.get(log_key)
@@ -581,6 +720,7 @@ def _create_workspace_services_factory_impl(
                 locale=loc,
                 config_loader=_load_cfg,
                 contributes_loader=_load_contrib,
+                profiler=_ActiveBoundProfiler(),
             )
             if len(cache) >= 64:
                 cache.pop(next(iter(cache)), None)
@@ -690,8 +830,32 @@ def resolve_active_call_tree_id() -> Optional[str]:
     return inv[-1][1] if inv else None
 
 
+@contextmanager
+def active_invocation_correlation_scope(ctx: InvocationCorrelationContext) -> Iterator[None]:
+    """Bind per-invocation correlation metadata, profiler, and flight router onto thread-local state."""
+    _ActiveServicesHolder.correlations().append(ctx)
+    try:
+        yield
+    finally:
+        _ActiveServicesHolder.correlations().pop()
+
+
+def resolve_active_correlation() -> Optional[InvocationCorrelationContext]:
+    """Return the innermost active invocation correlation context on the current thread, if any."""
+    stack = _ActiveServicesHolder.correlations()
+    return stack[-1] if stack else None
+
+
+def resolve_active_profiler() -> Profiler:
+    """Return the active thread-local invocation Profiler, or NullProfiler outside an invocation."""
+    corr = resolve_active_correlation()
+    return corr.profiler if corr is not None else NullProfiler()
+
+
 __all__: tuple[str, ...] = (
     "HOST_DIALECT_ENV_KEY",
+    "InvocationCorrelationContext",
+    "active_invocation_correlation_scope",
     "active_module_services_scope",
     "active_step_caller_env_scope",
     "active_step_invocation_scope",
@@ -701,9 +865,12 @@ __all__: tuple[str, ...] = (
     "register_workspace_host_dialect",
     "resolve_active_call_tree_id",
     "resolve_active_caller_module",
+    "resolve_active_correlation",
     "resolve_active_module_services",
+    "resolve_active_profiler",
     "resolve_active_step_env_locale",
     "resolve_explicit_workspace_host_dialect",
     "resolve_workspace_host_dialect",
     "unregister_workspace_host_dialect",
+    "unwrap_active_profiler",
 )

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from dataclasses import replace
 import os
 import signal
 import sys
 import threading
-from typing import Callable, MutableMapping, Optional, Sequence
+from typing import Callable, Mapping, MutableMapping, Optional, Sequence
 
 from core.execution.event import CausalLineage
 from core.execution.lifecycle import WorkerContainerLifecycle
@@ -30,9 +31,12 @@ from core.execution.runtime.contracts import (
 from core.execution.runtime.module_slot import LocalModuleSlotRegistry, LocalStepExecutionSpec, StepContextCallbacks
 from core.execution.runtime.services import (
     HOST_DIALECT_ENV_KEY,
+    InvocationCorrelationContext,
+    active_invocation_correlation_scope,
     build_default_module_services,
     build_worker_module_services_factory,
 )
+from core.filesystem.fs import try_resolve_contained_subpath
 from core.execution.runtime.wire import (
     WorkerBootstrapConfig,
     WorkerCallbackContext,
@@ -65,7 +69,34 @@ from core.foundation.primitives import (
     strict_parse_json_object,
 )
 from core.foundation.proc import SignalWakeupGuard
+from core.foundation.profiler import (
+    FlightLogConfig,
+    FlightLogRouter,
+    MemoryTrackingGuard,
+    ProfilerSession,
+)
 from core.metadata.contributes import probe_workspace_host_dir
+
+
+def _build_worker_flight_log_router(
+    workspace_root: HostPath,
+    daemon_boot_id: str,
+    raw_cfg: Optional[JsonObject],
+    env: Mapping[str, str],
+) -> Optional[FlightLogRouter]:
+    logs_hp = try_resolve_contained_subpath(workspace_root, ".cache", "logs")
+    if logs_hp is None:
+        return None
+    fl_cfg = FlightLogConfig()
+    if raw_cfg is not None:
+        try:
+            fl_cfg = DataclassCodec.decode(FlightLogConfig, raw_cfg)
+        except (ValueError, TypeError, KeyError, YscbError):
+            fl_cfg = FlightLogConfig()
+    try:
+        return FlightLogRouter(logs_hp, config=fl_cfg, env=env, daemon_boot_id=daemon_boot_id)
+    except (ValueError, OSError, YscbError):
+        return None
 
 
 def _resolve_worker_services_factory(
@@ -171,8 +202,12 @@ class WorkerSubprocessHandler(InboundCallHandler):
         expect_channel: bool = False,
         host_dir: Optional[HostPath] = None,
         dialect: Optional[str] = None,
+        daemon_boot_id: str = "",
+        flight_log_router: Optional[FlightLogRouter] = None,
     ) -> None:
         self._expect_channel = expect_channel
+        self._daemon_boot_id = daemon_boot_id
+        self._flight_log_router = flight_log_router
         self._container = WorkerContainerLifecycle()
         svc_factory = _resolve_worker_services_factory(
             workspace_root,
@@ -240,6 +275,8 @@ class WorkerSubprocessHandler(InboundCallHandler):
                     self._slots.unload_all_modules(grace_sec=ms_to_safe_sec(rem_ms, min_sec=0.05))
                 ),
             )
+            if self._flight_log_router is not None:
+                self._flight_log_router.close()
             self._closed_diags = (*slot_diags, *cont_diags)
             return self._closed_diags
 
@@ -359,9 +396,23 @@ class WorkerSubprocessHandler(InboundCallHandler):
             callbacks=callbacks,
             interactive_tty=cmd.interactive_tty,
         )
+        worker_prof = ProfilerSession(root_name=f"Worker/{cmd.task_id.value}", track_memory=cmd.profile_mem)
+        eff_trace_id = cmd.trace_id or (cmd.callback_context.propagation.call_tree_id or "")
+        eff_exec_mode = cmd.exec_mode or "worker"
+        corr = InvocationCorrelationContext(
+            trace_id=eff_trace_id,
+            task_id=cmd.task_id.value,
+            exec_mode=eff_exec_mode,
+            daemon_boot_id=self._daemon_boot_id,
+            profiler=worker_prof,
+            flight_log_router=self._flight_log_router,
+        )
         try:
-            reply = self._slots.execute_step_locally(step_spec)
-            return (True, DataclassCodec.encode_envelope(reply))
+            with MemoryTrackingGuard(cmd.profile_mem), active_invocation_correlation_scope(corr):
+                reply = self._slots.execute_step_locally(step_spec)
+            snap_payload = DataclassCodec.encode_object(worker_prof.snapshot())
+            reply_with_tree = replace(reply, profiler_tree=snap_payload)
+            return (True, DataclassCodec.encode_envelope(reply_with_tree))
         finally:
             if step_run_id:
                 with self._prio_lock:
@@ -469,6 +520,12 @@ def worker_main(
     except (ValueError, YscbError, KeyError, TypeError, RecursionError):
         return 2
     descriptors = cfg.modules
+    fl_router = _build_worker_flight_log_router(
+        cfg.workspace_root,
+        cfg.daemon_boot_id,
+        cfg.flight_log_config,
+        eff_env,
+    )
     handler = WorkerSubprocessHandler(
         cfg.workspace_root,
         descriptors,
@@ -476,6 +533,8 @@ def worker_main(
         expect_channel=True,
         host_dir=cfg.host_dir,
         dialect=host_dialect,
+        daemon_boot_id=cfg.daemon_boot_id,
+        flight_log_router=fl_router,
     )
     ep = RpcEndpointInfo(
         pid=os.getpid(),
@@ -487,6 +546,7 @@ def worker_main(
     )
     ch = connect_and_handshake(ep, handler=handler, connect_timeout_sec=5.0)
     if ch is None:
+        handler.close()
         return 1
     handler.bind_channel(ch)
     stop_sigs = (int(signal.SIGTERM), int(signal.SIGBREAK)) if IS_WINDOWS else (int(signal.SIGTERM),)

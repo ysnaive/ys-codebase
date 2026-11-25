@@ -27,6 +27,7 @@ from core.foundation.primitives import (
     is_disallowed_reparse_tag,
     is_valid_relative_segment,
     require_pure_int,
+    safe_realpath,
     strict_parse_json_object,
     validate_relative_segment,
 )
@@ -138,7 +139,7 @@ def resolve_contained_subpath(root: HostPath, *parts: str) -> HostPath:
     if not isinstance(root, HostPath):
         raise ValueError(f"resolve_contained_subpath requires HostPath root, got {root!r}")
     raw_root = str(root)
-    real_root_raw = os.path.realpath(raw_root)
+    real_root_raw = safe_realpath(raw_root)
     if is_symlink_or_reparse(raw_root) or os.path.normcase(real_root_raw) != os.path.normcase(os.path.normpath(raw_root)):
         raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing symlink or reparse root directory: {raw_root}")
     if not parts:
@@ -153,11 +154,11 @@ def resolve_contained_subpath(root: HostPath, *parts: str) -> HostPath:
         if os.path.lexists(nxt):
             if idx < last_idx and not os.path.isdir(nxt):
                 raise YscbError(ErrorCode.SECURITY_GATED, f"Non-directory intermediate path inside '{root}': {nxt}")
-            if os.path.normcase(os.path.realpath(nxt)) != os.path.normcase(os.path.normpath(nxt)):
+            if os.path.normcase(safe_realpath(nxt)) != os.path.normcase(os.path.normpath(nxt)):
                 raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing redirected path inside '{root}': {nxt}")
         cur = nxt
     real_root = os.path.normcase(real_root_raw)
-    real_cur = os.path.normcase(os.path.realpath(cur))
+    real_cur = os.path.normcase(safe_realpath(cur))
     try:
         contained = real_cur != real_root and os.path.commonpath([real_root, real_cur]) == real_root
     except ValueError:
@@ -190,7 +191,7 @@ def _step_nonsymlink_segment(cur: str, seg: str) -> Optional[str]:
     nxt = os.path.join(cur, seg)
     if is_symlink_or_reparse(nxt):
         return None
-    if os.path.lexists(nxt) and os.path.normcase(os.path.realpath(nxt)) != os.path.normcase(os.path.normpath(nxt)):
+    if os.path.lexists(nxt) and os.path.normcase(safe_realpath(nxt)) != os.path.normcase(os.path.normpath(nxt)):
         return None
     return nxt
 
@@ -230,10 +231,10 @@ def _walk_nonsymlink_path(raw_path: str) -> Optional[str]:
         anchor = cand.anchor
         if is_symlink_or_reparse(anchor):
             return None
-        cur: Optional[str] = os.path.realpath(anchor)
+        cur: Optional[str] = safe_realpath(anchor)
         tail = walk_path[len(anchor):]
     else:
-        cur = os.path.realpath(".")
+        cur = safe_realpath(".")
         tail = walk_path
     for seg in (s for s in re.split(sep_pat, tail) if s):
         if cur is None:
@@ -244,7 +245,7 @@ def _walk_nonsymlink_path(raw_path: str) -> Optional[str]:
     seps = ("/", "\\") if IS_WINDOWS else ("/",)
     if walk_path.endswith(seps) and os.path.lexists(cur) and not os.path.isdir(cur):
         return None
-    if os.path.lexists(walk_path) and os.path.normcase(os.path.realpath(walk_path)) != os.path.normcase(cur):
+    if os.path.lexists(walk_path) and os.path.normcase(safe_realpath(walk_path)) != os.path.normcase(cur):
         return None
     return cur
 
@@ -265,7 +266,7 @@ def _resolve_nonsymlink_root_spec(
     stripped = raw_root.rstrip(seps) if len(raw_root) > len(p_root.anchor) else raw_root
     if not stripped or is_symlink_or_reparse(stripped):
         return None
-    abs_root = stripped if Path(stripped).is_absolute() else os.path.join(os.path.realpath("."), stripped)
+    abs_root = stripped if Path(stripped).is_absolute() else os.path.join(safe_realpath("."), stripped)
     sep_pat = r"[\\/]+" if IS_WINDOWS else r"/+"
     p_abs = Path(abs_root)
     anchor = p_abs.anchor
@@ -274,7 +275,7 @@ def _resolve_nonsymlink_root_spec(
     segs = tuple(s for s in re.split(sep_pat, abs_root[len(anchor) :]) if s)
     if any(s in (".", "..") or not is_valid_relative_segment(s) for s in segs):
         return None
-    real_root = os.path.realpath(abs_root)
+    real_root = safe_realpath(abs_root)
     if os.path.lexists(real_root) and raw_root.endswith(tuple(seps)) and not os.path.isdir(real_root):
         return None
     lex_spec = (os.path.normcase(anchor), tuple(os.path.normcase(s) for s in segs))
@@ -286,7 +287,7 @@ def _extract_candidate_tail_segs(
     real_root: str,
     allowed_lex_root: Optional[tuple[str, tuple[str, ...]]],
 ) -> Optional[tuple[str, ...]]:
-    abs_cand = raw_cand if Path(raw_cand).is_absolute() else os.path.join(os.path.realpath("."), raw_cand)
+    abs_cand = raw_cand if Path(raw_cand).is_absolute() else os.path.join(safe_realpath("."), raw_cand)
     sep_pat = r"[\\/]+" if IS_WINDOWS else r"/+"
     norm_real_root = os.path.normcase(real_root)
     if allowed_lex_root is not None:
@@ -302,7 +303,7 @@ def _extract_candidate_tail_segs(
             and tuple(os.path.normcase(s) for s in c_segs[:n_req]) == req_segs
         ):
             matched_base = os.path.join(c_anchor, *c_segs[:n_req]) if n_req else c_anchor
-            if not is_symlink_or_reparse(matched_base) and os.path.normcase(os.path.realpath(matched_base)) == norm_real_root:
+            if not is_symlink_or_reparse(matched_base) and os.path.normcase(safe_realpath(matched_base)) == norm_real_root:
                 return c_segs[n_req:]
     walk_cand = _normalize_darwin_root_alias(abs_cand)
     p_w = Path(walk_cand)
@@ -310,7 +311,7 @@ def _extract_candidate_tail_segs(
     if not w_anchor or is_symlink_or_reparse(w_anchor):
         return None
     w_segs = tuple(s for s in re.split(sep_pat, walk_cand[len(w_anchor) :]) if s)
-    cur: Optional[str] = os.path.realpath(w_anchor)
+    cur: Optional[str] = safe_realpath(w_anchor)
     if os.path.normcase(cur) == norm_real_root:
         return w_segs
     for idx, seg in enumerate(w_segs):
@@ -351,7 +352,7 @@ def is_contained_nonsymlink_path(
     seps = ("/", "\\") if IS_WINDOWS else ("/",)
     if raw_cand.endswith(seps) and os.path.lexists(cur) and not os.path.isdir(cur):
         return False
-    if os.path.lexists(cur) and os.path.normcase(os.path.realpath(cur)) != os.path.normcase(cur):
+    if os.path.lexists(cur) and os.path.normcase(safe_realpath(cur)) != os.path.normcase(cur):
         return False
     norm_cand = os.path.normcase(cur)
     if norm_cand == norm_root:
@@ -794,7 +795,7 @@ def _try_admit_walk_dir(
         st = os.lstat(raw_dir)
         if not stat.S_ISDIR(st.st_mode):
             return None
-        real_dir = os.path.realpath(raw_dir)
+        real_dir = safe_realpath(raw_dir)
     except OSError:
         return None
     norm_real = os.path.normcase(real_dir)

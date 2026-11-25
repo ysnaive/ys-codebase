@@ -8,7 +8,7 @@
 > **狀態**：`Active Living Spec — Implementation-Aligned SSOT`
 
 > [!NOTE]
-> **實作彈性邊界**：`tasks.index.json` 檔案 Schema、`CallerMode` 5 層環境分類、4×3 安全矩陣、兩段式單次 `--approve=<token>` 協議、全域統一旗標（`--help`/`-h`/`--json`/`--cold`/`--approve`）與 1.x `HelpRenderer` 輸出特性屬硬契約；內部詞法解析器與排版輔助函式可由實作端微調。
+> **實作彈性邊界**：`tasks.index.json` 檔案 Schema、`CallerMode` 5 層環境分類、4×3 安全矩陣、兩段式單次 `--approve=<token>` 協議、全域統一旗標（`--help`/`-h`/`--json`/`--cold`/`--approve`/`--profile`/`--profile-mem`）與 1.x `HelpRenderer` 輸出特性屬硬契約；內部詞法解析器與排版輔助函式可由實作端微調。
 
 ---
 
@@ -18,7 +18,7 @@
 1. **零匯入毫秒級靜態路由與自省**：直讀隨包 `.modules/<mod>/tasks.index.json`（並由 `.cache/tasks.index.json` 聚合加速），於 `< 10ms` 內完成指令樹解析、正交選項衝突驗證、`-h` 說明卡片渲染與 `Did you mean` 拼寫建議，全程零載入任何業務模組 Python 代碼（對 Tier 1 模組尤為關鍵）。
 2. **100% 承繼 1.x 成熟 `HelpRenderer` 體驗**：保留安全分級標籤、`ARGUMENTS`（含 choice 枚舉提示）、正交 `OPTIONS` 群組互斥標記、`RECOMMENDED USAGE (Pros)`、`RESTRICTIONS & GATES (Cons)`、模組別名、群組預設動作（`DN-13`）與模糊拼寫建議。
 3. **5 層 `CallerMode` 運行環境辨識 + 4×3 安全守門**：解決 AI Agent 跑在 PTY 時 `isatty() == True` 誤判問題，並以兩段式單次確認碼 `--approve=<token>` 徹底根除 Compact 後的 `-y` 記憶慣性風險。
-4. **雙軌輸出與非阻塞可觀測整合**：支援人類排版（`format_output`）與嚴格 `--json`（`TaskOutcome`），於出口整合 `SessionTelemetryWriter` 與非阻塞 12 小時 `UpdateChecker`（`--json` / 沙盒 / 離線時自動靜音）。
+4. **雙軌輸出與非阻塞可觀測整合**：支援人類排版（`format_output`）與嚴格 `--json`（`TaskOutcome`），於入口／出口作為單一寫手寫入 `FlightLogRouter`（3+1 JSONL 飛航日誌）與根 `ProfilerSession`（`--profile`／`--profile-mem` 僅輸出 ImTK 樹至 `stderr`），並整合非阻塞 12 小時 `UpdateChecker`（`--json` / 沙盒 / 離線時自動靜音）。
 
 ---
 
@@ -108,6 +108,8 @@
 | `--json` | 強制於 `stdout` 輸出嚴格單一 JSON 物件（編碼自 `TaskOutcome`），壓制人類排版與更新提示；退出碼仍依 `ExitCodeProvider` 或錯誤碼映射 |
 | `--cold` | 注入 `ClientRoutingPolicy.FORCE_COLD` 強制本地冷派發 |
 | `--approve=<token>` | 消費 `ApprovalTokenStore` 單次確認碼以授權單次 `GATED` 任務 |
+| `--profile` | 強制於 `stderr` 輸出 ImTK 風格跨進程耗時瀑布樹（絕不污染 `stdout` / `--json`） |
+| `--profile-mem` | 啟用 `tracemalloc` 記憶體配置追蹤（同 `YSCB_PROFILE_MEM=1`），並於 `stderr` 輸出含記憶體欄之瀑布樹 |
 
 ### 4.2 1.x 成熟 `HelpRenderer` 必備特性（100% 攜帶至 2.0）
 - **頂部標頭**：完整命令路徑、任務摘要、`Security : [SAFE] / [CONDITIONAL] / [GATED] / [CRITICAL]`、`Dispatch : [HYBRID] / [COLD_ONLY] / [DAEMON_ONLY]`。
@@ -118,13 +120,14 @@
 
 ### 4.3 執行與出口管線
 ```text
-argv -> CallerMode 5 層分類 -> 萃取全域旗標 (--help / --json / --cold / --approve)
+argv -> CallerMode 5 層分類 -> 萃取全域旗標 (--help / --json / --cold / --approve / --profile / --profile-mem)
      -> 零匯入載入 tasks.index.json (核對指紋自動重建 .cache/tasks.index.json)
      -> 解析 command_path / 群組預設動作 / 拼寫建議 / DTO 參數與互斥檢核
      -> 依 4×3 安全矩陣執行授權守門 (TTY 互動確認 或 --approve 單次確認碼)
-     -> 組裝 InvokeRequest(caller_surface=CallerSurface.CLI, ...) -> RuntimeDispatcher.invoke()
+     -> 開啟根 ProfilerSession 與 FlightLogRouter，寫入 daily/[IN]
+     -> 組裝 InvokeRequest(caller_surface=CallerSurface.CLI, external_flight_owner=True, active_profiler=root_profiler, ...) -> RuntimeDispatcher.invoke()
      -> 雙軌渲染 (--json 或 format_output) + stderr 進度串流
-     -> 寫入 SessionTelemetryWriter (沙盒 / --help 略過)
+     -> 寫入 daily/[OUT] 與 perf/ 合併後 ExecutionTraceRecord (沙盒 / --help / 未初始化工作區略過)；--profile/--profile-mem 輸出瀑布樹至 stderr
      -> 若非 --json / 非沙盒 / 非離線：檢查 UpdateChecker 12h 節流並輸出非阻塞更新提示至 stderr
      -> 以語意退出碼 (0 / ExitCodeProvider / ErrorCode 映射，取消為 130) 結束
 ```
@@ -149,9 +152,10 @@ import sys
 import threading
 from typing import Annotated, BinaryIO, Callable, ClassVar, Final, Generic, Literal, Optional, Protocol, TextIO, TypeAlias, TypeVar, overload, runtime_checkable
 from core.execution.event import normalize_payload_filter
-from core.execution.runtime import BoundTask, CORE_MODULE_ID, CallerSurface, CliBindingSpec, ClientRoutingPolicy, ConcurrencyMode, DEFAULT_CACHE_DIRNAME, DispatchMode, InvokeRequest, LOCKS_SUBDIR, MODULES_DIRNAME, PeriodicScheduleSpec, RuntimeDispatcher, SecurityTier, SelfMutationScope, SubscriptionRouteSpec, TaskExposure, TaskMetadata, TaskOutcome, TaskRouteSpec, YscbModule, sanitize_caller_env
+from core.execution.rpc import read_daemon_endpoint_file
+from core.execution.runtime import BoundTask, CORE_MODULE_ID, CallPropagationContext, CallerSurface, CliBindingSpec, ClientRoutingPolicy, ConcurrencyMode, DEFAULT_CACHE_DIRNAME, DispatchMode, InvokeRequest, LOCKS_SUBDIR, MODULES_DIRNAME, PeriodicScheduleSpec, RuntimeDispatcher, SecurityTier, SelfMutationScope, SubscriptionRouteSpec, TaskExposure, TaskMetadata, TaskOutcome, TaskRouteSpec, YscbModule, sanitize_caller_env
 from core.filesystem.fs import FileLock, MAX_JSON_FILE_BYTES, atomic_write_json, has_symlink_raw_path, is_symlink_or_reparse, read_json_dict, read_nofollow_regular_bytes, resolve_contained_subpath, try_resolve_contained_subpath
-from core.foundation import CancellationToken, DataclassCodec, EnvHash, ErrorCode, ErrorDetail, EventId, HostPath, INT64_MAX, INT64_MIN, JsonObject, JsonPrimitive, JsonValue, LogRotator, ModuleId, MutableJsonObject, SemVer4, SemanticUri, SessionTelemetryRecord, SessionTelemetryWriter, SignalWakeupGuard, SnapshotGen, SpaceId, SpacePath, TEST_SANDBOX_ENV_KEY, TaskId, VersionConstraint, YscbError, clamp_positive_sec, clone_strict_json_object, guard_standard_streams, require_pure_bool, require_pure_int, require_pure_str, require_typed_frozenset, require_typed_tuple, resolve_dataclass_init_hints, safe_exception_summary, safe_real_to_float, strict_parse_json_object
+from core.foundation import CancellationToken, DailyEventRecord, DataclassCodec, EnvHash, ErrorCode, ErrorDetail, EventId, ExecutionTraceRecord, FlightLogConfig, FlightLogRouter, HostPath, INT64_MAX, INT64_MIN, JsonObject, JsonPrimitive, JsonValue, LogLevel, MemoryTrackingGuard, ModuleId, MutableJsonObject, ProfilerNodeSnapshot, ProfilerSession, SemVer4, SemanticUri, SignalWakeupGuard, SnapshotGen, SpaceId, SpacePath, TEST_SANDBOX_ENV_KEY, TaskId, VersionConstraint, YscbError, clamp_positive_sec, clone_strict_json_object, guard_standard_streams, read_process_rss_kb, redact_cli_args, redact_sensitive_value, render_profiler_tree, require_pure_bool, require_pure_int, require_pure_str, require_typed_frozenset, require_typed_tuple, resolve_dataclass_init_hints, safe_exception_summary, safe_real_to_float, strict_parse_json_object
 from core.metadata.config import ConfigStore, lookup_compiled_module_root_default_tasks, lookup_compiled_module_surface_meta, parse_locale_chain_tokens
 from core.packaging.installer import ProviderClient, UpdateCheckReport, UpdateChecker
 from core.surface.sdk import Arg, Empty, ExitCodeProvider, HumanRenderable, Module, Option, format_output
@@ -181,7 +185,7 @@ def evaluate_security_gate(*, task_id: TaskId, security_tier: SecurityTier, call
 def extract_global_flags(argv: Sequence[str]) -> GlobalCliFlags:
     ...
 
-def main(argv: Sequence[str], *, host_dir: HostPath, yscb_root: HostPath, caller_cwd: Optional[HostPath]=None, env: Optional[Mapping[str, str]]=None, stdin_stream: Optional[CliInputStream]=None, stdout_stream: Optional[CliOutputStream]=None, stderr_stream: Optional[CliOutputStream]=None, kernel_factory: Optional[CliKernelFactoryFn]=None, builtin_indices: Optional[Sequence[ModuleTasksIndex]]=None, install_signal_guard: bool=True) -> int:
+def main(argv: Sequence[str], *, host_dir: HostPath, yscb_root: HostPath, caller_cwd: Optional[HostPath]=None, env: Optional[Mapping[str, str]]=None, stdin_stream: Optional[CliInputStream]=None, stdout_stream: Optional[CliOutputStream]=None, stderr_stream: Optional[CliOutputStream]=None, kernel_factory: Optional[CliKernelFactoryFn]=None, builtin_indices: Optional[Sequence[ModuleTasksIndex]]=None, install_signal_guard: bool=True, boot_start_ns: Optional[int]=None) -> int:
     ...
 
 def register_cli_kernel_factory(factory: Optional[CliKernelFactoryFn], *, builtin_indices_fn: Optional[Callable[[], Sequence[ModuleTasksIndex]]]=None) -> None:
@@ -351,6 +355,8 @@ class GlobalCliFlags:
     force_cold: bool = False
     approve_token: Optional[str] = None
     remaining_args: tuple[str, ...] = ()
+    profile: bool = False
+    profile_mem: bool = False
 
 class HelpRenderer:
 

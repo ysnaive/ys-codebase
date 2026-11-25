@@ -65,6 +65,7 @@ from core.foundation import (
     JsonValue,
     LocaleCatalog,
     ModuleId,
+    Profiler,
     SchemaExporter,
     SemVer4,
     SemanticUri,
@@ -91,7 +92,9 @@ TConfig = TypeVar("TConfig")
 _TFn = TypeVar("_TFn", bound=Callable[..., object])
 
 _ON_MIGRATE_TASK_SUFFIX = "yscb_on_migrate"
-_RESERVED_GLOBAL_CLI_FLAGS = frozenset({"-h", "--help", "--json", "--cold", "--approve", "--host-dir"})
+_RESERVED_GLOBAL_CLI_FLAGS = frozenset(
+    {"-h", "--help", "--json", "--cold", "--approve", "--host-dir", "--profile", "--profile-mem"}
+)
 SPACE_UPDATED_EVENT_ID_STR: Final[str] = "core.space_updated"
 SPACE_REGISTRY_CHANGED_EVENT_ID_STR: Final[str] = "core.space_registry_changed"
 
@@ -384,6 +387,10 @@ class ModuleEnv:
     def locale(self) -> LocaleCatalog:
         return _SdkStateRegistry.instance().env_services(self).locale
 
+    @property
+    def profiler(self) -> Profiler:
+        return _SdkStateRegistry.instance().env_services(self).profiler
+
     def register_closer(self, fn: Callable[[], None]) -> None:
         """Register a zero-argument teardown callback executed in LIFO order on shutdown."""
         if not callable(fn):
@@ -408,7 +415,13 @@ class ModuleEnv:
     ) -> ModuleDatabase:
         """Open a SQLite WAL database under storage.local://@/<name>.db and auto-register LIFO close."""
         rel_db = _validate_storage_rel_name(name, label="database name", add_db_ext=True)
-        db = ModuleDatabase(self.vfs, SemanticUri("storage.local", f"@/{rel_db}"), migrations=migrations, options=options)
+        db = ModuleDatabase(
+            self.vfs,
+            SemanticUri("storage.local", f"@/{rel_db}"),
+            migrations=migrations,
+            options=options,
+            profiler=self.profiler,
+        )
         try:
             self.register_closer(db.close)
         except BaseException:

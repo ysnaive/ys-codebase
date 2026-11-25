@@ -1,4 +1,4 @@
-"""Public SDK entrypoint re-exporting all 75 unified Core 2.0 contracts, declarative DSL, and YscbClient."""
+"""Public SDK entrypoint re-exporting all 80 unified Core 2.0 contracts, declarative DSL, and YscbClient."""
 
 from core.execution.event import EventMetadata
 from core.execution.runtime import (
@@ -36,6 +36,10 @@ from core.foundation import (
     LocaleCatalog,
     LogLevel,
     ModuleId,
+    NullProfiler,
+    Profiler,
+    ProfilerNodeSnapshot,
+    ProfilerSession,
     ProgressEvent,
     SemVer4,
     SemanticUri,
@@ -47,6 +51,7 @@ from core.foundation import (
     TaskId,
     VersionConstraint,
     YscbError,
+    render_profiler_tree,
 )
 from core.metadata.contributes import (
     AggregatedContributes,
@@ -115,7 +120,11 @@ __all__: tuple[str, ...] = (
     "ModuleDatabase",
     "ModuleEnv",
     "ModuleId",
+    "NullProfiler",
     "Option",
+    "Profiler",
+    "ProfilerNodeSnapshot",
+    "ProfilerSession",
     "ProgressEvent",
     "ProvenanceGraph",
     "SPACE_REGISTRY_CHANGED_EVENT_ID_STR",
@@ -156,5 +165,6 @@ __all__: tuple[str, ...] = (
     "on_event",
     "on_migrate",
     "periodic",
+    "render_profiler_tree",
     "task",
 )

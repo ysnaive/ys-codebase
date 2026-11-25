@@ -27,6 +27,7 @@ from core.execution.runtime.contracts import (
 )
 from core.execution.runtime.coordinator import PriorityHandle
 from core.execution.runtime.module_slot import LocalModuleSlotRegistry
+from core.execution.runtime.services import InvocationCorrelationContext
 from core.execution.runtime.worker_pool import OneShotVenvHost
 from core.foundation.errors import ErrorCode, ErrorDetail, YscbError
 from core.foundation.observability import CancellationToken
@@ -82,6 +83,7 @@ class ActiveStepBinding:
     approval_scope: frozenset[TaskId] = frozenset()
     allow_conditional: bool = True
     deadline_fn: Optional[Callable[[], Optional[float]]] = None
+    correlation: Optional[InvocationCorrelationContext] = None
 
     def current_deadline(self) -> Optional[float]:
         return self.deadline_fn() if self.deadline_fn is not None else None
@@ -103,6 +105,8 @@ class TurnSessionRegistry:
         cold_dialect_resolver: Optional[Callable[[], Optional[BoundLocaleDialect]]] = None,
         env_lease_acquire: Optional[EnvLeaseAcquireFn] = None,
         env_touch_used: Optional[EnvTouchUsedFn] = None,
+        daemon_boot_id: str = "",
+        flight_log_config: Optional[JsonObject] = None,
     ) -> None:
         self._workspace_root = workspace_root
         self._module_provider = module_provider
@@ -114,6 +118,8 @@ class TurnSessionRegistry:
         self._cold_dialect_resolver = cold_dialect_resolver
         self._env_lease_acquire = env_lease_acquire
         self._env_touch_used = env_touch_used
+        self._daemon_boot_id = daemon_boot_id
+        self._flight_log_config = flight_log_config
         self._lock = threading.Lock()
         self._sessions: dict[str, ActiveTurnSession] = {}
         self._closed_turn_ids: OrderedDict[str, None] = OrderedDict()
@@ -121,10 +127,28 @@ class TurnSessionRegistry:
         self._pending_host_teardown_diags: deque[ErrorDetail] = deque(maxlen=256)
         self._reload_seq: int = 0
 
+    def update_observability(
+        self,
+        *,
+        daemon_boot_id: str = "",
+        flight_log_config: Optional[JsonObject] = None,
+    ) -> None:
+        with self._lock:
+            if daemon_boot_id:
+                self._daemon_boot_id = daemon_boot_id
+            if flight_log_config is not None:
+                self._flight_log_config = flight_log_config
+
     @property
     def active_turn_count(self) -> int:
         with self._lock:
             return len(self._sessions)
+
+    def active_turn_breakdown(self) -> tuple[int, int]:
+        with self._lock:
+            fg = sum(1 for s in self._sessions.values() if s.scope.kind != TurnKind.HOT_BACKGROUND)
+            bg = len(self._sessions) - fg
+            return (fg, bg)
 
     def record_host_teardown_diags(self, diags: Sequence[ErrorDetail]) -> None:
         if not diags:
@@ -428,6 +452,8 @@ class TurnSessionRegistry:
                     on_teardown_diagnostics=lambda diags, t=turn: self.record_step_teardown_diags(t, diags),
                     env_lease_acquire=self._env_lease_acquire,
                     env_touch_used=self._env_touch_used,
+                    daemon_boot_id=self._daemon_boot_id,
+                    flight_log_config=self._flight_log_config,
                 )
             return sess.cold_venv_host
 

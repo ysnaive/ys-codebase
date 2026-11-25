@@ -118,7 +118,7 @@ _WIN_RESERVED_STEMS = frozenset(
         *(f"lpt{s}" for s in (*range(1, 10), "\u00b9", "\u00b2", "\u00b3")),
     }
 )
-_GLOBAL_LAUNCHER_FLAGS = frozenset({"-h", "--help", "--json", "--cold"})
+_GLOBAL_LAUNCHER_FLAGS = frozenset({"-h", "--help", "--json", "--cold", "--profile", "--profile-mem"})
 _NOFOLLOW_READ_FLAGS = os.O_RDONLY | (
     os.O_BINARY if os.name == "nt" else (os.O_NOFOLLOW | os.O_NONBLOCK)
 )
@@ -3104,6 +3104,7 @@ def _delegate_to_microkernel(
     script_path: Path,
     *,
     json_mode: bool = False,
+    boot_start_ns: Optional[int] = None,
 ) -> int:
     core_dir = yscb_root / ".modules" / "core"
     try:
@@ -3177,6 +3178,7 @@ def _delegate_to_microkernel(
             yscb_root=root_hp,
             caller_cwd=cwd_hp,
             kernel_factory=_lazy_open_kernel_session,
+            boot_start_ns=boot_start_ns,
         )
     )
 
@@ -3237,6 +3239,7 @@ def main(
     host_dir_override: Optional[Path] = None,
 ) -> int:
     """Thin stdlib entrypoint handling init, self-update, deterministic core auto-restore, and microkernel handoff."""
+    boot_start_ns = time.perf_counter_ns()
     _reconfigure_utf8_standard_streams()
     raw_args = list(argv if argv is not None else sys.argv[1:])
     json_mode = _has_cli_json_flag(raw_args)
@@ -3368,7 +3371,15 @@ def main(
     if verified_root is None:
         return restore_rc
 
-    return _delegate_to_microkernel(args, host_dir, verified_root, caller_cwd, script_path, json_mode=json_mode)
+    return _delegate_to_microkernel(
+        args,
+        host_dir,
+        verified_root,
+        caller_cwd,
+        script_path,
+        json_mode=json_mode,
+        boot_start_ns=boot_start_ns,
+    )
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import threading
 import time
+import tracemalloc
 from typing import Callable, Optional, Sequence
 
 from core.execution.daemon import (
@@ -33,9 +34,11 @@ from core.execution.rpc import (
 from core.execution.runtime import (
     BoundTask,
     CallPropagationContext,
+    CallerSurface,
     ClientRoutingPolicy,
     ConcurrencyMode,
     CoordinatedExecution,
+    DaemonRpcInvokeReply,
     DispatchMode,
     DispatcherHostOptions,
     EnvLeaseAcquireFn,
@@ -58,7 +61,9 @@ from core.execution.runtime import (
     TaskMetadata,
     TaskOutcome,
     WORKSPACE_RELOADED_EVENT_ID,
+    WorkerStepReply,
     YscbModule,
+    build_workspace_module_services_factory,
 )
 from core.filesystem.fs import (
     CrossProcessLockPaths,
@@ -73,11 +78,19 @@ from core.foundation import (
     ErrorCode,
     ErrorDetail,
     EventId,
+    FlightLogConfig,
+    FlightLogRouter,
     HostPath,
+    JsonObject,
+    LogLevel,
     ModuleId,
+    ProfilerNodeSnapshot,
+    ProfilerRingBuffer,
+    ProfilerSession,
     TaskCancelledException,
     TaskId,
     YscbError,
+    strict_parse_json_object,
 )
 from tests._boot import (
     FileConfigView,
@@ -955,11 +968,12 @@ def _verify_core_diff_handoff_and_diagnostics(tmp_root: Path, venv_py: Path) -> 
         "from_hot_container",
         "hot_workspaces",
         "cold_shared_workspaces",
+        "profile_mem",
     )
     actual_prop_fields = tuple(f.name for f in fields(CallPropagationContext))
     check(
-        actual_prop_fields == expected_prop_fields and len(actual_prop_fields) == 10,
-        f"CallPropagationContext 10-field contract mismatch: {actual_prop_fields}",
+        actual_prop_fields == expected_prop_fields and len(actual_prop_fields) == 11,
+        f"CallPropagationContext 11-field contract mismatch: {actual_prop_fields}",
     )
     check(WORKSPACE_RELOADED_EVENT_ID == EventId("core.workspace_reloaded"), "Bad WORKSPACE_RELOADED_EVENT_ID")
     check(MODULE_INSTALLED_EVENT_ID == EventId("core.module_installed"), "Bad MODULE_INSTALLED_EVENT_ID")
@@ -1925,6 +1939,433 @@ def _verify_watcher_poll_interval_and_env_lease_di(tmp_root: Path, venv_py: Path
         disp_cold.shutdown(grace_ms=300)
 
 
+def _read_jsonl_records(path: Path) -> list[JsonObject]:
+    if not path.is_file():
+        return []
+    out: list[JsonObject] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        text = raw_line.strip()
+        if text:
+            out.append(strict_parse_json_object(text))
+    return out
+
+
+def _collect_prof_names(node: ProfilerNodeSnapshot) -> set[str]:
+    names = {node.name}
+    for child in node.children:
+        names.update(_collect_prof_names(child))
+    return names
+
+
+def _verify_observability_logs_and_single_owner(tmp_root: Path) -> None:
+    ws_obs = HostPath(tmp_root / "ws_obs_logs")
+    ws_obs.path.mkdir(parents=True, exist_ok=True)
+    caller_fields_info: dict[str, object] = {"token": "tok_raw_secret_val", "ok": True}
+    caller_fields_warn: dict[str, object] = {"api_key": "ak_raw_secret_val"}
+
+    class _ObsWorkTask(Task[_InMemReqDto, _InMemRespDto]):
+        def __init__(self) -> None:
+            self._meta = TaskMetadata(
+                task_id=TaskId("obsmod.work"),
+                input_type=_InMemReqDto,
+                output_type=_InMemRespDto,
+                dispatch_mode=DispatchMode.HYBRID,
+            )
+
+        @property
+        def metadata(self) -> TaskMetadata[_InMemReqDto, _InMemRespDto]:
+            return self._meta
+
+        def run(self, req: _InMemReqDto, ctx: TaskContext) -> _InMemRespDto:
+            ctx.logger.log(LogLevel.INFO, "obs_info_msg", fields=caller_fields_info)
+            ctx.logger.log(LogLevel.WARNING, "obs_warn_msg", fields=caller_fields_warn)
+            with ctx.profiler.scope("obs_sub_scope"):
+                time.sleep(0.004)
+            if req.key == "fail":
+                raise RuntimeError("boom Bearer super_secret_token_999")
+            return _InMemRespDto(echo=f"obs:{req.key}")
+
+    class _ObsMod(YscbModule):
+        def __init__(self) -> None:
+            self._tasks = (_ObsWorkTask(),)
+
+        @property
+        def module_id(self) -> ModuleId:
+            return ModuleId("obsmod")
+
+        def tasks(self) -> Sequence[BoundTask]:
+            return self._tasks
+
+    cfg_view = FileConfigView(ws_obs)
+    logs_dir = ws_obs.join(".cache", "logs")
+    router = FlightLogRouter(
+        logs_dir,
+        config=FlightLogConfig(respect_sandbox=False, slow_threshold_ms=5000.0),
+        daemon_boot_id="boot_obs_01",
+    )
+    ring = ProfilerRingBuffer(maxlen=32)
+    disp = RuntimeDispatcher(
+        workspace_root=ws_obs,
+        cache_dir=ws_obs.join(".cache"),
+        module_provider=_EmptyModuleProvider(),
+        options=DispatcherHostOptions(
+            config_view=cfg_view,
+            is_daemon_host=True,
+            connection_config=DaemonConnectionConfig(enabled=False, auto_spawn=False),
+            in_memory_modules=(_ObsMod(),),
+            module_services_factory=build_workspace_module_services_factory(ws_obs, ws_obs),
+            flight_log_router=router,
+            daemon_boot_id="boot_obs_01",
+            profiler_ring_buffer=ring,
+        ),
+    )
+    try:
+        disp.container_lifecycle.transition_boot_phase(ContainerState.READY)
+        ok_out = disp.invoke(InvokeRequest(TaskId("obsmod.work"), {"key": "fast"}, ws_obs, ws_obs))
+        check(ok_out.ok and ok_out.value == {"echo": "obs:fast"}, f"Obs direct task failed: {ok_out}")
+        check(caller_fields_info["token"] == "tok_raw_secret_val", "Logger mutated caller info dict")
+        check(caller_fields_warn["api_key"] == "ak_raw_secret_val", "Logger mutated caller warn dict")
+
+        mod_log = logs_dir.path / "modules" / "obsmod.jsonl"
+        check(mod_log.is_file(), f"Missing module log at {mod_log}")
+        mod_raw = mod_log.read_text(encoding="utf-8")
+        check("tok_raw_secret_val" not in mod_raw and "ak_raw_secret_val" not in mod_raw, "Raw secret leaked to module log")
+        mod_recs = _read_jsonl_records(mod_log)
+        check(len(mod_recs) == 2, f"Expected 2 module log lines, got {len(mod_recs)}")
+        first_tid = str(mod_recs[0].get("trace_id", ""))
+        check(
+            bool(first_tid)
+            and str(mod_recs[0].get("task_id")) == "obsmod.work"
+            and str(mod_recs[0].get("exec_mode")) == "hot"
+            and str(mod_recs[0].get("daemon_boot_id")) == "boot_obs_01"
+            and mod_recs[0].get("pid") == os.getpid()
+            and "Task/obsmod.work" in str(mod_recs[0].get("span_id", "")),
+            f"Module log correlation mismatch: {mod_recs[0]}",
+        )
+
+        daily_files = sorted((logs_dir.path / "daily").glob("*.jsonl"))
+        perf_files = sorted((logs_dir.path / "perf").glob("*.jsonl"))
+        check(len(daily_files) == 1 and len(perf_files) == 1, f"Missing daily/perf files: {(daily_files, perf_files)}")
+        daily_recs = _read_jsonl_records(daily_files[0])
+        perf_recs = _read_jsonl_records(perf_files[0])
+        check(
+            [str(r.get("kind")) for r in daily_recs] == ["IN", "ALERT", "OUT"]
+            and all(str(r.get("trace_id")) == first_tid for r in daily_recs),
+            f"Expected IN/ALERT/OUT with correlated trace_id, got {daily_recs}",
+        )
+        check(
+            len(perf_recs) == 1 and perf_recs[0].get("ok") is True
+            and perf_recs[0].get("error_detail") is None and perf_recs[0].get("runtime_snapshot") is None,
+            f"Fast perf trace unexpected diagnostics: {perf_recs}",
+        )
+
+        ext_prof = ProfilerSession(root_name="cli_owner")
+        ext_out = disp.invoke(
+            InvokeRequest(
+                TaskId("obsmod.work"), {"key": "ext"}, ws_obs, ws_obs,
+                external_flight_owner=True, active_profiler=ext_prof,
+            )
+        )
+        check(ext_out.ok, f"External owner invoke failed: {ext_out}")
+        daily_after_ext = _read_jsonl_records(daily_files[0])
+        perf_after_ext = _read_jsonl_records(perf_files[0])
+        check(
+            sum(1 for r in daily_after_ext if r.get("kind") in ("IN", "OUT")) == 2 and len(perf_after_ext) == 1,
+            f"external_flight_owner=True wrote duplicate daily/perf records: {(daily_after_ext, perf_after_ext)}",
+        )
+        ext_names = _collect_prof_names(ext_prof.snapshot())
+        check("obs_sub_scope" in ext_names and "obsmod.work" in ext_names, f"External profiler missed scopes: {ext_names}")
+
+        fail_out = disp.invoke(InvokeRequest(TaskId("obsmod.work"), {"key": "fail"}, ws_obs, ws_obs))
+        check(not fail_out.ok, f"Expected failure outcome: {fail_out}")
+        perf_after_fail = _read_jsonl_records(perf_files[0])
+        fail_rec = perf_after_fail[-1]
+        check(
+            fail_rec.get("ok") is False and isinstance(fail_rec.get("error_detail"), dict)
+            and isinstance(fail_rec.get("runtime_snapshot"), dict)
+            and "super_secret_token_999" not in str(fail_rec.get("error_detail")),
+            f"Failure perf trace missing redacted diagnostics: {fail_rec}",
+        )
+
+        atomic_write_json(ws_obs.join("config", "core.json"), {"observability": {"slow_threshold_ms": 0.0}})
+        cfg_view.reload()
+        slow_out = disp.invoke(InvokeRequest(TaskId("obsmod.work"), {"key": "slow"}, ws_obs, ws_obs))
+        check(slow_out.ok, f"Slow threshold invoke failed: {slow_out}")
+        slow_rec = _read_jsonl_records(perf_files[0])[-1]
+        check(
+            slow_rec.get("ok") is True and isinstance(slow_rec.get("runtime_snapshot"), dict),
+            f"Slow trace missing runtime_snapshot: {slow_rec}",
+        )
+    finally:
+        disp.shutdown(grace_ms=200)
+        router.close()
+
+
+def _verify_tier1_profiler_merge_mem_and_fail_open(tmp_root: Path, venv_py: Path) -> None:
+    deep_tree: dict[str, object] = {
+        "name": "leaf", "self_ms": 0.1, "total_ms": 0.1, "calls": 1, "alloc_kb": 0.0, "callers": [], "children": [],
+    }
+    for depth_idx in range(45):
+        deep_tree = {
+            "name": f"lv_{depth_idx}", "self_ms": 0.0, "total_ms": 0.1,
+            "calls": 1, "alloc_kb": 0.0, "callers": [], "children": [deep_tree],
+        }
+    for bad_tree in ({"bad": 123}, "not_a_dict", deep_tree):
+        ws_rep = WorkerStepReply(ok=True, raw_output={"ok": True}, profiler_tree=bad_tree)
+        rpc_rep = DaemonRpcInvokeReply(ok=True, raw_value={"ok": True}, profiler_tree=bad_tree)
+        check(ws_rep.profiler_tree is None, f"Malformed WorkerStepReply.profiler_tree not sanitized: {ws_rep}")
+        check(rpc_rep.profiler_tree is None, f"Malformed DaemonRpcInvokeReply.profiler_tree not sanitized: {rpc_rep}")
+
+    ws_t1 = HostPath(tmp_root / "ws_t1_prof")
+    provision_live_workspace(ws_t1.path)
+    t1_code = (
+        "from dataclasses import dataclass\n"
+        "import os\n"
+        "import time\n"
+        "from typing import Sequence\n"
+        "from core.execution.runtime import BoundTask, Task, TaskContext, TaskMetadata, YscbModule\n"
+        "from core.foundation import LogLevel, ModuleId, TaskId\n\n"
+        "@dataclass(frozen=True, slots=True)\n"
+        "class ProfIn:\n"
+        "    tag: str\n\n"
+        "@dataclass(frozen=True, slots=True)\n"
+        "class ProfOut:\n"
+        "    worker_pid: int\n"
+        "    span_path: str\n"
+        "    buf_len: int\n\n"
+        "class ProfComputeTask(Task[ProfIn, ProfOut]):\n"
+        "    def __init__(self) -> None:\n"
+        "        self._meta = TaskMetadata(TaskId('prof_t1.compute'), ProfIn, ProfOut)\n"
+        "    @property\n"
+        "    def metadata(self) -> TaskMetadata[ProfIn, ProfOut]:\n"
+        "        return self._meta\n"
+        "    def run(self, _req: ProfIn, ctx: TaskContext) -> ProfOut:\n"
+        "        ctx.logger.log(LogLevel.WARNING, 'worker_prof_warn', fields={'secret': 'worker_secret_val'})\n"
+        "        with ctx.profiler.scope('t1_inner_work'):\n"
+        "            buf = [bytes(64) for _ in range(128)]\n"
+        "            time.sleep(0.005)\n"
+        "            span_now = ctx.profiler.current_span_path()\n"
+        "        return ProfOut(worker_pid=os.getpid(), span_path=span_now, buf_len=len(buf))\n\n"
+        "class ProfT1Mod(YscbModule):\n"
+        "    def __init__(self) -> None:\n"
+        "        self._tasks = (ProfComputeTask(),)\n"
+        "    @property\n"
+        "    def module_id(self) -> ModuleId:\n"
+        "        return ModuleId('prof_t1')\n"
+        "    def tasks(self) -> Sequence[BoundTask]:\n"
+        "        return self._tasks\n\n"
+        "def create_module() -> YscbModule:\n"
+        "    return ProfT1Mod()\n"
+    )
+    write_module(
+        ws_t1.path,
+        "prof_t1",
+        {"tier1": True, "venv_group": "prof_grp", "tasks": [{"task_id": "prof_t1.compute"}]},
+        t1_code,
+    )
+    venv_hp = HostPath(venv_py)
+    provider = ManifestModuleProvider(ws_t1, venv_hp, dedicated_venv_python=resolve_dedicated_venv_py(venv_hp))
+    logs_dir = ws_t1.join(".cache", "logs")
+    router = FlightLogRouter(logs_dir, config=FlightLogConfig(respect_sandbox=False), daemon_boot_id="boot_t1_01")
+    ring = ProfilerRingBuffer(maxlen=16)
+    disp = RuntimeDispatcher(
+        workspace_root=ws_t1,
+        cache_dir=ws_t1.join(".cache"),
+        module_provider=provider,
+        options=DispatcherHostOptions(
+            is_daemon_host=True,
+            connection_config=DaemonConnectionConfig(enabled=False, auto_spawn=False),
+            worker_host_dir=ws_t1,
+            flight_log_router=router,
+            daemon_boot_id="boot_t1_01",
+            profiler_ring_buffer=ring,
+        ),
+    )
+    try:
+        disp.container_lifecycle.transition_boot_phase(ContainerState.READY)
+        prof_root = ProfilerSession(root_name="root_t1", track_memory=True)
+        out = disp.invoke(
+            InvokeRequest(
+                TaskId("prof_t1.compute"), {"tag": "mem"}, ws_t1, ws_t1,
+                profile_mem=True, active_profiler=prof_root,
+            )
+        )
+        check(
+            out.ok and isinstance(out.value, dict) and jint(out.value, "worker_pid") != os.getpid(),
+            f"Tier 1 profiler task failed: {out}",
+        )
+        check("t1_inner_work" in str(out.value.get("span_path", "")), f"Worker span path missing scope: {out.value}")
+        check(not tracemalloc.is_tracing(), "MemoryTrackingGuard leaked tracemalloc active state")
+        names = _collect_prof_names(prof_root.snapshot())
+        check(
+            {"WorkerSpawn", "WorkerStep", "Worker/prof_t1.compute", "LoadModule", "Task", "t1_inner_work"}.issubset(names),
+            f"Merged Tier 1 profiler tree missing expected scopes: {sorted(names)}",
+        )
+        perf_files = sorted((logs_dir.path / "perf").glob("*.jsonl"))
+        check(len(perf_files) == 1, f"Missing Tier 1 perf log: {perf_files}")
+        perf_recs = _read_jsonl_records(perf_files[0])
+        check(len(perf_recs) == 1 and perf_recs[0].get("mem_tracked") is True, f"Expected mem_tracked=True: {perf_recs}")
+        mod_log = logs_dir.path / "modules" / "prof_t1.jsonl"
+        check(mod_log.is_file(), f"Missing Tier 1 worker module log: {mod_log}")
+        check("worker_secret_val" not in mod_log.read_text(encoding="utf-8"), "Worker secret leaked to module log")
+        w_recs = _read_jsonl_records(mod_log)
+        check(
+            len(w_recs) >= 1 and w_recs[0].get("exec_mode") == "worker" and w_recs[0].get("daemon_boot_id") == "boot_t1_01",
+            f"Worker module log correlation mismatch: {w_recs}",
+        )
+        daily_files = sorted((logs_dir.path / "daily").glob("*.jsonl"))
+        daily_recs = _read_jsonl_records(daily_files[0]) if daily_files else []
+        check(any(r.get("kind") == "ALERT" and r.get("exec_mode") == "worker" for r in daily_recs), f"Worker ALERT missing: {daily_recs}")
+    finally:
+        disp.shutdown(grace_ms=400)
+        router.close()
+
+
+def _verify_daemon_flight_logs_ring_summary_and_core_sig_cache(tmp_root: Path, venv_py: Path) -> None:
+    ws_df = HostPath(tmp_root / "ws_daemon_flight")
+    provision_live_workspace(ws_df.path)
+    sig_probe = ws_df.path / ".modules" / "core" / "sig_probe.py"
+    sig_probe.parent.mkdir(parents=True, exist_ok=True)
+    sig_probe.write_text("SIG_VER = 1\n", encoding="utf-8")
+    settled_ns = time.time_ns() - 5_000_000_000
+    os.utime(sig_probe, ns=(settled_ns, settled_ns))
+
+    venv_hp = HostPath(venv_py)
+    provider = ManifestModuleProvider(ws_df, venv_hp, dedicated_venv_python=resolve_dedicated_venv_py(venv_hp))
+    cfg_view = FileConfigView(ws_df)
+    logs_dir = ws_df.join(".cache", "logs")
+    router = FlightLogRouter(logs_dir, config=FlightLogConfig(respect_sandbox=False), daemon_boot_id="boot_df_01")
+    disp_host = RuntimeDispatcher(
+        workspace_root=ws_df,
+        cache_dir=ws_df.join(".cache"),
+        module_provider=provider,
+        options=DispatcherHostOptions(config_view=cfg_view, is_daemon_host=True),
+    )
+    daemon = WorkspaceDaemon(
+        workspace_root=ws_df,
+        cache_dir=ws_df.join(".cache"),
+        dispatcher=disp_host,
+        config_view=cfg_view,
+        flight_log_router=router,
+        daemon_boot_id="boot_df_01",
+    )
+    disp_cli = RuntimeDispatcher(
+        workspace_root=ws_df,
+        cache_dir=ws_df.join(".cache"),
+        module_provider=provider,
+        options=DispatcherHostOptions(
+            config_view=cfg_view,
+            is_daemon_host=False,
+            connection_config=DaemonConnectionConfig(enabled=True, auto_spawn=False),
+        ),
+    )
+    ready_ev = threading.Event()
+    th_df = threading.Thread(target=lambda: daemon.run_forever(ready_callback=ready_ev.set), daemon=True)
+    th_df.start()
+    try:
+        check(ready_ev.wait(timeout=6.0), "Flight-log WorkspaceDaemon failed to reach READY")
+        sig_cache_hp = ws_df.join(".cache", "daemon", "core_sig_cache.json")
+        sig_doc = read_json_dict(sig_cache_hp)
+        check(
+            sig_doc is not None and isinstance(sig_doc.get("sig_probe.py"), list) and len(sig_doc["sig_probe.py"]) == 4,
+            f"Missing persisted core_sig_cache.json entry: {sig_doc}",
+        )
+
+        cli_prof = ProfilerSession(root_name="cli_rpc_root")
+        cli_out = disp_cli.invoke(
+            InvokeRequest(
+                task_id=TaskId("space.echo_tier0"),
+                raw_input={"tag": "cli_rpc"},
+                workspace_root=ws_df,
+                caller_cwd=ws_df,
+                caller_surface=CallerSurface.CLI,
+                routing_policy=ClientRoutingPolicy.STRICT_HOT,
+                external_flight_owner=True,
+                active_profiler=cli_prof,
+            )
+        )
+        check(cli_out.ok and cli_out.executed_hot, f"CLI RPC invoke failed: {cli_out}")
+        cli_names = _collect_prof_names(cli_prof.snapshot())
+        check("RpcCall" in cli_names and "space.echo_tier0" in cli_names, f"RPC profiler subtree not merged: {cli_names}")
+
+        st_ack = query_daemon_control(ws_df.join(".cache"), ws_df, FrameKind.CONTROL_STATUS)
+        check(st_ack is not None and isinstance(st_ack.get("status"), dict), f"Missing CONTROL_STATUS: {st_ack}")
+        st_obj = st_ack["status"]
+        prof_sum = st_obj.get("profiler_summary")
+        check(
+            st_obj.get("boot_id") == "boot_df_01"
+            and isinstance(prof_sum, dict)
+            and jint(prof_sum, "total_traces") >= 2
+            and isinstance(prof_sum.get("by_task"), dict)
+            and "daemon.boot" in prof_sum["by_task"]
+            and "space.echo_tier0" in prof_sum["by_task"],
+            f"DaemonStatusSnapshot missing boot_id or profiler_summary: {st_obj}",
+        )
+        q_ack = query_daemon_control(ws_df.join(".cache"), ws_df, FrameKind.CONTROL_QUIESCE, {"lease_sec": 5.0})
+        check(q_ack is not None and q_ack.get("ok") is True, f"Quiesce ack failed: {q_ack}")
+        r_ack = query_daemon_control(ws_df.join(".cache"), ws_df, FrameKind.CONTROL_RESUME, {})
+        check(r_ack is not None and r_ack.get("ok") is True, f"Resume ack failed: {r_ack}")
+        rel_ack = query_daemon_control(ws_df.join(".cache"), ws_df, FrameKind.CONTROL_RELOAD, {})
+        check(rel_ack is not None and rel_ack.get("reloaded") is True, f"Reload ack failed: {rel_ack}")
+        daemon.request_shutdown(force=False)
+        th_df.join(timeout=6.0)
+        check(not th_df.is_alive(), "Flight-log WorkspaceDaemon did not stop cleanly")
+    finally:
+        daemon.request_shutdown(force=True)
+        th_df.join(timeout=2.0)
+        disp_cli.shutdown(grace_ms=200)
+        disp_host.shutdown(grace_ms=200)
+        router.close()
+
+    daemon_files = sorted((logs_dir.path / "daemon").glob("daemon_*.jsonl"))
+    check(len(daemon_files) == 1, f"Expected 1 daemon stream file, got {daemon_files}")
+    d_recs = _read_jsonl_records(daemon_files[0])
+    d_events = {str(r.get("event")) for r in d_recs}
+    check(
+        {"boot_start", "ready", "rpc_done", "quiesce", "reload_start", "reload_done", "shutdown"}.issubset(d_events),
+        f"Daemon stream missing lifecycle events: {sorted(d_events)}",
+    )
+    perf_files = sorted((logs_dir.path / "perf").glob("*.jsonl"))
+    perf_recs = _read_jsonl_records(perf_files[0]) if perf_files else []
+    perf_tids = [str(r.get("task_id")) for r in perf_recs]
+    check("daemon.boot" in perf_tids and "daemon.reload" in perf_tids, f"Missing daemon boot/reload perf traces: {perf_tids}")
+    check("space.echo_tier0" not in perf_tids, f"Daemon duplicated CLI-owned task perf record: {perf_tids}")
+
+    st_set = sig_probe.stat()
+    sentinel_a = "a" * 64
+    cached_doc = dict(read_json_dict(sig_cache_hp) or {})
+    cached_doc["sig_probe.py"] = [st_set.st_mtime_ns, st_set.st_size, st_set.st_ino, sentinel_a]
+    atomic_write_json(sig_cache_hp, cached_doc)
+    for is_racy_case in (False, True):
+        if is_racy_case:
+            sig_probe.write_text("SIG_VER = 2\n", encoding="utf-8")
+            fresh_ns = time.time_ns() + 50_000_000
+            os.utime(sig_probe, ns=(fresh_ns, fresh_ns))
+            st_fresh = sig_probe.stat()
+            racy_doc = dict(read_json_dict(sig_cache_hp) or {})
+            racy_doc["sig_probe.py"] = [st_fresh.st_mtime_ns, st_fresh.st_size, st_fresh.st_ino, "b" * 64]
+            atomic_write_json(sig_cache_hp, racy_doc)
+        d_probe = RuntimeDispatcher(
+            workspace_root=ws_df, cache_dir=ws_df.join(".cache"), module_provider=provider,
+            options=DispatcherHostOptions(is_daemon_host=True),
+        )
+        r_probe = FlightLogRouter(logs_dir, config=FlightLogConfig(enabled=False), daemon_boot_id="boot_cache")
+        wd_probe = WorkspaceDaemon(
+            workspace_root=ws_df, cache_dir=ws_df.join(".cache"), dispatcher=d_probe,
+            flight_log_router=r_probe, daemon_boot_id="boot_cache",
+        )
+        wd_probe.request_shutdown(force=True)
+        d_probe.shutdown(grace_ms=100)
+        r_probe.close()
+        after_doc = read_json_dict(sig_cache_hp) or {}
+        entry = after_doc.get("sig_probe.py")
+        check(isinstance(entry, list) and len(entry) == 4, f"Corrupted sig cache entry: {entry}")
+        if not is_racy_case:
+            check(entry[3] == sentinel_a, f"Settled file ignored persisted core_sig_cache: {entry}")
+        else:
+            check(entry[3] != "b" * 64, f"Racy-Clean guard failed to recompute live SHA-256: {entry}")
+
+
 def run_runtime_daemon_suite(tmp_root: Path, venv_py: Path) -> None:
     """Run domain and live integration checks for core.execution.runtime and core.execution.daemon."""
     suite_root = tmp_root / "domain_runtime_daemon"
@@ -1950,6 +2391,12 @@ def run_runtime_daemon_suite(tmp_root: Path, venv_py: Path) -> None:
         _verify_daemon_shell_and_controls(suite_root, venv_py)
         log("[RUNTIME-DAEMON] Verifying watcher poll cadence and Tier 1 env lease DI callbacks...")
         _verify_watcher_poll_interval_and_env_lease_di(suite_root, venv_py)
+        log("[RUNTIME-DAEMON] Verifying module log correlation, single-owner flight matrix, and slow/error diagnostics...")
+        _verify_observability_logs_and_single_owner(suite_root)
+        log("[RUNTIME-DAEMON] Verifying Tier 1 profiler subtree merge, profile_mem propagation, and fail-open wire...")
+        _verify_tier1_profiler_merge_mem_and_fail_open(suite_root, venv_py)
+        log("[RUNTIME-DAEMON] Verifying daemon Stream 1 lifecycle logs, profiler_summary, and core_sig_cache...")
+        _verify_daemon_flight_logs_ring_summary_and_core_sig_cache(suite_root, venv_py)
         log("[RUNTIME-DAEMON] All checks passed.")
     finally:
         force_reap_tmp_root_orphans(suite_root)

@@ -12,6 +12,7 @@ from typing import Callable, Generic, Iterator, Optional, Sequence, TypeVar
 import uuid
 
 from core.execution.runtime.contracts import DEFAULT_CACHE_DIRNAME, LOCKS_SUBDIR, ConcurrencyMode, ExecutionPriority
+from core.execution.runtime.services import resolve_active_profiler
 from core.filesystem.fs import (
     CrossProcessLockPaths, FileLock, acquire_verified_cross_proc_pin, read_live_owner_dict,
     resolve_contained_subpath, silent_unlink, unlink_owner_under_pin, write_cross_proc_owner_json,
@@ -430,7 +431,8 @@ def _await_step_flight(
 ) -> CoordinatedExecution[TResult]:
     slot_wake = flight.slot_wake_event(adm.caller_slot_id)
     try:
-        wait_on_event_with_cancel(slot_wake, cancel_token, timeout_sec)
+        with resolve_active_profiler().scope_relative("Runtime/CoalesceWait"):
+            wait_on_event_with_cancel(slot_wake, cancel_token, timeout_sec)
     except BaseException:
         if adm.detach_fn is not None:
             adm.detach_fn()
@@ -891,15 +893,16 @@ def _acquire_or_reenter_os_lock(
         with bucket.cond:
             holder.os_lock_live = True
         return (paths, False, pin_lk)
-    if holder.flight is not None:
-        _acquire_os_lock_dynamic(paths.lock_file, eff_cancel, deadline_fn)
-    else:
-        fixed_dl = deadline_fn()
-        fixed_rem = (fixed_dl - time.monotonic()) if fixed_dl is not None else None
-        if fixed_rem is not None and fixed_rem <= 0.0:
-            eff_cancel.raise_if_cancelled()
-            raise YscbError(ErrorCode.TASK_TIMEOUT, f"Timed out waiting for file lock: {paths.lock_file.lock_path}")
-        paths.lock_file.acquire(shared=False, blocking=True, timeout_sec=fixed_rem, cancel_token=eff_cancel)
+    with resolve_active_profiler().scope_relative("Runtime/LockWait"):
+        if holder.flight is not None:
+            _acquire_os_lock_dynamic(paths.lock_file, eff_cancel, deadline_fn)
+        else:
+            fixed_dl = deadline_fn()
+            fixed_rem = (fixed_dl - time.monotonic()) if fixed_dl is not None else None
+            if fixed_rem is not None and fixed_rem <= 0.0:
+                eff_cancel.raise_if_cancelled()
+                raise YscbError(ErrorCode.TASK_TIMEOUT, f"Timed out waiting for file lock: {paths.lock_file.lock_path}")
+            paths.lock_file.acquire(shared=False, blocking=True, timeout_sec=fixed_rem, cancel_token=eff_cancel)
     owner_doc: JsonObject = {
         "pid": os.getpid(), "call_tree_id": holder.call_tree_id or holder.turn_id, "turn_id": holder.turn_id,
         "mode": holder.mode.value, "call_stack": [[str(ws), str(tid)] for ws, tid in holder.call_stack],
@@ -920,7 +923,8 @@ def _await_queued_promotion(
     deadline_fn: Callable[[], Optional[float]], resource_key: Optional[str],
 ) -> None:
     try:
-        _wait_on_event_dynamic(waiter.wake_event, cancel_token, deadline_fn)
+        with resolve_active_profiler().scope_relative("Runtime/LockWait"):
+            _wait_on_event_dynamic(waiter.wake_event, cancel_token, deadline_fn)
     except BaseException:
         with bucket.cond:
             is_active = bucket.active is waiter.holder

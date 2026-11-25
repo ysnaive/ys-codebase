@@ -438,6 +438,15 @@ _ALLOWED_CORE_IMPORTS_BY_PREFIX: Final[tuple[tuple[str, tuple[str, ...]], ...]] 
     ("core.foundation.errors", ("core.foundation.errors", "core.foundation.primitives")),
     ("core.foundation.codec", ("core.foundation.codec", "core.foundation.primitives", "core.foundation.errors")),
     ("core.foundation.observability", ("core.foundation.observability", "core.foundation.primitives", "core.foundation.errors")),
+    (
+        "core.foundation.profiler",
+        (
+            "core.foundation.profiler",
+            "core.foundation.observability",
+            "core.foundation.primitives",
+            "core.foundation.errors",
+        ),
+    ),
     ("core.foundation.proc", ("core.foundation.proc", "core.foundation.primitives", "core.foundation.errors")),
     (
         "core.filesystem.fs",
@@ -468,6 +477,7 @@ _ALLOWED_CORE_IMPORTS_BY_PREFIX: Final[tuple[tuple[str, tuple[str, ...]], ...]] 
             "core.foundation.primitives",
             "core.foundation.errors",
             "core.foundation.observability",
+            "core.foundation.profiler",
         ),
     ),
     (
@@ -481,6 +491,7 @@ _ALLOWED_CORE_IMPORTS_BY_PREFIX: Final[tuple[tuple[str, tuple[str, ...]], ...]] 
             "core.foundation.errors",
             "core.foundation.codec",
             "core.foundation.observability",
+            "core.foundation.profiler",
         ),
     ),
     (
@@ -1945,6 +1956,7 @@ def _verify_dag_guard_rejects_violations(
         ("core.execution.rpc.channel", "from core.foundation import DataclassCodec"),
         ("core.foundation.proc", "from core.foundation.observability import clamp_wait_sec"),
         ("core.foundation.observability", "from core.foundation.proc import is_process_alive"),
+        ("core.foundation.profiler", "from core.filesystem.fs import FileLock"),
         ("core.filesystem.vfs.mount", "from core.filesystem.space import SpaceRegistry"),
         ("core.filesystem.storage.database", "from core.filesystem.space import SpaceScanner"),
         ("core.filesystem.fs.atomic", "from core.filesystem.vfs import ScopedVfs"),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import json
 import math
 import os
 from pathlib import Path
@@ -14,7 +15,9 @@ import subprocess
 import sys
 import threading
 import time
+import tracemalloc
 from typing import Annotated, Callable, Generic, Mapping, Optional, Sequence, TypeVar, Union
+from unittest import mock
 
 from core.execution.event import (
     CausalLineage,
@@ -64,12 +67,18 @@ from core.filesystem.fs import (
 )
 from core.foundation import (
     CancellationToken,
+    DaemonLogRecord,
+    DailyEventRecord,
     DataclassCodec,
     DeadlineGuard,
     EnvHash,
     ErrorCode,
     ErrorDetail,
     EventId,
+    ExecutionTraceRecord,
+    FORCE_FLIGHT_LOGS_ENV_KEY,
+    FlightLogConfig,
+    FlightLogRouter,
     HOST_DIR_ENV_KEY,
     HostPath,
     INT64_MAX,
@@ -85,15 +94,19 @@ from core.foundation import (
     MAX_LOCALE_INTERPOLATION_DEPTH,
     MAX_USER_JSON_DEPTH,
     ManagedProcessTree,
+    MemoryTrackingGuard,
     ModuleId,
+    NullProfiler,
     PRIVATE_ENV_PREFIX,
     PUBLIC_ENV_ALLOWLIST,
+    Profiler,
+    ProfilerNodeSnapshot,
+    ProfilerRingBuffer,
+    ProfilerSession,
     ROOT_DIR_ENV_KEY,
     SchemaExporter,
     SemVer4,
     SemanticUri,
-    SessionTelemetryRecord,
-    SessionTelemetryWriter,
     SignalWakeupGuard,
     SnapshotGen,
     SpaceId,
@@ -106,13 +119,19 @@ from core.foundation import (
     VersionConstraint,
     YscbError,
     clone_strict_json_object,
+    decode_profiler_snapshot,
     get_process_start_tag,
     infer_sequence_element_dataclass,
     is_disallowed_reparse_tag,
     is_process_alive,
+    read_process_rss_kb,
+    redact_cli_args,
+    redact_sensitive_value,
+    render_profiler_tree,
     require_pure_bool,
     require_pure_int,
     safe_exception_summary,
+    safe_realpath,
     sanitize_utf8_text,
     spawn_detached,
     strict_parse_json_object,
@@ -344,7 +363,14 @@ def _verify_codec_contracts() -> None:
 def _verify_wave12_value_objects_and_env() -> None:
     check(PRIVATE_ENV_PREFIX == "_YSCB_", f"Unexpected PRIVATE_ENV_PREFIX: {PRIVATE_ENV_PREFIX!r}")
     check(WORKER_AUTH_ENV_KEY.startswith(PRIVATE_ENV_PREFIX), "WORKER_AUTH_ENV_KEY must carry PRIVATE_ENV_PREFIX")
-    for priv_key in (WORKER_AUTH_ENV_KEY, TREE_ID_ENV_KEY, TEST_SANDBOX_ENV_KEY, HOST_DIR_ENV_KEY, ROOT_DIR_ENV_KEY):
+    for priv_key in (
+        WORKER_AUTH_ENV_KEY,
+        TREE_ID_ENV_KEY,
+        TEST_SANDBOX_ENV_KEY,
+        FORCE_FLIGHT_LOGS_ENV_KEY,
+        HOST_DIR_ENV_KEY,
+        ROOT_DIR_ENV_KEY,
+    ):
         check(priv_key.startswith(PRIVATE_ENV_PREFIX), f"Private env key missing prefix: {priv_key!r}")
     expected_allowlist = frozenset(
         {
@@ -356,6 +382,7 @@ def _verify_wave12_value_objects_and_env() -> None:
             "YSCB_OFFLINE",
             "YSCB_CALLER_MODE",
             "YSCB_CI_APPROVE_GATED",
+            "YSCB_PROFILE_MEM",
         }
     )
     check(PUBLIC_ENV_ALLOWLIST == expected_allowlist, f"PUBLIC_ENV_ALLOWLIST mismatch: {PUBLIC_ENV_ALLOWLIST}")
@@ -714,46 +741,6 @@ def _verify_observability_rotator_locale_telemetry(tmp_root: Path) -> None:
     check(catalog.translate("hop1", caller_module=mod_core, chain=("zh-TW",)) == "too_deep", "Exact depth 5 resolution failed")
     check(catalog.translate("cyc.a", caller_module=mod_core, chain=("zh-TW",)) == "A->B->{cyc.a}", "Cycle guard failed")
 
-    telem_off_path = obs_dir.join("telem_disabled.jsonl")
-    telem_sbx_path = obs_dir.join("telem_sandbox.jsonl")
-    telem_on_path = obs_dir.join("telem_active.jsonl")
-    sample_telem = SessionTelemetryRecord(
-        ts_utc="2026-11-22T01:00:00Z",
-        epoch_ms=1795309200000,
-        task_id="core.status",
-        args=("--json",),
-        exit_code=0,
-        duration_ms=12,
-        executed_hot=True,
-        caller_cwd=str(obs_dir),
-    )
-    writer_off = SessionTelemetryWriter(LogRotator(telem_off_path), enabled=False)
-    writer_off.record(sample_telem)
-    check((not telem_off_path.path.exists()) and writer_off.read_recent() == (), "Disabled telemetry must not write")
-
-    writer_sbx = SessionTelemetryWriter(LogRotator(telem_sbx_path), env={TEST_SANDBOX_ENV_KEY: "1"})
-    writer_sbx.record(sample_telem)
-    check((not telem_sbx_path.path.exists()) and writer_sbx.read_recent() == (), "Sandbox telemetry must auto-disable")
-
-    active_rot = LogRotator(telem_on_path, max_bytes=4096, keep_lines=10)
-    writer_on = SessionTelemetryWriter(active_rot, env={"YSCB_LOCALE": "en"})
-    second_telem = SessionTelemetryRecord(
-        ts_utc="2026-11-22T01:00:01Z",
-        epoch_ms=1795309201000,
-        task_id="core.list",
-        args=("--remote",),
-        exit_code=2,
-        duration_ms=45,
-        executed_hot=False,
-        caller_cwd=str(obs_dir),
-        error_hint="offline",
-    )
-    writer_on.record(sample_telem)
-    writer_on.record(second_telem)
-    check(writer_on.read_recent() == (sample_telem, second_telem), "Active SessionTelemetryWriter round-trip mismatch")
-    check(writer_on.read_recent(limit=1) == (second_telem,), "SessionTelemetryWriter limit=1 mismatch")
-    active_rot.close()
-
     byte_cap_path = obs_dir.join("compact_byte_ceiling.log")
     byte_cap_rot = LogRotator(byte_cap_path, max_bytes=110, keep_lines=20)
     try:
@@ -776,6 +763,366 @@ def _verify_observability_rotator_locale_telemetry(tmp_root: Path) -> None:
         )
     finally:
         byte_cap_rot.close()
+
+    _verify_profiler_and_redaction()
+    _verify_flight_log_router_and_concurrent_rotator(obs_dir)
+
+
+def _verify_profiler_and_redaction() -> None:
+    corr_rec = LogRecord(
+        ts_utc="2026-11-25T10:00:00Z",
+        level=LogLevel.INFO,
+        logger_name="core.test",
+        message="correlated",
+        fields={"ok": True},
+        trace_id="tr-abc",
+        span_id="CLI/Dispatch",
+        task_id="core.status",
+        exec_mode="hot",
+        daemon_boot_id="boot1234",
+        pid=os.getpid(),
+    )
+    check(corr_rec.trace_id == "tr-abc" and corr_rec.pid == os.getpid(), "LogRecord correlation fields mismatch")
+    assert_raises_val_error(
+        lambda: LogRecord("2026-11-25T10:00:00Z", LogLevel.INFO, "core.test", "bad_pid", pid=-1)
+    )
+    assert_raises_val_error(
+        lambda: LogRecord("2026-11-25T10:00:00Z", LogLevel.INFO, "core.test", "bool_pid", pid=True)
+    )
+
+    null_prof: Profiler = NullProfiler()
+    with null_prof.scope("CLI/Noop"):
+        check(null_prof.current_span_path() == "", "NullProfiler span path must stay empty")
+    check(null_prof.snapshot().calls == 0, "NullProfiler snapshot must report zero calls")
+
+    prof: Profiler = ProfilerSession("CLI", track_memory=False, capture_callers=True)
+    _unentered_guard = prof.scope("Unentered/NeverPushed")
+    check(prof.current_span_path() == "", "Un-entered ProfilerSession.scope guard must not push onto stack")
+    with prof.scope("Boot/Init"):
+        check(prof.current_span_path() == "Boot/Init", f"Unexpected span path: {prof.current_span_path()!r}")
+        time.sleep(0.004)
+        with prof.scope_relative("LoadConfig"):
+            check(prof.current_span_path() == "Boot/Init/LoadConfig", "scope_relative path mismatch")
+            time.sleep(0.004)
+    with prof.scope("Group", "LeafTask"):
+        time.sleep(0.002)
+    check(prof.current_span_path() == "", "Span path must reset to empty after exiting scopes")
+
+    worker_sub = ProfilerNodeSnapshot(
+        name="Worker",
+        self_ms=1.0,
+        total_ms=3.0,
+        calls=1,
+        children=(ProfilerNodeSnapshot(name="Exec", self_ms=2.0, total_ms=2.0, calls=1),),
+    )
+    prof.merge_subtree(worker_sub, mount_path="Boot/Init")
+    snap = prof.snapshot()
+    check(snap.name == "CLI" and len(snap.children) == 2, f"Unexpected root snapshot: {snap}")
+    check(snap.children[0].total_ms >= snap.children[1].total_ms, "Children must be sorted descending by total_ms")
+    boot_node = next(ch for ch in snap.children if ch.name == "Boot")
+    init_node = boot_node.children[0]
+    check(init_node.name == "Init" and init_node.calls == 1, f"Unexpected Boot/Init node: {init_node}")
+    check(
+        any("test_foundation_fs.py:" in c for c in init_node.callers),
+        f"Expected captured caller file:line, got {init_node.callers}",
+    )
+    check(any(ch.name == "Worker" for ch in init_node.children), f"Merged Worker subtree missing: {init_node}")
+    check(
+        abs(init_node.total_ms - (init_node.self_ms + sum(ch.total_ms for ch in init_node.children))) < 0.05,
+        f"Self/Total invariant violated after merge_subtree: {init_node}",
+    )
+
+    rendered = render_profiler_tree(snap, include_mem=True, include_callers=True)
+    check("Scope" in rendered and "Total ms" in rendered and "Alloc KB" in rendered and "Worker" in rendered, rendered)
+
+    bench_prof = ProfilerSession("Bench", track_memory=False, capture_callers=True)
+    t_start = time.perf_counter()
+    for idx in range(30):
+        with bench_prof.scope("Chain", f"Node{idx}"):
+            pass
+    overhead_ms = (time.perf_counter() - t_start) * 1000.0
+    check(overhead_ms < 2.0 and bench_prof.snapshot().children[0].total_ms < 0.5, f"Profiler overhead too high: {overhead_ms:.3f}ms")
+
+    was_tracing = tracemalloc.is_tracing()
+    try:
+        if was_tracing:
+            tracemalloc.stop()
+        with MemoryTrackingGuard(enabled=False):
+            check(not tracemalloc.is_tracing(), "Disabled MemoryTrackingGuard started tracemalloc")
+        try:
+            with MemoryTrackingGuard(enabled=True):
+                check(tracemalloc.is_tracing(), "Enabled MemoryTrackingGuard did not start tracemalloc")
+                mem_prof = ProfilerSession("Mem", track_memory=True)
+                with mem_prof.scope("Alloc"):
+                    _buf = [bytearray(4096) for _ in range(8)]
+                    check(len(_buf) == 8)
+                check(mem_prof.snapshot().alloc_kb >= 0.0)
+                raise RuntimeError("boom")
+        except RuntimeError:
+            pass
+        check(not tracemalloc.is_tracing(), "MemoryTrackingGuard failed to stop tracemalloc after exception")
+        tracemalloc.start()
+        with MemoryTrackingGuard(enabled=True):
+            check(tracemalloc.is_tracing())
+        check(tracemalloc.is_tracing(), "MemoryTrackingGuard must not stop pre-existing tracemalloc")
+    finally:
+        if not was_tracing and tracemalloc.is_tracing():
+            tracemalloc.stop()
+        elif was_tracing and not tracemalloc.is_tracing():
+            tracemalloc.start()
+
+    rss_kb = read_process_rss_kb()
+    check(type(rss_kb) is int and rss_kb >= 0, f"Invalid read_process_rss_kb: {rss_kb!r}")
+    if sys.platform.startswith("linux") or IS_WINDOWS:
+        check(rss_kb > 0, f"Expected positive RSS on {sys.platform}, got {rss_kb}")
+
+    check(decode_profiler_snapshot(None) is None and decode_profiler_snapshot("bad") is None)
+    deep_raw: dict[str, object] = {"name": "leaf", "self_ms": 0.1, "total_ms": 0.1, "calls": 1, "children": []}
+    for lvl in range(40):
+        deep_raw = {"name": f"n{lvl}", "self_ms": 0.0, "total_ms": 0.1, "calls": 1, "children": [deep_raw]}
+    check(decode_profiler_snapshot(deep_raw, max_depth=32) is None, "Over-deep profiler snapshot must return None")
+    wide_raw = {
+        "name": "root",
+        "self_ms": 0.0,
+        "total_ms": 1.0,
+        "calls": 1,
+        "children": [{"name": f"c{i}", "self_ms": 0.0, "total_ms": 0.0, "calls": 1} for i in range(20)],
+    }
+    check(decode_profiler_snapshot(wide_raw, max_nodes=10) is None, "Over-node-limit snapshot must return None")
+    check(decode_profiler_snapshot({"name": "bad", "self_ms": -1.0, "total_ms": 1.0, "calls": 1}) is None)
+
+    orig_payload: dict[str, object] = {
+        "api_key": "sk-secret",
+        "nested": {"password": "pw", "url": "https://alice:pw123@example.com/repo", "note": "Bearer tok999"},
+        "safe": "hello",
+    }
+    red_val = redact_sensitive_value(orig_payload)
+    check(orig_payload["api_key"] == "sk-secret", "redact_sensitive_value must not mutate input")
+    check(isinstance(red_val, dict) and red_val["api_key"] == "[REDACTED]", f"Top-level secret not redacted: {red_val}")
+    if isinstance(red_val, dict) and isinstance(red_val["nested"], dict):
+        check(red_val["nested"]["password"] == "[REDACTED]", "Nested password not redacted")
+        check("pw123" not in str(red_val["nested"]["url"]) and "[REDACTED]" in str(red_val["nested"]["url"]), "URL creds leaked")
+        check("tok999" not in str(red_val["nested"]["note"]), "Bearer token leaked")
+
+    raw_argv = [
+        "--approve=tok_eq",
+        "--token",
+        "tok_sep",
+        "--api-key",
+        "k_sep",
+        "https://bob:s3cr3t@host.local/a",
+        "config",
+        "set",
+        "gdrive",
+        "oauth_secret",
+        "raw_oauth_val",
+    ]
+    red_argv = redact_cli_args(raw_argv)
+    check(raw_argv[2] == "tok_sep", "redact_cli_args must not mutate input list")
+    check(red_argv[0] == "--approve=[REDACTED]" and red_argv[2] == "[REDACTED]" and red_argv[4] == "[REDACTED]", f"Flag redaction failed: {red_argv}")
+    check("s3cr3t" not in red_argv[5] and "[REDACTED]" in red_argv[5], f"URL arg redaction failed: {red_argv}")
+    check(red_argv[-2] == "oauth_secret" and red_argv[-1] == "[REDACTED]", f"config set redaction failed: {red_argv}")
+
+
+def _verify_flight_log_router_and_concurrent_rotator(obs_dir: HostPath) -> None:
+    logs_root = obs_dir.join("flight_logs")
+    sbx_router = FlightLogRouter(logs_root, env={TEST_SANDBOX_ENV_KEY: "1"}, daemon_boot_id="boot1234abcd")
+    legacy_sbx_router = FlightLogRouter(logs_root, env={"YSCB_TEST_SANDBOX": "1"}, daemon_boot_id="boot1234abcd")
+    check((not sbx_router.enabled) and (not legacy_sbx_router.enabled), "Sandbox flags must suppress FlightLogRouter")
+    sample_trace = ExecutionTraceRecord(
+        ts_utc="2026-11-25T12:00:00Z",
+        epoch_ms=1795521600000,
+        trace_id="tr-flight-1",
+        daemon_boot_id="boot1234abcd",
+        pid=os.getpid(),
+        task_id="core.status",
+        args=("--token", "super_secret_tok", "https://u:pw@host/x"),
+        caller_mode="cli",
+        caller_cwd=str(obs_dir),
+        executed_hot=True,
+        exit_code=0,
+        ok=True,
+        duration_ms=14.5,
+        rss_kb=4096,
+        rss_delta_kb=128,
+        mem_tracked=False,
+        dispatched_tasks=("core.status",),
+        profiler_tree=ProfilerNodeSnapshot(
+            name="CLI",
+            self_ms=4.5,
+            total_ms=14.5,
+            calls=1,
+            children=(ProfilerNodeSnapshot(name="RPC", self_ms=10.0, total_ms=10.0, calls=1),),
+        ),
+        error_detail={"api_key": "secret_key_val", "info": "clean"},
+    )
+    sbx_router.record_perf(sample_trace)
+    check(not logs_root.path.exists(), "Suppressed FlightLogRouter must not touch disk")
+    sbx_router.close()
+    legacy_sbx_router.close()
+
+    forced_router = FlightLogRouter(
+        logs_root,
+        config=FlightLogConfig(retention_days=3, max_daemon_files=2),
+        env={TEST_SANDBOX_ENV_KEY: "1", FORCE_FLIGHT_LOGS_ENV_KEY: "1"},
+        daemon_boot_id="boot1234abcd",
+    )
+    try:
+        check(forced_router.enabled and forced_router.daemon_boot_id == "boot1234abcd")
+        d_path = forced_router.daemon_log_path()
+        check(d_path is not None and d_path.path.parent.name == "daemon" and "boot1234" in d_path.path.name)
+        check(forced_router.daily_log_path(date_str="2026-11-25").path.name == "2026-11-25.jsonl")
+        check(forced_router.perf_log_path(date_str="2026-11-25").path.name == "2026-11-25.jsonl")
+        check(forced_router.module_log_path("knowledge-db").path.name == "knowledge-db.jsonl")
+
+        (logs_root.path / "daemon").mkdir(parents=True, exist_ok=True)
+        old_d1 = logs_root.path / "daemon" / "daemon_20260101_000001_10_old00001.jsonl"
+        old_d2 = logs_root.path / "daemon" / "daemon_20260101_000002_11_old00002.jsonl"
+        old_d1.write_text("{}\n", encoding="utf-8")
+        old_d2.write_text("{}\n", encoding="utf-8")
+        forced_router.record_daemon(
+            DaemonLogRecord(
+                ts_utc="2026-11-25T12:00:00Z",
+                epoch_ms=1795521600000,
+                daemon_boot_id="boot1234abcd",
+                pid=os.getpid(),
+                event="daemon.ready",
+                detail={"auth_token": "tok_hide", "ok": True},
+            )
+        )
+        check((not old_d1.exists()) and old_d2.exists(), "Daemon file retention pruning failed")
+        if d_path is not None:
+            raw_daemon_txt = d_path.path.read_text(encoding="utf-8")
+            check("tok_hide" not in raw_daemon_txt and "[REDACTED]" in raw_daemon_txt, "Daemon detail redaction failed")
+
+        (logs_root.path / "daily").mkdir(parents=True, exist_ok=True)
+        (logs_root.path / "perf").mkdir(parents=True, exist_ok=True)
+        old_daily = logs_root.path / "daily" / "2026-11-20.jsonl"
+        keep_daily = logs_root.path / "daily" / "2026-11-24.jsonl"
+        old_perf = logs_root.path / "perf" / "2026-11-20.jsonl"
+        old_daily.write_text("{}\n", encoding="utf-8")
+        keep_daily.write_text("{}\n", encoding="utf-8")
+        old_perf.write_text("{}\n", encoding="utf-8")
+
+        forced_router.record_daily(
+            DailyEventRecord(
+                ts_utc="2026-11-25T12:00:00Z",
+                epoch_ms=1795521600000,
+                kind="task.in",
+                trace_id="tr-flight-1",
+                daemon_boot_id="boot1234abcd",
+                pid=os.getpid(),
+                exec_mode="hot",
+                module="core",
+                task_id="core.status",
+                fields={"password": "pw_secret", "step": 1},
+            )
+        )
+        forced_router.record_perf(sample_trace)
+        check((not old_daily.exists()) and keep_daily.exists() and (not old_perf.exists()), "Dated log pruning failed")
+        daily_txt = forced_router.daily_log_path(date_str="2026-11-25").path.read_text(encoding="utf-8")
+        check("pw_secret" not in daily_txt and "[REDACTED]" in daily_txt, "Daily fields redaction failed")
+
+        perf_rows = forced_router.read_recent_perf(limit=10, date_str="2026-11-25")
+        check(len(perf_rows) == 1, f"Expected 1 perf row, got {len(perf_rows)}")
+        check("super_secret_tok" not in perf_rows[0].args and "[REDACTED]" in perf_rows[0].args, "Perf args redaction failed")
+        check(
+            perf_rows[0].error_detail is not None and perf_rows[0].error_detail.get("api_key") == "[REDACTED]",
+            f"Perf error_detail redaction failed: {perf_rows[0].error_detail}",
+        )
+        check(perf_rows[0].profiler_tree == sample_trace.profiler_tree, "Perf profiler_tree round-trip mismatch")
+    finally:
+        forced_router.close()
+
+    no_sbx_router = FlightLogRouter(
+        obs_dir.join("flight_nosbx"),
+        config=FlightLogConfig(respect_sandbox=False),
+        env={TEST_SANDBOX_ENV_KEY: "1"},
+    )
+    check(no_sbx_router.enabled, "respect_sandbox=False must override sandbox flag")
+    no_sbx_router.close()
+
+    blocker = obs_dir.join("blocked_root")
+    blocker.path.write_text("file_blocks_dir", encoding="utf-8")
+    failopen_router = FlightLogRouter(blocker, config=FlightLogConfig(respect_sandbox=False))
+    failopen_router.record_perf(sample_trace)
+    failopen_router.close()
+
+    ring = ProfilerRingBuffer(maxlen=3)
+    for ms_val in (10.0, 20.0, 30.0, 40.0):
+        ring.record(
+            ExecutionTraceRecord(
+                ts_utc="2026-11-25T12:00:00Z",
+                epoch_ms=1795521600000,
+                trace_id="tr-ring",
+                daemon_boot_id="",
+                pid=os.getpid(),
+                task_id="core.status",
+                args=(),
+                caller_mode="cli",
+                caller_cwd=str(obs_dir),
+                executed_hot=True,
+                exit_code=0,
+                ok=True,
+                duration_ms=ms_val,
+                profiler_tree=ProfilerNodeSnapshot(
+                    name="Root",
+                    self_ms=0.0,
+                    total_ms=ms_val,
+                    calls=1,
+                    children=(ProfilerNodeSnapshot(name="Dispatch", self_ms=ms_val, total_ms=ms_val, calls=1),),
+                ),
+            )
+        )
+    recents = ring.recent(limit=2)
+    check([rec.duration_ms for rec in recents] == [30.0, 40.0], f"RingBuffer eviction/recent mismatch: {recents}")
+    summary = ring.summarize()
+    by_task = summary.get("by_task")
+    top_phases = summary.get("top_phases")
+    check(
+        isinstance(by_task, dict)
+        and isinstance(by_task.get("core.status"), dict)
+        and by_task["core.status"]["count"] == 3
+        and by_task["core.status"]["latest_ms"] == 40.0
+        and by_task["core.status"]["max_ms"] == 40.0
+        and by_task["core.status"]["avg_ms"] == 30.0,
+        f"Unexpected ring summary by_task: {summary}",
+    )
+    check(isinstance(top_phases, dict) and "Dispatch" in top_phases, f"Missing top_phases: {summary}")
+
+    conc_path = obs_dir.join("concurrent_rotator.jsonl")
+    worker_code = (
+        "import sys\n"
+        "from core.foundation import HostPath, LogRotator\n"
+        "rot = LogRotator(HostPath(sys.argv[1]), max_bytes=256, max_history_files=4)\n"
+        "wid = int(sys.argv[2])\n"
+        "try:\n"
+        "    for idx in range(25):\n"
+        "        rot.append_jsonl({'worker': wid, 'seq': idx, 'pad': 'abcdefghij'})\n"
+        "finally:\n"
+        "    rot.close()\n"
+    )
+    env_cp = os.environ.copy()
+    env_cp["PYTHONPATH"] = os.pathsep.join(sys.path)
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-B", "-W", "error::ResourceWarning", "-c", worker_code, str(conc_path), str(wid)],
+            env=env_cp,
+            creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0,
+        )
+        for wid in range(3)
+    ]
+    for proc in procs:
+        check(proc.wait(timeout=15.0) == 0, "Concurrent LogRotator worker failed")
+    check_rot = LogRotator(conc_path, max_bytes=256, max_history_files=4)
+    try:
+        raw_lines = check_rot.read_tail_lines(limit=200)
+        check(len(raw_lines) > 0, "Concurrent LogRotator produced empty log")
+        for ln in raw_lines:
+            parsed_obj = json.loads(ln)
+            check(isinstance(parsed_obj, dict) and "worker" in parsed_obj and "seq" in parsed_obj, f"Corrupt line: {ln}")
+    finally:
+        check_rot.close()
 
 
 def _verify_foundation_primitives_errors_proc(tmp_root: Path) -> None:
@@ -817,6 +1164,15 @@ def _verify_foundation_primitives_errors_proc(tmp_root: Path) -> None:
     assert_raises_val_error(lambda: HostPath("relative/path"))
     assert_raises_val_error(lambda: ws_hp.join("..", "escape"))
     assert_raises_val_error(lambda: ws_hp.join("bad:stream"))
+    check(safe_realpath(str(ws_hp)) == str(ws_hp), f"safe_realpath diverged on HostPath: {safe_realpath(str(ws_hp))!r}")
+    with mock.patch("core.foundation.primitives.IS_WINDOWS", True):
+        with mock.patch("core.foundation.primitives.os.path.realpath", return_value="\\\\?\\C:\\ws\\sub"):
+            check(safe_realpath("C:\\ws\\sub") == "C:\\ws\\sub", "safe_realpath must strip transient Windows drive prefix")
+            check(safe_realpath("\\\\?\\C:\\ws\\sub") == "\\\\?\\C:\\ws\\sub", "safe_realpath must preserve explicit extended drive input")
+        with mock.patch("core.foundation.primitives.os.path.realpath", return_value="\\\\?\\UNC\\srv\\share\\f.txt"):
+            check(safe_realpath("\\\\srv\\share\\f.txt") == "\\\\srv\\share\\f.txt", "safe_realpath must strip transient Windows UNC prefix")
+        with mock.patch("core.foundation.primitives.os.path.realpath", return_value="\\\\?\\Volume{1234-5678}\\sub"):
+            check(safe_realpath("C:\\ws\\sub") == "\\\\?\\Volume{1234-5678}\\sub", "safe_realpath must preserve Volume GUID paths")
     if IS_WINDOWS:
         assert_raises_val_error(lambda: ws_hp.join("CON"))
     rel_resolved = ws_hp.resolve_caller_relative("sub/item.txt")

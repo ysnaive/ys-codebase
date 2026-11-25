@@ -168,6 +168,8 @@ class HelpRenderer:
             ("--cold", "Force local cold execution bypassing warm daemon"),
             ("--approve=<token>", "Consume single-use approval token for GATED tasks"),
             ("--host-dir=<path>", "Explicit workspace host directory override"),
+            ("--profile", "Print hierarchical execution timing tree to stderr"),
+            ("--profile-mem", "Track tracemalloc memory allocations and print profile tree to stderr"),
         ]
         return self._format_two_col(rows)
 

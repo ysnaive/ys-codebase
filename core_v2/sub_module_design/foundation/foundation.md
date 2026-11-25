@@ -2,18 +2,19 @@
 
 > **所屬功能域**：`Domain 1 — 基礎底座域 (foundation/)`
 > **模組路徑**：`core_v2/source/core/core/foundation/`
-> **內部模組職責切分**：`primitives.py`、`errors.py`、`codec.py`、`observability.py`、`proc.py`
-> **依賴上限（Allowed Imports）**：`100% Python 3.11+ 標準庫`（同域依賴方向：`codec | observability | proc -> primitives | errors`）
+> **內部模組職責切分**：`primitives.py`、`errors.py`、`codec.py`、`observability.py`、`profiler.py`、`proc.py`
+> **依賴上限（Allowed Imports）**：`100% Python 3.11+ 標準庫`（同域依賴方向：`codec | observability | proc -> primitives | errors`；`profiler -> observability | primitives | errors`）
 > **禁止反向依賴（Forbidden Imports）**：`filesystem/*`、`metadata/*`、`packaging/*`、`execution/*`、`surface/*`
 > **狀態**：`Active Living Spec — Implementation-Aligned SSOT`
 
 ## 1. 核心職責與設計不變量
 
-1. **不可變基礎值物件、跨功能域識別符與跨平台路徑區段安全（`primitives.py`）**：提供 `ModuleId`、`TaskId`、`EventId`、`HostPath`、`SemVer4`、`VersionConstraint`、`SemanticUri`、`SpaceId`、`SpacePath`、`SnapshotGen`、`EnvHash`、受控環境變數清冊（`PUBLIC_ENV_ALLOWLIST` / `PRIVATE_ENV_PREFIX`）、嚴格 int64/UTF-8/有限浮點 JSON 解析與複製原語、Windows 重解析點標籤判定（`IO_REPARSE_TAG_SYMLINK` / `IO_REPARSE_TAG_MOUNT_POINT` / `is_disallowed_reparse_tag`，僅攔截 Symlink 與 Mount Point／Junction 並放行 OneDrive／WOF），以及跨平台相對路徑區段守衛（`is_valid_relative_segment` / `validate_relative_segment`，統一封鎖 `..`、路徑分隔符、NTFS `:` 替代資料流、尾隨點號／空白別名與 Windows 保留裝置名稱）。
+1. **不可變基礎值物件、跨功能域識別符與跨平台路徑區段安全（`primitives.py`）**：提供 `ModuleId`、`TaskId`、`EventId`、`HostPath`、`SemVer4`、`VersionConstraint`、`SemanticUri`、`SpaceId`、`SpacePath`、`SnapshotGen`、`EnvHash`、受控環境變數清冊（`PUBLIC_ENV_ALLOWLIST` / `PRIVATE_ENV_PREFIX` / `FORCE_FLIGHT_LOGS_ENV_KEY`）、嚴格 int64/UTF-8/有限浮點 JSON 解析與複製原語、Windows 重解析點標籤判定（`IO_REPARSE_TAG_SYMLINK` / `IO_REPARSE_TAG_MOUNT_POINT` / `is_disallowed_reparse_tag`，僅攔截 Symlink 與 Mount Point／Junction 並放行 OneDrive／WOF），以及跨平台相對路徑區段守衛（`is_valid_relative_segment` / `validate_relative_segment`，統一封鎖 `..`、路徑分隔符、NTFS `:` 替代資料流、尾隨點號／空白別名與 Windows 保留裝置名稱）。
 2. **結構化錯誤階層（`errors.py`）**：定義 `ErrorCode`、`ErrorDetail`、`YscbError`、`EventCycleError`、`CallCycleError` 與協作式 `TaskCancelledException`。
 3. **純標準庫強型別編解碼器與 JSON Schema 導出器（`codec.py`）**：提供支援遞迴型別、基礎泛型參數替換、宣告序聯合型別解碼、全值物件雙向映射、嚴格欄位校驗與弱引用自動回收之 `DataclassCodec`、`infer_sequence_element_dataclass`，以及標準 JSON Schema Draft 2020-12 導出器 `SchemaExporter`。
-4. **協作取消、截止時間守衛、結構化日誌輪替、多語系查表與標準輸出隔離（`observability.py`）**：提供 `CancellationToken`、`DeadlineGuard`、`ProgressEvent`、`guard_standard_streams`、`LogLevel`、`LogRecord`、`LogRotator`、`StructuredLogger`、`LocaleCatalog` 與 `SessionTelemetryWriter`。
-5. **跨平台進程樹監管與主執行緒訊號協調（`proc.py`）**：提供 `ManagedProcessTree`（Windows Job Object 含 `BREAKAWAY_OK` / POSIX Session+PGID）、`spawn_detached`（經 `stdin` 安全傳遞負載）、防殭屍誤判之 `is_process_alive` / `get_process_start_tag`，以及基於單主執行緒 `signal.signal` 註冊與生命週期還原之 `SignalWakeupGuard`。
+4. **協作取消、截止時間守衛、結構化日誌輪替與多語系查表（`observability.py`）**：提供 `CancellationToken`、`DeadlineGuard`、`ProgressEvent`、`guard_standard_streams`、`LogLevel`、`LogRecord`（含關聯追蹤鍵）、具跨進程防呆鎖之 `LogRotator`、`StructuredLogger` 與 `LocaleCatalog`。
+5. **階層式效能剖析器、記憶體量測守衛、脫敏器與 3+1 JSONL 飛行日誌路由（`profiler.py`）**：提供無全域單例之 ImTK 風格 `Profiler` / `ProfilerSession` / `ProfilerNodeSnapshot` / `NullProfiler`、`MemoryTrackingGuard`、`read_process_rss_kb`、`render_profiler_tree`、`decode_profiler_snapshot`、`redact_sensitive_value` / `redact_cli_args`、`ProfilerRingBuffer` 與 `FlightLogRouter`（`FlightLogConfig`、`DaemonLogRecord`、`DailyEventRecord`、`ExecutionTraceRecord`）。
+6. **跨平台進程樹監管與主執行緒訊號協調（`proc.py`）**：提供 `ManagedProcessTree`（Windows Job Object 含 `BREAKAWAY_OK` / POSIX Session+PGID）、`spawn_detached`（經 `stdin` 安全傳遞負載）、防殭屍誤判之 `is_process_alive` / `get_process_start_tag`，以及基於單主執行緒 `signal.signal` 註冊與生命週期還原之 `SignalWakeupGuard`。
 
 ## 2. 公開契約規格 (`core.foundation.__all__` 完整快照)
 
@@ -21,7 +22,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 import io
@@ -35,6 +36,7 @@ from typing import Callable, ClassVar, Final, ForwardRef, Generic, NoReturn, Opt
 _T = TypeVar("_T")
 T = TypeVar("T")
 
+FORCE_FLIGHT_LOGS_ENV_KEY: Final[str] = '_YSCB_FORCE_FLIGHT_LOGS'
 HOST_DIR_ENV_KEY: Final[str] = '_YSCB_HOST_DIR'
 INT64_MAX: Final[int] = (1 << 63) - 1
 INT64_MIN: Final[int] = -(1 << 63)
@@ -57,6 +59,7 @@ PUBLIC_ENV_ALLOWLIST: Final[frozenset[str]] = frozenset({
     'YSCB_OFFLINE',
     'YSCB_CALLER_MODE',
     'YSCB_CI_APPROVE_GATED',
+    'YSCB_PROFILE_MEM',
 })
 PYTHON_LAUNCHER_HIJACK_ENV_KEYS: Final[tuple[str, ...]] = ('__PYVENV_LAUNCHER__', 'PYTHONSTARTUP', 'PYTHONINSPECT')
 ROOT_DIR_ENV_KEY: Final[str] = '_YSCB_ROOT_DIR'
@@ -81,6 +84,9 @@ def clamp_wait_sec(timeout_sec: Optional[float], *, min_sec: float=0.0) -> Optio
     ...
 
 def clone_strict_json_object(payload: object, *, max_depth: int=MAX_USER_JSON_DEPTH, label: str='payload') -> MutableJsonObject:
+    ...
+
+def decode_profiler_snapshot(raw: object, *, max_depth: int=32, max_nodes: int=512) -> Optional[ProfilerNodeSnapshot]:
     ...
 
 def decrement_ref_count(table: dict[_T, int], key: _T) -> int:
@@ -120,7 +126,22 @@ def is_valid_type_annotation(tp_val: object) -> bool:
 def ms_to_safe_sec(ms: int, *, min_sec: float=0.0) -> float:
     ...
 
+def read_flight_log_env() -> dict[str, str]:
+    ...
+
+def read_process_rss_kb() -> int:
+    ...
+
 def read_public_env_value(key: str) -> Optional[str]:
+    ...
+
+def redact_cli_args(args: Sequence[str]) -> tuple[str, ...]:
+    ...
+
+def redact_sensitive_value(value: JsonValue, *, key_hint: str='') -> JsonValue:
+    ...
+
+def render_profiler_tree(root: ProfilerNodeSnapshot, *, include_mem: bool=False, include_callers: bool=True) -> str:
     ...
 
 def require_non_negative_sec(timeout_sec: float, *, label: str='timeout_sec') -> float:
@@ -151,6 +172,9 @@ def safe_exception_summary(exc: BaseException) -> str:
     ...
 
 def safe_real_to_float(val: object, *, label: str='value') -> float:
+    ...
+
+def safe_realpath(raw_path: str) -> str:
     ...
 
 def sanitize_utf8_text(text: str) -> str:
@@ -221,6 +245,36 @@ class CancellationToken:
 
     def raise_if_cancelled(self) -> None:
         ...
+
+@dataclass(frozen=True, slots=True)
+class DaemonLogRecord:
+    ts_utc: str
+    epoch_ms: int
+    daemon_boot_id: str
+    pid: int
+    event: str
+    level: LogLevel = LogLevel.INFO
+    trace_id: str = ''
+    task_id: str = ''
+    detail: JsonObject = field(default_factory=dict)
+
+@dataclass(frozen=True, slots=True)
+class DailyEventRecord:
+    ts_utc: str
+    epoch_ms: int
+    kind: str
+    trace_id: str
+    daemon_boot_id: str
+    pid: int
+    exec_mode: str
+    module: str
+    task_id: str = ''
+    level: LogLevel = LogLevel.INFO
+    ok: Optional[bool] = None
+    duration_ms: Optional[float] = None
+    exit_code: Optional[int] = None
+    message: str = ''
+    fields: JsonObject = field(default_factory=dict)
 
 class DataclassCodec:
 
@@ -353,6 +407,80 @@ class EventId:
         ...
 
 @dataclass(frozen=True, slots=True)
+class ExecutionTraceRecord:
+    ts_utc: str
+    epoch_ms: int
+    trace_id: str
+    daemon_boot_id: str
+    pid: int
+    task_id: str
+    args: tuple[str, ...]
+    caller_mode: str
+    caller_cwd: str
+    executed_hot: bool
+    exit_code: int
+    ok: bool
+    duration_ms: float
+    rss_kb: int = 0
+    rss_delta_kb: int = 0
+    mem_tracked: bool = False
+    dispatched_tasks: tuple[str, ...] = ()
+    profiler_tree: Optional[ProfilerNodeSnapshot] = None
+    error_code: str = ''
+    error_detail: Optional[JsonObject] = None
+    runtime_snapshot: Optional[JsonObject] = None
+
+@dataclass(frozen=True, slots=True)
+class FlightLogConfig:
+    enabled: bool = True
+    max_bytes_per_file: int = 5242880
+    max_history_files: int = 3
+    retention_days: int = 7
+    max_daemon_files: int = 10
+    slow_threshold_ms: float = 1000.0
+    respect_sandbox: bool = True
+
+class FlightLogRouter:
+
+    def __init__(self, logs_root: HostPath, *, config: Optional[FlightLogConfig]=None, env: Optional[Mapping[str, str]]=None, daemon_boot_id: str='') -> None:
+        ...
+
+    @property
+    def enabled(self) -> bool:
+        ...
+
+    @property
+    def daemon_boot_id(self) -> str:
+        ...
+
+    def daemon_log_path(self) -> Optional[HostPath]:
+        ...
+
+    def daily_log_path(self, *, date_str: Optional[str]=None) -> HostPath:
+        ...
+
+    def perf_log_path(self, *, date_str: Optional[str]=None) -> HostPath:
+        ...
+
+    def module_log_path(self, module_id: str) -> HostPath:
+        ...
+
+    def record_daemon(self, entry: DaemonLogRecord) -> None:
+        ...
+
+    def record_daily(self, entry: DailyEventRecord) -> None:
+        ...
+
+    def record_perf(self, entry: ExecutionTraceRecord) -> None:
+        ...
+
+    def read_recent_perf(self, *, limit: int=100, date_str: Optional[str]=None) -> tuple[ExecutionTraceRecord, ...]:
+        ...
+
+    def close(self) -> None:
+        ...
+
+@dataclass(frozen=True, slots=True)
 class HostPath:
     path: Path
     comparison_key: str
@@ -396,6 +524,12 @@ class LogRecord:
     logger_name: str
     message: str
     fields: JsonObject = field(default_factory=dict)
+    trace_id: str = ''
+    span_id: str = ''
+    task_id: str = ''
+    exec_mode: str = ''
+    daemon_boot_id: str = ''
+    pid: int = 0
 
 class LogRotator:
 
@@ -447,11 +581,104 @@ class ManagedProcessTree:
     def kill_tree_now(self) -> None:
         ...
 
+class MemoryTrackingGuard:
+
+    def __init__(self, enabled: bool) -> None:
+        ...
+
+    def __enter__(self) -> MemoryTrackingGuard:
+        ...
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        ...
+
 @dataclass(frozen=True, slots=True)
 class ModuleId:
     value: str
 
     def __str__(self) -> str:
+        ...
+
+class NullProfiler:
+
+    def scope(self, path: Optional[str]=None, name: Optional[str]=None, *, caller: Optional[str]=None) -> AbstractContextManager[None]:
+        ...
+
+    def scope_relative(self, path: str, name: Optional[str]=None, *, caller: Optional[str]=None) -> AbstractContextManager[None]:
+        ...
+
+    def merge_subtree(self, subtree: ProfilerNodeSnapshot, *, mount_path: Optional[str]=None) -> None:
+        ...
+
+    def snapshot(self) -> ProfilerNodeSnapshot:
+        ...
+
+    def current_span_path(self) -> str:
+        ...
+
+class Profiler(Protocol):
+
+    def scope(self, path: Optional[str]=None, name: Optional[str]=None, *, caller: Optional[str]=None) -> AbstractContextManager[None]:
+        ...
+
+    def scope_relative(self, path: str, name: Optional[str]=None, *, caller: Optional[str]=None) -> AbstractContextManager[None]:
+        ...
+
+    def merge_subtree(self, subtree: ProfilerNodeSnapshot, *, mount_path: Optional[str]=None) -> None:
+        ...
+
+    def snapshot(self) -> ProfilerNodeSnapshot:
+        ...
+
+    def current_span_path(self) -> str:
+        ...
+
+@dataclass(frozen=True, slots=True)
+class ProfilerNodeSnapshot:
+    name: str
+    self_ms: float
+    total_ms: float
+    calls: int
+    alloc_kb: float = 0.0
+    callers: tuple[str, ...] = ()
+    children: tuple[ProfilerNodeSnapshot, ...] = ()
+
+class ProfilerRingBuffer:
+
+    def __init__(self, maxlen: int=512) -> None:
+        ...
+
+    def record(self, trace: ExecutionTraceRecord) -> None:
+        ...
+
+    def recent(self, limit: int=50) -> tuple[ExecutionTraceRecord, ...]:
+        ...
+
+    def summarize(self) -> JsonObject:
+        ...
+
+class ProfilerSession:
+
+    def __init__(self, root_name: str='Root', *, track_memory: bool=False, capture_callers: bool=True) -> None:
+        ...
+
+    @property
+    def track_memory(self) -> bool:
+        ...
+
+    def scope(self, path: Optional[str]=None, name: Optional[str]=None, *, caller: Optional[str]=None) -> AbstractContextManager[None]:
+        ...
+
+    def scope_relative(self, path: str, name: Optional[str]=None, *, caller: Optional[str]=None) -> AbstractContextManager[None]:
+        ...
+
+    def merge_subtree(self, subtree: ProfilerNodeSnapshot, *, mount_path: Optional[str]=None) -> None:
+        ...
+
+    def snapshot(self) -> ProfilerNodeSnapshot:
+        ...
+
+    def current_span_path(self) -> str:
         ...
 
 @dataclass(frozen=True, slots=True)
@@ -536,29 +763,6 @@ class SemanticUri:
         ...
 
     def __str__(self) -> str:
-        ...
-
-@dataclass(frozen=True, slots=True)
-class SessionTelemetryRecord:
-    ts_utc: str
-    epoch_ms: int
-    task_id: str
-    args: tuple[str, ...]
-    exit_code: int
-    duration_ms: int
-    executed_hot: bool
-    caller_cwd: str
-    error_hint: str = ''
-
-class SessionTelemetryWriter:
-
-    def __init__(self, rotator: LogRotator, *, enabled: bool=True, env: Optional[Mapping[str, str]]=None) -> None:
-        ...
-
-    def record(self, entry: SessionTelemetryRecord) -> None:
-        ...
-
-    def read_recent(self, limit: int=100) -> tuple[SessionTelemetryRecord, ...]:
         ...
 
 class SignalWakeupGuard:
@@ -684,7 +888,7 @@ class YscbError(Exception):
 | 分類 | 命名慣例 | 語意定位與存取規範 |
 | :--- | :--- | :--- |
 | **公開環境覆寫旗標** | `YSCB_*`（無前導底線） | **僅限使用者或 CI 在讀取組態前需要生效之極少數覆寫開關**（如停用常駐、除錯日誌層級，見 `PUBLIC_ENV_ALLOWLIST`）。須集中登記於受控清冊，未登記者禁止任意 `os.environ.get()`；一般業務開關一律優先走 `config` 或強型別 `Enum`。 |
-| **內核／工具私有變數** | `_YSCB_*`（前導底線） | **僅供內核與工具鏈跨進程傳遞之內部訊號、憑證或沙盒標記**（如 `_YSCB_TREE_ID`、`_YSCB_WORKER_AUTH_TOKEN`、`_YSCB_TEST_SANDBOX`、`_YSCB_HOST_DIR`、`_YSCB_ROOT_DIR`）。`sanitize_caller_env` 依 `PRIVATE_ENV_PREFIX`（`"_YSCB_"`）前綴整批封殺外部注入。 |
+| **內核／工具私有變數** | `_YSCB_*`（前導底線） | **僅供內核與工具鏈跨進程傳遞之內部訊號、憑證或沙盒標記**（如 `_YSCB_TREE_ID`、`_YSCB_WORKER_AUTH_TOKEN`、`_YSCB_TEST_SANDBOX`、`_YSCB_FORCE_FLIGHT_LOGS`、`_YSCB_HOST_DIR`、`_YSCB_ROOT_DIR`）。`sanitize_caller_env` 依 `PRIVATE_ENV_PREFIX`（`"_YSCB_"`）前綴整批封殺外部注入。 |
 | **模組常數與上限門檻** | `_UPPER_CASE` / `Final[...]` | 單檔內部調校門檻維持 `_UPPER_CASE` 私有；跨檔共享之協定、系統目錄／檔名與保留識別符須顯式宣告 `Final[...]` 並收錄於所屬功能域 Living Spec。 |
 
 ---
@@ -699,5 +903,8 @@ class YscbError(Exception):
    - `DataclassCodec` 原生支援 `SemVer4`、`VersionConstraint`、`SemanticUri`、`SpaceId`、`SpacePath`、`SnapshotGen`、`EnvHash` 雙向編解碼。
 3. **`SchemaExporter`、`LogRotator` 與 `LocaleCatalog`**：
    - `SchemaExporter` 輸出標準 JSON Schema Draft 2020-12（`$defs`、物件預設 `additionalProperties: False`、`Annotated` 描述萃取）。
-   - `LogRotator` 強制以 `\n` 切行（避免 `\u2028`/`\u2029` 破壞 JSONL）、設定 `os.set_inheritable(fd, False)` 並以同目錄原子 `os.replace` 輪替。
+   - `LogRotator` 強制以 `\n` 切行（避免 `\u2028`/`\u2029` 破壞 JSONL）、設定 `os.set_inheritable(fd, False)`、於同層 `.lock` 檔施作純標準庫跨進程防呆鎖（POSIX `fcntl.flock` / Windows `LockFileEx` + `O_NOFOLLOW`）並以同目錄原子 `os.replace` 輪替。
    - `LocaleCatalog.translate` 嚴格依顯式語系鏈查找（零隱式父語系猜測），`{placeholder}` 遞迴解析深度上限為 `5`（防環不崩潰）並支援 `{{` / `}}` 轉義。
+4. **`ProfilerSession`、脫敏器與 `FlightLogRouter`（3+1 JSONL 飛行日誌）**：
+   - `ProfilerSession` 採實例私有 `threading.local()` 堆疊與首觸快取 `inspect.currentframe()` 來源定位（無全域單例），離開 Scope 自動執行 Self/Total 拆帳並支援 `merge_subtree` 扣除子樹耗時防重複計數。
+   - `FlightLogRouter` 依注入之 `env` 偵測 `_YSCB_TEST_SANDBOX` / `YSCB_TEST_SANDBOX` 並支援 `_YSCB_FORCE_FLIGHT_LOGS` 或 `respect_sandbox=False` 顯式覆寫，寫盤前自動經 `redact_cli_args` / `redact_sensitive_value` 脫敏，並採 fail-open 保護業務執行。

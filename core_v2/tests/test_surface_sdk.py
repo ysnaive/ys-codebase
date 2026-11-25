@@ -67,7 +67,11 @@ from core.surface.sdk import (
     ModuleDatabase,
     ModuleEnv,
     ModuleId,
+    NullProfiler,
     Option,
+    Profiler,
+    ProfilerNodeSnapshot,
+    ProfilerSession,
     ProgressEvent,
     ProvenanceGraph,
     SchemaMigration,
@@ -105,6 +109,7 @@ from core.surface.sdk import (
     on_event,
     on_migrate,
     periodic,
+    render_profiler_tree,
     task,
 )
 from tests._harness import assert_raises_val_error, check, expect_yscb_code, log
@@ -609,7 +614,11 @@ def _verify_facade_and_zero_leak() -> None:
             "ModuleDatabase",
             "ModuleEnv",
             "ModuleId",
+            "NullProfiler",
             "Option",
+            "Profiler",
+            "ProfilerNodeSnapshot",
+            "ProfilerSession",
             "ProgressEvent",
             "ProvenanceGraph",
             "SPACE_REGISTRY_CHANGED_EVENT_ID_STR",
@@ -650,11 +659,12 @@ def _verify_facade_and_zero_leak() -> None:
             "on_event",
             "on_migrate",
             "periodic",
+            "render_profiler_tree",
             "task",
         }
     )
-    check(len(sdk.__all__) == 75)
-    check(len(set(sdk.__all__)) == 75)
+    check(len(sdk.__all__) == 80)
+    check(len(set(sdk.__all__)) == 80)
     check(frozenset(sdk.__all__) == expected_exports)
     check(
         all(
@@ -676,6 +686,10 @@ def _verify_facade_and_zero_leak() -> None:
                 MergeStrategy,
                 MigrationRequest,
                 ModuleDatabase,
+                NullProfiler,
+                Profiler,
+                ProfilerNodeSnapshot,
+                ProfilerSession,
                 ProvenanceGraph,
                 SPACE_REGISTRY_CHANGED_EVENT_ID_STR,
                 SPACE_UPDATED_EVENT_ID_STR,
@@ -702,6 +716,7 @@ def _verify_facade_and_zero_leak() -> None:
                 WriteTransaction,
                 YscbError,
                 on_migrate,
+                render_profiler_tree,
             )
         )
     )
@@ -2154,6 +2169,78 @@ def _verify_taskgroup_parent_module_and_new_contracts(tmp_root: Path) -> None:
     check(dyn_in.name == "tmp_sp" and clr_in.name == "tmp_sp" and scan_in.space_id == "core/workspace" and scan_in.force)
 
 
+class _ProfilerChildGroup(TaskGroup):
+    def __init__(self) -> None:
+        self.init_span_path: str = ""
+
+    def on_init(self, env: ModuleEnv) -> None:
+        prof: Profiler = env.profiler
+        check(callable(prof.scope) and callable(prof.scope_relative) and callable(prof.snapshot))
+        with prof.scope_relative("GroupInit"):
+            self.init_span_path = prof.current_span_path()
+
+    @task("prof group_work")
+    def group_work(self, ctx: TaskContext) -> _EchoOut:
+        prof: Profiler = ctx.profiler
+        check(callable(prof.scope) and callable(prof.merge_subtree) and callable(prof.current_span_path))
+        with prof.scope("GroupWork/Inner"):
+            cur_path = prof.current_span_path()
+        snap = prof.snapshot()
+        rendered = render_profiler_tree(snap)
+        check("GroupWork" in rendered and "Inner" in rendered, f"Expected profiler tree output: {rendered}")
+        return _EchoOut(text=f"{self.init_span_path}|{cur_path}")
+
+
+class _ProfilerShowcaseModule(Module):
+    id: ClassVar[str] = "profmod"
+    groups: ClassVar[tuple[type[TaskGroup], ...]] = (_ProfilerChildGroup,)
+
+    def __init__(self) -> None:
+        self.env_init_seen: bool = False
+
+    def on_init(self, env: ModuleEnv) -> None:
+        prof: Profiler = env.profiler
+        check(callable(prof.scope))
+        with prof.scope("ModInit"):
+            self.env_init_seen = True
+
+    @task("prof work")
+    def work(self, ctx: TaskContext) -> _EchoOut:
+        with ctx.profiler.scope("WorkRoot"):
+            with ctx.profiler.scope_relative("SubStep"):
+                span_path = ctx.profiler.current_span_path()
+        snap = ctx.profiler.snapshot()
+        check(isinstance(snap, ProfilerNodeSnapshot))
+        check(any(ch.name == "WorkRoot" for ch in snap.children), f"Missing WorkRoot in {snap}")
+        return _EchoOut(text=span_path)
+
+
+def _verify_sdk_profiler_contracts(tmp_root: Path) -> None:
+    null_p: Profiler = NullProfiler()
+    check(callable(null_p.scope) and callable(null_p.snapshot))
+    with null_p.scope("Noop"):
+        check(null_p.current_span_path() == "")
+    sess = ProfilerSession(root_name="sdk_unit")
+    with sess.scope("StageA"):
+        with sess.scope_relative("Step1"):
+            check(sess.current_span_path() == "StageA/Step1")
+    tree_txt = render_profiler_tree(sess.snapshot())
+    check("sdk_unit" in tree_txt and "StageA" in tree_txt and "Step1" in tree_txt)
+
+    ws_prof = tmp_root / "ws_sdk_profiler"
+    ws_prof.mkdir(parents=True, exist_ok=True)
+    mod = _ProfilerShowcaseModule()
+    with YscbClient.local(HostPath(ws_prof), mod) as client:
+        out_mod = client.call("profmod.work", output_type=_EchoOut)
+        check(out_mod.ok and out_mod.value == _EchoOut(text="WorkRoot/SubStep"), f"Unexpected mod profiler output: {out_mod}")
+        check(mod.env_init_seen, "Expected Module.on_init to receive env.profiler")
+        out_grp = client.call("profmod.group_work", output_type=_EchoOut)
+        check(
+            out_grp.ok and out_grp.value is not None and out_grp.value.text.endswith("|GroupWork/Inner"),
+            f"Unexpected group profiler output: {out_grp}",
+        )
+
+
 def run_surface_sdk_suite(tmp_root: Path) -> None:
     """Execute the full Surface SDK test suite covering DSL, lifecycle, and YscbClient."""
     ws_base_p = tmp_root / "ws_sdk_base"
@@ -2168,6 +2255,7 @@ def run_surface_sdk_suite(tmp_root: Path) -> None:
     _verify_in_memory_and_client_e2e(tmp_root)
     _verify_wave12_sdk_extensions(tmp_root)
     _verify_taskgroup_parent_module_and_new_contracts(tmp_root)
+    _verify_sdk_profiler_contracts(tmp_root)
     log("[SURFACE-SDK] Surface SDK verification suite PASSED")
 
 

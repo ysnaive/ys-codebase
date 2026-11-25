@@ -13,7 +13,7 @@
 
 ### 1.1 萬物皆 `Task`、顯式傳播組合與零逆向依賴邊界
 1. **唯一公開執行單元**：全生態系所有可被 CLI、SDK、跨模組調用、事件、定時排程或升級遷移觸發的能力，**100% 實作為 `Task[TIn, TOut]` 並附帶強型別 `TaskMetadata`**。支援磁碟 `.modules/` 與無磁碟 `DispatcherHostOptions.in_memory_modules` 雙軌註冊；即便兩模組共置於同一 `venv_group` 子進程，跨模組呼叫 `ctx.invoke_task()` / `ctx.invoke_typed()` **仍必須經由主控端 `RuntimeDispatcher` 協調**。
-2. **顯式 10 欄位傳播上下文（`CallPropagationContext`）與跨 Tier 服務注入（`ModuleRuntimeServices`）**：將跨單步/跨進程傳遞之呼叫狀態收斂為 10 欄位不可變值物件；透過 `DispatcherHostOptions.module_services_factory` 與 `WorkerBootstrapConfig.host_dir` 對稱注入 `ScopedVfs`、`StructuredLogger`、`LocaleCatalog`、`ConfigStore` 與 `ContributesAggregator`。
+2. **顯式 11 欄位傳播上下文（`CallPropagationContext`）與跨 Tier 服務注入（`ModuleRuntimeServices`）**：將跨單步/跨進程傳遞之呼叫狀態（含 `profile_mem`）收斂為 11 欄位不可變值物件；透過 `DispatcherHostOptions.module_services_factory` 與 `WorkerBootstrapConfig.host_dir` 對稱注入 `ScopedVfs`、`StructuredLogger`（寫入 `.cache/logs/modules/<module>.jsonl` 並關聯 `trace_id`/`span_id`）、`LocaleCatalog`、`ConfigStore`、`ContributesAggregator` 與 `Profiler`。
 3. **頂層單工作區單飛合併（`StepFlight`）與全域 `QUIESCE` 單屏障（`LifecycleReloadGate`）**：
    - **頂層同工作區 `StepFlight`**：`COALESCE` 僅於非事件鏈之頂層同工作區熱呼叫啟用對稱單飛合併；任何巢狀呼叫與事件鏈呼叫自動降級為 `SERIALIZE`。
    - **全域單一 `QUIESCE` 屏障**：`LifecycleReloadGate` 以全域 `quiesce_epoch` 與單一租約門檻統一控管停止/重載與租約續期／逾時自癒恢復。
@@ -34,6 +34,7 @@ from core.filesystem.vfs import ScopedVfs, VfsHub
 from core.foundation.errors import ErrorDetail
 from core.foundation.observability import CancellationToken, LocaleCatalog, ProgressEvent, StructuredLogger
 from core.foundation.primitives import EventId, HostPath, JsonObject, JsonPrimitive, JsonValue, ModuleId, TaskId
+from core.foundation.profiler import NullProfiler, Profiler
 from core.metadata.config import ConfigStore
 from core.metadata.contributes import AggregatedContributes, ContributesAggregator
 
@@ -183,6 +184,7 @@ class CallPropagationContext:
     from_hot_container: bool = False
     hot_workspaces: frozenset[HostPath] = frozenset()
     cold_shared_workspaces: frozenset[HostPath] = frozenset()
+    profile_mem: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +200,9 @@ class InvokeRequest:
     approval_scope: frozenset[TaskId] = frozenset()
     allow_conditional: bool = True
     propagation: CallPropagationContext = field(default_factory=CallPropagationContext)
+    profile_mem: bool = False
+    external_flight_owner: bool = False
+    active_profiler: Optional[Profiler] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +225,7 @@ class ModuleRuntimeServices:
     locale: LocaleCatalog
     config_loader: Callable[[type[object]], object]
     contributes_loader: Callable[[], AggregatedContributes]
+    profiler: Profiler = field(default_factory=NullProfiler)
 
 
 def build_default_module_services(workspace_root: HostPath, module_id: ModuleId) -> ModuleRuntimeServices: ...
@@ -270,6 +276,8 @@ class TaskContext(ABC):
     @property
     @abstractmethod
     def locale(self) -> LocaleCatalog: ...
+    @property
+    def profiler(self) -> Profiler: ...
     @abstractmethod
     def load_config(self, config_cls: type[TConfig]) -> TConfig: ...
     @abstractmethod
@@ -402,6 +410,7 @@ from core.execution.lifecycle import (
     StepExecutionResult, TaskStepExecutor, TurnExecutionReport, TurnScope, WorkerContainerLifecycle,
 )
 from core.execution.rpc import DaemonConnectionConfig, PersistentRpcSession
+from core.foundation.profiler import FlightLogRouter, ProfilerRingBuffer
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,6 +422,7 @@ class DaemonRpcInvokeReply:
     teardown_diagnostics: tuple[ErrorDetail, ...] = ()
     invoked_tasks: tuple[tuple[HostPath, TaskId], ...] = ()
     coalesced: bool = False
+    profiler_tree: Optional[JsonValue] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -502,6 +512,9 @@ class DispatcherHostOptions:
     worker_host_dir: Optional[HostPath] = None
     env_lease_acquire: Optional[EnvLeaseAcquireFn] = None
     env_touch_used: Optional[EnvTouchUsedFn] = None
+    flight_log_router: Optional[FlightLogRouter] = None
+    daemon_boot_id: str = ""
+    profiler_ring_buffer: Optional[ProfilerRingBuffer] = None
 
 
 class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
@@ -525,6 +538,14 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
     def module_provider(self) -> ModuleProviderPort: ...
     @property
     def active_turn_count(self) -> int: ...
+    @property
+    def flight_log_router(self) -> Optional[FlightLogRouter]: ...
+    @property
+    def profiler_ring_buffer(self) -> Optional[ProfilerRingBuffer]: ...
+    def bind_daemon_observability(
+        self, *, daemon_boot_id: str = "", flight_log_router: Optional[FlightLogRouter] = None,
+        profiler_ring_buffer: Optional[ProfilerRingBuffer] = None,
+    ) -> None: ...
     def drain_teardown_diagnostics(self) -> tuple[ErrorDetail, ...]: ...
     def list_route_specs(self) -> tuple[TaskRouteSpec, ...]: ...
     def subscribed_modules(self, event_id: EventId) -> frozenset[ModuleId]: ...
@@ -746,6 +767,8 @@ class WorkerBootstrapConfig:
     modules: tuple[ModuleDescriptor, ...]
     is_hot_container: bool = True
     host_dir: Optional[HostPath] = None
+    daemon_boot_id: str = ""
+    flight_log_config: Optional[JsonObject] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -772,6 +795,7 @@ class WorkerStepReply:
     preempted: bool = False
     fatal_abort_turn: bool = False
     error: Optional[ErrorDetail] = None
+    profiler_tree: Optional[JsonValue] = None
 
 
 def worker_main(argv: Optional[Sequence[str]] = None, env: Optional[MutableMapping[str, str]] = None) -> int: ...

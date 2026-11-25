@@ -16,7 +16,39 @@ from core.execution.runtime.contracts import (
     ModuleDescriptor,
 )
 from core.foundation.errors import ErrorDetail, safe_exception_summary
-from core.foundation.primitives import MAX_USER_JSON_DEPTH, EventId, HostPath, JsonObject, JsonValue, ModuleId, TaskId, require_pure_bool, require_typed_tuple, validate_wire_json_object
+from core.foundation.primitives import (
+    MAX_USER_JSON_DEPTH,
+    EventId,
+    HostPath,
+    JsonObject,
+    JsonValue,
+    ModuleId,
+    MutableJsonObject,
+    TaskId,
+    require_pure_bool,
+    require_typed_tuple,
+    validate_wire_json_object,
+)
+from core.foundation.profiler import ProfilerNodeSnapshot, decode_profiler_snapshot
+
+
+def _snapshot_to_wire_dict(snap: ProfilerNodeSnapshot) -> MutableJsonObject:
+    return {
+        "name": snap.name,
+        "self_ms": snap.self_ms,
+        "total_ms": snap.total_ms,
+        "calls": snap.calls,
+        "alloc_kb": snap.alloc_kb,
+        "callers": list(snap.callers),
+        "children": [_snapshot_to_wire_dict(ch) for ch in snap.children],
+    }
+
+
+def _sanitize_profiler_tree_wire(raw: Optional[JsonValue]) -> Optional[JsonValue]:
+    if raw is None:
+        return None
+    decoded = decode_profiler_snapshot(raw)
+    return _snapshot_to_wire_dict(decoded) if decoded is not None else None
 
 
 class WorkerCommandKind(Enum):
@@ -71,6 +103,8 @@ class WorkerBootstrapConfig:
     modules: tuple[ModuleDescriptor, ...]
     is_hot_container: bool = True
     host_dir: Optional[HostPath] = None
+    daemon_boot_id: str = ""
+    flight_log_config: Optional[JsonObject] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +135,9 @@ class WorkerCommandEnvelope:
     priority: ExecutionPriority = ExecutionPriority.FOREGROUND
     interactive_tty: bool = False
     callback_context: Optional[WorkerCallbackContext] = None
+    profile_mem: bool = False
+    trace_id: str = ""
+    exec_mode: str = "worker"
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +178,11 @@ class WorkerStepReply:
     preempted: bool = False
     fatal_abort_turn: bool = False
     error: Optional[ErrorDetail] = None
+    profiler_tree: Optional[JsonValue] = None
+
+    def __post_init__(self) -> None:
+        if self.profiler_tree is not None:
+            object.__setattr__(self, "profiler_tree", _sanitize_profiler_tree_wire(self.profiler_tree))
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +228,7 @@ class DaemonRpcInvokeEnvelope:
     allow_conditional: bool = True
     timeout_ms: Optional[int] = None
     propagation: CallPropagationContext = field(default_factory=CallPropagationContext)
+    client_owns_flight_logs: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +242,7 @@ class DaemonRpcInvokeReply:
     teardown_diagnostics: tuple[ErrorDetail, ...] = ()
     invoked_tasks: tuple[tuple[HostPath, TaskId], ...] = ()
     coalesced: bool = False
+    profiler_tree: Optional[JsonValue] = None
 
     def __post_init__(self) -> None:
         require_pure_bool(self.ok, "DaemonRpcInvokeReply.ok")
@@ -216,3 +260,5 @@ class DaemonRpcInvokeReply:
         object.__setattr__(self, "event_diagnostics", require_typed_tuple(self.event_diagnostics, ErrorDetail, "event_diagnostics"))
         object.__setattr__(self, "teardown_diagnostics", require_typed_tuple(self.teardown_diagnostics, ErrorDetail, "teardown_diagnostics"))
         object.__setattr__(self, "invoked_tasks", validate_host_task_pairs(self.invoked_tasks, "DaemonRpcInvokeReply.invoked_tasks"))
+        if self.profiler_tree is not None:
+            object.__setattr__(self, "profiler_tree", _sanitize_profiler_tree_wire(self.profiler_tree))

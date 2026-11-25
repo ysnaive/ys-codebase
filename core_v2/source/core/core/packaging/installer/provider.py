@@ -43,6 +43,7 @@ from core.foundation.primitives import (
     is_valid_relative_segment,
     require_pure_bool,
     require_pure_str,
+    safe_realpath,
     strict_parse_json_object,
 )
 from core.foundation.proc import is_public_env_truthy
@@ -723,7 +724,7 @@ def _validate_provider_tail_syntax(raw_tail: str, *, raw_label: str) -> None:
 def _canonicalize_checked_nonsymlink_step(raw_step: str) -> str:
     assert_no_symlink_raw_path(raw_step)
     if os.path.lexists(raw_step):
-        return os.path.realpath(raw_step)
+        return safe_realpath(raw_step)
     return raw_step
 
 

@@ -72,7 +72,7 @@ from typing import Annotated, BinaryIO, Callable, ClassVar, Final, Generic, Lite
 from core.filesystem.fs import IGNORED_FS_PREFIXES, has_symlink_raw_path, is_atomic_staging_filename, is_symlink_or_reparse
 from core.filesystem.storage import ModuleDatabase, SnapshotReader, WriteTransaction
 from core.filesystem.vfs import KernelVfs
-from core.foundation import CancellationToken, DataclassCodec, ErrorCode, HostPath, IS_WINDOWS, ModuleId, SemanticUri, SnapshotGen, SpaceId, SpacePath, YscbError, is_valid_relative_segment, require_non_none, require_pure_bool, require_pure_int, require_pure_str, strict_parse_json_object
+from core.foundation import CancellationToken, DataclassCodec, ErrorCode, HostPath, IS_WINDOWS, ModuleId, Profiler, SemanticUri, SnapshotGen, SpaceId, SpacePath, YscbError, is_valid_relative_segment, require_non_none, require_pure_bool, require_pure_int, require_pure_str, strict_parse_json_object
 
 @dataclass(frozen=True, slots=True)
 class ConsumerCursor:
@@ -190,7 +190,7 @@ class SpaceRegistry:
 
 class SpaceScanner:
 
-    def __init__(self, registry: SpaceRegistry, db: ModuleDatabase) -> None:
+    def __init__(self, registry: SpaceRegistry, db: ModuleDatabase, *, profiler: Optional[Profiler]=None) -> None:
         ...
 
     def status(self, space_id: SpaceId | str) -> SpaceStatusSnapshot:

@@ -32,6 +32,7 @@ from core.foundation.primitives import (
     is_valid_relative_segment,
     require_pure_bool,
     require_pure_str,
+    safe_realpath,
 )
 
 _SCHEME_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)*$")
@@ -68,8 +69,8 @@ def _validate_provider_uri(uri: SemanticUri, expected_scheme: str) -> tuple[str,
 
 
 def _ensure_realpath_contained(root_dir: HostPath, target: HostPath, *, allow_equal: bool) -> None:
-    real_root = os.path.normcase(os.path.realpath(str(root_dir)))
-    real_target = os.path.normcase(os.path.realpath(str(target)))
+    real_root = os.path.normcase(safe_realpath(str(root_dir)))
+    real_target = os.path.normcase(safe_realpath(str(target)))
     seps = ("/", "\\") if IS_WINDOWS else ("/",)
     strip_chars = "/\\" if IS_WINDOWS else "/"
     trimmed_root = real_root.rstrip(strip_chars) or real_root
@@ -621,7 +622,7 @@ class PhysicalDirectoryProvider:
             raise YscbError(ErrorCode.ACCESS_DENIED, f"Refusing symlink directory in iter_entries: {raw_t}")
         if not os.path.isdir(raw_t):
             raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), raw_t)
-        real_root = os.path.realpath(str(self._root_dir))
+        real_root = safe_realpath(str(self._root_dir))
         collected: list[SemanticUri] = []
         if not recursive:
             with os.scandir(raw_t) as it:

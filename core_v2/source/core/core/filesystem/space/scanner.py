@@ -34,7 +34,9 @@ from core.foundation.primitives import (
     require_pure_bool,
     require_pure_int,
     require_pure_str,
+    safe_realpath,
 )
+from core.foundation.profiler import NullProfiler, Profiler
 
 _RACY_CLEAN_WINDOW_NS: Final[int] = 20_000_000
 
@@ -171,12 +173,19 @@ def _is_racy_clean_candidate(
 class SpaceScanner:
     """Two-stage incremental scanner, surgical dirty-path patcher, and multi-consumer cursor engine."""
 
-    def __init__(self, registry: SpaceRegistry, db: ModuleDatabase) -> None:
+    def __init__(
+        self,
+        registry: SpaceRegistry,
+        db: ModuleDatabase,
+        *,
+        profiler: Optional[Profiler] = None,
+    ) -> None:
         if not isinstance(registry, SpaceRegistry):
             raise ValueError(f"SpaceScanner requires SpaceRegistry, got {registry!r}")
         spc_ensure_space_tables(db)
         self._registry: SpaceRegistry = registry
         self._db: ModuleDatabase = db
+        self._profiler: Profiler = profiler if profiler is not None else NullProfiler()
         self._scan_lock = threading.RLock()
         self._inflight_lock = threading.Lock()
         self._inflight_from_gens: dict[str, list[int]] = {}
@@ -218,6 +227,38 @@ class SpaceScanner:
         view: SpcCapturedRegistryView,
         cancel_token: Optional[CancellationToken],
     ) -> SpaceDiffBatch:
+        with self._profiler.scope_relative("Commit"):
+            batch = self._commit_snapshot_delta_once(
+                resolved_id=resolved_id,
+                target_key=target_key,
+                cur_cfg_hash=cur_cfg_hash,
+                next_files=next_files,
+                prev_snap=prev_snap,
+                prev_files=prev_files,
+                stat_refreshed_rels=stat_refreshed_rels,
+                scan_ts_ns=scan_ts_ns,
+                advance_snap_ts=advance_snap_ts,
+                is_full_scan=is_full_scan,
+                cancel_token=cancel_token,
+            )
+        if batch is None:
+            return self._scan_locked(resolved_id, force=False, cancel_token=cancel_token, view=view)
+        return batch
+
+    def _commit_snapshot_delta_once(
+        self,
+        resolved_id: SpaceId,
+        target_key: str,
+        cur_cfg_hash: str,
+        next_files: Mapping[str, _SpcStoredFile],
+        prev_snap: _SpcStoredSnapshot,
+        prev_files: Mapping[str, _SpcStoredFile],
+        stat_refreshed_rels: Sequence[str],
+        scan_ts_ns: int,
+        advance_snap_ts: bool,
+        is_full_scan: bool,
+        cancel_token: Optional[CancellationToken],
+    ) -> Optional[SpaceDiffBatch]:
         added_rels = sorted(rel for rel in next_files if rel not in prev_files)
         deleted_rels = sorted(rel for rel in prev_files if rel not in next_files)
         modified_rels = sorted(
@@ -264,7 +305,7 @@ class SpaceScanner:
                                 (scan_ts_ns, target_key),
                             )
             if noop_stale:
-                return self._scan_locked(resolved_id, force=False, cancel_token=cancel_token, view=view)
+                return None
             cur_gen = SnapshotGen(prev_snap.generation)
             return SpaceDiffBatch(
                 space_id=resolved_id,
@@ -369,7 +410,7 @@ class SpaceScanner:
                 tx.mark_generation_bumped()
 
         if stale_base:
-            return self._scan_locked(resolved_id, force=False, cancel_token=cancel_token, view=view)
+            return None
 
         return SpaceDiffBatch(
             space_id=resolved_id,
@@ -426,8 +467,9 @@ class SpaceScanner:
         require_pure_bool(force, "force")
         if cancel_token is not None:
             cancel_token.raise_if_cancelled()
-        with self._scan_lock:
-            return self._scan_locked(space_id, force=force, cancel_token=cancel_token)
+        with self._profiler.scope_relative("Space/Scan"):
+            with self._scan_lock:
+                return self._scan_locked(space_id, force=force, cancel_token=cancel_token)
 
     def _scan_locked(
         self,
@@ -449,59 +491,61 @@ class SpaceScanner:
             prev_snap = _read_snapshot_meta(snap, target_key)
             prev_files = _read_stored_files(snap, target_key)
 
-        stat_entries = active_view.iter_raw_files(resolved_id, cancel_token=cancel_token)
+        with self._profiler.scope_relative("WalkFiles"):
+            stat_entries = active_view.iter_raw_files(resolved_id, cancel_token=cancel_token)
         next_files: dict[str, _SpcStoredFile] = {}
         stat_refreshed: list[str] = []
         rechecked_racy = False
 
-        for st_ent in stat_entries:
-            if cancel_token is not None:
-                cancel_token.raise_if_cancelled()
-            rel_s = str(st_ent.rel_path)
-            prev_f = prev_files.get(rel_s)
-            is_racy = _is_racy_clean_candidate(st_ent.mtime_ns, scan_start_ns, prev_snap.updated_at_ns)
-            can_reuse = (
-                (not force)
-                and prev_snap.exists
-                and prev_snap.config_hash == cur_cfg_hash
-                and prev_f is not None
-                and prev_f.size_bytes == st_ent.size_bytes
-                and prev_f.mtime_ns == st_ent.mtime_ns
-                and not is_racy
-            )
-            if can_reuse and prev_f is not None:
-                next_files[rel_s] = prev_f
-                continue
-            if is_racy and prev_f is not None and prev_f.size_bytes == st_ent.size_bytes and prev_f.mtime_ns == st_ent.mtime_ns:
-                rechecked_racy = True
+        with self._profiler.scope_relative("HashFiles"):
+            for st_ent in stat_entries:
+                if cancel_token is not None:
+                    cancel_token.raise_if_cancelled()
+                rel_s = str(st_ent.rel_path)
+                prev_f = prev_files.get(rel_s)
+                is_racy = _is_racy_clean_candidate(st_ent.mtime_ns, scan_start_ns, prev_snap.updated_at_ns)
+                can_reuse = (
+                    (not force)
+                    and prev_snap.exists
+                    and prev_snap.config_hash == cur_cfg_hash
+                    and prev_f is not None
+                    and prev_f.size_bytes == st_ent.size_bytes
+                    and prev_f.mtime_ns == st_ent.mtime_ns
+                    and not is_racy
+                )
+                if can_reuse and prev_f is not None:
+                    next_files[rel_s] = prev_f
+                    continue
+                if is_racy and prev_f is not None and prev_f.size_bytes == st_ent.size_bytes and prev_f.mtime_ns == st_ent.mtime_ns:
+                    rechecked_racy = True
 
-            try:
-                computed_hash = spc_compute_file_hash(
-                    st_ent.abs_path,
+                try:
+                    computed_hash = spc_compute_file_hash(
+                        st_ent.abs_path,
+                        size_bytes=st_ent.size_bytes,
+                        mtime_ns=st_ent.mtime_ns,
+                        policy=eff_policy,
+                    )
+                except OSError:
+                    continue
+                if computed_hash is None:
+                    continue
+
+                if (
+                    prev_f is not None
+                    and prev_f.content_hash == computed_hash
+                    and (prev_f.size_bytes != st_ent.size_bytes or prev_f.mtime_ns != st_ent.mtime_ns)
+                ):
+                    stat_refreshed.append(rel_s)
+
+                next_files[rel_s] = _SpcStoredFile(
+                    rel_path=rel_s,
+                    abs_path=str(st_ent.abs_path),
                     size_bytes=st_ent.size_bytes,
                     mtime_ns=st_ent.mtime_ns,
-                    policy=eff_policy,
+                    content_hash=computed_hash,
+                    updated_gen=prev_f.updated_gen if prev_f is not None else max(1, prev_snap.generation + 1),
                 )
-            except OSError:
-                continue
-            if computed_hash is None:
-                continue
-
-            if (
-                prev_f is not None
-                and prev_f.content_hash == computed_hash
-                and (prev_f.size_bytes != st_ent.size_bytes or prev_f.mtime_ns != st_ent.mtime_ns)
-            ):
-                stat_refreshed.append(rel_s)
-
-            next_files[rel_s] = _SpcStoredFile(
-                rel_path=rel_s,
-                abs_path=str(st_ent.abs_path),
-                size_bytes=st_ent.size_bytes,
-                mtime_ns=st_ent.mtime_ns,
-                content_hash=computed_hash,
-                updated_gen=prev_f.updated_gen if prev_f is not None else max(1, prev_snap.generation + 1),
-            )
 
         return self._commit_snapshot_delta(
             resolved_id=resolved_id,
@@ -532,8 +576,9 @@ class SpaceScanner:
             if not isinstance(hp, HostPath):
                 raise ValueError(f"dirty_paths requires HostPath elements, got {hp!r}")
 
-        with self._scan_lock:
-            return self._patch_paths_locked(dirty_paths, cancel_token=cancel_token)
+        with self._profiler.scope_relative("Space/PatchPaths"):
+            with self._scan_lock:
+                return self._patch_paths_locked(dirty_paths, cancel_token=cancel_token)
 
     def _patch_paths_locked(
         self,
@@ -643,7 +688,7 @@ class SpaceScanner:
                         next_files.pop(old_rec.rel_path, None)
                     continue
 
-                actual_abs = os.path.realpath(raw_d) if IS_WINDOWS else raw_d
+                actual_abs = safe_realpath(raw_d) if IS_WINDOWS else raw_d
                 if old_rec is None or old_rec.abs_path != actual_abs:
                     need_fallback_scan = True
                     break
@@ -708,7 +753,10 @@ class SpaceScanner:
         clean_cid = consumer_id.strip()
         if not clean_cid:
             raise ValueError("consumer_id must be a non-empty string.")
+        with self._profiler.scope_relative("Space/Diff"):
+            return self._diff_validated(space_id, clean_cid)
 
+    def _diff_validated(self, space_id: SpaceId | str, clean_cid: str) -> SpaceDiffBatch:
         view = spc_capture_registry_view(self._registry)
         spec = view.get_space(space_id)
         resolved_id = spec.space_id
@@ -804,7 +852,10 @@ class SpaceScanner:
             raise ValueError("consumer_id must be a non-empty string.")
         if not isinstance(batch, SpaceDiffBatch):
             raise ValueError(f"batch must be SpaceDiffBatch, got {batch!r}")
+        with self._profiler.scope_relative("Space/AckCursor"):
+            return self._ack_cursor_validated(space_id, clean_cid, batch)
 
+    def _ack_cursor_validated(self, space_id: SpaceId | str, clean_cid: str, batch: SpaceDiffBatch) -> bool:
         spec = self._registry.get_space(space_id)
         resolved_id = spec.space_id
         if batch.space_id != resolved_id:

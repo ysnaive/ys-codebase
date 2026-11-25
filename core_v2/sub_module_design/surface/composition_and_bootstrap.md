@@ -119,7 +119,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from enum import Enum, Flag
 import io
@@ -134,12 +134,12 @@ from typing import Annotated, BinaryIO, Callable, ClassVar, Final, Generic, Lite
 from core.execution.daemon import DaemonQuiesceControl, DaemonReloadControl, DaemonResumeControl, DaemonRunState, DaemonStopControl, DaemonWatcherConfig, SingleFlightDaemonSpawner, WorkspaceDaemon, query_daemon_control
 from core.execution.lifecycle import ContainerState
 from core.execution.rpc import DAEMON_SUBDIR, DaemonConnectionConfig, FrameKind, call_ephemeral_daemon_rpc, probe_daemon_endpoint, read_daemon_endpoint_file
-from core.execution.runtime import BoundTask, CONFIG_CHANGED_EVENT_ID, CORE_MODULE_ID, CallPropagationContext, CallerSurface, ClientRoutingPolicy, ConfigViewPort, DEFAULT_CACHE_DIRNAME, DaemonRpcInvokeReply, DispatchMode, DispatcherHostOptions, ExecutionPriority, InvokeRequest, LOCKS_SUBDIR, MODULES_DIRNAME, MODULE_INSTALLED_EVENT_ID, MODULE_REMOVING_EVENT_ID, ModuleDescriptor, ModuleProviderPort, ModuleRuntimeServices, ProtectedModuleLoader, RuntimeDispatcher, SecurityTier, SelfMutationScope, TaskContext, TaskExposure, TaskMetadata, TaskRouteSpec, WORKSPACE_RELOADED_EVENT_ID, YscbModule, build_workspace_module_services_factory, resolve_active_call_tree_id, resolve_active_caller_module
+from core.execution.runtime import BoundTask, CONFIG_CHANGED_EVENT_ID, CORE_MODULE_ID, CallPropagationContext, CallerSurface, ClientRoutingPolicy, ConfigViewPort, DEFAULT_CACHE_DIRNAME, DaemonRpcInvokeReply, DispatchMode, DispatcherHostOptions, ExecutionPriority, InvokeRequest, LOCKS_SUBDIR, MODULES_DIRNAME, MODULE_INSTALLED_EVENT_ID, MODULE_REMOVING_EVENT_ID, ModuleDescriptor, ModuleProviderPort, ModuleRuntimeServices, ProtectedModuleLoader, RuntimeDispatcher, SecurityTier, SelfMutationScope, TaskContext, TaskExposure, TaskMetadata, TaskOutcome, TaskRouteSpec, WORKSPACE_RELOADED_EVENT_ID, YscbModule, build_workspace_module_services_factory, resolve_active_call_tree_id, resolve_active_caller_module
 from core.filesystem.fs import FileLock, MAX_JSON_FILE_BYTES, assert_no_symlink_raw_path, atomic_write_json, has_symlink_raw_path, is_symlink_or_reparse, read_json_dict, read_nofollow_regular_bytes, resolve_contained_subpath, try_resolve_contained_subpath
 from core.filesystem.space import GitignoreMaterializer, HashPolicy, SpaceDiffBatch, SpaceMatchExplain, SpaceRegistry, SpaceScanner, SpaceSpec
 from core.filesystem.storage import ModuleDatabase
 from core.filesystem.vfs import KernelVfs, MountRule, ReadonlyPolicy, UriMountTable, VfsCapabilities, VfsEchoGuard, VfsHub, build_standard_mount_rules
-from core.foundation import CancellationToken, DataclassCodec, ErrorCode, HostPath, INT64_MAX, INT64_MIN, IS_WINDOWS, JsonObject, JsonValue, LocaleCatalog, ModuleId, MutableJsonObject, SemanticUri, SnapshotGen, SpaceId, SpacePath, TEST_SANDBOX_ENV_KEY, TaskId, YscbError, build_isolated_python_env, guard_standard_streams, is_process_alive, is_public_env_truthy, read_public_env_value, require_non_none, require_pure_bool, require_pure_int, require_pure_str, safe_real_to_float, strict_parse_json_object
+from core.foundation import CancellationToken, DataclassCodec, ErrorCode, ErrorDetail, FlightLogConfig, FlightLogRouter, HostPath, INT64_MAX, INT64_MIN, IS_WINDOWS, JsonObject, JsonValue, LocaleCatalog, ModuleId, MutableJsonObject, NullProfiler, Profiler, ProfilerNodeSnapshot, ProfilerRingBuffer, SemanticUri, SnapshotGen, SpaceId, SpacePath, TEST_SANDBOX_ENV_KEY, TaskId, YscbError, build_isolated_python_env, guard_standard_streams, is_process_alive, is_public_env_truthy, read_public_env_value, require_non_none, require_pure_bool, require_pure_int, require_pure_str, safe_real_to_float, strict_parse_json_object
 from core.metadata.config import ConfigStore, ModuleManifest, SnapshotVault, parse_manifest_dict, register_compiled_module_surface_meta
 from core.metadata.contributes import AggregatedContributes, ContributesAggregator, CoreSpaceContribution, CoreUriSchemeContribution, ExtensionPointSpec, ProvenanceGraph, ResolvedProjectRoot, bind_locale_getter_dialect, bind_locale_getter_owner, core_builtin_extension_points, discover_installed_manifests_map, extract_parsed_space_contributions, extract_validated_uri_schemes, hash_workspace_surface_trees, is_active_cross_workspace_call, is_control_plane_reserved_path, is_permitted_contributed_mount_root, load_workspace_locale_catalog, probe_workspace_host_dir, register_managed_child_dispatcher, register_sdk_core_post_call_hook, register_sdk_core_session_factory, resolve_sdk_core_dispatcher_binder, resolve_workspace_project_root, unbind_locale_getter_dialect, unbind_locale_getter_owner
 from core.packaging.env import EnvGarbageCollector, EnvHealthProbe, EnvSpec, ImmutableVenvPool, acquire_env_lease_for_python, touch_env_last_used
@@ -697,7 +697,7 @@ class WatcherTriggerInput:
 
 class WorkspaceKernel(SystemKernelPort, CliKernelSession):
 
-    def __init__(self, *, host_dir: HostPath, yscb_root: HostPath, is_daemon_host: bool, force_cold: bool, extra_modules: Sequence[YscbModule], yscb_script_path: Optional[HostPath], dialect: Optional[str]=None, extra_config_types: Mapping[ModuleId, type[object]]=MappingProxyType({}), extra_live_specs: Mapping[ModuleId, Sequence[ExtensionPointSpec[object]]]=MappingProxyType({}), allow_deferred_daemon_console: bool=False, is_managed_child: bool=False, allow_auto_spawn: bool=True, inherit_host_env_locale: bool=True, raw_env_locale_override: Optional[str]=None) -> None:
+    def __init__(self, *, host_dir: HostPath, yscb_root: HostPath, is_daemon_host: bool, force_cold: bool, extra_modules: Sequence[YscbModule], yscb_script_path: Optional[HostPath], dialect: Optional[str]=None, extra_config_types: Mapping[ModuleId, type[object]]=MappingProxyType({}), extra_live_specs: Mapping[ModuleId, Sequence[ExtensionPointSpec[object]]]=MappingProxyType({}), allow_deferred_daemon_console: bool=False, is_managed_child: bool=False, allow_auto_spawn: bool=True, inherit_host_env_locale: bool=True, raw_env_locale_override: Optional[str]=None, profiler: Optional[Profiler]=None) -> None:
         ...
 
     def resolve_module_config_type(self, module_id: ModuleId) -> Optional[type[object]]:

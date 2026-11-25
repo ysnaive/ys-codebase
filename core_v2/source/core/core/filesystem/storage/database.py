@@ -27,6 +27,7 @@ from core.foundation.primitives import (
     require_pure_str,
     require_typed_tuple,
 )
+from core.foundation.profiler import NullProfiler, Profiler
 
 SqlParam: TypeAlias = None | bool | int | float | str | bytes
 SqlParams: TypeAlias = Sequence[SqlParam]
@@ -880,6 +881,7 @@ class ModuleDatabase:
         *,
         migrations: Sequence[SchemaMigration] = (),
         options: StorageOpenOptions = StorageOpenOptions(),
+        profiler: Optional[Profiler] = None,
     ) -> None:
         if not isinstance(options, StorageOpenOptions):
             raise TypeError(f"options must be StorageOpenOptions, got {type(options).__name__}")
@@ -895,11 +897,14 @@ class ModuleDatabase:
             vfs.mkdir(parent_uri, parents=True)
         else:
             os.makedirs(phys.path.parent, exist_ok=True)
+        active_profiler: Profiler = profiler if profiler is not None else NullProfiler()
         uri_text = str(bound_uri)
         _stg_verify_sqlite_files_safe(phys, uri_text)
-        write_conn = _stg_open_sqlite_conn(phys, options, uri_text, writable=True)
+        with active_profiler.scope_relative("Storage/Open"):
+            write_conn = _stg_open_sqlite_conn(phys, options, uri_text, writable=True)
         try:
-            final_ver = _stg_bootstrap_and_migrate(write_conn, steps, uri_text)
+            with active_profiler.scope_relative("Storage/Migrate"):
+                final_ver = _stg_bootstrap_and_migrate(write_conn, steps, uri_text)
         except BaseException:
             _stg_safe_close_conn(write_conn)
             raise
@@ -908,6 +913,7 @@ class ModuleDatabase:
         self._uri_text: str = uri_text
         self._physical_path: HostPath = phys
         self._options: StorageOpenOptions = options
+        self._profiler: Profiler = active_profiler
         self._schema_version: int = final_ver
         self._write_lock = threading.Lock()
         self._pool_lock = threading.Lock()
@@ -1023,29 +1029,30 @@ class ModuleDatabase:
 
     @contextmanager
     def read_snapshot(self) -> Iterator[SnapshotReader]:
-        conn, borrower_tid = self._borrow_read_conn()
-        lease: Optional[_StgSnapshotLease] = None
-        try:
-            _stg_exec_sql(conn, "PRAGMA query_only = ON", (), self._uri_text)
-            _stg_exec_sql(conn, "BEGIN DEFERRED", (), self._uri_text)
-            snap_gen = _stg_read_committed_gen(conn, self._uri_text)
-            lease = _StgSnapshotLease(
-                conn=conn,
-                uri_text=self._uri_text,
-                snapshot_gen=snap_gen,
-            )
-            reader: SnapshotReader = _StgSnapshotReader(lease)
-            yield reader
-        finally:
-            if lease is not None:
-                lease.active = False
-                for cur in list(lease.open_cursors):
-                    try:
-                        cur.close()
-                    except sqlite3.Error:
-                        pass
-                lease.open_cursors.clear()
-            self._return_read_conn(conn, borrower_tid)
+        with self._profiler.scope_relative("Storage/ReadSnap"):
+            conn, borrower_tid = self._borrow_read_conn()
+            lease: Optional[_StgSnapshotLease] = None
+            try:
+                _stg_exec_sql(conn, "PRAGMA query_only = ON", (), self._uri_text)
+                _stg_exec_sql(conn, "BEGIN DEFERRED", (), self._uri_text)
+                snap_gen = _stg_read_committed_gen(conn, self._uri_text)
+                lease = _StgSnapshotLease(
+                    conn=conn,
+                    uri_text=self._uri_text,
+                    snapshot_gen=snap_gen,
+                )
+                reader: SnapshotReader = _StgSnapshotReader(lease)
+                yield reader
+            finally:
+                if lease is not None:
+                    lease.active = False
+                    for cur in list(lease.open_cursors):
+                        try:
+                            cur.close()
+                        except sqlite3.Error:
+                            pass
+                    lease.open_cursors.clear()
+                self._return_read_conn(conn, borrower_tid)
 
     @contextmanager
     def write_transaction(
@@ -1057,47 +1064,48 @@ class ModuleDatabase:
             raise TypeError(f"cancel_token must be CancellationToken or None, got {type(cancel_token).__name__}")
         if cancel_token is not None:
             cancel_token.raise_if_cancelled()
-        self._acquire_write_lock(cancel_token)
-        try:
-            with self._pool_lock:
-                if self._closed or self._write_conn is None:
-                    raise YscbError(
-                        ErrorCode.TEARDOWN_ERROR,
-                        f"ModuleDatabase '{self._uri_text}' is already closed.",
-                    )
-                write_conn = self._write_conn
-                self._write_owner_tid = threading.get_ident()
+        with self._profiler.scope_relative("Storage/WriteTx"):
+            self._acquire_write_lock(cancel_token)
             try:
-                if cancel_token is not None:
-                    cancel_token.raise_if_cancelled()
-                _stg_exec_sql(write_conn, "BEGIN IMMEDIATE", (), self._uri_text)
-                committed = False
-                lease: Optional[_StgWriteLease] = None
+                with self._pool_lock:
+                    if self._closed or self._write_conn is None:
+                        raise YscbError(
+                            ErrorCode.TEARDOWN_ERROR,
+                            f"ModuleDatabase '{self._uri_text}' is already closed.",
+                        )
+                    write_conn = self._write_conn
+                    self._write_owner_tid = threading.get_ident()
                 try:
-                    init_gen = _stg_read_committed_gen(write_conn, self._uri_text)
-                    lease = _StgWriteLease(
-                        conn=write_conn,
-                        uri_text=self._uri_text,
-                        initial_gen=init_gen,
-                        current_gen=init_gen,
-                    )
-                    tx: WriteTransaction = _StgWriteTransaction(lease)
-                    yield tx
                     if cancel_token is not None:
                         cancel_token.raise_if_cancelled()
-                    lease.active = False
-                    _stg_exec_sql(write_conn, "COMMIT", (), self._uri_text)
-                    committed = True
-                finally:
-                    if lease is not None:
+                    _stg_exec_sql(write_conn, "BEGIN IMMEDIATE", (), self._uri_text)
+                    committed = False
+                    lease: Optional[_StgWriteLease] = None
+                    try:
+                        init_gen = _stg_read_committed_gen(write_conn, self._uri_text)
+                        lease = _StgWriteLease(
+                            conn=write_conn,
+                            uri_text=self._uri_text,
+                            initial_gen=init_gen,
+                            current_gen=init_gen,
+                        )
+                        tx: WriteTransaction = _StgWriteTransaction(lease)
+                        yield tx
+                        if cancel_token is not None:
+                            cancel_token.raise_if_cancelled()
                         lease.active = False
-                    if not committed:
-                        _stg_safe_rollback(write_conn)
+                        _stg_exec_sql(write_conn, "COMMIT", (), self._uri_text)
+                        committed = True
+                    finally:
+                        if lease is not None:
+                            lease.active = False
+                        if not committed:
+                            _stg_safe_rollback(write_conn)
+                finally:
+                    with self._pool_lock:
+                        self._write_owner_tid = None
             finally:
-                with self._pool_lock:
-                    self._write_owner_tid = None
-        finally:
-            self._write_lock.release()
+                self._write_lock.release()
 
     def committed_gen(self) -> SnapshotGen:
         with self.read_snapshot() as reader:
@@ -1109,24 +1117,25 @@ class ModuleDatabase:
 
     def checkpoint(self, *, truncate: bool = False) -> tuple[int, int]:
         require_pure_bool(truncate, "truncate")
-        self._acquire_write_lock(None)
-        try:
-            with self._pool_lock:
-                if self._closed or self._write_conn is None:
-                    raise YscbError(
-                        ErrorCode.TEARDOWN_ERROR,
-                        f"ModuleDatabase '{self._uri_text}' is already closed.",
-                    )
-                write_conn = self._write_conn
-            mode = "TRUNCATE" if truncate else "PASSIVE"
-            row = _stg_query_one_sql(write_conn, f"PRAGMA wal_checkpoint({mode})", (), self._uri_text)
-            if row is None or len(row) < 3 or type(row[1]) is not int or type(row[2]) is not int:
-                return (0, 0)
-            total_frames = max(0, row[1])
-            checkpointed_frames = max(0, row[2])
-            return (total_frames, checkpointed_frames)
-        finally:
-            self._write_lock.release()
+        with self._profiler.scope_relative("Storage/Checkpoint"):
+            self._acquire_write_lock(None)
+            try:
+                with self._pool_lock:
+                    if self._closed or self._write_conn is None:
+                        raise YscbError(
+                            ErrorCode.TEARDOWN_ERROR,
+                            f"ModuleDatabase '{self._uri_text}' is already closed.",
+                        )
+                    write_conn = self._write_conn
+                mode = "TRUNCATE" if truncate else "PASSIVE"
+                row = _stg_query_one_sql(write_conn, f"PRAGMA wal_checkpoint({mode})", (), self._uri_text)
+                if row is None or len(row) < 3 or type(row[1]) is not int or type(row[2]) is not int:
+                    return (0, 0)
+                total_frames = max(0, row[1])
+                checkpointed_frames = max(0, row[2])
+                return (total_frames, checkpointed_frames)
+            finally:
+                self._write_lock.release()
 
     def verify_integrity(self) -> bool:
         with self.read_snapshot() as reader:

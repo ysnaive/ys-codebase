@@ -25,7 +25,11 @@ from core.execution.runtime.contracts import (
     ModuleDescriptor,
     WorkerProcessSnapshot,
 )
-from core.execution.runtime.services import HOST_DIALECT_ENV_KEY, resolve_explicit_workspace_host_dialect
+from core.execution.runtime.services import (
+    HOST_DIALECT_ENV_KEY,
+    resolve_active_profiler,
+    resolve_explicit_workspace_host_dialect,
+)
 from core.execution.runtime.coordinator import PriorityHandle, wait_on_event_with_cancel
 from core.execution.runtime.wire import (
     WorkerBootstrapConfig, WorkerCommandEnvelope, WorkerCommandKind, WorkerControlAction, WorkerElevateControl,
@@ -42,6 +46,7 @@ from core.foundation.errors import ErrorCode, ErrorDetail, TaskCancelledExceptio
 from core.foundation.observability import MAX_SAFE_WAIT_SEC, MAX_TIMEOUT_MS, CancellationToken, DeadlineGuard, ms_to_safe_sec
 from core.foundation.primitives import PYTHON_LAUNCHER_HIJACK_ENV_KEYS, decrement_ref_count, HostPath, JsonObject, ModuleId, invoke_observer_safely, require_non_none
 from core.foundation.proc import ManagedProcessTree
+from core.foundation.profiler import decode_profiler_snapshot
 from core.metadata.contributes import BoundLocaleDialect, lookup_cold_workspace_dialect_state
 
 
@@ -443,6 +448,8 @@ class _WorkerSpawnOpts:
     host_dir: Optional[HostPath] = None
     bound_dialect: Optional[BoundLocaleDialect] = None
     env_lease_acquire: Optional[EnvLeaseAcquireFn] = None
+    daemon_boot_id: str = ""
+    flight_log_config: Optional[JsonObject] = None
 
 
 _STRIPPED_WORKER_PYTHON_ENV_UPPER: frozenset[str] = frozenset(
@@ -576,43 +583,60 @@ def _spawn_connected_worker(
     channel: Optional[MultiplexedChannel] = None
     handle: Optional[_ActiveWorkerHandle] = None
     try:
-        if opts.env_lease_acquire is not None:
-            env_lease_release = opts.env_lease_acquire(venv_python)
-        listen_sock = bind_loopback_ephemeral(backlog=16)
-        port = int(listen_sock.getsockname()[1])
-        boot_id, auth_token = uuid.uuid4().hex, uuid.uuid4().hex
-        mods = tuple(
-            ModuleDescriptor(module_id=d.module_id, module_dir=d.module_dir, entry_file=d.entry_file, eager_warmup=d.eager_warmup, declared_tasks=d.declared_tasks)
-            for d in descriptors
-        )
-        cfg_arg = json.dumps(DataclassCodec.encode_object(WorkerBootstrapConfig("127.0.0.1", port, boot_id, workspace_root, mods, opts.is_hot, opts.host_dir)), separators=(",", ":"), ensure_ascii=False)
-        argv = [str(venv_python), "-c", "from core.execution.runtime.worker_entry import worker_main; raise SystemExit(worker_main())", cfg_arg]
-        try:
-            proc_tree = ManagedProcessTree(
-                argv,
-                cwd=workspace_root,
-                env=_build_worker_subproc_env(auth_token, workspace_root, opts),
-                inherit_tty=opts.inherit_tty,
+        with resolve_active_profiler().scope_relative("WorkerSpawn", group_key):
+            if opts.env_lease_acquire is not None:
+                env_lease_release = opts.env_lease_acquire(venv_python)
+            listen_sock = bind_loopback_ephemeral(backlog=16)
+            port = int(listen_sock.getsockname()[1])
+            boot_id, auth_token = uuid.uuid4().hex, uuid.uuid4().hex
+            mods = tuple(
+                ModuleDescriptor(module_id=d.module_id, module_dir=d.module_dir, entry_file=d.entry_file, eager_warmup=d.eager_warmup, declared_tasks=d.declared_tasks)
+                for d in descriptors
             )
-        except OSError as exc:
-            raise YscbError(
-                ErrorCode.WORKER_CRASHED,
-                f"Failed to spawn Tier 1 worker '{group_key}' ({venv_python}): {safe_exception_summary(exc)}",
-            ) from exc
-        handle = _ActiveWorkerHandle(
-            proc_tree,
-            group_key,
-            master_callback_handler,
-            opts.on_module_init,
-            venv_python=venv_python,
-            env_lease_release=env_lease_release,
-        )
-        env_lease_release = None
-        channel = _accept_authenticated_worker_channel(listen_sock, proc_tree, handle, group_key, auth_token, boot_id, workspace_root, guard)
-        handle.bind_channel(channel)
-        handle.boot_fingerprint = _compute_group_desc_fingerprint(descriptors)
-        handle.bound_modules = frozenset(d.module_id for d in descriptors)
-        return handle
+            cfg_arg = json.dumps(
+                DataclassCodec.encode_object(
+                    WorkerBootstrapConfig(
+                        "127.0.0.1",
+                        port,
+                        boot_id,
+                        workspace_root,
+                        mods,
+                        opts.is_hot,
+                        opts.host_dir,
+                        opts.daemon_boot_id,
+                        opts.flight_log_config,
+                    )
+                ),
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            argv = [str(venv_python), "-c", "from core.execution.runtime.worker_entry import worker_main; raise SystemExit(worker_main())", cfg_arg]
+            try:
+                proc_tree = ManagedProcessTree(
+                    argv,
+                    cwd=workspace_root,
+                    env=_build_worker_subproc_env(auth_token, workspace_root, opts),
+                    inherit_tty=opts.inherit_tty,
+                )
+            except OSError as exc:
+                raise YscbError(
+                    ErrorCode.WORKER_CRASHED,
+                    f"Failed to spawn Tier 1 worker '{group_key}' ({venv_python}): {safe_exception_summary(exc)}",
+                ) from exc
+            handle = _ActiveWorkerHandle(
+                proc_tree,
+                group_key,
+                master_callback_handler,
+                opts.on_module_init,
+                venv_python=venv_python,
+                env_lease_release=env_lease_release,
+            )
+            env_lease_release = None
+            channel = _accept_authenticated_worker_channel(listen_sock, proc_tree, handle, group_key, auth_token, boot_id, workspace_root, guard)
+            handle.bind_channel(channel)
+            handle.boot_fingerprint = _compute_group_desc_fingerprint(descriptors)
+            handle.bound_modules = frozenset(d.module_id for d in descriptors)
+            return handle
     except BaseException:
         if handle is not None:
             handle.kill_immediately()
@@ -721,7 +745,19 @@ def _invoke_worker_handle_with_taint(
         handle.terminate_when_healthy_drained(max_wait_sec=drain_wait_sec)
 
     try:
-        out = _execute_rpc_call_with_watchdog(handle, wire_payload, spec, timeout_ms, _on_abort)
+        prof = resolve_active_profiler()
+        step_lbl = str(spec.command.task_id) if spec.command.task_id is not None else spec.command.action.value
+        with prof.scope_relative("WorkerStep", step_lbl):
+            out = _execute_rpc_call_with_watchdog(handle, wire_payload, spec, timeout_ms, _on_abort)
+            if (
+                spec.command.action == WorkerCommandKind.RUN_STEP
+                and out.error_code is None
+                and not out.transport_lost
+                and out.result_payload is not None
+            ):
+                child_tree = decode_profiler_snapshot(out.result_payload.get("profiler_tree"))
+                if child_tree is not None:
+                    prof.merge_subtree(child_tree)
         with tainted_lock:
             was_tainted = tainted_by_call
         return (out, (None if handle.is_stopped else handle.stopped_event) if was_tainted else None)
@@ -744,10 +780,12 @@ class HotWorkerPool:
     def __init__(
         self, workspace_root: HostPath, master_callback_handler: InboundCallHandler, *,
         host_callbacks: PoolHostCallbacks = PoolHostCallbacks(), lifo_stack: Optional[LifoResourceStack] = None,
-        host_dir: Optional[HostPath] = None,
+        host_dir: Optional[HostPath] = None, daemon_boot_id: str = "", flight_log_config: Optional[JsonObject] = None,
     ) -> None:
         self._workspace_root, self._callback_handler, self._lifo_stack = workspace_root, master_callback_handler, lifo_stack
         self._host_dir = host_dir
+        self._daemon_boot_id = daemon_boot_id
+        self._flight_log_config = flight_log_config
         self._on_warmup_reply, self._on_module_crashed = host_callbacks.on_warmup_reply, host_callbacks.on_module_crashed
         self._is_module_degraded, self._is_module_quiesced = host_callbacks.is_module_degraded, host_callbacks.is_module_quiesced
         self._is_group_reloading, self._resolve_group_descs = host_callbacks.is_group_reloading, host_callbacks.resolve_group_descriptors
@@ -760,6 +798,18 @@ class HotWorkerPool:
         self._workers: dict[str, _ActiveWorkerHandle] = {}
         self._retiring_workers: dict[str, list[_ActiveWorkerHandle]] = {}
         self._deferred_retire_warmups: dict[str, tuple[tuple[ModuleDescriptor, ...], Optional[frozenset[ModuleId]]]] = {}
+
+    def update_observability(
+        self,
+        *,
+        daemon_boot_id: str = "",
+        flight_log_config: Optional[JsonObject] = None,
+    ) -> None:
+        with self._state_cond:
+            if daemon_boot_id:
+                self._daemon_boot_id = daemon_boot_id
+            if flight_log_config is not None:
+                self._flight_log_config = flight_log_config
 
     def _register_spawned_worker_lifo(self, group_key: str, spawned: _ActiveWorkerHandle) -> None:
         if self._lifo_stack is None:
@@ -1020,7 +1070,8 @@ class HotWorkerPool:
         rem_sec = (guard.deadline - time.monotonic()) if guard.deadline is not None else None
         if rem_sec is not None and rem_sec <= 0:
             raise YscbError(ErrorCode.TASK_TIMEOUT, "Timed out waiting for Tier 1 worker startup.")
-        wait_on_event_with_cancel(flight.done_event, guard.cancel_token or CancellationToken(), rem_sec)
+        with resolve_active_profiler().scope_relative("WorkerSpawn", group_key):
+            wait_on_event_with_cancel(flight.done_event, guard.cancel_token or CancellationToken(), rem_sec)
         if flight.error is not None:
             if isinstance(flight.error, (YscbError, TaskCancelledException)):
                 raise flight.error
@@ -1057,6 +1108,8 @@ class HotWorkerPool:
                 on_module_init=lambda h, mid: self._claim_and_push_hot_lifo(group_key, h, mid),
                 host_dir=self._host_dir,
                 env_lease_acquire=self._env_lease_acquire,
+                daemon_boot_id=self._daemon_boot_id,
+                flight_log_config=self._flight_log_config,
             ),
             guard=guard,
         )
@@ -1128,6 +1181,8 @@ class HotWorkerPool:
                             on_module_init=lambda h, mid: self._claim_and_push_hot_lifo(group_key, h, mid),
                             host_dir=self._host_dir,
                             env_lease_acquire=self._env_lease_acquire,
+                            daemon_boot_id=self._daemon_boot_id,
+                            flight_log_config=self._flight_log_config,
                         ),
                         guard=guard,
                     )
@@ -1156,6 +1211,8 @@ class HotWorkerPool:
                 on_module_init=lambda h, mid: self._claim_and_push_hot_lifo(group_key, h, mid),
                 host_dir=self._host_dir,
                 env_lease_acquire=self._env_lease_acquire,
+                daemon_boot_id=self._daemon_boot_id,
+                flight_log_config=self._flight_log_config,
             ),
             guard=guard,
         )
@@ -1423,12 +1480,16 @@ class OneShotVenvHost:
         on_teardown_diagnostics: Optional[Callable[[Sequence[ErrorDetail]], None]] = None,
         env_lease_acquire: Optional[EnvLeaseAcquireFn] = None,
         env_touch_used: Optional[EnvTouchUsedFn] = None,
+        daemon_boot_id: str = "",
+        flight_log_config: Optional[JsonObject] = None,
     ) -> None:
         self._workspace_root, self._callback_handler, self._host_dir = workspace_root, master_callback_handler, host_dir
         self._dialect_resolver = dialect_resolver
         self._on_teardown_diags = on_teardown_diagnostics
         self._env_lease_acquire = env_lease_acquire
         self._env_touch_used = env_touch_used
+        self._daemon_boot_id = daemon_boot_id
+        self._flight_log_config = flight_log_config
         self._lock = threading.Lock()
         self._group_locks: dict[str, threading.Lock] = {}
         self._handles: dict[str, _ColdGroupHandleEntry] = {}
@@ -1575,6 +1636,8 @@ class OneShotVenvHost:
                     host_dir=self._host_dir,
                     bound_dialect=bd,
                     env_lease_acquire=self._env_lease_acquire,
+                    daemon_boot_id=self._daemon_boot_id,
+                    flight_log_config=self._flight_log_config,
                 ),
                 guard=guard,
             )
@@ -1619,6 +1682,8 @@ class OneShotVenvHost:
                     host_dir=self._host_dir,
                     bound_dialect=bd,
                     env_lease_acquire=self._env_lease_acquire,
+                    daemon_boot_id=self._daemon_boot_id,
+                    flight_log_config=self._flight_log_config,
                 ),
                 guard=guard,
             )

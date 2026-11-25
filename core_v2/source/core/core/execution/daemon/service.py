@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 import math
 import os
 from pathlib import Path
@@ -11,7 +12,8 @@ import signal
 import stat
 import threading
 import time
-from typing import Callable, Mapping, Optional, Sequence
+from types import MappingProxyType
+from typing import Callable, Final, Mapping, Optional, Sequence
 import uuid
 
 from core.execution.lifecycle import ContainerState
@@ -33,18 +35,30 @@ from core.filesystem.fs import (
 )
 from core.foundation.codec import DataclassCodec
 from core.foundation.errors import ErrorCode, ErrorDetail, YscbError, safe_exception_summary
-from core.foundation.observability import CancellationToken, clamp_positive_sec, validate_non_negative_sec
+from core.foundation.observability import CancellationToken, LogLevel, clamp_positive_sec, validate_non_negative_sec
 from core.foundation.primitives import (
-    IS_WINDOWS, MAX_SAFE_WAIT_SEC, HostPath, JsonObject, ModuleId, TaskId, require_non_none,
-    require_pure_bool, require_pure_int, require_pure_str, require_typed_tuple, safe_real_to_float,
+    IS_WINDOWS, MAX_SAFE_WAIT_SEC, HostPath, JsonObject, ModuleId, MutableJsonObject, TaskId,
+    clone_strict_json_object, require_non_none, require_pure_bool, require_pure_int, require_pure_str,
+    require_typed_tuple, safe_real_to_float,
 )
-from core.foundation.proc import SignalWakeupGuard, is_process_alive, spawn_detached
+from core.foundation.proc import SignalWakeupGuard, is_process_alive, read_flight_log_env, spawn_detached
+from core.foundation.profiler import (
+    DaemonLogRecord,
+    ExecutionTraceRecord,
+    FlightLogConfig,
+    FlightLogRouter,
+    ProfilerRingBuffer,
+    ProfilerSession,
+    read_process_rss_kb,
+)
 
 DaemonRunState = ContainerState
 _HANDOFF_LEASE_SUBPATH: tuple[str, str] = (DAEMON_SUBDIR, DAEMON_HANDOFF_FILENAME)
 _DAEMON_LOCK_FILENAME: str = "daemon.lock"
 _SPAWN_LOCK_FILENAME: str = "spawn.lock"
 _SPAWN_LEASE_FILENAME: str = "spawn_lease.json"
+_CORE_SIG_CACHE_FILENAME: Final[str] = "core_sig_cache.json"
+_RACY_CLEAN_WINDOW_NS: Final[int] = 20_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +76,7 @@ class DaemonStatusSnapshot:
     active_tier1_workers: tuple[WorkerProcessSnapshot, ...]
     degraded_modules: tuple[str, ...] = ()
     background_error_count: int = 0
+    profiler_summary: JsonObject = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.state, ContainerState):
@@ -77,6 +92,8 @@ class DaemonStatusSnapshot:
         require_pure_str(self.boot_id, "DaemonStatusSnapshot.boot_id")
         object.__setattr__(self, "active_tier1_workers", require_typed_tuple(self.active_tier1_workers, WorkerProcessSnapshot, "active_tier1_workers"))
         object.__setattr__(self, "degraded_modules", require_typed_tuple(self.degraded_modules, str, "degraded_modules"))
+        cloned_summary = clone_strict_json_object(self.profiler_summary, label="DaemonStatusSnapshot.profiler_summary")
+        object.__setattr__(self, "profiler_summary", MappingProxyType(cloned_summary))
 
 
 @dataclass(frozen=True, slots=True)
@@ -566,10 +583,104 @@ def _write_handoff_lease(cache_dir: HostPath, old_boot_id: str, ttl_sec: float) 
         return
 
 
-def _scan_core_module_tree(workspace_root: HostPath, cached: Optional[Mapping[str, _CoreFileSig]] = None) -> dict[str, _CoreFileSig]:
+def _now_utc_and_epoch_ms() -> tuple[str, int]:
+    now_dt = datetime.now(timezone.utc)
+    return (now_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), int(now_dt.timestamp() * 1000))
+
+
+def _build_daemon_flight_config(
+    config_view: Optional[ConfigViewPort],
+    *,
+    force_ignore_sandbox: bool = False,
+) -> FlightLogConfig:
+    cfg = FlightLogConfig()
+    if config_view is not None:
+        try:
+            raw_obs = config_view.get_module_value(CORE_MODULE_ID, "observability", None)
+        except (Exception, SystemExit, GeneratorExit):
+            raw_obs = None
+        if isinstance(raw_obs, Mapping):
+            try:
+                cfg = DataclassCodec.decode(FlightLogConfig, raw_obs)
+            except (ValueError, TypeError, KeyError, YscbError):
+                cfg = FlightLogConfig()
+    if force_ignore_sandbox:
+        return replace(cfg, enabled=True, respect_sandbox=False)
+    return cfg
+
+
+def _is_valid_sha256_hex(val: object) -> bool:
+    return type(val) is str and len(val) == 64 and all(ch in "0123456789abcdefABCDEF" for ch in val)
+
+
+def _load_persisted_core_sig_cache(cache_dir: HostPath, core_root: HostPath) -> tuple[dict[str, _CoreFileSig], bool]:
+    cache_hp = try_resolve_contained_subpath(cache_dir, DAEMON_SUBDIR, _CORE_SIG_CACHE_FILENAME)
+    if cache_hp is None:
+        return ({}, False)
+    raw_doc = read_json_dict(cache_hp)
+    if raw_doc is None:
+        return ({}, False)
+    loaded: dict[str, _CoreFileSig] = {}
+    core_root_str = str(core_root)
+    for rel_key, item in raw_doc.items():
+        if type(rel_key) is not str or not rel_key or rel_key.startswith(("/", "\\")):
+            continue
+        parts = rel_key.split("/")
+        if any(not p or p in (".", "..") or "\\" in p for p in parts):
+            continue
+        if not isinstance(item, list) or len(item) != 4:
+            continue
+        m_ns, sz, ino, digest = item[0], item[1], item[2], item[3]
+        if (
+            type(m_ns) is not int
+            or type(sz) is not int
+            or type(ino) is not int
+            or sz < 0
+            or not _is_valid_sha256_hex(digest)
+        ):
+            continue
+        loaded[os.path.join(core_root_str, *parts)] = _CoreFileSig(m_ns, sz, ino, str(digest))
+    return (loaded, True)
+
+
+def _save_persisted_core_sig_cache(
+    cache_dir: HostPath,
+    core_root: HostPath,
+    snap: Mapping[str, _CoreFileSig],
+) -> None:
+    try:
+        cache_hp = resolve_contained_subpath(cache_dir, DAEMON_SUBDIR, _CORE_SIG_CACHE_FILENAME)
+        core_root_str = str(core_root)
+        payload: MutableJsonObject = {}
+        for fpath in sorted(snap.keys()):
+            sig = snap[fpath]
+            if not sig.sha256:
+                continue
+            rel_key = os.path.relpath(fpath, core_root_str).replace("\\", "/")
+            if not rel_key or rel_key.startswith(".."):
+                continue
+            payload[rel_key] = [sig.mtime_ns, sig.size, sig.ino, sig.sha256]
+        atomic_write_json(cache_hp, payload)
+    except (OSError, ValueError, YscbError):
+        return
+
+
+def _scan_core_module_tree(
+    workspace_root: HostPath,
+    cached: Optional[Mapping[str, _CoreFileSig]] = None,
+    *,
+    cache_dir: Optional[HostPath] = None,
+    persist_cache: bool = False,
+) -> dict[str, _CoreFileSig]:
     core_hp = try_resolve_contained_subpath(workspace_root, MODULES_DIRNAME, str(CORE_MODULE_ID))
     if core_hp is None or not os.path.isdir(str(core_hp)):
         return {}
+    eff_cached: Optional[Mapping[str, _CoreFileSig]] = cached
+    cache_file_existed = False
+    if eff_cached is None and cache_dir is not None:
+        eff_cached, cache_file_existed = _load_persisted_core_sig_cache(cache_dir, core_hp)
+    now_ns = time.time_ns()
+    cache_dirty = not cache_file_existed
     snap: dict[str, _CoreFileSig] = {}
     for cur_dir, entries in walk_nonsymlink_dir_tree(str(core_hp)):
         for ent in sorted(entries, key=lambda e: e.name):
@@ -582,12 +693,27 @@ def _scan_core_module_tree(workspace_root: HostPath, cached: Optional[Mapping[st
                 st = os.stat(fpath, follow_symlinks=False)
             except OSError:
                 continue
-            prev = cached.get(fpath) if cached is not None else None
-            if prev is not None and (prev.mtime_ns, prev.size, prev.ino) == (st.st_mtime_ns, st.st_size, st.st_ino):
+            prev = eff_cached.get(fpath) if eff_cached is not None else None
+            is_racy = (now_ns - st.st_mtime_ns) < _RACY_CLEAN_WINDOW_NS
+            if (
+                prev is not None
+                and not is_racy
+                and bool(prev.sha256)
+                and (prev.mtime_ns, prev.size, prev.ino) == (st.st_mtime_ns, st.st_size, st.st_ino)
+            ):
                 snap[fpath] = prev
             else:
                 is_reg = not is_symlink_or_reparse(fpath) and stat.S_ISREG(st.st_mode)
-                snap[fpath] = _CoreFileSig(st.st_mtime_ns, st.st_size, st.st_ino, hash_nofollow_regular_sha256(fpath, expected_stat=st) if is_reg else "")
+                snap[fpath] = _CoreFileSig(
+                    st.st_mtime_ns,
+                    st.st_size,
+                    st.st_ino,
+                    hash_nofollow_regular_sha256(fpath, expected_stat=st) if is_reg else "",
+                )
+                cache_dirty = True
+    if persist_cache and cache_dir is not None:
+        if cache_dirty or eff_cached is None or set(snap.keys()) != set(eff_cached.keys()):
+            _save_persisted_core_sig_cache(cache_dir, core_hp, snap)
     return snap
 
 
@@ -598,9 +724,42 @@ class WorkspaceDaemon(InboundCallHandler):
         self, *, workspace_root: HostPath, cache_dir: HostPath, dispatcher: RuntimeDispatcher,
         config_view: Optional[ConfigViewPort] = None, watch_config: DaemonWatcherConfig = DaemonWatcherConfig(),
         self_restart_argv: Optional[Sequence[str]] = None,
+        flight_log_router: Optional[FlightLogRouter] = None, daemon_boot_id: str = "",
     ) -> None:
+        require_pure_str(daemon_boot_id, "WorkspaceDaemon.daemon_boot_id")
+        if flight_log_router is not None and not isinstance(flight_log_router, FlightLogRouter):
+            raise ValueError("WorkspaceDaemon.flight_log_router must be FlightLogRouter or None.")
         self._workspace_root, self._cache_dir, self._dispatcher, self._config_view, self._watch_cfg = workspace_root, cache_dir, dispatcher, config_view, watch_config
         self._self_restart_argv = tuple(self_restart_argv) if self_restart_argv else None
+        clean_boot = daemon_boot_id.strip()
+        if not clean_boot and flight_log_router is not None and flight_log_router.daemon_boot_id:
+            clean_boot = flight_log_router.daemon_boot_id
+        if not clean_boot and dispatcher.flight_log_router is not None and dispatcher.flight_log_router.daemon_boot_id:
+            clean_boot = dispatcher.flight_log_router.daemon_boot_id
+        self._boot_id = clean_boot or uuid.uuid4().hex
+        self._profiler_ring_buffer = dispatcher.profiler_ring_buffer or ProfilerRingBuffer(maxlen=512)
+        if flight_log_router is not None:
+            self._flight_log_router = flight_log_router
+            self._owns_flight_router = False
+        elif dispatcher.flight_log_router is not None and dispatcher.flight_log_router.daemon_log_path() is not None:
+            self._flight_log_router = dispatcher.flight_log_router
+            self._owns_flight_router = False
+        else:
+            sandbox_env = read_flight_log_env()
+            force_no_sbx = dispatcher.flight_log_router is not None and dispatcher.flight_log_router.enabled
+            fl_cfg = _build_daemon_flight_config(config_view, force_ignore_sandbox=force_no_sbx)
+            self._flight_log_router = FlightLogRouter(
+                resolve_contained_subpath(cache_dir, "logs"),
+                config=fl_cfg,
+                env=sandbox_env,
+                daemon_boot_id=self._boot_id,
+            )
+            self._owns_flight_router = True
+        dispatcher.bind_daemon_observability(
+            daemon_boot_id=self._boot_id,
+            flight_log_router=self._flight_log_router,
+            profiler_ring_buffer=self._profiler_ring_buffer,
+        )
         self._cond, self._handoff_lease_lock = threading.Condition(), threading.Lock()
         self._space_watcher_lock = threading.Lock()
         dispatcher.container_lifecycle.transition_boot_phase(ContainerState.BOOTING)
@@ -619,7 +778,7 @@ class WorkspaceDaemon(InboundCallHandler):
         self._daemon_lock = FileLock(resolve_contained_subpath(cache_dir, DAEMON_SUBDIR, _DAEMON_LOCK_FILENAME), allow_transitions=False)
         _ = resolve_contained_subpath(cache_dir, DAEMON_SUBDIR, DAEMON_ENDPOINT_FILENAME)
         _ = resolve_contained_subpath(cache_dir, LOCKS_SUBDIR, INSTALLER_LOCK_FILENAME)
-        self._listener, self._idle_monitor = RpcServerListener(workspace_root, self), IdleTtlMonitor(None)
+        self._listener, self._idle_monitor = RpcServerListener(workspace_root, self, boot_id=self._boot_id), IdleTtlMonitor(None)
         self._periodic_loop = PeriodicTriggerLoop(
             dispatcher=dispatcher, config_view=config_view, can_run_background=self._can_run_any_background,
             can_run_task=lambda tid: self._can_run_any_background() and not dispatcher.reload_gate.is_call_gated_for_quiesce(tid.module_id),
@@ -631,8 +790,69 @@ class WorkspaceDaemon(InboundCallHandler):
         self._config_watcher: Optional[PollingDirectoryWatcher] = None
         self._space_watcher: Optional[PollingDirectoryWatcher] = None
         self._active_space_watch_roots: tuple[HostPath, ...] = ()
-        self._boot_core_snapshot = _scan_core_module_tree(workspace_root)
+        self._boot_core_snapshot = _scan_core_module_tree(workspace_root, cache_dir=cache_dir, persist_cache=True)
         self._dispatcher.reload_gate.register_gate_listener(self._wake_cond)
+
+    def _log_daemon_event(
+        self,
+        event: str,
+        *,
+        level: LogLevel = LogLevel.INFO,
+        trace_id: str = "",
+        task_id: str = "",
+        detail: Optional[JsonObject] = None,
+    ) -> None:
+        ts_utc, epoch_ms = _now_utc_and_epoch_ms()
+        self._flight_log_router.record_daemon(
+            DaemonLogRecord(
+                ts_utc=ts_utc,
+                epoch_ms=epoch_ms,
+                daemon_boot_id=self._boot_id,
+                pid=os.getpid(),
+                event=event,
+                level=level,
+                trace_id=trace_id,
+                task_id=task_id,
+                detail=detail if detail is not None else {},
+            )
+        )
+
+    def _record_daemon_trace(
+        self,
+        task_id: str,
+        prof: ProfilerSession,
+        *,
+        duration_ms: float,
+        rss_before: int,
+        ok: bool,
+        error_detail: Optional[JsonObject] = None,
+    ) -> None:
+        ts_utc, epoch_ms = _now_utc_and_epoch_ms()
+        rss_after = read_process_rss_kb()
+        trace = ExecutionTraceRecord(
+            ts_utc=ts_utc,
+            epoch_ms=epoch_ms,
+            trace_id=self._boot_id,
+            daemon_boot_id=self._boot_id,
+            pid=os.getpid(),
+            task_id=task_id,
+            args=(),
+            caller_mode="daemon",
+            caller_cwd=str(self._workspace_root),
+            executed_hot=True,
+            exit_code=0 if ok else 1,
+            ok=ok,
+            duration_ms=duration_ms,
+            rss_kb=rss_after,
+            rss_delta_kb=rss_after - rss_before,
+            mem_tracked=prof.track_memory,
+            dispatched_tasks=(task_id,),
+            profiler_tree=prof.snapshot(),
+            error_code="" if ok else ErrorCode.BUSINESS_FAILURE.value,
+            error_detail=error_detail,
+        )
+        self._profiler_ring_buffer.record(trace)
+        self._flight_log_router.record_perf(trace)
 
     def _wake_cond(self) -> None:
         with self._cond:
@@ -726,6 +946,9 @@ class WorkspaceDaemon(InboundCallHandler):
                 force_drain = self._force_shutdown
             self._execute_full_shutdown(force=force_drain)
             self._listener.flush_inbound_controls(timeout_sec=2.0)
+        except BaseException as exc:
+            self._log_daemon_event("crash", level=LogLevel.ERROR, detail={"error": safe_exception_summary(exc)})
+            raise
         finally:
             try:
                 if sig_guard is not None:
@@ -785,6 +1008,7 @@ class WorkspaceDaemon(InboundCallHandler):
                     raw_sleep = min(wake_q, ttl_s) if (wake_q is not None and ttl_s is not None) else (wake_q if wake_q is not None else ttl_s)
                     self._cond.wait(timeout=min(MAX_SAFE_WAIT_SEC, max(0.001, raw_sleep)) if raw_sleep is not None else None)
             if stop_due_to_ttl:
+                self._log_daemon_event("idle_ttl_stop", detail={"ttl_sec": self._idle_monitor.ttl_sec})
                 self._listener.stop_accepting()
                 return
             if dirty_batch is not None:
@@ -957,18 +1181,43 @@ class WorkspaceDaemon(InboundCallHandler):
                 return
             self._pending_ready_callback = ready_callback
             self._pending_startup_catchup = self._watch_cfg.on_space_changed_task is not None
-        ep_info = self._listener.start(pid=os.getpid())
-        with self._cond:
-            stop_early = self._stopping or self._stopped
-        if stop_early:
-            self._listener.stop_accepting()
-            return
-        self._dispatcher.container_lifecycle.transition_boot_phase(ContainerState.WARMING)
-        self._start_watchers_only()
-        ep_path = resolve_contained_subpath(self._cache_dir, DAEMON_SUBDIR, DAEMON_ENDPOINT_FILENAME)
-        atomic_write_json(ep_path, build_daemon_endpoint_dict(ep_info), file_mode=0o600)
-        silent_unlink_contained(self._cache_dir, *_HANDOFF_LEASE_SUBPATH)
-        self._run_initial_boot_warmup()
+        self._log_daemon_event("boot_start", detail={"ttl_sec": norm_ttl})
+        boot_prof = ProfilerSession(root_name="daemon.boot")
+        rss_before = read_process_rss_kb()
+        t0_ns = time.perf_counter_ns()
+        boot_ok = False
+        boot_err: Optional[JsonObject] = None
+        try:
+            with boot_prof.scope_relative("Daemon/ListenerStart"):
+                ep_info = self._listener.start(pid=os.getpid())
+            with self._cond:
+                stop_early = self._stopping or self._stopped
+            if stop_early:
+                self._listener.stop_accepting()
+                return
+            self._dispatcher.container_lifecycle.transition_boot_phase(ContainerState.WARMING)
+            with boot_prof.scope_relative("Daemon/StartWatchers"):
+                self._start_watchers_only()
+            with boot_prof.scope_relative("Daemon/PublishEndpoint"):
+                ep_path = resolve_contained_subpath(self._cache_dir, DAEMON_SUBDIR, DAEMON_ENDPOINT_FILENAME)
+                atomic_write_json(ep_path, build_daemon_endpoint_dict(ep_info), file_mode=0o600)
+                silent_unlink_contained(self._cache_dir, *_HANDOFF_LEASE_SUBPATH)
+            with boot_prof.scope_relative("Daemon/Warmup"):
+                self._run_initial_boot_warmup()
+            boot_ok = True
+        except BaseException as exc:
+            boot_err = {"error": safe_exception_summary(exc)}
+            raise
+        finally:
+            dur_ms = round(max(0.0, (time.perf_counter_ns() - t0_ns) / 1_000_000.0), 4)
+            self._record_daemon_trace(
+                "daemon.boot",
+                boot_prof,
+                duration_ms=dur_ms,
+                rss_before=rss_before,
+                ok=boot_ok,
+                error_detail=boot_err,
+            )
 
     def _consume_and_fire_post_boot_hooks(self) -> None:
         with self._cond:
@@ -981,6 +1230,14 @@ class WorkspaceDaemon(InboundCallHandler):
             self._pending_startup_catchup = False
         self._periodic_loop.start()
         self._periodic_loop.refresh_schedules()
+        ep_ready = self._listener.endpoint
+        self._log_daemon_event(
+            "ready",
+            detail={
+                "port": ep_ready.port if ep_ready is not None else 0,
+                "uptime_sec": round(max(0.0, time.monotonic() - self._started_at), 4),
+            },
+        )
         if cb is not None:
             try:
                 cb()
@@ -1109,6 +1366,15 @@ class WorkspaceDaemon(InboundCallHandler):
                 self._shutdown_diagnostics = (*bg_diags, *disp_diags)
                 self._dispatcher_stopped = True
                 self._cond.notify_all()
+        self._log_daemon_event(
+            "shutdown",
+            detail={
+                "force": eff_force,
+                "teardown_error_count": len(self._shutdown_diagnostics),
+            },
+        )
+        if self._owns_flight_router:
+            self._flight_log_router.close()
         silent_unlink_contained(self._cache_dir, DAEMON_SUBDIR, DAEMON_ENDPOINT_FILENAME)
 
     def request_shutdown(self, *, force: bool = False, core_handoff: bool = False) -> None:
@@ -1123,7 +1389,8 @@ class WorkspaceDaemon(InboundCallHandler):
                 can_handoff = core_handoff and not self._explicit_stop_latched
                 unlink_handoff = not core_handoff
             if can_handoff:
-                _write_handoff_lease(self._cache_dir, ep.boot_id if ep is not None else "boot", 10.0)
+                _write_handoff_lease(self._cache_dir, ep.boot_id if ep is not None else self._boot_id, 10.0)
+                self._log_daemon_event("handoff", detail={"core_handoff": True, "force": force})
             elif unlink_handoff:
                 silent_unlink_contained(self._cache_dir, *_HANDOFF_LEASE_SUBPATH)
             with self._cond:
@@ -1174,6 +1441,7 @@ class WorkspaceDaemon(InboundCallHandler):
             if not self._dispatcher.try_quiesce_global(drain_deadline=dl, leased=True):
                 return False
             self._dispatcher.reload_gate.record_quiesce_lease(s_lease)
+        self._log_daemon_event("quiesce", detail={"epoch": self.quiesce_epoch, "lease_sec": s_lease})
         self._wake_cond()
         return True
 
@@ -1244,13 +1512,15 @@ class WorkspaceDaemon(InboundCallHandler):
         ep = self._listener.endpoint
         t1_workers = self._dispatcher.tier1_pool.active_worker_snapshots()
         deg_mods = tuple(sorted(str(m) for m in self._dispatcher.container_lifecycle.degraded_modules.keys()))
+        prof_summary = self._profiler_ring_buffer.summarize()
         with self._cond:
             return DaemonStatusSnapshot(
                 state=self._effective_state_locked(), pid=ep.pid if ep is not None else os.getpid(),
-                boot_id=ep.boot_id if ep is not None else "", port=ep.port if ep is not None else 0,
+                boot_id=ep.boot_id if ep is not None else self._boot_id, port=ep.port if ep is not None else 0,
                 uptime_sec=max(0.0, time.monotonic() - self._started_at), idle_ttl_remaining_sec=self._idle_monitor.remaining_sec(),
                 active_foreground_calls=self._active_fg_calls, tasks_handled=self._tasks_handled,
                 active_tier1_workers=t1_workers, degraded_modules=deg_mods, background_error_count=len(self._bg_error_diags),
+                profiler_summary=prof_summary,
             )
 
     def on_call(
@@ -1260,6 +1530,7 @@ class WorkspaceDaemon(InboundCallHandler):
         """Admit, track, and dispatch an inbound RPC call frame through RuntimeDispatcher."""
         _ = stream_id
         task_id_raw, prop_raw = payload.get("task_id"), payload.get("propagation")
+        task_id_str = task_id_raw if isinstance(task_id_raw, str) else ""
         try:
             target_mod = TaskId(task_id_raw).module_id if isinstance(task_id_raw, str) else CORE_MODULE_ID
         except ValueError:
@@ -1272,19 +1543,48 @@ class WorkspaceDaemon(InboundCallHandler):
                 prop = None
         is_bg = payload.get("priority") == ExecutionPriority.BACKGROUND.value
         call_id = (prop.turn_id if prop is not None and prop.turn_id else "") or uuid.uuid4().hex
+        trace_id = (prop.call_tree_id if prop is not None and prop.call_tree_id else "") or call_id
         if not self._wait_and_admit_rpc_call(target_mod, call_id, prop, is_bg, peer_cancel_token):
             return (False, {"ok": False})
+        t0_ns = time.perf_counter_ns()
+        rpc_ok = False
+        rpc_err_code = ""
+        rpc_disconnected = False
+        rpc_coalesced = False
         try:
             if not ack_accepted():
+                rpc_disconnected = True
                 return (False, {"ok": False})
             reply: DaemonRpcInvokeReply = self._dispatcher.invoke_daemon_rpc(payload, peer_cancel_token, emit_progress, pre_turn_id=call_id)
+            rpc_ok = reply.ok
+            rpc_coalesced = reply.coalesced
+            rpc_err_code = reply.error.code.value if reply.error is not None else ""
             if reply.ok and (
                 target_mod == CORE_MODULE_ID
                 or any(tid.module_id == CORE_MODULE_ID for _ws, tid in reply.invoked_tasks)
             ):
                 self._sync_space_watcher(resync_existing=False)
             return (True, DataclassCodec.encode_envelope(reply))
+        except BaseException as exc:
+            rpc_err_code = safe_exception_summary(exc)
+            raise
         finally:
+            dur_ms = round(max(0.0, (time.perf_counter_ns() - t0_ns) / 1_000_000.0), 4)
+            disconnected = rpc_disconnected or peer_cancel_token.is_cancelled
+            lvl = LogLevel.INFO if (rpc_ok and not disconnected) else (LogLevel.WARNING if disconnected else LogLevel.ERROR)
+            self._log_daemon_event(
+                "rpc_done",
+                level=lvl,
+                trace_id=trace_id,
+                task_id=task_id_str,
+                detail={
+                    "ok": rpc_ok,
+                    "duration_ms": dur_ms,
+                    "coalesced": rpc_coalesced,
+                    "disconnected": disconnected,
+                    "error_code": rpc_err_code,
+                },
+            )
             self._dispatcher.reload_gate.exit_rpc_call(target_mod, call_id)
             with self._cond:
                 if is_bg:
@@ -1503,6 +1803,7 @@ class WorkspaceDaemon(InboundCallHandler):
             self._idle_monitor.record_external_activity()
             self._dirty.add_paths(kind, paths)
             self._cond.notify_all()
+        self._log_daemon_event("watcher_dirty", detail={"kind": kind, "path_count": len(paths)})
 
     def _extract_touched_modules(self, batch: _DirtyBatch) -> frozenset[ModuleId]:
         hp_root = try_resolve_contained_subpath(self._workspace_root, MODULES_DIRNAME)
@@ -1530,26 +1831,58 @@ class WorkspaceDaemon(InboundCallHandler):
         extra_config_paths: frozenset[HostPath] = frozenset(),
     ) -> frozenset[HostPath]:
         target_mods = frozenset() if reload_all else modules
-        self._resync_modules_watcher(None if reload_all else target_mods)
-        drained_cfg = self._dirty.drain_config_paths()
-        resynced_cfg = (
-            self._config_watcher.resync_paths(self._watch_cfg.config_watch_roots)
-            if (self._config_watcher is not None and self._watch_cfg.config_watch_roots)
-            else frozenset()
-        )
-        touched_cfg = extra_config_paths | drained_cfg | resynced_cfg
-        cfg_changed = (
-            self._dispatcher.reload_config_and_contributes(
-                changed_paths=[str(p) for p in sorted(touched_cfg, key=str)],
-                emit_event=False,
+        mod_names = sorted(str(m) for m in target_mods)
+        self._log_daemon_event("reload_start", detail={"reload_all": reload_all, "modules": mod_names})
+        rel_prof = ProfilerSession(root_name="daemon.reload")
+        rss_before = read_process_rss_kb()
+        t0_ns = time.perf_counter_ns()
+        rel_ok = False
+        rel_err: Optional[JsonObject] = None
+        cfg_changed = False
+        try:
+            with rel_prof.scope_relative("Daemon/ResyncWatchers"):
+                self._resync_modules_watcher(None if reload_all else target_mods)
+                drained_cfg = self._dirty.drain_config_paths()
+                resynced_cfg = (
+                    self._config_watcher.resync_paths(self._watch_cfg.config_watch_roots)
+                    if (self._config_watcher is not None and self._watch_cfg.config_watch_roots)
+                    else frozenset()
+                )
+            touched_cfg = extra_config_paths | drained_cfg | resynced_cfg
+            with rel_prof.scope_relative("Daemon/ReloadConfig"):
+                cfg_changed = (
+                    self._dispatcher.reload_config_and_contributes(
+                        changed_paths=[str(p) for p in sorted(touched_cfg, key=str)],
+                        emit_event=False,
+                    )
+                    if touched_cfg
+                    else False
+                )
+            with rel_prof.scope_relative("Daemon/ReloadModules"):
+                self._dispatcher.reload_affected_modules(target_mods)
+            with rel_prof.scope_relative("Daemon/RefreshTriggers"):
+                self._sync_space_watcher(resync_existing=False)
+                self._periodic_loop.refresh_schedules()
+            rel_ok = True
+            return touched_cfg if cfg_changed else frozenset()
+        except BaseException as exc:
+            rel_err = {"error": safe_exception_summary(exc)}
+            raise
+        finally:
+            dur_ms = round(max(0.0, (time.perf_counter_ns() - t0_ns) / 1_000_000.0), 4)
+            self._log_daemon_event(
+                "reload_done",
+                level=LogLevel.INFO if rel_ok else LogLevel.ERROR,
+                detail={"reload_all": reload_all, "duration_ms": dur_ms, "config_changed": cfg_changed, "ok": rel_ok},
             )
-            if touched_cfg
-            else False
-        )
-        self._dispatcher.reload_affected_modules(target_mods)
-        self._sync_space_watcher(resync_existing=False)
-        self._periodic_loop.refresh_schedules()
-        return touched_cfg if cfg_changed else frozenset()
+            self._record_daemon_trace(
+                "daemon.reload",
+                rel_prof,
+                duration_ms=dur_ms,
+                rss_before=rss_before,
+                ok=rel_ok,
+                error_detail=rel_err,
+            )
 
     def _process_dirty_batch(self, batch: _DirtyBatch) -> frozenset[HostPath]:
         inst_lk, cancelled = self._acquire_cancellable_shared_installer_lock(timeout_sec=0.1)

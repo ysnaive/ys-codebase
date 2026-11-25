@@ -34,6 +34,7 @@ IO_REPARSE_TAG_SYMLINK: Final[int] = 0xA000000C
 PRIVATE_ENV_PREFIX: Final[str] = "_YSCB_"
 TREE_ID_ENV_KEY: Final[str] = "_YSCB_TREE_ID"
 TEST_SANDBOX_ENV_KEY: Final[str] = "_YSCB_TEST_SANDBOX"
+FORCE_FLIGHT_LOGS_ENV_KEY: Final[str] = "_YSCB_FORCE_FLIGHT_LOGS"
 HOST_DIR_ENV_KEY: Final[str] = "_YSCB_HOST_DIR"
 ROOT_DIR_ENV_KEY: Final[str] = "_YSCB_ROOT_DIR"
 PUBLIC_ENV_ALLOWLIST: Final[frozenset[str]] = frozenset(
@@ -46,6 +47,7 @@ PUBLIC_ENV_ALLOWLIST: Final[frozenset[str]] = frozenset(
         "YSCB_OFFLINE",
         "YSCB_CALLER_MODE",
         "YSCB_CI_APPROVE_GATED",
+        "YSCB_PROFILE_MEM",
     }
 )
 PYTHON_LAUNCHER_HIJACK_ENV_KEYS: Final[tuple[str, ...]] = (
@@ -779,29 +781,46 @@ def _validate_host_path_segments(path_str: str) -> None:
             raise ValueError(f"Invalid cross-platform path segment {seg!r} in HostPath: {path_str!r}")
 
 
+def _strip_win_extended_prefix(path_str: str) -> str:
+    if path_str.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path_str[8:]
+    if path_str.startswith("\\\\?\\") and len(path_str) >= 6 and path_str[4].isalpha() and path_str[5] == ":":
+        return path_str[4:]
+    return path_str
+
+
+def safe_realpath(raw_path: str) -> str:
+    """Resolve realpath while stripping transient Windows extended drive/UNC prefixes left by ntpath races."""
+    require_pure_str(raw_path, "raw_path")
+    rp = os.path.realpath(raw_path)
+    if IS_WINDOWS and not raw_path.startswith("\\\\?\\"):
+        return _strip_win_extended_prefix(rp)
+    return rp
+
+
 def _resolve_canonical_host_path(raw_str: str) -> Path:
     seps = ("/", "\\") if IS_WINDOWS else ("/",)
     anchor = Path(raw_str).anchor
     if len(raw_str) > len(anchor) and raw_str.endswith(seps):
-        real_dir = Path(os.path.realpath(raw_str))
+        real_dir = Path(safe_realpath(raw_str))
         stripped = raw_str.rstrip("/\\" if IS_WINDOWS else "/")
         if (os.path.lexists(real_dir) or os.path.islink(stripped)) and not real_dir.is_dir():
             raise ValueError(f"Trailing path separator on non-directory HostPath: {raw_str!r}")
         return real_dir
     parent_str, tail = os.path.split(raw_str)
     if tail in ("", ".", ".."):
-        return Path(os.path.realpath(raw_str))
-    real_parent = Path(os.path.realpath(parent_str))
+        return Path(safe_realpath(raw_str))
+    real_parent = Path(safe_realpath(parent_str))
     cand = real_parent / tail
     if (
         os.path.islink(cand)
         and os.path.normcase(real_parent.name) in ("bin", "scripts")
         and (real_parent.parent / "pyvenv.cfg").is_file()
     ):
-        real_target = os.path.realpath(cand)
+        real_target = safe_realpath(str(cand))
         if os.path.isfile(real_target) and not os.path.isdir(real_target):
             return cand
-    return Path(os.path.realpath(cand))
+    return Path(safe_realpath(str(cand)))
 
 
 INT64_MIN: Final[int] = -(1 << 63)

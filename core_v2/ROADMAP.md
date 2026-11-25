@@ -53,17 +53,18 @@ Domain 3: 組態擴充域 (metadata/)    [contributes -> config] ── 允許�
 Domain 2: 檔案儲存域 (filesystem/)  [space -> storage -> vfs -> fs] ── 僅依賴: Domain 1 (100% 獨立可測!)
    │
    ▼
-Domain 1: 基礎底座域 (foundation/)  [codec | observability | proc <- primitives | errors] ── 僅依賴: Python 標準庫!
+Domain 1: 基礎底座域 (foundation/)  [codec | observability | profiler | proc <- primitives | errors] ── 僅依賴: Python 標準庫!
 ```
 
 ### 3.2 六大功能域與內核子模組職責清冊（Wave 1.1 + Wave 1.2 全數落地）
 
 #### Domain 1：基礎底座域（`foundation/` — 僅依賴 Python 標準庫）
-1. **`primitives`**：全系統共通不可變值物件（`ModuleId`、`TaskId`、`EventId`、`HostPath`、`SemVer4`、`VersionConstraint`、`SemanticUri`、`SpaceId`、`SpacePath`、`SnapshotGen`、`EnvHash` 與純量/路徑/環境變數 `PUBLIC_ENV_ALLOWLIST` + `_YSCB_*` 邊界校驗原語）。
+1. **`primitives`**：全系統共通不可變值物件（`ModuleId`、`TaskId`、`EventId`、`HostPath`、`SemVer4`、`VersionConstraint`、`SemanticUri`、`SpaceId`、`SpacePath`、`SnapshotGen`、`EnvHash`、跨平台 `safe_realpath` 與純量/路徑/環境變數 `PUBLIC_ENV_ALLOWLIST` + `_YSCB_*` 邊界校驗原語）。
 2. **`errors`**：結構化異常階層（`YscbError` 基類、`ErrorDetail`、33 個標準 `ErrorCode`、修復指引 `remediation` 與 `TaskCancelledException`）。
 3. **`codec`**：純標準庫強型別編解碼與 Schema 導出器（`DataclassCodec` + Draft 2020-12 `SchemaExporter`）。
-4. **`observability`**：顯式注入之可觀測性、取消與多語系原語（`CancellationToken`、`DeadlineGuard`、`ProgressEvent`、`guard_standard_streams`、`StructuredLogger`、`LogRotator`、`LocaleCatalog`、`SessionTelemetryWriter`）。
-5. **`proc`**：跨平台 OS 進程樹原語（`ManagedProcessTree` 基於 Windows Job Object［含顯式 `BREAKAWAY_OK`］/ POSIX Session+PGID 與環境標記清理、`spawn_detached`、`SignalWakeupGuard`、進程存活與啟動時間指紋探針）。
+4. **`observability`**：顯式注入之可觀測性、取消與多語系原語（`CancellationToken`、`DeadlineGuard`、`ProgressEvent`、`guard_standard_streams`、`StructuredLogger`、跨進程側車鎖 `LogRotator` 與 `LocaleCatalog`）。
+5. **`profiler`**：零可變全域狀態之 ImTK 風格階層效能剖析器與 3+1 全 JSONL 運行日誌體系（`Profiler`、`ProfilerSession`、`ProfilerNodeSnapshot`、`NullProfiler`、`MemoryTrackingGuard`、`ProfilerRingBuffer`、`FlightLogRouter`、脫敏器與 `render_profiler_tree` / `read_process_rss_kb`）。
+6. **`proc`**：跨平台 OS 進程樹原語（`ManagedProcessTree` 基於 Windows Job Object［含顯式 `BREAKAWAY_OK`］/ POSIX Session+PGID 與環境標記清理、`spawn_detached`、`SignalWakeupGuard`、`read_flight_log_env`、進程存活與啟動時間指紋探針）。
 
 #### Domain 2：檔案、空間與儲存域（`filesystem/` — 僅依賴 `foundation/`）
 6. **`fs`**：物理檔案系統原語（`atomic_write_bytes` / `atomic_write_json` 等原子寫入與無符號連結路徑守衛、支援 `.upg/.xchg` 防死鎖升級之跨進程檔案鎖 `FileLock`、純標準庫輪詢防抖目錄變更監聽器 `PollingDirectoryWatcher`）。
@@ -87,9 +88,9 @@ Domain 1: 基礎底座域 (foundation/)  [codec | observability | proc <- primit
 18. **`daemon`**：超薄每專案常駐守護外殼（`WorkspaceDaemon`、`SingleFlightDaemonSpawner`、`IdleTtlMonitor`、`DaemonWatcherConfig`、空間/模組/組態三路監視實例與 `PeriodicTriggerLoop`）。
 
 #### Domain 6：對外門面與組裝域（`surface/` — 公開契約、CLI 與組裝根）
-19a. **`sdk`**：下游業務模組與程式化客戶端唯一公開匯入門面（75 符號零反射方案 B：`Module` + `TaskGroup.parent_module`、`@task`/`@on_event`/`@periodic`/`@on_migrate`、`Arg`/`Option(group=...)`、`ModuleEnv` LIFO 資料庫/Blob 自動關閉、`YscbClient` 及系統 DTO/事件常數 Re-export）。
-19b. **`cli`**：零匯入業務源碼之預編譯 `tasks.index.json` 毫秒級命令列解析器、1.x 風格 `HelpRenderer`、5 層 `CallerMode`（防 PTY Agent 誤判）、4×3 安全矩陣與兩段式單次確認碼 `ApprovalTokenStore`。
-19c. **`bootstrap`**：六域頂層組裝根 `WorkspaceKernelFactory` / `WorkspaceKernel`、Port 薄轉接層與全套內建系統管理任務 `CoreSystemModule`，搭配 100% 純標準庫超薄自舉啟動器 `core_v2/yscb.py`。
+19a. **`sdk`**：下游業務模組與程式化客戶端唯一公開匯入門面（80 符號零反射方案 B：`Module` + `TaskGroup.parent_module`、`@task`/`@on_event`/`@periodic`/`@on_migrate`、`Arg`/`Option(group=...)`、`ModuleEnv` LIFO 資料庫/Blob 自動關閉、`Profiler` 剖析契約、`YscbClient` 及系統 DTO/事件常數 Re-export）。
+19b. **`cli`**：零匯入業務源碼之預編譯 `tasks.index.json` 毫秒級命令列解析器、1.x 風格 `HelpRenderer`、5 層 `CallerMode`（防 PTY Agent 誤判）、極簡 `--profile`/`--profile-mem` 剖析旗標、4×3 安全矩陣與兩段式單次確認碼 `ApprovalTokenStore`。
+19c. **`bootstrap`**：六域頂層組裝根 `WorkspaceKernelFactory` / `WorkspaceKernel`（含 `_LazyCliKernelSession` 單次建核快啟）、Port 薄轉接層與全套內建系統管理任務 `CoreSystemModule`，搭配 100% 純標準庫超薄自舉啟動器 `core_v2/yscb.py`。
 
 ## 4. `./core_v2` 潔淨室分域目錄拓撲與同步護欄 (Workspace Layout & Guardrails)
 
@@ -109,7 +110,7 @@ Domain 1: 基礎底座域 (foundation/)  [codec | observability | proc <- primit
 ├── verify_execution_live.py  # 9 大實測套件總調度入口（gate0 ~ rc_e2e + unplug）
 ├── tests/                    # 分域契約、CLI/自舉 E2E、10 階段物理拔除與 RC-01~RC-08 多進程壓測套件
 ├── source/                   # 2.0 模組唯一真理源碼區（100% OOP + Strict Typing）
-│   ├── core/                 # Wave 1.1 + 1.2（已完成並雙平台驗收）：六大功能域微內核（92 檔 / 62,130 LOC） + 真實元資料
+│   ├── core/                 # Wave 1.1 + 1.2（已完成並雙平台驗收）：六大功能域微內核（93 檔 / 65,954 LOC） + 真實元資料
 │   ├── dev/                  # Wave 1.3（下一階段）：OOP/強型別/跨分類匯入紅線靜態守門器、打包索引編譯器與跨平台沙盒
 │   ├── vscode-support/       # Wave 2：Tier 0 IDE 路徑與 Contributes JSON Schema 投影模組
 │   ├── agents-workflow/      # Wave 2：Tier 0 多代理研發工作流、模板編譯與計畫管理模組
@@ -128,7 +129,7 @@ Domain 1: 基礎底座域 (foundation/)  [codec | observability | proc <- primit
 
 | 波段 | 目標範疇 | 核心交付內容與架構任務 | 出場驗收門檻 (Exit Gate) |
 | :--- | :--- | :--- | :--- |
-| **Wave 1：<br>內核與工具鏈地基** | `core 2.0` (6 大功能域)<br>`core_v2/yscb.py`<br>`dev 2.0` | 1. **已完成 Wave 1.1 精簡收斂基線與 `surface.sdk` 初版門面**：完成 `Domain 5 (execution)` 5 階段精簡版、`Domain 1 (foundation)` 基礎子集、`Domain 2.fs` 與分域驗證套件基線（完整版基線封存於 `archive/core-v2-maximalist` Tag）。<br>2. **已完成 Wave 1.2 全內核實作、止血收斂與雙平台實機驗收**：依 `Wave 1.2a ~ 1.2d` 全數完成 6 大功能域與純標準庫 `core_v2/yscb.py`（`3,375 LOC`）；經止血收斂計畫根治 10 項 P0 瑕疵、補齊 `core` 真實元資料 / `ScopedVfs.open_read()` / `core.space.ack_cursor` / `sdk` 75 符號與 `TaskGroup.parent_module` / `CallerMode` 與 `yscb.py` 覆寫守門 / 4 項 Windows 11 Win32 產品修正；17 份 Active Living Specs 100% 通過 `Gate 0` 雙向校驗，且全 9 大套件於 **Linux 標準/`-O` 雙模**與 **Windows 11 實機**均 100% 通過（`0 ResourceWarning`）並獲唯讀盲審 `REVIEW_STATUS: PASSED`。<br>3. **待推進 Wave 1.3 (`dev 2.0`)**：拍板 `dev/dev.md` 開放議題，實作 `dev build` 靜態索引打包器、`dev check 2.0` 與跨平台模組測試沙盒。 | • `core 2.0` 與 `core_v2/yscb.py` 已達成：`0 Any` 洩漏、`0 ResourceWarning`、10 階段物理拔除零反向耦合、17 份活規格 1:1 對齊、Linux + Windows 11 雙平台全綠。<br>• 待 `dev 2.0` 落地後完成 Wave 1 全閉環。 |
+| **Wave 1：<br>內核與工具鏈地基** | `core 2.0` (6 大功能域)<br>`core_v2/yscb.py`<br>`dev 2.0` | 1. **已完成 Wave 1.1 精簡收斂基線與 `surface.sdk` 初版門面**：完成 `Domain 5 (execution)` 5 階段精簡版、`Domain 1 (foundation)` 基礎子集、`Domain 2.fs` 與分域驗證套件基線（完整版基線封存於 `archive/core-v2-maximalist` Tag）。<br>2. **已完成 Wave 1.2 全內核實作、止血收斂、可觀測性/效能剖析與雙平台實機驗收**：依 `Wave 1.2a ~ 1.2d` 全數完成 6 大功能域與純標準庫 `core_v2/yscb.py`（`3,386 LOC`）；經止血收斂與可觀測性計畫落地 ImTK 風格 `foundation/profiler.py`、3+1 全 JSONL 運行日誌（`daemon/`、`daily/`、`perf/`、`modules/`）、`CLI → Daemon → Tier 1 Worker` 三進程效能樹合併、`sdk` 80 符號門面、`--profile`/`--profile-mem` 旗標、全核心 `safe_realpath` 與 `TODO-31` 單次建核/持久化簽章快取；17 份 Active Living Specs 100% 通過 `Gate 0` 雙向校驗，且全 9 大套件於 **Linux 標準/`-O` 雙模**與 **Windows 11 實機**均 100% 通過（`0 ResourceWarning`）並獲唯讀盲審 `REVIEW_STATUS: PASSED`。<br>3. **待推進 Wave 1.3 (`dev 2.0`)**：拍板 `dev/dev.md` 開放議題，實作 `dev build` 靜態索引打包器、`dev check 2.0` 與跨平台模組測試沙盒。 | • `core 2.0` 與 `core_v2/yscb.py` 已達成：`0 Any` 洩漏、`0 ResourceWarning`、10 階段物理拔除零反向耦合、17 份活規格 1:1 對齊、Linux + Windows 11 雙平台全綠。<br>• 待 `dev 2.0` 落地後完成 Wave 1 全閉環。 |
 | **Wave 2：<br>Tier 0 輕模組移植** | `vscode-support`<br>`agents-workflow`<br>`gdrive-support` | 1. 保留既有模板/技能資產、投影邏輯與三方同步帳本演算法。<br>2. 將所有外部與背景能力全面收斂為 `Task[TIn, TOut]`，拔除自管背景執行緒、`hook.*.py` 與裸字串路徑。 | • Tier 0 全模組 0 `.venv` 秒速運行。<br>• 工作流產物編譯與 Google Drive 離線沙盒同步 100% 通過契約測試。 |
 | **Wave 3：<br>Tier 1 雙引擎削殼** | `ast`<br>`knowledge-db` | 1. 刪除舊版自管 `.bin.gz` 快取、`.kdb_index.lock`、前景 JIT 修補、自管前景活動旗標與動態 `pip`。<br>2. 以 `space -> ast -> kdb` 事件鏈重構更新流，`kdb index` 透過 SDK 調用上游更新並核對世代水位，無變更天然短路。 | • 下游業務模組 0 自管鎖、代碼大幅精簡。<br>• 連續大量改檔背景索引期間，前景查詢恆定毫秒級秒回且零世代撕裂。 |
 | **Wave 4：<br>宿主原子切換與退役** | 根目錄切換至 `2.0.0.0` | 1. 完成本機 Windows 與雲端 Linux VM 全套實機端到端驗收與組態平滑遷移驗證。<br>2. 將 `./core_v2` 扶正為正式主幹，退役 `1.x` 舊源碼及獨立的 `server`、`file-space` 模組（收斂為 7 大模組）。 | • 全倉 7 大模組 100% 運行於 `Core 2.0` 基座，正式發布 `2.0.0.0`。 |

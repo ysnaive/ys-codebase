@@ -329,18 +329,21 @@ def _verify_rc02_preempt_and_static_filter(ws2: HostPath, ws2_path: Path, disp2:
 def verify_rc03_coalesce_priority_and_nested_group(ws2: HostPath, ws2_path: Path, disp2: RuntimeDispatcher) -> None:
     """Verify snapshot reads, priority inheritance, COALESCE semantics, and nested SERIALIZE fallback."""
     log("[RC-03] Testing snapshot read, priority inheritance, normalized/custom COALESCE, leader-cancel & subscriber fault isolation...")
+    bg_sleep_ms = 800 if os.name == "nt" else 260
+    bg_in_loop = threading.Event()
     progress_seen: list[JsonObject] = []
     follower_progress: list[JsonObject] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         f_bg = pool.submit(
             disp2.invoke,
-            InvokeRequest(task_id=TaskId("kdb.index"), raw_input={"sleep_ms": 240}, workspace_root=ws2, caller_cwd=ws2, priority=ExecutionPriority.BACKGROUND),
+            InvokeRequest(task_id=TaskId("kdb.index"), raw_input={"sleep_ms": bg_sleep_ms}, workspace_root=ws2, caller_cwd=ws2, priority=ExecutionPriority.BACKGROUND),
             output_type=IndexOutDto,
+            on_progress=lambda _p: bg_in_loop.set(),
         )
-        time.sleep(0.04)
+        check(bg_in_loop.wait(timeout=5.0), "Background kdb.index did not enter progress loop")
         f_fg_eq = pool.submit(
             disp2.invoke,
-            InvokeRequest(task_id=TaskId("kdb.index"), raw_input={"force": False, "export_path": "", "sleep_ms": 240}, workspace_root=ws2, caller_cwd=ws2),
+            InvokeRequest(task_id=TaskId("kdb.index"), raw_input={"force": False, "export_path": "", "sleep_ms": bg_sleep_ms}, workspace_root=ws2, caller_cwd=ws2),
             output_type=IndexOutDto,
             on_progress=follower_progress.append,
         )
@@ -350,16 +353,24 @@ def verify_rc03_coalesce_priority_and_nested_group(ws2: HostPath, ws2_path: Path
             output_type=IndexOutDto,
             on_progress=progress_seen.append,
         )
-        time.sleep(0.03)
         read_out = disp2.invoke_typed(KDB_SEARCH_META, SearchInDto(query="fast", sync=False))
         check(not f_bg.done(), "Lock-free read should finish while slow kdb.index still holds kdb lock!")
         r_bg, r_fg_eq, r_fg_diff = f_bg.result(timeout=10), f_fg_eq.result(timeout=10), f_fg_diff.result(timeout=10)
 
-    check(read_out.ok and read_out.value is not None and read_out.value.warm_model_ready is True)
-    check(r_bg.ok and r_bg.value is not None and r_bg.value.observed_priority == "foreground")
-    check(r_fg_eq.ok and r_fg_eq.coalesced is True and len(follower_progress) >= 1)
-    check(r_fg_diff.ok and r_fg_diff.coalesced is False and (ws2_path / "sub_dir" / "exported_bundle.json").is_file())
-    check(len(progress_seen) >= 2 and progress_seen[0].get("phase") == "indexing")
+    check(read_out.ok and read_out.value is not None and read_out.value.warm_model_ready is True, lambda: f"Unexpected read_out: {read_out}")
+    check(
+        r_bg.ok and r_bg.value is not None and r_bg.value.observed_priority == "foreground",
+        lambda: f"Expected background leader elevated to foreground: r_bg={r_bg}, r_fg_eq={r_fg_eq}, follower_progress={len(follower_progress)}",
+    )
+    check(
+        r_fg_eq.ok and r_fg_eq.coalesced is True and len(follower_progress) >= 1,
+        lambda: f"Expected coalesced foreground follower with progress: r_fg_eq={r_fg_eq}, follower_progress={len(follower_progress)}",
+    )
+    check(
+        r_fg_diff.ok and r_fg_diff.coalesced is False and (ws2_path / "sub_dir" / "exported_bundle.json").is_file(),
+        lambda: f"Unexpected non-equivalent foreground outcome: r_fg_diff={r_fg_diff}",
+    )
+    check(len(progress_seen) >= 2 and progress_seen[0].get("phase") == "indexing", lambda: f"Unexpected progress_seen: {progress_seen}")
 
     _verify_rc03_custom_equiv_cancel_and_step5(ws2, ws2_path, disp2)
     _verify_rc03_cross_layer_and_step5_fatal_coalesce(ws2, disp2)
@@ -1115,20 +1126,23 @@ def _verify_rc08_security_and_topology_gates(ws8: HostPath, venv_py: Path, disp8
     mix_cyc = disp8.invoke(InvokeRequest(task_id=TaskId("space.mix_cycle_emit"), raw_input={}, workspace_root=ws8, caller_cwd=ws8))
     check(not mix_cyc.ok and mix_cyc.error is not None and mix_cyc.error.code == ErrorCode.EVENT_CYCLE_DETECTED)
 
-    t0_to1 = disp8.invoke(InvokeRequest(task_id=TaskId("space.tier0_timeout"), raw_input={"hold_ms": 350, "ignore_cancel": False}, workspace_root=ws8, caller_cwd=ws8))
+    t0_to1 = disp8.invoke(InvokeRequest(task_id=TaskId("space.tier0_timeout"), raw_input={"hold_ms": 600, "ignore_cancel": False}, workspace_root=ws8, caller_cwd=ws8))
     check(disp8.invoke(InvokeRequest(task_id=TaskId("space.hold_lock_ms"), raw_input={"hold_ms": 1, "ignore_cancel": False}, workspace_root=ws8, caller_cwd=ws8)).ok)
     t_start_uncoop = time.monotonic()
-    t0_to2 = disp8.invoke(InvokeRequest(task_id=TaskId("space.tier0_timeout"), raw_input={"hold_ms": 500, "ignore_cancel": True}, workspace_root=ws8, caller_cwd=ws8))
+    t0_to2 = disp8.invoke(InvokeRequest(task_id=TaskId("space.tier0_timeout"), raw_input={"hold_ms": 900, "ignore_cancel": True}, workspace_root=ws8, caller_cwd=ws8))
     elapsed_uncoop = time.monotonic() - t_start_uncoop
     t0_after = disp8.invoke(InvokeRequest(task_id=TaskId("space.hold_lock_ms"), raw_input={"hold_ms": 5, "ignore_cancel": False}, workspace_root=ws8, caller_cwd=ws8))
     check(not t0_to1.ok and t0_to1.error is not None and t0_to1.error.code == ErrorCode.TASK_TIMEOUT)
-    check(not t0_to2.ok and t0_to2.error is not None and t0_to2.error.code == ErrorCode.TASK_TIMEOUT and elapsed_uncoop < 0.40)
+    check(
+        not t0_to2.ok and t0_to2.error is not None and t0_to2.error.code == ErrorCode.TASK_TIMEOUT and elapsed_uncoop < 0.70,
+        lambda: f"Unexpected uncooperative timeout: t0_to2={t0_to2} elapsed={elapsed_uncoop:.3f}s",
+    )
     check(t0_after.ok)
     ling_exit = jfloat(read_json_dict(ws8.join(".cache", "t0_lingering_exit.json")), "exit")
     next_enter = jfloat(read_json_dict(ws8.join(".cache", "t0_guard_probe_enter.json")), "enter")
     check(
         ling_exit > 0.0 and next_enter >= ling_exit - 0.005,
-        lambda: f"ling_exit={ling_exit} next_enter={next_enter} hot={(t0_to1.executed_hot, t0_to2.executed_hot, t0_after.executed_hot)}",
+        lambda: f"ling_exit={ling_exit} next_enter={next_enter} elapsed={elapsed_uncoop:.3f}s err={t0_to2.error} hot={(t0_to1.executed_hot, t0_to2.executed_hot, t0_after.executed_hot)}",
     )
     nf_out = disp8.invoke(InvokeRequest(task_id=TaskId("space.nonexistent_xyz"), raw_input={}, workspace_root=ws8, caller_cwd=ws8))
     check(not nf_out.ok and nf_out.error is not None and nf_out.error.code == ErrorCode.TASK_NOT_FOUND)

@@ -88,7 +88,7 @@ from core.surface.sdk import Arg, Empty, ExitCodeProvider, HumanRenderable, Modu
 TASKS_INDEX_SCHEMA_VERSION: Final[int] = 2
 _TASKS_INDEX_FILENAME: Final[str] = "tasks.index.json"
 _RESERVED_GLOBAL_CLI_FLAGS: Final[frozenset[str]] = frozenset(
-    {"-h", "--help", "--json", "--cold", "--approve", "--host-dir"}
+    {"-h", "--help", "--json", "--cold", "--approve", "--host-dir", "--profile", "--profile-mem"}
 )
 _VALID_CLI_SCALAR_TYPE_NAMES: Final[frozenset[str]] = frozenset(
     {"str", "int", "float", "bool", "dict"}

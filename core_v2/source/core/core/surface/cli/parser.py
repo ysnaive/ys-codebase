@@ -78,11 +78,15 @@ class GlobalCliFlags:
     force_cold: bool = False
     approve_token: Optional[str] = None
     remaining_args: tuple[str, ...] = ()
+    profile: bool = False
+    profile_mem: bool = False
 
     def __post_init__(self) -> None:
         require_pure_bool(self.help_requested, "help_requested")
         require_pure_bool(self.json_output, "json_output")
         require_pure_bool(self.force_cold, "force_cold")
+        require_pure_bool(self.profile, "profile")
+        require_pure_bool(self.profile_mem, "profile_mem")
         if self.approve_token is not None:
             require_pure_str(self.approve_token, "approve_token", non_empty=True)
         object.__setattr__(self, "remaining_args", require_typed_tuple(self.remaining_args, str, "remaining_args"))
@@ -112,11 +116,13 @@ class CliRouteResolution:
 
 
 def extract_global_flags(argv: Sequence[str]) -> GlobalCliFlags:
-    """Extract global reserved flags (--help/-h, --json, --cold, --approve) before '--'."""
+    """Extract global reserved flags (--help/-h, --json, --cold, --approve, --profile, --profile-mem) before '--'."""
     tokens = require_typed_tuple(argv, str, "argv")
     help_req = False
     json_out = False
     cold = False
+    profile_req = False
+    profile_mem_req = False
     approve_tok: Optional[str] = None
     rem: list[str] = []
     idx = 0
@@ -145,6 +151,14 @@ def extract_global_flags(argv: Sequence[str]) -> GlobalCliFlags:
             cold = True
             idx += 1
             continue
+        if tok == "--profile":
+            profile_req = True
+            idx += 1
+            continue
+        if tok == "--profile-mem":
+            profile_mem_req = True
+            idx += 1
+            continue
         if tok.startswith("--approve="):
             val = tok[len("--approve=") :].strip()
             if not val:
@@ -167,6 +181,8 @@ def extract_global_flags(argv: Sequence[str]) -> GlobalCliFlags:
         force_cold=cold,
         approve_token=approve_tok,
         remaining_args=tuple(rem),
+        profile=profile_req,
+        profile_mem=profile_mem_req,
     )
 
 
@@ -389,7 +405,7 @@ def _coerce_scalar_value(
 
 
 _GLOBAL_RESERVED_FLAGS: Final[frozenset[str]] = frozenset(
-    {"-h", "--help", "--json", "--cold", "--approve", "--host-dir"}
+    {"-h", "--help", "--json", "--cold", "--approve", "--host-dir", "--profile", "--profile-mem"}
 )
 
 
@@ -702,6 +718,8 @@ def extract_contextual_global_flags(
     help_req = False
     json_out = False
     cold = False
+    profile_req = False
+    profile_mem_req = False
     approve_tok: Optional[str] = None
     rem: list[str] = []
     idx = 0
@@ -741,6 +759,14 @@ def extract_contextual_global_flags(
             cold = True
             idx += 1
             continue
+        if tok == "--profile":
+            profile_req = True
+            idx += 1
+            continue
+        if tok == "--profile-mem":
+            profile_mem_req = True
+            idx += 1
+            continue
         if tok.startswith("--approve="):
             val = tok[len("--approve=") :].strip()
             if not val:
@@ -775,6 +801,8 @@ def extract_contextual_global_flags(
         force_cold=cold,
         approve_token=approve_tok,
         remaining_args=tuple(rem),
+        profile=profile_req,
+        profile_mem=profile_mem_req,
     )
 
 

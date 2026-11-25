@@ -21,6 +21,7 @@ from core.filesystem.vfs import ScopedVfs
 from core.foundation.codec import DataclassCodec
 from core.foundation.errors import ErrorCode, ErrorDetail, YscbError, safe_exception_summary
 from core.foundation.observability import CancellationToken, LocaleCatalog, ProgressEvent, StructuredLogger
+from core.foundation.profiler import NullProfiler, Profiler
 from core.foundation.primitives import (
     INT64_MAX,
     MAX_PARSE_JSON_DEPTH,
@@ -419,7 +420,7 @@ class TaskMetadata(Generic[TIn, TOut]):
 
 @dataclass(frozen=True, slots=True)
 class CallPropagationContext:
-    """Immutable cross-hop call tree, causal lineage, and container reentrancy state."""
+    """Immutable cross-hop call tree, causal lineage, profiling flag, and container reentrancy state."""
 
     turn_id: Optional[str] = None
     call_tree_id: Optional[str] = None
@@ -431,6 +432,7 @@ class CallPropagationContext:
     from_hot_container: bool = False
     hot_workspaces: frozenset[HostPath] = frozenset()
     cold_shared_workspaces: frozenset[HostPath] = frozenset()
+    profile_mem: bool = False
 
     def __post_init__(self) -> None:
         for opt_txt, label in ((self.turn_id, "turn_id"), (self.call_tree_id, "call_tree_id")):
@@ -443,6 +445,7 @@ class CallPropagationContext:
             (self.is_nested_call, "is_nested_call"),
             (self.in_event_chain, "in_event_chain"),
             (self.from_hot_container, "from_hot_container"),
+            (self.profile_mem, "profile_mem"),
         ):
             require_pure_bool(flag, f"CallPropagationContext.{label}")
         object.__setattr__(self, "call_stack", validate_host_task_pairs(self.call_stack, "call_stack"))
@@ -452,6 +455,25 @@ class CallPropagationContext:
             "cold_shared_workspaces",
             require_typed_frozenset(self.cold_shared_workspaces, HostPath, "cold_shared_workspaces"),
         )
+
+
+def _validate_profiler_contract(prof: Profiler, label: str) -> None:
+    try:
+        m_scope = prof.scope
+        m_rel = prof.scope_relative
+        m_merge = prof.merge_subtree
+        m_snap = prof.snapshot
+        m_span = prof.current_span_path
+    except AttributeError as exc:
+        raise ValueError(f"Invalid Profiler on {label}: {prof!r}") from exc
+    if not (
+        callable(m_scope)
+        and callable(m_rel)
+        and callable(m_merge)
+        and callable(m_snap)
+        and callable(m_span)
+    ):
+        raise ValueError(f"Invalid Profiler methods on {label}: {prof!r}")
 
 
 def _freeze_raw_input_value(val: object, depth: int = 0) -> object:
@@ -498,6 +520,9 @@ class InvokeRequest:
     approval_scope: frozenset[TaskId] = frozenset()
     allow_conditional: bool = True
     propagation: CallPropagationContext = field(default_factory=CallPropagationContext)
+    profile_mem: bool = False
+    external_flight_owner: bool = False
+    active_profiler: Optional[Profiler] = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.task_id, TaskId):
@@ -515,8 +540,12 @@ class InvokeRequest:
         if not isinstance(self.priority, ExecutionPriority):
             raise ValueError(f"InvokeRequest.priority must be ExecutionPriority, got {self.priority!r}")
         require_pure_bool(self.allow_conditional, "InvokeRequest.allow_conditional")
+        require_pure_bool(self.profile_mem, "InvokeRequest.profile_mem")
+        require_pure_bool(self.external_flight_owner, "InvokeRequest.external_flight_owner")
         if not isinstance(self.propagation, CallPropagationContext):
             raise ValueError("InvokeRequest.propagation must be CallPropagationContext.")
+        if self.active_profiler is not None:
+            _validate_profiler_contract(self.active_profiler, "InvokeRequest.active_profiler")
         object.__setattr__(self, "approval_scope", require_typed_frozenset(self.approval_scope, TaskId, "InvokeRequest.approval_scope"))
 
 
@@ -555,6 +584,7 @@ class ModuleRuntimeServices:
     locale: LocaleCatalog
     config_loader: Callable[[type[object]], object]
     contributes_loader: Callable[[], AggregatedContributes]
+    profiler: Profiler = field(default_factory=NullProfiler)
 
     def __post_init__(self) -> None:
         if not isinstance(self.module_id, ModuleId):
@@ -573,6 +603,7 @@ class ModuleRuntimeServices:
             raise ValueError(f"Invalid StructuredLogger.log on ModuleRuntimeServices: {self.logger!r}")
         if not callable(self.config_loader) or not callable(self.contributes_loader):
             raise ValueError("ModuleRuntimeServices config_loader and contributes_loader must be callable.")
+        _validate_profiler_contract(self.profiler, "ModuleRuntimeServices")
 
 
 class TaskContext(ABC):
@@ -609,6 +640,10 @@ class TaskContext(ABC):
     @property
     @abstractmethod
     def locale(self) -> LocaleCatalog: ...
+
+    @property
+    def profiler(self) -> Profiler:
+        return NullProfiler()
 
     @abstractmethod
     def load_config(self, config_cls: type[TConfig]) -> TConfig: ...

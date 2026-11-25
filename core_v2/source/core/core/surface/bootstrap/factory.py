@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field, replace
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -54,10 +55,12 @@ from core.execution.runtime import (
     ModuleRuntimeServices,
     ProtectedModuleLoader,
     RuntimeDispatcher,
+    TaskOutcome,
     TaskRouteSpec,
     YscbModule,
     build_workspace_module_services_factory,
     resolve_active_call_tree_id,
+    resolve_active_caller_module,
 )
 from core.filesystem.fs import (
     FileLock,
@@ -92,12 +95,19 @@ from core.foundation import (
     CancellationToken,
     DataclassCodec,
     ErrorCode,
+    ErrorDetail,
+    FlightLogConfig,
+    FlightLogRouter,
     HostPath,
     IS_WINDOWS,
     JsonObject,
     JsonValue,
     LocaleCatalog,
     ModuleId,
+    NullProfiler,
+    Profiler,
+    ProfilerNodeSnapshot,
+    ProfilerRingBuffer,
     SemanticUri,
     TEST_SANDBOX_ENV_KEY,
     TaskId,
@@ -106,6 +116,7 @@ from core.foundation import (
     guard_standard_streams,
     is_process_alive,
     is_public_env_truthy,
+    read_flight_log_env,
     read_public_env_value,
     require_non_none,
     require_pure_bool,
@@ -127,6 +138,7 @@ from core.metadata.contributes import (
     extract_parsed_space_contributions,
     extract_validated_uri_schemes,
     hash_workspace_surface_trees,
+    is_active_cross_workspace_call,
     is_control_plane_reserved_path,
     is_permitted_contributed_mount_root,
     load_workspace_locale_catalog,
@@ -149,7 +161,9 @@ from core.packaging.env import (
 from core.packaging.installer import OfflinePackageEngine
 from core.surface.bootstrap.system_module import (
     CoreSystemModule,
+    DaemonStartInput,
     SystemKernelPort,
+    SystemResultView,
     bind_system_kernel,
     lookup_active_system_kernel,
     unbind_system_kernel,
@@ -647,6 +661,135 @@ def _close_retired_kernels_safely(kernels: Sequence[WorkspaceKernel]) -> None:
         raise first_exc
 
 
+@dataclass(frozen=True, slots=True)
+class _DeferredDaemonOutcome:
+    acquired_lock: bool
+    daemon_rc: int
+    post_close_rc: int
+
+
+def _capture_kernel_profiler_caller() -> Optional[str]:
+    frame = inspect.currentframe()
+    try:
+        cur = frame.f_back if frame is not None else None
+        if cur is not None:
+            cur = cur.f_back
+        if cur is None:
+            return None
+        fname = os.path.basename(cur.f_code.co_filename) or "<unknown>"
+        return f"{fname}:{cur.f_lineno}"
+    finally:
+        del frame
+
+
+class _KernelActiveProfiler:
+    """Profiler adapter delegating to init-time Profiler during boot and active service Profiler at runtime."""
+
+    __slots__ = ("_init_profiler", "_svc_profiler")
+
+    def __init__(self, init_profiler: Optional[Profiler] = None) -> None:
+        self._init_profiler: Optional[Profiler] = init_profiler
+        self._svc_profiler: Optional[Profiler] = None
+
+    def bind_runtime_profiler(self, profiler: Profiler) -> None:
+        self._svc_profiler = profiler
+
+    def finish_init(self) -> None:
+        self._init_profiler = None
+
+    def _target(self) -> Profiler:
+        if self._init_profiler is not None:
+            return self._init_profiler
+        if self._svc_profiler is not None:
+            return self._svc_profiler
+        return NullProfiler()
+
+    def scope(
+        self,
+        path: Optional[str] = None,
+        name: Optional[str] = None,
+        *,
+        caller: Optional[str] = None,
+    ) -> AbstractContextManager[None]:
+        target = self._target()
+        if isinstance(target, NullProfiler):
+            return target.scope(path, name, caller=caller)
+        eff_caller = caller if caller is not None else _capture_kernel_profiler_caller()
+        return target.scope(path, name, caller=eff_caller)
+
+    def scope_relative(
+        self,
+        path: str,
+        name: Optional[str] = None,
+        *,
+        caller: Optional[str] = None,
+    ) -> AbstractContextManager[None]:
+        target = self._target()
+        if isinstance(target, NullProfiler):
+            return target.scope_relative(path, name, caller=caller)
+        eff_caller = caller if caller is not None else _capture_kernel_profiler_caller()
+        return target.scope_relative(path, name, caller=eff_caller)
+
+    def merge_subtree(
+        self,
+        subtree: ProfilerNodeSnapshot,
+        *,
+        mount_path: Optional[str] = None,
+    ) -> None:
+        self._target().merge_subtree(subtree, mount_path=mount_path)
+
+    def snapshot(self) -> ProfilerNodeSnapshot:
+        return self._target().snapshot()
+
+    def current_span_path(self) -> str:
+        return self._target().current_span_path()
+
+
+def _load_flight_log_config(cfg_store: ConfigStore) -> FlightLogConfig:
+    try:
+        raw_obs = cfg_store.get_module_value(CORE_MODULE_ID, "observability", default=None)
+    except (OSError, ValueError, YscbError):
+        return FlightLogConfig()
+    if isinstance(raw_obs, Mapping):
+        try:
+            return DataclassCodec.decode(FlightLogConfig, raw_obs)
+        except (ValueError, TypeError, KeyError, YscbError):
+            return FlightLogConfig()
+    return FlightLogConfig()
+
+
+def _run_deferred_daemon_host(
+    host_dir: HostPath,
+    yscb_root: HostPath,
+    yscb_script_path: Optional[HostPath],
+    run_mode: bool,
+    on_ready: Optional[Callable[[], None]],
+) -> _DeferredDaemonOutcome:
+    daemon_kernel = WorkspaceKernelFactory.create(
+        host_dir,
+        yscb_root,
+        is_daemon_host=True,
+        yscb_script_path=yscb_script_path,
+        dialect=None,
+    )
+    ready_fired = False
+
+    def _handle_ready() -> None:
+        nonlocal ready_fired
+        ready_fired = True
+        if on_ready is not None:
+            on_ready()
+
+    try:
+        daemon = daemon_kernel.build_daemon()
+        rc = int(daemon.run_forever(console_mode=run_mode, ready_callback=_handle_ready))
+        acquired_lock = ready_fired or daemon.snapshot_status().state != DaemonRunState.BOOTING
+        post_rc = rc if (ready_fired or not acquired_lock or rc != 0) else 1
+        return _DeferredDaemonOutcome(acquired_lock=acquired_lock, daemon_rc=rc, post_close_rc=post_rc)
+    finally:
+        daemon_kernel.close()
+
+
 class WorkspaceKernel(SystemKernelPort, CliKernelSession):
     """Fully wired 6-domain microkernel instance for a single (host_dir, yscb_root) workspace."""
 
@@ -667,7 +810,13 @@ class WorkspaceKernel(SystemKernelPort, CliKernelSession):
         allow_auto_spawn: bool = True,
         inherit_host_env_locale: bool = True,
         raw_env_locale_override: Optional[str] = None,
+        profiler: Optional[Profiler] = None,
     ) -> None:
+        self._kernel_profiler = _KernelActiveProfiler(profiler)
+        self._daemon_boot_id: str = uuid.uuid4().hex if is_daemon_host else ""
+        self._profiler_ring_buffer: Optional[ProfilerRingBuffer] = (
+            ProfilerRingBuffer(maxlen=512) if is_daemon_host else None
+        )
         self._host_dir = host_dir
         self._yscb_root = yscb_root
         self._cache_dir = resolve_contained_subpath(yscb_root, DEFAULT_CACHE_DIRNAME)
@@ -731,89 +880,117 @@ class WorkspaceKernel(SystemKernelPort, CliKernelSession):
         self._applied_tier0_code_fp: str = ""
         self._last_notified_cfg_fp: str = ""
 
-        self._config_store = ConfigStore(host_dir=host_dir, yscb_root=yscb_root)
-        self._snapshot_vault = SnapshotVault(host_dir=host_dir, yscb_root=yscb_root)
-        self._readonly_policy = ReadonlyPolicy()
-        self._echo_guard = VfsEchoGuard()
-        self._env_pool = ImmutableVenvPool(yscb_root=yscb_root, cache_dir=self._cache_dir)
-        self._env_probe = EnvHealthProbe(self._env_pool)
-        self._env_gc = EnvGarbageCollector(self._env_pool)
+        with self._kernel_profiler.scope_relative("Kernel/ConfigAndVfs"):
+            self._config_store = ConfigStore(host_dir=host_dir, yscb_root=yscb_root)
+            self._flight_log_router = FlightLogRouter(
+                resolve_contained_subpath(self._cache_dir, "logs"),
+                config=_load_flight_log_config(self._config_store),
+                env=read_flight_log_env(),
+                daemon_boot_id=self._daemon_boot_id,
+            )
+            try:
+                self._snapshot_vault = SnapshotVault(host_dir=host_dir, yscb_root=yscb_root)
+                self._readonly_policy = ReadonlyPolicy()
+                self._echo_guard = VfsEchoGuard()
+                self._env_pool = ImmutableVenvPool(yscb_root=yscb_root, cache_dir=self._cache_dir)
+                self._env_probe = EnvHealthProbe(self._env_pool)
+                self._env_gc = EnvGarbageCollector(self._env_pool)
 
-        manifests_map = discover_installed_manifests_map(yscb_root)
-        self._contributes = ContributesAggregator(
-            yscb_root=yscb_root,
-            manifests=tuple(manifests_map.values()),
-            live_specs=self._live_specs,
-        )
-        core_agg = _safe_aggregate_core(self._contributes)
-        self._rebuild_vfs_from_core_agg(core_agg)
+                manifests_map = discover_installed_manifests_map(yscb_root)
+                self._contributes = ContributesAggregator(
+                    yscb_root=yscb_root,
+                    manifests=tuple(manifests_map.values()),
+                    live_specs=self._live_specs,
+                )
+                core_agg = _safe_aggregate_core(self._contributes)
+                self._rebuild_vfs_from_core_agg(core_agg)
+            except BaseException:
+                self._flight_log_router.close()
+                self._kernel_profiler.finish_init()
+                raise
 
-        os.makedirs(str(resolve_contained_subpath(yscb_root, ".storage.local", "core", "space")), exist_ok=True)
-        self._space_db = ModuleDatabase(
-            self._kernel_vfs,
-            SemanticUri("storage.local", "core/space/state.db"),
-        )
         try:
-            self._rebuild_space_and_services_locked(core_agg)
-            self.ensure_installed_tasks_indices()
+            os.makedirs(str(resolve_contained_subpath(yscb_root, ".storage.local", "core", "space")), exist_ok=True)
+            with self._kernel_profiler.scope_relative("Kernel/SpaceDb"):
+                self._space_db = ModuleDatabase(
+                    self._kernel_vfs,
+                    SemanticUri("storage.local", "core/space/state.db"),
+                    profiler=self._kernel_profiler,
+                )
+        except BaseException:
+            self._flight_log_router.close()
+            self._kernel_profiler.finish_init()
+            raise
+        try:
+            with self._kernel_profiler.scope_relative("Kernel/SpaceAndServices"):
+                self._rebuild_space_and_services_locked(core_agg)
+            with self._kernel_profiler.scope_relative("Kernel/TasksIndex"):
+                self.ensure_installed_tasks_indices()
 
-            core_mod = CoreSystemModule(self).to_yscb_module()
-            register_sdk_core_post_call_hook(core_mod, self.flush_pending_daemon_sync)
-            all_in_mem = (core_mod, *extra_modules)
-            self._output_types: dict[TaskId, object] = {
-                bt.task_id: bt.metadata.output_type
-                for ym in all_in_mem
-                for bt in ym.tasks()
-            }
-            self._module_provider = ModuleProviderAdapter(
-                yscb_root=yscb_root,
-                env_pool=self._env_pool,
-                core_route_specs=tuple(bt.route_spec for bt in core_mod.tasks()),
-                on_reload=self._on_provider_reloaded,
-            )
-            self._module_provider_opt = self._module_provider
-            self._applied_metadata_fp = self._compute_metadata_state_fingerprint_locked()
-            self._applied_tier0_code_fp = self._compute_tier0_code_fingerprint()
-            self._last_notified_cfg_fp = self.config_and_contributes_fingerprint()
-            spawner = self._build_daemon_spawner()
-            conn_cfg = DaemonConnectionConfig(
-                enabled=(not is_daemon_host and not force_cold),
-                auto_spawn=(
-                    not is_daemon_host
-                    and not force_cold
-                    and bool(allow_auto_spawn)
-                    and spawner.can_spawn_in_environment()
-                ),
-                strict_hot_dispatch=False,
-            )
-            self._spawner = spawner
-            self._dispatcher = RuntimeDispatcher(
-                workspace_root=yscb_root,
-                cache_dir=self._cache_dir,
-                module_provider=self._module_provider,
-                options=DispatcherHostOptions(
-                    config_view=_DaemonConfigViewAdapter(self),
-                    daemon_spawner=spawner,
-                    connection_config=conn_cfg,
-                    is_daemon_host=is_daemon_host,
-                    child_dispatcher_factory=self._resolve_child_dispatcher,
-                    peer_cache_dir_resolver=lambda peer_ws: resolve_contained_subpath(peer_ws, DEFAULT_CACHE_DIRNAME),
-                    owns_child_dispatchers=False,
-                    in_memory_modules=all_in_mem,
-                    module_services_factory=self._resolve_module_services,
-                    worker_host_dir=host_dir,
-                    env_lease_acquire=self._acquire_env_lease,
-                    env_touch_used=self._touch_env_used_for_python,
-                ),
-            )
-            bind_locale_getter_owner(self._dispatcher, self._locale_getter_fn)
-            self._persist_core_disk_index_if_present()
-            if not self._is_managed_child:
-                bind_system_kernel(yscb_root, self)
+            with self._kernel_profiler.scope_relative("Kernel/Dispatcher"):
+                core_mod = CoreSystemModule(self).to_yscb_module()
+                register_sdk_core_post_call_hook(core_mod, self.flush_pending_daemon_sync)
+                all_in_mem = (core_mod, *extra_modules)
+                self._output_types: dict[TaskId, object] = {
+                    bt.task_id: bt.metadata.output_type
+                    for ym in all_in_mem
+                    for bt in ym.tasks()
+                }
+                self._module_provider = ModuleProviderAdapter(
+                    yscb_root=yscb_root,
+                    env_pool=self._env_pool,
+                    core_route_specs=tuple(bt.route_spec for bt in core_mod.tasks()),
+                    on_reload=self._on_provider_reloaded,
+                )
+                self._module_provider_opt = self._module_provider
+                self._applied_metadata_fp = self._compute_metadata_state_fingerprint_locked()
+                self._applied_tier0_code_fp = self._compute_tier0_code_fingerprint()
+                self._last_notified_cfg_fp = self.config_and_contributes_fingerprint()
+                spawner = self._build_daemon_spawner()
+                conn_cfg = DaemonConnectionConfig(
+                    enabled=(not is_daemon_host and not force_cold),
+                    auto_spawn=(
+                        not is_daemon_host
+                        and not force_cold
+                        and bool(allow_auto_spawn)
+                        and spawner.can_spawn_in_environment()
+                    ),
+                    strict_hot_dispatch=False,
+                )
+                self._spawner = spawner
+                self._dispatcher = RuntimeDispatcher(
+                    workspace_root=yscb_root,
+                    cache_dir=self._cache_dir,
+                    module_provider=self._module_provider,
+                    options=DispatcherHostOptions(
+                        config_view=_DaemonConfigViewAdapter(self),
+                        daemon_spawner=spawner,
+                        connection_config=conn_cfg,
+                        is_daemon_host=is_daemon_host,
+                        child_dispatcher_factory=self._resolve_child_dispatcher,
+                        peer_cache_dir_resolver=lambda peer_ws: resolve_contained_subpath(peer_ws, DEFAULT_CACHE_DIRNAME),
+                        owns_child_dispatchers=False,
+                        in_memory_modules=all_in_mem,
+                        module_services_factory=self._resolve_module_services,
+                        worker_host_dir=host_dir,
+                        env_lease_acquire=self._acquire_env_lease,
+                        env_touch_used=self._touch_env_used_for_python,
+                        flight_log_router=self._flight_log_router,
+                        daemon_boot_id=self._daemon_boot_id,
+                        profiler_ring_buffer=self._profiler_ring_buffer,
+                    ),
+                )
+                bind_locale_getter_owner(self._dispatcher, self._locale_getter_fn)
+                self._persist_core_disk_index_if_present()
+                if not self._is_managed_child:
+                    bind_system_kernel(yscb_root, self)
         except BaseException:
             unbind_locale_getter_dialect(self._locale_getter_fn)
             self._space_db.close()
+            self._flight_log_router.close()
             raise
+        finally:
+            self._kernel_profiler.finish_init()
 
     def _acquire_env_lease(self, venv_python: HostPath) -> Optional[Callable[[], None]]:
         lease = acquire_env_lease_for_python(self._env_pool, venv_python)
@@ -886,7 +1063,6 @@ class WorkspaceKernel(SystemKernelPort, CliKernelSession):
             self._space_db,
             static_specs=static_spaces,
         )
-        self._space_scanner = SpaceScanner(self._space_registry, self._space_db)
         self._gitignore = GitignoreMaterializer(self._space_registry, self._kernel_vfs)
         self._package_engine = OfflinePackageEngine(
             host_dir=self._host_dir,
@@ -912,6 +1088,12 @@ class WorkspaceKernel(SystemKernelPort, CliKernelSession):
             contributes_aggregator=self._contributes,
             vfs_hub=self._vfs_hub,
             locale_getter=self._locale_getter_fn,
+        )
+        self._kernel_profiler.bind_runtime_profiler(self._svc_factory(CORE_MODULE_ID).profiler)
+        self._space_scanner = SpaceScanner(
+            self._space_registry,
+            self._space_db,
+            profiler=self._kernel_profiler,
         )
 
     def _collect_expired_retired_children_locked(self, now_mono: float) -> list[WorkspaceKernel]:
@@ -1175,6 +1357,7 @@ class WorkspaceKernel(SystemKernelPort, CliKernelSession):
                 vfs_hub=self._vfs_hub,
                 locale_getter=self._locale_getter_fn,
             )
+            self._kernel_profiler.bind_runtime_profiler(self._svc_factory(CORE_MODULE_ID).profiler)
 
     def consume_post_close_exit_code(self) -> Optional[int]:
         rc = self._post_close_exit_code
@@ -1855,7 +2038,11 @@ class WorkspaceKernel(SystemKernelPort, CliKernelSession):
                     self._space_db,
                     static_specs=static_spaces,
                 )
-                self._space_scanner = SpaceScanner(self._space_registry, self._space_db)
+                self._space_scanner = SpaceScanner(
+                    self._space_registry,
+                    self._space_db,
+                    profiler=self._kernel_profiler,
+                )
                 self._gitignore = GitignoreMaterializer(self._space_registry, self._kernel_vfs)
                 self._rebind_readonly_matcher()
                 after_specs = {
@@ -2400,6 +2587,7 @@ class WorkspaceKernel(SystemKernelPort, CliKernelSession):
             if self_restart_argv is not None
             else self._default_daemon_restart_argv()
         )
+        use_kernel_router = bool(self._daemon_boot_id)
         daemon = WorkspaceDaemon(
             workspace_root=self._yscb_root,
             cache_dir=self._cache_dir,
@@ -2407,6 +2595,8 @@ class WorkspaceKernel(SystemKernelPort, CliKernelSession):
             config_view=_DaemonConfigViewAdapter(self),
             watch_config=watch_cfg,
             self_restart_argv=eff_restart,
+            flight_log_router=self._flight_log_router if use_kernel_router else None,
+            daemon_boot_id=self._daemon_boot_id if use_kernel_router else "",
         )
         with self._reload_lock:
             if self._closed or self._closing:
@@ -2442,29 +2632,15 @@ class WorkspaceKernel(SystemKernelPort, CliKernelSession):
         self._deferred_daemon_console_mode = None
         if run_mode is None:
             return (False, 0)
-        daemon_kernel = WorkspaceKernelFactory.create(
+        res = _run_deferred_daemon_host(
             self._host_dir,
             self._yscb_root,
-            is_daemon_host=True,
-            yscb_script_path=self._yscb_script_path,
-            dialect=None,
+            self._yscb_script_path,
+            run_mode,
+            on_ready,
         )
-        ready_fired = False
-
-        def _handle_ready() -> None:
-            nonlocal ready_fired
-            ready_fired = True
-            if on_ready is not None:
-                on_ready()
-
-        try:
-            daemon = daemon_kernel.build_daemon()
-            rc = int(daemon.run_forever(console_mode=run_mode, ready_callback=_handle_ready))
-            acquired_lock = ready_fired or daemon.snapshot_status().state != DaemonRunState.BOOTING
-            self._post_close_exit_code = rc if (ready_fired or not acquired_lock or rc != 0) else 1
-            return (acquired_lock, rc)
-        finally:
-            daemon_kernel.close()
+        self._post_close_exit_code = res.post_close_rc
+        return (res.acquired_lock, res.daemon_rc)
 
     def spawn_or_run_daemon(self, *, console: bool, detach: bool, supervisor: bool = False) -> JsonObject:
         with self._reload_lock:
@@ -2590,6 +2766,12 @@ class WorkspaceKernel(SystemKernelPort, CliKernelSession):
             if first_exc is None:
                 first_exc = exc
 
+        try:
+            self._flight_log_router.close()
+        except BaseException as exc:
+            if first_exc is None:
+                first_exc = exc
+
         if pending_sync is not None:
             try:
                 self._deliver_daemon_sync_pair(pending_sync)
@@ -2666,14 +2848,11 @@ class WorkspaceKernelFactory:
         if not isinstance(host_dir, HostPath) or not isinstance(yscb_root, HostPath):
             raise TypeError("host_dir and yscb_root must be HostPath instances")
         require_pure_bool(force_cold, "force_cold")
-        return WorkspaceKernel(
+        return _LazyCliKernelSession(
             host_dir=host_dir,
             yscb_root=yscb_root,
-            is_daemon_host=False,
             force_cold=force_cold,
-            extra_modules=(),
             yscb_script_path=yscb_script_path,
-            allow_deferred_daemon_console=True,
         )
 
     @staticmethod
@@ -2980,6 +3159,279 @@ class _LazySdkKernelPort(SystemKernelPort):
 
     def spawn_or_run_daemon(self, *, console: bool, detach: bool, supervisor: bool = False) -> JsonObject:
         return self._ensure().spawn_or_run_daemon(console=console, detach=detach, supervisor=supervisor)
+
+
+class _LazyCliDispatcherProxy:
+    """Lightweight CLI dispatcher proxy intercepting foreground daemon start before creating a cold kernel."""
+
+    def __init__(self, session: _LazyCliKernelSession) -> None:
+        self._session = session
+
+    def invoke(
+        self,
+        request: InvokeRequest,
+        *,
+        output_type: Optional[type[object]] = None,
+        cancel_token: Optional[CancellationToken] = None,
+        on_progress: Optional[Callable[[JsonObject], None]] = None,
+    ) -> TaskOutcome[object]:
+        prop = request.propagation
+        if (
+            request.task_id == TaskId("core.daemon.start")
+            and request.workspace_root == self._session.yscb_root
+            and not self._session.is_closed
+            and output_type is None
+            and request.allow_conditional
+            and request.routing_policy != ClientRoutingPolicy.STRICT_HOT
+            and not prop.in_event_chain
+            and not prop.call_stack
+            and not prop.from_hot_container
+            and not prop.is_nested_call
+            and not prop.is_internal_trigger
+            and resolve_active_caller_module() is None
+        ):
+            try:
+                decoded_start = DataclassCodec.decode(DaemonStartInput, request.raw_input)
+            except (YscbError, ValueError, TypeError, KeyError):
+                decoded_start = None
+            if decoded_start is not None and (decoded_start.console or decoded_start.supervisor) and not decoded_start.detach:
+                return self._session.handle_fast_foreground_daemon_start(
+                    console=decoded_start.console,
+                    supervisor=decoded_start.supervisor,
+                    cancel_token=cancel_token,
+                    profiler=request.active_profiler,
+                )
+        kernel = self._session.ensure_kernel(profiler=request.active_profiler)
+        return kernel.dispatcher.invoke(
+            request,
+            output_type=output_type,
+            cancel_token=cancel_token,
+            on_progress=on_progress,
+        )
+
+
+class _LazyCliKernelSession:
+    """Deferred CliKernelSession avoiding duplicate WorkspaceKernel instantiation on foreground daemon start."""
+
+    def __init__(
+        self,
+        *,
+        host_dir: HostPath,
+        yscb_root: HostPath,
+        force_cold: bool,
+        yscb_script_path: Optional[HostPath],
+    ) -> None:
+        self._host_dir = host_dir
+        self._yscb_root = yscb_root
+        self._cache_dir = resolve_contained_subpath(yscb_root, DEFAULT_CACHE_DIRNAME)
+        self._force_cold = force_cold
+        self._yscb_script_path = yscb_script_path
+        self._lock = threading.RLock()
+        self._kernel: Optional[WorkspaceKernel] = None
+        self._config_store_cache: Optional[ConfigStore] = None
+        self._dialect: Optional[str] = None
+        self._raw_env_locale: Optional[str] = None
+        self._dialect_applied = False
+        self._deferred_daemon_console_mode: Optional[bool] = None
+        self._post_close_exit_code: Optional[int] = None
+        self._closed = False
+        self._proxy_dispatcher = _LazyCliDispatcherProxy(self)
+
+    @property
+    def yscb_root(self) -> HostPath:
+        return self._yscb_root
+
+    @property
+    def is_closed(self) -> bool:
+        with self._lock:
+            return self._closed
+
+    @property
+    def dispatcher(self) -> RuntimeDispatcher | _LazyCliDispatcherProxy:
+        with self._lock:
+            if self._kernel is not None:
+                return self._kernel.dispatcher
+            return self._proxy_dispatcher
+
+    @property
+    def config_store(self) -> Optional[ConfigStore]:
+        with self._lock:
+            if self._kernel is not None:
+                return self._kernel.config_store
+            if self._config_store_cache is None:
+                self._config_store_cache = ConfigStore(host_dir=self._host_dir, yscb_root=self._yscb_root)
+            return self._config_store_cache
+
+    def ensure_kernel(self, *, profiler: Optional[Profiler] = None) -> WorkspaceKernel:
+        with self._lock:
+            if self._closed:
+                raise YscbError(ErrorCode.DAEMON_UNAVAILABLE, "CLI kernel session is closed.")
+            if self._kernel is not None:
+                return self._kernel
+            eff_dialect = self._dialect
+            eff_raw_loc = self._raw_env_locale if self._dialect_applied else None
+            if profiler is not None:
+                with profiler.scope_relative("Bootstrap/CreateKernel"):
+                    built = WorkspaceKernel(
+                        host_dir=self._host_dir,
+                        yscb_root=self._yscb_root,
+                        is_daemon_host=False,
+                        force_cold=self._force_cold,
+                        extra_modules=(),
+                        yscb_script_path=self._yscb_script_path,
+                        dialect=eff_dialect,
+                        allow_deferred_daemon_console=True,
+                        raw_env_locale_override=eff_raw_loc,
+                        profiler=profiler,
+                    )
+            else:
+                built = WorkspaceKernel(
+                    host_dir=self._host_dir,
+                    yscb_root=self._yscb_root,
+                    is_daemon_host=False,
+                    force_cold=self._force_cold,
+                    extra_modules=(),
+                    yscb_script_path=self._yscb_script_path,
+                    dialect=eff_dialect,
+                    allow_deferred_daemon_console=True,
+                    raw_env_locale_override=eff_raw_loc,
+                )
+            self._kernel = built
+            return built
+
+    def handle_fast_foreground_daemon_start(
+        self,
+        *,
+        console: bool,
+        supervisor: bool,
+        cancel_token: Optional[CancellationToken],
+        profiler: Optional[Profiler],
+    ) -> TaskOutcome[JsonValue]:
+        if cancel_token is not None and cancel_token.is_cancelled:
+            return TaskOutcome(
+                ok=False,
+                error=ErrorDetail(
+                    ErrorCode.TASK_CANCELLED,
+                    cancel_token.reason or "Task cancelled.",
+                    source_task="core.daemon.start",
+                ),
+            )
+        if is_active_cross_workspace_call():
+            return TaskOutcome(
+                ok=False,
+                error=ErrorDetail(
+                    ErrorCode.ACCESS_DENIED,
+                    "Cross-workspace callers are not permitted to start workspace daemon.",
+                    source_task="core.daemon.start",
+                ),
+            )
+        eff_console = bool(console and not supervisor)
+        mode_label = "console" if eff_console else "supervisor"
+        if profiler is not None:
+            with profiler.scope_relative("Daemon/FastStartProbe"):
+                live_ep = probe_daemon_endpoint(self._cache_dir, self._yscb_root)
+        else:
+            live_ep = probe_daemon_endpoint(self._cache_dir, self._yscb_root)
+        if live_ep is not None:
+            view = SystemResultView(
+                "Daemon start processed.",
+                {"mode": mode_label, "already_running": True, "started": False},
+            )
+            return TaskOutcome(ok=True, value=DataclassCodec.encode_object(view), executed_hot=False)
+        with self._lock:
+            if self._closed:
+                return TaskOutcome(
+                    ok=False,
+                    error=ErrorDetail(
+                        ErrorCode.DAEMON_UNAVAILABLE,
+                        "CLI kernel session is closed.",
+                        source_task="core.daemon.start",
+                    ),
+                )
+            self._deferred_daemon_console_mode = eff_console
+        view = SystemResultView("Daemon start processed.", {"mode": mode_label, "started": True})
+        return TaskOutcome(ok=True, value=DataclassCodec.encode_object(view), executed_hot=False)
+
+    def apply_caller_dialect(self, dialect: Optional[str], raw_env_locale: Optional[str] = None) -> None:
+        with self._lock:
+            self._dialect = dialect.strip() if isinstance(dialect, str) and dialect.strip() else None
+            self._raw_env_locale = raw_env_locale.strip() if isinstance(raw_env_locale, str) else None
+            self._dialect_applied = True
+            kernel = self._kernel
+        if kernel is not None:
+            kernel.apply_caller_dialect(dialect, raw_env_locale)
+
+    def resolve_task_output_type(self, task_id: TaskId) -> Optional[object]:
+        with self._lock:
+            kernel = self._kernel
+        if kernel is not None:
+            return kernel.resolve_task_output_type(task_id)
+        if task_id == TaskId("core.daemon.start"):
+            return SystemResultView
+        return None
+
+    def resolve_task_presentation(
+        self,
+        task_entry: IndexedTaskEntry,
+        raw_value: JsonValue,
+        *,
+        render_human: bool,
+    ) -> tuple[Optional[str], Optional[int]]:
+        with self._lock:
+            kernel = self._kernel
+        if kernel is not None:
+            return kernel.resolve_task_presentation(task_entry, raw_value, render_human=render_human)
+        if task_entry.task_id == TaskId("core.daemon.start"):
+            try:
+                typed_val = DataclassCodec.decode(SystemResultView, raw_value)
+            except (TypeError, ValueError, YscbError):
+                return (None, None)
+            if not render_human:
+                return (None, typed_val.exit_code())
+            return format_output(typed_val)
+        return (None, None)
+
+    def has_deferred_daemon(self) -> bool:
+        with self._lock:
+            if self._kernel is not None:
+                return self._kernel.has_deferred_daemon()
+            return self._deferred_daemon_console_mode is not None
+
+    def run_deferred_daemon(self, *, on_ready: Optional[Callable[[], None]] = None) -> tuple[bool, int]:
+        with self._lock:
+            kernel = self._kernel
+            run_mode = self._deferred_daemon_console_mode
+            self._deferred_daemon_console_mode = None
+        if kernel is not None:
+            return kernel.run_deferred_daemon(on_ready=on_ready)
+        if run_mode is None:
+            return (False, 0)
+        res = _run_deferred_daemon_host(
+            self._host_dir,
+            self._yscb_root,
+            self._yscb_script_path,
+            run_mode,
+            on_ready,
+        )
+        with self._lock:
+            self._post_close_exit_code = res.post_close_rc
+        return (res.acquired_lock, res.daemon_rc)
+
+    def consume_post_close_exit_code(self) -> Optional[int]:
+        with self._lock:
+            kernel = self._kernel
+            rc = self._post_close_exit_code
+            self._post_close_exit_code = None
+        if kernel is not None:
+            return kernel.consume_post_close_exit_code()
+        return rc
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            kernel = self._kernel
+        if kernel is not None:
+            kernel.close()
 
 
 __all__: tuple[str, ...] = (

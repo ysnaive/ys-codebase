@@ -41,6 +41,8 @@ from core.execution.runtime.services import (
     active_module_services_scope,
     active_step_caller_env_scope,
     build_default_module_services,
+    resolve_active_profiler,
+    unwrap_active_profiler,
 )
 from core.execution.runtime.wire import WorkerEquivReply, WorkerMapBatchReply, WorkerStepReply
 from core.filesystem.vfs import ScopedVfs
@@ -56,6 +58,7 @@ from core.filesystem.fs import (
 from core.foundation.codec import DataclassCodec
 from core.foundation.errors import ErrorCode, ErrorDetail, TaskCancelledException, YscbError, is_fatal_error_code, safe_exception_summary
 from core.foundation.observability import CancellationToken, LocaleCatalog, ProgressEvent, StructuredLogger, clamp_wait_sec, guard_standard_streams
+from core.foundation.profiler import Profiler
 from core.metadata.contributes import AggregatedContributes
 from core.foundation.primitives import (
     EventId,
@@ -554,6 +557,10 @@ class _StepTaskContext(TaskContext):
     def locale(self) -> LocaleCatalog:
         return self._svc().locale
 
+    @property
+    def profiler(self) -> Profiler:
+        return unwrap_active_profiler(self._svc().profiler)
+
     def load_config(self, config_cls: type[TConfig]) -> TConfig:
         return cast(TConfig, self._svc().config_loader(config_cls))
 
@@ -900,13 +907,14 @@ class LocalModuleSlotRegistry:
     ) -> tuple[LoadedModuleArtifact, dict[TaskId, BoundTask]]:
         try:
             in_mem = self._in_memory_modules.get(module_id)
-            with guard_standard_streams():
-                art = LoadedModuleArtifact(instance=in_mem, package_key="") if in_mem is not None else self._loader.load_module_artifact(desc)
-                try:
-                    return (art, _validate_and_bind_module_tasks(module_id, desc, art.instance))
-                except BaseException:
-                    ProtectedModuleLoader.cleanup_package(art.package_key)
-                    raise
+            with resolve_active_profiler().scope_relative("LoadModule", module_id.value):
+                with guard_standard_streams():
+                    art = LoadedModuleArtifact(instance=in_mem, package_key="") if in_mem is not None else self._loader.load_module_artifact(desc)
+                    try:
+                        return (art, _validate_and_bind_module_tasks(module_id, desc, art.instance))
+                    except BaseException:
+                        ProtectedModuleLoader.cleanup_package(art.package_key)
+                        raise
         except TaskCancelledException:
             raise
         except YscbError as exc:
@@ -1257,7 +1265,8 @@ class LocalModuleSlotRegistry:
                 task, pinned_art = self._acquire_pinned_task(spec.task_id)
                 pinned_box.append(pinned_art)
                 with guard_standard_streams(allow_interactive_tty=(task.interactive_tty or spec.interactive_tty)):
-                    raw_out = task.execute_encoded(spec.raw_input, ctx)
+                    with resolve_active_profiler().scope_relative("Task", spec.task_id.value):
+                        raw_out = task.execute_encoded(spec.raw_input, ctx)
             return WorkerStepReply(ok=True, raw_output=raw_out, committed_events=outbox.drain_committed())
         except (TaskCancelledException, YscbError) as exc:
             outbox.discard()
