@@ -179,11 +179,10 @@ from core.surface.cli import (
 )
 from core.surface.sdk import (
     ExitCodeProvider,
-    InMemoryModule,
     MigrationRequest,
     Module,
-    format_output,
 )
+from core.surface.sdk.advanced import InMemoryModule, format_output
 
 DEFAULT_PROVIDER_URL: Final[str] = CLI_DEFAULT_PROVIDER_URL
 DEFAULT_SELF_UPDATE_URL: Final[str] = CLI_DEFAULT_SELF_UPDATE_URL
@@ -212,7 +211,8 @@ _TIER1_FORMAT_SNIPPET: Final[str] = (
     "try:\n"
     "    from core.execution.runtime import ModuleDescriptor, ProtectedModuleLoader\n"
     "    from core.foundation import DataclassCodec, HostPath, TaskId, guard_standard_streams, require_pure_int\n"
-    "    from core.surface.sdk import ExitCodeProvider, format_output\n"
+    "    from core.surface.sdk import ExitCodeProvider\n"
+    "    from core.surface.sdk.advanced import format_output\n"
     "    ws = HostPath(sys.argv[1])\n"
     "    desc = DataclassCodec.decode(ModuleDescriptor, json.loads(sys.argv[2]))\n"
     "    tid = TaskId(sys.argv[3])\n"

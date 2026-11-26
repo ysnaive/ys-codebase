@@ -181,7 +181,7 @@ class CallCycleError(YscbError):
         eff_rem = (
             remediation
             if remediation is not None
-            else "Remove recursive synchronous ctx.invoke_task() calls within the same workspace."
+            else "Remove recursive synchronous ctx.call() calls within the same workspace."
         )
         super().__init__(
             ErrorCode.CALL_CYCLE_DETECTED,

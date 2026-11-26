@@ -25,18 +25,24 @@ from core.execution.daemon import (
 from core.execution.rpc import FrameKind, probe_daemon_endpoint, read_daemon_endpoint_file
 from core.execution.runtime import (
     BoundTask,
-    CONFIG_CHANGED_EVENT_ID,
+    CONFIG_CHANGED_EVENT,
     CORE_MODULE_ID,
+    ConfigChangedEventPayload,
     DispatchMode,
-    MODULE_INSTALLED_EVENT_ID,
-    MODULE_REMOVING_EVENT_ID,
+    Empty,
+    MODULE_INSTALLED_EVENT,
+    MODULE_REMOVING_EVENT,
+    ModuleLifecycleEventPayload,
+    SPACE_REGISTRY_CHANGED_EVENT,
+    SPACE_UPDATED_EVENT,
     SecurityTier,
     SelfMutationScope,
+    SpaceUpdatedEventPayload,
     TaskContext,
     TaskExposure,
     TaskMetadata,
     TaskRouteSpec,
-    WORKSPACE_RELOADED_EVENT_ID,
+    WORKSPACE_RELOADED_EVENT,
     YscbModule,
     resolve_active_call_tree_id,
     resolve_active_caller_module,
@@ -52,10 +58,12 @@ from core.filesystem.fs import (
 from core.filesystem.space import (
     GitignoreMaterializer,
     SpaceDiffBatch,
+    SpaceFileEntry,
     SpaceMatchExplain,
     SpaceRegistry,
     SpaceScanner,
     SpaceSpec,
+    SpaceStatusSnapshot,
 )
 from core.filesystem.vfs import KernelVfs, ReadonlyPolicy, UriMountTable
 from core.foundation import (
@@ -98,21 +106,13 @@ from core.packaging.installer import (
 )
 from core.surface.cli import CLI_DEFAULT_PROVIDER_URL
 from core.surface.sdk import (
-    SPACE_REGISTRY_CHANGED_EVENT_ID_STR,
-    SPACE_UPDATED_EVENT_ID_STR,
     Arg,
-    ClearDynamicSpaceInput,
-    Empty,
     ExitCodeProvider,
     HumanRenderable,
     MigrationRequest,
     Module,
     Option,
-    SetDynamicSpaceInput,
-    SpaceAckCursorInput,
-    SpaceScanInput,
     TaskGroup,
-    define_event,
     task,
 )
 
@@ -372,24 +372,89 @@ class SystemResultView(HumanRenderable, ExitCodeProvider):
 
 
 @dataclass(frozen=True, slots=True)
-class ModuleLifecycleEventPayload:
-    """Event payload emitted on core.module_removing and core.module_installed."""
+class SetDynamicSpaceInput:
+    """Input DTO for registering or updating a dynamic logical space via core.space.set_dynamic."""
 
-    modules: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class ConfigChangedEventPayload:
-    """Event payload emitted on core.config_changed."""
-
-    changed_paths: tuple[str, ...] = ()
+    owner: ModuleId
+    name: str
+    spec: SpaceSpec
 
 
 @dataclass(frozen=True, slots=True)
-class SpaceUpdatedEventPayload:
-    """Event payload emitted on core.space_updated when SpaceScanner detects deltas."""
+class ClearDynamicSpaceInput:
+    """Input DTO for clearing one or all dynamic logical spaces via core.space.clear_dynamic."""
 
-    spaces: tuple[str, ...] = ()
+    owner: ModuleId
+    name: Optional[str] = None
+
+
+@dataclass(frozen=True, slots=True)
+class SpaceScanInput:
+    """Input DTO for triggering an incremental space scan via core.space.scan."""
+
+    space_id: Optional[str] = None
+    force: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SpaceAckCursorInput:
+    """CAS input DTO for advancing a space consumer cursor via core.space.ack_cursor."""
+
+    space: str
+    consumer: str
+    from_gen: int
+    to_gen: int
+    config_hash: str
+    merkle_root: str
+
+    def __post_init__(self) -> None:
+        clean_space = require_pure_str(self.space, "SpaceAckCursorInput.space", non_empty=True).strip()
+        if not clean_space:
+            raise ValueError("SpaceAckCursorInput.space cannot be blank whitespace")
+        _ = SpaceId.parse(clean_space)
+        clean_consumer = require_pure_str(self.consumer, "SpaceAckCursorInput.consumer", non_empty=True).strip()
+        if not clean_consumer:
+            raise ValueError("SpaceAckCursorInput.consumer cannot be blank whitespace")
+        fg = require_pure_int(self.from_gen, "SpaceAckCursorInput.from_gen", min_val=0)
+        tg = require_pure_int(self.to_gen, "SpaceAckCursorInput.to_gen", min_val=0)
+        if fg > tg:
+            raise ValueError(f"SpaceAckCursorInput.from_gen ({fg}) cannot exceed to_gen ({tg})")
+        cfg_h = require_pure_str(self.config_hash, "SpaceAckCursorInput.config_hash")
+        merkle = require_pure_str(self.merkle_root, "SpaceAckCursorInput.merkle_root")
+        object.__setattr__(self, "space", clean_space)
+        object.__setattr__(self, "consumer", clean_consumer)
+        object.__setattr__(self, "config_hash", cfg_h)
+        object.__setattr__(self, "merkle_root", merkle)
+
+
+@dataclass(frozen=True, slots=True)
+class SpaceListInput:
+    """Input DTO for listing compiled logical spaces via core.space.list."""
+
+    owner: Optional[str] = None
+
+
+@dataclass(frozen=True, slots=True)
+class SpaceStatusInput:
+    """Input DTO for querying a logical space SQLite WAL status snapshot via core.space.status."""
+
+    space_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class SpaceFilesInput:
+    """Input DTO for enumerating files in a logical space via core.space.files."""
+
+    space_id: str
+    pattern: Optional[str] = None
+
+
+@dataclass(frozen=True, slots=True)
+class SpaceDiffInput:
+    """Input DTO for querying unacknowledged incremental file deltas via core.space.diff."""
+
+    space_id: str
+    consumer: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -873,8 +938,7 @@ def _run_space_scan_batches(
             if b.has_changes:
                 changed_spaces.append(str(b.space_id))
     if changed_spaces:
-        evt = define_event(SPACE_UPDATED_EVENT_ID_STR, SpaceUpdatedEventPayload)
-        ctx.emit(evt, SpaceUpdatedEventPayload(spaces=tuple(changed_spaces)))
+        ctx.emit(SPACE_UPDATED_EVENT, SpaceUpdatedEventPayload(spaces=tuple(changed_spaces)))
     return tuple(batches)
 
 
@@ -995,13 +1059,8 @@ def _execute_package_transaction_locked(
         if removing_modules:
             validated_removing = kernel.package_engine.validate_remove_targets(removing_modules, force=force_remove)
             if validated_removing:
-                rem_evt = define_event(
-                    MODULE_REMOVING_EVENT_ID.value,
-                    ModuleLifecycleEventPayload,
-                    ordered=True,
-                )
                 ctx.emit_imm(
-                    rem_evt,
+                    MODULE_REMOVING_EVENT,
                     ModuleLifecycleEventPayload(modules=tuple(m.value for m in validated_removing)),
                     strict=False,
                 )
@@ -1064,10 +1123,8 @@ def _execute_package_transaction_locked(
 
         touched = tuple(str(m) for m in report.installed.keys())
         if touched:
-            inst_evt = define_event(MODULE_INSTALLED_EVENT_ID.value, ModuleLifecycleEventPayload)
-            ctx.emit(inst_evt, ModuleLifecycleEventPayload(modules=touched))
-        rel_evt = define_event(WORKSPACE_RELOADED_EVENT_ID.value, Empty)
-        ctx.emit(rel_evt, Empty())
+            ctx.emit(MODULE_INSTALLED_EVENT, ModuleLifecycleEventPayload(modules=touched))
+        ctx.emit(WORKSPACE_RELOADED_EVENT, Empty())
         return report
     finally:
         _resume_or_handoff_online_daemon(
@@ -1592,8 +1649,7 @@ class ConfigContributesTaskGroup(TaskGroup):
         kernel.config_store.set_value(mid, req.key, parsed_val, local=req.local, schema_cls=schema_cls)
         kernel.reload_config_only((f"{mid.value}:{req.key}",))
         _ = kernel.sync_gitignore_and_readonly()
-        evt = define_event(CONFIG_CHANGED_EVENT_ID.value, ConfigChangedEventPayload)
-        ctx.emit(evt, ConfigChangedEventPayload(changed_paths=(f"{mid.value}:{req.key}",)))
+        ctx.emit(CONFIG_CHANGED_EVENT, ConfigChangedEventPayload(changed_paths=(f"{mid.value}:{req.key}",)))
         return SystemResultView(f"Updated {mid}.{req.key}.", {"module": mid.value, "key": req.key, "value": parsed_val, "local": req.local})
 
     @task(
@@ -1612,8 +1668,7 @@ class ConfigContributesTaskGroup(TaskGroup):
         if removed:
             kernel.reload_config_only((f"{mid.value}:{req.key}",))
             _ = kernel.sync_gitignore_and_readonly()
-            evt = define_event(CONFIG_CHANGED_EVENT_ID.value, ConfigChangedEventPayload)
-            ctx.emit(evt, ConfigChangedEventPayload(changed_paths=(f"{mid.value}:{req.key}",)))
+            ctx.emit(CONFIG_CHANGED_EVENT, ConfigChangedEventPayload(changed_paths=(f"{mid.value}:{req.key}",)))
         return SystemResultView(
             f"Unset {mid}.{req.key} (removed={removed}).",
             {"module": mid.value, "key": req.key, "removed": removed},
@@ -1632,8 +1687,7 @@ class ConfigContributesTaskGroup(TaskGroup):
         kernel = _resolve_bound_kernel(self, ctx.workspace_root)
         kernel.reload_config_only(())
         sync_res = kernel.sync_gitignore_and_readonly()
-        evt = define_event(CONFIG_CHANGED_EVENT_ID.value, ConfigChangedEventPayload)
-        ctx.emit(evt, ConfigChangedEventPayload())
+        ctx.emit(CONFIG_CHANGED_EVENT, ConfigChangedEventPayload())
         return SystemResultView("Configuration reloaded.", sync_res)
 
     @task(
@@ -2296,8 +2350,7 @@ class CoreSystemModule(Module):
         kernel = _resolve_bound_kernel(self, ctx.workspace_root)
         changed = kernel.set_dynamic_space(req.owner, req.name, req.spec)
         if changed:
-            evt = define_event(SPACE_REGISTRY_CHANGED_EVENT_ID_STR, SpaceUpdatedEventPayload)
-            ctx.emit(evt, SpaceUpdatedEventPayload(spaces=(str(expected_sid),)))
+            ctx.emit(SPACE_REGISTRY_CHANGED_EVENT, SpaceUpdatedEventPayload(spaces=(str(expected_sid),)))
         return changed
 
     @task(
@@ -2327,9 +2380,48 @@ class CoreSystemModule(Module):
                 after_specs = {str(s.space_id): s for s in kernel.space_registry.list_spaces(owner=req.owner.value)}
                 diff_ids = sorted(sid for sid, old_sp in before_specs.items() if after_specs.get(sid) != old_sp)
                 cleared_ids = tuple(diff_ids) if diff_ids else tuple(sorted(before_specs.keys()))
-            evt = define_event(SPACE_REGISTRY_CHANGED_EVENT_ID_STR, SpaceUpdatedEventPayload)
-            ctx.emit(evt, SpaceUpdatedEventPayload(spaces=cleared_ids))
+            ctx.emit(SPACE_REGISTRY_CHANGED_EVENT, SpaceUpdatedEventPayload(spaces=cleared_ids))
         return removed
+
+    @task(
+        name="core.space.list",
+        summary="List compiled logical file spaces via SDK",
+        dispatch_mode=DispatchMode.HYBRID,
+        security=SecurityTier.SAFE,
+    )
+    def list_spaces(self, req: SpaceListInput, ctx: TaskContext) -> tuple[SpaceSpec, ...]:
+        kernel = _resolve_bound_kernel(self, ctx.workspace_root)
+        return tuple(kernel.space_registry.list_spaces(owner=req.owner))
+
+    @task(
+        name="core.space.status",
+        summary="Inspect SQLite WAL generation, Merkle root, and consumer cursors for a space via SDK",
+        dispatch_mode=DispatchMode.HYBRID,
+        security=SecurityTier.SAFE,
+    )
+    def get_space_status(self, req: SpaceStatusInput, ctx: TaskContext) -> SpaceStatusSnapshot:
+        kernel = _resolve_bound_kernel(self, ctx.workspace_root)
+        return kernel.space_scanner.status(req.space_id)
+
+    @task(
+        name="core.space.files",
+        summary="Enumerate matched files inside a logical space via SDK",
+        dispatch_mode=DispatchMode.HYBRID,
+        security=SecurityTier.SAFE,
+    )
+    def list_space_files(self, req: SpaceFilesInput, ctx: TaskContext) -> tuple[SpaceFileEntry, ...]:
+        kernel = _resolve_bound_kernel(self, ctx.workspace_root)
+        return tuple(kernel.space_registry.iter_files(req.space_id, pattern=req.pattern))
+
+    @task(
+        name="core.space.diff",
+        summary="Read unacknowledged delta batch for a consumer cursor via SDK",
+        dispatch_mode=DispatchMode.HYBRID,
+        security=SecurityTier.SAFE,
+    )
+    def diff_space(self, req: SpaceDiffInput, ctx: TaskContext) -> SpaceDiffBatch:
+        kernel = _resolve_bound_kernel(self, ctx.workspace_root)
+        return kernel.space_scanner.diff(req.space_id, req.consumer)
 
     @task(
         name="core.space.scan",
@@ -2398,8 +2490,7 @@ class CoreSystemModule(Module):
                             seen_changed.add(sid_s)
                             changed_ids.append(sid_s)
         if changed_ids:
-            evt = define_event(SPACE_UPDATED_EVENT_ID_STR, SpaceUpdatedEventPayload)
-            ctx.emit(evt, SpaceUpdatedEventPayload(spaces=tuple(changed_ids)))
+            ctx.emit(SPACE_UPDATED_EVENT, SpaceUpdatedEventPayload(spaces=tuple(changed_ids)))
 
     @task(
         name="core.config.on_changed",
@@ -2418,8 +2509,7 @@ class CoreSystemModule(Module):
         changed = kernel.reload_config_only(req.changed_paths)
         _ = kernel.sync_gitignore_and_readonly()
         if changed:
-            evt = define_event(CONFIG_CHANGED_EVENT_ID.value, ConfigChangedEventPayload)
-            ctx.emit(evt, ConfigChangedEventPayload(changed_paths=tuple(str(p) for p in req.changed_paths)))
+            ctx.emit(CONFIG_CHANGED_EVENT, ConfigChangedEventPayload(changed_paths=tuple(str(p) for p in req.changed_paths)))
 
     @task(
         name="core.space.on_dynamic_mutated",
@@ -2433,8 +2523,7 @@ class CoreSystemModule(Module):
         kernel = _resolve_bound_kernel(self, ctx.workspace_root)
         diff_spaces = kernel.refresh_dynamic_spaces_only()
         if diff_spaces:
-            evt = define_event(SPACE_REGISTRY_CHANGED_EVENT_ID_STR, SpaceUpdatedEventPayload)
-            ctx.emit(evt, SpaceUpdatedEventPayload(spaces=diff_spaces))
+            ctx.emit(SPACE_REGISTRY_CHANGED_EVENT, SpaceUpdatedEventPayload(spaces=diff_spaces))
         return diff_spaces
 
     def to_yscb_module(self) -> YscbModule:

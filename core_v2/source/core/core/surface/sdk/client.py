@@ -12,7 +12,7 @@ import re
 import stat
 import sys
 import threading
-from typing import Callable, ClassVar, Final, Mapping, Optional, Sequence, TypeVar, overload
+from typing import Callable, ClassVar, Final, Mapping, Optional, Sequence, TypeVar, cast, overload
 import uuid
 
 from core.execution.event import normalize_payload_filter
@@ -29,6 +29,7 @@ from core.execution.runtime import (
     DEFAULT_CACHE_DIRNAME,
     DispatchMode,
     DispatcherHostOptions,
+    Empty,
     InvokeRequest,
     MODULES_DIRNAME,
     ModuleDescriptor,
@@ -42,6 +43,7 @@ from core.execution.runtime import (
     TaskContext,
     TaskExposure,
     TaskOutcome,
+    TaskRef,
     TaskRouteSpec,
     YscbModule,
     build_default_module_services,
@@ -53,6 +55,7 @@ from core.foundation import (
     DataclassCodec,
     EnvHash,
     ErrorCode,
+    ErrorDetail,
     EventId,
     FlightLogConfig,
     FlightLogRouter,
@@ -89,6 +92,7 @@ from core.metadata.contributes import (
 )
 from core.surface.sdk.declarative import InMemoryModule, Module
 
+TIn = TypeVar("TIn")
 TOut = TypeVar("TOut")
 
 _MAX_INDEX_FILE_BYTES: Final[int] = 8 * 1024 * 1024
@@ -1168,6 +1172,34 @@ class YscbClient:
     @overload
     def call(
         self,
+        task_id: TaskRef[Empty, TOut],
+        req: Optional[Empty] = None,
+        *,
+        cwd: Optional[HostPath] = None,
+        env: Optional[Mapping[str, str]] = None,
+        force_cold: bool = False,
+        cancel_token: Optional[CancellationToken] = None,
+        approval_scope: frozenset[TaskId] = frozenset(),
+        on_progress: Optional[Callable[[ProgressEvent], None]] = None,
+    ) -> TaskOutcome[TOut]: ...
+
+    @overload
+    def call(
+        self,
+        task_id: TaskRef[TIn, TOut],
+        req: TIn,
+        *,
+        cwd: Optional[HostPath] = None,
+        env: Optional[Mapping[str, str]] = None,
+        force_cold: bool = False,
+        cancel_token: Optional[CancellationToken] = None,
+        approval_scope: frozenset[TaskId] = frozenset(),
+        on_progress: Optional[Callable[[ProgressEvent], None]] = None,
+    ) -> TaskOutcome[TOut]: ...
+
+    @overload
+    def call(
+        self,
         task_id: TaskId | str,
         req: object = None,
         *,
@@ -1197,7 +1229,7 @@ class YscbClient:
 
     def call(
         self,
-        task_id: TaskId | str,
+        task_id: TaskRef[TIn, TOut] | TaskId | str,
         req: object = None,
         *,
         output_type: Optional[type[TOut]] = None,
@@ -1248,7 +1280,7 @@ class YscbClient:
 
     def _execute_call_under_lease(
         self,
-        task_id: TaskId | str,
+        task_id: TaskRef[TIn, TOut] | TaskId | str,
         req: object,
         *,
         call_tree_id: str,
@@ -1260,7 +1292,39 @@ class YscbClient:
         approval_scope: frozenset[TaskId],
         on_progress: Optional[Callable[[ProgressEvent], None]],
     ) -> TaskOutcome[TOut] | TaskOutcome[JsonValue]:
-        tid = task_id if isinstance(task_id, TaskId) else TaskId(require_pure_str(task_id, "task_id", non_empty=True))
+        eff_output_type: Optional[type[object]] = output_type
+        if isinstance(task_id, TaskRef):
+            tid = task_id.task_id
+            if output_type is not None and output_type != task_id.output_type:
+                return TaskOutcome(
+                    ok=False,
+                    error=ErrorDetail(
+                        ErrorCode.CODEC_VALIDATION_FAILED,
+                        f"Conflicting output_type {output_type!r} for TaskRef '{tid}' expecting {task_id.output_type!r}.",
+                        source_task=str(tid),
+                    ),
+                )
+            eff_output_type = task_id.output_type
+            if req is None:
+                if task_id.input_type is Empty:
+                    encoded_input: JsonObject = {}
+                else:
+                    return TaskOutcome(
+                        ok=False,
+                        error=ErrorDetail(
+                            ErrorCode.CODEC_VALIDATION_FAILED,
+                            f"TaskRef '{tid}' requires input of type {task_id.input_type!r}.",
+                            source_task=str(tid),
+                        ),
+                    )
+            else:
+                try:
+                    encoded_input = DataclassCodec.encode_object(req, expected_type=task_id.input_type)
+                except YscbError as exc:
+                    return TaskOutcome(ok=False, error=exc.detail.with_fallback_task(str(tid)))
+        else:
+            tid = task_id if isinstance(task_id, TaskId) else TaskId(require_pure_str(task_id, "task_id", non_empty=True))
+            encoded_input = _encode_call_input(req)
         if cwd is not None and not isinstance(cwd, HostPath):
             raise TypeError(f"cwd must be HostPath or None, got {type(cwd).__name__}")
         if env is not None and not isinstance(env, Mapping):
@@ -1277,7 +1341,6 @@ class YscbClient:
             approval_scope, (set, frozenset, Sequence)
         ):
             raise TypeError("approval_scope must be a frozenset of TaskId")
-        encoded_input = _encode_call_input(req)
         policy = (
             ClientRoutingPolicy.FORCE_COLD
             if require_pure_bool(force_cold, "force_cold")
@@ -1321,11 +1384,14 @@ class YscbClient:
         )
         self._sync_local_state_from_disk(allow_module_unload=(self._current_in_flight_count() <= 1))
         try:
-            outcome = self._dispatcher.invoke(
-                request,
-                output_type=output_type,
-                cancel_token=cancel_token,
-                on_progress=progress_cb,
+            outcome = cast(
+                TaskOutcome[TOut] | TaskOutcome[JsonValue],
+                self._dispatcher.invoke(
+                    request,
+                    output_type=eff_output_type,
+                    cancel_token=cancel_token,
+                    on_progress=progress_cb,
+                ),
             )
         finally:
             for sync_fn in self._post_call_syncs:

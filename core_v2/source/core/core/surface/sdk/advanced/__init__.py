@@ -1,0 +1,79 @@
+"""Advanced public SDK subpackage for external clients, low-level adapters, profilers, and dev tooling."""
+
+from core.execution.runtime import (
+    CONFIG_CHANGED_EVENT_ID,
+    MODULE_INSTALLED_EVENT_ID,
+    MODULE_REMOVING_EVENT_ID,
+    SPACE_REGISTRY_CHANGED_EVENT_ID,
+    SPACE_UPDATED_EVENT_ID,
+    WORKSPACE_RELOADED_EVENT_ID,
+    ClientRoutingPolicy,
+    ExecutionPriority,
+    TaskMetadata,
+    YscbModule,
+)
+from core.filesystem.space import ConsumerCursor, HashPolicy
+from core.filesystem.storage import SnapshotReader, StorageOpenOptions, WriteTransaction
+from core.filesystem.vfs import VfsCapabilities, VfsStat
+from core.foundation import (
+    ErrorDetail,
+    EventId,
+    JsonValue,
+    LocaleCatalog,
+    LogLevel,
+    ModuleId,
+    NullProfiler,
+    Profiler,
+    ProfilerNodeSnapshot,
+    ProfilerSession,
+    SemVer4,
+    SnapshotGen,
+    StructuredLogger,
+    TaskId,
+    VersionConstraint,
+    render_profiler_tree,
+)
+from core.metadata.contributes import AggregatedContributes, ProvenanceGraph
+from core.surface.sdk.client import YscbClient
+from core.surface.sdk.declarative import InMemoryModule, format_output
+
+__all__: tuple[str, ...] = (
+    "AggregatedContributes",
+    "CONFIG_CHANGED_EVENT_ID",
+    "ClientRoutingPolicy",
+    "ConsumerCursor",
+    "ErrorDetail",
+    "EventId",
+    "ExecutionPriority",
+    "HashPolicy",
+    "InMemoryModule",
+    "JsonValue",
+    "LocaleCatalog",
+    "LogLevel",
+    "MODULE_INSTALLED_EVENT_ID",
+    "MODULE_REMOVING_EVENT_ID",
+    "ModuleId",
+    "NullProfiler",
+    "Profiler",
+    "ProfilerNodeSnapshot",
+    "ProfilerSession",
+    "ProvenanceGraph",
+    "SPACE_REGISTRY_CHANGED_EVENT_ID",
+    "SPACE_UPDATED_EVENT_ID",
+    "SemVer4",
+    "SnapshotGen",
+    "SnapshotReader",
+    "StorageOpenOptions",
+    "StructuredLogger",
+    "TaskId",
+    "TaskMetadata",
+    "VersionConstraint",
+    "VfsCapabilities",
+    "VfsStat",
+    "WORKSPACE_RELOADED_EVENT_ID",
+    "WriteTransaction",
+    "YscbClient",
+    "YscbModule",
+    "format_output",
+    "render_profiler_tree",
+)

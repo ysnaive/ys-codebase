@@ -10,9 +10,11 @@ from pathlib import Path
 import shutil
 import sys
 import threading
+import time
 from typing import Literal, Annotated, ClassVar, Optional, Sequence, TypeVar, cast, get_args, get_type_hints
 
 import core.surface.sdk as sdk
+import core.surface.sdk.advanced as sdk_adv
 from core.execution.event import EventOrdering, EventSubscriptionSpec
 from core.execution.runtime import (
     CallPropagationContext,
@@ -30,87 +32,105 @@ from core.execution.runtime import (
     build_workspace_module_services_factory,
 )
 from core.metadata.contributes import compile_extension_points
+from core.surface.bootstrap import (
+    ClearDynamicSpaceInput,
+    SetDynamicSpaceInput,
+    SpaceAckCursorInput,
+    SpaceScanInput,
+)
 from core.surface.sdk import (
-    CONFIG_CHANGED_EVENT_ID,
-    MODULE_INSTALLED_EVENT_ID,
-    MODULE_REMOVING_EVENT_ID,
-    SPACE_REGISTRY_CHANGED_EVENT_ID_STR,
-    SPACE_UPDATED_EVENT_ID_STR,
-    WORKSPACE_RELOADED_EVENT_ID,
-    AggregatedContributes,
+    CONFIG_CHANGED_EVENT,
+    MODULE_INSTALLED_EVENT,
+    MODULE_REMOVING_EVENT,
+    SPACE_REGISTRY_CHANGED_EVENT,
+    SPACE_UPDATED_EVENT,
+    WORKSPACE_RELOADED_EVENT,
     Arg,
     BlobVault,
     CancellationToken,
-    ClearDynamicSpaceInput,
-    ClientRoutingPolicy,
     ConcurrencyMode,
+    ConfigChangedEventPayload,
     ContribField,
     DispatchMode,
     Empty,
     ErrorCode,
-    ErrorDetail,
-    EventId,
     EventMetadata,
-    ExecutionPriority,
     ExitCodeProvider,
     ExtensionPointSpec,
-    HashPolicy,
     HostPath,
     HumanRenderable,
-    InMemoryModule,
-    JsonValue,
-    LocaleCatalog,
-    LogLevel,
     MergeStrategy,
     MigrationRequest,
     Module,
     ModuleDatabase,
     ModuleEnv,
-    ModuleId,
-    NullProfiler,
+    ModuleLifecycleEventPayload,
     Option,
-    Profiler,
-    ProfilerNodeSnapshot,
-    ProfilerSession,
+    ProcessResult,
     ProgressEvent,
-    ProvenanceGraph,
     SchemaMigration,
     ScopedVfs,
     SecurityTier,
-    SemVer4,
     SemanticUri,
-    SetDynamicSpaceInput,
-    SnapshotGen,
-    SnapshotReader,
-    SpaceAckCursorInput,
+    SpaceClient,
     SpaceDiffBatch,
     SpaceFileEntry,
     SpaceId,
     SpacePath,
-    SpaceScanInput,
     SpaceSpec,
-    StorageOpenOptions,
-    StructuredLogger,
+    SpaceStatusSnapshot,
+    SpaceUpdatedEventPayload,
     TaskCancelledException,
     TaskContext,
     TaskGroup,
+    TaskOutcome,
+    TaskRef,
+    YscbError,
+    define_event,
+    on_event,
+    on_migrate,
+    periodic,
+    task,
+)
+from core.surface.sdk.advanced import (
+    CONFIG_CHANGED_EVENT_ID,
+    MODULE_INSTALLED_EVENT_ID,
+    MODULE_REMOVING_EVENT_ID,
+    SPACE_REGISTRY_CHANGED_EVENT_ID,
+    SPACE_UPDATED_EVENT_ID,
+    WORKSPACE_RELOADED_EVENT_ID,
+    AggregatedContributes,
+    ClientRoutingPolicy,
+    ConsumerCursor,
+    ErrorDetail,
+    EventId,
+    ExecutionPriority,
+    HashPolicy,
+    InMemoryModule,
+    JsonValue,
+    LocaleCatalog,
+    LogLevel,
+    ModuleId,
+    NullProfiler,
+    Profiler,
+    ProfilerNodeSnapshot,
+    ProfilerSession,
+    ProvenanceGraph,
+    SemVer4,
+    SnapshotGen,
+    SnapshotReader,
+    StorageOpenOptions,
+    StructuredLogger,
     TaskId,
     TaskMetadata,
-    TaskOutcome,
     VersionConstraint,
     VfsCapabilities,
     VfsStat,
     WriteTransaction,
     YscbClient,
-    YscbError,
     YscbModule,
-    define_event,
     format_output,
-    on_event,
-    on_migrate,
-    periodic,
     render_profiler_tree,
-    task,
 )
 from tests._harness import assert_raises_val_error, check, expect_yscb_code, log
 
@@ -535,8 +555,9 @@ class _EmitterModule(Module):
 
     @task
     def call_sub(self, req: _EchoIn, ctx: TaskContext) -> _EchoOut:
-        sub_one = ctx.invoke_task("subscriber.echo", _EchoIn(tag=req.tag), output_type=_EchoOut)
-        sub_two = ctx.invoke_typed(_SUB_TYPED_META, _EchoIn(tag=f"{req.tag}:typed"))
+        sub_one = ctx.call("subscriber.echo", _EchoIn(tag=req.tag), output_type=_EchoOut)
+        sub_ref = TaskRef(_SUB_TYPED_META.task_id, _SUB_TYPED_META.input_type, _SUB_TYPED_META.output_type)
+        sub_two = ctx.call(sub_ref, _EchoIn(tag=f"{req.tag}:typed"))
         check(sub_one.ok and sub_one.value is not None)
         check(sub_two.ok and sub_two.value is not None)
         return _EchoOut(
@@ -579,101 +600,119 @@ class _SubscriberModule(Module):
 
 
 def _verify_facade_and_zero_leak() -> None:
-    expected_exports = frozenset(
+    expected_primary = frozenset(
         {
-            "AggregatedContributes",
             "Arg",
             "BlobVault",
-            "CONFIG_CHANGED_EVENT_ID",
+            "CONFIG_CHANGED_EVENT",
             "CancellationToken",
-            "ClearDynamicSpaceInput",
-            "ClientRoutingPolicy",
             "ConcurrencyMode",
+            "ConfigChangedEventPayload",
             "ContribField",
             "DispatchMode",
             "Empty",
             "ErrorCode",
-            "ErrorDetail",
-            "EventId",
             "EventMetadata",
-            "ExecutionPriority",
             "ExitCodeProvider",
             "ExtensionPointSpec",
-            "HashPolicy",
             "HostPath",
             "HumanRenderable",
+            "MODULE_INSTALLED_EVENT",
+            "MODULE_REMOVING_EVENT",
+            "MergeStrategy",
+            "MigrationRequest",
+            "Module",
+            "ModuleDatabase",
+            "ModuleEnv",
+            "ModuleLifecycleEventPayload",
+            "Option",
+            "ProcessResult",
+            "ProgressEvent",
+            "SPACE_REGISTRY_CHANGED_EVENT",
+            "SPACE_UPDATED_EVENT",
+            "SchemaMigration",
+            "ScopedVfs",
+            "SecurityTier",
+            "SemanticUri",
+            "SpaceClient",
+            "SpaceDiffBatch",
+            "SpaceFileEntry",
+            "SpaceId",
+            "SpacePath",
+            "SpaceSpec",
+            "SpaceStatusSnapshot",
+            "SpaceUpdatedEventPayload",
+            "TaskCancelledException",
+            "TaskContext",
+            "TaskGroup",
+            "TaskOutcome",
+            "TaskRef",
+            "WORKSPACE_RELOADED_EVENT",
+            "YscbError",
+            "define_event",
+            "on_event",
+            "on_migrate",
+            "periodic",
+            "task",
+        }
+    )
+    expected_advanced = frozenset(
+        {
+            "AggregatedContributes",
+            "CONFIG_CHANGED_EVENT_ID",
+            "ClientRoutingPolicy",
+            "ConsumerCursor",
+            "ErrorDetail",
+            "EventId",
+            "ExecutionPriority",
+            "HashPolicy",
             "InMemoryModule",
             "JsonValue",
             "LocaleCatalog",
             "LogLevel",
             "MODULE_INSTALLED_EVENT_ID",
             "MODULE_REMOVING_EVENT_ID",
-            "MergeStrategy",
-            "MigrationRequest",
-            "Module",
-            "ModuleDatabase",
-            "ModuleEnv",
             "ModuleId",
             "NullProfiler",
-            "Option",
             "Profiler",
             "ProfilerNodeSnapshot",
             "ProfilerSession",
-            "ProgressEvent",
             "ProvenanceGraph",
-            "SPACE_REGISTRY_CHANGED_EVENT_ID_STR",
-            "SPACE_UPDATED_EVENT_ID_STR",
-            "SchemaMigration",
-            "ScopedVfs",
-            "SecurityTier",
+            "SPACE_REGISTRY_CHANGED_EVENT_ID",
+            "SPACE_UPDATED_EVENT_ID",
             "SemVer4",
-            "SemanticUri",
-            "SetDynamicSpaceInput",
             "SnapshotGen",
             "SnapshotReader",
-            "SpaceAckCursorInput",
-            "SpaceDiffBatch",
-            "SpaceFileEntry",
-            "SpaceId",
-            "SpacePath",
-            "SpaceScanInput",
-            "SpaceSpec",
             "StorageOpenOptions",
             "StructuredLogger",
-            "TaskCancelledException",
-            "TaskContext",
-            "TaskGroup",
             "TaskId",
             "TaskMetadata",
-            "TaskOutcome",
             "VersionConstraint",
             "VfsCapabilities",
             "VfsStat",
             "WORKSPACE_RELOADED_EVENT_ID",
             "WriteTransaction",
             "YscbClient",
-            "YscbError",
             "YscbModule",
-            "define_event",
             "format_output",
-            "on_event",
-            "on_migrate",
-            "periodic",
             "render_profiler_tree",
-            "task",
         }
     )
-    check(len(sdk.__all__) == 80)
-    check(len(set(sdk.__all__)) == 80)
-    check(frozenset(sdk.__all__) == expected_exports)
+    check(len(sdk.__all__) == 52 and len(set(sdk.__all__)) == 52)
+    check(frozenset(sdk.__all__) == expected_primary)
+    check(len(sdk_adv.__all__) == 38 and len(set(sdk_adv.__all__)) == 38)
+    check(frozenset(sdk_adv.__all__) == expected_advanced)
+    check(expected_primary.isdisjoint(expected_advanced))
     check(
         all(
             sym is not None
             for sym in (
                 BlobVault,
+                CONFIG_CHANGED_EVENT,
                 CONFIG_CHANGED_EVENT_ID,
-                ClearDynamicSpaceInput,
                 ClientRoutingPolicy,
+                ConfigChangedEventPayload,
+                ConsumerCursor,
                 ContribField,
                 ErrorDetail,
                 ExecutionPriority,
@@ -681,37 +720,45 @@ def _verify_facade_and_zero_leak() -> None:
                 HashPolicy,
                 JsonValue,
                 LogLevel,
+                MODULE_INSTALLED_EVENT,
                 MODULE_INSTALLED_EVENT_ID,
+                MODULE_REMOVING_EVENT,
                 MODULE_REMOVING_EVENT_ID,
                 MergeStrategy,
                 MigrationRequest,
                 ModuleDatabase,
+                ModuleLifecycleEventPayload,
                 NullProfiler,
+                ProcessResult,
                 Profiler,
                 ProfilerNodeSnapshot,
                 ProfilerSession,
                 ProvenanceGraph,
-                SPACE_REGISTRY_CHANGED_EVENT_ID_STR,
-                SPACE_UPDATED_EVENT_ID_STR,
+                SPACE_REGISTRY_CHANGED_EVENT,
+                SPACE_REGISTRY_CHANGED_EVENT_ID,
+                SPACE_UPDATED_EVENT,
+                SPACE_UPDATED_EVENT_ID,
                 SchemaMigration,
                 SemVer4,
                 SemanticUri,
-                SetDynamicSpaceInput,
                 SnapshotGen,
                 SnapshotReader,
-                SpaceAckCursorInput,
+                SpaceClient,
                 SpaceDiffBatch,
                 SpaceFileEntry,
                 SpaceId,
                 SpacePath,
-                SpaceScanInput,
                 SpaceSpec,
+                SpaceStatusSnapshot,
+                SpaceUpdatedEventPayload,
                 StorageOpenOptions,
                 TaskCancelledException,
                 TaskMetadata,
+                TaskRef,
                 VersionConstraint,
                 VfsCapabilities,
                 VfsStat,
+                WORKSPACE_RELOADED_EVENT,
                 WORKSPACE_RELOADED_EVENT_ID,
                 WriteTransaction,
                 YscbError,
@@ -721,12 +768,29 @@ def _verify_facade_and_zero_leak() -> None:
         )
     )
     tg_members = dict(inspect.getmembers_static(TaskGroup))
-    check("prefix" not in tg_members and "parent_module" in tg_members)
+    check("prefix" not in tg_members and "parent_module" in tg_members and "module" in tg_members)
     sdk_members = dict(inspect.getmembers_static(sdk))
-    for leaked in ("BoundTask", "_DeclarativeMeta", "_DecoratedMethod", "_SdkStateRegistry", "_SdkBoundTask", "_SdkYscbModule"):
-        check(leaked not in sdk.__all__)
-        check(leaked not in sdk_members)
-    check(all(sym in sdk_members for sym in expected_exports))
+    adv_members = dict(inspect.getmembers_static(sdk_adv))
+    for leaked in (
+        "BoundTask",
+        "_DeclarativeMeta",
+        "_DecoratedMethod",
+        "_SdkStateRegistry",
+        "_SdkBoundTask",
+        "_SdkYscbModule",
+        "ClearDynamicSpaceInput",
+        "SetDynamicSpaceInput",
+        "SpaceAckCursorInput",
+        "SpaceScanInput",
+        "SPACE_UPDATED_EVENT_ID_STR",
+        "SPACE_REGISTRY_CHANGED_EVENT_ID_STR",
+    ):
+        check(leaked not in sdk.__all__ and leaked not in sdk_members)
+        check(leaked not in sdk_adv.__all__ and leaked not in adv_members)
+    for adv_only in ("YscbClient", "InMemoryModule", "format_output", "ProfilerSession", "TaskMetadata", "YscbModule"):
+        check(adv_only not in sdk.__all__ and adv_only in sdk_adv.__all__)
+    check(all(sym in sdk_members for sym in expected_primary))
+    check(all(sym in adv_members for sym in expected_advanced))
     check(TaskOutcome is not None and YscbModule is not None)
 
 
@@ -738,6 +802,10 @@ class _StubTaskContext(TaskContext):
         self._ws = ws
         self._tok = CancellationToken()
         self._svc = build_default_module_services(ws, ModuleId("demo"))
+
+    @property
+    def module_id(self) -> ModuleId:
+        return self._svc.module_id
 
     @property
     def workspace_root(self) -> HostPath:
@@ -783,16 +851,16 @@ class _StubTaskContext(TaskContext):
     def emit_imm(self, event_meta: EventMetadata[object], payload: object, *, strict: bool = False) -> None:
         _ = (event_meta, payload, strict)
 
-    def invoke_task(
+    def call(
         self,
-        task_id: TaskId | str,
-        input_obj: object,
+        target: TaskRef[object, object] | TaskId | str,
+        input_obj: object = None,
         *,
         output_type: Optional[type[object]] = None,
         target_workspace: Optional[HostPath] = None,
         routing_policy: Optional[object] = None,
     ) -> TaskOutcome[object]:
-        _ = (task_id, input_obj, output_type, target_workspace, routing_policy)
+        _ = (target, input_obj, output_type, target_workspace, routing_policy)
         return TaskOutcome(ok=False)
 
     def report_progress(self, progress: ProgressEvent) -> None:
@@ -1445,7 +1513,7 @@ class _Wave12StorageAndMigrateModule(Module):
 
     @task("w12 nested-crit")
     def nested_call_critical(self, ctx: TaskContext) -> _EchoOut:
-        out = ctx.invoke_task("w12mod.critical_wipe", {}, output_type=_EchoOut)
+        out = ctx.call("w12mod.critical_wipe", {}, output_type=_EchoOut)
         return _EchoOut(text=out.error.code.value if out.error is not None else "unexpected_ok")
 
     @on_migrate()
@@ -1591,8 +1659,9 @@ def _verify_wave12_sdk_extensions(tmp_root: Path) -> None:
             "from dataclasses import dataclass",
             "from core.surface.sdk import (",
             "    ExtensionPointSpec, MergeStrategy, MigrationRequest, Module, SchemaMigration,",
-            "    SemVer4, TaskContext, on_migrate, task,",
+            "    TaskContext, on_migrate, task,",
             ")",
+            "from core.surface.sdk.advanced import SemVer4",
             "@dataclass(frozen=True, slots=True)",
             "class TModCfg:",
             "    greeting: str = 'dflt'",
@@ -2056,7 +2125,7 @@ class _SharedWriterGroup(TaskGroup):
         if not isinstance(owner, _SharedParentModule):
             raise RuntimeError("missing parent_module")
         owner.append_trace(f"write:{req.tag}")
-        sub = ctx.invoke_task("shparent.read_trace", {}, output_type=_EchoOut)
+        sub = ctx.call("shparent.read_trace", {}, output_type=_EchoOut)
         check(sub.ok and sub.value is not None)
         sub_txt = sub.value.text if sub.value is not None else ""
         return _EchoOut(text=f"{owner.shared_label}:{req.tag}|{sub_txt}")
@@ -2123,8 +2192,18 @@ def _verify_taskgroup_parent_module_and_new_contracts(tmp_root: Path) -> None:
         f"Unexpected shared parent lifecycle trace: {parent_mod.trace_snapshot()}",
     )
 
-    check(SPACE_UPDATED_EVENT_ID_STR == "core.space_updated")
-    check(SPACE_REGISTRY_CHANGED_EVENT_ID_STR == "core.space_registry_changed")
+    check(SPACE_UPDATED_EVENT_ID == EventId("core.space_updated"))
+    check(SPACE_REGISTRY_CHANGED_EVENT_ID == EventId("core.space_registry_changed"))
+    check(SPACE_UPDATED_EVENT.event_id == SPACE_UPDATED_EVENT_ID and SPACE_UPDATED_EVENT.payload_type is SpaceUpdatedEventPayload)
+    check(SPACE_REGISTRY_CHANGED_EVENT.event_id == SPACE_REGISTRY_CHANGED_EVENT_ID and SPACE_REGISTRY_CHANGED_EVENT.payload_type is SpaceUpdatedEventPayload)
+    check(CONFIG_CHANGED_EVENT.event_id == CONFIG_CHANGED_EVENT_ID and CONFIG_CHANGED_EVENT.payload_type is ConfigChangedEventPayload)
+    check(MODULE_INSTALLED_EVENT.event_id == MODULE_INSTALLED_EVENT_ID and MODULE_INSTALLED_EVENT.payload_type is ModuleLifecycleEventPayload)
+    check(
+        MODULE_REMOVING_EVENT.event_id == MODULE_REMOVING_EVENT_ID
+        and MODULE_REMOVING_EVENT.payload_type is ModuleLifecycleEventPayload
+        and MODULE_REMOVING_EVENT.ordering == EventOrdering.ORDERED
+    )
+    check(WORKSPACE_RELOADED_EVENT.event_id == WORKSPACE_RELOADED_EVENT_ID and WORKSPACE_RELOADED_EVENT.payload_type is Empty)
     check(WORKSPACE_RELOADED_EVENT_ID == EventId("core.workspace_reloaded"))
     check(MODULE_INSTALLED_EVENT_ID == EventId("core.module_installed"))
     check(MODULE_REMOVING_EVENT_ID == EventId("core.module_removing"))
@@ -2241,6 +2320,212 @@ def _verify_sdk_profiler_contracts(tmp_root: Path) -> None:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _EqCoalesceIn:
+    bucket: str
+    detail: str
+
+
+class _TypedParentModule(Module):
+    id: ClassVar[str] = "typedp"
+
+    def __init__(self) -> None:
+        self.shared_label: str = "init_pending"
+
+    def on_init(self, env: ModuleEnv) -> None:
+        _ = env
+        self.shared_label = "parent_ready"
+
+
+class _TypedChildGroup(TaskGroup[_TypedParentModule]):
+    @task
+    def read_typed_parent(self, ctx: TaskContext) -> _EchoOut:
+        check(self.parent_module is self.module)
+        check(ctx.module_id == ModuleId("typedp"))
+        return _EchoOut(text=f"{self.module.shared_label}:{ctx.module_id.value}")
+
+
+class _TypedHostModule(_TypedParentModule):
+    id: ClassVar[str] = "typedp"
+    groups: ClassVar[tuple[type[TaskGroup[Module]], ...]] = (_TypedChildGroup,)
+
+
+class _ErgonomicsProbeModule(Module):
+    id: ClassVar[str] = "ergo"
+
+    def __init__(self) -> None:
+        self.runs: list[str] = []
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    @task
+    def ping_empty(self, ctx: TaskContext) -> _EchoOut:
+        return _EchoOut(text=f"pong:{ctx.module_id.value}")
+
+    @task
+    def echo_req(self, req: _EchoIn, ctx: TaskContext) -> _EchoOut:
+        _ = ctx
+        return _EchoOut(text=f"echo:{req.tag}")
+
+    @task
+    def call_via_refs(self, ctx: TaskContext) -> _EchoOut:
+        empty_ref = TaskRef("ergo.ping_empty", Empty, _EchoOut)
+        echo_ref = TaskRef("ergo.echo_req", _EchoIn, _EchoOut)
+        r_empty = ctx.call(empty_ref)
+        r_echo = ctx.call(echo_ref, _EchoIn(tag="typed_ok"))
+        r_wrong = ctx.call(echo_ref, Empty())
+        r_missing = ctx.call(echo_ref)
+        r_conflict = ctx.call(echo_ref, _EchoIn(tag="x"), output_type=Empty)
+        check(r_empty.ok and r_empty.value == _EchoOut(text="pong:ergo"), f"TaskRef Empty call failed: {r_empty}")
+        check(r_echo.ok and r_echo.value == _EchoOut(text="echo:typed_ok"), f"TaskRef typed call failed: {r_echo}")
+        check(
+            not r_wrong.ok and r_wrong.error is not None and r_wrong.error.code == ErrorCode.CODEC_VALIDATION_FAILED,
+            f"Wrong input_type must fail validation: {r_wrong}",
+        )
+        check(
+            not r_missing.ok and r_missing.error is not None and r_missing.error.code == ErrorCode.CODEC_VALIDATION_FAILED,
+            f"Missing non-Empty input must fail validation: {r_missing}",
+        )
+        check(
+            not r_conflict.ok and r_conflict.error is not None and r_conflict.error.code == ErrorCode.CODEC_VALIDATION_FAILED,
+            f"Conflicting output_type must fail validation: {r_conflict}",
+        )
+        return _EchoOut(text=f"{r_empty.value.text}|{r_echo.value.text}")
+
+    @task(
+        lock="ergo.eq_slot",
+        concurrency=ConcurrencyMode.COALESCE,
+        equivalence_fn=lambda req: req.bucket,
+    )
+    def coalesced_bucket(self, req: _EqCoalesceIn, ctx: TaskContext) -> _EchoOut:
+        _ = ctx
+        self.runs.append(f"{req.bucket}:{req.detail}")
+        self.entered.set()
+        self.release.wait(timeout=3.0)
+        return _EchoOut(text=f"bucket:{req.bucket}")
+
+
+def _verify_sdk_ergonomics_taskref_group_and_equivalence(tmp_root: Path) -> None:
+    unbound = _TypedChildGroup()
+    check(unbound.parent_module is None, "Unbound TaskGroup.parent_module must be None")
+    raised_rt = False
+    try:
+        _ = unbound.module
+    except RuntimeError:
+        raised_rt = True
+    check(raised_rt, "Unbound TaskGroup.module must raise RuntimeError")
+
+    assert_raises_val_error(lambda: task(equivalence_fn=cast(object, 123)))
+    for bad_ref_fn in (
+        lambda: TaskRef("no_dot", Empty, _EchoOut),
+        lambda: TaskRef("ergo.ping", type(None), _EchoOut),
+        lambda: TaskRef("ergo.ping", Empty, type(None)),
+        lambda: TaskRef("ergo.ping", cast(type[object], 123), _EchoOut),
+    ):
+        assert_raises_val_error(bad_ref_fn)
+
+    ev_err_msg = ""
+    try:
+        class _BadNoMapperMod(Module):
+            id: ClassVar[str] = "badnomap"
+
+            @on_event(SPACE_UPDATED_EVENT)
+            def on_ev(self, req: _EchoIn, ctx: TaskContext) -> None:
+                _ = (req, ctx)
+    except ValueError as exc:
+        ev_err_msg = str(exc)
+    check("mapper=" in ev_err_msg, f"Expected actionable mapper= hint in @on_event error: {ev_err_msg!r}")
+
+    ws_ergo = tmp_root / "ws_sdk_ergonomics"
+    ws_ergo.mkdir(parents=True, exist_ok=True)
+    ergo_mod = _ErgonomicsProbeModule()
+    with YscbClient.local(HostPath(ws_ergo), _TypedHostModule(), ergo_mod) as client:
+        tp_out = client.call("typedp.read_typed_parent", output_type=_EchoOut)
+        check(tp_out.ok and tp_out.value == _EchoOut(text="parent_ready:typedp"), f"Typed TaskGroup failed: {tp_out}")
+
+        empty_ref = TaskRef("ergo.ping_empty", Empty, _EchoOut)
+        echo_ref = TaskRef("ergo.echo_req", _EchoIn, _EchoOut)
+        c_empty = client.call(empty_ref)
+        c_echo = client.call(echo_ref, _EchoIn(tag="cli_ref"))
+        c_bad = client.call(echo_ref, Empty())
+        check(c_empty.ok and c_empty.value == _EchoOut(text="pong:ergo"), f"YscbClient TaskRef Empty failed: {c_empty}")
+        check(c_echo.ok and c_echo.value == _EchoOut(text="echo:cli_ref"), f"YscbClient TaskRef typed failed: {c_echo}")
+        check(
+            not c_bad.ok and c_bad.error is not None and c_bad.error.code == ErrorCode.CODEC_VALIDATION_FAILED,
+            f"YscbClient TaskRef wrong input must fail: {c_bad}",
+        )
+
+        ref_e2e = client.call("ergo.call_via_refs", output_type=_EchoOut)
+        check(ref_e2e.ok and ref_e2e.value == _EchoOut(text="pong:ergo|echo:typed_ok"), f"ctx.call TaskRef failed: {ref_e2e}")
+
+    ergo_ymod = ergo_mod.to_yscb_module()
+    eq_bt = next(t for t in ergo_ymod.tasks() if t.task_id == TaskId("ergo.coalesced_bucket"))
+    check(
+        eq_bt.compute_normalized_equivalence({"bucket": "same", "detail": "a"})
+        == eq_bt.compute_normalized_equivalence({"bucket": "same", "detail": "b"})
+        == "ergo.coalesced_bucket:custom:same",
+        "Custom equivalence_fn must normalize equal bucket keys identically",
+    )
+    check(
+        eq_bt.compute_normalized_equivalence({"bucket": "other", "detail": "a"}) == "ergo.coalesced_bucket:custom:other",
+        "Custom equivalence_fn must distinguish distinct bucket keys",
+    )
+
+    hot_ws = HostPath(ws_ergo / "hot_eq")
+    hot_ws.path.mkdir(parents=True, exist_ok=True)
+
+    class _EmptyModProvider(ModuleProviderPort):
+        def list_modules(self) -> Sequence[ModuleDescriptor]:
+            return ()
+
+        def get_module(self, module_id: ModuleId) -> Optional[ModuleDescriptor]:
+            _ = module_id
+            return None
+
+        def reload(self) -> None:
+            pass
+
+    hot_disp = RuntimeDispatcher(
+        workspace_root=hot_ws,
+        cache_dir=hot_ws.join(".cache"),
+        module_provider=_EmptyModProvider(),
+        options=DispatcherHostOptions(is_daemon_host=True, in_memory_modules=(ergo_ymod,)),
+    )
+    try:
+        results: list[TaskOutcome[_EchoOut]] = []
+
+        def _invoke_eq(detail: str) -> None:
+            results.append(
+                hot_disp.invoke(
+                    InvokeRequest(
+                        TaskId("ergo.coalesced_bucket"),
+                        {"bucket": "same", "detail": detail},
+                        hot_ws,
+                        hot_ws,
+                    ),
+                    output_type=_EchoOut,
+                )
+            )
+
+        t1 = threading.Thread(target=_invoke_eq, args=("first",))
+        t2 = threading.Thread(target=_invoke_eq, args=("second_different_detail",))
+        t1.start()
+        check(ergo_mod.entered.wait(timeout=2.0), "First coalesced task did not enter")
+        t2.start()
+        time.sleep(0.15)
+        ergo_mod.release.set()
+        t1.join(timeout=3.0)
+        t2.join(timeout=3.0)
+        check(
+            len(results) == 2 and all(r.ok and r.value == _EchoOut(text="bucket:same") for r in results),
+            f"Coalesced equivalence_fn calls failed: {results}",
+        )
+        check(len(ergo_mod.runs) == 1, f"Expected custom equivalence_fn to coalesce into 1 run, got {ergo_mod.runs}")
+        check(any(r.coalesced for r in results), f"Expected coalesced=True on follower outcome: {results}")
+    finally:
+        hot_disp.shutdown(grace_ms=300)
+
+
 def run_surface_sdk_suite(tmp_root: Path) -> None:
     """Execute the full Surface SDK test suite covering DSL, lifecycle, and YscbClient."""
     ws_base_p = tmp_root / "ws_sdk_base"
@@ -2256,6 +2541,7 @@ def run_surface_sdk_suite(tmp_root: Path) -> None:
     _verify_wave12_sdk_extensions(tmp_root)
     _verify_taskgroup_parent_module_and_new_contracts(tmp_root)
     _verify_sdk_profiler_contracts(tmp_root)
+    _verify_sdk_ergonomics_taskref_group_and_equivalence(tmp_root)
     log("[SURFACE-SDK] Surface SDK verification suite PASSED")
 
 

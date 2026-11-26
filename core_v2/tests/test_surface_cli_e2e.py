@@ -97,16 +97,18 @@ from core.surface.sdk import (
     Arg,
     ExitCodeProvider,
     HumanRenderable,
-    InMemoryModule,
     MigrationRequest,
     Module,
     ModuleEnv,
     Option,
     TaskGroup,
-    YscbClient,
-    format_output,
     on_migrate,
     task,
+)
+from core.surface.sdk.advanced import (
+    InMemoryModule,
+    YscbClient,
+    format_output,
 )
 from tests import CORE_SRC_ROOT, CORE_V2_ROOT
 from tests._harness import check, log, stop_daemon_cleanly
@@ -1108,7 +1110,8 @@ def _package_demo_module_zip(
     fail_flag_lit = "1" if fail_migration else "0"
     base_tpl = (
         "from dataclasses import dataclass\n"
-        "from core.surface.sdk import ExitCodeProvider, HumanRenderable, MigrationRequest, Module, ModuleId, SemanticUri, SpaceId, SpaceSpec, TaskContext, on_migrate, task\n\n"
+        "from core.surface.sdk import ExitCodeProvider, HumanRenderable, MigrationRequest, Module, SemanticUri, SpaceId, SpaceSpec, TaskContext, on_migrate, task\n"
+        "from core.surface.sdk.advanced import ModuleId\n\n"
         "@dataclass(frozen=True, slots=True)\n"
         "class DemoBannerOut(HumanRenderable, ExitCodeProvider):\n"
         "    headline: str\n"
@@ -1140,7 +1143,7 @@ def _package_demo_module_zip(
         "    def reg_sp(self, ctx: TaskContext) -> bool:\n"
         "        _ = self\n"
         "        sp = SpaceSpec(space_id=SpaceId('demo', 'dyn_docs'), entries=(SemanticUri('project', ''),), include=('*.py',))\n"
-        "        out = ctx.invoke_task('core.space.set_dynamic', {'owner': 'demo', 'name': 'dyn_docs', 'spec': sp}, output_type=bool)\n"
+        "        out = ctx.call('core.space.set_dynamic', {'owner': 'demo', 'name': 'dyn_docs', 'spec': sp}, output_type=bool)\n"
         "        return bool(out.ok and out.value is True)\n\n"
         "    @on_migrate()\n"
         "    def handle_migrate(self, req: MigrationRequest, ctx: TaskContext) -> None:\n"
@@ -1563,7 +1566,8 @@ def _verify_yscb_e2e_lifecycle(tmp_root: Path) -> None:
 
         standalone_hot_code = (
             "import json, sys\n"
-            "from core.surface.sdk import HostPath, YscbClient\n"
+            "from core.surface.sdk import HostPath\n"
+        "from core.surface.sdk.advanced import YscbClient\n"
             "assert 'core.surface.bootstrap' not in sys.modules\n"
             "ws = HostPath(sys.argv[1])\n"
             "with YscbClient.connect(ws) as c:\n"
@@ -1696,7 +1700,7 @@ def _verify_yscb_e2e_lifecycle(tmp_root: Path) -> None:
 
     def _rogue_hijack(ctx: TaskContext) -> bool:
         sp = SpaceSpec(space_id=SpaceId("demo", "hijacked"), entries=(SemanticUri("project", ""),), include=("*.py",))
-        out = ctx.invoke_task(
+        out = ctx.call(
             "core.space.set_dynamic",
             SetDynamicSpaceInput(owner=ModuleId("demo"), name="hijacked", spec=sp),
             output_type=bool,
@@ -1707,19 +1711,19 @@ def _verify_yscb_e2e_lifecycle(tmp_root: Path) -> None:
 
     def _rogue_own(ctx: TaskContext) -> int:
         sp = SpaceSpec(space_id=SpaceId("rogue", "temp_sp"), entries=(SemanticUri("project", ""),), include=("*.py",))
-        out_set = ctx.invoke_task(
+        out_set = ctx.call(
             "core.space.set_dynamic",
             SetDynamicSpaceInput(owner=ModuleId("rogue"), name="temp_sp", spec=sp),
             output_type=bool,
         )
         check(out_set.ok and out_set.value is True)
-        scan_out = ctx.invoke_task(
+        scan_out = ctx.call(
             "core.space.scan",
             SpaceScanInput(space_id="rogue/temp_sp", force=False),
             output_type=tuple[SpaceDiffBatch, ...],
         )
         check(scan_out.ok and scan_out.value is not None and len(scan_out.value) == 1 and str(scan_out.value[0].space_id) == "rogue/temp_sp")
-        out_clr = ctx.invoke_task(
+        out_clr = ctx.call(
             "core.space.clear_dynamic",
             ClearDynamicSpaceInput(owner=ModuleId("rogue"), name="temp_sp"),
             output_type=int,
@@ -1735,7 +1739,7 @@ def _verify_yscb_e2e_lifecycle(tmp_root: Path) -> None:
 
     def _spoof_cross_ws(ctx: TaskContext) -> bool:
         sp = SpaceSpec(space_id=SpaceId("demo", "spoofed"), entries=(SemanticUri("project", ""),), include=("*.py",))
-        out = ctx.invoke_task(
+        out = ctx.call(
             "core.space.set_dynamic",
             SetDynamicSpaceInput(owner=ModuleId("demo"), name="spoofed", spec=sp),
             output_type=bool,
@@ -1749,7 +1753,7 @@ def _verify_yscb_e2e_lifecycle(tmp_root: Path) -> None:
     spoof_demo.add_task("cross_hijack", _spoof_cross_ws)
 
     def _call_peer_info(ctx: TaskContext) -> dict[str, str]:
-        out = ctx.invoke_task(
+        out = ctx.call(
             "demo.info",
             {},
             output_type=dict[str, str],
@@ -2862,7 +2866,7 @@ def _verify_uri_scheme_provenance_and_bootstrap_edges(sec_root: Path) -> None:
         encoding="utf-8",
     )
     (pkg_src / "module_entry.py").write_text(
-        "from core.surface.sdk import InMemoryModule\n"
+        "from core.surface.sdk.advanced import InMemoryModule\n"
         "def create_module():\n"
         "    return InMemoryModule('gitkeep').to_yscb_module()\n",
         encoding="utf-8",
@@ -2932,7 +2936,7 @@ def _verify_uri_scheme_provenance_and_bootstrap_edges(sec_root: Path) -> None:
 
         @task
         def try_lock_foreign(self, ctx: TaskContext) -> str:
-            out = ctx.invoke_task(
+            out = ctx.call(
                 "core.file_lock.lock",
                 {"path": "storage://demo/pinned.json"},
             )
@@ -3610,7 +3614,7 @@ def _verify_surface_convergence_regressions(sec_root: Path) -> None:
 
         @task
         def mutate_and_done(self, ctx: TaskContext) -> str:
-            res = ctx.invoke_task(
+            res = ctx.call(
                 "core.config.set",
                 {"module": "nestedmut", "key": "greeting", "value": '"updated_via_nested"', "local": False},
             )
@@ -4020,7 +4024,7 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
     peer_bridge = InMemoryModule("peerbridge")
 
     def _read_peer_marker(ctx: TaskContext) -> object:
-        res = ctx.invoke_task(
+        res = ctx.call(
             "core.config.get",
             ConfigGetInput(module="core", key="peer_marker"),
             output_type=SystemResultView,
@@ -4203,7 +4207,7 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
         caller_bridge = InMemoryModule("callerbridge")
 
         def _call_peer_hotonly(ctx: TaskContext) -> str:
-            r_hot = ctx.invoke_task(
+            r_hot = ctx.call(
                 "hotonly.ping",
                 {},
                 output_type=str,
@@ -4347,9 +4351,8 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
         encoding="utf-8",
     )
     (dyn_mod_dir / "module_entry.py").write_text(
-        "from core.surface.bootstrap import SPACE_REGISTRY_CHANGED_EVENT_ID_STR, SpaceUpdatedEventPayload\n"
-        "from core.surface.sdk import DispatchMode, Module, TaskContext, define_event, on_event, task\n"
-        "_SPACE_EV = define_event(SPACE_REGISTRY_CHANGED_EVENT_ID_STR, SpaceUpdatedEventPayload)\n"
+        "from core.surface.sdk import DispatchMode, Module, SPACE_REGISTRY_CHANGED_EVENT, SpaceUpdatedEventPayload, TaskContext, on_event, task\n"
+        "_SPACE_EV = SPACE_REGISTRY_CHANGED_EVENT\n"
         "def _first_space_ev(items: tuple[SpaceUpdatedEventPayload, ...]):\n"
         "    return items[0] if items else None\n"
         "class HotDynMod(Module):\n"
@@ -4403,7 +4406,7 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
             peer_caller_mod = InMemoryModule("peercheck")
 
             def _invoke_hotdyn_spaces(ctx: TaskContext) -> list[str]:
-                res_hd = ctx.invoke_task(
+                res_hd = ctx.call(
                     "hotdyn.spaces",
                     {},
                     output_type=list[str],
@@ -4429,7 +4432,7 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
                         space_id=SpaceId("dynmut", "live"),
                         entries=(SemanticUri("storage", "dynmut"),),
                     )
-                    out_set = ctx.invoke_task(
+                    out_set = ctx.call(
                         "core.space.set_dynamic",
                         DataclassCodec.encode_object(
                             SetDynamicSpaceInput(owner=ModuleId("dynmut"), name="live", spec=spec_obj)
@@ -4764,14 +4767,14 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
     xws_attacker = InMemoryModule("attacker")
 
     def _xws_lock_attack(ctx: TaskContext) -> bool:
-        out_lk = ctx.invoke_task(
+        out_lk = ctx.call(
             "core.file_lock.lock",
             {"paths": [str(victim_store_file)]},
             target_workspace=HostPath(own_data_root),
             routing_policy=ClientRoutingPolicy.FORCE_COLD,
         )
         check(not out_lk.ok and out_lk.error is not None and out_lk.error.code == ErrorCode.SECURITY_GATED)
-        out_st = ctx.invoke_task(
+        out_st = ctx.call(
             "core.file_lock.status",
             {"path": str(victim_store_file)},
             target_workspace=HostPath(own_data_root),
@@ -5234,7 +5237,7 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
             @task
             def peek_all(self, ctx: TaskContext) -> object:
                 _ = self
-                res_p = ctx.invoke_task(TaskId("core.file_lock.status"), {})
+                res_p = ctx.call(TaskId("core.file_lock.status"), {})
                 return res_p.value
 
         peek_kernel = WorkspaceKernelFactory.create(
@@ -5275,7 +5278,7 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
         @task
         def run_checks(self, ctx: TaskContext) -> str:
             _ = self
-            r_hijack = ctx.invoke_task(
+            r_hijack = ctx.call(
                 TaskId("core.config.set"),
                 {"module": "core", "key": "project_root", "value": '"/tmp"', "local": False},
             )
@@ -5283,7 +5286,7 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
                 not r_hijack.ok and r_hijack.error is not None and r_hijack.error.code == ErrorCode.ACCESS_DENIED,
                 f"Expected ACCESS_DENIED when non-core module mutates core.project_root: {r_hijack}",
             )
-            r_foreign_set = ctx.invoke_task(
+            r_foreign_set = ctx.call(
                 TaskId("core.config.set"),
                 {"module": "victim", "key": "api_token", "value": '"pwned"', "local": True},
             )
@@ -5291,7 +5294,7 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
                 not r_foreign_set.ok and r_foreign_set.error is not None and r_foreign_set.error.code == ErrorCode.ACCESS_DENIED,
                 f"Expected ACCESS_DENIED when non-core module mutates sibling config: {r_foreign_set}",
             )
-            r_foreign_get = ctx.invoke_task(
+            r_foreign_get = ctx.call(
                 TaskId("core.config.get"),
                 {"module": "victim", "key": "api_token"},
             )
@@ -5299,32 +5302,32 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
                 not r_foreign_get.ok and r_foreign_get.error is not None and r_foreign_get.error.code == ErrorCode.ACCESS_DENIED,
                 f"Expected ACCESS_DENIED when non-core module reads sibling .config.local secret: {r_foreign_get}",
             )
-            r_list_all = ctx.invoke_task(TaskId("core.config.list"), {})
+            r_list_all = ctx.call(TaskId("core.config.list"), {})
             check(
                 not r_list_all.ok and r_list_all.error is not None and r_list_all.error.code == ErrorCode.ACCESS_DENIED,
                 f"Expected ACCESS_DENIED when non-core module dumps all module configs: {r_list_all}",
             )
-            r_clean_all = ctx.invoke_task(TaskId("core.fs.clean"), {})
+            r_clean_all = ctx.call(TaskId("core.fs.clean"), {})
             check(
                 not r_clean_all.ok and r_clean_all.error is not None and r_clean_all.error.code == ErrorCode.ACCESS_DENIED,
                 f"Expected ACCESS_DENIED when non-core module cleans all workspace spaces: {r_clean_all}",
             )
-            r_clean_foreign = ctx.invoke_task(TaskId("core.fs.clean"), {"space_id": "core/readonly"})
+            r_clean_foreign = ctx.call(TaskId("core.fs.clean"), {"space_id": "core/readonly"})
             check(
                 not r_clean_foreign.ok and r_clean_foreign.error is not None and r_clean_foreign.error.code == ErrorCode.ACCESS_DENIED,
                 f"Expected ACCESS_DENIED when non-core module cleans foreign space: {r_clean_foreign}",
             )
-            r_own_set = ctx.invoke_task(
+            r_own_set = ctx.call(
                 TaskId("core.config.set"),
                 {"module": "sbprobe", "key": "note", "value": '"allowed"', "local": True},
             )
             check(r_own_set.ok, f"Expected own-module config.set to remain allowed: {r_own_set}")
-            r_own_get = ctx.invoke_task(
+            r_own_get = ctx.call(
                 TaskId("core.config.get"),
                 {"module": "sbprobe", "key": "note"},
             )
             check(r_own_get.ok, f"Expected own-module config.get to succeed: {r_own_get}")
-            r_own_clean = ctx.invoke_task(
+            r_own_clean = ctx.call(
                 TaskId("core.fs.clean"),
                 {"space_id": "sbprobe/cache", "consumer": "sbprobe"},
             )
@@ -5593,7 +5596,7 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
                 ("core.gitignore.sync", {}),
                 ("core.file_lock.lock", {"path": str(proj_victim_f)}),
             ):
-                r_bad = ctx.invoke_task(TaskId(bad_tid), bad_in)
+                r_bad = ctx.call(TaskId(bad_tid), bad_in)
                 check(
                     not r_bad.ok and r_bad.error is not None and r_bad.error.code == ErrorCode.ACCESS_DENIED,
                     f"Expected ACCESS_DENIED for non-core nested {bad_tid}, got {r_bad}",
@@ -5686,7 +5689,8 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
             encoding="utf-8",
         )
         (t1_dir / "module_entry.py").write_text(
-            "from core.surface.sdk import Module, ModuleId, TaskContext, task\n\n"
+            "from core.surface.sdk import Module, TaskContext, task\n"
+        "from core.surface.sdk.advanced import ModuleId\n\n"
             "class T1DialMod(Module):\n"
             "    id = 't1dial'\n"
             "    @task(cli='probe', name='probe', summary='Probe Tier 1 dialect')\n"
@@ -5712,7 +5716,7 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
         @task
         def call_peer_t1(self, ctx: TaskContext) -> str:
             _ = self
-            r_peer = ctx.invoke_task(TaskId("t1dial.probe"), {}, target_workspace=peer_dial_root_hp)
+            r_peer = ctx.call(TaskId("t1dial.probe"), {}, target_workspace=peer_dial_root_hp)
             check(r_peer.ok and isinstance(r_peer.value, str), f"Expected peer t1dial.probe ok, got {r_peer}")
             return str(r_peer.value)
 
@@ -5867,7 +5871,7 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
         @task
         def run_sequence(self, ctx: TaskContext) -> str:
             _ = self
-            first = ctx.invoke_task(TaskId("t1dial.probe"), {})
+            first = ctx.call(TaskId("t1dial.probe"), {})
             check(first.ok and first.value == "v1-live", f"Expected v1-live first, got {first}")
             check(not closer_marker.exists(), "Expected on_init closer not yet run while v1 worker active")
             t1_entry_path.write_text(
@@ -5882,7 +5886,7 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
                 "    return T1DialMod().to_yscb_module()\n",
                 encoding="utf-8",
             )
-            second = ctx.invoke_task(TaskId("t1dial.probe"), {})
+            second = ctx.call(TaskId("t1dial.probe"), {})
             check(second.ok and second.value == "v2-live", f"Expected v2-live after mid-turn edit, got {second}")
             check(
                 closer_marker.is_file() and closer_marker.read_text(encoding="utf-8") == "closed-v1",
@@ -6143,6 +6147,7 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
 
     _verify_bootstrap_gate_ack_cursor_and_env_lease(wk_host_hp, wk_root_hp, t1_pool, t1_grp_specs[ModuleId("t1fd1")])
     _verify_observability_profiler_and_fast_daemon_boot(suite_dir, boot_prov, wheel_house_hp)
+    _verify_ctx_spaces_tier0_and_tier1_e2e(suite_dir, boot_prov, wheel_house_hp)
     log("[SURFACE-CLI] All CLI, Bootstrap, and yscb.py E2E checks passed.")
 
 
@@ -6196,7 +6201,7 @@ def _verify_bootstrap_gate_ack_cursor_and_env_lease(
     ack_mod = InMemoryModule("ackmod")
 
     def _ack_as_mod(req: dict[str, object], ctx: TaskContext) -> dict[str, object]:
-        res = ctx.invoke_task(
+        res = ctx.call(
             "core.space.ack_cursor",
             req,
             routing_policy=ClientRoutingPolicy.FORCE_COLD,
@@ -6364,7 +6369,8 @@ def _verify_bootstrap_gate_ack_cursor_and_env_lease(
     )
 
     (wk_root_hp.path / ".modules" / "t1dial" / "module_entry.py").write_text(
-        "from core.surface.sdk import Module, ModuleId, TaskContext, task\n\n"
+        "from core.surface.sdk import Module, TaskContext, task\n"
+        "from core.surface.sdk.advanced import ModuleId\n\n"
         "class T1DialMod(Module):\n"
         "    id = 't1dial'\n"
         "    @task(cli='probe', name='probe', summary='Probe Tier 1 dialect')\n"
@@ -6379,7 +6385,7 @@ def _verify_bootstrap_gate_ack_cursor_and_env_lease(
     sdk_t1_dial_code = (
         "import sys\n"
         "from core.foundation import HostPath\n"
-        "from core.surface.sdk import YscbClient\n"
+        "from core.surface.sdk.advanced import YscbClient\n"
         "with YscbClient(HostPath(sys.argv[1])) as cli:\n"
         "    out = cli.call('t1dial.probe', force_cold=True)\n"
         "    sys.stdout.write(str(out.value if out.ok else out.error))\n"
@@ -6626,11 +6632,13 @@ def _verify_single_kernel_fast_daemon_boot(ws_obs: Path, obs_root: Path) -> None
         orig_init(self, *args, **kwargs)
 
     stop_done = threading.Event()
+    sup_out = _MockTtyOutput(is_tty=False)
+    sup_err = _MockTtyOutput(is_tty=False)
 
     def _stop_when_ready() -> None:
         dl = time.monotonic() + 15.0
         while time.monotonic() < dl:
-            if probe_daemon_endpoint(cache_hp, obs_root_hp) is not None:
+            if probe_daemon_endpoint(cache_hp, obs_root_hp) is not None and bool(sup_out.getvalue()):
                 _ = query_daemon_control(cache_hp, obs_root_hp, FrameKind.CONTROL_STOP, {"force": False}, timeout_ms=5000)
                 stop_done.set()
                 return
@@ -6640,8 +6648,6 @@ def _verify_single_kernel_fast_daemon_boot(ws_obs: Path, obs_root: Path) -> None
     stopper = threading.Thread(target=_stop_when_ready, daemon=True)
     stopper.start()
     try:
-        sup_out = _MockTtyOutput(is_tty=False)
-        sup_err = _MockTtyOutput(is_tty=False)
         rc_sup = cli_main(
             ["daemon", "start", "--supervisor", "--json"],
             host_dir=obs_host_hp,
@@ -6894,7 +6900,7 @@ def _verify_lazy_proxy_gates_and_sandbox_env_overrides(ws_obs: Path, obs_root: P
     sdk_probe_code = (
         "import sys\n"
         "from core.foundation import HostPath\n"
-        "from core.surface.sdk import YscbClient\n"
+        "from core.surface.sdk.advanced import YscbClient\n"
         "with YscbClient(HostPath(sys.argv[1])) as cli:\n"
         "    out = cli.call('t1obs.trace_work', force_cold=True)\n"
         "    if not out.ok:\n"
@@ -6961,6 +6967,139 @@ def _verify_observability_profiler_and_fast_daemon_boot(
     _verify_single_kernel_fast_daemon_boot(ws_obs, obs_root)
     _verify_three_process_observability_e2e(ws_obs, obs_root)
     _verify_lazy_proxy_gates_and_sandbox_env_overrides(ws_obs, obs_root)
+
+
+def _verify_ctx_spaces_tier0_and_tier1_e2e(
+    suite_dir: Path,
+    prov_dir: Path,
+    wheel_house_hp: HostPath,
+) -> None:
+    sp_ws = suite_dir / "ctx_spaces_tier0_tier1_ws"
+    sp_ws.mkdir(parents=True, exist_ok=True)
+    cp_init = _run_yscb_subproc(sp_ws, ["init", f"--provider={prov_dir}", "--json"])
+    check(cp_init.returncode == 0, f"ctx_spaces ws init failed: {cp_init.stdout} {cp_init.stderr}")
+    (sp_ws / "docs").mkdir(parents=True, exist_ok=True)
+    (sp_ws / "docs" / "guide.md").write_text("# Guide\n", encoding="utf-8")
+    (sp_ws / "docs" / "skip.txt").write_text("skip\n", encoding="utf-8")
+    sp_root = sp_ws / ".yscb"
+
+    def _build_mod_src(mod_id: str) -> str:
+        return (
+            "from core.surface.sdk import (\n"
+            "    ErrorCode, Module, SPACE_UPDATED_EVENT, SemanticUri, SpaceId, SpaceSpec,\n"
+            "    SpaceUpdatedEventPayload, TaskContext, YscbError, on_event, task,\n"
+            ")\n\n"
+            "class SpaceProbeMod(Module):\n"
+            f"    id = {mod_id!r}\n"
+            "    def __init__(self) -> None:\n"
+            "        self.ev_hits: int = 0\n"
+            "    @on_event(SPACE_UPDATED_EVENT)\n"
+            "    def on_space_ev(self, ctx: TaskContext) -> None:\n"
+            "        prev = int(ctx.vfs.read_text('cache://@/ev_hits.txt')) if ctx.vfs.exists('cache://@/ev_hits.txt') else 0\n"
+            "        ctx.vfs.write_text('cache://@/ev_hits.txt', str(prev + 1))\n"
+            "    @task(cli=('probe',), name='probe', summary='Exercise ctx.spaces and resolve_uri')\n"
+            "    def probe(self, ctx: TaskContext) -> dict[str, object]:\n"
+            "        resolved = ctx.resolve_uri('./docs/guide.md')\n"
+            "        sid = SpaceId(ctx.module_id.value, 'docs')\n"
+            "        spec = SpaceSpec(space_id=sid, entries=(SemanticUri('project', 'docs'),), include=('*.md',))\n"
+            "        changed = ctx.spaces.set_dynamic('docs', spec)\n"
+            "        listed = ctx.spaces.list_spaces(owner=ctx.module_id.value)\n"
+            "        files = ctx.spaces.list_files(sid, pattern='*.md')\n"
+            "        scanned = ctx.spaces.scan(sid)\n"
+            "        st = ctx.spaces.status(sid)\n"
+            "        diff1 = ctx.spaces.diff(sid)\n"
+            "        acked = ctx.spaces.ack_cursor(diff1)\n"
+            "        diff2 = ctx.spaces.diff(sid)\n"
+            "        missing_code = ''\n"
+            "        try:\n"
+            "            ctx.spaces.status('noowner/nospace')\n"
+            "        except YscbError as exc:\n"
+            "            missing_code = exc.detail.code.value\n"
+            "        bad_owner_code = ''\n"
+            "        try:\n"
+            "            ctx.spaces.set_dynamic('bad', SpaceSpec(SpaceId('other', 'bad'), entries=(SemanticUri('project', 'docs'),)))\n"
+            "        except YscbError as exc:\n"
+            "            bad_owner_code = exc.detail.code.value\n"
+            "        cleared = ctx.spaces.clear_dynamic('docs')\n"
+            "        return {\n"
+            "            'mod': ctx.module_id.value,\n"
+            "            'resolved': str(resolved),\n"
+            "            'changed': changed,\n"
+            "            'listed': [str(s.space_id) for s in listed],\n"
+            "            'files': [str(f.rel_path) for f in files],\n"
+            "            'scan_cnt': len(scanned),\n"
+            "            'gen': st.generation.value,\n"
+            "            'diff1_changes': diff1.has_changes,\n"
+            "            'acked': acked,\n"
+            "            'diff2_changes': diff2.has_changes,\n"
+            "            'missing_code': missing_code,\n"
+            "            'bad_owner_code': bad_owner_code,\n"
+            "            'cleared': cleared,\n"
+            "            'ev_type': SpaceUpdatedEventPayload.__name__,\n"
+            "        }\n"
+            "    @task(name='ev_count', summary='Return SPACE_UPDATED_EVENT hits')\n"
+            "    def ev_count(self, ctx: TaskContext) -> int:\n"
+            "        return int(ctx.vfs.read_text('cache://@/ev_hits.txt')) if ctx.vfs.exists('cache://@/ev_hits.txt') else 0\n"
+        )
+
+    host_cfg_p = sp_ws / "yscb.config.json"
+    host_cfg = json.loads(host_cfg_p.read_text(encoding="utf-8"))
+    for mod_id, is_t1 in (("sp_t0", False), ("sp_t1", True)):
+        mdir = sp_root / ".modules" / mod_id
+        mdir.mkdir(parents=True, exist_ok=True)
+        mf_doc: dict[str, object] = {
+            "id": mod_id,
+            "version": "1.0.0.0",
+            "description": f"SpaceClient probe {mod_id}",
+        }
+        if is_t1:
+            mf_doc["venv_group"] = "sp_t1_grp"
+            mf_doc["pip_dependencies"] = {"dummy-dial-pkg": "==1.0.0"}
+        (mdir / "manifest.json").write_text(json.dumps(mf_doc, indent=2), encoding="utf-8")
+        (mdir / "module_entry.py").write_text(_build_mod_src(mod_id), encoding="utf-8")
+        host_cfg["installed_modules"][mod_id] = {
+            "version": "1.0.0.0",
+            "provider": "local",
+            "installed_at": "2026-11-25T00:00:00Z",
+        }
+    host_cfg_p.write_text(json.dumps(host_cfg, indent=2), encoding="utf-8")
+
+    sp_host_hp = HostPath(sp_ws)
+    sp_root_hp = HostPath(sp_root)
+    sp_pool = ImmutableVenvPool(yscb_root=sp_root_hp, cache_dir=HostPath(sp_root / ".cache"))
+    sp_mfs = discover_installed_manifests_map(sp_root_hp)
+    sp_grp_specs = ImmutableVenvPool.resolve_group_specs(tuple(sp_mfs.values()))
+    sp_pool.ensure_env(sp_grp_specs[ModuleId("sp_t1")], offline=True, wheel_cache_dir=wheel_house_hp)
+    idx_k = WorkspaceKernelFactory.create(sp_host_hp, sp_root_hp, force_cold=True)
+    try:
+        idx_k.ensure_installed_tasks_indices((ModuleId("sp_t0"), ModuleId("sp_t1")))
+        idx_k.rebuild_tasks_index_cache()
+    finally:
+        idx_k.close()
+
+    with YscbClient(sp_root_hp) as client:
+        for mod_id in ("sp_t0", "sp_t1"):
+            out = client.call(f"{mod_id}.probe", cwd=sp_host_hp, force_cold=True)
+            check(out.ok and isinstance(out.value, dict), f"ctx.spaces E2E failed for {mod_id}: {out}")
+            v = out.value
+            check(
+                v["mod"] == mod_id
+                and v["resolved"] == "project://docs/guide.md"
+                and v["changed"] is True
+                and f"{mod_id}/docs" in v["listed"]
+                and list(v["files"]) == ["docs/guide.md"]
+                and v["scan_cnt"] == 1
+                and int(v["gen"]) >= 1
+                and v["diff1_changes"] is True
+                and v["acked"] is True
+                and v["diff2_changes"] is False
+                and v["missing_code"] == ErrorCode.SPACE_NOT_FOUND.value
+                and v["bad_owner_code"] == ErrorCode.CONFIG_INVALID.value
+                and v["cleared"] == 1,
+                f"Unexpected ctx.spaces E2E result for {mod_id}: {v}",
+            )
+        ev_t0 = client.call("sp_t0.ev_count", force_cold=True)
+        check(ev_t0.ok and isinstance(ev_t0.value, int) and ev_t0.value >= 1, f"Expected SPACE_UPDATED_EVENT hit: {ev_t0}")
 
 
 __all__ = ("run_surface_cli_e2e_suite",)

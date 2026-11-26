@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 import errno
 import json
 import os
+from pathlib import Path
+import re
 import stat
 from types import MappingProxyType
 from typing import BinaryIO, Final, Iterator, Mapping, Optional, Sequence
@@ -15,6 +17,7 @@ from core.filesystem.fs import (
     MAX_JSON_FILE_BYTES,
     has_symlink_raw_path,
     is_atomic_staging_filename,
+    is_symlink_or_reparse,
     walk_nonsymlink_dir_tree,
 )
 from core.filesystem.vfs.capabilities import VfsCapabilities, VfsStat
@@ -400,6 +403,139 @@ def _collect_subtree_regular_files(dir_hp: HostPath, *, limit: int) -> list[tupl
             except ValueError:
                 continue
     return out
+
+
+def _glob_segment_to_regex(segment: str) -> str:
+    out: list[str] = []
+    idx = 0
+    length = len(segment)
+    while idx < length:
+        ch = segment[idx]
+        if ch == "*":
+            out.append("[^/]*")
+            idx += 1
+        elif ch == "?":
+            out.append("[^/]")
+            idx += 1
+        elif ch == "[":
+            end = idx + 1
+            if end < length and segment[end] in ("!", "^"):
+                end += 1
+            if end < length and segment[end] == "]":
+                end += 1
+            while end < length and segment[end] != "]":
+                end += 1
+            if end >= length:
+                out.append(r"\[")
+                idx += 1
+            else:
+                body = segment[idx + 1 : end]
+                neg = ""
+                if body.startswith("!"):
+                    neg = "^/"
+                    inner = body[1:]
+                else:
+                    inner = body
+                escaped_inner = (
+                    inner.replace("\\", r"\\")
+                    .replace("[", r"\[")
+                    .replace("]", r"\]")
+                    .replace("--", r"\-\-")
+                    .replace("&&", r"\&\&")
+                    .replace("~~", r"\~\~")
+                    .replace("||", r"\|\|")
+                )
+                if not neg and escaped_inner.startswith("^"):
+                    escaped_inner = r"\^" + escaped_inner[1:]
+                out.append(f"[{neg}{escaped_inner}]")
+                idx = end + 1
+        else:
+            out.append(re.escape(ch))
+            idx += 1
+    return "".join(out)
+
+
+def _compile_posix_glob_pattern(pattern: str) -> re.Pattern[str]:
+    require_pure_str(pattern, "pattern", non_empty=True)
+    if (
+        pattern.startswith("/")
+        or "\\" in pattern
+        or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in pattern)
+    ):
+        raise ValueError(f"Invalid VFS glob pattern: {pattern!r}")
+    raw_segs = pattern.split("/")
+    if any(seg in ("", ".", "..") for seg in raw_segs):
+        raise ValueError(f"VFS glob pattern must contain clean relative POSIX segments: {pattern!r}")
+    segs: list[str] = []
+    for seg in raw_segs:
+        if seg == "**" and segs and segs[-1] == "**":
+            continue
+        segs.append(seg)
+    parts: list[str] = ["^"]
+    last_idx = len(segs) - 1
+    for idx, seg in enumerate(segs):
+        if seg == "**":
+            if idx == last_idx:
+                parts.append(".+" if idx == 0 else "/.+")
+            else:
+                parts.append("(?:.+/)?" if idx == 0 else "/(?:.+/)?")
+        else:
+            if idx > 0 and segs[idx - 1] != "**":
+                parts.append("/")
+            parts.append(_glob_segment_to_regex(seg))
+    parts.append("$")
+    try:
+        return re.compile("".join(parts))
+    except re.error as exc:
+        raise ValueError(f"Invalid VFS glob pattern {pattern!r}: {exc}") from exc
+
+
+def _assert_no_uncollapsed_raw_symlink(raw_joined: str, raw_label: str) -> None:
+    cand = Path(raw_joined)
+    acc: Optional[Path] = None
+    for part in cand.parts:
+        if part == "..":
+            if acc is not None and (is_symlink_or_reparse(str(acc)) or has_symlink_raw_path(str(acc))):
+                raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing symlink traversal in path: '{raw_label}'.")
+            acc = acc.parent if acc is not None else Path("..")
+            continue
+        acc = Path(part) if acc is None else (acc / part)
+        if is_symlink_or_reparse(str(acc)):
+            raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing symlink path: '{raw_label}'.")
+
+
+def _select_deepest_allowed_mounts(
+    cfg: _VfsScopeConfig,
+    target_hp: HostPath,
+    raw_label: str,
+) -> tuple[tuple[str, SemanticUri], ...]:
+    covering = cfg.mount_table.iter_covering_mounts(target_hp)
+    if not covering:
+        raise YscbError(
+            ErrorCode.ACCESS_DENIED,
+            f"Path '{raw_label}' is outside all mounted workspace VFS roots.",
+        )
+    root_len_by_scheme = {
+        m_sch: len(m_root.comparison_key.rstrip("/\\"))
+        for m_sch, m_root in vfs_list_physical_mount_roots(cfg.mount_table)
+    }
+    max_root_len = max((root_len_by_scheme.get(m_sch, 0) for m_sch, _ in covering), default=0)
+    deepest = tuple((m_sch, m_uri) for m_sch, m_uri in covering if root_len_by_scheme.get(m_sch, 0) == max_root_len)
+    deepest_schemes = frozenset(m_sch for m_sch, _ in deepest)
+    has_colocated_project = ("project" in deepest_schemes) and ("yscb.host" in deepest_schemes)
+    if not cfg.is_kernel:
+        for m_sch in deepest_schemes:
+            if m_sch in _KERNEL_ONLY_SCHEMES and not (m_sch == "yscb.host" and has_colocated_project):
+                raise YscbError(
+                    ErrorCode.ACCESS_DENIED,
+                    f"Module '{cfg.module_id}' cannot resolve path '{raw_label}' inside protected mount '{m_sch}://'.",
+                )
+    return tuple(
+        (m_sch, m_uri)
+        for m_sch, m_uri in deepest
+        if (cfg.is_kernel or m_sch not in _KERNEL_ONLY_SCHEMES)
+        and not (m_sch == "yscb.host" and has_colocated_project)
+    )
 
 
 class ScopedVfs:
@@ -819,6 +955,94 @@ class ScopedVfs:
         route = vfs_inspect_mount_route(cfg.mount_table, bound)
         _assert_scheme_read_allowed(cfg, bound, route, allow_storage_local_root=True)
         return route.provider.try_get_physical_path(bound)
+
+    def glob(self, uri_dir: SemanticUri | str, pattern: str) -> tuple[SemanticUri, ...]:
+        """Return deterministically sorted file SemanticUris under uri_dir matching a relative POSIX glob pattern."""
+        rx = _compile_posix_glob_pattern(pattern)
+        cfg = self._cfg()
+        bound_dir = self.bind_uri(uri_dir)
+        route = vfs_inspect_mount_route(cfg.mount_table, bound_dir)
+        _assert_scheme_read_allowed(cfg, bound_dir, route)
+        dir_st = self.stat(bound_dir)
+        if not dir_st.exists or not dir_st.is_dir:
+            return ()
+        base_prefix = f"{bound_dir.rel_path}/" if bound_dir.rel_path else ""
+        matches: list[SemanticUri] = []
+        for entry_uri in self.iter_entries(bound_dir, recursive=True):
+            if base_prefix:
+                if not entry_uri.rel_path.startswith(base_prefix):
+                    continue
+                rel_sub = entry_uri.rel_path[len(base_prefix) :]
+            else:
+                rel_sub = entry_uri.rel_path
+            if not rel_sub or not rx.fullmatch(rel_sub):
+                continue
+            ent_st = self.stat(entry_uri)
+            if not ent_st.exists or ent_st.is_dir:
+                continue
+            matches.append(entry_uri)
+        return tuple(sorted(matches, key=str))
+
+    def resolve_caller_uri(self, raw_path: str, caller_cwd: HostPath) -> SemanticUri:
+        """Resolve a caller-supplied URI or local relative/absolute path into an accessible SemanticUri."""
+        require_pure_str(raw_path, "raw_path", non_empty=True)
+        if not isinstance(caller_cwd, HostPath):
+            raise ValueError(f"resolve_caller_uri requires HostPath caller_cwd, got {caller_cwd!r}")
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw_path) or not raw_path.strip():
+            raise ValueError(f"Invalid caller path containing blank or control characters: {raw_path!r}")
+        clean = raw_path.strip()
+        cfg = self._cfg()
+        if "://" in clean:
+            bound = self.bind_uri(clean)
+            try:
+                route = vfs_inspect_mount_route(cfg.mount_table, bound)
+            except YscbError as exc:
+                cause = exc.__cause__
+                if exc.detail.code == ErrorCode.SECURITY_GATED or (
+                    isinstance(cause, YscbError) and cause.detail.code == ErrorCode.SECURITY_GATED
+                ):
+                    raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing symlink path behind URI '{bound}'.") from exc
+                raise YscbError(ErrorCode.ACCESS_DENIED, f"Mount scheme is unavailable for '{bound}': {exc.detail.message}") from exc
+            if not cfg.is_kernel and (
+                bound.scheme in _KERNEL_ONLY_SCHEMES or route.terminal_uri.scheme in _KERNEL_ONLY_SCHEMES
+            ):
+                raise YscbError(
+                    ErrorCode.ACCESS_DENIED,
+                    f"Module '{cfg.module_id}' is not permitted to resolve protected URI '{bound}'.",
+                )
+            _assert_scheme_read_allowed(cfg, bound, route)
+            if route.unmasked_host_path is not None:
+                raw_backing = str(route.unmasked_host_path)
+                if has_symlink_raw_path(raw_backing) or is_symlink_or_reparse(raw_backing):
+                    raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing symlink path behind URI '{bound}'.")
+                _ = _select_deepest_allowed_mounts(cfg, route.unmasked_host_path, clean)
+            return bound
+        cand = Path(clean)
+        if (cand.drive or cand.anchor) and not cand.is_absolute():
+            raise ValueError(f"Half-qualified drive or root-relative path is forbidden: {raw_path!r}")
+        segs_to_check = cand.parts[1:] if cand.is_absolute() else cand.parts
+        if any(":" in seg for seg in segs_to_check):
+            raise ValueError(f"Illegal drive or stream syntax in path: {raw_path!r}")
+        raw_joined = str(cand) if cand.is_absolute() else os.path.join(str(caller_cwd), clean)
+        _assert_no_uncollapsed_raw_symlink(raw_joined, clean)
+        norm_raw = os.path.normpath(raw_joined)
+        if has_symlink_raw_path(norm_raw) or is_symlink_or_reparse(norm_raw):
+            raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing symlink path: '{clean}'.")
+        target_hp = HostPath(norm_raw)
+        candidates = _select_deepest_allowed_mounts(cfg, target_hp, clean)
+        if not candidates:
+            raise YscbError(ErrorCode.ACCESS_DENIED, f"No accessible VFS mount covers path '{clean}'.")
+        chosen_uri = next((m_uri for m_sch, m_uri in candidates if m_sch == "project"), candidates[0][1])
+        chosen_route = vfs_inspect_mount_route(cfg.mount_table, chosen_uri)
+        if not cfg.is_kernel and (
+            chosen_uri.scheme in _KERNEL_ONLY_SCHEMES or chosen_route.terminal_uri.scheme in _KERNEL_ONLY_SCHEMES
+        ):
+            raise YscbError(
+                ErrorCode.ACCESS_DENIED,
+                f"Module '{cfg.module_id}' is not permitted to resolve protected URI '{chosen_uri}'.",
+            )
+        _assert_scheme_read_allowed(cfg, chosen_uri, chosen_route)
+        return chosen_uri
 
 
 class KernelVfs(ScopedVfs):

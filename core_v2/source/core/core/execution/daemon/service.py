@@ -613,13 +613,22 @@ def _is_valid_sha256_hex(val: object) -> bool:
     return type(val) is str and len(val) == 64 and all(ch in "0123456789abcdefABCDEF" for ch in val)
 
 
-def _load_persisted_core_sig_cache(cache_dir: HostPath, core_root: HostPath) -> tuple[dict[str, _CoreFileSig], bool]:
+def _load_persisted_core_sig_cache(
+    cache_dir: HostPath,
+    core_root: HostPath,
+) -> tuple[dict[str, _CoreFileSig], bool, int]:
     cache_hp = try_resolve_contained_subpath(cache_dir, DAEMON_SUBDIR, _CORE_SIG_CACHE_FILENAME)
     if cache_hp is None:
-        return ({}, False)
+        return ({}, False, 0)
+    try:
+        cache_st = os.stat(str(cache_hp), follow_symlinks=False)
+    except OSError:
+        return ({}, False, 0)
+    if not stat.S_ISREG(cache_st.st_mode):
+        return ({}, False, 0)
     raw_doc = read_json_dict(cache_hp)
     if raw_doc is None:
-        return ({}, False)
+        return ({}, False, 0)
     loaded: dict[str, _CoreFileSig] = {}
     core_root_str = str(core_root)
     for rel_key, item in raw_doc.items():
@@ -640,7 +649,7 @@ def _load_persisted_core_sig_cache(cache_dir: HostPath, core_root: HostPath) -> 
         ):
             continue
         loaded[os.path.join(core_root_str, *parts)] = _CoreFileSig(m_ns, sz, ino, str(digest))
-    return (loaded, True)
+    return (loaded, True, cache_st.st_mtime_ns)
 
 
 def _save_persisted_core_sig_cache(
@@ -671,14 +680,16 @@ def _scan_core_module_tree(
     *,
     cache_dir: Optional[HostPath] = None,
     persist_cache: bool = False,
+    cached_at_ns: int = 0,
 ) -> dict[str, _CoreFileSig]:
     core_hp = try_resolve_contained_subpath(workspace_root, MODULES_DIRNAME, str(CORE_MODULE_ID))
     if core_hp is None or not os.path.isdir(str(core_hp)):
         return {}
     eff_cached: Optional[Mapping[str, _CoreFileSig]] = cached
     cache_file_existed = False
+    eff_cached_at_ns = cached_at_ns
     if eff_cached is None and cache_dir is not None:
-        eff_cached, cache_file_existed = _load_persisted_core_sig_cache(cache_dir, core_hp)
+        eff_cached, cache_file_existed, eff_cached_at_ns = _load_persisted_core_sig_cache(cache_dir, core_hp)
     now_ns = time.time_ns()
     cache_dirty = not cache_file_existed
     snap: dict[str, _CoreFileSig] = {}
@@ -694,7 +705,9 @@ def _scan_core_module_tree(
             except OSError:
                 continue
             prev = eff_cached.get(fpath) if eff_cached is not None else None
-            is_racy = (now_ns - st.st_mtime_ns) < _RACY_CLEAN_WINDOW_NS
+            is_racy = (now_ns - st.st_mtime_ns) < _RACY_CLEAN_WINDOW_NS or (
+                eff_cached_at_ns > 0 and st.st_mtime_ns >= (eff_cached_at_ns - _RACY_CLEAN_WINDOW_NS)
+            )
             if (
                 prev is not None
                 and not is_racy
@@ -790,6 +803,7 @@ class WorkspaceDaemon(InboundCallHandler):
         self._config_watcher: Optional[PollingDirectoryWatcher] = None
         self._space_watcher: Optional[PollingDirectoryWatcher] = None
         self._active_space_watch_roots: tuple[HostPath, ...] = ()
+        self._boot_core_snapshot_ns = time.time_ns()
         self._boot_core_snapshot = _scan_core_module_tree(workspace_root, cache_dir=cache_dir, persist_cache=True)
         self._dispatcher.reload_gate.register_gate_listener(self._wake_cond)
 
@@ -1446,7 +1460,14 @@ class WorkspaceDaemon(InboundCallHandler):
         return True
 
     def _has_deferred_core_mutation(self) -> bool:
-        return self._dirty.has_explicit_core_reload() or _scan_core_module_tree(self._workspace_root, cached=self._boot_core_snapshot) != self._boot_core_snapshot
+        return (
+            self._dirty.has_explicit_core_reload()
+            or _scan_core_module_tree(
+                self._workspace_root,
+                cached=self._boot_core_snapshot,
+                cached_at_ns=self._boot_core_snapshot_ns,
+            ) != self._boot_core_snapshot
+        )
 
     def _prepare_deferred_warmup_state(self) -> None:
         self._resync_modules_watcher(None)

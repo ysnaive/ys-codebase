@@ -15,7 +15,6 @@ from typing import (
     Annotated,
     Callable,
     ClassVar,
-    Final,
     Generic,
     Literal,
     Mapping,
@@ -40,6 +39,7 @@ from core.execution.runtime import (
     CliBindingSpec,
     ConcurrencyMode,
     DispatchMode,
+    Empty,
     ModuleRuntimeServices,
     PeriodicScheduleSpec,
     SecurityTier,
@@ -51,7 +51,6 @@ from core.execution.runtime import (
     build_default_module_services,
     resolve_active_module_services,
 )
-from core.filesystem.space import SpaceSpec
 from core.filesystem.storage import BlobVault, ModuleDatabase, SchemaMigration, StorageOpenOptions
 from core.filesystem.vfs import ScopedVfs
 from core.foundation import (
@@ -89,14 +88,13 @@ from core.metadata.contributes import AggregatedContributes, ExtensionPointSpec,
 TIn = TypeVar("TIn")
 TPayload = TypeVar("TPayload")
 TConfig = TypeVar("TConfig")
+TModule_co = TypeVar("TModule_co", bound="Module", covariant=True)
 _TFn = TypeVar("_TFn", bound=Callable[..., object])
 
 _ON_MIGRATE_TASK_SUFFIX = "yscb_on_migrate"
 _RESERVED_GLOBAL_CLI_FLAGS = frozenset(
     {"-h", "--help", "--json", "--cold", "--approve", "--host-dir", "--profile", "--profile-mem"}
 )
-SPACE_UPDATED_EVENT_ID_STR: Final[str] = "core.space_updated"
-SPACE_REGISTRY_CHANGED_EVENT_ID_STR: Final[str] = "core.space_registry_changed"
 
 
 def _require_token(value: str, label: str) -> str:
@@ -119,11 +117,6 @@ def _validate_storage_rel_name(raw_name: str, *, label: str, add_db_ext: bool) -
     if add_db_ext and not rel.endswith(".db"):
         rel = f"{rel}.db"
     return rel
-
-
-@dataclass(frozen=True, slots=True)
-class Empty:
-    """Empty payload or output DTO for parameterless or void tasks and events."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,62 +175,6 @@ class MigrationRequest:
     def __post_init__(self) -> None:
         if not isinstance(self.old_version, SemVer4) or not isinstance(self.new_version, SemVer4):
             raise ValueError("MigrationRequest old_version and new_version must be SemVer4 instances")
-
-
-@dataclass(frozen=True, slots=True)
-class SetDynamicSpaceInput:
-    """Input DTO for registering or updating a dynamic logical space via core.space.set_dynamic."""
-
-    owner: ModuleId
-    name: str
-    spec: SpaceSpec
-
-
-@dataclass(frozen=True, slots=True)
-class ClearDynamicSpaceInput:
-    """Input DTO for clearing one or all dynamic logical spaces via core.space.clear_dynamic."""
-
-    owner: ModuleId
-    name: Optional[str] = None
-
-
-@dataclass(frozen=True, slots=True)
-class SpaceScanInput:
-    """Input DTO for triggering an incremental space scan via core.space.scan."""
-
-    space_id: Optional[str] = None
-    force: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class SpaceAckCursorInput:
-    """CAS input DTO for advancing a space consumer cursor via core.space.ack_cursor."""
-
-    space: str
-    consumer: str
-    from_gen: int
-    to_gen: int
-    config_hash: str
-    merkle_root: str
-
-    def __post_init__(self) -> None:
-        clean_space = require_pure_str(self.space, "SpaceAckCursorInput.space", non_empty=True).strip()
-        if not clean_space:
-            raise ValueError("SpaceAckCursorInput.space cannot be blank whitespace")
-        _ = SpaceId.parse(clean_space)
-        clean_consumer = require_pure_str(self.consumer, "SpaceAckCursorInput.consumer", non_empty=True).strip()
-        if not clean_consumer:
-            raise ValueError("SpaceAckCursorInput.consumer cannot be blank whitespace")
-        fg = require_pure_int(self.from_gen, "SpaceAckCursorInput.from_gen", min_val=0)
-        tg = require_pure_int(self.to_gen, "SpaceAckCursorInput.to_gen", min_val=0)
-        if fg > tg:
-            raise ValueError(f"SpaceAckCursorInput.from_gen ({fg}) cannot exceed to_gen ({tg})")
-        cfg_h = require_pure_str(self.config_hash, "SpaceAckCursorInput.config_hash")
-        merkle = require_pure_str(self.merkle_root, "SpaceAckCursorInput.merkle_root")
-        object.__setattr__(self, "space", clean_space)
-        object.__setattr__(self, "consumer", clean_consumer)
-        object.__setattr__(self, "config_hash", cfg_h)
-        object.__setattr__(self, "merkle_root", merkle)
 
 
 @runtime_checkable
@@ -301,7 +238,7 @@ class _SdkStateRegistry:
         self._stacks: weakref.WeakKeyDictionary[ModuleEnv, LifoResourceStack] = weakref.WeakKeyDictionary()
         self._services: weakref.WeakKeyDictionary[ModuleEnv, ModuleRuntimeServices] = weakref.WeakKeyDictionary()
         self._classes: weakref.WeakKeyDictionary[type[object], _CompiledClassMeta] = weakref.WeakKeyDictionary()
-        self._group_parents: weakref.WeakKeyDictionary[TaskGroup, Module] = weakref.WeakKeyDictionary()
+        self._group_parents: weakref.WeakKeyDictionary[TaskGroup[Module], Module] = weakref.WeakKeyDictionary()
 
     @classmethod
     def instance(cls) -> _SdkStateRegistry:
@@ -348,11 +285,11 @@ class _SdkStateRegistry:
             raise ValueError(f"Unregistered TaskGroup {cls_obj.__name__}")
         return meta.entries
 
-    def bind_group_parent(self, group: TaskGroup, module: Module) -> None:
+    def bind_group_parent(self, group: TaskGroup[Module], module: Module) -> None:
         with self._lock:
             self._group_parents[group] = module
 
-    def get_group_parent(self, group: TaskGroup) -> Optional[Module]:
+    def get_group_parent(self, group: TaskGroup[Module]) -> Optional[Module]:
         with self._lock:
             return self._group_parents.get(group)
 
@@ -459,6 +396,7 @@ class _TaskDeclSpec:
     security: SecurityTier = SecurityTier.SAFE
     lock: Optional[str] = None
     concurrency: ConcurrencyMode = ConcurrencyMode.PARALLEL
+    equivalence_fn: Optional[Callable[[object], str]] = None
     timeout_ms: Optional[int] = None
 
 
@@ -826,7 +764,10 @@ def _resolve_task_metadata(module_id: ModuleId, entry: _CompiledMethodEntry, *, 
         )
     for ev in dec.events:
         if ev.mapper is None and parsed.input_type is not Empty:
-            raise ValueError(f"@on_event without mapper on {entry.method_name!r} requires a parameterless (self, ctx) task method")
+            raise ValueError(
+                f"@on_event without mapper on {entry.method_name!r} requires a parameterless (self, ctx) task method; "
+                "pass mapper=lambda batch: MyReq(...) to inspect payloads or declare (self, ctx: TaskContext)."
+            )
     subs = tuple(EventSubscriptionSpec(
         event=ev.event, payload_filter=ev.payload_filter, payload_type=ev.payload_type,
         batch_mapper=ev.mapper if ev.mapper is not None else (lambda batch: Empty() if batch else None),
@@ -834,7 +775,7 @@ def _resolve_task_metadata(module_id: ModuleId, entry: _CompiledMethodEntry, *, 
     return TaskMetadata(
         task_id=tid, input_type=parsed.input_type, output_type=parsed.output_type, exposure=exposure, cli=cli_spec,
         dispatch_mode=decl.dispatch_mode, interactive_tty=decl.interactive_tty, security_tier=decl.security,
-        resource_key=decl.lock, concurrency_mode=decl.concurrency, timeout_ms=decl.timeout_ms,
+        resource_key=decl.lock, concurrency_mode=decl.concurrency, equivalence_fn=decl.equivalence_fn, timeout_ms=decl.timeout_ms,
         subscriptions=subs, periodic=dec.periodic_spec,
     )
 
@@ -860,7 +801,7 @@ class _SdkBoundTask(Task[object, object]):
 class _SdkYscbModule(YscbModule):
     """Runtime YscbModule adapter bridging declarative Module/TaskGroup or InMemoryModule tasks."""
 
-    def __init__(self, module_id: ModuleId, bound_tasks: tuple[BoundTask, ...], module_obj: Optional[Module] = None, group_objs: tuple[TaskGroup, ...] = ()) -> None:
+    def __init__(self, module_id: ModuleId, bound_tasks: tuple[BoundTask, ...], module_obj: Optional[Module] = None, group_objs: tuple[TaskGroup[Module], ...] = ()) -> None:
         self._module_id, self._bound_tasks, self._module_obj, self._group_objs = module_id, bound_tasks, module_obj, group_objs
 
     @property
@@ -904,7 +845,7 @@ class _SdkYscbModule(YscbModule):
 class _CompiledClassMeta:
     kind: str
     module_id: Optional[ModuleId]
-    groups: tuple[type[TaskGroup], ...]
+    groups: tuple[type[TaskGroup[Module]], ...]
     entries: tuple[_CompiledMethodEntry, ...]
     is_abstract: bool = False
 
@@ -963,10 +904,10 @@ def _collect_entries_from_class(cls_obj: type[object], namespace: Mapping[str, o
     return tuple(merged.values())
 
 
-def _read_module_groups(cls_obj: type[Module], registry: _SdkStateRegistry) -> tuple[type[TaskGroup], ...]:
+def _read_module_groups(cls_obj: type[Module], registry: _SdkStateRegistry) -> tuple[type[TaskGroup[Module]], ...]:
     if not isinstance(raw_groups := cls_obj.groups, (tuple, list)):
         raise ValueError(f"{cls_obj.__name__}.groups must be a tuple of TaskGroup subclasses")
-    normalized: list[type[TaskGroup]] = []
+    normalized: list[type[TaskGroup[Module]]] = []
     for grp in raw_groups:
         grp_meta = registry.get_meta(grp) if isinstance(grp, type) else None
         if (
@@ -1172,13 +1113,23 @@ class _DeclarativeMeta(ABCMeta):
         return cls_obj
 
 
-class TaskGroup(metaclass=_DeclarativeMeta):
+class TaskGroup(Generic[TModule_co], metaclass=_DeclarativeMeta):
     """Base class for modular groups of @task, @on_event, and @periodic methods."""
 
     @property
-    def parent_module(self) -> Optional[Module]:
+    def parent_module(self) -> Optional[TModule_co]:
         """Return the owning Module instance bound during to_yscb_module(), if any."""
-        return _SdkStateRegistry.instance().get_group_parent(self)
+        return cast(Optional[TModule_co], _SdkStateRegistry.instance().get_group_parent(self))
+
+    @property
+    def module(self) -> TModule_co:
+        """Return the owning Module instance bound during to_yscb_module(), raising RuntimeError if unbound."""
+        parent = _SdkStateRegistry.instance().get_group_parent(self)
+        if parent is None:
+            raise RuntimeError(
+                f"TaskGroup {type(self).__name__!r} is not bound to a Module; attach it via Module.groups and call to_yscb_module()."
+            )
+        return cast(TModule_co, parent)
 
     def on_init(self, env: ModuleEnv) -> None:
         """Initialize group-owned resources during module startup."""
@@ -1198,7 +1149,7 @@ class Module(metaclass=_DeclarativeMeta):
     id: ClassVar[str] = ""
     aliases: ClassVar[tuple[str, ...]] = ()
     description: ClassVar[str] = ""
-    groups: ClassVar[tuple[type[TaskGroup], ...]] = ()
+    groups: ClassVar[tuple[type[TaskGroup[Module]], ...]] = ()
     config_type: ClassVar[Optional[type[object]]] = None
     extension_points: ClassVar[tuple[ExtensionPointSpec[object], ...]] = ()
 
@@ -1322,6 +1273,7 @@ def task(
     security: SecurityTier = SecurityTier.SAFE,
     lock: Optional[str] = None,
     concurrency: Optional[ConcurrencyMode] = None,
+    equivalence_fn: Optional[Callable[[TIn], str]] = None,
     timeout_ms: Optional[int] = None,
 ) -> Callable[[_TFn], _TFn]:
     """Declare an SDK and optional CLI task on a Module or TaskGroup method."""
@@ -1337,6 +1289,7 @@ def task(
         and security == SecurityTier.SAFE
         and lock is None
         and concurrency is None
+        and equivalence_fn is None
         and timeout_ms is None
     ):
         return cast(Callable[[_TFn], _TFn], _attach_decl(cast(_TFn, cli), task_spec=_TaskDeclSpec()))
@@ -1351,6 +1304,8 @@ def task(
         _ = TaskId(norm_name if "." in norm_name else f"probe.{norm_name}")
     if not isinstance(dispatch_mode, DispatchMode):
         raise ValueError(f"@task dispatch_mode must be DispatchMode, got {dispatch_mode!r}")
+    if equivalence_fn is not None and not callable(equivalence_fn):
+        raise ValueError("@task equivalence_fn must be callable or None")
     eff_sec, norm_lock, eff_conc = _normalize_exec_policy(security, lock, concurrency, owner="@task")
     spec = _TaskDeclSpec(
         cli=cli_tokens,
@@ -1364,6 +1319,7 @@ def task(
         security=eff_sec,
         lock=norm_lock,
         concurrency=eff_conc,
+        equivalence_fn=cast(Optional[Callable[[object], str]], equivalence_fn),
         timeout_ms=require_pure_int(timeout_ms, "timeout_ms", min_val=1, max_val=None) if timeout_ms is not None else None,
     )
     return lambda target: _attach_decl(target, task_spec=spec)

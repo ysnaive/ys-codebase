@@ -301,6 +301,12 @@ class ScopedVfs:
     def try_get_physical_path(self, uri: SemanticUri | str) -> Optional[HostPath]:
         ...
 
+    def glob(self, uri_dir: SemanticUri | str, pattern: str) -> tuple[SemanticUri, ...]:
+        ...
+
+    def resolve_caller_uri(self, raw_path: str, caller_cwd: HostPath) -> SemanticUri:
+        ...
+
 class UriMountTable:
 
     def __init__(self, rules: Sequence[MountRule], *, providers: Optional[Mapping[str, VfsProvider]]=None) -> None:
@@ -459,6 +465,10 @@ __all__: tuple[str, ...] = (
 5. **全覆蓋掛載最嚴格寫入守門與跨模組讀寫隔離**：
    - `UriMountTable.iter_covering_mounts(host_path)` 列舉所有實體根覆蓋目標路徑之掛載（含基礎協議與別名）；`ScopedVfs` 執行任何寫入前檢驗所有覆蓋掛載並採最嚴格權限（封堵同址工作區 `project://yscb.py` 等宿主控制檔覆寫與唯讀別名穿透，拋 `ACCESS_DENIED` 或 `READONLY_VIOLATION`）。
    - `ScopedVfs(mod)` 對 `config.local://`、`cache://`、`storage://`、`storage.local://` 僅允許寫入首段等於 `mod.value` 之子路徑（含 `@/` 展開），且對 `config.local://` 與 `storage.local://`（含別名終點與跨協議覆蓋路徑）同步強制跨模組**讀取隔離**（涵蓋 `read_bytes`/`read_text`/`read_json`/`open_read`/`exists`/`stat`/`iter_entries` 與 `try_get_physical_path`，特例保留 `try_get_physical_path(SemanticUri("storage.local", ""))` 空相對路徑供 `storage` 模組驗界）；違規一律拋 `YscbError(ErrorCode.ACCESS_DENIED)`。
+
+6. **`ScopedVfs.glob` 與 `ScopedVfs.resolve_caller_uri` 路徑橋接守門**：
+   - `glob(uri_dir, pattern)` 採純標準庫 POSIX 分段比對（`*` 不跨 `/`、`**` 跨 0..N 層、否定字元類 `[!...]` 永不跨 `/`、非法語法與 `re.error` 轉拋 `ValueError`），僅回傳排序後之存在檔案且 100% 繼承跨模組讀取隔離。
+   - `resolve_caller_uri(raw_path, caller_cwd)` 於建構 `HostPath` 前即驗證未折疊與折疊後原始路徑之符號連結（命中拋 `SECURITY_GATED`），並對全部覆蓋掛載先算最深層（同深優先 `project://` 勝過共掛 `yscb.host://`），最深層或別名終點命中非共掛 `_KERNEL_ONLY_SCHEMES` 或他模組讀隔離區一律拋 `ACCESS_DENIED`，杜絕 `.yscb/` 降級外洩。
 
 ---
 

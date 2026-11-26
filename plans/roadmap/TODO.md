@@ -3,7 +3,7 @@
 > 主題：專案輕量級待辦與技術債帳本  
 > 更新日期：2026-11-25  
 > 狀態：Active  
-> 最後分配編號：32  
+> 最後分配編號：34  
 > 模型：Gemini 4 Neon (XHigh)  
 
 ---
@@ -64,3 +64,13 @@
 - **建立日期**：2026-11-25
 - **目標範疇**：`core_v2/source/core/core/surface/bootstrap/system_module.py`
 - **備忘與解法要點**：在 3+1 JSONL 日誌與 ImTK 風格 Profiler 引擎落地後，視需要補齊 yscb diag perf/logs/inspect/bundle（含跨流 trace_id 串查、Chrome Trace 匯出、即時鎖與 Worker 現場檢視、一鍵脫敏問題回報包）
+
+### [TODO-33] Core 2.0 Daemon 活體執行現場檢視 (in-flight tasks/locks/waiters/bg_errors)
+- **建立日期**：2026-11-25
+- **目標範疇**：`core_v2/execution/daemon, core_v2/execution/runtime`
+- **備忘與解法要點**：擴充 DaemonStatusSnapshot 與控制查詢，讓線上卡住或慢跑時可即時看到進行中 trace_id/task_id/耗時、resource_key 持有者與 SERIALIZE/COALESCE/QUIESCE 佇列等候明細及近期背景錯誤內容
+
+### [TODO-34] Core 2.0 CLI 熱轉發路徑瘦身與 Bootstrap/Launcher 耗時剖析優化
+- **建立日期**：2026-11-25
+- **目標範疇**：`core_v2/yscb.py, core_v2/surface/cli, core_v2/surface/bootstrap`
+- **備忘與解法要點**：拆解並縮減 Bootstrap/Launcher (~500ms) 啟動黑箱，並讓純轉發線上 Daemon RPC 之 CLI 請求繞過冷 CreateKernel 與 SpaceDb 初始化 (省去 ~165ms 熱啟動稅)

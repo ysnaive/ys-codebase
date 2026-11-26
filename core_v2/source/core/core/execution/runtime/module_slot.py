@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from abc import ABC
 import builtins
 import dataclasses
 from collections import deque
@@ -18,7 +19,7 @@ import sys
 import threading
 import time
 import types
-from typing import Callable, ClassVar, Mapping, Optional, Sequence, TypeVar, cast, overload
+from typing import Callable, ClassVar, Mapping, Optional, Protocol, Sequence, TypeVar, cast, overload
 import uuid
 
 from core.execution.event import CausalLineage, EventMetadata, TaskLocalOutbox
@@ -28,13 +29,16 @@ from core.execution.runtime.contracts import (
     CORE_MODULE_ID,
     BoundTask,
     ClientRoutingPolicy,
+    Empty,
     ExecutionPriority,
     ModuleDescriptor,
     ModuleRuntimeServices,
     TaskContext,
     TaskOutcome,
+    TaskRef,
     TaskRouteSpec,
     YscbModule,
+    YscbModuleConvertible,
     decode_outcome_as,
 )
 from core.execution.runtime.services import (
@@ -71,6 +75,7 @@ from core.foundation.primitives import (
     require_non_none,
 )
 
+TIn = TypeVar("TIn")
 TOut = TypeVar("TOut")
 TPayload = TypeVar("TPayload")
 TConfig = TypeVar("TConfig")
@@ -460,18 +465,50 @@ class ProtectedModuleLoader:
                 py_mod.__package__ = parent_pkg
                 sys.modules[entry_mod_name] = py_mod
                 loader.exec_module(py_mod)
-            factory = py_mod.__dict__.get("create_module")
-            if not callable(factory):
-                raise YscbError(
-                    ErrorCode.MODULE_DEGRADED,
-                    f"Module '{descriptor.module_id}' must define create_module() -> YscbModule.",
-                )
-            instance = factory()
-            if not isinstance(instance, YscbModule):
-                raise YscbError(
-                    ErrorCode.MODULE_DEGRADED,
-                    f"create_module() in '{descriptor.module_id}' did not return a YscbModule.",
-                )
+            if "create_module" in py_mod.__dict__:
+                factory = py_mod.__dict__.get("create_module")
+                if not callable(factory):
+                    raise YscbError(
+                        ErrorCode.MODULE_DEGRADED,
+                        f"Module '{descriptor.module_id}' defines non-callable create_module.",
+                    )
+                instance = factory()
+                if not isinstance(instance, YscbModule):
+                    raise YscbError(
+                        ErrorCode.MODULE_DEGRADED,
+                        f"create_module() in '{descriptor.module_id}' did not return a YscbModule.",
+                    )
+            else:
+                seen_cls: set[type[object]] = set()
+                candidates: list[type[object]] = []
+                for raw_obj in py_mod.__dict__.values():
+                    if not isinstance(raw_obj, type) or raw_obj in seen_cls:
+                        continue
+                    seen_cls.add(raw_obj)
+                    if raw_obj.__module__ != entry_mod_name or raw_obj is YscbModule:
+                        continue
+                    if ABC in raw_obj.__bases__ or Protocol in raw_obj.__mro__ or inspect.isabstract(raw_obj):
+                        continue
+                    is_direct = issubclass(raw_obj, YscbModule)
+                    is_conv = any(
+                        callable(dict(inspect.getmembers_static(base)).get("to_yscb_module"))
+                        for base in raw_obj.__mro__
+                        if base is not object
+                    )
+                    if is_direct or is_conv:
+                        candidates.append(raw_obj)
+                if len(candidates) != 1:
+                    raise YscbError(
+                        ErrorCode.MODULE_DEGRADED,
+                        f"Module '{descriptor.module_id}' must define create_module() or exactly one concrete Module subclass (found {len(candidates)}).",
+                    )
+                cand_obj = candidates[0]()
+                instance = cand_obj if isinstance(cand_obj, YscbModule) else cast(YscbModuleConvertible, cand_obj).to_yscb_module()
+                if not isinstance(instance, YscbModule):
+                    raise YscbError(
+                        ErrorCode.MODULE_DEGRADED,
+                        f"Auto-discovered module class '{candidates[0].__name__}' in '{descriptor.module_id}' did not produce a YscbModule.",
+                    )
             return LoadedModuleArtifact(instance=instance, package_key=entry_mod_name)
         except BaseException:
             self.cleanup_package(unique_pkg)
@@ -504,7 +541,7 @@ class ProtectedModuleLoader:
 
 
 class _StepTaskContext(TaskContext):
-    """Concrete per-step TaskContext forwarding emit, emit_imm, invoke_task, progress, and module services."""
+    """Concrete per-step TaskContext forwarding emit, emit_imm, call, progress, and module services."""
 
     def __init__(
         self,
@@ -524,6 +561,10 @@ class _StepTaskContext(TaskContext):
         if self._cached_services is None:
             self._cached_services = self._services_getter()
         return self._cached_services
+
+    @property
+    def module_id(self) -> ModuleId:
+        return self._svc().module_id
 
     @property
     def workspace_root(self) -> HostPath:
@@ -592,10 +633,30 @@ class _StepTaskContext(TaskContext):
         self._spec.callbacks.on_emit_imm(event_meta.event_id, raw_obj, imm_lin, strict)
 
     @overload
-    def invoke_task(
+    def call(
         self,
-        task_id: TaskId | str,
-        input_obj: object,
+        target: TaskRef[Empty, TOut],
+        input_obj: Optional[Empty] = None,
+        *,
+        target_workspace: Optional[HostPath] = None,
+        routing_policy: Optional[ClientRoutingPolicy] = None,
+    ) -> TaskOutcome[TOut]: ...
+
+    @overload
+    def call(
+        self,
+        target: TaskRef[TIn, TOut],
+        input_obj: TIn,
+        *,
+        target_workspace: Optional[HostPath] = None,
+        routing_policy: Optional[ClientRoutingPolicy] = None,
+    ) -> TaskOutcome[TOut]: ...
+
+    @overload
+    def call(
+        self,
+        target: TaskId | str,
+        input_obj: object = None,
         *,
         output_type: type[TOut],
         target_workspace: Optional[HostPath] = None,
@@ -603,34 +664,95 @@ class _StepTaskContext(TaskContext):
     ) -> TaskOutcome[TOut]: ...
 
     @overload
-    def invoke_task(
+    def call(
         self,
-        task_id: TaskId | str,
-        input_obj: object,
+        target: TaskId | str,
+        input_obj: object = None,
         *,
         output_type: None = None,
         target_workspace: Optional[HostPath] = None,
         routing_policy: Optional[ClientRoutingPolicy] = None,
     ) -> TaskOutcome[JsonValue]: ...
 
-    def invoke_task(
-        self, task_id: TaskId | str, input_obj: object, *, output_type: Optional[type[TOut]] = None,
-        target_workspace: Optional[HostPath] = None, routing_policy: Optional[ClientRoutingPolicy] = None,
+    def call(
+        self,
+        target: TaskRef[TIn, TOut] | TaskId | str,
+        input_obj: object = None,
+        *,
+        output_type: Optional[type[TOut]] = None,
+        target_workspace: Optional[HostPath] = None,
+        routing_policy: Optional[ClientRoutingPolicy] = None,
     ) -> TaskOutcome[TOut] | TaskOutcome[JsonValue]:
-        try:
-            tid = task_id if isinstance(task_id, TaskId) else TaskId(task_id)
-        except ValueError as exc:
-            return TaskOutcome(ok=False, error=ErrorDetail(ErrorCode.CODEC_VALIDATION_FAILED, safe_exception_summary(exc), source_task=str(self._spec.task_id)))
+        eff_out_type: Optional[type[object]] = output_type
+        if isinstance(target, TaskRef):
+            tid = target.task_id
+            if output_type is not None and output_type != target.output_type:
+                return TaskOutcome(
+                    ok=False,
+                    error=ErrorDetail(
+                        ErrorCode.CODEC_VALIDATION_FAILED,
+                        f"Conflicting output_type {output_type!r} for TaskRef '{tid}' expecting {target.output_type!r}.",
+                        source_task=str(tid),
+                    ),
+                )
+            eff_out_type = target.output_type
+            if input_obj is None:
+                if target.input_type is Empty:
+                    encoded_in: JsonObject = {}
+                else:
+                    return TaskOutcome(
+                        ok=False,
+                        error=ErrorDetail(
+                            ErrorCode.CODEC_VALIDATION_FAILED,
+                            f"TaskRef '{tid}' requires input of type {target.input_type!r}.",
+                            source_task=str(tid),
+                        ),
+                    )
+            else:
+                try:
+                    encoded_in = DataclassCodec.encode_object(input_obj, expected_type=target.input_type)
+                except YscbError as exc:
+                    return TaskOutcome(ok=False, error=exc.detail.with_fallback_task(str(tid)))
+        else:
+            try:
+                tid = target if isinstance(target, TaskId) else TaskId(target)
+            except ValueError as exc:
+                return TaskOutcome(
+                    ok=False,
+                    error=ErrorDetail(
+                        ErrorCode.CODEC_VALIDATION_FAILED,
+                        safe_exception_summary(exc),
+                        source_task=str(self._spec.task_id),
+                    ),
+                )
+            try:
+                encoded_in = {} if input_obj is None else DataclassCodec.encode_object(input_obj)
+            except YscbError as exc:
+                return TaskOutcome(ok=False, error=exc.detail.with_fallback_task(str(tid)))
         if target_workspace is not None and not isinstance(target_workspace, HostPath):
-            return TaskOutcome(ok=False, error=ErrorDetail(ErrorCode.CODEC_VALIDATION_FAILED, f"target_workspace must be HostPath or None, got {target_workspace!r}", source_task=str(tid)))
+            return TaskOutcome(
+                ok=False,
+                error=ErrorDetail(
+                    ErrorCode.CODEC_VALIDATION_FAILED,
+                    f"target_workspace must be HostPath or None, got {target_workspace!r}",
+                    source_task=str(tid),
+                ),
+            )
         if routing_policy is not None and not isinstance(routing_policy, ClientRoutingPolicy):
-            return TaskOutcome(ok=False, error=ErrorDetail(ErrorCode.CODEC_VALIDATION_FAILED, f"routing_policy must be ClientRoutingPolicy or None, got {routing_policy!r}", source_task=str(tid)))
-        try:
-            encoded_in = DataclassCodec.encode_object(input_obj)
-        except YscbError as exc:
-            return TaskOutcome(ok=False, error=exc.detail.with_fallback_task(str(tid)))
+            return TaskOutcome(
+                ok=False,
+                error=ErrorDetail(
+                    ErrorCode.CODEC_VALIDATION_FAILED,
+                    f"routing_policy must be ClientRoutingPolicy or None, got {routing_policy!r}",
+                    source_task=str(tid),
+                ),
+            )
         raw_out = self._spec.callbacks.on_invoke_task(tid, encoded_in, target_workspace, routing_policy)
-        return decode_outcome_as(raw_out, output_type, source_task=str(tid)) if output_type is not None else raw_out
+        return (
+            cast(TaskOutcome[TOut], decode_outcome_as(raw_out, eff_out_type, source_task=str(tid)))
+            if eff_out_type is not None
+            else raw_out
+        )
 
     def report_progress(self, progress: ProgressEvent) -> None:
         encoded = DataclassCodec.encode_object(progress, expected_type=ProgressEvent)

@@ -69,7 +69,8 @@ from core.surface.cli.caller_mode import (
 from core.surface.cli.help_renderer import HelpRenderer
 from core.surface.cli.index import IndexedTaskEntry, ModuleTasksIndex, WorkspaceTasksIndexCache
 from core.surface.cli.parser import CliRouteKind, extract_contextual_global_flags, resolve_cli_invocation
-from core.surface.sdk import ExitCodeProvider, format_output
+from core.surface.sdk import ExitCodeProvider
+from core.surface.sdk.advanced import format_output
 
 CLI_DEFAULT_PROVIDER_URL: Final[str] = "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases"
 CLI_DEFAULT_SELF_UPDATE_URL: Final[str] = "https://raw.githubusercontent.com/ysnaive/ys-codebase/releases/yscb.py"

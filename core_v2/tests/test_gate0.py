@@ -40,6 +40,7 @@ import core.packaging.installer as installer_pkg
 import core.surface.bootstrap as bootstrap_pkg
 import core.surface.cli as cli_pkg
 import core.surface.sdk as sdk_pkg
+import core.surface.sdk.advanced as sdk_adv_pkg
 from tests import CORE_SRC_ROOT, CORE_V2_ROOT, TESTS_ROOT
 from tests._harness import EMBEDDED_MODULE_TEMPLATES, check
 
@@ -53,6 +54,7 @@ _IMMUTABLE_GLOBAL_CALLS: Final[frozenset[str]] = frozenset(
         "ModuleId",
         "TaskId",
         "EventId",
+        "EventMetadata",
         "min",
         "max",
         "float",
@@ -993,6 +995,7 @@ _PUBLIC_DOMAIN_ROOTS: Final[dict[str, object]] = {
     "core.execution.runtime": runtime_pkg,
     "core.execution.daemon": daemon_pkg,
     "core.surface.sdk": sdk_pkg,
+    "core.surface.sdk.advanced": sdk_adv_pkg,
     "core.surface.cli": cli_pkg,
     "core.surface.bootstrap": bootstrap_pkg,
 }
@@ -1872,6 +1875,7 @@ def _verify_execution_living_specs_parity() -> None:
         ("execution/runtime.md", runtime_pkg),
         ("execution/daemon.md", daemon_pkg),
         ("surface/sdk.md", sdk_pkg),
+        ("surface/sdk_advanced.md", sdk_adv_pkg),
         ("surface/cli.md", cli_pkg),
         ("surface/composition_and_bootstrap.md", bootstrap_pkg),
     )
@@ -1995,6 +1999,7 @@ def _verify_cross_package_public_exports(py_files: Sequence[Path]) -> None:
         ("core.execution.rpc", rpc_pkg.__all__),
         ("core.execution.runtime", runtime_pkg.__all__),
         ("core.execution.daemon", daemon_pkg.__all__),
+        ("core.surface.sdk.advanced", sdk_adv_pkg.__all__),
         ("core.surface.sdk", sdk_pkg.__all__),
         ("core.surface.cli", cli_pkg.__all__),
         ("core.surface.bootstrap", bootstrap_pkg.__all__),
@@ -2008,7 +2013,7 @@ def _verify_cross_package_public_exports(py_files: Sequence[Path]) -> None:
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
                 target_fac = next((f for f in facades if node.module == f or node.module.startswith(f + ".")), "")
-                if target_fac and target_fac != own_fac:
+                if target_fac and target_fac != own_fac and not own_fac.startswith(target_fac + "."):
                     for al in node.names:
                         check(
                             al.name in pub_all[target_fac],

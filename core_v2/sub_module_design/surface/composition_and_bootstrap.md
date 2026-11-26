@@ -90,9 +90,12 @@
 5. **跨版資料遷移 `Task` 派發**：依 `DeploymentReport.transitions` 中 `is_upgrade == True` 且目標模組宣告 `@on_migrate` 者，經 `RuntimeDispatcher` 派發內部遷移任務（帶 `MigrationRequest(old_version, new_version)`）；**任一遷移失敗立即觸發 `SnapshotVault.restore_snapshot()` 與鏡像重物化回滾**。
 6. **收尾同步與通知**：重建 `.cache/tasks.index.json`、重載 `ContributesAggregator` / `SpaceRegistry`、執行 `GitignoreMaterializer.sync()` 與 `ReadonlyPolicy.sync_files()`、執行 `EnvGarbageCollector.collect()`、發射 `MODULE_INSTALLED_EVENT_ID` / `WORKSPACE_RELOADED_EVENT_ID`，於 `CONTROL_RESUME` 喚醒 Daemon 後依序釋放中層 `tx_orchestrator.lock` 與最外層 `installer.lock`。
 
-### 2.2 供下游模組呼叫之內核空間寫入系統 `Task`
-- `core.space.set_dynamic(owner, name, spec)` / `core.space.clear_dynamic(owner, name=None)`（`SDK_ONLY`）：檢核呼叫來源模組僅能修改自身 `owner`，寫入 `storage.local://core/space/state.db` 後立即觸發 `.gitignore` / `/readonly` 同步並發射 `core.space_registry_changed`。
-- `core.space.ack_cursor`（`CLI_AND_SDK` / `fs ack-cursor`）：接收 `SpaceAckCursorInput` 六欄 CAS 參數薄封裝 `SpaceScanner.ack_cursor()`，精準推進單一 consumer 游標。
+### 2.2 供下游模組呼叫之內核空間系統 `Task`（`SpaceClient` 後端）
+- **無鎖併發讀任務（`SDK_ONLY`, `ConcurrencyMode.PARALLEL`）**：`core.space.list(owner=None)`、`core.space.status(space_id)`、`core.space.files(space_id, pattern=None)`、`core.space.diff(space_id, consumer)`，直接透過 `SpaceRegistry` 與 SQLite WAL 快照回傳強型別 DTO/Tuple。
+- **單點互斥寫入／掃描任務（`lock="core:space_state"`）**：
+  - `core.space.scan(space_id=None, force=False)`（`SDK_ONLY`）：單點鎖下執行增量掃描並發射 `SPACE_UPDATED_EVENT`。
+  - `core.space.set_dynamic(owner, name, spec)` / `core.space.clear_dynamic(owner, name=None)`（`SDK_ONLY`）：檢核呼叫來源模組僅能修改自身 `owner`，寫入 `storage.local://core/space/state.db` 後立即觸發 `.gitignore` / `/readonly` 同步並發射 `SPACE_REGISTRY_CHANGED_EVENT`。
+  - `core.space.ack_cursor`（`CLI_AND_SDK` / `fs ack-cursor`）：接收 `SpaceAckCursorInput` 六欄 CAS 參數薄封裝 `SpaceScanner.ack_cursor()`，精準推進單一 consumer 游標。
 
 ---
 
@@ -134,9 +137,9 @@ from typing import Annotated, BinaryIO, Callable, ClassVar, Final, Generic, Lite
 from core.execution.daemon import DaemonQuiesceControl, DaemonReloadControl, DaemonResumeControl, DaemonRunState, DaemonStopControl, DaemonWatcherConfig, SingleFlightDaemonSpawner, WorkspaceDaemon, query_daemon_control
 from core.execution.lifecycle import ContainerState
 from core.execution.rpc import DAEMON_SUBDIR, DaemonConnectionConfig, FrameKind, call_ephemeral_daemon_rpc, probe_daemon_endpoint, read_daemon_endpoint_file
-from core.execution.runtime import BoundTask, CONFIG_CHANGED_EVENT_ID, CORE_MODULE_ID, CallPropagationContext, CallerSurface, ClientRoutingPolicy, ConfigViewPort, DEFAULT_CACHE_DIRNAME, DaemonRpcInvokeReply, DispatchMode, DispatcherHostOptions, ExecutionPriority, InvokeRequest, LOCKS_SUBDIR, MODULES_DIRNAME, MODULE_INSTALLED_EVENT_ID, MODULE_REMOVING_EVENT_ID, ModuleDescriptor, ModuleProviderPort, ModuleRuntimeServices, ProtectedModuleLoader, RuntimeDispatcher, SecurityTier, SelfMutationScope, TaskContext, TaskExposure, TaskMetadata, TaskOutcome, TaskRouteSpec, WORKSPACE_RELOADED_EVENT_ID, YscbModule, build_workspace_module_services_factory, resolve_active_call_tree_id, resolve_active_caller_module
+from core.execution.runtime import BoundTask, CONFIG_CHANGED_EVENT, CORE_MODULE_ID, CallPropagationContext, CallerSurface, ClientRoutingPolicy, ConfigChangedEventPayload, ConfigViewPort, DEFAULT_CACHE_DIRNAME, DaemonRpcInvokeReply, DispatchMode, DispatcherHostOptions, Empty, ExecutionPriority, InvokeRequest, LOCKS_SUBDIR, MODULES_DIRNAME, MODULE_INSTALLED_EVENT, MODULE_REMOVING_EVENT, ModuleDescriptor, ModuleLifecycleEventPayload, ModuleProviderPort, ModuleRuntimeServices, ProtectedModuleLoader, RuntimeDispatcher, SPACE_REGISTRY_CHANGED_EVENT, SPACE_UPDATED_EVENT, SecurityTier, SelfMutationScope, SpaceUpdatedEventPayload, TaskContext, TaskExposure, TaskMetadata, TaskOutcome, TaskRouteSpec, WORKSPACE_RELOADED_EVENT, YscbModule, build_workspace_module_services_factory, resolve_active_call_tree_id, resolve_active_caller_module
 from core.filesystem.fs import FileLock, MAX_JSON_FILE_BYTES, assert_no_symlink_raw_path, atomic_write_json, has_symlink_raw_path, is_symlink_or_reparse, read_json_dict, read_nofollow_regular_bytes, resolve_contained_subpath, try_resolve_contained_subpath
-from core.filesystem.space import GitignoreMaterializer, HashPolicy, SpaceDiffBatch, SpaceMatchExplain, SpaceRegistry, SpaceScanner, SpaceSpec
+from core.filesystem.space import GitignoreMaterializer, HashPolicy, SpaceDiffBatch, SpaceFileEntry, SpaceMatchExplain, SpaceRegistry, SpaceScanner, SpaceSpec, SpaceStatusSnapshot
 from core.filesystem.storage import ModuleDatabase
 from core.filesystem.vfs import KernelVfs, MountRule, ReadonlyPolicy, UriMountTable, VfsCapabilities, VfsEchoGuard, VfsHub, build_standard_mount_rules
 from core.foundation import CancellationToken, DataclassCodec, ErrorCode, ErrorDetail, FlightLogConfig, FlightLogRouter, HostPath, INT64_MAX, INT64_MIN, IS_WINDOWS, JsonObject, JsonValue, LocaleCatalog, ModuleId, MutableJsonObject, NullProfiler, Profiler, ProfilerNodeSnapshot, ProfilerRingBuffer, SemanticUri, SnapshotGen, SpaceId, SpacePath, TEST_SANDBOX_ENV_KEY, TaskId, YscbError, build_isolated_python_env, guard_standard_streams, is_process_alive, is_public_env_truthy, read_public_env_value, require_non_none, require_pure_bool, require_pure_int, require_pure_str, safe_real_to_float, strict_parse_json_object
@@ -145,7 +148,8 @@ from core.metadata.contributes import AggregatedContributes, ContributesAggregat
 from core.packaging.env import EnvGarbageCollector, EnvHealthProbe, EnvSpec, ImmutableVenvPool, acquire_env_lease_for_python, touch_env_last_used
 from core.packaging.installer import DeploymentReport, OfflinePackageEngine, PackageRequest, ProviderClient, PurgeLevel
 from core.surface.cli import CLI_DEFAULT_PROVIDER_URL, CLI_DEFAULT_SELF_UPDATE_URL, CliKernelSession, IndexedTaskEntry, ModuleTasksIndex, WorkspaceTasksIndexCache, compile_tasks_index, register_cli_kernel_factory
-from core.surface.sdk import Arg, ClearDynamicSpaceInput, Empty, ExitCodeProvider, HumanRenderable, InMemoryModule, MigrationRequest, Module, Option, SPACE_REGISTRY_CHANGED_EVENT_ID_STR, SPACE_UPDATED_EVENT_ID_STR, SetDynamicSpaceInput, SpaceAckCursorInput, SpaceScanInput, TaskGroup, define_event, format_output, task
+from core.surface.sdk import Arg, ExitCodeProvider, HumanRenderable, MigrationRequest, Module, Option, TaskGroup, task
+from core.surface.sdk.advanced import InMemoryModule, format_output
 
 DEFAULT_PROVIDER_URL: Final[str] = CLI_DEFAULT_PROVIDER_URL
 DEFAULT_SELF_UPDATE_URL: Final[str] = CLI_DEFAULT_SELF_UPDATE_URL
@@ -160,8 +164,9 @@ def unbind_system_kernel(yscb_root: HostPath, kernel: SystemKernelPort) -> None:
     ...
 
 @dataclass(frozen=True, slots=True)
-class ConfigChangedEventPayload:
-    changed_paths: tuple[str, ...] = ()
+class ClearDynamicSpaceInput:
+    owner: ModuleId
+    name: Optional[str] = None
 
 @dataclass(frozen=True, slots=True)
 class ConfigChangedTriggerInput:
@@ -244,6 +249,18 @@ class CoreSystemModule(Module):
         ...
 
     def clear_dynamic_space(self, req: ClearDynamicSpaceInput, ctx: TaskContext) -> int:
+        ...
+
+    def list_spaces(self, req: SpaceListInput, ctx: TaskContext) -> tuple[SpaceSpec, ...]:
+        ...
+
+    def get_space_status(self, req: SpaceStatusInput, ctx: TaskContext) -> SpaceStatusSnapshot:
+        ...
+
+    def list_space_files(self, req: SpaceFilesInput, ctx: TaskContext) -> tuple[SpaceFileEntry, ...]:
+        ...
+
+    def diff_space(self, req: SpaceDiffInput, ctx: TaskContext) -> SpaceDiffBatch:
         ...
 
     def scan_space(self, req: SpaceScanInput, ctx: TaskContext) -> tuple[SpaceDiffBatch, ...]:
@@ -362,10 +379,6 @@ class FsSpaceOptInput:
 @dataclass(frozen=True, slots=True)
 class FsSpacesInput:
     owner: Annotated[Optional[str], Option(summary='Filter spaces by owner module ID')] = None
-
-@dataclass(frozen=True, slots=True)
-class ModuleLifecycleEventPayload:
-    modules: tuple[str, ...] = ()
 
 class ModuleProviderAdapter(ModuleProviderPort):
 
@@ -497,8 +510,42 @@ class SpaceGitignoreTaskGroup(TaskGroup):
         ...
 
 @dataclass(frozen=True, slots=True)
-class SpaceUpdatedEventPayload:
-    spaces: tuple[str, ...] = ()
+class SetDynamicSpaceInput:
+    owner: ModuleId
+    name: str
+    spec: SpaceSpec
+
+@dataclass(frozen=True, slots=True)
+class SpaceAckCursorInput:
+    space: str
+    consumer: str
+    from_gen: int
+    to_gen: int
+    config_hash: str
+    merkle_root: str
+
+@dataclass(frozen=True, slots=True)
+class SpaceDiffInput:
+    space_id: str
+    consumer: str
+
+@dataclass(frozen=True, slots=True)
+class SpaceFilesInput:
+    space_id: str
+    pattern: Optional[str] = None
+
+@dataclass(frozen=True, slots=True)
+class SpaceListInput:
+    owner: Optional[str] = None
+
+@dataclass(frozen=True, slots=True)
+class SpaceScanInput:
+    space_id: Optional[str] = None
+    force: bool = False
+
+@dataclass(frozen=True, slots=True)
+class SpaceStatusInput:
+    space_id: str
 
 class SystemKernelPort(Protocol):
 
@@ -961,12 +1008,14 @@ __all__: tuple[str, ...] = (
     "PackageRollbackInput",
     "PackageTaskGroup",
     "PackageUpdateInput",
-    "SPACE_REGISTRY_CHANGED_EVENT_ID_STR",
-    "SPACE_UPDATED_EVENT_ID_STR",
     "SetDynamicSpaceInput",
     "SpaceAckCursorInput",
+    "SpaceDiffInput",
+    "SpaceFilesInput",
     "SpaceGitignoreTaskGroup",
+    "SpaceListInput",
     "SpaceScanInput",
+    "SpaceStatusInput",
     "SpaceUpdatedEventPayload",
     "SystemKernelPort",
     "SystemResultView",

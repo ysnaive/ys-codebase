@@ -12,15 +12,16 @@
 `core.execution.runtime` 的最高準則為：**將全系統所有功能派發、冷熱路由、環境隔離執行與資源並發協調問題 100% 封閉鎖死在本模組單點維護，且以根因正交模型取代過渡補丁**。
 
 ### 1.1 萬物皆 `Task`、顯式傳播組合與零逆向依賴邊界
-1. **唯一公開執行單元**：全生態系所有可被 CLI、SDK、跨模組調用、事件、定時排程或升級遷移觸發的能力，**100% 實作為 `Task[TIn, TOut]` 並附帶強型別 `TaskMetadata`**。支援磁碟 `.modules/` 與無磁碟 `DispatcherHostOptions.in_memory_modules` 雙軌註冊；即便兩模組共置於同一 `venv_group` 子進程，跨模組呼叫 `ctx.invoke_task()` / `ctx.invoke_typed()` **仍必須經由主控端 `RuntimeDispatcher` 協調**。
+1. **唯一公開執行單元**：全生態系所有可被 CLI、SDK、跨模組調用、事件、定時排程或升級遷移觸發的能力，**100% 實作為 `Task[TIn, TOut]` 並附帶強型別 `TaskMetadata`**。支援磁碟 `.modules/` 與無磁碟 `DispatcherHostOptions.in_memory_modules` 雙軌註冊；即便兩模組共置於同一 `venv_group` 子進程，跨模組呼叫 `ctx.call()` **仍必須經由主控端 `RuntimeDispatcher` 協調**。
 2. **顯式 11 欄位傳播上下文（`CallPropagationContext`）與跨 Tier 服務注入（`ModuleRuntimeServices`）**：將跨單步/跨進程傳遞之呼叫狀態（含 `profile_mem`）收斂為 11 欄位不可變值物件；透過 `DispatcherHostOptions.module_services_factory` 與 `WorkerBootstrapConfig.host_dir` 對稱注入 `ScopedVfs`、`StructuredLogger`（寫入 `.cache/logs/modules/<module>.jsonl` 並關聯 `trace_id`/`span_id`）、`LocaleCatalog`、`ConfigStore`、`ContributesAggregator` 與 `Profiler`。
 3. **頂層單工作區單飛合併（`StepFlight`）與全域 `QUIESCE` 單屏障（`LifecycleReloadGate`）**：
    - **頂層同工作區 `StepFlight`**：`COALESCE` 僅於非事件鏈之頂層同工作區熱呼叫啟用對稱單飛合併；任何巢狀呼叫與事件鏈呼叫自動降級為 `SERIALIZE`。
    - **全域單一 `QUIESCE` 屏障**：`LifecycleReloadGate` 以全域 `quiesce_epoch` 與單一租約門檻統一控管停止/重載與租約續期／逾時自癒恢復。
-4. **純淨 `sys.meta_path` 隔離套件與子模組載入（`module_slot.py`）**：透過 `_ScopedModuleFinder` 與直接呼叫幀限定之 `importlib.import_module` 轉發，零全域 `sys.path` / `sys.modules` 頂層污染。
-5. **與 `execution.daemon` 零逆向耦合**：`runtime` 透過 `execution.rpc` 唯讀探測線上 Daemon，並透過外層注入的 `DaemonSpawner(Protocol)` 按需背景拉起 Daemon，**`runtime` 內部 0 行匯入 `execution.daemon`**。
-6. **消費端擁有之 `ModuleProviderPort` 契約**：`ModuleProviderPort` 及 `ModuleDescriptor` / `TaskRouteSpec` 由 `execution.runtime` 定義並擁有。
-7. **跨進程 `SERIALIZE` 單跳 `.pin` 免死鎖重入與 4 階安全分級守門**：`SecurityTier.CRITICAL` 與 `SecurityTier.GATED` 強制要求 `approval_scope`，且 `CRITICAL` 額外阻斷任何非頂層前景呼叫。
+4. **純淨 `sys.meta_path` 隔離套件與零樣板模組載入（`module_slot.py`）**：透過 `_ScopedModuleFinder` 與直接呼叫幀限定之 `importlib.import_module` 轉發，零全域 `sys.path` / `sys.modules` 頂層污染；`ProtectedModuleLoader.load_module_artifact` 優先呼叫 `create_module()`，若缺席則自動偵測入口檔自身定義之唯一具象非抽象模組子類（排除 `ABC` 與 `Protocol`）。
+5. **一等空間門面、受管子行程與強型別系統事件（`contracts.py`）**：`TaskContext` 提供 `module_id`、`spaces: SpaceClient`（透明路由至 `core.space.*`）、`resolve_uri`、`run_process`（復用 `ManagedProcessTree(capture_output=True)` 與隔離環境、保留 `TASK_PREEMPTED` 搶佔語意）及重載統一之 `call(TaskRef | TaskId | str, ...)`，並統一承載 `Empty`、3 組事件 Payload 與 6 組強型別系統 `EventMetadata`（其中 `MODULE_REMOVING_EVENT` 為 `ORDERED`）。
+6. **與 `execution.daemon` 零逆向耦合**：`runtime` 透過 `execution.rpc` 唯讀探測線上 Daemon，並透過外層注入的 `DaemonSpawner(Protocol)` 按需背景拉起 Daemon，**`runtime` 內部 0 行匯入 `execution.daemon`**。
+7. **消費端擁有之 `ModuleProviderPort` 契約**：`ModuleProviderPort` 及 `ModuleDescriptor` / `TaskRouteSpec` 由 `execution.runtime` 定義並擁有。
+8. **跨進程 `SERIALIZE` 單跳 `.pin` 免死鎖重入與 4 階安全分級守門**：`SecurityTier.CRITICAL` 與 `SecurityTier.GATED` 強制要求 `approval_scope`，且 `CRITICAL` 額外阻斷任何非頂層前景呼叫。
 
 ## 2. 核心契約規格 (`contracts.py` & `services.py` 公開快照)
 
@@ -29,11 +30,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Generic, Mapping, Optional, Protocol, Sequence, TypeVar, overload
-from core.execution.event import BoundEventSubscription, CausalLineage, EventMetadata
+from core.execution.event import BoundEventSubscription, CausalLineage, EventMetadata, EventOrdering
+from core.filesystem.space import SpaceDiffBatch, SpaceFileEntry, SpaceSpec, SpaceStatusSnapshot
 from core.filesystem.vfs import ScopedVfs, VfsHub
 from core.foundation.errors import ErrorDetail
 from core.foundation.observability import CancellationToken, LocaleCatalog, ProgressEvent, StructuredLogger
-from core.foundation.primitives import EventId, HostPath, JsonObject, JsonPrimitive, JsonValue, ModuleId, TaskId
+from core.foundation.primitives import EventId, HostPath, JsonObject, JsonPrimitive, JsonValue, ModuleId, SemanticUri, SpaceId, TaskId
 from core.foundation.profiler import NullProfiler, Profiler
 from core.metadata.config import ConfigStore
 from core.metadata.contributes import AggregatedContributes, ContributesAggregator
@@ -59,6 +61,102 @@ CONFIG_CHANGED_EVENT_ID: EventId = EventId("core.config_changed")
 WORKSPACE_RELOADED_EVENT_ID: EventId = EventId("core.workspace_reloaded")
 MODULE_INSTALLED_EVENT_ID: EventId = EventId("core.module_installed")
 MODULE_REMOVING_EVENT_ID: EventId = EventId("core.module_removing")
+SPACE_UPDATED_EVENT_ID: EventId = EventId("core.space_updated")
+SPACE_REGISTRY_CHANGED_EVENT_ID: EventId = EventId("core.space_registry_changed")
+
+
+@dataclass(frozen=True, slots=True)
+class Empty:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class ModuleLifecycleEventPayload:
+    modules: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigChangedEventPayload:
+    changed_paths: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SpaceUpdatedEventPayload:
+    spaces: tuple[str, ...] = ()
+
+
+SPACE_UPDATED_EVENT: EventMetadata[SpaceUpdatedEventPayload] = EventMetadata(
+    event_id=SPACE_UPDATED_EVENT_ID,
+    payload_type=SpaceUpdatedEventPayload,
+    ordering=EventOrdering.UNORDERED,
+    description="Emitted when one or more logical spaces detect file deltas.",
+)
+SPACE_REGISTRY_CHANGED_EVENT: EventMetadata[SpaceUpdatedEventPayload] = EventMetadata(
+    event_id=SPACE_REGISTRY_CHANGED_EVENT_ID,
+    payload_type=SpaceUpdatedEventPayload,
+    ordering=EventOrdering.UNORDERED,
+    description="Emitted when dynamic logical space registrations change.",
+)
+CONFIG_CHANGED_EVENT: EventMetadata[ConfigChangedEventPayload] = EventMetadata(
+    event_id=CONFIG_CHANGED_EVENT_ID,
+    payload_type=ConfigChangedEventPayload,
+    ordering=EventOrdering.UNORDERED,
+    description="Emitted when workspace configuration files change.",
+)
+MODULE_INSTALLED_EVENT: EventMetadata[ModuleLifecycleEventPayload] = EventMetadata(
+    event_id=MODULE_INSTALLED_EVENT_ID,
+    payload_type=ModuleLifecycleEventPayload,
+    ordering=EventOrdering.UNORDERED,
+    description="Emitted after one or more modules are installed or updated.",
+)
+MODULE_REMOVING_EVENT: EventMetadata[ModuleLifecycleEventPayload] = EventMetadata(
+    event_id=MODULE_REMOVING_EVENT_ID,
+    payload_type=ModuleLifecycleEventPayload,
+    ordering=EventOrdering.ORDERED,
+    description="Ordered pre-removal hook emitted before uninstalling modules.",
+)
+WORKSPACE_RELOADED_EVENT: EventMetadata[Empty] = EventMetadata(
+    event_id=WORKSPACE_RELOADED_EVENT_ID,
+    payload_type=Empty,
+    ordering=EventOrdering.UNORDERED,
+    description="Emitted after workspace metadata and modules reload.",
+)
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class TaskRef(Generic[TIn, TOut]):
+    task_id: TaskId
+    input_type: type[TIn]
+    output_type: type[TOut]
+    def __init__(self, task_id: TaskId | str, input_type: type[TIn], output_type: type[TOut]) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessResult:
+    returncode: int
+    stdout: str
+    stderr: str
+    duration_ms: float
+    timed_out: bool = False
+    truncated: bool = False
+    @property
+    def ok(self) -> bool: ...
+
+
+class YscbModuleConvertible(Protocol):
+    def to_yscb_module(self) -> YscbModule: ...
+
+
+class SpaceClient:
+    def __init__(self, ctx: TaskContext) -> None: ...
+    def list_spaces(self, *, owner: Optional[str] = None) -> tuple[SpaceSpec, ...]: ...
+    def status(self, space_id: SpaceId | str) -> SpaceStatusSnapshot: ...
+    def list_files(self, space_id: SpaceId | str, *, pattern: Optional[str] = None) -> tuple[SpaceFileEntry, ...]: ...
+    def diff(self, space_id: SpaceId | str, *, consumer: Optional[str] = None) -> SpaceDiffBatch: ...
+    def scan(self, space_id: Optional[SpaceId | str] = None, *, force: bool = False) -> tuple[SpaceDiffBatch, ...]: ...
+    def ack_cursor(self, batch: SpaceDiffBatch, *, consumer: Optional[str] = None) -> bool: ...
+    def set_dynamic(self, name: str, spec: SpaceSpec) -> bool: ...
+    def clear_dynamic(self, name: Optional[str] = None) -> int: ...
 
 
 def sanitize_caller_env(raw_env: Mapping[str, str]) -> dict[str, str]: ...
@@ -254,6 +352,9 @@ def resolve_active_call_tree_id() -> Optional[str]: ...
 class TaskContext(ABC):
     @property
     @abstractmethod
+    def module_id(self) -> ModuleId: ...
+    @property
+    @abstractmethod
     def workspace_root(self) -> HostPath: ...
     @property
     @abstractmethod
@@ -286,25 +387,43 @@ class TaskContext(ABC):
     def emit(self, event_meta: EventMetadata[TPayload], payload: TPayload) -> None: ...
     @abstractmethod
     def emit_imm(self, event_meta: EventMetadata[TPayload], payload: TPayload, *, strict: bool = False) -> None: ...
+    @property
+    def spaces(self) -> SpaceClient: ...
+    def resolve_uri(self, raw_path: str) -> SemanticUri: ...
+    def run_process(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Optional[SemanticUri | HostPath | str] = None,
+        env: Optional[Mapping[str, str]] = None,
+        timeout_sec: float = 60.0,
+        max_output_bytes: int = 1048576,
+    ) -> ProcessResult: ...
     @overload
-    def invoke_task(
-        self, task_id: TaskId | str, input_obj: object, *, output_type: type[TOut],
+    def call(
+        self, target: TaskRef[Empty, TOut], input_obj: Optional[Empty] = None, *,
         target_workspace: Optional[HostPath] = None, routing_policy: Optional[ClientRoutingPolicy] = None,
     ) -> TaskOutcome[TOut]: ...
     @overload
-    def invoke_task(
-        self, task_id: TaskId | str, input_obj: object, *, output_type: None = None,
+    def call(
+        self, target: TaskRef[TIn, TOut], input_obj: TIn, *,
+        target_workspace: Optional[HostPath] = None, routing_policy: Optional[ClientRoutingPolicy] = None,
+    ) -> TaskOutcome[TOut]: ...
+    @overload
+    def call(
+        self, target: TaskId | str, input_obj: object = None, *, output_type: type[TOut],
+        target_workspace: Optional[HostPath] = None, routing_policy: Optional[ClientRoutingPolicy] = None,
+    ) -> TaskOutcome[TOut]: ...
+    @overload
+    def call(
+        self, target: TaskId | str, input_obj: object = None, *, output_type: None = None,
         target_workspace: Optional[HostPath] = None, routing_policy: Optional[ClientRoutingPolicy] = None,
     ) -> TaskOutcome[JsonValue]: ...
     @abstractmethod
-    def invoke_task(
-        self, task_id: TaskId | str, input_obj: object, *, output_type: Optional[type[TOut]] = None,
+    def call(
+        self, target: TaskRef[TIn, TOut] | TaskId | str, input_obj: object = None, *, output_type: Optional[type[TOut]] = None,
         target_workspace: Optional[HostPath] = None, routing_policy: Optional[ClientRoutingPolicy] = None,
     ) -> TaskOutcome[TOut] | TaskOutcome[JsonValue]: ...
-    def invoke_typed(
-        self, task_meta: TaskMetadata[TIn, TOut], req: TIn, *,
-        target_workspace: Optional[HostPath] = None, routing_policy: Optional[ClientRoutingPolicy] = None,
-    ) -> TaskOutcome[TOut]: ...
     @abstractmethod
     def report_progress(self, progress: ProgressEvent) -> None: ...
 

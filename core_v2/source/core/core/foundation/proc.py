@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Callable, ClassVar, Final, Mapping, Optional, Sequence
+from typing import BinaryIO, Callable, ClassVar, Final, Mapping, Optional, Sequence, cast
 import uuid
 
 from core.foundation.errors import safe_exception_summary
@@ -986,15 +986,15 @@ def _build_managed_child_env(
     if token_hex:
         prev_chain = env_map.get(TREE_ID_ENV_KEY, "").strip(",")
         env_map[TREE_ID_ENV_KEY] = f"{prev_chain},{token_hex}" if prev_chain else token_hex
-    if sys.dont_write_bytecode:
-        env_map.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-    if sys.flags.optimize > 0:
-        env_map.setdefault("PYTHONOPTIMIZE", str(sys.flags.optimize))
+    if sys.dont_write_bytecode and not any(k.upper() == "PYTHONDONTWRITEBYTECODE" for k in env_map):
+        env_map["PYTHONDONTWRITEBYTECODE"] = "1"
+    if sys.flags.optimize > 0 and not any(k.upper() == "PYTHONOPTIMIZE" for k in env_map):
+        env_map["PYTHONOPTIMIZE"] = str(sys.flags.optimize)
     return env_map
 
 
 class ManagedProcessTree:
-    """Supervises a child OS process group/Job Object with PID-reuse protection and optional TTY inheritance."""
+    """Supervises a child OS process group/Job Object with PID-reuse protection, optional TTY inheritance, or pipe capture."""
 
     def __init__(
         self,
@@ -1003,13 +1003,19 @@ class ManagedProcessTree:
         cwd: HostPath,
         env: Optional[Mapping[str, str]] = None,
         inherit_tty: bool = False,
+        capture_output: bool = False,
     ) -> None:
         require_pure_bool(inherit_tty, "ManagedProcessTree.inherit_tty")
+        require_pure_bool(capture_output, "ManagedProcessTree.capture_output")
+        if inherit_tty and capture_output:
+            raise ValueError("ManagedProcessTree cannot combine inherit_tty=True and capture_output=True.")
         clean_argv = _validate_proc_argv_and_cwd(argv, cwd, "ManagedProcessTree")
         self._owns_process_group = not inherit_tty
         tok_hex = "" if IS_WINDOWS else uuid.uuid4().hex
         self._tree_token_bytes = tok_hex.encode("ascii")
-        stream_target = None if inherit_tty else subprocess.DEVNULL
+        stdin_target = None if inherit_tty else subprocess.DEVNULL
+        out_target = subprocess.PIPE if capture_output else (None if inherit_tty else subprocess.DEVNULL)
+        popen_bufsize = 0 if capture_output else -1
         env_map = _build_managed_child_env(env, tok_hex)
         if IS_WINDOWS:
             flags = 0x00000004 | (
@@ -1019,25 +1025,44 @@ class ManagedProcessTree:
                 clean_argv,
                 cwd=str(cwd),
                 env=env_map,
-                stdin=stream_target,
-                stdout=stream_target,
-                stderr=stream_target,
+                stdin=stdin_target,
+                stdout=out_target,
+                stderr=out_target,
+                bufsize=popen_bufsize,
                 close_fds=True,
                 creationflags=flags,
             )
-            self._job_handle = _create_win32_kill_on_close_job(self._proc.pid)
-            if self._job_handle is None:
-                self._proc.kill()
-                self._proc.wait()
-                raise OSError("Failed to bind child process to Win32 kill-on-close Job Object.")
+            try:
+                self._job_handle = _create_win32_kill_on_close_job(self._proc.pid)
+                if self._job_handle is None:
+                    raise OSError("Failed to bind child process to Win32 kill-on-close Job Object.")
+            except BaseException:
+                try:
+                    try:
+                        self._proc.kill()
+                    except OSError:
+                        pass
+                    try:
+                        self._proc.wait(timeout=3.0)
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
+                finally:
+                    for pipe in (self._proc.stdout, self._proc.stderr):
+                        if pipe is not None:
+                            try:
+                                pipe.close()
+                            except OSError:
+                                pass
+                raise
         else:
             self._proc = subprocess.Popen(
                 clean_argv,
                 cwd=str(cwd),
                 env=env_map,
-                stdin=stream_target,
-                stdout=stream_target,
-                stderr=stream_target,
+                stdin=stdin_target,
+                stdout=out_target,
+                stderr=out_target,
+                bufsize=popen_bufsize,
                 close_fds=True,
                 start_new_session=(not inherit_tty),
             )
@@ -1052,11 +1077,33 @@ class ManagedProcessTree:
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         _ = (exc_type, exc, tb)
-        self.terminate_tree()
+        try:
+            self.terminate_tree()
+        finally:
+            self.close_pipes()
 
     @property
     def pid(self) -> int:
         return self._proc.pid
+
+    @property
+    def stdout_pipe(self) -> Optional[BinaryIO]:
+        """Return the readable binary stdout pipe when capture_output=True, else None."""
+        return cast(Optional[BinaryIO], self._proc.stdout)
+
+    @property
+    def stderr_pipe(self) -> Optional[BinaryIO]:
+        """Return the readable binary stderr pipe when capture_output=True, else None."""
+        return cast(Optional[BinaryIO], self._proc.stderr)
+
+    def close_pipes(self) -> None:
+        """Idempotently close any captured stdout/stderr pipes to prevent OS handle leaks."""
+        for pipe in (self._proc.stdout, self._proc.stderr):
+            if pipe is not None:
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
 
     def snapshot_descendants(self) -> None:
         """Capture live descendant PIDs before closing IPC channels that trigger root exit."""

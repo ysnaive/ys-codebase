@@ -31,7 +31,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
-from typing import Callable, ClassVar, Final, ForwardRef, Generic, NoReturn, Optional, Protocol, TextIO, TypeAlias, TypeVar, overload
+from typing import BinaryIO, Callable, ClassVar, Final, ForwardRef, Generic, NoReturn, Optional, Protocol, TextIO, TypeAlias, TypeVar, overload
 
 _T = TypeVar("_T")
 T = TypeVar("T")
@@ -553,7 +553,7 @@ class LogRotator:
 
 class ManagedProcessTree:
 
-    def __init__(self, argv: Sequence[str], *, cwd: HostPath, env: Optional[Mapping[str, str]]=None, inherit_tty: bool=False) -> None:
+    def __init__(self, argv: Sequence[str], *, cwd: HostPath, env: Optional[Mapping[str, str]]=None, inherit_tty: bool=False, capture_output: bool=False) -> None:
         ...
 
     def __enter__(self) -> ManagedProcessTree:
@@ -564,6 +564,17 @@ class ManagedProcessTree:
 
     @property
     def pid(self) -> int:
+        ...
+
+    @property
+    def stdout_pipe(self) -> Optional[BinaryIO]:
+        ...
+
+    @property
+    def stderr_pipe(self) -> Optional[BinaryIO]:
+        ...
+
+    def close_pipes(self) -> None:
         ...
 
     def snapshot_descendants(self) -> None:

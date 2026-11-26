@@ -2246,6 +2246,109 @@ def _verify_storage_and_space_profiler_hooks(suite_root: Path) -> None:
         check(null_scanner.ack_cursor("project/pkg_src", "null-consumer", null_batch) is True)
 
 
+def _verify_scoped_vfs_glob_and_resolve_caller_uri(base_root: Path) -> None:
+    g_root = base_root / "scoped_glob_resolve"
+    proj_dir = g_root / "repo"
+    yscb_dir = proj_dir / "ys_codebase"
+    outside_dir = g_root / "outside_area"
+    (proj_dir / "sub" / "deep").mkdir(parents=True, exist_ok=True)
+    (yscb_dir / ".modules" / "kdb").mkdir(parents=True, exist_ok=True)
+    (yscb_dir / ".storage.local" / "mod_a").mkdir(parents=True, exist_ok=True)
+    (yscb_dir / ".storage.local" / "mod_b").mkdir(parents=True, exist_ok=True)
+    outside_dir.mkdir(parents=True, exist_ok=True)
+
+    (proj_dir / "top.py").write_text("x = 1\n", encoding="utf-8")
+    (proj_dir / "note1.txt").write_text("n1\n", encoding="utf-8")
+    (proj_dir / "sub" / "mid.py").write_text("y = 2\n", encoding="utf-8")
+    (proj_dir / "sub" / "a.txt").write_text("a\n", encoding="utf-8")
+    (proj_dir / "sub" / "deep" / "leaf.py").write_text("z = 3\n", encoding="utf-8")
+    (proj_dir / "sub" / "deep" / "b.txt").write_text("b\n", encoding="utf-8")
+    (yscb_dir / ".modules" / "kdb" / "secret.mod").write_text("s = 1\n", encoding="utf-8")
+    (yscb_dir / ".storage.local" / "mod_a" / "own.dat").write_text("own\n", encoding="utf-8")
+    (yscb_dir / ".storage.local" / "mod_b" / "other.dat").write_text("other\n", encoding="utf-8")
+    (outside_dir / "escape.txt").write_text("esc\n", encoding="utf-8")
+
+    rules = build_standard_mount_rules(
+        host_dir=HostPath(proj_dir),
+        yscb_root=HostPath(yscb_dir),
+        project_root=HostPath(proj_dir),
+    )
+    hub = VfsHub(UriMountTable(rules))
+    vfs_a = hub.for_module(ModuleId("mod_a"))
+
+    top_py = vfs_a.glob("project://", "*.py")
+    check(top_py == (SemanticUri("project", "top.py"),), f"Single-star glob crossed dir: {top_py}")
+    all_py = vfs_a.glob("project://", "**/*.py")
+    check(
+        all_py == (
+            SemanticUri("project", "sub/deep/leaf.py"),
+            SemanticUri("project", "sub/mid.py"),
+            SemanticUri("project", "top.py"),
+        ),
+        f"Recursive glob mismatch: {all_py}",
+    )
+    all_dat = vfs_a.glob("project://", "**/*.dat")
+    check(
+        all_dat == (SemanticUri("project", "ys_codebase/.storage.local/mod_a/own.dat"),),
+        f"Foreign storage.local leaked through project:// glob: {all_dat}",
+    )
+    sub_txt = vfs_a.glob("project://sub", "**/*.txt")
+    check(
+        sub_txt == (SemanticUri("project", "sub/a.txt"), SemanticUri("project", "sub/deep/b.txt")),
+        f"Subdir glob mismatch: {sub_txt}",
+    )
+    cls_match = vfs_a.glob("project://", "note[0-9].t?t")
+    check(cls_match == (SemanticUri("project", "note1.txt"),), f"Char class glob mismatch: {cls_match}")
+    check(vfs_a.glob("project://", "[!t]op.py") == (), "Negated char class must exclude 't'")
+    check(vfs_a.glob("project://", "[^]n]ote1.txt") == (SemanticUri("project", "note1.txt"),), "Literal ^/] char class failed")
+    check(vfs_a.glob("project://", "[a--z]op.py") == (), "Set-op chars inside glob class must not emit FutureWarning")
+    check(vfs_a.glob("project://no_such_dir", "**/*.py") == (), "Missing dir glob must return ()")
+    check(vfs_a.glob("project://top.py", "*.py") == (), "File URI glob must return ()")
+    own_st = vfs_a.glob("storage.local://@", "**")
+    check(own_st == (SemanticUri("storage.local", "mod_a/own.dat"),), f"Own storage glob failed: {own_st}")
+    expect_yscb_code(lambda: vfs_a.glob("storage.local://mod_b", "**"), ErrorCode.ACCESS_DENIED)
+    for bad_pat in ("", "/abs/*.py", "../up/*.py", "a\\b.py", "a//b.py", "a/./b.py", "a\x00b", "[z-a].py"):
+        assert_raises_val_error(lambda p=bad_pat: vfs_a.glob("project://", p))
+
+    cwd_sub = HostPath(proj_dir / "sub")
+    check(vfs_a.resolve_caller_uri("./mid.py", cwd_sub) == SemanticUri("project", "sub/mid.py"))
+    check(vfs_a.resolve_caller_uri("../top.py", cwd_sub) == SemanticUri("project", "top.py"))
+    check(vfs_a.resolve_caller_uri(str(proj_dir / "sub" / "deep" / "leaf.py"), cwd_sub) == SemanticUri("project", "sub/deep/leaf.py"))
+    check(vfs_a.resolve_caller_uri("project://sub/mid.py", cwd_sub) == SemanticUri("project", "sub/mid.py"))
+    check(vfs_a.resolve_caller_uri("storage.local://@/own.dat", cwd_sub) == SemanticUri("storage.local", "mod_a/own.dat"))
+
+    for bad_path in ("", "   ", "a\x00b", "a\nb", "C:rel_path", "sub/foo:stream"):
+        assert_raises_val_error(lambda bp=bad_path: vfs_a.resolve_caller_uri(bp, cwd_sub))
+    for denied in (
+        "../../outside_area/escape.txt",
+        str(outside_dir / "escape.txt"),
+        "yscb://.modules/kdb/secret.mod",
+        "module://kdb/secret.mod",
+        "project://ys_codebase/.modules/kdb/secret.mod",
+        str(yscb_dir / ".modules" / "kdb" / "secret.mod"),
+        "storage.local://mod_b/other.dat",
+        str(yscb_dir / ".storage.local" / "mod_b" / "other.dat"),
+        "bogus://foo.py",
+    ):
+        expect_yscb_code(lambda d=denied: vfs_a.resolve_caller_uri(d, cwd_sub), ErrorCode.ACCESS_DENIED)
+
+    if os.name != "nt":
+        sym_file = proj_dir / "sym_top.py"
+        sym_dir = proj_dir / "sym_sub"
+        os.symlink(proj_dir / "top.py", sym_file)
+        os.symlink(proj_dir / "sub", sym_dir)
+        try:
+            expect_yscb_code(lambda: vfs_a.resolve_caller_uri("sym_top.py", HostPath(proj_dir)), ErrorCode.SECURITY_GATED)
+            expect_yscb_code(lambda: vfs_a.resolve_caller_uri("project://sym_top.py", HostPath(proj_dir)), ErrorCode.SECURITY_GATED)
+            expect_yscb_code(
+                lambda: vfs_a.resolve_caller_uri("sym_sub/../top.py", HostPath(proj_dir)),
+                ErrorCode.SECURITY_GATED,
+            )
+        finally:
+            sym_file.unlink(missing_ok=True)
+            sym_dir.unlink(missing_ok=True)
+
+
 def _execute_all_domain2_checks(base_root: Path) -> None:
     log("[VFS-STORAGE-SPACE] Verifying VFS 15-scheme capability matrix, !undefined, and URI_CYCLE...")
     _verify_vfs_scheme_matrix_and_mount_guards(base_root)
@@ -2260,6 +2363,8 @@ def _execute_all_domain2_checks(base_root: Path) -> None:
     _verify_cross_mount_boundaries_and_space_algebra_invariants(base_root)
     _verify_covering_mounts_open_read_and_local_isolation(base_root)
     _verify_sqlite_error_classification_and_uri_globs(base_root)
+    log("[VFS-STORAGE-SPACE] Verifying ScopedVfs.glob and resolve_caller_uri security boundaries...")
+    _verify_scoped_vfs_glob_and_resolve_caller_uri(base_root)
     log("[VFS-STORAGE-SPACE] Verifying optional Profiler hooks on ModuleDatabase and SpaceScanner...")
     _verify_storage_and_space_profiler_hooks(base_root)
     log("[VFS-STORAGE-SPACE] All Domain 2 checks passed.")

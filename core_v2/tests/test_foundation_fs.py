@@ -1771,6 +1771,34 @@ def _verify_execution_rpc(tmp_root: Path) -> None:
                 pass
 
 
+def _verify_managed_process_tree_capture_output(suite_root: Path) -> None:
+    cap_dir = HostPath(suite_root / "proc_capture_probe")
+    cap_dir.path.mkdir(parents=True, exist_ok=True)
+    assert_raises_val_error(
+        lambda: ManagedProcessTree(
+            [sys.executable, "-c", "pass"],
+            cwd=cap_dir,
+            inherit_tty=True,
+            capture_output=True,
+        )
+    )
+    with ManagedProcessTree(
+        [sys.executable, "-c", "import sys; sys.stdout.write('cap_out'); sys.stderr.write('cap_err')"],
+        cwd=cap_dir,
+        capture_output=True,
+    ) as tree:
+        check(tree.stdout_pipe is not None and tree.stderr_pipe is not None, "Expected captured pipes")
+        raw_out = tree.stdout_pipe.read()
+        raw_err = tree.stderr_pipe.read()
+        deadline = time.monotonic() + 5.0
+        while tree.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        check(tree.poll() == 0, f"Expected clean child exit, got {tree.poll()}")
+        check(raw_out == b"cap_out" and raw_err == b"cap_err", f"Unexpected pipe capture: {raw_out!r} / {raw_err!r}")
+        tree.close_pipes()
+        tree.close_pipes()
+
+
 def run_foundation_fs_suite(tmp_root: Path) -> None:
     """Run all domain unit checks for foundation, filesystem.fs, and execution.{event,lifecycle,rpc}."""
     suite_root = tmp_root / "domain_foundation_fs"
@@ -1783,6 +1811,7 @@ def run_foundation_fs_suite(tmp_root: Path) -> None:
     _verify_observability_rotator_locale_telemetry(suite_root)
     log("[FOUNDATION-FS] Verifying foundation primitives, errors, signals, and process trees...")
     _verify_foundation_primitives_errors_proc(suite_root)
+    _verify_managed_process_tree_capture_output(suite_root)
     log("[FOUNDATION-FS] Verifying filesystem atomic I/O, containment, locks, and watcher...")
     _verify_filesystem_fs(suite_root)
     log("[FOUNDATION-FS] Verifying execution event queue, lifecycle, and RPC channels...")

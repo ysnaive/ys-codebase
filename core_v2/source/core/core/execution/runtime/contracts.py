@@ -8,22 +8,28 @@ from dataclasses import dataclass, field
 from enum import Enum
 import math
 import re
+import threading
+import time
 from types import MappingProxyType
-from typing import Callable, Generic, Mapping, Optional, Protocol, Sequence, TypeVar, get_origin, overload
+from typing import BinaryIO, Callable, Generic, Mapping, Optional, Protocol, Sequence, TypeVar, cast, get_args, get_origin, overload
 
 from core.execution.event import (
     BoundEventSubscription,
     CausalLineage,
     EventMetadata,
+    EventOrdering,
     normalize_payload_filter,
 )
+from core.filesystem.space import SpaceDiffBatch, SpaceFileEntry, SpaceSpec, SpaceStatusSnapshot
 from core.filesystem.vfs import ScopedVfs
 from core.foundation.codec import DataclassCodec
-from core.foundation.errors import ErrorCode, ErrorDetail, YscbError, safe_exception_summary
+from core.foundation.errors import ErrorCode, ErrorDetail, TaskCancelledException, YscbError, safe_exception_summary
 from core.foundation.observability import CancellationToken, LocaleCatalog, ProgressEvent, StructuredLogger
+from core.foundation.proc import ManagedProcessTree, build_isolated_python_env
 from core.foundation.profiler import NullProfiler, Profiler
 from core.foundation.primitives import (
     INT64_MAX,
+    IS_WINDOWS,
     MAX_PARSE_JSON_DEPTH,
     PRIVATE_ENV_PREFIX,
     PYTHON_LAUNCHER_HIJACK_ENV_KEYS,
@@ -34,6 +40,8 @@ from core.foundation.primitives import (
     JsonPrimitive,
     JsonValue,
     ModuleId,
+    SemanticUri,
+    SpaceId,
     TaskId,
     clone_strict_json_object,
     is_valid_type_annotation,
@@ -89,6 +97,135 @@ CONFIG_CHANGED_EVENT_ID: EventId = EventId("core.config_changed")
 WORKSPACE_RELOADED_EVENT_ID: EventId = EventId("core.workspace_reloaded")
 MODULE_INSTALLED_EVENT_ID: EventId = EventId("core.module_installed")
 MODULE_REMOVING_EVENT_ID: EventId = EventId("core.module_removing")
+SPACE_UPDATED_EVENT_ID: EventId = EventId("core.space_updated")
+SPACE_REGISTRY_CHANGED_EVENT_ID: EventId = EventId("core.space_registry_changed")
+
+
+@dataclass(frozen=True, slots=True)
+class Empty:
+    """Empty payload or output DTO for parameterless or void tasks and events."""
+
+
+@dataclass(frozen=True, slots=True)
+class ModuleLifecycleEventPayload:
+    """Event payload emitted on core.module_removing and core.module_installed."""
+
+    modules: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigChangedEventPayload:
+    """Event payload emitted on core.config_changed."""
+
+    changed_paths: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SpaceUpdatedEventPayload:
+    """Event payload emitted on core.space_updated and core.space_registry_changed."""
+
+    spaces: tuple[str, ...] = ()
+
+
+SPACE_UPDATED_EVENT: EventMetadata[SpaceUpdatedEventPayload] = EventMetadata(
+    event_id=SPACE_UPDATED_EVENT_ID,
+    payload_type=SpaceUpdatedEventPayload,
+    ordering=EventOrdering.UNORDERED,
+    description="Emitted when one or more logical spaces detect file deltas.",
+)
+SPACE_REGISTRY_CHANGED_EVENT: EventMetadata[SpaceUpdatedEventPayload] = EventMetadata(
+    event_id=SPACE_REGISTRY_CHANGED_EVENT_ID,
+    payload_type=SpaceUpdatedEventPayload,
+    ordering=EventOrdering.UNORDERED,
+    description="Emitted when dynamic logical space registrations change.",
+)
+CONFIG_CHANGED_EVENT: EventMetadata[ConfigChangedEventPayload] = EventMetadata(
+    event_id=CONFIG_CHANGED_EVENT_ID,
+    payload_type=ConfigChangedEventPayload,
+    ordering=EventOrdering.UNORDERED,
+    description="Emitted when workspace configuration files change.",
+)
+MODULE_INSTALLED_EVENT: EventMetadata[ModuleLifecycleEventPayload] = EventMetadata(
+    event_id=MODULE_INSTALLED_EVENT_ID,
+    payload_type=ModuleLifecycleEventPayload,
+    ordering=EventOrdering.UNORDERED,
+    description="Emitted after one or more modules are installed or updated.",
+)
+MODULE_REMOVING_EVENT: EventMetadata[ModuleLifecycleEventPayload] = EventMetadata(
+    event_id=MODULE_REMOVING_EVENT_ID,
+    payload_type=ModuleLifecycleEventPayload,
+    ordering=EventOrdering.ORDERED,
+    description="Ordered pre-removal hook emitted before uninstalling modules.",
+)
+WORKSPACE_RELOADED_EVENT: EventMetadata[Empty] = EventMetadata(
+    event_id=WORKSPACE_RELOADED_EVENT_ID,
+    payload_type=Empty,
+    ordering=EventOrdering.UNORDERED,
+    description="Emitted after workspace metadata and modules reload.",
+)
+
+
+def _contains_any_type_contract(tp: object) -> bool:
+    if repr(tp) == "typing.Any":
+        return True
+    origin = get_origin(tp)
+    if origin is None:
+        return False
+    if repr(origin) == "typing.Any":
+        return True
+    return any(_contains_any_type_contract(a) for a in get_args(tp))
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class TaskRef(Generic[TIn, TOut]):
+    """Lightweight immutable typed cross-module task reference binding task_id, input_type, and output_type."""
+
+    task_id: TaskId
+    input_type: type[TIn]
+    output_type: type[TOut]
+
+    def __init__(self, task_id: TaskId | str, input_type: type[TIn], output_type: type[TOut]) -> None:
+        tid = task_id if isinstance(task_id, TaskId) else TaskId(require_pure_str(task_id, "TaskRef.task_id", non_empty=True))
+        for tp_val, label in ((input_type, "input_type"), (output_type, "output_type")):
+            if tp_val is type(None) or _contains_any_type_contract(tp_val) or not is_valid_type_annotation(tp_val):
+                raise ValueError(f"TaskRef.{label} must be a valid strict non-Any type annotation, got {tp_val!r}")
+        object.__setattr__(self, "task_id", tid)
+        object.__setattr__(self, "input_type", input_type)
+        object.__setattr__(self, "output_type", output_type)
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessResult:
+    """Immutable captured outcome from TaskContext.run_process()."""
+
+    returncode: int
+    stdout: str
+    stderr: str
+    duration_ms: float
+    timed_out: bool = False
+    truncated: bool = False
+
+    def __post_init__(self) -> None:
+        require_pure_int(self.returncode, "ProcessResult.returncode", min_val=None, max_val=None)
+        require_pure_str(self.stdout, "ProcessResult.stdout")
+        require_pure_str(self.stderr, "ProcessResult.stderr")
+        dur_f = safe_real_to_float(self.duration_ms, label="ProcessResult.duration_ms")
+        if not math.isfinite(dur_f) or dur_f < 0.0:
+            raise ValueError(f"ProcessResult.duration_ms must be finite and >= 0, got {self.duration_ms!r}")
+        object.__setattr__(self, "duration_ms", dur_f)
+        require_pure_bool(self.timed_out, "ProcessResult.timed_out")
+        require_pure_bool(self.truncated, "ProcessResult.truncated")
+
+    @property
+    def ok(self) -> bool:
+        """Return True iff the subprocess exited cleanly with returncode 0 and did not time out."""
+        return (not self.timed_out) and self.returncode == 0
+
+
+class YscbModuleConvertible(Protocol):
+    """Structural protocol for declarative Module instances convertible into runtime YscbModule."""
+
+    def to_yscb_module(self) -> YscbModule: ...
 
 _ALLOWED_ENV_PREFIXES: tuple[str, ...] = ("LC_", "YSCB_")
 _FORBIDDEN_ENV_UPPER: frozenset[str] = frozenset(
@@ -606,8 +743,208 @@ class ModuleRuntimeServices:
         _validate_profiler_contract(self.profiler, "ModuleRuntimeServices")
 
 
+def _unwrap_space_outcome(outcome: TaskOutcome[TOut]) -> TOut:
+    if not outcome.ok:
+        if outcome.error is not None:
+            outcome.error.raise_as_exception()
+        raise YscbError(ErrorCode.BUSINESS_FAILURE, "Space operation failed without error detail.")
+    return cast(TOut, outcome.value)
+
+
+def _normalize_space_id_str(space_id: SpaceId | str, label: str = "space_id") -> str:
+    if isinstance(space_id, SpaceId):
+        return str(space_id)
+    return str(SpaceId.parse(require_pure_str(space_id, label, non_empty=True)))
+
+
+class SpaceClient:
+    """First-class module facade over Core 2.0 logical spaces backed transparently by core.space.* system tasks."""
+
+    __slots__ = ("_ctx",)
+
+    def __init__(self, ctx: TaskContext) -> None:
+        if not isinstance(ctx, TaskContext):
+            raise ValueError(f"SpaceClient requires TaskContext, got {ctx!r}")
+        self._ctx = ctx
+
+    def list_spaces(self, *, owner: Optional[str] = None) -> tuple[SpaceSpec, ...]:
+        """List registered logical spaces, optionally filtered by owner module ID."""
+        if owner is not None:
+            require_pure_str(owner, "owner", non_empty=True)
+        out = self._ctx.call("core.space.list", {"owner": owner}, output_type=tuple[SpaceSpec, ...])
+        return _unwrap_space_outcome(out)
+
+    def status(self, space_id: SpaceId | str) -> SpaceStatusSnapshot:
+        """Return SQLite WAL generation, Merkle root, and consumer cursors for a logical space."""
+        sid = _normalize_space_id_str(space_id)
+        out = self._ctx.call("core.space.status", {"space_id": sid}, output_type=SpaceStatusSnapshot)
+        return _unwrap_space_outcome(out)
+
+    def list_files(self, space_id: SpaceId | str, *, pattern: Optional[str] = None) -> tuple[SpaceFileEntry, ...]:
+        """Enumerate matched files inside a logical space with optional glob pattern filtering."""
+        sid = _normalize_space_id_str(space_id)
+        if pattern is not None:
+            require_pure_str(pattern, "pattern", non_empty=True)
+        out = self._ctx.call(
+            "core.space.files",
+            {"space_id": sid, "pattern": pattern},
+            output_type=tuple[SpaceFileEntry, ...],
+        )
+        return _unwrap_space_outcome(out)
+
+    def diff(self, space_id: SpaceId | str, *, consumer: Optional[str] = None) -> SpaceDiffBatch:
+        """Read unacknowledged incremental file deltas for a consumer cursor (defaulting to current module_id)."""
+        sid = _normalize_space_id_str(space_id)
+        eff_consumer = self._ctx.module_id.value if consumer is None else require_pure_str(consumer, "consumer", non_empty=True)
+        out = self._ctx.call(
+            "core.space.diff",
+            {"space_id": sid, "consumer": eff_consumer},
+            output_type=SpaceDiffBatch,
+        )
+        return _unwrap_space_outcome(out)
+
+    def scan(self, space_id: Optional[SpaceId | str] = None, *, force: bool = False) -> tuple[SpaceDiffBatch, ...]:
+        """Trigger an incremental two-stage SQLite WAL scan across one or all logical spaces."""
+        sid = None if space_id is None else _normalize_space_id_str(space_id)
+        require_pure_bool(force, "force")
+        out = self._ctx.call(
+            "core.space.scan",
+            {"space_id": sid, "force": force},
+            output_type=tuple[SpaceDiffBatch, ...],
+        )
+        return _unwrap_space_outcome(out)
+
+    def ack_cursor(self, batch: SpaceDiffBatch, *, consumer: Optional[str] = None) -> bool:
+        """Advance a consumer cursor using compare-and-swap verification against a SpaceDiffBatch."""
+        if not isinstance(batch, SpaceDiffBatch):
+            raise ValueError(f"SpaceClient.ack_cursor requires SpaceDiffBatch, got {batch!r}")
+        eff_consumer = self._ctx.module_id.value if consumer is None else require_pure_str(consumer, "consumer", non_empty=True)
+        raw_out = self._ctx.call(
+            "core.space.ack_cursor",
+            {
+                "space": str(batch.space_id),
+                "consumer": eff_consumer,
+                "from_gen": batch.from_gen.value,
+                "to_gen": batch.to_gen.value,
+                "config_hash": batch.config_hash,
+                "merkle_root": batch.merkle_root,
+            },
+        )
+        val = _unwrap_space_outcome(raw_out)
+        if type(val) is bool:
+            return val
+        if isinstance(val, Mapping):
+            payload = val.get("data") if "data" in val else val
+            if isinstance(payload, Mapping) and type(payload.get("acked")) is bool:
+                return cast(bool, payload["acked"])
+        raise YscbError(ErrorCode.CODEC_VALIDATION_FAILED, f"Unexpected core.space.ack_cursor response: {val!r}")
+
+    def set_dynamic(self, name: str, spec: SpaceSpec) -> bool:
+        """Register or update a dynamic logical space owned by the calling module."""
+        require_pure_str(name, "name", non_empty=True)
+        if not isinstance(spec, SpaceSpec):
+            raise ValueError(f"SpaceClient.set_dynamic requires SpaceSpec, got {spec!r}")
+        out = self._ctx.call(
+            "core.space.set_dynamic",
+            {
+                "owner": self._ctx.module_id.value,
+                "name": name,
+                "spec": DataclassCodec.encode_object(spec),
+            },
+            output_type=bool,
+        )
+        return _unwrap_space_outcome(out)
+
+    def clear_dynamic(self, name: Optional[str] = None) -> int:
+        """Remove one or all dynamic logical spaces owned by the calling module."""
+        if name is not None:
+            require_pure_str(name, "name", non_empty=True)
+        out = self._ctx.call(
+            "core.space.clear_dynamic",
+            {"owner": self._ctx.module_id.value, "name": name},
+            output_type=int,
+        )
+        return _unwrap_space_outcome(out)
+
+
+def _resolve_run_process_cwd(ctx: TaskContext, cwd: Optional[SemanticUri | HostPath | str]) -> HostPath:
+    if cwd is None:
+        cwd_hp = ctx.caller_cwd
+    elif isinstance(cwd, (SemanticUri, HostPath)) or type(cwd) is str:
+        raw_target = str(cwd) if isinstance(cwd, (SemanticUri, HostPath)) else cwd
+        resolved_uri = ctx.resolve_uri(raw_target)
+        phys = ctx.vfs.try_get_physical_path(resolved_uri)
+        if phys is None:
+            raise YscbError(
+                ErrorCode.ACCESS_DENIED,
+                f"Cannot run subprocess in virtual URI without physical path: '{cwd}'.",
+            )
+        cwd_hp = phys
+    else:
+        raise ValueError(f"run_process cwd must be SemanticUri, HostPath, str, or None, got {cwd!r}")
+    if not cwd_hp.path.is_dir():
+        raise FileNotFoundError(f"Subprocess working directory does not exist: '{cwd_hp}'")
+    return cwd_hp
+
+
+def _set_case_normalized_env(env_map: dict[str, str], key: str, value: str) -> None:
+    if IS_WINDOWS:
+        k_up = key.upper()
+        for existing_k in [ek for ek in env_map if ek != key and ek.upper() == k_up]:
+            env_map.pop(existing_k, None)
+    env_map[key] = value
+
+
+def _build_run_process_env(ctx: TaskContext, env: Optional[Mapping[str, str]]) -> dict[str, str]:
+    merged = build_isolated_python_env()
+    for ck, cv in sanitize_caller_env(ctx.caller_env).items():
+        _set_case_normalized_env(merged, ck, cv)
+    if env is None:
+        return merged
+    if not isinstance(env, Mapping):
+        raise ValueError(f"run_process env must be Mapping[str, str] or None, got {type(env).__name__}")
+    for k, v in env.items():
+        require_pure_str(k, "run_process env key", non_empty=True)
+        require_pure_str(v, "run_process env value")
+        if not _is_valid_env_str(k, forbid_eq=True) or not _is_valid_env_str(v):
+            raise ValueError("run_process env keys forbid '=' and keys/values forbid NUL and lone surrogates.")
+        k_up = k.upper()
+        if k_up.startswith(PRIVATE_ENV_PREFIX) or k_up in _FORBIDDEN_ENV_UPPER:
+            raise ValueError(f"run_process env key {k!r} is reserved or forbidden.")
+        _set_case_normalized_env(merged, k, v)
+    return merged
+
+
+def _drain_pipe_bounded(pipe: Optional[BinaryIO], max_bytes: int, sink: list[bytes], trunc_flag: list[bool]) -> None:
+    if pipe is None:
+        return
+    collected = 0
+    while True:
+        try:
+            chunk = pipe.read(8192)
+        except (OSError, ValueError):
+            break
+        if not chunk:
+            break
+        if collected < max_bytes:
+            rem = max_bytes - collected
+            if len(chunk) <= rem:
+                sink.append(chunk)
+                collected += len(chunk)
+            else:
+                sink.append(chunk[:rem])
+                collected = max_bytes
+                trunc_flag[0] = True
+        else:
+            trunc_flag[0] = True
+
+
 class TaskContext(ABC):
     """Explicit execution context passed into Task.run(req, ctx) with zero global singletons."""
+
+    @property
+    @abstractmethod
+    def module_id(self) -> ModuleId: ...
 
     @property
     @abstractmethod
@@ -657,11 +994,119 @@ class TaskContext(ABC):
     @abstractmethod
     def emit_imm(self, event_meta: EventMetadata[TPayload], payload: TPayload, *, strict: bool = False) -> None: ...
 
-    @overload
-    def invoke_task(
+    @property
+    def spaces(self) -> SpaceClient:
+        """Return a first-class SpaceClient bound to this TaskContext."""
+        return SpaceClient(self)
+
+    def resolve_uri(self, raw_path: str) -> SemanticUri:
+        """Resolve a caller-supplied URI or local path relative to caller_cwd into a validated SemanticUri."""
+        return self.vfs.resolve_caller_uri(raw_path, self.caller_cwd)
+
+    def run_process(
         self,
-        task_id: TaskId | str,
-        input_obj: object,
+        argv: Sequence[str],
+        *,
+        cwd: Optional[SemanticUri | HostPath | str] = None,
+        env: Optional[Mapping[str, str]] = None,
+        timeout_sec: float = 60.0,
+        max_output_bytes: int = 1048576,
+    ) -> ProcessResult:
+        """Run a managed child process tree with cancel_token teardown, bounded pipe draining, and isolated env."""
+        clean_argv = require_typed_tuple(argv, str, "run_process argv")
+        if not clean_argv or any((not seg and idx == 0) or not _is_valid_env_str(seg) for idx, seg in enumerate(clean_argv)):
+            raise ValueError("run_process argv must be a non-empty UTF-8 NUL-free Sequence[str] with non-empty program.")
+        timeout_f = safe_real_to_float(timeout_sec, label="run_process timeout_sec")
+        if not math.isfinite(timeout_f) or timeout_f <= 0.0:
+            raise ValueError(f"run_process timeout_sec must be finite and > 0, got {timeout_sec!r}")
+        max_bytes = require_pure_int(max_output_bytes, "run_process max_output_bytes", min_val=0, max_val=INT64_MAX)
+        cwd_hp = _resolve_run_process_cwd(self, cwd)
+        merged_env = _build_run_process_env(self, env)
+        self.cancel_token.raise_if_cancelled()
+        t0 = time.monotonic()
+        deadline = t0 + timeout_f
+        out_chunks: list[bytes] = []
+        err_chunks: list[bytes] = []
+        out_trunc: list[bool] = [False]
+        err_trunc: list[bool] = [False]
+        timed_out = False
+        cancelled = False
+        rc: Optional[int] = None
+        with self.profiler.scope_relative("Proc/Run"):
+            with ManagedProcessTree(clean_argv, cwd=cwd_hp, env=merged_env, capture_output=True) as tree:
+                started_threads: list[threading.Thread] = []
+                step = 0.002
+                try:
+                    for pipe_obj, sink_buf, trunc_ref in (
+                        (tree.stdout_pipe, out_chunks, out_trunc),
+                        (tree.stderr_pipe, err_chunks, err_trunc),
+                    ):
+                        reader = threading.Thread(
+                            target=_drain_pipe_bounded,
+                            args=(pipe_obj, max_bytes, sink_buf, trunc_ref),
+                            daemon=True,
+                        )
+                        reader.start()
+                        started_threads.append(reader)
+                    while True:
+                        rc = tree.poll()
+                        if rc is not None:
+                            break
+                        if self.cancel_token.is_cancelled:
+                            cancelled = True
+                            tree.terminate_tree()
+                            break
+                        now = time.monotonic()
+                        if now >= deadline:
+                            timed_out = True
+                            tree.terminate_tree()
+                            break
+                        time.sleep(min(step, max(0.001, deadline - now)))
+                        step = min(0.015, step * 1.5)
+                finally:
+                    if rc is None:
+                        tree.terminate_tree()
+                    for reader in started_threads:
+                        reader.join(timeout=2.0)
+                    tree.close_pipes()
+        if cancelled:
+            self.cancel_token.raise_if_cancelled()
+            raise TaskCancelledException(f"Subprocess '{clean_argv[0]}' cancelled.")
+        duration_ms = max(0.0, round((time.monotonic() - t0) * 1000.0, 3))
+        return ProcessResult(
+            returncode=-1 if timed_out else (rc if rc is not None else -1),
+            stdout=b"".join(out_chunks).decode("utf-8", errors="replace"),
+            stderr=b"".join(err_chunks).decode("utf-8", errors="replace"),
+            duration_ms=duration_ms,
+            timed_out=timed_out,
+            truncated=out_trunc[0] or err_trunc[0],
+        )
+
+    @overload
+    def call(
+        self,
+        target: TaskRef[Empty, TOut],
+        input_obj: Optional[Empty] = None,
+        *,
+        target_workspace: Optional[HostPath] = None,
+        routing_policy: Optional[ClientRoutingPolicy] = None,
+    ) -> TaskOutcome[TOut]: ...
+
+    @overload
+    def call(
+        self,
+        target: TaskRef[TIn, TOut],
+        input_obj: TIn,
+        *,
+        target_workspace: Optional[HostPath] = None,
+        routing_policy: Optional[ClientRoutingPolicy] = None,
+    ) -> TaskOutcome[TOut]: ...
+
+    @overload
+    def call(
+        self,
+        target: TaskId | str,
+        input_obj: object = None,
         *,
         output_type: type[TOut],
         target_workspace: Optional[HostPath] = None,
@@ -669,10 +1114,10 @@ class TaskContext(ABC):
     ) -> TaskOutcome[TOut]: ...
 
     @overload
-    def invoke_task(
+    def call(
         self,
-        task_id: TaskId | str,
-        input_obj: object,
+        target: TaskId | str,
+        input_obj: object = None,
         *,
         output_type: None = None,
         target_workspace: Optional[HostPath] = None,
@@ -680,41 +1125,15 @@ class TaskContext(ABC):
     ) -> TaskOutcome[JsonValue]: ...
 
     @abstractmethod
-    def invoke_task(
+    def call(
         self,
-        task_id: TaskId | str,
-        input_obj: object,
+        target: TaskRef[TIn, TOut] | TaskId | str,
+        input_obj: object = None,
         *,
         output_type: Optional[type[TOut]] = None,
         target_workspace: Optional[HostPath] = None,
         routing_policy: Optional[ClientRoutingPolicy] = None,
     ) -> TaskOutcome[TOut] | TaskOutcome[JsonValue]: ...
-
-    def invoke_typed(
-        self,
-        task_meta: TaskMetadata[TIn, TOut],
-        req: TIn,
-        *,
-        target_workspace: Optional[HostPath] = None,
-        routing_policy: Optional[ClientRoutingPolicy] = None,
-    ) -> TaskOutcome[TOut]:
-        """End-to-end compile-time typed nested invocation checking both TIn and TOut."""
-        if not isinstance(task_meta, TaskMetadata):
-            return TaskOutcome(
-                ok=False,
-                error=ErrorDetail(ErrorCode.CODEC_VALIDATION_FAILED, f"Expected TaskMetadata, got {task_meta!r}"),
-            )
-        try:
-            encoded_req = DataclassCodec.encode_object(req, expected_type=task_meta.input_type)
-        except YscbError as exc:
-            return TaskOutcome(ok=False, error=exc.detail.with_fallback_task(str(task_meta.task_id)))
-        return self.invoke_task(
-            task_meta.task_id,
-            encoded_req,
-            output_type=task_meta.output_type,
-            target_workspace=target_workspace,
-            routing_policy=routing_policy,
-        )
 
     @abstractmethod
     def report_progress(self, progress: ProgressEvent) -> None: ...

@@ -1,5 +1,12 @@
 # 專案變更歷史 (Changelog)
 
+## 2026_11_25_1630_core_v2_sdk_ergonomics_overhaul (Completed)
+
+- **Core 2.0 下游模組 SDK 門面雙層收斂（52+38）、一等空間客戶端 `ctx.spaces`、受管子行程與零樣板人體工學重構 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-06`, `NFR-01` ~ `NFR-03`)**：
+  - **雙層零反射 SDK 門面分流 (`surface/sdk/{__init__,declarative,client}.py`, `surface/sdk/advanced/__init__.py`, `surface/{sdk,sdk_advanced}.md`)**：將主入口 `core.surface.sdk` 收斂為業務模組（`knowledge-db`/`agents-workflow` 等）高頻必用之精確 **52 符號**，新建進階子套件 `core.surface.sdk.advanced` 承接外部客戶端、剖析器、低階轉接與值物件之精確 **38 符號**（零交集）；清退 4 組 `Space*Input`（移至 `surface/bootstrap/system_module.py`）與 2 組 `SPACE_*_EVENT_ID_STR`（全倉退役），同步遷移內部 `cli`/`bootstrap`（含 `_TIER1_FORMAT_SNIPPET`）匯入並將兩層 `__all__` 完整納入 `Gate 0` 1:1 活規格與跨包邊界校驗。
+  - **一等空間門面 `ctx.spaces: SpaceClient`、強型別系統事件與統一 `TaskRef`/`call` (`execution/runtime/{contracts,module_slot,__init__}.py`, `surface/bootstrap/{system_module,__init__}.py`, `{runtime,composition_and_bootstrap}.md`)**：於 Domain 5 單一真理下沉 `Empty`、3 組事件 Payload DTO、6 組強型別 `EventMetadata` 常數（`MODULE_REMOVING_EVENT` 為 `ORDERED`）、不可變 `TaskRef[TIn, TOut]`、`ProcessResult` 與 `SpaceClient`；於 `CoreSystemModule` 新增 4 支無鎖併發讀 `SDK_ONLY` 系統任務 `core.space.{list,status,files,diff}`，使 `ctx.spaces.*` 於 Tier 0/1 跨進程 100% 對稱；以統一重載之 `ctx.call(...)` 與 `YscbClient.call(TaskRef, ...)` 徹底取代 `invoke_task`/`invoke_typed`。
+  - **VFS 橋接／`glob`、受管子行程 `ctx.run_process`、零樣板自動載入與雙條件 `core_sig_cache` (`foundation/{proc,errors}.py`, `filesystem/vfs/scoped.py`, `execution/daemon/service.py`, `{foundation,vfs,daemon}.md`)**：於 `ManagedProcessTree` 新增無緩衝 `bufsize=0` `capture_output` 雙管道與 `close_pipes()`；於 `ScopedVfs` 實作 `glob` 與防未折疊符號連結／防 `.yscb/` 降級外洩之 `resolve_caller_uri`；於 `TaskContext` 新增 `module_id`/`resolve_uri`/`run_process`（隔離環境、Windows 大小寫去重、`CREATE_NO_WINDOW`、取消保留 `TASK_PREEMPTED` 並終止整棵進程樹）；實作 `ProtectedModuleLoader` 無 `create_module()` 唯一具象非抽象子類自動探索、協變 `TaskGroup[TModule_co]`/`.module` 與 `@task(..., equivalence_fn=...)`；並於 Windows 11 `UX-01` 期間同步補強 `core_sig_cache` 跨重啟 `cache_mtime_ns` / `_boot_core_snapshot_ns` 20ms 雙條件 Racy-Clean 守衛；全 9 大套件於 Linux 雙模（`248.35s`/`278.37s` + 補強覆驗全綠）與 Windows 11 `-O` 實機 100% 通過（`0 ResourceWarning`），Pre-Code Analyze Gate 與 Pre-UX 唯讀盲審雙雙獲 `PASSED`（黑箱盲區已記 `TODO-33`/`TODO-34`，本地測試工作台留待 `dev 2.0`）。
+
 ## 2026_11_25_1157_core_v2_observability_profiler (Completed)
 
 - **Core 2.0 內核原生可觀測性、ImTK 風格階層效能剖析器、3+1 全 JSONL 運行日誌體系與 `TODO-31` 實戰優化 (`FR-01` ~ `FR-05`, `EC-01` ~ `EC-06`, `NFR-01` ~ `NFR-03`)**：

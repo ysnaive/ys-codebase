@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 import os
 from pathlib import Path
+import sys
 import threading
 import time
 import tracemalloc
@@ -52,6 +53,8 @@ from core.execution.runtime import (
     ModuleDescriptor,
     PeriodicScheduleSpec,
     PriorityHandle,
+    ProcessResult,
+    ProtectedModuleLoader,
     ResourceAcquireSpec,
     ResourceCoordinator,
     RuntimeDispatcher,
@@ -90,8 +93,10 @@ from core.foundation import (
     TaskCancelledException,
     TaskId,
     YscbError,
+    is_process_alive,
     strict_parse_json_object,
 )
+from core.filesystem.vfs import MemoryVfsProvider, MountRule, UriMountTable, VfsHub, build_standard_mount_rules
 from tests._boot import (
     FileConfigView,
     ManifestModuleProvider,
@@ -250,7 +255,11 @@ def _build_coord_test_module(ctrl: _CoalesceControl) -> YscbModule:
                 ctrl.entered.set()
                 ctrl.release.wait(timeout=3.0)
             if req.mode_tag == "reenter_illegal":
-                nested_out = ctx.invoke_typed(self._serial_meta, _CoordReqDto(eq_key="inner"))
+                nested_out = ctx.call(
+                    self._serial_meta.task_id,
+                    _CoordReqDto(eq_key="inner"),
+                    output_type=self._serial_meta.output_type,
+                )
                 if not nested_out.ok and nested_out.error is not None:
                     nested_out.error.raise_as_exception()
             if req.emit_bad_event:
@@ -657,7 +666,7 @@ def _verify_step5_cycle_and_cross_proc_reentrancy(tmp_root: Path, venv_py: Path)
         "        return self._meta\n"
         "    def run(self, req: OuterReq, ctx: TaskContext) -> OuterOut:\n"
         "        target = 'xs_inner.coal' if req.tag == 'bad_mode' else 'xs_inner.step'\n"
-        "        sub = ctx.invoke_task(TaskId(target), {'tag': req.tag})\n"
+        "        sub = ctx.call(TaskId(target), {'tag': req.tag})\n"
         "        if sub.ok and isinstance(sub.value, dict):\n"
         "            ipid = int(sub.value.get('inner_pid', 0))\n"
         "            return OuterOut(outer_pid=os.getpid(), inner_pid=ipid, ok_nested=True)\n"
@@ -2336,15 +2345,8 @@ def _verify_daemon_flight_logs_ring_summary_and_core_sig_cache(tmp_root: Path, v
     cached_doc = dict(read_json_dict(sig_cache_hp) or {})
     cached_doc["sig_probe.py"] = [st_set.st_mtime_ns, st_set.st_size, st_set.st_ino, sentinel_a]
     atomic_write_json(sig_cache_hp, cached_doc)
-    for is_racy_case in (False, True):
-        if is_racy_case:
-            sig_probe.write_text("SIG_VER = 2\n", encoding="utf-8")
-            fresh_ns = time.time_ns() + 50_000_000
-            os.utime(sig_probe, ns=(fresh_ns, fresh_ns))
-            st_fresh = sig_probe.stat()
-            racy_doc = dict(read_json_dict(sig_cache_hp) or {})
-            racy_doc["sig_probe.py"] = [st_fresh.st_mtime_ns, st_fresh.st_size, st_fresh.st_ino, "b" * 64]
-            atomic_write_json(sig_cache_hp, racy_doc)
+
+    def _boot_and_read_sig_entry() -> list[object]:
         d_probe = RuntimeDispatcher(
             workspace_root=ws_df, cache_dir=ws_df.join(".cache"), module_provider=provider,
             options=DispatcherHostOptions(is_daemon_host=True),
@@ -2360,10 +2362,313 @@ def _verify_daemon_flight_logs_ring_summary_and_core_sig_cache(tmp_root: Path, v
         after_doc = read_json_dict(sig_cache_hp) or {}
         entry = after_doc.get("sig_probe.py")
         check(isinstance(entry, list) and len(entry) == 4, f"Corrupted sig cache entry: {entry}")
-        if not is_racy_case:
-            check(entry[3] == sentinel_a, f"Settled file ignored persisted core_sig_cache: {entry}")
-        else:
-            check(entry[3] != "b" * 64, f"Racy-Clean guard failed to recompute live SHA-256: {entry}")
+        return list(entry)
+
+    # 1. Settled file (-5s) with freshly written cache -> cache HIT
+    e_settled = _boot_and_read_sig_entry()
+    check(e_settled[3] == sentinel_a, f"Settled file ignored persisted core_sig_cache: {e_settled}")
+
+    # 2. Cross-boot cache_mtime_ns Racy-Clean: file & cache share stale timestamp (-5s, outside now_ns-20ms window)
+    sig_probe.write_text("SIG_VER = 2\n", encoding="utf-8")
+    stale_racy_ns = time.time_ns() - 5_000_000_000
+    os.utime(sig_probe, ns=(stale_racy_ns, stale_racy_ns))
+    st_stale = sig_probe.stat()
+    racy_cache_doc = dict(read_json_dict(sig_cache_hp) or {})
+    racy_cache_doc["sig_probe.py"] = [st_stale.st_mtime_ns, st_stale.st_size, st_stale.st_ino, "b" * 64]
+    atomic_write_json(sig_cache_hp, racy_cache_doc)
+    os.utime(sig_cache_hp.path, ns=(stale_racy_ns, stale_racy_ns))
+    e_racy_cache = _boot_and_read_sig_entry()
+    check(e_racy_cache[3] != "b" * 64, f"Cross-boot cache_mtime_ns Racy-Clean failed to recompute live SHA-256: {e_racy_cache}")
+    check(
+        sig_cache_hp.path.stat().st_mtime_ns > stale_racy_ns + 1_000_000_000,
+        "core_sig_cache.json mtime was not refreshed after cross-boot Racy-Clean recompute",
+    )
+
+    # 2b. Once refreshed cache mtime is ahead of file mtime, subsequent boot hits cache (no infinite re-hash)
+    sentinel_c = "c" * 64
+    post_doc = dict(read_json_dict(sig_cache_hp) or {})
+    post_doc["sig_probe.py"] = [st_stale.st_mtime_ns, st_stale.st_size, st_stale.st_ino, sentinel_c]
+    atomic_write_json(sig_cache_hp, post_doc)
+    e_post = _boot_and_read_sig_entry()
+    check(e_post[3] == sentinel_c, f"Refreshed core_sig_cache failed to settle after racy recompute: {e_post}")
+
+    # 3. Current-scan fresh/future Racy-Clean (+5s symmetric margin immune to Windows NTFS fsync jitter)
+    sig_probe.write_text("SIG_VER = 3\n", encoding="utf-8")
+    fresh_ns = time.time_ns() + 5_000_000_000
+    os.utime(sig_probe, ns=(fresh_ns, fresh_ns))
+    st_fresh = sig_probe.stat()
+    racy_fresh_doc = dict(read_json_dict(sig_cache_hp) or {})
+    racy_fresh_doc["sig_probe.py"] = [st_fresh.st_mtime_ns, st_fresh.st_size, st_fresh.st_ino, "d" * 64]
+    atomic_write_json(sig_cache_hp, racy_fresh_doc)
+    e_fresh = _boot_and_read_sig_entry()
+    check(e_fresh[3] != "d" * 64, f"Fresh-mtime Racy-Clean guard failed to recompute live SHA-256: {e_fresh}")
+
+
+def _verify_loader_autodiscovery(suite_root: Path) -> None:
+    ws_ld = HostPath(suite_root / "loader_autodiscovery_ws")
+    ws_ld.path.mkdir(parents=True, exist_ok=True)
+    loader = ProtectedModuleLoader(ws_ld)
+
+    def _mk_mod(mod_id: str, entry_src: str, extra_files: Optional[dict[str, str]] = None) -> ModuleDescriptor:
+        mdir = ws_ld.path / ".modules" / mod_id
+        mdir.mkdir(parents=True, exist_ok=True)
+        (mdir / "module_entry.py").write_text(entry_src, encoding="utf-8")
+        if extra_files:
+            for rel_f, content in extra_files.items():
+                (mdir / rel_f).write_text(content, encoding="utf-8")
+        return ModuleDescriptor(module_id=ModuleId(mod_id), module_dir=HostPath(mdir))
+
+    d_single = _mk_mod(
+        "auto_one",
+        "from core.surface.sdk import Module, TaskContext, task\n"
+        "class AutoOne(Module):\n"
+        "    id = 'auto_one'\n"
+        "    @task\n"
+        "    def hi(self, ctx: TaskContext) -> str:\n"
+        "        return ctx.module_id.value\n",
+    )
+    art_one = loader.load_module_artifact(d_single)
+    try:
+        check(art_one.instance.module_id == ModuleId("auto_one") and len(art_one.instance.tasks()) == 1)
+    finally:
+        loader.cleanup_package(art_one.package_key)
+
+    d_abc = _mk_mod(
+        "auto_abc",
+        "from abc import ABC\n"
+        "from typing import Protocol\n"
+        "from core.surface.sdk import Module, TaskContext, task\n"
+        "class LocalProto(Protocol):\n"
+        "    def to_yscb_module(self) -> object: ...\n"
+        "class BaseMod(Module, ABC):\n"
+        "    pass\n"
+        "class ConcreteMod(BaseMod):\n"
+        "    id = 'auto_abc'\n"
+        "    @task\n"
+        "    def ok(self, ctx: TaskContext) -> str:\n"
+        "        return ctx.module_id.value\n",
+    )
+    art_abc = loader.load_module_artifact(d_abc)
+    try:
+        check(art_abc.instance.module_id == ModuleId("auto_abc"))
+    finally:
+        loader.cleanup_package(art_abc.package_key)
+
+    d_imp = _mk_mod(
+        "auto_imp",
+        "from .helper_mod import ForeignMod\n"
+        "from core.surface.sdk import Module\n"
+        "_ = ForeignMod\n"
+        "class LocalOnly(Module):\n"
+        "    id = 'auto_imp'\n",
+        extra_files={
+            "helper_mod.py": "from core.surface.sdk import Module\nclass ForeignMod(Module):\n    id = 'foreign'\n"
+        },
+    )
+    art_imp = loader.load_module_artifact(d_imp)
+    try:
+        check(art_imp.instance.module_id == ModuleId("auto_imp"))
+    finally:
+        loader.cleanup_package(art_imp.package_key)
+
+    d_prec = _mk_mod(
+        "auto_prec",
+        "from core.surface.sdk import Module\n"
+        "class IgnoredAuto(Module):\n"
+        "    id = 'wrong_id'\n"
+        "class ExplicitAuto(Module):\n"
+        "    id = 'auto_prec'\n"
+        "def create_module():\n"
+        "    return ExplicitAuto().to_yscb_module()\n",
+    )
+    art_prec = loader.load_module_artifact(d_prec)
+    try:
+        check(art_prec.instance.module_id == ModuleId("auto_prec"))
+    finally:
+        loader.cleanup_package(art_prec.package_key)
+
+    before_mods = set(sys.modules.keys())
+    d_zero = _mk_mod("auto_zero", "X = 1\n")
+    expect_yscb_code(lambda: loader.load_module_artifact(d_zero), ErrorCode.MODULE_DEGRADED)
+    d_two = _mk_mod(
+        "auto_two",
+        "from core.surface.sdk import Module\n"
+        "class A(Module):\n"
+        "    id = 'a'\n"
+        "class B(Module):\n"
+        "    id = 'b'\n",
+    )
+    expect_yscb_code(lambda: loader.load_module_artifact(d_two), ErrorCode.MODULE_DEGRADED)
+    leaked_keys = [k for k in sys.modules if k not in before_mods and ("auto_zero" in k or "auto_two" in k)]
+    check(not leaked_keys, f"Failed auto-discovery leaked sys.modules keys: {leaked_keys}")
+
+
+def _verify_run_process_contracts(suite_root: Path, venv_py: Path) -> None:
+    rp_base = suite_root / "run_process_ws"
+    proj_dir = rp_base / "repo"
+    yscb_dir = proj_dir / ".yscb"
+    sub_dir = proj_dir / "sub"
+    outside_dir = rp_base / "outside"
+    sub_dir.mkdir(parents=True, exist_ok=True)
+    yscb_dir.mkdir(parents=True, exist_ok=True)
+    outside_dir.mkdir(parents=True, exist_ok=True)
+
+    rules = (
+        *build_standard_mount_rules(
+            host_dir=HostPath(proj_dir),
+            yscb_root=HostPath(yscb_dir),
+            project_root=HostPath(proj_dir),
+        ),
+        MountRule(scheme="virt.test"),
+    )
+    hub = VfsHub(UriMountTable(rules, providers={"virt.test": MemoryVfsProvider("virt.test")}))
+    svc_factory = build_workspace_module_services_factory(HostPath(proj_dir), HostPath(yscb_dir), vfs_hub=hub)
+
+    @dataclass(frozen=True, slots=True)
+    class _RpReq:
+        mode: str
+
+    @dataclass(frozen=True, slots=True)
+    class _RpOut:
+        ok: bool
+        rc: int
+        stdout: str
+        stderr: str
+        timed_out: bool
+        truncated: bool
+
+    grandchild_pid_file = proj_dir / "grandchild.pid"
+    cancel_gc_file = proj_dir / "cancel_gc.pid"
+    preempt_gc_file = proj_dir / "preempt_gc.pid"
+
+    class _RpTask(Task[_RpReq, _RpOut]):
+        def __init__(self) -> None:
+            self._meta = TaskMetadata(TaskId("rpmod.exec"), _RpReq, _RpOut, dispatch_mode=DispatchMode.HYBRID)
+
+        @property
+        def metadata(self) -> TaskMetadata[_RpReq, _RpOut]:
+            return self._meta
+
+        def run(self, req: _RpReq, ctx: TaskContext) -> _RpOut:
+            if req.mode == "ok_env":
+                code = (
+                    "import os, sys; "
+                    "sys.stdout.write(f'{os.getcwd()}|{os.environ.get(\"YSCB_TRACE\",\"\")}|{os.environ.get(\"CUSTOM_VAR\",\"\")}|{os.environ.get(\"PYTHONNOUSERSITE\",\"\")}|{bool(os.environ.get(\"PATH\"))}'); "
+                    "sys.stderr.write('err_ok')"
+                )
+                res = ctx.run_process([sys.executable, "-c", code], cwd="project://sub", env={"CUSTOM_VAR": "hello"})
+                assert_raises_val_error(lambda: ctx.run_process([sys.executable, "-c", "pass"], env={"_YSCB_SECRET": "1"}))
+                expect_yscb_code(lambda: ctx.run_process([sys.executable, "-c", "pass"], cwd="virt.test://x"), ErrorCode.ACCESS_DENIED)
+                expect_yscb_code(lambda: ctx.run_process([sys.executable, "-c", "pass"], cwd=HostPath(outside_dir)), ErrorCode.ACCESS_DENIED)
+                expect_yscb_code(lambda: ctx.run_process([sys.executable, "-c", "pass"], cwd="yscb://"), ErrorCode.ACCESS_DENIED)
+                return _RpOut(res.ok, res.returncode, res.stdout, res.stderr, res.timed_out, res.truncated)
+            if req.mode == "nonzero":
+                res = ctx.run_process([sys.executable, "-c", "import sys; sys.exit(7)"])
+                return _RpOut(res.ok, res.returncode, res.stdout, res.stderr, res.timed_out, res.truncated)
+            if req.mode == "truncate":
+                res = ctx.run_process(
+                    [sys.executable, "-c", "import sys; sys.stdout.write('A'*160000); sys.stderr.write('B'*160000)"],
+                    max_output_bytes=128,
+                )
+                return _RpOut(res.ok, res.returncode, res.stdout, res.stderr, res.timed_out, res.truncated)
+            if req.mode in ("timeout_tree", "cancel_tree", "preempt_tree"):
+                pid_out = (
+                    grandchild_pid_file
+                    if req.mode == "timeout_tree"
+                    else (cancel_gc_file if req.mode == "cancel_tree" else preempt_gc_file)
+                )
+                tmp_out = pid_out.with_suffix(".tmp")
+                spawner = (
+                    "import pathlib, subprocess, sys, time; "
+                    "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+                    f"t = pathlib.Path({str(tmp_out)!r}); "
+                    "t.write_text(str(p.pid), encoding='utf-8'); "
+                    f"t.replace(pathlib.Path({str(pid_out)!r})); "
+                    "time.sleep(30)"
+                )
+                res = ctx.run_process([sys.executable, "-c", spawner], timeout_sec=1.5 if req.mode == "timeout_tree" else 10.0)
+                return _RpOut(res.ok, res.returncode, res.stdout, res.stderr, res.timed_out, res.truncated)
+            raise ValueError(req.mode)
+
+    class _RpMod(YscbModule):
+        @property
+        def module_id(self) -> ModuleId:
+            return ModuleId("rpmod")
+
+        def tasks(self) -> Sequence[BoundTask]:
+            return (_RpTask(),)
+
+    disp = RuntimeDispatcher(
+        workspace_root=HostPath(yscb_dir),
+        cache_dir=HostPath(yscb_dir / ".cache"),
+        module_provider=ManifestModuleProvider(HostPath(yscb_dir), HostPath(venv_py)),
+        options=DispatcherHostOptions(in_memory_modules=(_RpMod(),), module_services_factory=svc_factory),
+    )
+    try:
+        out_ok = disp.invoke(
+            InvokeRequest(
+                TaskId("rpmod.exec"),
+                {"mode": "ok_env"},
+                HostPath(yscb_dir),
+                HostPath(proj_dir),
+                caller_env={"YSCB_TRACE": "tr42"},
+            ),
+            output_type=_RpOut,
+        )
+        check(out_ok.ok and out_ok.value is not None and out_ok.value.ok and out_ok.value.stderr == "err_ok", f"run_process ok_env failed: {out_ok}")
+        parts = out_ok.value.stdout.split("|")
+        check(
+            len(parts) == 5 and HostPath(parts[0]) == HostPath(sub_dir) and parts[1:] == ["tr42", "hello", "1", "True"],
+            f"Unexpected isolated env/cwd output: {parts}",
+        )
+
+        out_nz = disp.invoke(InvokeRequest(TaskId("rpmod.exec"), {"mode": "nonzero"}, HostPath(yscb_dir), HostPath(proj_dir)), output_type=_RpOut)
+        check(out_nz.ok and out_nz.value is not None and (not out_nz.value.ok) and out_nz.value.rc == 7 and not out_nz.value.timed_out)
+
+        out_tr = disp.invoke(InvokeRequest(TaskId("rpmod.exec"), {"mode": "truncate"}, HostPath(yscb_dir), HostPath(proj_dir)), output_type=_RpOut)
+        check(
+            out_tr.ok and out_tr.value is not None and out_tr.value.ok and out_tr.value.truncated
+            and len(out_tr.value.stdout) == 128 and len(out_tr.value.stderr) == 128,
+            f"Bounded pipe truncation failed: {out_tr}",
+        )
+
+        out_to = disp.invoke(InvokeRequest(TaskId("rpmod.exec"), {"mode": "timeout_tree"}, HostPath(yscb_dir), HostPath(proj_dir)), output_type=_RpOut)
+        check(
+            out_to.ok and out_to.value is not None and (not out_to.value.ok) and out_to.value.timed_out and out_to.value.rc == -1,
+            f"Expected timed_out ProcessResult: {out_to}",
+        )
+        check(grandchild_pid_file.is_file(), "Timeout test must unconditionally verify spawned grandchild cleanup")
+        gc_pid = int(grandchild_pid_file.read_text(encoding="utf-8").strip())
+        wait_until(lambda: not is_process_alive(gc_pid), timeout_sec=3.0)
+
+        for mode_nm, pid_f, is_preempt, exp_code in (
+            ("cancel_tree", cancel_gc_file, False, ErrorCode.TASK_CANCELLED),
+            ("preempt_tree", preempt_gc_file, True, ErrorCode.TASK_PREEMPTED),
+        ):
+            c_tok = CancellationToken()
+
+            def _trigger_tok(target_f: Path = pid_f, tok: CancellationToken = c_tok, pre: bool = is_preempt) -> None:
+                wait_until(lambda: target_f.is_file() and bool(target_f.read_text(encoding="utf-8").strip()), timeout_sec=5.0)
+                tok.cancel(reason="abort_proc_tree", preempted=pre)
+
+            t_can = threading.Thread(target=_trigger_tok, daemon=True)
+            t_can.start()
+            out_can = disp.invoke(
+                InvokeRequest(TaskId("rpmod.exec"), {"mode": mode_nm}, HostPath(yscb_dir), HostPath(proj_dir)),
+                output_type=_RpOut,
+                cancel_token=c_tok,
+            )
+            t_can.join(timeout=3.0)
+            check(
+                not out_can.ok and out_can.error is not None and out_can.error.code == exp_code,
+                f"Expected {exp_code} on run_process {mode_nm}: {out_can}",
+            )
+            check(pid_f.is_file(), f"Expected grandchild pid file for {mode_nm}")
+            c_gc_pid = int(pid_f.read_text(encoding="utf-8").strip())
+            wait_until(lambda p=c_gc_pid: not is_process_alive(p), timeout_sec=3.0)
+        check(ProcessResult(0, "", "", 1.0).ok and not ProcessResult(0, "", "", 1.0, timed_out=True).ok)
+    finally:
+        disp.shutdown(grace_ms=300)
 
 
 def run_runtime_daemon_suite(tmp_root: Path, venv_py: Path) -> None:
@@ -2397,6 +2702,9 @@ def run_runtime_daemon_suite(tmp_root: Path, venv_py: Path) -> None:
         _verify_tier1_profiler_merge_mem_and_fail_open(suite_root, venv_py)
         log("[RUNTIME-DAEMON] Verifying daemon Stream 1 lifecycle logs, profiler_summary, and core_sig_cache...")
         _verify_daemon_flight_logs_ring_summary_and_core_sig_cache(suite_root, venv_py)
+        log("[RUNTIME-DAEMON] Verifying ProtectedModuleLoader auto-discovery and TaskContext.run_process...")
+        _verify_loader_autodiscovery(suite_root)
+        _verify_run_process_contracts(suite_root, venv_py)
         log("[RUNTIME-DAEMON] All checks passed.")
     finally:
         force_reap_tmp_root_orphans(suite_root)

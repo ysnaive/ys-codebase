@@ -668,7 +668,7 @@ class OrchestrateChildWsTask(Task[ChildWsIn, SimpleOut]):
     def run(self, req: ChildWsIn, ctx: TaskContext) -> SimpleOut:
         cws = HostPath(req.child_ws)
         if req.bounce_back_ws:
-            _ = ctx.invoke_task(
+            _ = ctx.call(
                 "space.orchestrate_child_ws",
                 {"child_ws": req.bounce_back_ws, "bounce_back_ws": str(ctx.workspace_root)},
                 target_workspace=cws,
@@ -679,7 +679,7 @@ class OrchestrateChildWsTask(Task[ChildWsIn, SimpleOut]):
             if not target_str:
                 continue
             t_ws = HostPath(target_str)
-            out = ctx.invoke_task(
+            out = ctx.call(
                 "dev.run_sandbox",
                 {"child_workspace": str(t_ws), "spawn_sleep_child": False, "sync_host_install": False},
                 target_workspace=t_ws,
@@ -720,7 +720,7 @@ class RemoveAndInstallTask(Task[MutateIn, SimpleOut]):
         if req.hold_ms > 0:
             time.sleep(req.hold_ms / 1000.0)
         atomic_write_json(ctx.workspace_root.join(".cache", "installer_exit_ts.json"), {"exit": time.monotonic()})
-        rel_out = ctx.invoke_typed(RELOAD_META, EmptyIn())
+        rel_out = ctx.call(RELOAD_META.task_id, EmptyIn(), output_type=RELOAD_META.output_type)
         if not rel_out.ok or rel_out.value is None:
             raise RuntimeError(f"Reload failed: {rel_out.error}")
         return SimpleOut(ok_msg=f"mutated_and_{rel_out.value.ok_msg}", pid=os.getpid())
@@ -763,7 +763,7 @@ class PartialCommitParentTask(Task[EmptyIn, SimpleOut]):
     def metadata(self) -> TaskMetadata[EmptyIn, SimpleOut]:
         return TaskMetadata(TaskId("space.partial_commit_parent"), EmptyIn, SimpleOut)
     def run(self, req: EmptyIn, ctx: TaskContext) -> SimpleOut:
-        child_ok = ctx.invoke_typed(RELOAD_META, EmptyIn())
+        child_ok = ctx.call(RELOAD_META.task_id, EmptyIn(), output_type=RELOAD_META.output_type)
         if not child_ok.ok:
             raise AssertionError("embedded check failed")
         ctx.emit(ORDERED_AUDIT_EV, SpaceEvPayload(space="must_be_discarded", count=999))
@@ -774,7 +774,7 @@ class BadHotMutateTask(Task[EmptyIn, SimpleOut]):
     def metadata(self) -> TaskMetadata[EmptyIn, SimpleOut]:
         return TaskMetadata(TaskId("space.bad_hot_mutate"), EmptyIn, SimpleOut)
     def run(self, req: EmptyIn, ctx: TaskContext) -> SimpleOut:
-        out = ctx.invoke_task("space.remove_and_install", MutateIn(target_module="vsc"))
+        out = ctx.call("space.remove_and_install", MutateIn(target_module="vsc"))
         return SimpleOut(ok_msg=out.error.code.value if (not out.ok and out.error) else "unexpected")
 
 class BadHotCoreMutateTask(Task[EmptyIn, SimpleOut]):
@@ -782,7 +782,7 @@ class BadHotCoreMutateTask(Task[EmptyIn, SimpleOut]):
     def metadata(self) -> TaskMetadata[EmptyIn, SimpleOut]:
         return TaskMetadata(TaskId("space.bad_hot_core_mutate"), EmptyIn, SimpleOut)
     def run(self, req: EmptyIn, ctx: TaskContext) -> SimpleOut:
-        out = ctx.invoke_task("space.upgrade_core", UpgradeCoreIn(version_tag="2.1.0"))
+        out = ctx.call("space.upgrade_core", UpgradeCoreIn(version_tag="2.1.0"))
         return SimpleOut(ok_msg=out.error.code.value if (not out.ok and out.error) else "unexpected")
 
 class BadEscalateTask(Task[EmptyIn, SimpleOut]):
@@ -790,7 +790,7 @@ class BadEscalateTask(Task[EmptyIn, SimpleOut]):
     def metadata(self) -> TaskMetadata[EmptyIn, SimpleOut]:
         return TaskMetadata(TaskId("space.bad_escalate"), EmptyIn, SimpleOut)
     def run(self, req: EmptyIn, ctx: TaskContext) -> SimpleOut:
-        out = ctx.invoke_task("vsc.gated_clean", EmptyIn())
+        out = ctx.call("vsc.gated_clean", EmptyIn())
         return SimpleOut(ok_msg=f"blocked:{out.error.code.value}" if (not out.ok and out.error) else "unexpected")
 
 class BadSelfPreemptTask(Task[EmptyIn, SimpleOut]):
@@ -798,7 +798,7 @@ class BadSelfPreemptTask(Task[EmptyIn, SimpleOut]):
     def metadata(self) -> TaskMetadata[EmptyIn, SimpleOut]:
         return TaskMetadata(TaskId("space.bad_self_preempt"), EmptyIn, SimpleOut, resource_key="self_p", concurrency_mode=ConcurrencyMode.SERIALIZE)
     def run(self, req: EmptyIn, ctx: TaskContext) -> SimpleOut:
-        ctx.invoke_task("space.bad_self_preempt_inner", EmptyIn())
+        ctx.call("space.bad_self_preempt_inner", EmptyIn())
         return SimpleOut(ok_msg="unexpected")
 
 class BadSelfPreemptInnerTask(Task[EmptyIn, SimpleOut]):
@@ -813,7 +813,7 @@ class BadSelfCoalesceTask(Task[EmptyIn, SimpleOut]):
     def metadata(self) -> TaskMetadata[EmptyIn, SimpleOut]:
         return TaskMetadata(TaskId("space.bad_self_coalesce"), EmptyIn, SimpleOut, resource_key="self_c", concurrency_mode=ConcurrencyMode.SERIALIZE)
     def run(self, req: EmptyIn, ctx: TaskContext) -> SimpleOut:
-        ctx.invoke_task("space.bad_self_coalesce_inner", EmptyIn())
+        ctx.call("space.bad_self_coalesce_inner", EmptyIn())
         return SimpleOut(ok_msg="unexpected")
 
 class BadSelfCoalesceInnerTask(Task[EmptyIn, SimpleOut]):
@@ -828,7 +828,7 @@ class CycleATask(Task[EmptyIn, SimpleOut]):
     def metadata(self) -> TaskMetadata[EmptyIn, SimpleOut]:
         return TaskMetadata(TaskId("space.cycle_a"), EmptyIn, SimpleOut)
     def run(self, req: EmptyIn, ctx: TaskContext) -> SimpleOut:
-        out = ctx.invoke_task("space.cycle_b", EmptyIn())
+        out = ctx.call("space.cycle_b", EmptyIn())
         if not out.ok and out.error:
             return SimpleOut(ok_msg=out.error.code.value)
         return SimpleOut(ok_msg="a")
@@ -838,7 +838,7 @@ class CycleBTask(Task[EmptyIn, SimpleOut]):
     def metadata(self) -> TaskMetadata[EmptyIn, SimpleOut]:
         return TaskMetadata(TaskId("space.cycle_b"), EmptyIn, SimpleOut)
     def run(self, req: EmptyIn, ctx: TaskContext) -> SimpleOut:
-        out = ctx.invoke_task("space.cycle_a", EmptyIn())
+        out = ctx.call("space.cycle_a", EmptyIn())
         if not out.ok and out.error:
             return SimpleOut(ok_msg=out.error.code.value)
         return SimpleOut(ok_msg="b")
@@ -892,7 +892,7 @@ class MixCycleSubTask(Task[EmptyIn, SimpleOut]):
             subscriptions=(EventSubscriptionSpec(EventId("space.mix_cycle_ev"), lambda _p: EmptyIn(), payload_type=EmptyIn),),
         )
     def run(self, req: EmptyIn, ctx: TaskContext) -> SimpleOut:
-        ctx.invoke_task("space.mix_cycle_emit", EmptyIn())
+        ctx.call("space.mix_cycle_emit", EmptyIn())
         return SimpleOut(ok_msg="sub")
 
 class SpaceModule(YscbModule):
@@ -1206,7 +1206,7 @@ class RunSandboxTask(Task[SandboxIn, SandboxOut]):
         child_ws = HostPath(req.child_workspace)
         if not req.spawn_sleep_child:
             if child_ws != ctx.workspace_root:
-                sub = ctx.invoke_task(
+                sub = ctx.call(
                     "dev.run_sandbox",
                     SandboxIn(child_workspace=str(child_ws), spawn_sleep_child=False),
                     output_type=SandboxOut,
@@ -1216,15 +1216,15 @@ class RunSandboxTask(Task[SandboxIn, SandboxOut]):
                 if not sub.ok or sub.value is None or not sub.value.child_ok:
                     return SandboxOut(child_ok=False)
             if req.sync_host_install:
-                d_try = ctx.invoke_task("space.daemon_metrics", {})
-                d_fc = ctx.invoke_task("space.daemon_metrics", {}, routing_policy=ClientRoutingPolicy.FORCE_COLD)
+                d_try = ctx.call("space.daemon_metrics", {})
+                d_fc = ctx.call("space.daemon_metrics", {}, routing_policy=ClientRoutingPolicy.FORCE_COLD)
                 if d_try.ok or d_fc.ok or d_fc.error is None or d_fc.error.code.value != "cold_dispatch_forbidden":
                     return SandboxOut(child_ok=False)
-                inst = ctx.invoke_task("space.remove_and_install", {"target_module": "vsc", "hold_ms": 0})
+                inst = ctx.call("space.remove_and_install", {"target_module": "vsc", "hold_ms": 0})
                 return SandboxOut(child_ok=inst.ok)
             return SandboxOut(child_ok=True)
 
-        ctx.invoke_task("space.echo_tier0", {"tag": "register_space_lifo"})
+        ctx.call("space.echo_tier0", {"tag": "register_space_lifo"})
         tree_script = (
             "import json, os, pathlib, subprocess, sys, time; "
             "cf = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0; "
@@ -1394,7 +1394,7 @@ class AstModule(YscbModule):
                     )
                     if not imm_marker.path.is_file():
                         raise RuntimeError("Tier 1 emit_imm did not complete synchronous subscriber before returning!")
-                    cb = ctx.invoke_typed(ECHO_T0_META, EchoIn(tag="from_oneshot_tier1"))
+                    cb = ctx.call(ECHO_T0_META.task_id, EchoIn(tag="from_oneshot_tier1"), output_type=ECHO_T0_META.output_type)
                     t0 = cb.value.ok_msg if (cb.ok and cb.value is not None) else ""
                 return OutlineOut(
                     resolved_path=str(full_p),
@@ -1525,7 +1525,7 @@ class SearchTask(Task[SearchIn, SearchOut]):
                 trigger_ev_cycle=(req.query == "ev_cyc"),
                 trigger_step5_error=(req.query == "ev_err"),
             )
-            idx_out = ctx.invoke_typed(KDB_INDEX_META, idx_in)
+            idx_out = ctx.call(KDB_INDEX_META.task_id, idx_in, output_type=KDB_INDEX_META.output_type)
             if not idx_out.ok:
                 raise RuntimeError(f"Sync index failed: {idx_out.error}")
             if req.query == "cross_layer_must_coalesce" and not idx_out.coalesced:
@@ -1536,7 +1536,7 @@ class SearchTask(Task[SearchIn, SearchOut]):
             ctx.cancel_token.raise_if_cancelled()
             time.sleep(0.02)
         if req.post_sync:
-            ps_out = ctx.invoke_typed(KDB_INDEX_META, IndexIn(force=False, sleep_ms=10))
+            ps_out = ctx.call(KDB_INDEX_META.task_id, IndexIn(force=False, sleep_ms=10), output_type=KDB_INDEX_META.output_type)
             if not ps_out.ok:
                 raise RuntimeError(f"Post-sleep nested index failed: {ps_out.error}")
         st = read_json_dict(ctx.workspace_root.join(".cache", "kdb_state.json")) or {}
@@ -1548,7 +1548,7 @@ class IndexTask(Task[IndexIn, IndexOut]):
     def metadata(self) -> TaskMetadata[IndexIn, IndexOut]:
         return KDB_INDEX_META
     def run(self, req: IndexIn, ctx: TaskContext) -> IndexOut:
-        ast_out = ctx.invoke_typed(AST_SYNC_META, AstSyncIn(spaces=("source", "docs")))
+        ast_out = ctx.call(AST_SYNC_META.task_id, AstSyncIn(spaces=("source", "docs")), output_type=AST_SYNC_META.output_type)
         if not ast_out.ok:
             raise RuntimeError(f"Upstream ast.sync failed: {ast_out.error}")
         steps = max(1, req.sleep_ms // 20) if req.sleep_ms > 0 else 0
@@ -1805,7 +1805,7 @@ class ParentPreemptTask(Task[ProbeIn, ProbeOut]):
     def run(self, req: ProbeIn, ctx: TaskContext) -> ProbeOut:
         if req.fast:
             return ProbeOut(ok_tag="fast_winner")
-        sub = ctx.invoke_typed(CHILD_META, ProbeIn(hold_ms=req.hold_ms))
+        sub = ctx.call(CHILD_META.task_id, ProbeIn(hold_ms=req.hold_ms), output_type=CHILD_META.output_type)
         if not sub.ok:
             ctx.cancel_token.raise_if_cancelled()
             raise RuntimeError(f"child failed: {sub.error}")
@@ -1816,7 +1816,7 @@ class CoalC1bTask(Task[ProbeIn, ProbeOut]):
     def metadata(self) -> TaskMetadata[ProbeIn, ProbeOut]:
         return COAL_C1B_META
     def run(self, req: ProbeIn, ctx: TaskContext) -> ProbeOut:
-        sub = ctx.invoke_typed(CHILD_META, ProbeIn(hold_ms=req.hold_ms))
+        sub = ctx.call(CHILD_META.task_id, ProbeIn(hold_ms=req.hold_ms), output_type=CHILD_META.output_type)
         if not sub.ok:
             raise RuntimeError(f"nested child aborted: {sub.error}")
         return ProbeOut(ok_tag="c1b_ok")
@@ -1826,7 +1826,7 @@ class OuterJoinC1bTask(Task[ProbeIn, ProbeOut]):
     def metadata(self) -> TaskMetadata[ProbeIn, ProbeOut]:
         return TaskMetadata(TaskId("cprobe.outer_c1b"), ProbeIn, ProbeOut)
     def run(self, req: ProbeIn, ctx: TaskContext) -> ProbeOut:
-        r = ctx.invoke_typed(COAL_C1B_META, req)
+        r = ctx.call(COAL_C1B_META.task_id, req, output_type=COAL_C1B_META.output_type)
         if not r.ok:
             raise RuntimeError(f"c1b join failed: {r.error}")
         return ProbeOut(ok_tag="joined_ok", coalesced_sub=r.coalesced)
@@ -1849,7 +1849,7 @@ class OuterC2Task(Task[ProbeIn, ProbeOut]):
     def metadata(self) -> TaskMetadata[ProbeIn, ProbeOut]:
         return TaskMetadata(TaskId("cprobe.outer_c2"), ProbeIn, ProbeOut)
     def run(self, req: ProbeIn, ctx: TaskContext) -> ProbeOut:
-        r = ctx.invoke_typed(COAL_C2_META, req)
+        r = ctx.call(COAL_C2_META.task_id, req, output_type=COAL_C2_META.output_type)
         if not r.ok:
             raise RuntimeError(f"c2 failed: {r.error}")
         if req.after_ms > 0:
@@ -1865,7 +1865,7 @@ class OuterC2HopTask(Task[ProbeIn, ProbeOut]):
         return TaskMetadata(TaskId("cprobe.outer_c2_hop"), ProbeIn, ProbeOut, resource_key="cp_hop", concurrency_mode=ConcurrencyMode.COALESCE)
     def run(self, req: ProbeIn, ctx: TaskContext) -> ProbeOut:
         time.sleep(0.03)
-        r = ctx.invoke_typed(COAL_C2_META, req)
+        r = ctx.call(COAL_C2_META.task_id, req, output_type=COAL_C2_META.output_type)
         if not r.ok:
             raise RuntimeError(f"c2 hop failed: {r.error}")
         return ProbeOut(ok_tag="hop_ok", coalesced_sub=r.coalesced)
@@ -1875,7 +1875,7 @@ class OuterC2ThrowTask(Task[ProbeIn, ProbeOut]):
     def metadata(self) -> TaskMetadata[ProbeIn, ProbeOut]:
         return TaskMetadata(TaskId("cprobe.outer_c2_throw"), ProbeIn, ProbeOut)
     def run(self, req: ProbeIn, ctx: TaskContext) -> ProbeOut:
-        _ = ctx.invoke_typed(COAL_C2_META, req)
+        _ = ctx.call(COAL_C2_META.task_id, req, output_type=COAL_C2_META.output_type)
         raise RuntimeError("outer non-fatal boom after joining cycle host")
 
 class BgTrigSubTask(Task[ProbeIn, ProbeOut]):
@@ -1887,7 +1887,7 @@ class BgTrigSubTask(Task[ProbeIn, ProbeOut]):
             subscriptions=(EventSubscriptionSpec(EventId("cprobe.bg_start"), lambda _items: ProbeIn(mode="cyc_sub", hold_ms=90)),),
         )
     def run(self, req: ProbeIn, ctx: TaskContext) -> ProbeOut:
-        _ = ctx.invoke_typed(COAL_C2_META, req)
+        _ = ctx.call(COAL_C2_META.task_id, req, output_type=COAL_C2_META.output_type)
         return ProbeOut(ok_tag="bg_done")
 
 class Tier0PreemptTask(Task[ProbeIn, ProbeOut]):
@@ -1913,7 +1913,7 @@ class OuterC2TimedTask(Task[ProbeIn, ProbeOut]):
     def metadata(self) -> TaskMetadata[ProbeIn, ProbeOut]:
         return TaskMetadata(TaskId("cprobe.outer_c2_timed"), ProbeIn, ProbeOut, timeout_ms=130)
     def run(self, req: ProbeIn, ctx: TaskContext) -> ProbeOut:
-        r = ctx.invoke_typed(COAL_C2_META, req)
+        r = ctx.call(COAL_C2_META.task_id, req, output_type=COAL_C2_META.output_type)
         if not r.ok:
             raise RuntimeError(f"c2 timed failed: {r.error}")
         return ProbeOut(ok_tag="outer_c2_timed_ok", coalesced_sub=r.coalesced)
@@ -1970,7 +1970,7 @@ class OuterC3StarterTask(Task[ProbeIn, ProbeOut]):
     def metadata(self) -> TaskMetadata[ProbeIn, ProbeOut]:
         return TaskMetadata(TaskId("cprobe.outer_c3_starter"), ProbeIn, ProbeOut)
     def run(self, req: ProbeIn, ctx: TaskContext) -> ProbeOut:
-        sub = ctx.invoke_typed(COAL_C3_META, req)
+        sub = ctx.call(COAL_C3_META.task_id, req, output_type=COAL_C3_META.output_type)
         atomic_write_json(ctx.workspace_root.join(".cache_cprobe", "starter_timed_out.json"), {"ok": sub.ok})
         time.sleep(0.16)
         return ProbeOut(ok_tag="starter_survived" if not sub.ok else "unexpected")
@@ -1980,7 +1980,7 @@ class OuterC3FollowerTask(Task[ProbeIn, ProbeOut]):
     def metadata(self) -> TaskMetadata[ProbeIn, ProbeOut]:
         return TaskMetadata(TaskId("cprobe.outer_c3_foll"), ProbeIn, ProbeOut)
     def run(self, req: ProbeIn, ctx: TaskContext) -> ProbeOut:
-        sub = ctx.invoke_typed(COAL_C3_META, req)
+        sub = ctx.call(COAL_C3_META.task_id, req, output_type=COAL_C3_META.output_type)
         if not sub.ok:
             raise RuntimeError(f"c3 follower failed: {sub.error}")
         return ProbeOut(ok_tag="foll_ok", coalesced_sub=sub.coalesced)
@@ -2028,7 +2028,7 @@ XGRP_OUTER_SRC: Final[str] = (
     "    def run(self, req: XIn, ctx: TaskContext) -> XOut:\n"
     "        atomic_write_json(ctx.workspace_root.join('.cache', 'xg1_in.json'), {'in': True})\n"
     "        time.sleep(req.hold_ms / 1000.0)\n"
-    "        res = ctx.invoke_task(TaskId('xg2.inner'), {})\n"
+    "        res = ctx.call(TaskId('xg2.inner'), {})\n"
     "        v = res.value.get('v', 0) if (res.ok and isinstance(res.value, dict)) else -1\n"
     "        return XOut(inner_v=int(v) if isinstance(v, int) else -1)\n"
     "class Xg1Mod(YscbModule):\n"
@@ -2083,8 +2083,8 @@ PRIVATE_FATAL_MOD_SRC: Final[str] = (
     "class BadF1(Task[PIn, POut]):\n"
     "    @property\n    def metadata(self) -> TaskMetadata[PIn, POut]: return TaskMetadata(TaskId('pfm.bad_f1'), PIn, POut)\n"
     "    def run(self, req: PIn, ctx: TaskContext) -> POut:\n"
-    "        ctx.invoke_task(TaskId('pfm.prod'), {})\n"
-    "        ctx.invoke_task(TaskId('pfm.bad_f1'), {})\n        return POut()\n"
+    "        ctx.call(TaskId('pfm.prod'), {})\n"
+    "        ctx.call(TaskId('pfm.bad_f1'), {})\n        return POut()\n"
     "class TrigF2(Task[PIn, POut]):\n"
     "    @property\n    def metadata(self) -> TaskMetadata[PIn, POut]: return TaskMetadata(TaskId('pfm.trig_f2'), PIn, POut)\n"
     "    def run(self, req: PIn, ctx: TaskContext) -> POut:\n"
@@ -2093,7 +2093,7 @@ PRIVATE_FATAL_MOD_SRC: Final[str] = (
     "    @property\n    def metadata(self) -> TaskMetadata[PIn, POut]:\n"
     "        return TaskMetadata(TaskId('pfm.good_f2'), PIn, POut, exposure=TaskExposure.INTERNAL_TRIGGER, subscriptions=(EventSubscriptionSpec(EventId('pfm.ev_pre'), _mp, payload_type=PIn),))\n"
     "    def run(self, req: PIn, ctx: TaskContext) -> POut:\n"
-    "        ctx.invoke_task(TaskId('pfm.prod'), {})\n        return POut()\n"
+    "        ctx.call(TaskId('pfm.prod'), {})\n        return POut()\n"
     "class PfMod(YscbModule):\n"
     "    @property\n    def module_id(self) -> ModuleId: return ModuleId('pfm')\n"
     "    def tasks(self) -> Sequence[BoundTask]: return (Prod(), SubOk(), BadF1(), TrigF2(), GoodF2())\n"
