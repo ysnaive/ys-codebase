@@ -13,6 +13,7 @@ import threading
 import time
 from typing import Literal, Annotated, ClassVar, Optional, Sequence, TypeVar, cast, get_args, get_type_hints
 
+import core.execution.runtime as rt_mod
 import core.surface.sdk as sdk
 import core.surface.sdk.advanced as sdk_adv
 from core.execution.event import EventOrdering, EventSubscriptionSpec
@@ -31,6 +32,7 @@ from core.execution.runtime import (
     build_default_module_services,
     build_workspace_module_services_factory,
 )
+from core.foundation import SECRET_FIELD_METADATA_KEY, SchemaExporter
 from core.metadata.contributes import compile_extension_points
 from core.surface.bootstrap import (
     ClearDynamicSpaceInput,
@@ -90,6 +92,7 @@ from core.surface.sdk import (
     on_event,
     on_migrate,
     periodic,
+    secret_field,
     task,
 )
 from core.surface.sdk.advanced import (
@@ -653,6 +656,7 @@ def _verify_facade_and_zero_leak() -> None:
             "on_event",
             "on_migrate",
             "periodic",
+            "secret_field",
             "task",
         }
     )
@@ -698,11 +702,12 @@ def _verify_facade_and_zero_leak() -> None:
             "render_profiler_tree",
         }
     )
-    check(len(sdk.__all__) == 52 and len(set(sdk.__all__)) == 52)
+    check(len(sdk.__all__) == 53 and len(set(sdk.__all__)) == 53)
     check(frozenset(sdk.__all__) == expected_primary)
     check(len(sdk_adv.__all__) == 38 and len(set(sdk_adv.__all__)) == 38)
     check(frozenset(sdk_adv.__all__) == expected_advanced)
     check(expected_primary.isdisjoint(expected_advanced))
+    check(secret_field is not None)
     check(
         all(
             sym is not None
@@ -2526,6 +2531,45 @@ def _verify_sdk_ergonomics_taskref_group_and_equivalence(tmp_root: Path) -> None
         hot_disp.shutdown(grace_ms=300)
 
 
+def _verify_secret_field_and_presentation_ssot() -> None:
+    check(sdk.HumanRenderable is rt_mod.HumanRenderable)
+    check(sdk.ExitCodeProvider is rt_mod.ExitCodeProvider)
+    check(sdk_adv.format_output is rt_mod.format_output)
+
+    @dataclass(frozen=True, slots=True)
+    class _SecretCfgDto:
+        endpoint: str = "https://api.example.test"
+        api_token: str = secret_field(default="", metadata={"hint": "Bearer token"})
+        extra_keys: tuple[str, ...] = secret_field(default_factory=tuple)
+
+    @dataclass(frozen=True, slots=True)
+    class _RequiredSecretDto:
+        passphrase: str = secret_field()
+
+    cfg = _SecretCfgDto(api_token="super-secret-value", extra_keys=("k1",))
+    check(cfg.api_token == "super-secret-value" and cfg.extra_keys == ("k1",))
+    check("super-secret-value" not in repr(cfg) and "k1" not in repr(cfg), f"secret_field leaked in repr: {repr(cfg)}")
+    req_cfg = _RequiredSecretDto(passphrase="top-secret")
+    check(req_cfg.passphrase == "top-secret" and "top-secret" not in repr(req_cfg))
+
+    f_map = {f.name: f for f in _SecretCfgDto.__dataclass_fields__.values()}
+    check(f_map["api_token"].metadata.get(SECRET_FIELD_METADATA_KEY) is True)
+    check(f_map["api_token"].metadata.get("hint") == "Bearer token")
+    check(f_map["extra_keys"].metadata.get(SECRET_FIELD_METADATA_KEY) is True)
+
+    exported = SchemaExporter.export(_SecretCfgDto)
+    props = exported["properties"]
+    check(isinstance(props, dict))
+    check(props["api_token"].get("writeOnly") is True and props["api_token"].get("x-yscb-secret") is True)
+    check(props["extra_keys"].get("writeOnly") is True and props["extra_keys"].get("x-yscb-secret") is True)
+    check("writeOnly" not in props["endpoint"] and "x-yscb-secret" not in props["endpoint"])
+
+    assert_raises_val_error(lambda: secret_field(default="a", default_factory=lambda: "b"))
+    assert_raises_val_error(lambda: secret_field(default_factory="not_callable"))
+    assert_raises_val_error(lambda: secret_field(repr=cast(bool, "no")))
+    assert_raises_val_error(lambda: secret_field(metadata=cast(object, ["bad"])))
+
+
 def run_surface_sdk_suite(tmp_root: Path) -> None:
     """Execute the full Surface SDK test suite covering DSL, lifecycle, and YscbClient."""
     ws_base_p = tmp_root / "ws_sdk_base"
@@ -2533,6 +2577,7 @@ def run_surface_sdk_suite(tmp_root: Path) -> None:
     ws_base = HostPath(ws_base_p)
 
     _verify_facade_and_zero_leak()
+    _verify_secret_field_and_presentation_ssot()
     _verify_declarative_metadata_and_stacking(ws_base)
     _verify_compile_time_validation(ws_base)
     _verify_dual_track_rendering(ws_base)

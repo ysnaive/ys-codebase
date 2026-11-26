@@ -93,6 +93,20 @@ class IndexReleaseRecord:
     summary: str = ''
     yanked: bool = False
 
+class MigrationRollbackHandle:
+
+    def __init__(self, *, snapshot_fn: Callable[[ModuleId], None], restore_fn: Callable[[], None]) -> None:
+        ...
+
+    def snapshot_module_storage_local(self, module_id: ModuleId) -> None:
+        ...
+
+    def restore(self) -> None:
+        ...
+
+    def __call__(self) -> None:
+        ...
+
 class MirrorStore:
 
     def __init__(self, *, yscb_root: HostPath) -> None:
@@ -119,7 +133,7 @@ class OfflinePackageEngine:
         ...
 
     @contextmanager
-    def migration_rollback_scope(self) -> Iterator[Callable[[], None]]:
+    def migration_rollback_scope(self) -> Iterator[MigrationRollbackHandle]:
         ...
 
     def install(self, requests: Sequence[PackageRequest], *, force: bool=False, ignore_sha256: bool=False, offline: bool=False, cancel_token: Optional[CancellationToken]=None) -> DeploymentReport:
@@ -204,7 +218,7 @@ class UpgradeTransition:
     old_version: Optional[SemVer4]
     new_version: SemVer4
     is_upgrade: bool
-__all__: tuple[str, ...] = ('AtomicPackageDeployer', 'DependencySolver', 'DeploymentReport', 'IndexReleaseRecord', 'MirrorStore', 'OfflinePackageEngine', 'PackageRequest', 'ProviderClient', 'PurgeLevel', 'RemoteModuleIndex', 'UpdateCandidate', 'UpdateCheckReport', 'UpdateChecker', 'UpgradeTransition')
+__all__: tuple[str, ...] = ('AtomicPackageDeployer', 'DependencySolver', 'DeploymentReport', 'IndexReleaseRecord', 'MigrationRollbackHandle', 'MirrorStore', 'OfflinePackageEngine', 'PackageRequest', 'ProviderClient', 'PurgeLevel', 'RemoteModuleIndex', 'UpdateCandidate', 'UpdateCheckReport', 'UpdateChecker', 'UpgradeTransition')
 ```
 
 ---

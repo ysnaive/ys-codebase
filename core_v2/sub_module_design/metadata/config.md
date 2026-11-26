@@ -126,6 +126,12 @@ class ConfigStore:
     def unset_value(self, module_id: ModuleId, key: str, *, local: bool=False) -> bool:
         ...
 
+    def get_module_local_dict(self, module_id: ModuleId) -> MutableJsonObject:
+        ...
+
+    def get_module_redacted_dict(self, module_id: ModuleId, *, schema_cls: Optional[type[object]]=None) -> MutableJsonObject:
+        ...
+
     def deploy_configurable(self, module_id: ModuleId, staging_configurable_dir: HostPath, *, default_config_template: Optional[JsonObject]=None) -> tuple[str, ...]:
         ...
 
@@ -246,13 +252,13 @@ __all__: tuple[str, ...] = (
 
 1. **觸發時機與備份範圍（`DN-19`）**：
    - 預設僅於**套件生命週期變更**（`install` / `update` / `remove` / `rollback`）前自動觸發；單鍵 `config set` / `unset` 僅走單檔 `fs.atomic_write_json`（寫前若模組具組態 Schema 則先驗證型別，非法即拋 `YscbError(ErrorCode.CONFIG_INVALID)`）。
-   - 備份內容精準涵蓋：`{host_dir}/yscb.config.json`、`{yscb_root}/config/`、`{yscb_root}/.config.local/`、`{yscb_root}/storage/`；**嚴禁包含 `.storage.local/` 與 `.cache/`**。
+   - 備份內容精準涵蓋：`{host_dir}/yscb.config.json`、`{yscb_root}/config/`、`{yscb_root}/storage/`；**嚴禁包含 `.config.local/`、`.storage.local/` 與 `.cache/`**（`.config.local/` 屬本機私密層且採 `0o600` 檔案權限，避免於 `.snapshots/` 留下長期明文副本）。
 2. **三階段智能防重複與自動清理**：
-   - **① 內容指紋去重（Zero-Diff Short-Circuit）**：計算目標 4 區內容之確定性 `state_fingerprint`（SHA-256）；若最新一份快照之指紋完全一致且 `force=False`，直接復用並回傳 `SnapshotMeta(..., reused=True)`，0 磁碟寫入。
+   - **① 內容指紋去重（Zero-Diff Short-Circuit）**：計算目標 3 區與宿主組態之確定性 `state_fingerprint`（SHA-256）；若最新一份快照之指紋完全一致且 `force=False`，直接復用並回傳 `SnapshotMeta(..., reused=True)`，0 磁碟寫入。
    - **② 短時窗連點折疊（Burst Coalesce Window）**：若最新快照建立距今 `< coalesce_window_sec`（預設 `60s`）且 `force=False`，**保留該連續操作窗口起點的原始乾淨快照**並回傳 `reused=True`，避免短時間連續跑多條 `install`/`update` 塞滿 3 份槽位、擠掉真正早期的安全回滾點。
    - **③ 雙維度自動淘汰（Age + Count Pruning）**：每次建立快照或呼叫 `prune()` 時，自動移除「超過 `max_age_days`（預設 `7` 天）」以及「按建立時間排序超出最新 `max_snapshots`（預設 `3` 份）」之舊快照目錄（永不刪除當次剛建立／復用之快照），所有快照均先寫入 `.snapshots/.tmp_<id>` 再原子更名為 `.snapshots/snap_<ts>_<seq>`。
 3. **原子回滾閉環**：
-   - `restore_snapshot(snapshot_id)` 預設還原最新一份有效快照：先以臨時 staging 目錄覆蓋還原 `yscb.config.json`、`config/`、`.config.local/` 與 `storage/`，完成後交由上層 `packaging.installer` 依還原後的 `yscb.config.json` 從不可變鏡像重新物化 `.modules/`。
+   - `restore_snapshot(snapshot_id)` 預設還原最新一份有效快照：先以臨時 staging 目錄覆蓋還原 `yscb.config.json`、`config/` 與 `storage/`（不觸及本機私密 `.config.local/`），完成後交由上層 `packaging.installer` 依還原後的 `yscb.config.json` 從不可變鏡像重新物化 `.modules/`。
 
 ---
 

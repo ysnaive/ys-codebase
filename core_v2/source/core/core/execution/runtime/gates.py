@@ -95,12 +95,22 @@ class SharedWorkspaceState:
 
 
 def compute_coalesce_context_suffix(
-    caller_cwd: HostPath, caller_env: Mapping[str, str], approval_scope: frozenset[TaskId], allow_conditional: bool,
+    caller_cwd: HostPath,
+    caller_env: Mapping[str, str],
+    approval_scope: frozenset[TaskId],
+    allow_conditional: bool,
+    include_presentation: bool = False,
 ) -> str:
-    """Isolate COALESCE equivalence keys across caller security scopes and working directories."""
+    """Isolate COALESCE equivalence keys across caller security scopes, presentation flags, and working directories."""
     env_pairs = tuple(sorted(sanitize_caller_env(caller_env).items()))
     approvals = tuple(sorted(str(t) for t in approval_scope))
-    digest_doc: JsonObject = {"cwd": caller_cwd.comparison_key, "env": [[k, v] for k, v in env_pairs], "apr": list(approvals), "cond": allow_conditional}
+    digest_doc: JsonObject = {
+        "cwd": caller_cwd.comparison_key,
+        "env": [[k, v] for k, v in env_pairs],
+        "apr": list(approvals),
+        "cond": allow_conditional,
+        "pres": bool(include_presentation),
+    }
     return DataclassCodec.canonical_hash(digest_doc)[:24]
 
 
@@ -113,8 +123,19 @@ def expand_colocated_tier1_siblings(target_mods: frozenset[ModuleId], all_descs:
 
 
 def check_exposure_and_security_gates(request: InvokeRequest, spec: TaskRouteSpec) -> Optional[ErrorDetail]:
-    """Validate task exposure surface and conditional/gated security tier authorization."""
+    """Validate task exposure surface, skip_module_init authority, and conditional/gated security tier authorization."""
     prop, sid = request.propagation, str(request.task_id)
+    if request.skip_module_init:
+        if (
+            not prop.is_internal_trigger
+            or not request.task_id.value.endswith(".yscb_on_migrate")
+            or request.routing_policy != ClientRoutingPolicy.FORCE_COLD
+        ):
+            return ErrorDetail(
+                ErrorCode.ACCESS_DENIED,
+                f"skip_module_init=True is restricted to internal cold '.yscb_on_migrate' tasks, rejected for '{request.task_id}'.",
+                source_task=sid,
+            )
     if spec.exposure == TaskExposure.INTERNAL_TRIGGER and not prop.is_internal_trigger:
         return ErrorDetail(ErrorCode.EXPOSURE_DENIED, f"Task '{request.task_id}' is INTERNAL_TRIGGER only.", source_task=sid)
     if spec.exposure == TaskExposure.SDK_ONLY and request.caller_surface == CallerSurface.CLI:
@@ -143,6 +164,18 @@ def check_host_and_mutation_gates(
 ) -> Optional[ErrorDetail]:
     """Validate interactive TTY, environment self-mutation, and cold/hot dispatch mode constraints."""
     prop, sid = request.propagation, str(request.task_id)
+    if request.skip_module_init and (
+        is_daemon_host
+        or prop.from_hot_container
+        or bool(prop.hot_workspaces)
+        or prop.is_nested_call
+        or bool(prop.call_stack)
+    ):
+        return ErrorDetail(
+            ErrorCode.ACCESS_DENIED,
+            f"skip_module_init=True is forbidden inside hot daemon containers or nested calls: '{request.task_id}'.",
+            source_task=sid,
+        )
     if spec.interactive_tty and (
         prop.is_nested_call or bool(prop.call_stack) or bool(prop.hot_workspaces) or prop.is_internal_trigger
         or prop.in_event_chain or prop.from_hot_container or is_daemon_host or request.priority != ExecutionPriority.FOREGROUND

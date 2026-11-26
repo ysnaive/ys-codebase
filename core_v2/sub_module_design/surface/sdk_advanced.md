@@ -8,7 +8,7 @@
 
 ## 1. 模組定位與分層邊界
 
-`core.surface.sdk.advanced` 承接外部程式化宿主客戶端（`YscbClient`）、無磁碟記憶體模組治具（`InMemoryModule`）、CLI 呈現輔助（`format_output`）、ImTK 階層式效能剖析與渲染工具（`Profiler` / `ProfilerSession` / `ProfilerNodeSnapshot` / `NullProfiler` / `render_profiler_tree`）、細部儲存與 VFS 契約（`SnapshotReader` / `WriteTransaction` / `StorageOpenOptions` / `VfsCapabilities` / `VfsStat` / `HashPolicy` / `ConsumerCursor`）、低階值物件與系統事件 ID，讓主入口 [`core.surface.sdk`](./sdk.md) 保持高信噪比（52 個高頻業務模組核心符號），兩層 `__all__` 交集嚴格為空。
+`core.surface.sdk.advanced` 承接外部程式化宿主客戶端（`YscbClient`）、無磁碟記憶體模組治具（`InMemoryModule`）、CLI 呈現輔助（`format_output`）、ImTK 階層式效能剖析與渲染工具（`Profiler` / `ProfilerSession` / `ProfilerNodeSnapshot` / `NullProfiler` / `render_profiler_tree`）、細部儲存與 VFS 契約（`SnapshotReader` / `WriteTransaction` / `StorageOpenOptions` / `VfsCapabilities` / `VfsStat` / `HashPolicy` / `ConsumerCursor`）、低階值物件與系統事件 ID，讓主入口 [`core.surface.sdk`](./sdk.md) 保持高信噪比（53 個高頻業務模組核心符號），兩層 `__all__` 交集嚴格為空。
 
 ## 2. 公開契約與門面簽名（1:1 Parity）
 
@@ -30,6 +30,7 @@ from core.execution.runtime import (
     TaskOutcome,
     TaskRef,
     YscbModule,
+    format_output,
 )
 from core.filesystem.space import ConsumerCursor, HashPolicy
 from core.filesystem.storage import SnapshotReader, StorageOpenOptions, WriteTransaction
@@ -60,9 +61,6 @@ from core.surface.sdk import Module
 
 TIn = TypeVar("TIn")
 TOut = TypeVar("TOut")
-
-
-def format_output(output: object) -> tuple[str, int]: ...
 
 
 class InMemoryModule:

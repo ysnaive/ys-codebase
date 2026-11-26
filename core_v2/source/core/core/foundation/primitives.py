@@ -50,11 +50,62 @@ PUBLIC_ENV_ALLOWLIST: Final[frozenset[str]] = frozenset(
         "YSCB_PROFILE_MEM",
     }
 )
+TOOLCHAIN_ENV_ALLOWLIST: Final[frozenset[str]] = frozenset(
+    {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS",
+        "SSH_AUTH_SOCK",
+        "GIT_SSH_COMMAND",
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+        "CARGO_HOME",
+        "RUSTUP_HOME",
+        "GOPATH",
+        "GOMODCACHE",
+        "NPM_CONFIG_REGISTRY",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+    }
+)
 PYTHON_LAUNCHER_HIJACK_ENV_KEYS: Final[tuple[str, ...]] = (
     "__PYVENV_LAUNCHER__",
     "PYTHONSTARTUP",
     "PYTHONINSPECT",
 )
+
+
+def extract_toolchain_env(raw_env: Mapping[str, str]) -> dict[str, str]:
+    """Filter a raw environment mapping to non-credential developer toolchain, proxy, CA, and SSH agent keys."""
+    if not isinstance(raw_env, Mapping):
+        raise ValueError(f"extract_toolchain_env requires a Mapping[str, str], got {type(raw_env).__name__}")
+    hijack_upper = {k.upper() for k in PYTHON_LAUNCHER_HIJACK_ENV_KEYS}
+    out: dict[str, str] = {}
+    for k, v in raw_env.items():
+        if type(k) is not str or type(v) is not str or not k or "=" in k or "\x00" in k or "\x00" in v:
+            continue
+        try:
+            k.encode("utf-8")
+            v.encode("utf-8")
+        except UnicodeEncodeError:
+            continue
+        ku = k.upper()
+        if (
+            ku in hijack_upper
+            or ku.startswith(("PYTHON", "PIP_", PRIVATE_ENV_PREFIX, "YSCB_"))
+            or ku == "VIRTUAL_ENV"
+        ):
+            continue
+        if ku in TOOLCHAIN_ENV_ALLOWLIST:
+            out[k] = v
+    return out
 MutableJsonObject: TypeAlias = dict[str, JsonValue]
 MAX_USER_JSON_DEPTH: Final[int] = 128
 MAX_ENVELOPE_JSON_DEPTH: Final[int] = MAX_USER_JSON_DEPTH + 6

@@ -1,9 +1,9 @@
 # 專案輕量級待辦與技術債帳本 (TODO Ledger)
 
 > 主題：專案輕量級待辦與技術債帳本  
-> 更新日期：2026-11-25  
+> 更新日期：2026-11-26  
 > 狀態：Active  
-> 最後分配編號：34  
+> 最後分配編號：37  
 > 模型：Gemini 4 Neon (XHigh)  
 
 ---
@@ -74,3 +74,18 @@
 - **建立日期**：2026-11-25
 - **目標範疇**：`core_v2/yscb.py, core_v2/surface/cli, core_v2/surface/bootstrap`
 - **備忘與解法要點**：拆解並縮減 Bootstrap/Launcher (~500ms) 啟動黑箱，並讓純轉發線上 Daemon RPC 之 CLI 請求繞過冷 CreateKernel 與 SpaceDb 初始化 (省去 ~165ms 熱啟動稅)
+
+### [TODO-35] Core 2.0 與 dev 2.0 協同打通磁碟模組 config.schema.json 與 contributes/_schema.json 編譯載入閉環
+- **建立日期**：2026-11-26
+- **目標範疇**：`core_v2/source/core + core_v2/source/dev`
+- **備忘與解法要點**：盲審 P0-1: WorkspaceKernel._live_specs 與 Tier 1 Worker 未自省磁碟模組, ensure_installed_tasks_indices 僅編譯 tasks.index.json 致 Module.extension_points 與 config_type 在磁碟態靜默失效; 歸屬 Wave 1.3 dev 2.0 build 與 core 安裝/載入閉環協同設計
+
+### [TODO-36] Core 2.0 與 dev 2.0 協同設計強隔離下的跨模組強型別契約共享機制
+- **建立日期**：2026-11-26
+- **目標範疇**：`core_v2/source/core/execution/runtime + core_v2/source/dev`
+- **備忘與解法要點**：盲審 P0-5: _ScopedModuleFinder 隔離磁碟模組命名空間禁止互 import, 致跨模組 TaskRef / DTO / 自訂 EventMetadata 無法單一真理共享; 需於 Wave 1.3 dev 2.0 協同定義純契約層或 Stub 匯出機制以支撐 Wave 3 kdb 與 ast 協作
+
+### [TODO-37] Core 2.0 @periodic 持久化排程基準、長週期與 Daemon Idle TTL 協調及背景錯誤檢視
+- **建立日期**：2026-11-26
+- **目標範疇**：`core_v2/source/core/core/execution/daemon/service.py`
+- **備忘與解法要點**：盲審 P1-3: 預設 30m Idle TTL 不因背景任務續命致長週期巡檢永不觸發, _last_base 僅存記憶體致重啟即重跑重任務, 且缺 CLI 檢視背景錯誤明細; 可與 TODO-32 與 TODO-33 一併設計

@@ -1,7 +1,7 @@
 """Domain 4.2: Pure offline package engine, dependency solver, atomic staging deployer, mirror store, and update checker."""
 
 from core.packaging.installer.deployer import AtomicPackageDeployer
-from core.packaging.installer.engine import OfflinePackageEngine
+from core.packaging.installer.engine import MigrationRollbackHandle, OfflinePackageEngine
 from core.packaging.installer.mirror import MirrorStore
 from core.packaging.installer.models import (
     DeploymentReport,
@@ -22,6 +22,7 @@ __all__ = (
     "DependencySolver",
     "DeploymentReport",
     "IndexReleaseRecord",
+    "MigrationRollbackHandle",
     "MirrorStore",
     "OfflinePackageEngine",
     "PackageRequest",

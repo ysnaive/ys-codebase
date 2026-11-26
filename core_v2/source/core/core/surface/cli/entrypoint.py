@@ -214,7 +214,8 @@ def _map_error_exit_code(code: ErrorCode) -> int:
 
 
 def _write_json_outcome(stdout_stream: CliOutputStream, outcome: TaskOutcome[object]) -> None:
-    encoded = DataclassCodec.encode_object(outcome)
+    raw = DataclassCodec.encode_object(outcome)
+    encoded = {k: v for k, v in raw.items() if k not in ("rendered_text", "exit_code")}
     stdout_stream.write(json.dumps(encoded, ensure_ascii=False) + "\n")
     stdout_stream.flush()
 
@@ -272,6 +273,22 @@ def _render_human_outcome(
         stderr_stream.flush()
         return _map_error_exit_code(err.code)
 
+    if outcome.rendered_text is not None:
+        if outcome.rendered_text:
+            stdout_stream.write(
+                outcome.rendered_text if outcome.rendered_text.endswith("\n") else f"{outcome.rendered_text}\n"
+            )
+            stdout_stream.flush()
+        return outcome.exit_code if outcome.exit_code is not None else 0
+
+    if outcome.exit_code is not None:
+        if not (task_entry.void_output and outcome.value == {}):
+            txt, _unused_rc = format_output(outcome.value)
+            if txt:
+                stdout_stream.write(txt if txt.endswith("\n") else f"{txt}\n")
+                stdout_stream.flush()
+        return outcome.exit_code
+
     custom_txt, custom_code = _fallback_decode_output(
         session,
         task_entry,
@@ -283,6 +300,13 @@ def _render_human_outcome(
             stdout_stream.write(custom_txt if custom_txt.endswith("\n") else f"{custom_txt}\n")
             stdout_stream.flush()
         return custom_code if custom_code is not None else 0
+
+    if task_entry.custom_exit_code:
+        stderr_stream.write(
+            f"Error [{ErrorCode.BUSINESS_FAILURE.value}]: Task '{task_entry.task_id}' declared custom exit code but returned none.\n"
+        )
+        stderr_stream.flush()
+        return 1
 
     if task_entry.void_output and outcome.value == {}:
         return 0
@@ -835,6 +859,7 @@ def main(
                 profile_mem=eff_profile_mem,
                 external_flight_owner=True,
                 active_profiler=root_profiler,
+                include_presentation=True,
             )
             with guard_standard_streams(allow_interactive_tty=task_entry.interactive_tty):
                 if install_signal_guard and threading.current_thread() is threading.main_thread():
@@ -862,14 +887,20 @@ def main(
 
         if deferred_daemon:
             if flags.json_output:
-                _unused_txt, custom_exit = _fallback_decode_output(
-                    session,
-                    task_entry,
-                    outcome.value,
-                    render_human=False,
-                )
-                exit_code = custom_exit if custom_exit is not None else 0
+                if outcome.exit_code is not None:
+                    exit_code = outcome.exit_code
+                else:
+                    _unused_txt, custom_exit = _fallback_decode_output(
+                        session,
+                        task_entry,
+                        outcome.value,
+                        render_human=False,
+                    )
+                    exit_code = custom_exit if custom_exit is not None else (1 if task_entry.custom_exit_code else 0)
                 pre_human_txt = ""
+            elif outcome.rendered_text is not None or outcome.exit_code is not None:
+                pre_human_txt = outcome.rendered_text or ""
+                exit_code = outcome.exit_code if outcome.exit_code is not None else 0
             else:
                 custom_txt, custom_exit = _fallback_decode_output(
                     session,
@@ -952,13 +983,33 @@ def main(
             buf_err = io.StringIO()
             if flags.json_output:
                 if outcome.ok:
-                    _unused_txt, custom_exit = _fallback_decode_output(
-                        session,
-                        task_entry,
-                        outcome.value,
-                        render_human=False,
-                    )
-                    exit_code = custom_exit if custom_exit is not None else 0
+                    if outcome.exit_code is not None:
+                        exit_code = outcome.exit_code
+                    else:
+                        _unused_txt, custom_exit = _fallback_decode_output(
+                            session,
+                            task_entry,
+                            outcome.value,
+                            render_human=False,
+                        )
+                        if custom_exit is not None:
+                            exit_code = custom_exit
+                        elif task_entry.custom_exit_code:
+                            exit_code = 1
+                            outcome = TaskOutcome(
+                                ok=False,
+                                error=ErrorDetail(
+                                    ErrorCode.BUSINESS_FAILURE,
+                                    f"Task '{task_entry.task_id}' declared custom exit code but produced none.",
+                                    source_task=task_entry.task_id.value,
+                                ),
+                                event_diagnostics=outcome.event_diagnostics,
+                                teardown_diagnostics=outcome.teardown_diagnostics,
+                                coalesced=outcome.coalesced,
+                                executed_hot=outcome.executed_hot,
+                            )
+                        else:
+                            exit_code = 0
                 else:
                     exit_code = (
                         130

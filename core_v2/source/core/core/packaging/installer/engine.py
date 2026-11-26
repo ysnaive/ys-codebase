@@ -30,6 +30,7 @@ from core.filesystem.vfs import KernelVfs
 from core.foundation.errors import ErrorCode, YscbError
 from core.foundation.observability import CancellationToken
 from core.foundation.primitives import (
+    IS_WINDOWS,
     HostPath,
     ModuleId,
     SemVer4,
@@ -305,13 +306,42 @@ def _replace_dir_with_retry(src_raw: str, dst_raw: str) -> None:
         raise last_exc
 
 
+def _chmod_private_tx_dir(path_str: str) -> None:
+    if IS_WINDOWS:
+        return
+    try:
+        os.chmod(path_str, 0o700)
+    except OSError:
+        pass
+
+
+def _tighten_private_tree_permissions(root_str: str) -> None:
+    if IS_WINDOWS or not os.path.isdir(root_str):
+        return
+    _chmod_private_tx_dir(root_str)
+    for cur_dir, entries in walk_nonsymlink_dir_tree(root_str):
+        _chmod_private_tx_dir(cur_dir)
+        for ent in entries:
+            if ent.is_symlink() or is_symlink_or_reparse(ent.path):
+                continue
+            if ent.is_dir(follow_symlinks=False):
+                _chmod_private_tx_dir(ent.path)
+            elif ent.is_file(follow_symlinks=False):
+                try:
+                    os.chmod(ent.path, 0o600)
+                except OSError:
+                    pass
+
+
 def _capture_tx_workspace_guard(host_dir: HostPath, yscb_root: HostPath, seq: int) -> _InsTxWorkspaceGuard:
     temp_root = resolve_contained_subpath(yscb_root, ".temp")
-    os.makedirs(str(temp_root), exist_ok=True)
+    os.makedirs(str(temp_root), mode=0o700, exist_ok=True)
+    _chmod_private_tx_dir(str(temp_root))
     guard_dir = resolve_contained_subpath(temp_root, f"tx_guard_{os.getpid()}_{seq}")
     if os.path.lexists(str(guard_dir)):
         ins_robust_rmtree(str(guard_dir))
-    os.makedirs(str(guard_dir), exist_ok=False)
+    os.makedirs(str(guard_dir), mode=0o700, exist_ok=False)
+    _chmod_private_tx_dir(str(guard_dir))
 
     try:
         host_cfg_hp = resolve_contained_subpath(host_dir, "yscb.config.json")
@@ -357,7 +387,9 @@ def _capture_tx_workspace_guard(host_dir: HostPath, yscb_root: HostPath, seq: in
                                 raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing symlinked file: '{ent.path}'")
                             raise YscbError(ErrorCode.CONFIG_INVALID, f"Unreadable regular file: '{ent.path}'")
                         dst_file_hp = resolve_contained_subpath(dst_sub, ent.name)
-                        atomic_write_bytes(dst_file_hp, f_bytes)
+                        atomic_write_bytes(dst_file_hp, f_bytes, file_mode=0o600 if area_key == "config_local" else None)
+            if area_key == "config_local":
+                _tighten_private_tree_permissions(str(bak_area))
         return _InsTxWorkspaceGuard(
             guard_dir=guard_dir,
             had_host_cfg=had_host,
@@ -377,6 +409,8 @@ def _capture_tx_workspace_guard(host_dir: HostPath, yscb_root: HostPath, seq: in
 def _sync_guard_backup_in_place(
     live_hp: HostPath,
     bak_area: Optional[HostPath],
+    *,
+    private_mode: bool = False,
 ) -> None:
     raw_live = str(live_hp)
     assert_no_symlink_raw_path(raw_live)
@@ -412,7 +446,7 @@ def _sync_guard_backup_in_place(
                 raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing symlink inside '{live_hp}': '{raw_f}'")
             if os.path.isdir(raw_f):
                 ins_robust_rmtree(raw_f)
-            atomic_write_bytes(f_hp, f_bytes)
+            atomic_write_bytes(f_hp, f_bytes, file_mode=(0o600 if private_mode else None))
 
     if not os.path.isdir(raw_live):
         return
@@ -452,9 +486,51 @@ def _restore_single_tx_guard_area(
     seq: int,
 ) -> None:
     live_hp = resolve_contained_subpath(yscb_root, subdir_name)
+    _restore_contained_dir_from_backup(
+        yscb_root=yscb_root,
+        live_hp=live_hp,
+        bak_area=resolve_contained_subpath(guard.guard_dir, area_key) if guard.area_present.get(area_key, False) else None,
+        tag=area_key,
+        seq=seq,
+        private_mode=(area_key == "config_local"),
+    )
+
+
+def _copy_private_tree_to_stage(bak_area: HostPath, stage_hp: HostPath) -> None:
+    os.makedirs(str(stage_hp), exist_ok=True)
+    _chmod_private_tx_dir(str(stage_hp))
+    raw_bak = str(bak_area)
+    for cur_dir, entries in walk_nonsymlink_dir_tree(raw_bak):
+        rel_cur = os.path.relpath(cur_dir, raw_bak)
+        dir_parts = () if rel_cur in ("", ".") else tuple(Path(rel_cur).parts)
+        dst_dir_hp = resolve_contained_subpath(stage_hp, *dir_parts) if dir_parts else stage_hp
+        os.makedirs(str(dst_dir_hp), exist_ok=True)
+        _chmod_private_tx_dir(str(dst_dir_hp))
+        for ent in entries:
+            if ent.is_symlink() or is_symlink_or_reparse(ent.path):
+                continue
+            if ent.is_dir(follow_symlinks=False):
+                sub_hp = resolve_contained_subpath(dst_dir_hp, ent.name)
+                os.makedirs(str(sub_hp), exist_ok=True)
+                _chmod_private_tx_dir(str(sub_hp))
+            elif ent.is_file(follow_symlinks=False):
+                f_bytes = read_nofollow_regular_bytes(ent.path)
+                if f_bytes is not None:
+                    atomic_write_bytes(resolve_contained_subpath(dst_dir_hp, ent.name), f_bytes, file_mode=0o600)
+
+
+def _restore_contained_dir_from_backup(
+    *,
+    yscb_root: HostPath,
+    live_hp: HostPath,
+    bak_area: Optional[HostPath],
+    tag: str,
+    seq: int,
+    private_mode: bool = False,
+) -> None:
     raw_live = str(live_hp)
-    stage_hp = resolve_contained_subpath(yscb_root, f".staging_txguard_{area_key}_{os.getpid()}_{seq}")
-    prev_hp = resolve_contained_subpath(yscb_root, f".tmp_txprev_{area_key}_{os.getpid()}_{seq}")
+    stage_hp = resolve_contained_subpath(yscb_root, f".staging_txguard_{tag}_{os.getpid()}_{seq}")
+    prev_hp = resolve_contained_subpath(yscb_root, f".tmp_txprev_{tag}_{os.getpid()}_{seq}")
     raw_stage = str(stage_hp)
     raw_prev = str(prev_hp)
     for residual in (raw_stage, raw_prev):
@@ -462,12 +538,17 @@ def _restore_single_tx_guard_area(
             ins_robust_rmtree(residual)
     moved_prev = False
     try:
-        if guard.area_present.get(area_key, False):
-            bak_area = resolve_contained_subpath(guard.guard_dir, area_key)
+        if bak_area is not None:
+            os.makedirs(str(live_hp.path.parent), exist_ok=True)
             if os.path.isdir(str(bak_area)):
-                shutil.copytree(str(bak_area), raw_stage, symlinks=False)
+                if private_mode:
+                    _copy_private_tree_to_stage(bak_area, stage_hp)
+                else:
+                    shutil.copytree(str(bak_area), raw_stage, symlinks=False)
             else:
                 os.makedirs(raw_stage, exist_ok=True)
+            if private_mode:
+                _tighten_private_tree_permissions(raw_stage)
             if os.path.lexists(raw_live):
                 if is_symlink_or_reparse(raw_live):
                     ins_robust_rmtree(raw_live)
@@ -478,7 +559,9 @@ def _restore_single_tx_guard_area(
                     except OSError:
                         if not os.path.isdir(raw_live) or is_symlink_or_reparse(raw_live):
                             raise
-                        _sync_guard_backup_in_place(live_hp, bak_area)
+                        _sync_guard_backup_in_place(live_hp, bak_area, private_mode=private_mode)
+                        if private_mode:
+                            _tighten_private_tree_permissions(raw_live)
                         return
             try:
                 _replace_dir_with_retry(raw_stage, raw_live)
@@ -489,6 +572,8 @@ def _restore_single_tx_guard_area(
                     except OSError:
                         pass
                 raise
+            if private_mode:
+                _tighten_private_tree_permissions(raw_live)
         elif os.path.lexists(raw_live):
             if is_symlink_or_reparse(raw_live):
                 ins_robust_rmtree(raw_live)
@@ -534,6 +619,71 @@ def _restore_tx_workspace_guard(
 
     if first_err is not None:
         raise first_err
+
+
+def _capture_module_storage_local_backup(
+    yscb_root: HostPath,
+    guard_dir: HostPath,
+    module_id: ModuleId,
+) -> bool:
+    live_mod_hp = resolve_contained_subpath(yscb_root, ".storage.local", module_id.value)
+    raw_live = str(live_mod_hp)
+    if not os.path.lexists(raw_live):
+        return False
+    if is_symlink_or_reparse(raw_live) or has_symlink_raw_path(raw_live):
+        raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing symlinked .storage.local directory: '{live_mod_hp}'")
+    if not os.path.isdir(raw_live):
+        raise YscbError(ErrorCode.CONFIG_INVALID, f"Expected directory at '{live_mod_hp}'")
+    bak_mod_hp = resolve_contained_subpath(guard_dir, "storage_local", module_id.value)
+    os.makedirs(str(bak_mod_hp), exist_ok=True)
+    _chmod_private_tx_dir(str(bak_mod_hp.path.parent))
+    _chmod_private_tx_dir(str(bak_mod_hp))
+    for cur_dir, entries in walk_nonsymlink_dir_tree(raw_live):
+        rel_cur = os.path.relpath(cur_dir, raw_live)
+        dir_parts = () if rel_cur in ("", ".") else tuple(Path(rel_cur).parts)
+        dst_sub = resolve_contained_subpath(bak_mod_hp, *dir_parts) if dir_parts else bak_mod_hp
+        os.makedirs(str(dst_sub), exist_ok=True)
+        _chmod_private_tx_dir(str(dst_sub))
+        for ent in entries:
+            if is_atomic_staging_filename(ent.name):
+                continue
+            if ent.is_symlink() or is_symlink_or_reparse(ent.path):
+                raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing symlink inside '{live_mod_hp}': '{ent.path}'")
+            if ent.is_file(follow_symlinks=False):
+                f_bytes = read_nofollow_regular_bytes(ent.path)
+                if f_bytes is None:
+                    if has_symlink_raw_path(ent.path):
+                        raise YscbError(ErrorCode.SECURITY_GATED, f"Refusing symlinked file: '{ent.path}'")
+                    raise YscbError(ErrorCode.CONFIG_INVALID, f"Unreadable storage file: '{ent.path}'")
+                dst_file_hp = resolve_contained_subpath(dst_sub, ent.name)
+                atomic_write_bytes(dst_file_hp, f_bytes, file_mode=0o600)
+    return True
+
+
+class MigrationRollbackHandle:
+    """Callable transactional rollback handle supporting on-demand per-module .storage.local backup and restore."""
+
+    def __init__(
+        self,
+        *,
+        snapshot_fn: Callable[[ModuleId], None],
+        restore_fn: Callable[[], None],
+    ) -> None:
+        self._snapshot_fn = snapshot_fn
+        self._restore_fn = restore_fn
+
+    def snapshot_module_storage_local(self, module_id: ModuleId) -> None:
+        """Capture an idempotent pre-migration snapshot of .storage.local/<module_id> before running @on_migrate."""
+        if not isinstance(module_id, ModuleId):
+            raise ValueError(f"snapshot_module_storage_local requires ModuleId, got {module_id!r}")
+        self._snapshot_fn(module_id)
+
+    def restore(self) -> None:
+        """Atomically restore pre-transaction workspace state and any snapshotted module .storage.local directories."""
+        self._restore_fn()
+
+    def __call__(self) -> None:
+        self.restore()
 
 
 class OfflinePackageEngine:
@@ -625,19 +775,56 @@ class OfflinePackageEngine:
         return (snap.snapshot_id, tx_guard)
 
     @contextlib.contextmanager
-    def migration_rollback_scope(self) -> Iterator[Callable[[], None]]:
+    def migration_rollback_scope(self) -> Iterator[MigrationRollbackHandle]:
         """Capture an exact pre-transaction workspace guard for post-deploy @on_migrate rollback."""
         with self._engine_tx_lock():
             guard = _capture_tx_workspace_guard(self._host_dir, self._yscb_root, self._next_tx_seq())
+        storage_snaps: dict[ModuleId, bool] = {}
+
+        def _snapshot_storage_local(mod_id: ModuleId) -> None:
+            with self._engine_tx_lock():
+                if mod_id in storage_snaps:
+                    return
+                storage_snaps[mod_id] = _capture_module_storage_local_backup(
+                    self._yscb_root, guard.guard_dir, mod_id,
+                )
 
         def _restore_pre_transaction() -> None:
             with self._engine_tx_lock():
-                _restore_tx_workspace_guard(self._host_dir, self._yscb_root, guard, self._next_tx_seq())
+                first_err: Optional[BaseException] = None
+                try:
+                    _restore_tx_workspace_guard(self._host_dir, self._yscb_root, guard, self._next_tx_seq())
+                except BaseException as base_exc:
+                    first_err = base_exc
+                for mod_id, existed in storage_snaps.items():
+                    try:
+                        live_mod_hp = resolve_contained_subpath(self._yscb_root, ".storage.local", mod_id.value)
+                        bak_mod_hp = (
+                            resolve_contained_subpath(guard.guard_dir, "storage_local", mod_id.value)
+                            if existed
+                            else None
+                        )
+                        _restore_contained_dir_from_backup(
+                            yscb_root=self._yscb_root,
+                            live_hp=live_mod_hp,
+                            bak_area=bak_mod_hp,
+                            tag=f"stloc_{mod_id.value}",
+                            seq=self._next_tx_seq(),
+                        )
+                    except BaseException as st_exc:
+                        if first_err is None:
+                            first_err = st_exc
                 self._config_store.reload()
                 self._reconcile_materialized_modules_from_mirror()
+                if first_err is not None:
+                    raise first_err
 
+        handle = MigrationRollbackHandle(
+            snapshot_fn=_snapshot_storage_local,
+            restore_fn=_restore_pre_transaction,
+        )
         try:
-            yield _restore_pre_transaction
+            yield handle
         finally:
             with self._engine_tx_lock():
                 self._cleanup_tx_guard(guard)

@@ -8,7 +8,6 @@ import dataclasses
 from dataclasses import dataclass
 from enum import Enum
 import inspect
-import json
 import threading
 import types
 from typing import (
@@ -19,7 +18,6 @@ from typing import (
     Literal,
     Mapping,
     Optional,
-    Protocol,
     Sequence,
     TypeVar,
     Union,
@@ -27,7 +25,6 @@ from typing import (
     get_args,
     get_origin,
     get_type_hints,
-    runtime_checkable,
 )
 import weakref
 
@@ -54,7 +51,6 @@ from core.execution.runtime import (
 from core.filesystem.storage import BlobVault, ModuleDatabase, SchemaMigration, StorageOpenOptions
 from core.filesystem.vfs import ScopedVfs
 from core.foundation import (
-    DataclassCodec,
     EnvHash,
     ErrorCode,
     EventId,
@@ -175,56 +171,6 @@ class MigrationRequest:
     def __post_init__(self) -> None:
         if not isinstance(self.old_version, SemVer4) or not isinstance(self.new_version, SemVer4):
             raise ValueError("MigrationRequest old_version and new_version must be SemVer4 instances")
-
-
-@runtime_checkable
-class HumanRenderable(Protocol):
-    """Optional output protocol rendering human-readable CLI output without altering SDK return values."""
-
-    def render_text(self) -> str: ...
-
-
-@runtime_checkable
-class ExitCodeProvider(Protocol):
-    """Optional output protocol supplying semantic CLI process exit codes."""
-
-    def exit_code(self) -> int: ...
-
-
-def format_output(output: object) -> tuple[str, int]:
-    """Extract (rendered_text, exit_code) uniformly from any SDK task return object."""
-    code = require_pure_int(output.exit_code(), "ExitCodeProvider.exit_code()", min_val=None, max_val=None) if isinstance(output, ExitCodeProvider) else 0
-    if isinstance(output, HumanRenderable):
-        return (require_pure_str(output.render_text(), "HumanRenderable.render_text()"), code)
-    if isinstance(output, Enum) and not isinstance(output, type):
-        output = output.value
-    if output is None or isinstance(output, Empty):
-        return ("", code)
-    if type(output) is str:
-        return (output, code)
-    if isinstance(
-        output,
-        (
-            bool,
-            int,
-            float,
-            ModuleId,
-            TaskId,
-            EventId,
-            HostPath,
-            SemVer4,
-            VersionConstraint,
-            SemanticUri,
-            SpaceId,
-            SpacePath,
-            SnapshotGen,
-            EnvHash,
-        ),
-    ):
-        return (str(output), code)
-    if (dataclasses.is_dataclass(output) and not isinstance(output, type)) or isinstance(output, (Mapping, list, tuple, frozenset)):
-        return (json.dumps(DataclassCodec.encode(output), indent=2, ensure_ascii=False), code)
-    return (str(output), code)
 
 
 class _SdkStateRegistry:

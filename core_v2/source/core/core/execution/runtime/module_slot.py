@@ -138,6 +138,8 @@ class LocalStepExecutionSpec:
     priority_getter: Callable[[], ExecutionPriority]
     callbacks: StepContextCallbacks
     interactive_tty: bool = False
+    include_presentation: bool = False
+    skip_module_init: bool = False
 
 
 def _entry_is_contained_py(ent: os.DirEntry[str], mod_dir: Path) -> bool:
@@ -1350,13 +1352,26 @@ class LocalModuleSlotRegistry:
             raise deferred_base
         return tuple(diags)
 
-    def _acquire_pinned_task(self, task_id: TaskId) -> tuple[BoundTask, LoadedModuleArtifact]:
+    def _acquire_pinned_task(
+        self,
+        task_id: TaskId,
+        *,
+        skip_module_init: bool = False,
+    ) -> tuple[BoundTask, LoadedModuleArtifact]:
         self._raise_if_degraded(task_id.module_id, str(task_id))
+        valid_phases = (
+            (_SlotPhase.ARTIFACT_LOADED, _SlotPhase.INITIALIZED, _SlotPhase.STARTED)
+            if skip_module_init
+            else (_SlotPhase.INITIALIZED, _SlotPhase.STARTED)
+        )
         for _attempt in range(3):
-            self.ensure_module_loaded_and_initialized(task_id.module_id)
+            if skip_module_init:
+                self.ensure_module_artifact_loaded(task_id.module_id)
+            else:
+                self.ensure_module_loaded_and_initialized(task_id.module_id)
             with self._drain_cond:
                 slot = self._slot_locked(task_id.module_id)
-                if slot.artifact is None or slot.phase not in (_SlotPhase.INITIALIZED, _SlotPhase.STARTED):
+                if slot.artifact is None or slot.phase not in valid_phases:
                     continue
                 task = slot.tasks.get(task_id)
                 if task is None:
@@ -1384,12 +1399,22 @@ class LocalModuleSlotRegistry:
         try:
             spec.cancel_token.raise_if_cancelled()
             with active_step_caller_env_scope(spec.caller_env):
-                task, pinned_art = self._acquire_pinned_task(spec.task_id)
+                task, pinned_art = self._acquire_pinned_task(spec.task_id, skip_module_init=spec.skip_module_init)
                 pinned_box.append(pinned_art)
                 with guard_standard_streams(allow_interactive_tty=(task.interactive_tty or spec.interactive_tty)):
                     with resolve_active_profiler().scope_relative("Task", spec.task_id.value):
-                        raw_out = task.execute_encoded(spec.raw_input, ctx)
-            return WorkerStepReply(ok=True, raw_output=raw_out, committed_events=outbox.drain_committed())
+                        step_out = task.execute_encoded_with_presentation(
+                            spec.raw_input,
+                            ctx,
+                            include_presentation=spec.include_presentation,
+                        )
+            return WorkerStepReply(
+                ok=True,
+                raw_output=step_out.raw_output,
+                committed_events=outbox.drain_committed(),
+                rendered_text=step_out.rendered_text,
+                exit_code=step_out.exit_code,
+            )
         except (TaskCancelledException, YscbError) as exc:
             outbox.discard()
             is_fatal = False if isinstance(exc, TaskCancelledException) else is_fatal_error_code(exc.detail.code)

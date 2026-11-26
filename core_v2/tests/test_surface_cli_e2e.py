@@ -6148,6 +6148,8 @@ def run_surface_cli_e2e_suite(tmp_root: Path) -> None:
     _verify_bootstrap_gate_ack_cursor_and_env_lease(wk_host_hp, wk_root_hp, t1_pool, t1_grp_specs[ModuleId("t1fd1")])
     _verify_observability_profiler_and_fast_daemon_boot(suite_dir, boot_prov, wheel_house_hp)
     _verify_ctx_spaces_tier0_and_tier1_e2e(suite_dir, boot_prov, wheel_house_hp)
+    _verify_greenfield_migrate_and_secret_e2e(suite_dir, boot_prov)
+    _verify_greenfield_warm_tier1_presentation_e2e(suite_dir, boot_prov, wheel_house_hp)
     log("[SURFACE-CLI] All CLI, Bootstrap, and yscb.py E2E checks passed.")
 
 
@@ -7010,6 +7012,25 @@ def _verify_ctx_spaces_tier0_and_tier1_e2e(
             "        diff1 = ctx.spaces.diff(sid)\n"
             "        acked = ctx.spaces.ack_cursor(diff1)\n"
             "        diff2 = ctx.spaces.diff(sid)\n"
+            "        sp_uri = ctx.spaces.resolve_uri(sid, 'docs/guide.md')\n"
+            "        sp_txt = ctx.vfs.read_text(sp_uri).strip()\n"
+            "        matched_uri = [str(s) for s in ctx.spaces.match_spaces(sp_uri)]\n"
+            "        matched_rel = [str(s) for s in ctx.spaces.match_spaces('./docs/guide.md')]\n"
+            "        denied_core_code = ''\n"
+            "        try:\n"
+            "            ctx.spaces.match_spaces('yscb://.modules/core/manifest.json')\n"
+            "        except YscbError as exc:\n"
+            "            denied_core_code = exc.detail.code.value\n"
+            "        denied_st_code = ''\n"
+            "        try:\n"
+            "            ctx.spaces.match_spaces('storage.local://core/space/state.db')\n"
+            "        except YscbError as exc:\n"
+            "            denied_st_code = exc.detail.code.value\n"
+            "        denied_cfg_code = ''\n"
+            "        try:\n"
+            "            ctx.spaces.match_spaces('config.local://other/config.local.json')\n"
+            "        except YscbError as exc:\n"
+            "            denied_cfg_code = exc.detail.code.value\n"
             "        missing_code = ''\n"
             "        try:\n"
             "            ctx.spaces.status('noowner/nospace')\n"
@@ -7032,6 +7053,13 @@ def _verify_ctx_spaces_tier0_and_tier1_e2e(
             "            'diff1_changes': diff1.has_changes,\n"
             "            'acked': acked,\n"
             "            'diff2_changes': diff2.has_changes,\n"
+            "            'sp_uri': str(sp_uri),\n"
+            "            'sp_txt': sp_txt,\n"
+            "            'matched_uri': matched_uri,\n"
+            "            'matched_rel': matched_rel,\n"
+            "            'denied_core_code': denied_core_code,\n"
+            "            'denied_st_code': denied_st_code,\n"
+            "            'denied_cfg_code': denied_cfg_code,\n"
             "            'missing_code': missing_code,\n"
             "            'bad_owner_code': bad_owner_code,\n"
             "            'cleared': cleared,\n"
@@ -7093,6 +7121,13 @@ def _verify_ctx_spaces_tier0_and_tier1_e2e(
                 and v["diff1_changes"] is True
                 and v["acked"] is True
                 and v["diff2_changes"] is False
+                and v["sp_uri"] == "project://docs/guide.md"
+                and v["sp_txt"] == "# Guide"
+                and f"{mod_id}/docs" in v["matched_uri"]
+                and f"{mod_id}/docs" in v["matched_rel"]
+                and v["denied_core_code"] == ErrorCode.ACCESS_DENIED.value
+                and v["denied_st_code"] == ErrorCode.ACCESS_DENIED.value
+                and v["denied_cfg_code"] == ErrorCode.ACCESS_DENIED.value
                 and v["missing_code"] == ErrorCode.SPACE_NOT_FOUND.value
                 and v["bad_owner_code"] == ErrorCode.CONFIG_INVALID.value
                 and v["cleared"] == 1,
@@ -7100,6 +7135,350 @@ def _verify_ctx_spaces_tier0_and_tier1_e2e(
             )
         ev_t0 = client.call("sp_t0.ev_count", force_cold=True)
         check(ev_t0.ok and isinstance(ev_t0.value, int) and ev_t0.value >= 1, f"Expected SPACE_UPDATED_EVENT hit: {ev_t0}")
+
+
+def _pkg_simple_module_zip(
+    prov_dir: Path,
+    mod_id: str,
+    version: str,
+    entry_code: str,
+    *,
+    config_schema: Optional[dict[str, object]] = None,
+    pip_dependencies: Optional[dict[str, str]] = None,
+    venv_group: Optional[str] = None,
+) -> None:
+    mod_dir = prov_dir / mod_id
+    mod_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = mod_dir / f"{version}.zip"
+    mf_doc: dict[str, object] = {
+        "schema_version": 2,
+        "id": mod_id,
+        "version": version,
+        "description": f"Test module {mod_id} {version}",
+        "entry": "module_entry.py",
+        "dependencies": {},
+        "pip_dependencies": pip_dependencies or {},
+        "eager_warmup": False,
+        "onboarding": [],
+    }
+    if venv_group is not None:
+        mf_doc["venv_group"] = venv_group
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps(mf_doc, indent=2))
+        zf.writestr("module_entry.py", entry_code)
+        if config_schema is not None:
+            zf.writestr("config.schema.json", json.dumps(config_schema, indent=2))
+    sha = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    idx_path = mod_dir / "index.json"
+    idx_doc = (
+        json.loads(idx_path.read_text(encoding="utf-8"))
+        if idx_path.is_file()
+        else {"module_id": mod_id, "versions": [], "releases": {}}
+    )
+    if version not in idx_doc["versions"]:
+        idx_doc["versions"].append(version)
+    idx_doc["releases"][version] = {
+        "version": version,
+        "status": "active",
+        "urgency": "recommended",
+        "yanked": False,
+        "sha256": sha,
+        "filename": f"{version}.zip",
+        "dependencies": {},
+    }
+    idx_path.write_text(json.dumps(idx_doc, indent=2), encoding="utf-8")
+
+
+def _verify_greenfield_migrate_and_secret_e2e(suite_dir: Path, _unused_prov: Path) -> None:
+    _ = _unused_prov
+    gf_base = suite_dir / "greenfield_mig_sec_e2e"
+    gf_prov = gf_base / "provider"
+    gf_ws = gf_base / "ws"
+    gf_ws.mkdir(parents=True, exist_ok=True)
+    _ = _package_core_release_zip(gf_prov, "2.0.0.0", status="active")
+
+    dbmig_v1 = (
+        "from core.surface.sdk import Module, ModuleEnv, SchemaMigration, TaskContext, task\n\n"
+        "class DbMigMod(Module):\n"
+        "    id = 'dbmig'\n"
+        "    def __init__(self) -> None:\n"
+        "        self._db = None\n"
+        "    def on_init(self, env: ModuleEnv) -> None:\n"
+        "        self._db = env.open_database('state', migrations=(SchemaMigration(1, 'init', ('CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)',)),))\n"
+        "        with self._db.write_transaction() as tx:\n"
+        "            tx.execute(\"INSERT OR IGNORE INTO kv (k, v) VALUES ('seed', 'v1_row')\")\n"
+        "    @task(cli='read', name='read', summary='Read kv')\n"
+        "    def read(self, ctx: TaskContext) -> dict[str, str]:\n"
+        "        _ = ctx\n"
+        "        with self._db.read_snapshot() as snap:\n"
+        "            rows = snap.query_all('SELECT k, v FROM kv ORDER BY k')\n"
+        "        return {str(r[0]): str(r[1]) for r in rows}\n"
+    )
+    dbmig_v2_fail = (
+        "from core.surface.sdk import MigrationRequest, Module, ModuleEnv, SchemaMigration, TaskContext, on_migrate, task\n\n"
+        "class DbMigMod(Module):\n"
+        "    id = 'dbmig'\n"
+        "    def __init__(self) -> None:\n"
+        "        self._db = None\n"
+        "    def on_init(self, env: ModuleEnv) -> None:\n"
+        "        env.vfs.write_text('cache://@/v2_on_init_ran.txt', 'RAN')\n"
+        "        self._db = env.open_database('state', migrations=(\n"
+        "            SchemaMigration(1, 'init', ('CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)',)),\n"
+        "            SchemaMigration(2, 'v2_col', ('ALTER TABLE kv ADD COLUMN tag TEXT DEFAULT \"v2\"',)),\n"
+        "        ))\n"
+        "    @on_migrate()\n"
+        "    def migrate(self, req: MigrationRequest, ctx: TaskContext) -> None:\n"
+        "        _ = req\n"
+        "        ctx.vfs.write_bytes('storage.local://@/state.db', b'CORRUPTED_MID_MIGRATE')\n"
+        "        raise RuntimeError('MID_MIGRATION_BOOM')\n"
+        "    @task(cli='read', name='read', summary='Read kv')\n"
+        "    def read(self, ctx: TaskContext) -> dict[str, str]:\n"
+        "        _ = ctx\n"
+        "        return {'ver': '2.0'}\n"
+    )
+    dbmig_v2_ok = (
+        "from core.surface.sdk import MigrationRequest, Module, ModuleEnv, SchemaMigration, TaskContext, on_migrate, task\n\n"
+        "class DbMigMod(Module):\n"
+        "    id = 'dbmig'\n"
+        "    def __init__(self) -> None:\n"
+        "        self._db = None\n"
+        "    def on_init(self, env: ModuleEnv) -> None:\n"
+        "        self._db = env.open_database('state', migrations=(\n"
+        "            SchemaMigration(1, 'init', ('CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)',)),\n"
+        "            SchemaMigration(2, 'v2_col', ('ALTER TABLE kv ADD COLUMN tag TEXT DEFAULT \"v2\"',)),\n"
+        "        ))\n"
+        "    @on_migrate()\n"
+        "    def migrate(self, req: MigrationRequest, ctx: TaskContext) -> None:\n"
+        "        ctx.vfs.write_text('storage.local://@/mig_done.txt', f'{req.old_version}->{req.new_version}')\n"
+        "    @task(cli='read', name='read', summary='Read kv')\n"
+        "    def read(self, ctx: TaskContext) -> dict[str, str]:\n"
+        "        with self._db.read_snapshot() as snap:\n"
+        "            rows = snap.query_all('SELECT k, v, tag FROM kv ORDER BY k')\n"
+        "        mig = ctx.vfs.read_text('storage.local://@/mig_done.txt') if ctx.vfs.exists('storage.local://@/mig_done.txt') else ''\n"
+        "        return {'seed': f'{rows[0][1]}:{rows[0][2]}', 'mig': mig}\n"
+    )
+    secmod_src = (
+        "from dataclasses import dataclass\n"
+        "from core.surface.sdk import Module, TaskContext, secret_field, task\n\n"
+        "@dataclass(frozen=True, slots=True)\n"
+        "class SecCfg:\n"
+        "    endpoint: str = 'https://default.example'\n"
+        "    api_token: str = secret_field(default='')\n\n"
+        "class SecMod(Module):\n"
+        "    id = 'secmod'\n"
+        "    config_type = SecCfg\n"
+        "    @task(cli='read-secret', name='read_secret', summary='Read unredacted config')\n"
+        "    def read_secret(self, ctx: TaskContext) -> dict[str, str]:\n"
+        "        cfg = ctx.load_config(SecCfg)\n"
+        "        return {'endpoint': cfg.endpoint, 'api_token': cfg.api_token}\n"
+    )
+    sec_schema = {
+        "type": "object",
+        "properties": {
+            "endpoint": {"type": "string", "default": "https://default.example"},
+            "api_token": {"type": "string", "default": "", "writeOnly": True, "x-yscb-secret": True},
+        },
+        "additionalProperties": False,
+    }
+    _pkg_simple_module_zip(gf_prov, "dbmig", "1.0.0.0", dbmig_v1)
+    _pkg_simple_module_zip(gf_prov, "dbmig", "1.1.0.0", dbmig_v2_fail)
+    _pkg_simple_module_zip(gf_prov, "dbmig", "1.2.0.0", dbmig_v2_ok)
+    _pkg_simple_module_zip(gf_prov, "secmod", "1.0.0.0", secmod_src, config_schema=sec_schema)
+
+    check(_run_yscb_subproc(gf_ws, ["init", f"--provider={gf_prov}", "--json"]).returncode == 0)
+    _ = _run_gated_cli_two_step(gf_ws, ["install", "dbmig@1.0.0.0", "secmod@1.0.0.0", "--cold"])
+    cp_read_v1 = _run_yscb_subproc(gf_ws, ["dbmig", "read", "--json", "--cold"])
+    check(cp_read_v1.returncode == 0 and json.loads(cp_read_v1.stdout)["value"] == {"seed": "v1_row"}, f"v1 read failed: {cp_read_v1.stdout}")
+
+    _ = _run_gated_cli_two_step_expect_fail(
+        gf_ws,
+        ["install", "dbmig@1.1.0.0", "--cold"],
+        expected_rc=1,
+        expected_code=ErrorCode.BUSINESS_FAILURE.value,
+    )
+    check(
+        not (gf_ws / ".yscb" / ".cache" / "dbmig" / "v2_on_init_ran.txt").exists(),
+        "New module on_init() MUST NOT run during @on_migrate!",
+    )
+    cp_after_rb = _run_yscb_subproc(gf_ws, ["dbmig", "read", "--json", "--cold"])
+    check(
+        cp_after_rb.returncode == 0 and json.loads(cp_after_rb.stdout)["value"] == {"seed": "v1_row"},
+        f"Rollback must restore .storage.local/dbmig/ cleanly without SCHEMA_MIGRATION_ERROR: {cp_after_rb.stdout} {cp_after_rb.stderr}",
+    )
+
+    _ = _run_gated_cli_two_step(gf_ws, ["install", "dbmig@1.2.0.0", "--cold"])
+    cp_v2 = _run_yscb_subproc(gf_ws, ["dbmig", "read", "--json", "--cold"])
+    check(
+        cp_v2.returncode == 0 and json.loads(cp_v2.stdout)["value"] == {"seed": "v1_row:v2", "mig": "1.0.0.0->1.2.0.0"},
+        f"Clean v2 upgrade failed: {cp_v2.stdout} {cp_v2.stderr}",
+    )
+
+    cp_set_tok = _run_yscb_subproc(gf_ws, ["config", "set", "secmod", "api_token", '"sk-live-999"', "--local", "--json", "--cold"])
+    check(cp_set_tok.returncode == 0 and "sk-live-999" not in cp_set_tok.stdout and "[REDACTED]" in cp_set_tok.stdout)
+    cp_set_ep = _run_yscb_subproc(gf_ws, ["config", "set", "secmod", "endpoint", '"https://local.override"', "--local", "--json", "--cold"])
+    check(cp_set_ep.returncode == 0 and "local.override" not in cp_set_ep.stdout and "[REDACTED]" in cp_set_ep.stdout)
+    if os.name != "nt":
+        loc_f = gf_ws / ".yscb" / ".config.local" / "secmod" / "config.local.json"
+        check(stat.S_IMODE(loc_f.stat().st_mode) == 0o600, f"Expected 0o600 on config.local.json: {oct(loc_f.stat().st_mode)}")
+
+    for cfg_cmd in (
+        ["config", "get", "secmod", "api_token", "--json", "--cold"],
+        ["config", "get", "secmod", "endpoint", "--json", "--cold"],
+        ["config", "list", "secmod", "--json", "--cold"],
+        ["config", "inspect", "secmod", "--json", "--cold"],
+    ):
+        cp_c = _run_yscb_subproc(gf_ws, cfg_cmd)
+        check(
+            cp_c.returncode == 0
+            and "sk-live-999" not in cp_c.stdout
+            and "local.override" not in cp_c.stdout
+            and "[REDACTED]" in cp_c.stdout,
+            f"Secret or config.local leaked via {cfg_cmd}: {cp_c.stdout}",
+        )
+    cp_no_reveal = _run_yscb_subproc(gf_ws, ["config", "get", "secmod", "api_token", "--reveal", "--json", "--cold"])
+    check(cp_no_reveal.returncode == 2, f"--reveal must NOT exist on config get: rc={cp_no_reveal.returncode}")
+
+    cp_mod_read = _run_yscb_subproc(gf_ws, ["secmod", "read-secret", "--json", "--cold"])
+    check(
+        cp_mod_read.returncode == 0
+        and json.loads(cp_mod_read.stdout)["value"] == {"endpoint": "https://local.override", "api_token": "sk-live-999"},
+        f"ctx.load_config must receive real unredacted secret values: {cp_mod_read.stdout}",
+    )
+
+
+def _verify_greenfield_warm_tier1_presentation_e2e(
+    suite_dir: Path,
+    prov_dir: Path,
+    wheel_house_hp: HostPath,
+) -> None:
+    ws_dir = suite_dir / "greenfield_t1_pres_e2e"
+    ws_dir.mkdir(parents=True, exist_ok=True)
+    check(_run_yscb_subproc(ws_dir, ["init", f"--provider={prov_dir}", "--json"]).returncode == 0)
+    yscb_root = ws_dir / ".yscb"
+    t1_dir = yscb_root / ".modules" / "t1pres"
+    t1_dir.mkdir(parents=True, exist_ok=True)
+    import_log_path = yscb_root / ".cache" / "t1pres_imports.log"
+    (t1_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "id": "t1pres",
+                "version": "1.0.0.0",
+                "description": "Tier 1 warm presentation probe",
+                "venv_group": "t1pres_grp",
+                "pip_dependencies": {"dummy-dial-pkg": "==1.0.0"},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (t1_dir / "module_entry.py").write_text(
+        "from dataclasses import dataclass\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        "from typing import Optional\n"
+        "from core.surface.sdk import ExitCodeProvider, HumanRenderable, Module, TaskContext, task\n\n"
+        f"_IMP_LOG = Path({str(import_log_path)!r})\n"
+        "_IMP_LOG.parent.mkdir(parents=True, exist_ok=True)\n"
+        "with _IMP_LOG.open('a', encoding='utf-8') as _f:\n"
+        "    _f.write(f'{os.getpid()}\\n')\n\n"
+        "@dataclass(frozen=True, slots=True)\n"
+        "class WarmOut(HumanRenderable, ExitCodeProvider):\n"
+        "    msg: str\n"
+        "    code: int\n"
+        "    def render_text(self) -> str:\n"
+        "        return f'WARM_T1_RENDER::{self.msg}:{os.getpid()}'\n"
+        "    def exit_code(self) -> int:\n"
+        "        return self.code\n\n"
+        "@dataclass(frozen=True, slots=True)\n"
+        "class BrokenOut(HumanRenderable, ExitCodeProvider):\n"
+        "    tag: str\n"
+        "    def render_text(self) -> str:\n"
+        "        raise RuntimeError('RENDER_CRASH_BOOM')\n"
+        "    def exit_code(self) -> int:\n"
+        "        return 5\n\n"
+        "class T1PresMod(Module):\n"
+        "    id = 't1pres'\n"
+        "    @task(cli='warn', name='warn', summary='Warm custom render and exit code')\n"
+        "    def warn(self, ctx: TaskContext) -> WarmOut:\n"
+        "        _ = ctx\n"
+        "        return WarmOut(msg='hot_ok', code=3)\n"
+        "    @task(cli='boom', name='boom', summary='Crashing render_text')\n"
+        "    def boom(self, ctx: TaskContext) -> BrokenOut:\n"
+        "        _ = ctx\n"
+        "        return BrokenOut(tag='bad')\n"
+        "    @task(cli='maybe', name='maybe', summary='Optional ExitCodeProvider returning None')\n"
+        "    def maybe(self, ctx: TaskContext) -> Optional[WarmOut]:\n"
+        "        _ = ctx\n"
+        "        return None\n",
+        encoding="utf-8",
+    )
+    host_cfg_p = ws_dir / "yscb.config.json"
+    hcfg = json.loads(host_cfg_p.read_text(encoding="utf-8"))
+    hcfg["installed_modules"]["t1pres"] = {"version": "1.0.0.0", "provider": "local", "installed_at": "2026-11-26T00:00:00Z"}
+    host_cfg_p.write_text(json.dumps(hcfg, indent=2), encoding="utf-8")
+
+    pool = ImmutableVenvPool(yscb_root=HostPath(yscb_root), cache_dir=HostPath(yscb_root / ".cache"))
+    mfs = discover_installed_manifests_map(HostPath(yscb_root))
+    grp_specs = ImmutableVenvPool.resolve_group_specs(tuple(mfs.values()))
+    pool.ensure_env(grp_specs[ModuleId("t1pres")], offline=True, wheel_cache_dir=wheel_house_hp)
+    idx_k = WorkspaceKernelFactory.create(HostPath(ws_dir), HostPath(yscb_root), force_cold=True)
+    try:
+        idx_k.ensure_installed_tasks_indices((ModuleId("t1pres"),))
+        idx_k.rebuild_tasks_index_cache()
+    finally:
+        idx_k.close()
+    if import_log_path.is_file():
+        import_log_path.unlink()
+
+    cp_start = _run_yscb_subproc(ws_dir, ["daemon", "start", "-d", "--json"])
+    check(cp_start.returncode == 0, f"Daemon start failed for t1pres: {cp_start.stdout} {cp_start.stderr}")
+    try:
+        cp_j = _run_yscb_subproc(ws_dir, ["t1pres", "warn", "--json"])
+        j_doc = json.loads(cp_j.stdout)
+        check(
+            cp_j.returncode == 3
+            and j_doc.get("ok") is True
+            and j_doc.get("executed_hot") is True
+            and j_doc.get("value") == {"msg": "hot_ok", "code": 3}
+            and "rendered_text" not in j_doc
+            and "exit_code" not in j_doc,
+            f"Warm Tier 1 --json presentation/purity failed (rc={cp_j.returncode}): {j_doc}",
+        )
+        cp_h = _run_yscb_subproc(ws_dir, ["t1pres", "warn"])
+        check(
+            cp_h.returncode == 3 and "WARM_T1_RENDER::hot_ok:" in cp_h.stdout,
+            f"Warm Tier 1 human presentation failed (rc={cp_h.returncode}): {cp_h.stdout!r} {cp_h.stderr!r}",
+        )
+        imp_pids = import_log_path.read_text(encoding="utf-8").splitlines()
+        check(
+            len(imp_pids) == 1,
+            f"Warm Tier 1 presentation must reuse the single warm worker (zero cold re-import), got imports={imp_pids}",
+        )
+        check(
+            f"WARM_T1_RENDER::hot_ok:{imp_pids[0]}" in cp_h.stdout,
+            f"render_text() must run inside the warm Tier 1 worker PID {imp_pids[0]}: {cp_h.stdout!r}",
+        )
+        cp_boom_j = _run_yscb_subproc(ws_dir, ["t1pres", "boom", "--json"])
+        boom_doc = json.loads(cp_boom_j.stdout)
+        check(
+            cp_boom_j.returncode != 0
+            and boom_doc.get("ok") is False
+            and boom_doc.get("error", {}).get("code") == ErrorCode.BUSINESS_FAILURE.value,
+            f"Broken render_text must fail explicitly (never silent exit 0): rc={cp_boom_j.returncode} doc={boom_doc}",
+        )
+        cp_boom_h = _run_yscb_subproc(ws_dir, ["t1pres", "boom"])
+        check(cp_boom_h.returncode != 0, f"Broken render_text human mode must exit non-zero: rc={cp_boom_h.returncode}")
+        cp_maybe_j = _run_yscb_subproc(ws_dir, ["t1pres", "maybe", "--json"])
+        maybe_doc = json.loads(cp_maybe_j.stdout)
+        check(
+            cp_maybe_j.returncode == 0 and maybe_doc.get("ok") is True and maybe_doc.get("value") is None,
+            f"Optional[ExitCodeProvider] returning None must succeed with exit 0 in --json: rc={cp_maybe_j.returncode} doc={maybe_doc}",
+        )
+        cp_maybe_h = _run_yscb_subproc(ws_dir, ["t1pres", "maybe"])
+        check(cp_maybe_h.returncode == 0, f"Optional[ExitCodeProvider] returning None must exit 0 in human mode: rc={cp_maybe_h.returncode}")
+    finally:
+        _ = _run_yscb_subproc(ws_dir, ["daemon", "stop", "--json"])
+        stop_daemon_cleanly(HostPath(yscb_root))
 
 
 __all__ = ("run_surface_cli_e2e_suite",)

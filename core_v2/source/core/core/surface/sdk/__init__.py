@@ -1,4 +1,4 @@
-"""Primary public SDK entrypoint re-exporting the 52 high-frequency Core 2.0 business-module contracts."""
+"""Primary public SDK entrypoint re-exporting the 53 high-frequency Core 2.0 business-module contracts."""
 
 from core.execution.event import EventMetadata
 from core.execution.runtime import (
@@ -12,6 +12,8 @@ from core.execution.runtime import (
     ConfigChangedEventPayload,
     DispatchMode,
     Empty,
+    ExitCodeProvider,
+    HumanRenderable,
     ModuleLifecycleEventPayload,
     ProcessResult,
     SecurityTier,
@@ -34,12 +36,11 @@ from core.foundation import (
     SpacePath,
     TaskCancelledException,
     YscbError,
+    secret_field,
 )
 from core.metadata.contributes import ContribField, ExtensionPointSpec, MergeStrategy
 from core.surface.sdk.declarative import (
     Arg,
-    ExitCodeProvider,
-    HumanRenderable,
     MigrationRequest,
     Module,
     ModuleEnv,
@@ -104,5 +105,6 @@ __all__: tuple[str, ...] = (
     "on_event",
     "on_migrate",
     "periodic",
+    "secret_field",
     "task",
 )

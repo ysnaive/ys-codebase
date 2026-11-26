@@ -395,6 +395,8 @@ class WorkerSubprocessHandler(InboundCallHandler):
             priority_getter=_live_prio,
             callbacks=callbacks,
             interactive_tty=cmd.interactive_tty,
+            include_presentation=cmd.include_presentation,
+            skip_module_init=cmd.skip_module_init,
         )
         worker_prof = ProfilerSession(root_name=f"Worker/{cmd.task_id.value}", track_memory=cmd.profile_mem)
         eff_trace_id = cmd.trace_id or (cmd.callback_context.propagation.call_tree_id or "")

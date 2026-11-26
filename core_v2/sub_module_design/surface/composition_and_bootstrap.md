@@ -91,7 +91,7 @@
 6. **收尾同步與通知**：重建 `.cache/tasks.index.json`、重載 `ContributesAggregator` / `SpaceRegistry`、執行 `GitignoreMaterializer.sync()` 與 `ReadonlyPolicy.sync_files()`、執行 `EnvGarbageCollector.collect()`、發射 `MODULE_INSTALLED_EVENT_ID` / `WORKSPACE_RELOADED_EVENT_ID`，於 `CONTROL_RESUME` 喚醒 Daemon 後依序釋放中層 `tx_orchestrator.lock` 與最外層 `installer.lock`。
 
 ### 2.2 供下游模組呼叫之內核空間系統 `Task`（`SpaceClient` 後端）
-- **無鎖併發讀任務（`SDK_ONLY`, `ConcurrencyMode.PARALLEL`）**：`core.space.list(owner=None)`、`core.space.status(space_id)`、`core.space.files(space_id, pattern=None)`、`core.space.diff(space_id, consumer)`，直接透過 `SpaceRegistry` 與 SQLite WAL 快照回傳強型別 DTO/Tuple。
+- **無鎖併發讀任務（`SDK_ONLY`, `ConcurrencyMode.PARALLEL`）**：`core.space.list(owner=None)`、`core.space.status(space_id)`、`core.space.files(space_id, pattern=None)`、`core.space.diff(space_id, consumer)`、`core.space.resolve_uri(space_id, rel_path)`、`core.space.match_spaces(target)`，直接透過 `SpaceRegistry`、呼叫端權限隔離 `ScopedVfs` 與 SQLite WAL 快照回傳強型別 DTO/Tuple。
 - **單點互斥寫入／掃描任務（`lock="core:space_state"`）**：
   - `core.space.scan(space_id=None, force=False)`（`SDK_ONLY`）：單點鎖下執行增量掃描並發射 `SPACE_UPDATED_EVENT`。
   - `core.space.set_dynamic(owner, name, spec)` / `core.space.clear_dynamic(owner, name=None)`（`SDK_ONLY`）：檢核呼叫來源模組僅能修改自身 `owner`，寫入 `storage.local://core/space/state.db` 後立即觸發 `.gitignore` / `/readonly` 同步並發射 `SPACE_REGISTRY_CHANGED_EVENT`。
@@ -141,7 +141,7 @@ from core.execution.runtime import BoundTask, CONFIG_CHANGED_EVENT, CORE_MODULE_
 from core.filesystem.fs import FileLock, MAX_JSON_FILE_BYTES, assert_no_symlink_raw_path, atomic_write_json, has_symlink_raw_path, is_symlink_or_reparse, read_json_dict, read_nofollow_regular_bytes, resolve_contained_subpath, try_resolve_contained_subpath
 from core.filesystem.space import GitignoreMaterializer, HashPolicy, SpaceDiffBatch, SpaceFileEntry, SpaceMatchExplain, SpaceRegistry, SpaceScanner, SpaceSpec, SpaceStatusSnapshot
 from core.filesystem.storage import ModuleDatabase
-from core.filesystem.vfs import KernelVfs, MountRule, ReadonlyPolicy, UriMountTable, VfsCapabilities, VfsEchoGuard, VfsHub, build_standard_mount_rules
+from core.filesystem.vfs import KernelVfs, MountRule, ReadonlyPolicy, ScopedVfs, UriMountTable, VfsCapabilities, VfsEchoGuard, VfsHub, build_standard_mount_rules
 from core.foundation import CancellationToken, DataclassCodec, ErrorCode, ErrorDetail, FlightLogConfig, FlightLogRouter, HostPath, INT64_MAX, INT64_MIN, IS_WINDOWS, JsonObject, JsonValue, LocaleCatalog, ModuleId, MutableJsonObject, NullProfiler, Profiler, ProfilerNodeSnapshot, ProfilerRingBuffer, SemanticUri, SnapshotGen, SpaceId, SpacePath, TEST_SANDBOX_ENV_KEY, TaskId, YscbError, build_isolated_python_env, guard_standard_streams, is_process_alive, is_public_env_truthy, read_public_env_value, require_non_none, require_pure_bool, require_pure_int, require_pure_str, safe_real_to_float, strict_parse_json_object
 from core.metadata.config import ConfigStore, ModuleManifest, SnapshotVault, parse_manifest_dict, register_compiled_module_surface_meta
 from core.metadata.contributes import AggregatedContributes, ContributesAggregator, CoreSpaceContribution, CoreUriSchemeContribution, ExtensionPointSpec, ProvenanceGraph, ResolvedProjectRoot, bind_locale_getter_dialect, bind_locale_getter_owner, core_builtin_extension_points, discover_installed_manifests_map, extract_parsed_space_contributions, extract_validated_uri_schemes, hash_workspace_surface_trees, is_active_cross_workspace_call, is_control_plane_reserved_path, is_permitted_contributed_mount_root, load_workspace_locale_catalog, probe_workspace_host_dir, register_managed_child_dispatcher, register_sdk_core_post_call_hook, register_sdk_core_session_factory, resolve_sdk_core_dispatcher_binder, resolve_workspace_project_root, unbind_locale_getter_dialect, unbind_locale_getter_owner
@@ -261,6 +261,12 @@ class CoreSystemModule(Module):
         ...
 
     def diff_space(self, req: SpaceDiffInput, ctx: TaskContext) -> SpaceDiffBatch:
+        ...
+
+    def resolve_space_uri(self, req: SpaceResolveUriInput, ctx: TaskContext) -> SemanticUri:
+        ...
+
+    def match_spaces(self, req: SpaceMatchSpacesInput, ctx: TaskContext) -> tuple[SpaceId, ...]:
         ...
 
     def scan_space(self, req: SpaceScanInput, ctx: TaskContext) -> tuple[SpaceDiffBatch, ...]:
@@ -539,6 +545,15 @@ class SpaceListInput:
     owner: Optional[str] = None
 
 @dataclass(frozen=True, slots=True)
+class SpaceMatchSpacesInput:
+    target: str
+
+@dataclass(frozen=True, slots=True)
+class SpaceResolveUriInput:
+    space_id: str
+    rel_path: str
+
+@dataclass(frozen=True, slots=True)
 class SpaceScanInput:
     space_id: Optional[str] = None
     force: bool = False
@@ -595,6 +610,9 @@ class SystemKernelPort(Protocol):
 
     @property
     def kernel_vfs(self) -> KernelVfs:
+        ...
+
+    def scoped_vfs_for_module(self, module_id: Optional[ModuleId]) -> ScopedVfs:
         ...
 
     @property
@@ -823,6 +841,9 @@ class WorkspaceKernel(SystemKernelPort, CliKernelSession):
     def kernel_vfs(self) -> KernelVfs:
         ...
 
+    def scoped_vfs_for_module(self, module_id: Optional[ModuleId]) -> ScopedVfs:
+        ...
+
     @property
     def space_registry(self) -> SpaceRegistry:
         ...
@@ -1014,6 +1035,8 @@ __all__: tuple[str, ...] = (
     "SpaceFilesInput",
     "SpaceGitignoreTaskGroup",
     "SpaceListInput",
+    "SpaceMatchSpacesInput",
+    "SpaceResolveUriInput",
     "SpaceScanInput",
     "SpaceStatusInput",
     "SpaceUpdatedEventPayload",

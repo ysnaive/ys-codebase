@@ -29,7 +29,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Generic, Mapping, Optional, Protocol, Sequence, TypeVar, overload
+from typing import Callable, Generic, Mapping, Optional, Protocol, Sequence, TypeVar, overload, runtime_checkable
 from core.execution.event import BoundEventSubscription, CausalLineage, EventMetadata, EventOrdering
 from core.filesystem.space import SpaceDiffBatch, SpaceFileEntry, SpaceSpec, SpaceStatusSnapshot
 from core.filesystem.vfs import ScopedVfs, VfsHub
@@ -139,8 +139,30 @@ class ProcessResult:
     duration_ms: float
     timed_out: bool = False
     truncated: bool = False
+    stdout_bytes: bytes = b""
+    stderr_bytes: bytes = b""
     @property
     def ok(self) -> bool: ...
+
+
+@runtime_checkable
+class HumanRenderable(Protocol):
+    def render_text(self) -> str: ...
+
+
+@runtime_checkable
+class ExitCodeProvider(Protocol):
+    def exit_code(self) -> int: ...
+
+
+def format_output(output: object) -> tuple[str, int]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class EncodedStepOutput:
+    raw_output: JsonValue
+    rendered_text: Optional[str] = None
+    exit_code: Optional[int] = None
 
 
 class YscbModuleConvertible(Protocol):
@@ -157,6 +179,8 @@ class SpaceClient:
     def ack_cursor(self, batch: SpaceDiffBatch, *, consumer: Optional[str] = None) -> bool: ...
     def set_dynamic(self, name: str, spec: SpaceSpec) -> bool: ...
     def clear_dynamic(self, name: Optional[str] = None) -> int: ...
+    def resolve_uri(self, space_id: SpaceId | str, rel_path: SpacePath | str) -> SemanticUri: ...
+    def match_spaces(self, target: SemanticUri | HostPath | str) -> tuple[SpaceId, ...]: ...
 
 
 def sanitize_caller_env(raw_env: Mapping[str, str]) -> dict[str, str]: ...
@@ -301,6 +325,8 @@ class InvokeRequest:
     profile_mem: bool = False
     external_flight_owner: bool = False
     active_profiler: Optional[Profiler] = None
+    include_presentation: bool = False
+    skip_module_init: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,6 +338,8 @@ class TaskOutcome(Generic[TOut_co]):
     teardown_diagnostics: tuple[ErrorDetail, ...] = ()
     coalesced: bool = False
     executed_hot: bool = False
+    rendered_text: Optional[str] = None
+    exit_code: Optional[int] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -396,6 +424,8 @@ class TaskContext(ABC):
         *,
         cwd: Optional[SemanticUri | HostPath | str] = None,
         env: Optional[Mapping[str, str]] = None,
+        input: Optional[str | bytes] = None,
+        inherit_toolchain_env: bool = True,
         timeout_sec: float = 60.0,
         max_output_bytes: int = 1048576,
     ) -> ProcessResult: ...
@@ -444,6 +474,9 @@ class BoundTask(ABC):
     def map_subscription_batch(self, event_id: EventId, raw_payloads: Sequence[JsonObject]) -> tuple[bool, JsonObject]: ...
     @abstractmethod
     def execute_encoded(self, raw_input: JsonObject, ctx: TaskContext) -> JsonValue: ...
+    def execute_encoded_with_presentation(
+        self, raw_input: JsonObject, ctx: TaskContext, *, include_presentation: bool = False,
+    ) -> EncodedStepOutput: ...
 
 
 class Task(BoundTask, Generic[TIn, TOut]):
@@ -461,6 +494,9 @@ class Task(BoundTask, Generic[TIn, TOut]):
     def compute_normalized_equivalence(self, raw_input: JsonObject) -> str: ...
     def map_subscription_batch(self, event_id: EventId, raw_payloads: Sequence[JsonObject]) -> tuple[bool, JsonObject]: ...
     def execute_encoded(self, raw_input: JsonObject, ctx: TaskContext) -> JsonValue: ...
+    def execute_encoded_with_presentation(
+        self, raw_input: JsonObject, ctx: TaskContext, *, include_presentation: bool = False,
+    ) -> EncodedStepOutput: ...
 
 
 class YscbModule(ABC):
@@ -542,6 +578,8 @@ class DaemonRpcInvokeReply:
     invoked_tasks: tuple[tuple[HostPath, TaskId], ...] = ()
     coalesced: bool = False
     profiler_tree: Optional[JsonValue] = None
+    rendered_text: Optional[str] = None
+    exit_code: Optional[int] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -793,6 +831,8 @@ class LocalStepExecutionSpec:
     priority_getter: Callable[[], ExecutionPriority]
     callbacks: StepContextCallbacks
     interactive_tty: bool = False
+    include_presentation: bool = False
+    skip_module_init: bool = False
 
 
 class PriorityHandle:
@@ -915,6 +955,8 @@ class WorkerStepReply:
     fatal_abort_turn: bool = False
     error: Optional[ErrorDetail] = None
     profiler_tree: Optional[JsonValue] = None
+    rendered_text: Optional[str] = None
+    exit_code: Optional[int] = None
 
 
 def worker_main(argv: Optional[Sequence[str]] = None, env: Optional[MutableMapping[str, str]] = None) -> int: ...

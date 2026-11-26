@@ -63,7 +63,31 @@ PUBLIC_ENV_ALLOWLIST: Final[frozenset[str]] = frozenset({
 })
 PYTHON_LAUNCHER_HIJACK_ENV_KEYS: Final[tuple[str, ...]] = ('__PYVENV_LAUNCHER__', 'PYTHONSTARTUP', 'PYTHONINSPECT')
 ROOT_DIR_ENV_KEY: Final[str] = '_YSCB_ROOT_DIR'
+SECRET_FIELD_METADATA_KEY: Final[str] = 'yscb_secret'
 TEST_SANDBOX_ENV_KEY: Final[str] = '_YSCB_TEST_SANDBOX'
+TOOLCHAIN_ENV_ALLOWLIST: Final[frozenset[str]] = frozenset({
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'NO_PROXY',
+    'SSL_CERT_FILE',
+    'SSL_CERT_DIR',
+    'REQUESTS_CA_BUNDLE',
+    'CURL_CA_BUNDLE',
+    'NODE_EXTRA_CA_CERTS',
+    'SSH_AUTH_SOCK',
+    'GIT_SSH_COMMAND',
+    'GIT_AUTHOR_NAME',
+    'GIT_AUTHOR_EMAIL',
+    'GIT_COMMITTER_NAME',
+    'GIT_COMMITTER_EMAIL',
+    'CARGO_HOME',
+    'RUSTUP_HOME',
+    'GOPATH',
+    'GOMODCACHE',
+    'NPM_CONFIG_REGISTRY',
+    'XDG_CONFIG_HOME',
+    'XDG_CACHE_HOME',
+})
 TREE_ID_ENV_KEY: Final[str] = '_YSCB_TREE_ID'
 
 JsonObject: TypeAlias = Mapping[str, JsonValue]
@@ -74,7 +98,7 @@ JsonValue: TypeAlias = JsonPrimitive | Sequence['JsonValue'] | Mapping[str, 'Jso
 
 MutableJsonObject: TypeAlias = dict[str, JsonValue]
 
-def build_isolated_python_env() -> dict[str, str]:
+def build_isolated_python_env(*, include_toolchain_env: bool=False) -> dict[str, str]:
     ...
 
 def clamp_positive_sec(val: object, *, min_sec: float, max_sec: float, default_sec: Optional[float]=None, label: str='seconds') -> float:
@@ -90,6 +114,9 @@ def decode_profiler_snapshot(raw: object, *, max_depth: int=32, max_nodes: int=5
     ...
 
 def decrement_ref_count(table: dict[_T, int], key: _T) -> int:
+    ...
+
+def extract_toolchain_env(raw_env: Mapping[str, str]) -> dict[str, str]:
     ...
 
 def get_process_start_tag(pid: int) -> Optional[str]:
@@ -115,6 +142,9 @@ def is_process_alive(pid: int) -> bool:
     ...
 
 def is_public_env_truthy(key: str) -> bool:
+    ...
+
+def is_sensitive_key(key: str) -> bool:
     ...
 
 def is_valid_relative_segment(segment: str) -> bool:
@@ -178,6 +208,9 @@ def safe_realpath(raw_path: str) -> str:
     ...
 
 def sanitize_utf8_text(text: str) -> str:
+    ...
+
+def secret_field(*, default: object=..., default_factory: object=..., init: bool=True, repr: bool=False, compare: bool=True, metadata: Optional[Mapping[str, object]]=None) -> object:
     ...
 
 def spawn_detached(argv: Sequence[str], *, cwd: HostPath, extra_env: Optional[Mapping[str, str]]=None) -> int:
@@ -553,7 +586,7 @@ class LogRotator:
 
 class ManagedProcessTree:
 
-    def __init__(self, argv: Sequence[str], *, cwd: HostPath, env: Optional[Mapping[str, str]]=None, inherit_tty: bool=False, capture_output: bool=False) -> None:
+    def __init__(self, argv: Sequence[str], *, cwd: HostPath, env: Optional[Mapping[str, str]]=None, inherit_tty: bool=False, capture_output: bool=False, pipe_stdin: bool=False) -> None:
         ...
 
     def __enter__(self) -> ManagedProcessTree:
@@ -564,6 +597,10 @@ class ManagedProcessTree:
 
     @property
     def pid(self) -> int:
+        ...
+
+    @property
+    def stdin_pipe(self) -> Optional[BinaryIO]:
         ...
 
     @property

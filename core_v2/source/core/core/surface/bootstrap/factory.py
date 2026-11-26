@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 import hashlib
 import inspect
 import json
@@ -85,6 +85,7 @@ from core.filesystem.vfs import (
     KernelVfs,
     MountRule,
     ReadonlyPolicy,
+    ScopedVfs,
     UriMountTable,
     VfsCapabilities,
     VfsEchoGuard,
@@ -201,46 +202,6 @@ class _SpaceNotifyRpcEnvelope:
     timeout_ms: Optional[int] = 2000
     propagation: CallPropagationContext = field(default_factory=CallPropagationContext)
 
-
-_TIER1_FORMAT_SNIPPET: Final[str] = (
-    "import json, os, sys\n"
-    "_proto_fd = os.dup(1)\n"
-    "os.set_inheritable(_proto_fd, False)\n"
-    "os.dup2(2, 1)\n"
-    "_proto_out = os.fdopen(_proto_fd, 'w', encoding='utf-8', closefd=True)\n"
-    "try:\n"
-    "    from core.execution.runtime import ModuleDescriptor, ProtectedModuleLoader\n"
-    "    from core.foundation import DataclassCodec, HostPath, TaskId, guard_standard_streams, require_pure_int\n"
-    "    from core.surface.sdk import ExitCodeProvider\n"
-    "    from core.surface.sdk.advanced import format_output\n"
-    "    ws = HostPath(sys.argv[1])\n"
-    "    desc = DataclassCodec.decode(ModuleDescriptor, json.loads(sys.argv[2]))\n"
-    "    tid = TaskId(sys.argv[3])\n"
-    "    render_human = sys.argv[4] == '1'\n"
-    "    raw_val = json.loads(sys.stdin.read())\n"
-    "    with guard_standard_streams():\n"
-    "        loader = ProtectedModuleLoader(ws)\n"
-    "        art = loader.load_module_artifact(desc)\n"
-    "        try:\n"
-    "            bt = next((t for t in art.instance.tasks() if t.task_id == tid), None)\n"
-    "            if bt is None:\n"
-    "                _payload = json.dumps({'ok': False})\n"
-    "            else:\n"
-    "                val = DataclassCodec.decode(bt.metadata.output_type, raw_val)\n"
-    "                if render_human:\n"
-    "                    txt, code = format_output(val)\n"
-    "                    eff_code = int(code) if isinstance(val, ExitCodeProvider) else 0\n"
-    "                else:\n"
-    "                    txt = None\n"
-    "                    eff_code = require_pure_int(val.exit_code(), 'ExitCodeProvider.exit_code()', min_val=None, max_val=None) if isinstance(val, ExitCodeProvider) else 0\n"
-    "                _payload = json.dumps({'ok': True, 'text': txt, 'exit_code': eff_code}, ensure_ascii=False)\n"
-    "        finally:\n"
-    "            loader.cleanup_package(art.package_key)\n"
-    "    _proto_out.write(_payload)\n"
-    "    _proto_out.flush()\n"
-    "finally:\n"
-    "    _proto_out.close()\n"
-)
 
 _TIER1_COMPILE_INDEX_SNIPPET: Final[str] = (
     "import json, os, sys\n"
@@ -1506,6 +1467,12 @@ class WorkspaceKernel(SystemKernelPort, CliKernelSession):
         with self._reload_lock:
             return self._kernel_vfs
 
+    def scoped_vfs_for_module(self, module_id: Optional[ModuleId]) -> ScopedVfs:
+        """Return a non-kernel ScopedVfs bound to module_id (or reserved unprivileged 'project' scope when None)."""
+        target_mod = module_id if module_id is not None else ModuleId("project")
+        with self._reload_lock:
+            return self._vfs_hub.for_module(target_mod)
+
     @property
     def space_registry(self) -> SpaceRegistry:
         with self._reload_lock:
@@ -1587,65 +1554,6 @@ class WorkspaceKernel(SystemKernelPort, CliKernelSession):
             )
             return mapping.get(task_id)
 
-    def _resolve_tier1_disk_presentation(
-        self,
-        desc: ModuleDescriptor,
-        task_id: TaskId,
-        raw_value: JsonValue,
-        *,
-        render_human: bool,
-    ) -> tuple[Optional[str], Optional[int]]:
-        if desc.venv_python is None or not os.path.isfile(str(desc.venv_python)):
-            return (None, None)
-        sub_env = build_isolated_python_env()
-        sub_env["PYTHONPATH"] = str(Path(__file__).resolve().parents[3])
-        sub_env["PYTHONDONTWRITEBYTECODE"] = "1"
-        sub_env["PYTHONUTF8"] = "1"
-        sub_env["PYTHONIOENCODING"] = "utf-8"
-        slim_desc = replace(desc, declared_tasks=())
-        desc_json = json.dumps(DataclassCodec.encode_object(slim_desc), separators=(",", ":"), ensure_ascii=False)
-        win_flags = subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
-        try:
-            cp = subprocess.run(
-                [
-                    str(desc.venv_python),
-                    "-X",
-                    "utf8",
-                    "-B",
-                    "-c",
-                    _TIER1_FORMAT_SNIPPET,
-                    str(self._yscb_root),
-                    desc_json,
-                    task_id.value,
-                    "1" if render_human else "0",
-                ],
-                cwd=str(self._yscb_root),
-                env=sub_env,
-                input=json.dumps(raw_value, ensure_ascii=False),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=10.0,
-                check=False,
-                creationflags=win_flags,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return (None, None)
-        if cp.returncode != 0 or not cp.stdout.strip():
-            return (None, None)
-        try:
-            doc = strict_parse_json_object(cp.stdout.strip())
-        except ValueError:
-            return (None, None)
-        if doc.get("ok") is not True:
-            return (None, None)
-        raw_txt = doc.get("text")
-        raw_code = doc.get("exit_code")
-        txt = raw_txt if (render_human and type(raw_txt) is str) else None
-        code = int(raw_code) if (type(raw_code) is int) else 0
-        return (txt, code)
-
     def resolve_task_presentation(
         self,
         task_entry: IndexedTaskEntry,
@@ -1713,12 +1621,7 @@ class WorkspaceKernel(SystemKernelPort, CliKernelSession):
             except (TypeError, ValueError, YscbError):
                 return (None, None)
 
-        return self._resolve_tier1_disk_presentation(
-            desc,
-            task_entry.task_id,
-            raw_value,
-            render_human=render_human,
-        )
+        return (None, None)
 
     def list_route_specs(self) -> Sequence[TaskRouteSpec]:
         return self._dispatcher.list_route_specs()
@@ -2545,6 +2448,7 @@ class WorkspaceKernel(SystemKernelPort, CliKernelSession):
                     call_tree_id=call_tree_id,
                     is_internal_trigger=True,
                 ),
+                skip_module_init=True,
             ),
             cancel_token=cancel_token,
         )
@@ -2571,7 +2475,15 @@ class WorkspaceKernel(SystemKernelPort, CliKernelSession):
         for sub_cfg in ("config", ".config.local"):
             sub_hp = try_resolve_contained_subpath(self._yscb_root, sub_cfg)
             if sub_hp is not None and not is_symlink_or_reparse(str(sub_hp)):
-                os.makedirs(str(sub_hp), exist_ok=True)
+                if sub_cfg == ".config.local":
+                    os.makedirs(str(sub_hp), mode=0o700, exist_ok=True)
+                    if not IS_WINDOWS:
+                        try:
+                            os.chmod(str(sub_hp), 0o700)
+                        except OSError:
+                            pass
+                else:
+                    os.makedirs(str(sub_hp), exist_ok=True)
                 cfg_roots.append(sub_hp)
 
         watch_cfg = DaemonWatcherConfig(
@@ -3160,6 +3072,9 @@ class _LazySdkKernelPort(SystemKernelPort):
     def spawn_or_run_daemon(self, *, console: bool, detach: bool, supervisor: bool = False) -> JsonObject:
         return self._ensure().spawn_or_run_daemon(console=console, detach=detach, supervisor=supervisor)
 
+    def scoped_vfs_for_module(self, module_id: Optional[ModuleId]) -> ScopedVfs:
+        return self._ensure().scoped_vfs_for_module(module_id)
+
 
 class _LazyCliDispatcherProxy:
     """Lightweight CLI dispatcher proxy intercepting foreground daemon start before creating a cold kernel."""
@@ -3200,6 +3115,7 @@ class _LazyCliDispatcherProxy:
                     supervisor=decoded_start.supervisor,
                     cancel_token=cancel_token,
                     profiler=request.active_profiler,
+                    include_presentation=request.include_presentation,
                 )
         kernel = self._session.ensure_kernel(profiler=request.active_profiler)
         return kernel.dispatcher.invoke(
@@ -3306,6 +3222,7 @@ class _LazyCliKernelSession:
         supervisor: bool,
         cancel_token: Optional[CancellationToken],
         profiler: Optional[Profiler],
+        include_presentation: bool = False,
     ) -> TaskOutcome[JsonValue]:
         if cancel_token is not None and cancel_token.is_cancelled:
             return TaskOutcome(
@@ -3337,7 +3254,14 @@ class _LazyCliKernelSession:
                 "Daemon start processed.",
                 {"mode": mode_label, "already_running": True, "started": False},
             )
-            return TaskOutcome(ok=True, value=DataclassCodec.encode_object(view), executed_hot=False)
+            txt, code = format_output(view) if include_presentation else (None, None)
+            return TaskOutcome(
+                ok=True,
+                value=DataclassCodec.encode_object(view),
+                executed_hot=False,
+                rendered_text=txt,
+                exit_code=code,
+            )
         with self._lock:
             if self._closed:
                 return TaskOutcome(
@@ -3350,7 +3274,14 @@ class _LazyCliKernelSession:
                 )
             self._deferred_daemon_console_mode = eff_console
         view = SystemResultView("Daemon start processed.", {"mode": mode_label, "started": True})
-        return TaskOutcome(ok=True, value=DataclassCodec.encode_object(view), executed_hot=False)
+        txt, code = format_output(view) if include_presentation else (None, None)
+        return TaskOutcome(
+            ok=True,
+            value=DataclassCodec.encode_object(view),
+            executed_hot=False,
+            rendered_text=txt,
+            exit_code=code,
+        )
 
     def apply_caller_dialect(self, dialect: Optional[str], raw_env_locale: Optional[str] = None) -> None:
         with self._lock:

@@ -40,6 +40,7 @@ from core.foundation import (
     TaskCancelledException,
     VersionConstraint,
     YscbError,
+    secret_field,
 )
 from core.metadata.config import (
     ConfigStore,
@@ -88,6 +89,7 @@ from core.packaging.installer import (
     AtomicPackageDeployer,
     DependencySolver,
     DeploymentReport,
+    MigrationRollbackHandle,
     MirrorStore,
     OfflinePackageEngine,
     PackageRequest,
@@ -116,6 +118,20 @@ class _SampleModuleConfigDto:
 @dataclass(frozen=True, slots=True)
 class _TypedKeyQuotaConfigDto:
     quotas: Mapping[ModuleId, int] = field(default_factory=lambda: {ModuleId("core"): 16})
+
+
+@dataclass(frozen=True, slots=True)
+class _CredBlockDto:
+    label: str = "main"
+    dsn: str = secret_field(default="")
+
+
+@dataclass(frozen=True, slots=True)
+class _MultiNestedSecretDto:
+    primary: _CredBlockDto = field(default_factory=_CredBlockDto)
+    secondary: Annotated[Optional[_CredBlockDto], "backup"] = None
+    replicas: tuple[_CredBlockDto, ...] = ()
+    profiles: Mapping[str, _CredBlockDto] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -458,8 +474,111 @@ def _verify_metadata_config_and_snapshot_vault(suite_root: Path) -> None:
         ErrorCode.CONFIG_INVALID,
     )
     check(store.load_typed(mod_kdb, _SampleModuleConfigDto).workers == 4, "Failed schema check must not mutate disk")
+    if not IS_WINDOWS:
+        local_cfg_file = yscb_root.path / ".config.local" / "kdb" / "config.local.json"
+        check(
+            stat.S_IMODE(local_cfg_file.stat().st_mode) == 0o600
+            and stat.S_IMODE(local_cfg_file.parent.stat().st_mode) == 0o700
+            and stat.S_IMODE((yscb_root.path / ".config.local").stat().st_mode) == 0o700,
+            "config.local.json and .config.local/ directories must enforce 0o600/0o700 permissions",
+        )
     check(store.unset_value(mod_kdb, "cache.evict_policy", local=True) is True)
+    if not IS_WINDOWS:
+        local_cfg_file = yscb_root.path / ".config.local" / "kdb" / "config.local.json"
+        check(
+            stat.S_IMODE(local_cfg_file.stat().st_mode) == 0o600,
+            "unset_value(..., local=True) must preserve 0o600 permissions",
+        )
     check(store.load_typed(mod_kdb, _SampleModuleConfigDto).cache.evict_policy == "lru")
+
+    @dataclass(frozen=True, slots=True)
+    class _SecretModCfgDto:
+        endpoint: str = "https://default.example"
+        api_token: str = secret_field(default="")
+        nested: _NestedCacheConfigDto = field(default_factory=_NestedCacheConfigDto)
+
+    mod_sec = ModuleId("seccfg")
+    store.set_value(mod_sec, "endpoint", "https://proj.example", local=False, schema_cls=_SecretModCfgDto)
+    store.set_value(mod_sec, "nested.max_mb", 128, local=False, schema_cls=_SecretModCfgDto)
+    store.set_value(mod_sec, "nested.evict_policy", "secret_local_policy", local=True, schema_cls=_SecretModCfgDto)
+    store.set_value(mod_sec, "api_token", "sk-live-secret-123", local=True, schema_cls=_SecretModCfgDto)
+    check(
+        store.get_module_local_dict(mod_sec)
+        == {"nested": {"evict_policy": "secret_local_policy"}, "api_token": "sk-live-secret-123"},
+        f"Unexpected get_module_local_dict: {store.get_module_local_dict(mod_sec)}",
+    )
+    redacted_sec = store.get_module_redacted_dict(mod_sec, schema_cls=_SecretModCfgDto)
+    check(
+        redacted_sec["endpoint"] == "https://proj.example"
+        and redacted_sec["api_token"] == "[REDACTED]"
+        and isinstance(redacted_sec["nested"], dict)
+        and redacted_sec["nested"]["max_mb"] == 128
+        and redacted_sec["nested"]["evict_policy"] == "[REDACTED]",
+        f"Unexpected get_module_redacted_dict: {redacted_sec}",
+    )
+    unredacted_sec = store.load_typed(mod_sec, _SecretModCfgDto)
+    check(unredacted_sec.api_token == "sk-live-secret-123" and unredacted_sec.nested.evict_policy == "secret_local_policy")
+
+    mod_disk_sec = ModuleId("disksec")
+    disk_schema_dir = yscb_root.path / ".modules" / "disksec"
+    disk_schema_dir.mkdir(parents=True, exist_ok=True)
+    (disk_schema_dir / "config.schema.json").write_text(
+        json.dumps(
+            {
+                "type": "object",
+                "properties": {
+                    "custom_key": {"type": "string", "writeOnly": True},
+                    "plain_key": {"type": "string"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    store.set_value(mod_disk_sec, "custom_key", "hidden-by-disk-schema", local=False)
+    store.set_value(mod_disk_sec, "plain_key", "visible-plain", local=False)
+    redacted_disk = store.get_module_redacted_dict(mod_disk_sec)
+    check(
+        redacted_disk == {"custom_key": "[REDACTED]", "plain_key": "visible-plain"},
+        f"Disk config.schema.json writeOnly redaction failed: {redacted_disk}",
+    )
+
+    mod_multi_sec = ModuleId("multisec")
+    store.set_value(mod_multi_sec, "primary", {"label": "p1", "dsn": "pg://secret-primary"}, local=False)
+    store.set_value(mod_multi_sec, "secondary", {"label": "p2", "dsn": "pg://secret-secondary"}, local=False)
+    store.set_value(mod_multi_sec, "replicas", [{"label": "r1", "dsn": "pg://secret-rep"}], local=False)
+    store.set_value(mod_multi_sec, "profiles", {"prod": {"label": "m1", "dsn": "pg://secret-map"}}, local=False)
+    red_multi = store.get_module_redacted_dict(mod_multi_sec, schema_cls=_MultiNestedSecretDto)
+    check(
+        red_multi == {
+            "primary": {"label": "p1", "dsn": "[REDACTED]"},
+            "secondary": {"label": "p2", "dsn": "[REDACTED]"},
+            "replicas": [{"label": "r1", "dsn": "[REDACTED]"}],
+            "profiles": {"prod": {"label": "m1", "dsn": "[REDACTED]"}},
+        },
+        f"Sibling/list/map secret_field redaction failed: {red_multi}",
+    )
+    disk_multi_dir = yscb_root.path / ".modules" / "diskmulti"
+    disk_multi_dir.mkdir(parents=True, exist_ok=True)
+    (disk_multi_dir / "config.schema.json").write_text(
+        json.dumps(
+            {
+                "type": "object",
+                "properties": {
+                    "items_cfg": {"type": "array", "items": {"type": "object", "properties": {"dsn": {"type": "string", "writeOnly": True}, "name": {"type": "string"}}}},
+                    "map_cfg": {"type": "object", "additionalProperties": {"type": "object", "properties": {"dsn": {"type": "string", "x-yscb-secret": True}}}},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    mod_disk_multi = ModuleId("diskmulti")
+    store.set_value(mod_disk_multi, "items_cfg", [{"dsn": "hidden-item", "name": "ok"}], local=False)
+    store.set_value(mod_disk_multi, "map_cfg", {"eu": {"dsn": "hidden-map"}}, local=False)
+    red_disk_multi = store.get_module_redacted_dict(mod_disk_multi)
+    check(
+        red_disk_multi == {"items_cfg": [{"dsn": "[REDACTED]", "name": "ok"}], "map_cfg": {"eu": {"dsn": "[REDACTED]"}}},
+        f"Disk schema array/map secret redaction failed: {red_disk_multi}",
+    )
 
     infilled_obj, added_paths = DeepInfiller.infill(
         {"workers": 8, "cache": {"max_mb": 512}},
@@ -501,6 +620,7 @@ def _verify_metadata_config_and_snapshot_vault(suite_root: Path) -> None:
     expect_yscb_code(lambda: store.deploy_configurable(mod_kdb, bad_staging_cfg), ErrorCode.CONFIG_INVALID)
 
     local_db_sentinel = yscb_root.path / ".storage.local" / "kdb" / "index.db"
+    local_cfg_sentinel = yscb_root.path / ".config.local" / "kdb" / "config.local.json"
     cache_sentinel = yscb_root.path / ".cache" / "kdb" / "ephemeral.bin"
     tracked_storage_file = yscb_root.path / "storage" / "kdb" / "glossary.json"
     local_db_sentinel.parent.mkdir(parents=True, exist_ok=True)
@@ -509,6 +629,7 @@ def _verify_metadata_config_and_snapshot_vault(suite_root: Path) -> None:
     local_db_sentinel.write_bytes(b"sqlite_v1_keep")
     cache_sentinel.write_bytes(b"cache_v1_keep")
     tracked_storage_file.write_text('{"ver": 1}\n', encoding="utf-8")
+    store.set_value(mod_kdb, "cache.evict_policy", "local_v1", local=True, schema_cls=_SampleModuleConfigDto)
 
     vault = SnapshotVault(
         host_dir=host_dir,
@@ -517,6 +638,10 @@ def _verify_metadata_config_and_snapshot_vault(suite_root: Path) -> None:
     )
     snap_one = vault.create_snapshot("pre_install")
     check(isinstance(snap_one, SnapshotMeta) and not snap_one.reused)
+    check(
+        not (yscb_root.path / ".snapshots" / snap_one.snapshot_id / "config_local").exists(),
+        "SnapshotVault must NEVER back up .config.local/ secrets into .snapshots/",
+    )
     snap_zero_diff = vault.create_snapshot("repeat_noop")
     check(snap_zero_diff.reused and snap_zero_diff.snapshot_id == snap_one.snapshot_id, "Zero-diff must short-circuit")
 
@@ -574,6 +699,7 @@ def _verify_metadata_config_and_snapshot_vault(suite_root: Path) -> None:
 
     local_db_sentinel.write_bytes(b"sqlite_v2_must_survive_restore")
     cache_sentinel.write_bytes(b"cache_v2_must_survive_restore")
+    store.set_value(mod_kdb, "cache.evict_policy", "local_v2_must_survive", local=True, schema_cls=_SampleModuleConfigDto)
     tracked_storage_file.write_text('{"ver": 999}\n', encoding="utf-8")
     store.set_value(mod_kdb, "workers", 99, local=False, schema_cls=_SampleModuleConfigDto)
 
@@ -586,8 +712,10 @@ def _verify_metadata_config_and_snapshot_vault(suite_root: Path) -> None:
     )
     check(
         local_db_sentinel.read_bytes() == b"sqlite_v2_must_survive_restore"
-        and cache_sentinel.read_bytes() == b"cache_v2_must_survive_restore",
-        "SnapshotVault MUST NEVER back up or overwrite .storage.local/ or .cache/",
+        and cache_sentinel.read_bytes() == b"cache_v2_must_survive_restore"
+        and json.loads(local_cfg_sentinel.read_text(encoding="utf-8")).get("cache", {}).get("evict_policy")
+        == "local_v2_must_survive",
+        "SnapshotVault MUST NEVER back up or overwrite .config.local/, .storage.local/, or .cache/",
     )
 
     mod_sym_test = ModuleId("symcfg")
@@ -3718,6 +3846,68 @@ def _verify_manifest_parser_core_metadata_and_env_leases(suite_root: Path) -> No
     )
 
 
+def _verify_migration_rollback_storage_local(base_root: Path) -> None:
+    ws_dir = base_root / "mig_storage_rb_suite"
+    host_dir = HostPath(ws_dir / "repo")
+    yscb_root = HostPath(ws_dir / "repo" / ".yscb")
+    host_dir.path.mkdir(parents=True, exist_ok=True)
+    yscb_root.path.mkdir(parents=True, exist_ok=True)
+
+    store = ConfigStore(host_dir=host_dir, yscb_root=yscb_root)
+    store.save_host_config(
+        HostConfig(
+            yscb_root=".yscb",
+            default_provider="./releases",
+            installed_modules={},
+        )
+    )
+    store.set_value(ModuleId("mod_exist"), "secret_tok", "keep-secret", local=True)
+    vault = SnapshotVault(host_dir=host_dir, yscb_root=yscb_root)
+    pool = ImmutableVenvPool(yscb_root=yscb_root, cache_dir=HostPath(yscb_root.path / ".cache"))
+    vfs = VfsHub(UriMountTable(build_standard_mount_rules(host_dir, yscb_root))).for_kernel()
+    eng = OfflinePackageEngine(
+        host_dir=host_dir,
+        yscb_root=yscb_root,
+        config_store=store,
+        snapshot_vault=vault,
+        env_pool=pool,
+        vfs=vfs,
+    )
+
+    exist_dir = yscb_root.path / ".storage.local" / "mod_exist"
+    (exist_dir / "nested").mkdir(parents=True, exist_ok=True)
+    (exist_dir / "state.db").write_bytes(b"DB_V1_BYTES")
+    (exist_dir / "state.db-wal").write_bytes(b"WAL_V1_BYTES")
+    (exist_dir / "state.db-shm").write_bytes(b"SHM_V1_BYTES")
+    (exist_dir / "nested" / "keep.bin").write_bytes(b"NESTED_V1")
+    fresh_dir = yscb_root.path / ".storage.local" / "mod_fresh"
+    check(not fresh_dir.exists())
+
+    with eng.migration_rollback_scope() as rb_handle:
+        check(isinstance(rb_handle, MigrationRollbackHandle) and callable(rb_handle))
+        rb_handle.snapshot_module_storage_local(ModuleId("mod_exist"))
+        rb_handle.snapshot_module_storage_local(ModuleId("mod_exist"))  # idempotent
+        rb_handle.snapshot_module_storage_local(ModuleId("mod_fresh"))
+        (exist_dir / "state.db").write_bytes(b"DB_V2_CORRUPT")
+        (exist_dir / "state.db-wal").unlink()
+        (exist_dir / "extra_v2.db").write_bytes(b"EXTRA")
+        fresh_dir.mkdir(parents=True, exist_ok=True)
+        (fresh_dir / "created_in_v2.db").write_bytes(b"FRESH_V2")
+        rb_handle.restore()
+
+    check((exist_dir / "state.db").read_bytes() == b"DB_V1_BYTES")
+    check((exist_dir / "state.db-wal").read_bytes() == b"WAL_V1_BYTES")
+    check((exist_dir / "state.db-shm").read_bytes() == b"SHM_V1_BYTES")
+    check((exist_dir / "nested" / "keep.bin").read_bytes() == b"NESTED_V1")
+    check(not (exist_dir / "extra_v2.db").exists())
+    check(not fresh_dir.exists(), "Newly created .storage.local/<mod>/ must be removed on migration rollback")
+    if not IS_WINDOWS:
+        loc_f = yscb_root.path / ".config.local" / "mod_exist" / "config.local.json"
+        check(stat.S_IMODE(loc_f.stat().st_mode) == 0o600, "Restored .config.local must retain 0o600 mode")
+    temp_dir = yscb_root.path / ".temp"
+    check(not temp_dir.exists() or not list(temp_dir.iterdir()), "migration_rollback_scope must clean .temp/ guard on exit")
+
+
 def _execute_all_domain34_checks(base_root: Path) -> None:
     try:
         log("[METADATA-PACKAGING] Verifying manifest.json 2.0, 2x2 ConfigStore, DeepInfiller & SnapshotVault...")
@@ -3733,6 +3923,7 @@ def _execute_all_domain34_checks(base_root: Path) -> None:
         _verify_boundary_hardening_and_tx_recovery(base_root)
         _verify_build_packages_and_error_passthrough(base_root)
         _verify_locked_workspace_dirs_snapshot_and_tx_rollback(base_root)
+        _verify_migration_rollback_storage_local(base_root)
         log("[METADATA-PACKAGING] All Domain 3 & Domain 4 checks passed.")
     finally:
         for sub_name in (
@@ -3743,6 +3934,7 @@ def _execute_all_domain34_checks(base_root: Path) -> None:
             "installer_suite",
             "boundary_suite",
             "ext_contract_suite",
+            "mig_storage_rb_suite",
         ):
             sub_p = base_root / sub_name
             if sub_p.exists():

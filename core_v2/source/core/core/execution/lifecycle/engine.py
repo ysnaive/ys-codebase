@@ -203,6 +203,8 @@ class StepExecutionResult(Generic[TOut_co]):
     coalesced: bool = False
     fatal_abort_turn: bool = False
     committed_events: tuple[RawEventRecord, ...] = ()
+    rendered_text: Optional[str] = None
+    exit_code: Optional[int] = None
 
     def __post_init__(self) -> None:
         for flag, label in (
@@ -215,6 +217,10 @@ class StepExecutionResult(Generic[TOut_co]):
                 raise ValueError(f"StepExecutionResult.{label} must be a bool.")
         if self.error is not None and not isinstance(self.error, ErrorDetail):
             raise ValueError("StepExecutionResult.error must be ErrorDetail or None.")
+        if self.rendered_text is not None and type(self.rendered_text) is not str:
+            raise ValueError("StepExecutionResult.rendered_text must be str or None.")
+        if self.exit_code is not None and type(self.exit_code) is not int:
+            raise ValueError("StepExecutionResult.exit_code must be int or None.")
         object.__setattr__(
             self, "committed_events", require_typed_tuple(self.committed_events, RawEventRecord, "committed_events")
         )

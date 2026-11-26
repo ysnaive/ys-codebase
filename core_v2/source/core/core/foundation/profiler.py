@@ -173,6 +173,12 @@ def _is_sensitive_key(key: str) -> bool:
     return any(tok in lowered for tok in _SENSITIVE_KEY_TOKENS)
 
 
+def is_sensitive_key(key: str) -> bool:
+    """Return True when a configuration or telemetry key name matches a sensitive credential pattern."""
+    require_pure_str(key, "is_sensitive_key.key")
+    return _is_sensitive_key(key)
+
+
 def _scrub_inline_secrets(text: str) -> str:
     scrubbed = _URL_CRED_RE.sub(r"\1[REDACTED]@", text)
     return _BEARER_TOKEN_RE.sub("Bearer [REDACTED]", scrubbed)
@@ -216,15 +222,31 @@ def redact_cli_args(args: Sequence[str]) -> tuple[str, ...]:
     seen_config = False
     in_config_set = False
     redact_next_config_val = False
+    config_set_pos = 0
+    after_double_dash = False
+    has_local_flag = any(tok == "--local" or tok.startswith("--local=") for tok in raw_args)
     for tok in raw_args:
         if redact_next:
             out.append(_REDACTED_LITERAL)
             redact_next = False
             continue
-        if tok == "--":
+        if not after_double_dash and tok == "--":
+            after_double_dash = True
             out.append(tok)
             continue
-        if "=" in tok:
+        is_positional = after_double_dash or not tok.startswith("-")
+        if in_config_set and is_positional:
+            if redact_next_config_val or (has_local_flag and config_set_pos == 2):
+                out.append(_REDACTED_LITERAL)
+                redact_next_config_val = False
+                config_set_pos += 1
+                continue
+            if config_set_pos == 1 and _is_sensitive_key(tok):
+                redact_next_config_val = True
+            config_set_pos += 1
+            out.append(_scrub_inline_secrets(tok))
+            continue
+        if "=" in tok and not after_double_dash:
             lhs, _, rhs = tok.partition("=")
             lhs_lower = lhs.lower()
             is_flag_secret = lhs_lower in _SENSITIVE_CLI_FLAGS or (
@@ -237,24 +259,19 @@ def redact_cli_args(args: Sequence[str]) -> tuple[str, ...]:
                 out.append(f"{lhs}={_scrub_inline_secrets(rhs)}")
             continue
         tok_lower = tok.lower()
-        if tok_lower in _SENSITIVE_CLI_FLAGS or (tok.startswith("--") and _is_sensitive_key(tok[2:])):
+        if not after_double_dash and (
+            tok_lower in _SENSITIVE_CLI_FLAGS or (tok.startswith("--") and _is_sensitive_key(tok[2:]))
+        ):
             out.append(tok)
             redact_next = True
             continue
-        if not tok.startswith("-"):
-            if in_config_set:
-                if redact_next_config_val:
-                    out.append(_REDACTED_LITERAL)
-                    redact_next_config_val = False
-                    continue
-                if _is_sensitive_key(tok):
-                    redact_next_config_val = True
-                out.append(_scrub_inline_secrets(tok))
-                continue
+        if is_positional:
             if tok == "core.config.set":
                 in_config_set = True
+                config_set_pos = 0
             elif seen_config and tok == "set":
                 in_config_set = True
+                config_set_pos = 0
             elif tok == "config":
                 seen_config = True
         out.append(_scrub_inline_secrets(tok))

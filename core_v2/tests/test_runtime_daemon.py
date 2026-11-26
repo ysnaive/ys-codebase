@@ -10,6 +10,7 @@ import threading
 import time
 import tracemalloc
 from typing import Callable, Optional, Sequence
+from unittest import mock
 
 from core.execution.daemon import (
     DaemonQuiesceControl,
@@ -2588,6 +2589,37 @@ def _verify_run_process_contracts(suite_root: Path, venv_py: Path) -> None:
                 )
                 res = ctx.run_process([sys.executable, "-c", spawner], timeout_sec=1.5 if req.mode == "timeout_tree" else 10.0)
                 return _RpOut(res.ok, res.returncode, res.stdout, res.stderr, res.timed_out, res.truncated)
+            if req.mode == "stdin_and_bytes":
+                big_str = "A" * 262144
+                r_str = ctx.run_process(
+                    [sys.executable, "-c", "import sys; d = sys.stdin.buffer.read(); sys.stdout.buffer.write(str(len(d)).encode())"],
+                    input=big_str,
+                )
+                check(r_str.ok and r_str.stdout == "262144" and r_str.stdout_bytes == b"262144")
+                bin_in = bytes(range(256)) * 1024
+                r_bin = ctx.run_process(
+                    [sys.executable, "-c", "import sys; d = sys.stdin.buffer.read(); sys.stdout.buffer.write(d[:16]); sys.stderr.buffer.write(b'\\x80\\xff\\x00')"],
+                    input=bin_in,
+                )
+                check(r_bin.ok and r_bin.stdout_bytes == bin_in[:16] and r_bin.stderr_bytes == b"\x80\xff\x00")
+                check("\ufffd" in r_bin.stderr)
+                r_early = ctx.run_process([sys.executable, "-c", "import sys; sys.exit(0)"], input=b"X" * 262144)
+                check(r_early.ok and r_early.returncode == 0)
+                with mock.patch.dict(
+                    os.environ,
+                    {"CARGO_HOME": "/tmp/yscb_tc_cargo", "HTTP_PROXY": "http://proxy.env:8080", "AWS_SECRET_ACCESS_KEY": "secret_drop"},
+                    clear=False,
+                ):
+                    tc_code = "import os, sys; sys.stdout.write(f'{os.environ.get(\"CARGO_HOME\",\"\")}|{os.environ.get(\"HTTP_PROXY\",\"\")}|{os.environ.get(\"AWS_SECRET_ACCESS_KEY\",\"\")}')"
+                    r_tc_on = ctx.run_process([sys.executable, "-c", tc_code], inherit_toolchain_env=True)
+                    r_tc_off = ctx.run_process([sys.executable, "-c", tc_code], inherit_toolchain_env=False)
+                check(r_tc_on.ok and r_tc_on.stdout == "/tmp/yscb_tc_cargo|http://proxy.caller:8080|")
+                check(r_tc_off.ok and r_tc_off.stdout == "||")
+                bad_in_obj: object = 123
+                bad_tc_obj: object = "yes"
+                assert_raises_val_error(lambda: ctx.run_process([sys.executable, "-c", "pass"], input=bad_in_obj))
+                assert_raises_val_error(lambda: ctx.run_process([sys.executable, "-c", "pass"], inherit_toolchain_env=bad_tc_obj))
+                return _RpOut(True, 0, "stdin_bytes_tc_ok", "", False, False)
             raise ValueError(req.mode)
 
     class _RpMod(YscbModule):
@@ -2666,9 +2698,97 @@ def _verify_run_process_contracts(suite_root: Path, venv_py: Path) -> None:
             check(pid_f.is_file(), f"Expected grandchild pid file for {mode_nm}")
             c_gc_pid = int(pid_f.read_text(encoding="utf-8").strip())
             wait_until(lambda p=c_gc_pid: not is_process_alive(p), timeout_sec=3.0)
-        check(ProcessResult(0, "", "", 1.0).ok and not ProcessResult(0, "", "", 1.0, timed_out=True).ok)
+        out_sb = disp.invoke(
+            InvokeRequest(
+                TaskId("rpmod.exec"),
+                {"mode": "stdin_and_bytes"},
+                HostPath(yscb_dir),
+                HostPath(proj_dir),
+                caller_env={"HTTP_PROXY": "http://proxy.caller:8080"},
+            ),
+            output_type=_RpOut,
+        )
+        check(out_sb.ok and out_sb.value is not None and out_sb.value.stdout == "stdin_bytes_tc_ok", f"stdin/bytes/toolchain failed: {out_sb}")
+        check(ProcessResult(0, "", "", 1.0).ok and ProcessResult(0, "", "", 1.0).stdout_bytes == b"" and ProcessResult(0, "", "", 1.0).stderr_bytes == b"")
+        check(not ProcessResult(0, "", "", 1.0, timed_out=True).ok)
+        bad_bytes_obj: object = "not_bytes"
+        assert_raises_val_error(lambda: ProcessResult(0, "", "", 1.0, stdout_bytes=bad_bytes_obj))
     finally:
         disp.shutdown(grace_ms=300)
+
+
+def _verify_skip_module_init_gate_and_cold_migration(suite_root: Path, venv_py: Path) -> None:
+    ws_dir = suite_root / "skip_init_ws"
+    yscb_dir = ws_dir / ".yscb"
+    (yscb_dir / ".cache").mkdir(parents=True, exist_ok=True)
+    init_calls: list[str] = []
+
+    class _MigTask(Task[EchoInDto, SimpleOutDto]):
+        def __init__(self, tid: str) -> None:
+            self._meta = TaskMetadata(task_id=TaskId(tid), input_type=EchoInDto, output_type=SimpleOutDto)
+
+        @property
+        def metadata(self) -> TaskMetadata[EchoInDto, SimpleOutDto]:
+            return self._meta
+
+        def run(self, req: EchoInDto, ctx: TaskContext) -> SimpleOutDto:
+            _ = ctx
+            return SimpleOutDto(f"ran:{req.tag}")
+
+    class _MigMod(YscbModule):
+        @property
+        def module_id(self) -> ModuleId:
+            return ModuleId("migmod")
+
+        def on_init(self, workspace_root: HostPath) -> Optional[Callable[[], None]]:
+            _ = workspace_root
+            init_calls.append("on_init")
+            raise RuntimeError("v2 on_init must be skipped during migration")
+
+        def tasks(self) -> Sequence[BoundTask]:
+            return (_MigTask("migmod.yscb_on_migrate"), _MigTask("migmod.regular"))
+
+    cold_disp = RuntimeDispatcher(
+        workspace_root=HostPath(yscb_dir),
+        cache_dir=HostPath(yscb_dir / ".cache"),
+        module_provider=ManifestModuleProvider(HostPath(yscb_dir), HostPath(venv_py)),
+        options=DispatcherHostOptions(is_daemon_host=False, in_memory_modules=(_MigMod(),)),
+    )
+    hot_disp = RuntimeDispatcher(
+        workspace_root=HostPath(yscb_dir),
+        cache_dir=HostPath(yscb_dir / ".cache"),
+        module_provider=ManifestModuleProvider(HostPath(yscb_dir), HostPath(venv_py)),
+        options=DispatcherHostOptions(is_daemon_host=True, in_memory_modules=(_MigMod(),)),
+    )
+    try:
+        r_no_internal = cold_disp.invoke(
+            InvokeRequest(TaskId("migmod.yscb_on_migrate"), {"tag": "x"}, HostPath(yscb_dir), HostPath(ws_dir), routing_policy=ClientRoutingPolicy.FORCE_COLD, skip_module_init=True)
+        )
+        check((not r_no_internal.ok) and r_no_internal.error is not None and r_no_internal.error.code == ErrorCode.ACCESS_DENIED)
+        r_wrong_task = cold_disp.invoke(
+            InvokeRequest(TaskId("migmod.regular"), {"tag": "x"}, HostPath(yscb_dir), HostPath(ws_dir), routing_policy=ClientRoutingPolicy.FORCE_COLD, propagation=CallPropagationContext(is_internal_trigger=True), skip_module_init=True)
+        )
+        check((not r_wrong_task.ok) and r_wrong_task.error is not None and r_wrong_task.error.code == ErrorCode.ACCESS_DENIED)
+        r_hot = hot_disp.invoke(
+            InvokeRequest(TaskId("migmod.yscb_on_migrate"), {"tag": "x"}, HostPath(yscb_dir), HostPath(ws_dir), routing_policy=ClientRoutingPolicy.FORCE_COLD, propagation=CallPropagationContext(is_internal_trigger=True), skip_module_init=True)
+        )
+        check((not r_hot.ok) and r_hot.error is not None and r_hot.error.code == ErrorCode.ACCESS_DENIED, f"Hot daemon host must reject skip_module_init even with FORCE_COLD: {r_hot}")
+        r_nested = cold_disp.invoke(
+            InvokeRequest(TaskId("migmod.yscb_on_migrate"), {"tag": "x"}, HostPath(yscb_dir), HostPath(ws_dir), routing_policy=ClientRoutingPolicy.FORCE_COLD, propagation=CallPropagationContext(is_internal_trigger=True, is_nested_call=True), skip_module_init=True)
+        )
+        check((not r_nested.ok) and r_nested.error is not None and r_nested.error.code == ErrorCode.ACCESS_DENIED)
+        r_from_hot = cold_disp.invoke(
+            InvokeRequest(TaskId("migmod.yscb_on_migrate"), {"tag": "x"}, HostPath(yscb_dir), HostPath(ws_dir), routing_policy=ClientRoutingPolicy.FORCE_COLD, propagation=CallPropagationContext(is_internal_trigger=True, from_hot_container=True), skip_module_init=True)
+        )
+        check((not r_from_hot.ok) and r_from_hot.error is not None and r_from_hot.error.code == ErrorCode.ACCESS_DENIED)
+        r_ok = cold_disp.invoke(
+            InvokeRequest(TaskId("migmod.yscb_on_migrate"), {"tag": "v1->v2"}, HostPath(yscb_dir), HostPath(ws_dir), routing_policy=ClientRoutingPolicy.FORCE_COLD, propagation=CallPropagationContext(is_internal_trigger=True), skip_module_init=True),
+            output_type=SimpleOutDto,
+        )
+        check(r_ok.ok and r_ok.value == SimpleOutDto("ran:v1->v2") and init_calls == [], f"skip_module_init cold migration failed: {r_ok}, init_calls={init_calls}")
+    finally:
+        hot_disp.shutdown(grace_ms=300)
+        cold_disp.shutdown(grace_ms=300)
 
 
 def run_runtime_daemon_suite(tmp_root: Path, venv_py: Path) -> None:
@@ -2705,6 +2825,7 @@ def run_runtime_daemon_suite(tmp_root: Path, venv_py: Path) -> None:
         log("[RUNTIME-DAEMON] Verifying ProtectedModuleLoader auto-discovery and TaskContext.run_process...")
         _verify_loader_autodiscovery(suite_root)
         _verify_run_process_contracts(suite_root, venv_py)
+        _verify_skip_module_init_gate_and_cold_migration(suite_root, venv_py)
         log("[RUNTIME-DAEMON] All checks passed.")
     finally:
         force_reap_tmp_root_orphans(suite_root)

@@ -196,6 +196,7 @@ def translate_remote_daemon_outcome(
         TaskOutcome(
             ok=reply.ok, value=reply.raw_value, error=err, event_diagnostics=reply.event_diagnostics,
             teardown_diagnostics=reply.teardown_diagnostics, coalesced=reply.coalesced, executed_hot=True,
+            rendered_text=reply.rendered_text, exit_code=reply.exit_code,
         ),
         reply.invoked_tasks,
         decoded_tree,
@@ -204,7 +205,13 @@ def translate_remote_daemon_outcome(
 
 def _step_reply_to_result(task_id: TaskId, reply: WorkerStepReply) -> StepExecutionResult[JsonValue]:
     if reply.ok:
-        return StepExecutionResult(ok=True, outcome=reply.raw_output, committed_events=reply.committed_events)
+        return StepExecutionResult(
+            ok=True,
+            outcome=reply.raw_output,
+            committed_events=reply.committed_events,
+            rendered_text=reply.rendered_text,
+            exit_code=reply.exit_code,
+        )
     err = (reply.error or ErrorDetail(ErrorCode.BUSINESS_FAILURE, f"Step {task_id} failed")).with_fallback_task(str(task_id))
     return StepExecutionResult(ok=False, error=err, preempted=reply.preempted, fatal_abort_turn=reply.fatal_abort_turn, committed_events=reply.committed_events)
 
@@ -243,6 +250,8 @@ def report_to_outcome(report: TurnExecutionReport, *, is_hot: bool, fallback_tas
         ok=ok, value=prim.outcome if ok else None, error=err,
         event_diagnostics=report.event_diagnostics, teardown_diagnostics=report.teardown_diagnostics,
         coalesced=prim.coalesced, executed_hot=is_hot,
+        rendered_text=prim.rendered_text if ok else None,
+        exit_code=prim.exit_code if ok else None,
     )
 def _wait_tier0_done_or_cancel(
     done_ev: threading.Event, wake_ev: threading.Event, step_cancel: CancellationToken, timeout_sec: Optional[float],
@@ -374,6 +383,8 @@ class StepHostRunner:
             caller_env=step_req.caller_env, base_lineage=step_req.propagation.lineage,
             cancel_token=step_cancel, priority_getter=priority_getter,
             callbacks=callbacks_factory(env, priority_getter), interactive_tty=spec.interactive_tty,
+            include_presentation=step_req.include_presentation,
+            skip_module_init=step_req.skip_module_init,
         )
         slots = self._sessions.slots_for_turn(turn)
         try:
@@ -465,6 +476,8 @@ class StepHostRunner:
             raw_input=step_req.raw_input, caller_cwd=step_req.caller_cwd, caller_env=step_req.caller_env,
             lineage=prop.lineage, priority=priority_getter(), interactive_tty=spec.interactive_tty, callback_context=cb_ctx,
             profile_mem=eff_profile_mem, trace_id=ctree, exec_mode="worker",
+            include_presentation=step_req.include_presentation,
+            skip_module_init=step_req.skip_module_init,
         )
         parent_req = replace(step_req, propagation=replace(prop, call_stack=prop.call_stack[:-1]))
         call_spec = WorkerCallSpec(
@@ -561,7 +574,9 @@ class StepHostRunner:
             base_key = self._compute_tier0_equiv_key(entry[0], req, ctx)
         else:
             base_key = self._compute_tier1_equiv_key(entry[0], req, ctx)
-        ctx_suf = compute_coalesce_context_suffix(req.caller_cwd, req.caller_env, req.approval_scope, req.allow_conditional)
+        ctx_suf = compute_coalesce_context_suffix(
+            req.caller_cwd, req.caller_env, req.approval_scope, req.allow_conditional, req.include_presentation,
+        )
         return f"{base_key}|ctx:{ctx_suf}"
 
     def _compute_tier0_equiv_key(self, desc: ModuleDescriptor, req: InvokeRequest, ctx: EquivCallContext) -> str:

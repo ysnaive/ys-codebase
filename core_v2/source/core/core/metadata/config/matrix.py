@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections.abc as cabc
 import dataclasses
 from dataclasses import dataclass
 import hashlib
@@ -10,8 +11,9 @@ import os
 from pathlib import Path
 import stat
 import threading
+import types
 from types import MappingProxyType
-from typing import Final, Mapping, Optional, Sequence, TypeVar
+from typing import Annotated, Final, Mapping, Optional, Sequence, TypeAlias, TypeVar, Union, get_args, get_origin
 
 from core.filesystem.fs import (
     IGNORED_FS_PREFIXES,
@@ -26,9 +28,14 @@ from core.filesystem.fs import (
     resolve_contained_subpath,
     walk_nonsymlink_dir_tree,
 )
-from core.foundation.codec import DataclassCodec, resolve_dataclass_init_hints
+from core.foundation.codec import (
+    SECRET_FIELD_METADATA_KEY,
+    DataclassCodec,
+    resolve_dataclass_init_hints,
+)
 from core.foundation.errors import ErrorCode, YscbError, safe_exception_summary
 from core.foundation.primitives import (
+    IS_WINDOWS,
     HostPath,
     JsonObject,
     JsonValue,
@@ -40,6 +47,7 @@ from core.foundation.primitives import (
     strict_parse_json_object,
     validate_relative_segment,
 )
+from core.foundation.profiler import is_sensitive_key, redact_sensitive_value
 from core.metadata.config.manifest import cfg_assert_not_reserved_module_id
 from core.metadata.config.infill import (
     DeepInfiller,
@@ -62,6 +70,9 @@ _CFG_TMPL_SUFFIX: Final[str] = ".tmpl"
 _CFG_HOST_LOCAL_ALLOWED_KEYS: Final[frozenset[str]] = frozenset(
     {"yscb_root", "default_provider"}
 )
+_CFG_LOCAL_FILE_MODE: Final[int] = 0o600
+_CFG_LOCAL_DIR_MODE: Final[int] = 0o700
+_CFG_REDACTED_LITERAL: Final[str] = "[REDACTED]"
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,9 +392,31 @@ def _cfg_validate_against_module_disk_schema(
     _cfg_validate_json_schema_node(effective_doc, schema_doc, defs_map, "")
 
 
-def _cfg_write_json_checked(dest: HostPath, payload: JsonObject) -> None:
+def _cfg_chmod_private_dir(path_str: str) -> None:
+    if IS_WINDOWS:
+        return
     try:
-        atomic_write_json(dest, payload)
+        os.chmod(path_str, _CFG_LOCAL_DIR_MODE)
+    except OSError:
+        pass
+
+
+def _cfg_ensure_private_local_dirs(yscb_root: HostPath, mod_id: ModuleId) -> None:
+    local_root = resolve_contained_subpath(yscb_root, _CFG_LOCAL_DIRNAME)
+    mod_local_dir = resolve_contained_subpath(local_root, mod_id.value)
+    os.makedirs(str(mod_local_dir), exist_ok=True)
+    _cfg_chmod_private_dir(str(local_root))
+    _cfg_chmod_private_dir(str(mod_local_dir))
+
+
+def _cfg_write_json_checked(
+    dest: HostPath,
+    payload: JsonObject,
+    *,
+    file_mode: Optional[int] = None,
+) -> None:
+    try:
+        atomic_write_json(dest, payload, file_mode=file_mode)
     except YscbError:
         raise
     except (OSError, ValueError) as exc:
@@ -391,6 +424,167 @@ def _cfg_write_json_checked(dest: HostPath, payload: JsonObject) -> None:
             ErrorCode.CONFIG_INVALID,
             f"Failed writing configuration file '{dest}': {safe_exception_summary(exc)}",
         ) from exc
+
+
+_CfgSecretPathToken: TypeAlias = tuple[bool, str]
+_CfgSecretPath: TypeAlias = tuple[_CfgSecretPathToken, ...]
+
+
+def _cfg_walk_type_hint_secret_paths(
+    hint_tp: object,
+    prefix: _CfgSecretPath,
+    out: set[_CfgSecretPath],
+    ancestors: frozenset[type[object]],
+    depth: int = 0,
+) -> None:
+    if depth > 24 or hint_tp is None:
+        return
+    orig = get_origin(hint_tp)
+    if orig is Annotated:
+        args = get_args(hint_tp)
+        if args:
+            _cfg_walk_type_hint_secret_paths(args[0], prefix, out, ancestors, depth + 1)
+        return
+    if orig is Union or orig is types.UnionType:
+        for arg in get_args(hint_tp):
+            if arg is not type(None):
+                _cfg_walk_type_hint_secret_paths(arg, prefix, out, ancestors, depth + 1)
+        return
+    if orig in (list, tuple, Sequence, cabc.Sequence, set, frozenset):
+        wild_prefix = (*prefix, (True, ""))
+        for arg in get_args(hint_tp):
+            if arg is not Ellipsis:
+                _cfg_walk_type_hint_secret_paths(arg, wild_prefix, out, ancestors, depth + 1)
+        return
+    if orig in (dict, Mapping, cabc.Mapping):
+        args = get_args(hint_tp)
+        if len(args) == 2:
+            _cfg_walk_type_hint_secret_paths(args[1], (*prefix, (True, "")), out, ancestors, depth + 1)
+        return
+    target_tp = orig if isinstance(orig, type) else hint_tp
+    if isinstance(target_tp, type) and dataclasses.is_dataclass(target_tp):
+        _cfg_collect_dataclass_secret_paths(target_tp, prefix, out, ancestors)
+
+
+def _cfg_collect_dataclass_secret_paths(
+    schema_cls: type[object],
+    prefix: _CfgSecretPath,
+    out: set[_CfgSecretPath],
+    ancestors: frozenset[type[object]],
+) -> None:
+    if not isinstance(schema_cls, type) or not dataclasses.is_dataclass(schema_cls) or schema_cls in ancestors:
+        return
+    next_ancestors = ancestors | {schema_cls}
+    try:
+        hints = resolve_dataclass_init_hints(schema_cls)
+    except YscbError:
+        hints = {}
+    for fld in dataclasses.fields(schema_cls):
+        fp = (*prefix, (False, fld.name))
+        if fld.metadata.get(SECRET_FIELD_METADATA_KEY) is True:
+            out.add(fp)
+        hint_tp = hints.get(fld.name)
+        if hint_tp is not None:
+            _cfg_walk_type_hint_secret_paths(hint_tp, fp, out, next_ancestors, 0)
+
+
+def _cfg_collect_schema_secret_paths(
+    node: Mapping[str, JsonValue],
+    defs: JsonObject,
+    prefix: _CfgSecretPath,
+    out: set[_CfgSecretPath],
+    depth: int = 0,
+) -> None:
+    if depth > 32:
+        return
+    ref = node.get("$ref")
+    if type(ref) is str and (ref.startswith("#/$defs/") or ref.startswith("#/definitions/")):
+        ref_name = ref.split("/", 2)[-1]
+        ref_target = defs.get(ref_name)
+        if isinstance(ref_target, Mapping):
+            _cfg_collect_schema_secret_paths(ref_target, defs, prefix, out, depth + 1)
+    if (node.get("writeOnly") is True or node.get("x-yscb-secret") is True) and prefix:
+        out.add(prefix)
+    for combo_key in ("anyOf", "oneOf", "allOf"):
+        branches = node.get(combo_key)
+        if isinstance(branches, Sequence) and not isinstance(branches, (str, bytes)):
+            for br in branches:
+                if isinstance(br, Mapping):
+                    _cfg_collect_schema_secret_paths(br, defs, prefix, out, depth + 1)
+    props = node.get("properties")
+    if isinstance(props, Mapping):
+        for pk, pv in props.items():
+            if type(pk) is str and isinstance(pv, Mapping):
+                _cfg_collect_schema_secret_paths(pv, defs, (*prefix, (False, pk)), out, depth + 1)
+    items_node = node.get("items")
+    if isinstance(items_node, Mapping):
+        _cfg_collect_schema_secret_paths(items_node, defs, (*prefix, (True, "")), out, depth + 1)
+    prefix_items = node.get("prefixItems")
+    if isinstance(prefix_items, Sequence) and not isinstance(prefix_items, (str, bytes)):
+        for p_item in prefix_items:
+            if isinstance(p_item, Mapping):
+                _cfg_collect_schema_secret_paths(p_item, defs, (*prefix, (True, "")), out, depth + 1)
+    add_props = node.get("additionalProperties")
+    if isinstance(add_props, Mapping):
+        _cfg_collect_schema_secret_paths(add_props, defs, (*prefix, (True, "")), out, depth + 1)
+
+
+def _cfg_matches_secret_path(
+    secret_paths: frozenset[_CfgSecretPath],
+    actual_path: tuple[Optional[str], ...],
+) -> bool:
+    n = len(actual_path)
+    if n == 0 or not secret_paths:
+        return False
+    for sp in secret_paths:
+        if len(sp) != n:
+            continue
+        if all(is_wild or (seg is not None and seg == tok) for (is_wild, tok), seg in zip(sp, actual_path)):
+            return True
+    return False
+
+
+def _cfg_mask_secret_leaf(val: JsonValue) -> JsonValue:
+    if val is None:
+        return None
+    if type(val) is str and not val:
+        return ""
+    return _CFG_REDACTED_LITERAL
+
+
+def _cfg_redact_merged_node(
+    val: JsonValue,
+    has_local: bool,
+    local_val: JsonValue,
+    secret_paths: frozenset[_CfgSecretPath],
+    path: tuple[Optional[str], ...],
+    depth: int = 0,
+) -> JsonValue:
+    if depth > 64:
+        return _CFG_REDACTED_LITERAL
+    if _cfg_matches_secret_path(secret_paths, path) or (bool(path) and path[-1] is not None and is_sensitive_key(path[-1])):
+        return _cfg_mask_secret_leaf(val)
+    if isinstance(val, Mapping):
+        if has_local and not isinstance(local_val, Mapping):
+            return _CFG_REDACTED_LITERAL
+        local_map = local_val if (has_local and isinstance(local_val, Mapping)) else None
+        out_map: MutableJsonObject = {}
+        for k, v in val.items():
+            k_str = k if type(k) is str else str(k)
+            child_has = local_map is not None and k_str in local_map
+            child_local: JsonValue = local_map[k_str] if (local_map is not None and child_has) else None
+            out_map[k_str] = _cfg_redact_merged_node(v, child_has, child_local, secret_paths, (*path, k_str), depth + 1)
+        return out_map
+    if isinstance(val, list):
+        if has_local:
+            return _cfg_mask_secret_leaf(val)
+        return [
+            _cfg_redact_merged_node(item, False, None, secret_paths, (*path, None), depth + 1)
+            for item in val
+        ]
+    if has_local:
+        return _cfg_mask_secret_leaf(val)
+    return redact_sensitive_value(val)
 
 
 def _cfg_write_bytes_checked(dest: HostPath, data: bytes) -> None:
@@ -953,7 +1147,9 @@ class ConfigStore:
                 mod_id.value,
                 _CFG_MOD_LOCAL_FILENAME if local else _CFG_MOD_PROJECT_FILENAME,
             )
-            _cfg_write_json_checked(dest, target_doc)
+            if local:
+                _cfg_ensure_private_local_dirs(self._yscb_root, mod_id)
+            _cfg_write_json_checked(dest, target_doc, file_mode=_CFG_LOCAL_FILE_MODE if local else None)
             self._module_cache.pop(mod_id, None)
 
     def unset_value(
@@ -985,9 +1181,67 @@ class ConfigStore:
             if not removed:
                 return False
             dest = resolve_contained_subpath(self._yscb_root, sub_dir, mod_id.value, fname)
-            _cfg_write_json_checked(dest, existing_doc)
+            if local:
+                _cfg_ensure_private_local_dirs(self._yscb_root, mod_id)
+            _cfg_write_json_checked(dest, existing_doc, file_mode=_CFG_LOCAL_FILE_MODE if local else None)
             self._module_cache.pop(mod_id, None)
             return True
+
+    def get_module_local_dict(self, module_id: ModuleId) -> MutableJsonObject:
+        """Return a detached copy of a module's machine-local config.local.json dictionary (or empty dict)."""
+        mod_id = _cfg_require_module_id(module_id)
+        with self._guard:
+            local_doc = _cfg_read_strict_json_file(
+                self._yscb_root,
+                _CFG_LOCAL_DIRNAME,
+                mod_id.value,
+                _CFG_MOD_LOCAL_FILENAME,
+                required=False,
+            )
+            return cfg_clone_json_object(local_doc or {}, label="module local config")
+
+    def get_module_redacted_dict(
+        self,
+        module_id: ModuleId,
+        *,
+        schema_cls: Optional[type[object]] = None,
+    ) -> MutableJsonObject:
+        """Return merged module config with config.local overrides, secret_field/writeOnly paths, and sensitive keys masked."""
+        mod_id = _cfg_require_module_id(module_id)
+        with self._guard:
+            proj_doc = _cfg_read_strict_json_file(
+                self._yscb_root,
+                _CFG_PROJECT_DIRNAME,
+                mod_id.value,
+                _CFG_MOD_PROJECT_FILENAME,
+                required=False,
+            ) or {}
+            local_doc = _cfg_read_strict_json_file(
+                self._yscb_root,
+                _CFG_LOCAL_DIRNAME,
+                mod_id.value,
+                _CFG_MOD_LOCAL_FILENAME,
+                required=False,
+            ) or {}
+            merged = cfg_deep_merge_json_objects(proj_doc, local_doc)
+            secret_paths: set[_CfgSecretPath] = set()
+            if schema_cls is not None:
+                _cfg_collect_dataclass_secret_paths(schema_cls, (), secret_paths, frozenset())
+            disk_schema = _cfg_read_strict_json_file(
+                self._yscb_root,
+                _CFG_MODULES_DIRNAME,
+                mod_id.value,
+                _CFG_MOD_SCHEMA_FILENAME,
+                required=False,
+            )
+            if disk_schema is not None:
+                raw_defs = disk_schema.get("$defs")
+                if not isinstance(raw_defs, Mapping):
+                    raw_defs = disk_schema.get("definitions")
+                defs_map: JsonObject = raw_defs if isinstance(raw_defs, Mapping) else {}
+                _cfg_collect_schema_secret_paths(disk_schema, defs_map, (), secret_paths, 0)
+            redacted = _cfg_redact_merged_node(merged, bool(local_doc), local_doc, frozenset(secret_paths), (), 0)
+            return dict(redacted) if isinstance(redacted, Mapping) else {}
 
     def deploy_configurable(
         self,

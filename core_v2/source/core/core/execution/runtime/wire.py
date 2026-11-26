@@ -138,6 +138,8 @@ class WorkerCommandEnvelope:
     profile_mem: bool = False
     trace_id: str = ""
     exec_mode: str = "worker"
+    include_presentation: bool = False
+    skip_module_init: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,8 +181,14 @@ class WorkerStepReply:
     fatal_abort_turn: bool = False
     error: Optional[ErrorDetail] = None
     profiler_tree: Optional[JsonValue] = None
+    rendered_text: Optional[str] = None
+    exit_code: Optional[int] = None
 
     def __post_init__(self) -> None:
+        if self.rendered_text is not None and type(self.rendered_text) is not str:
+            raise ValueError("WorkerStepReply.rendered_text must be str or None.")
+        if self.exit_code is not None and type(self.exit_code) is not int:
+            raise ValueError("WorkerStepReply.exit_code must be int or None.")
         if self.profiler_tree is not None:
             object.__setattr__(self, "profiler_tree", _sanitize_profiler_tree_wire(self.profiler_tree))
 
@@ -229,6 +237,7 @@ class DaemonRpcInvokeEnvelope:
     timeout_ms: Optional[int] = None
     propagation: CallPropagationContext = field(default_factory=CallPropagationContext)
     client_owns_flight_logs: bool = False
+    include_presentation: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,12 +252,18 @@ class DaemonRpcInvokeReply:
     invoked_tasks: tuple[tuple[HostPath, TaskId], ...] = ()
     coalesced: bool = False
     profiler_tree: Optional[JsonValue] = None
+    rendered_text: Optional[str] = None
+    exit_code: Optional[int] = None
 
     def __post_init__(self) -> None:
         require_pure_bool(self.ok, "DaemonRpcInvokeReply.ok")
         require_pure_bool(self.coalesced, "DaemonRpcInvokeReply.coalesced")
         if self.error is not None and not isinstance(self.error, ErrorDetail):
             raise ValueError("DaemonRpcInvokeReply.error must be ErrorDetail or None.")
+        if self.rendered_text is not None and type(self.rendered_text) is not str:
+            raise ValueError("DaemonRpcInvokeReply.rendered_text must be str or None.")
+        if self.exit_code is not None and type(self.exit_code) is not int:
+            raise ValueError("DaemonRpcInvokeReply.exit_code must be int or None.")
         try:
             validate_wire_json_object(
                 {"v": self.raw_value},

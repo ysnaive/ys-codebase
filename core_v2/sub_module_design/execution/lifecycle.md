@@ -144,6 +144,8 @@ class StepExecutionResult(Generic[TOut_co]):
     coalesced: bool = False
     fatal_abort_turn: bool = False
     committed_events: tuple[RawEventRecord, ...] = ()
+    rendered_text: Optional[str] = None
+    exit_code: Optional[int] = None
 
 
 @dataclass(frozen=True, slots=True)

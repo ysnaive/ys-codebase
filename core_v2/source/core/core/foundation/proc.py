@@ -23,6 +23,7 @@ from core.foundation.primitives import (
     PUBLIC_ENV_ALLOWLIST,
     PYTHON_LAUNCHER_HIJACK_ENV_KEYS,
     TEST_SANDBOX_ENV_KEY,
+    TOOLCHAIN_ENV_ALLOWLIST,
     TREE_ID_ENV_KEY,
     require_pure_str,
     HostPath,
@@ -1004,18 +1005,20 @@ class ManagedProcessTree:
         env: Optional[Mapping[str, str]] = None,
         inherit_tty: bool = False,
         capture_output: bool = False,
+        pipe_stdin: bool = False,
     ) -> None:
         require_pure_bool(inherit_tty, "ManagedProcessTree.inherit_tty")
         require_pure_bool(capture_output, "ManagedProcessTree.capture_output")
-        if inherit_tty and capture_output:
-            raise ValueError("ManagedProcessTree cannot combine inherit_tty=True and capture_output=True.")
+        require_pure_bool(pipe_stdin, "ManagedProcessTree.pipe_stdin")
+        if inherit_tty and (capture_output or pipe_stdin):
+            raise ValueError("ManagedProcessTree cannot combine inherit_tty=True with capture_output=True or pipe_stdin=True.")
         clean_argv = _validate_proc_argv_and_cwd(argv, cwd, "ManagedProcessTree")
         self._owns_process_group = not inherit_tty
         tok_hex = "" if IS_WINDOWS else uuid.uuid4().hex
         self._tree_token_bytes = tok_hex.encode("ascii")
-        stdin_target = None if inherit_tty else subprocess.DEVNULL
+        stdin_target = subprocess.PIPE if pipe_stdin else (None if inherit_tty else subprocess.DEVNULL)
         out_target = subprocess.PIPE if capture_output else (None if inherit_tty else subprocess.DEVNULL)
-        popen_bufsize = 0 if capture_output else -1
+        popen_bufsize = 0 if (capture_output or pipe_stdin) else -1
         env_map = _build_managed_child_env(env, tok_hex)
         if IS_WINDOWS:
             flags = 0x00000004 | (
@@ -1047,7 +1050,7 @@ class ManagedProcessTree:
                     except (OSError, subprocess.TimeoutExpired):
                         pass
                 finally:
-                    for pipe in (self._proc.stdout, self._proc.stderr):
+                    for pipe in (self._proc.stdin, self._proc.stdout, self._proc.stderr):
                         if pipe is not None:
                             try:
                                 pipe.close()
@@ -1087,6 +1090,11 @@ class ManagedProcessTree:
         return self._proc.pid
 
     @property
+    def stdin_pipe(self) -> Optional[BinaryIO]:
+        """Return the writable binary stdin pipe when pipe_stdin=True, else None."""
+        return cast(Optional[BinaryIO], self._proc.stdin)
+
+    @property
     def stdout_pipe(self) -> Optional[BinaryIO]:
         """Return the readable binary stdout pipe when capture_output=True, else None."""
         return cast(Optional[BinaryIO], self._proc.stdout)
@@ -1097,8 +1105,8 @@ class ManagedProcessTree:
         return cast(Optional[BinaryIO], self._proc.stderr)
 
     def close_pipes(self) -> None:
-        """Idempotently close any captured stdout/stderr pipes to prevent OS handle leaks."""
-        for pipe in (self._proc.stdout, self._proc.stderr):
+        """Idempotently close any captured stdin/stdout/stderr pipes to prevent OS handle leaks."""
+        for pipe in (self._proc.stdin, self._proc.stdout, self._proc.stderr):
             if pipe is not None:
                 try:
                     pipe.close()
@@ -1358,9 +1366,15 @@ def read_flight_log_env() -> dict[str, str]:
     return out
 
 
-def build_isolated_python_env() -> dict[str, str]:
+def build_isolated_python_env(*, include_toolchain_env: bool = False) -> dict[str, str]:
     """Construct a minimal OS-safe subprocess environment stripped of PYTHON*/PIP_*/VIRTUAL_ENV/_YSCB_*."""
+    require_pure_bool(include_toolchain_env, "build_isolated_python_env.include_toolchain_env")
     hijack_upper = {k.upper() for k in PYTHON_LAUNCHER_HIJACK_ENV_KEYS}
+    allowed_upper = (
+        _ISOLATED_SYS_ENV_ALLOW_UPPER | TOOLCHAIN_ENV_ALLOWLIST
+        if include_toolchain_env
+        else _ISOLATED_SYS_ENV_ALLOW_UPPER
+    )
     clean: dict[str, str] = {}
     for k, v in os.environ.items():
         if not k or "\x00" in k or "\x00" in v:
@@ -1372,7 +1386,7 @@ def build_isolated_python_env() -> dict[str, str]:
             or ku == "VIRTUAL_ENV"
         ):
             continue
-        if ku in _ISOLATED_SYS_ENV_ALLOW_UPPER or ku.startswith("LC_"):
+        if ku in allowed_upper or ku.startswith("LC_"):
             clean[k] = v
     clean["PYTHONNOUSERSITE"] = "1"
     clean["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"

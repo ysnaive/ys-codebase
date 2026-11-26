@@ -6,12 +6,27 @@ from abc import ABC, abstractmethod
 import dataclasses
 from dataclasses import dataclass, field
 from enum import Enum
+import json
 import math
 import re
 import threading
 import time
 from types import MappingProxyType
-from typing import BinaryIO, Callable, Generic, Mapping, Optional, Protocol, Sequence, TypeVar, cast, get_args, get_origin, overload
+from typing import (
+    BinaryIO,
+    Callable,
+    Generic,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    TypeVar,
+    cast,
+    get_args,
+    get_origin,
+    overload,
+    runtime_checkable,
+)
 
 from core.execution.event import (
     BoundEventSubscription,
@@ -33,16 +48,22 @@ from core.foundation.primitives import (
     MAX_PARSE_JSON_DEPTH,
     PRIVATE_ENV_PREFIX,
     PYTHON_LAUNCHER_HIJACK_ENV_KEYS,
+    TOOLCHAIN_ENV_ALLOWLIST,
     TREE_ID_ENV_KEY,
+    EnvHash,
     EventId,
     HostPath,
     JsonObject,
     JsonPrimitive,
     JsonValue,
     ModuleId,
+    SemVer4,
     SemanticUri,
+    SnapshotGen,
     SpaceId,
+    SpacePath,
     TaskId,
+    VersionConstraint,
     clone_strict_json_object,
     is_valid_type_annotation,
     require_pure_bool,
@@ -204,6 +225,8 @@ class ProcessResult:
     duration_ms: float
     timed_out: bool = False
     truncated: bool = False
+    stdout_bytes: bytes = b""
+    stderr_bytes: bytes = b""
 
     def __post_init__(self) -> None:
         require_pure_int(self.returncode, "ProcessResult.returncode", min_val=None, max_val=None)
@@ -215,11 +238,86 @@ class ProcessResult:
         object.__setattr__(self, "duration_ms", dur_f)
         require_pure_bool(self.timed_out, "ProcessResult.timed_out")
         require_pure_bool(self.truncated, "ProcessResult.truncated")
+        if type(self.stdout_bytes) is not bytes:
+            raise ValueError(f"ProcessResult.stdout_bytes must be bytes, got {type(self.stdout_bytes).__name__}")
+        if type(self.stderr_bytes) is not bytes:
+            raise ValueError(f"ProcessResult.stderr_bytes must be bytes, got {type(self.stderr_bytes).__name__}")
 
     @property
     def ok(self) -> bool:
         """Return True iff the subprocess exited cleanly with returncode 0 and did not time out."""
         return (not self.timed_out) and self.returncode == 0
+
+
+@runtime_checkable
+class HumanRenderable(Protocol):
+    """Optional output protocol rendering human-readable CLI output without altering SDK return values."""
+
+    def render_text(self) -> str: ...
+
+
+@runtime_checkable
+class ExitCodeProvider(Protocol):
+    """Optional output protocol supplying semantic CLI process exit codes."""
+
+    def exit_code(self) -> int: ...
+
+
+def format_output(output: object) -> tuple[str, int]:
+    """Extract (rendered_text, exit_code) uniformly from any SDK task return object."""
+    code = (
+        require_pure_int(output.exit_code(), "ExitCodeProvider.exit_code()", min_val=None, max_val=None)
+        if isinstance(output, ExitCodeProvider)
+        else 0
+    )
+    if isinstance(output, HumanRenderable):
+        return (require_pure_str(output.render_text(), "HumanRenderable.render_text()"), code)
+    if isinstance(output, Enum) and not isinstance(output, type):
+        output = output.value
+    if output is None or isinstance(output, Empty):
+        return ("", code)
+    if type(output) is str:
+        return (output, code)
+    if isinstance(
+        output,
+        (
+            bool,
+            int,
+            float,
+            ModuleId,
+            TaskId,
+            EventId,
+            HostPath,
+            SemVer4,
+            VersionConstraint,
+            SemanticUri,
+            SpaceId,
+            SpacePath,
+            SnapshotGen,
+            EnvHash,
+        ),
+    ):
+        return (str(output), code)
+    if (dataclasses.is_dataclass(output) and not isinstance(output, type)) or isinstance(
+        output, (Mapping, list, tuple, frozenset)
+    ):
+        return (json.dumps(DataclassCodec.encode(output), indent=2, ensure_ascii=False), code)
+    return (str(output), code)
+
+
+@dataclass(frozen=True, slots=True)
+class EncodedStepOutput:
+    """Typed encoded task step output with optional in-process presentation text and semantic exit code."""
+
+    raw_output: JsonValue
+    rendered_text: Optional[str] = None
+    exit_code: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if self.rendered_text is not None and type(self.rendered_text) is not str:
+            raise ValueError("EncodedStepOutput.rendered_text must be str or None.")
+        if self.exit_code is not None and type(self.exit_code) is not int:
+            raise ValueError("EncodedStepOutput.exit_code must be int or None.")
 
 
 class YscbModuleConvertible(Protocol):
@@ -660,6 +758,8 @@ class InvokeRequest:
     profile_mem: bool = False
     external_flight_owner: bool = False
     active_profiler: Optional[Profiler] = None
+    include_presentation: bool = False
+    skip_module_init: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.task_id, TaskId):
@@ -679,6 +779,8 @@ class InvokeRequest:
         require_pure_bool(self.allow_conditional, "InvokeRequest.allow_conditional")
         require_pure_bool(self.profile_mem, "InvokeRequest.profile_mem")
         require_pure_bool(self.external_flight_owner, "InvokeRequest.external_flight_owner")
+        require_pure_bool(self.include_presentation, "InvokeRequest.include_presentation")
+        require_pure_bool(self.skip_module_init, "InvokeRequest.skip_module_init")
         if not isinstance(self.propagation, CallPropagationContext):
             raise ValueError("InvokeRequest.propagation must be CallPropagationContext.")
         if self.active_profiler is not None:
@@ -697,12 +799,18 @@ class TaskOutcome(Generic[TOut_co]):
     teardown_diagnostics: tuple[ErrorDetail, ...] = ()
     coalesced: bool = False
     executed_hot: bool = False
+    rendered_text: Optional[str] = None
+    exit_code: Optional[int] = None
 
     def __post_init__(self) -> None:
         for flag, label in ((self.ok, "ok"), (self.coalesced, "coalesced"), (self.executed_hot, "executed_hot")):
             require_pure_bool(flag, f"TaskOutcome.{label}")
         if self.error is not None and not isinstance(self.error, ErrorDetail):
             raise ValueError("TaskOutcome.error must be ErrorDetail or None.")
+        if self.rendered_text is not None and type(self.rendered_text) is not str:
+            raise ValueError("TaskOutcome.rendered_text must be str or None.")
+        if self.exit_code is not None and type(self.exit_code) is not int:
+            raise ValueError("TaskOutcome.exit_code must be int or None.")
         for diag_seq, attr_nm in (
             (self.event_diagnostics, "event_diagnostics"),
             (self.teardown_diagnostics, "teardown_diagnostics"),
@@ -866,6 +974,32 @@ class SpaceClient:
         )
         return _unwrap_space_outcome(out)
 
+    def resolve_uri(self, space_id: SpaceId | str, rel_path: SpacePath | str) -> SemanticUri:
+        """Resolve a space-relative SpacePath into a caller-validated SemanticUri usable with ctx.vfs."""
+        sid = _normalize_space_id_str(space_id)
+        sp = rel_path if isinstance(rel_path, SpacePath) else SpacePath.parse(require_pure_str(rel_path, "rel_path", non_empty=True))
+        out = self._ctx.call(
+            "core.space.resolve_uri",
+            {"space_id": sid, "rel_path": str(sp)},
+            output_type=SemanticUri,
+        )
+        return _unwrap_space_outcome(out)
+
+    def match_spaces(self, target: SemanticUri | HostPath | str) -> tuple[SpaceId, ...]:
+        """Return all logical SpaceIds whose compiled rules match the caller-readable target URI or path."""
+        if isinstance(target, (SemanticUri, HostPath)):
+            raw_target = str(target)
+        elif type(target) is str:
+            raw_target = require_pure_str(target, "target", non_empty=True)
+        else:
+            raise ValueError(f"SpaceClient.match_spaces requires SemanticUri, HostPath, or str, got {target!r}")
+        out = self._ctx.call(
+            "core.space.match_spaces",
+            {"target": raw_target},
+            output_type=tuple[SpaceId, ...],
+        )
+        return _unwrap_space_outcome(out)
+
 
 def _resolve_run_process_cwd(ctx: TaskContext, cwd: Optional[SemanticUri | HostPath | str]) -> HostPath:
     if cwd is None:
@@ -895,9 +1029,20 @@ def _set_case_normalized_env(env_map: dict[str, str], key: str, value: str) -> N
     env_map[key] = value
 
 
-def _build_run_process_env(ctx: TaskContext, env: Optional[Mapping[str, str]]) -> dict[str, str]:
-    merged = build_isolated_python_env()
+def _build_run_process_env(
+    ctx: TaskContext,
+    env: Optional[Mapping[str, str]],
+    *,
+    inherit_toolchain_env: bool = True,
+) -> dict[str, str]:
+    merged = build_isolated_python_env(include_toolchain_env=inherit_toolchain_env)
+    stripped_tc_upper = (TOOLCHAIN_ENV_ALLOWLIST | frozenset({"ALL_PROXY"})) if not inherit_toolchain_env else frozenset()
+    if stripped_tc_upper:
+        for existing_k in [ek for ek in merged if ek.upper() in stripped_tc_upper]:
+            merged.pop(existing_k, None)
     for ck, cv in sanitize_caller_env(ctx.caller_env).items():
+        if stripped_tc_upper and ck.upper() in stripped_tc_upper:
+            continue
         _set_case_normalized_env(merged, ck, cv)
     if env is None:
         return merged
@@ -913,6 +1058,27 @@ def _build_run_process_env(ctx: TaskContext, env: Optional[Mapping[str, str]]) -
             raise ValueError(f"run_process env key {k!r} is reserved or forbidden.")
         _set_case_normalized_env(merged, k, v)
     return merged
+
+
+def _write_stdin_bytes(pipe: Optional[BinaryIO], data: bytes, stop_event: threading.Event) -> None:
+    if pipe is None:
+        return
+    try:
+        view = memoryview(data)
+        total = len(view)
+        offset = 0
+        while offset < total and not stop_event.is_set():
+            written = pipe.write(view[offset : offset + 16384])
+            if written is None or written <= 0:
+                break
+            offset += written
+    except (BrokenPipeError, OSError, ValueError):
+        pass
+    finally:
+        try:
+            pipe.close()
+        except OSError:
+            pass
 
 
 def _drain_pipe_bounded(pipe: Optional[BinaryIO], max_bytes: int, sink: list[bytes], trunc_flag: list[bool]) -> None:
@@ -1009,19 +1175,34 @@ class TaskContext(ABC):
         *,
         cwd: Optional[SemanticUri | HostPath | str] = None,
         env: Optional[Mapping[str, str]] = None,
+        input: Optional[str | bytes] = None,
+        inherit_toolchain_env: bool = True,
         timeout_sec: float = 60.0,
         max_output_bytes: int = 1048576,
     ) -> ProcessResult:
-        """Run a managed child process tree with cancel_token teardown, bounded pipe draining, and isolated env."""
+        """Run a managed child process tree with optional stdin, raw bytes output, cancel_token teardown, and isolated env."""
         clean_argv = require_typed_tuple(argv, str, "run_process argv")
         if not clean_argv or any((not seg and idx == 0) or not _is_valid_env_str(seg) for idx, seg in enumerate(clean_argv)):
             raise ValueError("run_process argv must be a non-empty UTF-8 NUL-free Sequence[str] with non-empty program.")
+        require_pure_bool(inherit_toolchain_env, "run_process inherit_toolchain_env")
+        stdin_bytes: Optional[bytes]
+        if input is None:
+            stdin_bytes = None
+        elif type(input) is bytes:
+            stdin_bytes = input
+        elif type(input) is str:
+            try:
+                stdin_bytes = input.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise ValueError("run_process input str must be valid UTF-8 without lone surrogates.") from exc
+        else:
+            raise ValueError(f"run_process input must be str, bytes, or None, got {type(input).__name__}")
         timeout_f = safe_real_to_float(timeout_sec, label="run_process timeout_sec")
         if not math.isfinite(timeout_f) or timeout_f <= 0.0:
             raise ValueError(f"run_process timeout_sec must be finite and > 0, got {timeout_sec!r}")
         max_bytes = require_pure_int(max_output_bytes, "run_process max_output_bytes", min_val=0, max_val=INT64_MAX)
         cwd_hp = _resolve_run_process_cwd(self, cwd)
-        merged_env = _build_run_process_env(self, env)
+        merged_env = _build_run_process_env(self, env, inherit_toolchain_env=inherit_toolchain_env)
         self.cancel_token.raise_if_cancelled()
         t0 = time.monotonic()
         deadline = t0 + timeout_f
@@ -1033,8 +1214,15 @@ class TaskContext(ABC):
         cancelled = False
         rc: Optional[int] = None
         with self.profiler.scope_relative("Proc/Run"):
-            with ManagedProcessTree(clean_argv, cwd=cwd_hp, env=merged_env, capture_output=True) as tree:
+            with ManagedProcessTree(
+                clean_argv,
+                cwd=cwd_hp,
+                env=merged_env,
+                capture_output=True,
+                pipe_stdin=(stdin_bytes is not None),
+            ) as tree:
                 started_threads: list[threading.Thread] = []
+                stdin_stop = threading.Event()
                 step = 0.002
                 try:
                     for pipe_obj, sink_buf, trunc_ref in (
@@ -1048,38 +1236,53 @@ class TaskContext(ABC):
                         )
                         reader.start()
                         started_threads.append(reader)
+                    if stdin_bytes is not None:
+                        writer = threading.Thread(
+                            target=_write_stdin_bytes,
+                            args=(tree.stdin_pipe, stdin_bytes, stdin_stop),
+                            daemon=True,
+                        )
+                        writer.start()
+                        started_threads.append(writer)
                     while True:
                         rc = tree.poll()
                         if rc is not None:
                             break
                         if self.cancel_token.is_cancelled:
                             cancelled = True
+                            stdin_stop.set()
                             tree.terminate_tree()
                             break
                         now = time.monotonic()
                         if now >= deadline:
                             timed_out = True
+                            stdin_stop.set()
                             tree.terminate_tree()
                             break
                         time.sleep(min(step, max(0.001, deadline - now)))
                         step = min(0.015, step * 1.5)
                 finally:
+                    stdin_stop.set()
                     if rc is None:
                         tree.terminate_tree()
-                    for reader in started_threads:
-                        reader.join(timeout=2.0)
+                    for io_thread in started_threads:
+                        io_thread.join(timeout=2.0)
                     tree.close_pipes()
         if cancelled:
             self.cancel_token.raise_if_cancelled()
             raise TaskCancelledException(f"Subprocess '{clean_argv[0]}' cancelled.")
         duration_ms = max(0.0, round((time.monotonic() - t0) * 1000.0, 3))
+        raw_out_bytes = b"".join(out_chunks)
+        raw_err_bytes = b"".join(err_chunks)
         return ProcessResult(
             returncode=-1 if timed_out else (rc if rc is not None else -1),
-            stdout=b"".join(out_chunks).decode("utf-8", errors="replace"),
-            stderr=b"".join(err_chunks).decode("utf-8", errors="replace"),
+            stdout=raw_out_bytes.decode("utf-8", errors="replace"),
+            stderr=raw_err_bytes.decode("utf-8", errors="replace"),
             duration_ms=duration_ms,
             timed_out=timed_out,
             truncated=out_trunc[0] or err_trunc[0],
+            stdout_bytes=raw_out_bytes,
+            stderr_bytes=raw_err_bytes,
         )
 
     @overload
@@ -1167,6 +1370,19 @@ class BoundTask(ABC):
     @abstractmethod
     def execute_encoded(self, raw_input: JsonObject, ctx: TaskContext) -> JsonValue: ...
 
+    def execute_encoded_with_presentation(
+        self,
+        raw_input: JsonObject,
+        ctx: TaskContext,
+        *,
+        include_presentation: bool = False,
+    ) -> EncodedStepOutput:
+        raw_out = self.execute_encoded(raw_input, ctx)
+        if not include_presentation:
+            return EncodedStepOutput(raw_output=raw_out)
+        rendered, code = format_output(raw_out)
+        return EncodedStepOutput(raw_output=raw_out, rendered_text=rendered, exit_code=code)
+
 
 class Task(BoundTask, Generic[TIn, TOut]):
     """Universal strongly typed base class for every public or triggered capability in Core 2.0."""
@@ -1233,6 +1449,34 @@ class Task(BoundTask, Generic[TIn, TOut]):
         typed_in = DataclassCodec.decode(self.metadata.input_type, raw_input)
         typed_out = self.run(typed_in, ctx)
         return DataclassCodec.encode_typed(self.metadata.output_type, typed_out)
+
+    def execute_encoded_with_presentation(
+        self,
+        raw_input: JsonObject,
+        ctx: TaskContext,
+        *,
+        include_presentation: bool = False,
+    ) -> EncodedStepOutput:
+        typed_in = DataclassCodec.decode(self.metadata.input_type, raw_input)
+        typed_out = self.run(typed_in, ctx)
+        raw_out = DataclassCodec.encode_typed(self.metadata.output_type, typed_out)
+        if not include_presentation:
+            return EncodedStepOutput(raw_output=raw_out)
+        is_human = isinstance(typed_out, HumanRenderable)
+        is_exit = isinstance(typed_out, ExitCodeProvider)
+        if not is_human and not is_exit:
+            return EncodedStepOutput(
+                raw_output=raw_out,
+                rendered_text="" if isinstance(typed_out, Empty) else None,
+                exit_code=0,
+            )
+        rendered: Optional[str] = None
+        code: Optional[int] = None
+        if is_human:
+            rendered, code = format_output(typed_out)
+        elif is_exit:
+            code = require_pure_int(typed_out.exit_code(), "ExitCodeProvider.exit_code()", min_val=None, max_val=None)
+        return EncodedStepOutput(raw_output=raw_out, rendered_text=rendered, exit_code=code)
 
 
 class YscbModule(ABC):
@@ -1393,6 +1637,8 @@ def decode_outcome_as(
             teardown_diagnostics=outcome.teardown_diagnostics,
             coalesced=outcome.coalesced,
             executed_hot=outcome.executed_hot,
+            rendered_text=outcome.rendered_text,
+            exit_code=outcome.exit_code,
         )
     except YscbError as exc:
         return TaskOutcome(

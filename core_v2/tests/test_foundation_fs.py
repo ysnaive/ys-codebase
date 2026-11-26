@@ -104,6 +104,7 @@ from core.foundation import (
     ProfilerRingBuffer,
     ProfilerSession,
     ROOT_DIR_ENV_KEY,
+    SECRET_FIELD_METADATA_KEY,
     SchemaExporter,
     SemVer4,
     SemanticUri,
@@ -113,21 +114,26 @@ from core.foundation import (
     SpacePath,
     StructuredLogger,
     TEST_SANDBOX_ENV_KEY,
+    TOOLCHAIN_ENV_ALLOWLIST,
     TREE_ID_ENV_KEY,
     TaskCancelledException,
     TaskId,
     VersionConstraint,
     YscbError,
+    build_isolated_python_env,
     clone_strict_json_object,
     decode_profiler_snapshot,
+    extract_toolchain_env,
     get_process_start_tag,
     infer_sequence_element_dataclass,
     is_disallowed_reparse_tag,
     is_process_alive,
+    is_sensitive_key,
     read_process_rss_kb,
     redact_cli_args,
     redact_sensitive_value,
     render_profiler_tree,
+    secret_field,
     require_pure_bool,
     require_pure_int,
     safe_exception_summary,
@@ -922,6 +928,10 @@ def _verify_profiler_and_redaction() -> None:
     check(red_argv[0] == "--approve=[REDACTED]" and red_argv[2] == "[REDACTED]" and red_argv[4] == "[REDACTED]", f"Flag redaction failed: {red_argv}")
     check("s3cr3t" not in red_argv[5] and "[REDACTED]" in red_argv[5], f"URL arg redaction failed: {red_argv}")
     check(red_argv[-2] == "oauth_secret" and red_argv[-1] == "[REDACTED]", f"config set redaction failed: {red_argv}")
+    red_local_cfg = redact_cli_args(["config", "set", "secmod", "dsn", "base64val==", "--local"])
+    check(red_local_cfg == ("config", "set", "secmod", "dsn", "[REDACTED]", "--local"), f"config set --local redaction failed: {red_local_cfg}")
+    red_local_pre = redact_cli_args(["config", "set", "--local", "secmod", "endpoint", "https://priv.local"])
+    check(red_local_pre == ("config", "set", "--local", "secmod", "endpoint", "[REDACTED]"), f"config set --local prefix redaction failed: {red_local_pre}")
 
 
 def _verify_flight_log_router_and_concurrent_rotator(obs_dir: HostPath) -> None:
@@ -1797,6 +1807,78 @@ def _verify_managed_process_tree_capture_output(suite_root: Path) -> None:
         check(raw_out == b"cap_out" and raw_err == b"cap_err", f"Unexpected pipe capture: {raw_out!r} / {raw_err!r}")
         tree.close_pipes()
         tree.close_pipes()
+
+    assert_raises_val_error(
+        lambda: ManagedProcessTree(
+            [sys.executable, "-c", "pass"],
+            cwd=cap_dir,
+            inherit_tty=True,
+            pipe_stdin=True,
+        )
+    )
+    with ManagedProcessTree(
+        [sys.executable, "-c", "import sys; data = sys.stdin.buffer.read(); sys.stdout.buffer.write(data[::-1])"],
+        cwd=cap_dir,
+        capture_output=True,
+        pipe_stdin=True,
+    ) as stdin_tree:
+        check(stdin_tree.stdin_pipe is not None and stdin_tree.stdout_pipe is not None)
+        stdin_tree.stdin_pipe.write(b"\x01\x02hello\xff")
+        stdin_tree.stdin_pipe.close()
+        echoed = stdin_tree.stdout_pipe.read()
+        deadline2 = time.monotonic() + 5.0
+        while stdin_tree.poll() is None and time.monotonic() < deadline2:
+            time.sleep(0.01)
+        check(stdin_tree.poll() == 0 and echoed == b"\xffolleh\x02\x01", f"Unexpected stdin pipe echo: {echoed!r}")
+        stdin_tree.close_pipes()
+
+    check("CARGO_HOME" in TOOLCHAIN_ENV_ALLOWLIST and "SSH_AUTH_SOCK" in TOOLCHAIN_ENV_ALLOWLIST)
+    filtered_tc = extract_toolchain_env(
+        {
+            "CARGO_HOME": "/opt/cargo",
+            "ssh_auth_sock": "/tmp/agent.sock",
+            "GIT_SSH_COMMAND": "ssh -i key",
+            "AWS_SECRET_ACCESS_KEY": "must_strip",
+            "GITHUB_TOKEN": "ghp_strip",
+            "PYTHONPATH": "/hijack",
+            "_YSCB_INTERNAL": "1",
+            "YSCB_LOCALE": "en",
+            "BAD=KEY": "1",
+            "BAD\x00KEY": "1",
+        }
+    )
+    check(
+        filtered_tc == {"CARGO_HOME": "/opt/cargo", "ssh_auth_sock": "/tmp/agent.sock", "GIT_SSH_COMMAND": "ssh -i key"},
+        f"Unexpected extract_toolchain_env result: {filtered_tc}",
+    )
+    with mock.patch.dict(
+        os.environ,
+        {
+            "CARGO_HOME": "/tmp/tc_cargo",
+            "SSH_AUTH_SOCK": "/tmp/tc_sock",
+            "AWS_SECRET_ACCESS_KEY": "drop_me",
+            "PYTHONPATH": "/tmp/drop_py",
+            "_YSCB_SECRET_FLAG": "1",
+        },
+        clear=False,
+    ):
+        iso_default = build_isolated_python_env()
+        iso_tc = build_isolated_python_env(include_toolchain_env=True)
+        check("CARGO_HOME" not in iso_default and "SSH_AUTH_SOCK" not in iso_default)
+        check(iso_tc.get("CARGO_HOME") == "/tmp/tc_cargo" and iso_tc.get("SSH_AUTH_SOCK") == "/tmp/tc_sock")
+        for env_map in (iso_default, iso_tc):
+            check(
+                "AWS_SECRET_ACCESS_KEY" not in env_map
+                and "PYTHONPATH" not in env_map
+                and "_YSCB_SECRET_FLAG" not in env_map
+                and env_map.get("PYTHONNOUSERSITE") == "1"
+            )
+
+    check(is_sensitive_key("api_token") and is_sensitive_key("MySecretKey") and is_sensitive_key("_yscb_auth"))
+    check((not is_sensitive_key("endpoint")) and (not is_sensitive_key("")))
+    bad_key_obj: object = 123
+    assert_raises_val_error(lambda: is_sensitive_key(bad_key_obj))
+    check(SECRET_FIELD_METADATA_KEY == "yscb_secret" and callable(secret_field))
 
 
 def run_foundation_fs_suite(tmp_root: Path) -> None:

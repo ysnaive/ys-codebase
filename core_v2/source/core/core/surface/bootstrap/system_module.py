@@ -30,6 +30,7 @@ from core.execution.runtime import (
     ConfigChangedEventPayload,
     DispatchMode,
     Empty,
+    EncodedStepOutput,
     MODULE_INSTALLED_EVENT,
     MODULE_REMOVING_EVENT,
     ModuleLifecycleEventPayload,
@@ -65,7 +66,7 @@ from core.filesystem.space import (
     SpaceSpec,
     SpaceStatusSnapshot,
 )
-from core.filesystem.vfs import KernelVfs, ReadonlyPolicy, UriMountTable
+from core.filesystem.vfs import KernelVfs, ReadonlyPolicy, ScopedVfs, UriMountTable
 from core.foundation import (
     CancellationToken,
     DataclassCodec,
@@ -180,6 +181,8 @@ class SystemKernelPort(Protocol):
 
     @property
     def kernel_vfs(self) -> KernelVfs: ...
+
+    def scoped_vfs_for_module(self, module_id: Optional[ModuleId]) -> ScopedVfs: ...
 
     @property
     def space_registry(self) -> SpaceRegistry: ...
@@ -455,6 +458,21 @@ class SpaceDiffInput:
 
     space_id: str
     consumer: str
+
+
+@dataclass(frozen=True, slots=True)
+class SpaceResolveUriInput:
+    """Input DTO for resolving a space-relative SpacePath into a SemanticUri via core.space.resolve_uri."""
+
+    space_id: str
+    rel_path: str
+
+
+@dataclass(frozen=True, slots=True)
+class SpaceMatchSpacesInput:
+    """Input DTO for finding all logical SpaceIds matching a target URI or path via core.space.match_spaces."""
+
+    target: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -1066,7 +1084,7 @@ def _execute_package_transaction_locked(
                 )
                 kernel.evict_local_modules_before_remove(validated_removing)
 
-        with kernel.package_engine.migration_rollback_scope() as restore_pre_tx:
+        with kernel.package_engine.migration_rollback_scope() as rollback_tx:
             try:
                 report = operation_fn()
             except BaseException:
@@ -1092,6 +1110,7 @@ def _execute_package_transaction_locked(
                     cur_mig_label = f"'{trans.module_id}' ({trans.old_version} -> {trans.new_version})"
                     if not _module_declares_on_migrate(kernel, trans.module_id):
                         continue
+                    rollback_tx.snapshot_module_storage_local(trans.module_id)
                     kernel.invoke_internal_migration(
                         trans.module_id,
                         MigrationRequest(old_version=trans.old_version, new_version=trans.new_version),
@@ -1100,7 +1119,7 @@ def _execute_package_transaction_locked(
                     )
             except BaseException as mig_exc:
                 try:
-                    restore_pre_tx()
+                    rollback_tx.restore()
                 finally:
                     rb_core_fp = _capture_core_install_fingerprint(kernel)
                     core_mutated = before_core_fp != rb_core_fp
@@ -1563,6 +1582,23 @@ def _verify_fs_ack_cursor_access(req: SpaceAckCursorInput) -> None:
             )
 
 
+def _lookup_dotted_config_value(doc: JsonObject, dotted_key: str) -> JsonValue:
+    clean = require_pure_str(dotted_key, "config key", non_empty=True).strip()
+    parts = clean.split(".")
+    if any(not p for p in parts):
+        raise YscbError(ErrorCode.CONFIG_INVALID, f"Invalid dotted configuration key: {dotted_key!r}")
+    if dotted_key in doc:
+        return doc[dotted_key]
+    if clean in doc:
+        return doc[clean]
+    cur: JsonValue = doc
+    for seg in parts:
+        if not isinstance(cur, Mapping) or seg not in cur:
+            return None
+        cur = cur[seg]
+    return cur
+
+
 class ConfigContributesTaskGroup(TaskGroup):
     """Built-in 2x2 configuration matrix and Contributes 2.0 introspection tasks."""
 
@@ -1578,12 +1614,17 @@ class ConfigContributesTaskGroup(TaskGroup):
         if req.module is not None:
             mid = ModuleId(req.module)
             _verify_config_read_access(mid)
-            return SystemResultView(f"Config for '{mid}':", {mid.value: kernel.config_store.get_module_dict(mid)})
+            redacted = kernel.config_store.get_module_redacted_dict(
+                mid, schema_cls=kernel.resolve_module_config_type(mid),
+            )
+            return SystemResultView(f"Config for '{mid}':", {mid.value: redacted})
         _verify_config_read_access(None)
         host_cfg = kernel.config_store.load_host_config()
         merged_all: MutableJsonObject = {}
         for mid in sorted(host_cfg.installed_modules.keys(), key=lambda m: m.value):
-            merged_all[mid.value] = kernel.config_store.get_module_dict(mid)
+            merged_all[mid.value] = kernel.config_store.get_module_redacted_dict(
+                mid, schema_cls=kernel.resolve_module_config_type(mid),
+            )
         return SystemResultView("Workspace module configurations:", merged_all)
 
     @task(
@@ -1597,7 +1638,10 @@ class ConfigContributesTaskGroup(TaskGroup):
         kernel = _resolve_bound_kernel(self, ctx.workspace_root)
         mid = ModuleId(req.module)
         _verify_config_read_access(mid)
-        val = kernel.config_store.get_module_value(mid, req.key, default=None)
+        redacted = kernel.config_store.get_module_redacted_dict(
+            mid, schema_cls=kernel.resolve_module_config_type(mid),
+        )
+        val = _lookup_dotted_config_value(redacted, req.key)
         return SystemResultView(f"{mid}.{req.key} = {json.dumps(val, ensure_ascii=False)}", {"value": val})
 
     @task(
@@ -1611,7 +1655,9 @@ class ConfigContributesTaskGroup(TaskGroup):
         kernel = _resolve_bound_kernel(self, ctx.workspace_root)
         mid = ModuleId(req.module)
         _verify_config_read_access(mid)
-        merged = kernel.config_store.get_module_dict(mid)
+        merged = kernel.config_store.get_module_redacted_dict(
+            mid, schema_cls=kernel.resolve_module_config_type(mid),
+        )
         schema_doc: Optional[JsonObject] = None
         schema_hp = try_resolve_contained_subpath(kernel.yscb_root, ".modules", mid.value, "config.schema.json")
         if schema_hp is not None and not is_symlink_or_reparse(str(schema_hp)):
@@ -1650,7 +1696,9 @@ class ConfigContributesTaskGroup(TaskGroup):
         kernel.reload_config_only((f"{mid.value}:{req.key}",))
         _ = kernel.sync_gitignore_and_readonly()
         ctx.emit(CONFIG_CHANGED_EVENT, ConfigChangedEventPayload(changed_paths=(f"{mid.value}:{req.key}",)))
-        return SystemResultView(f"Updated {mid}.{req.key}.", {"module": mid.value, "key": req.key, "value": parsed_val, "local": req.local})
+        redacted = kernel.config_store.get_module_redacted_dict(mid, schema_cls=schema_cls)
+        safe_val = _lookup_dotted_config_value(redacted, req.key)
+        return SystemResultView(f"Updated {mid}.{req.key}.", {"module": mid.value, "key": req.key, "value": safe_val, "local": req.local})
 
     @task(
         cli=("config", "unset"),
@@ -2277,6 +2325,19 @@ class _CustomizedBoundTask(BoundTask):
     def execute_encoded(self, raw_input: JsonObject, ctx: TaskContext) -> JsonValue:
         return self._inner.execute_encoded(raw_input, ctx)
 
+    def execute_encoded_with_presentation(
+        self,
+        raw_input: JsonObject,
+        ctx: TaskContext,
+        *,
+        include_presentation: bool = False,
+    ) -> EncodedStepOutput:
+        return self._inner.execute_encoded_with_presentation(
+            raw_input,
+            ctx,
+            include_presentation=include_presentation,
+        )
+
 
 class _CustomizedYscbModule(YscbModule):
     """YscbModule adapter exposing CoreSystemModule tasks with exact SelfMutationScope & INTERNAL_TRIGGER."""
@@ -2422,6 +2483,48 @@ class CoreSystemModule(Module):
     def diff_space(self, req: SpaceDiffInput, ctx: TaskContext) -> SpaceDiffBatch:
         kernel = _resolve_bound_kernel(self, ctx.workspace_root)
         return kernel.space_scanner.diff(req.space_id, req.consumer)
+
+    @task(
+        name="core.space.resolve_uri",
+        summary="Resolve a space-relative SpacePath into a caller-validated SemanticUri via SDK",
+        dispatch_mode=DispatchMode.HYBRID,
+        security=SecurityTier.SAFE,
+    )
+    def resolve_space_uri(self, req: SpaceResolveUriInput, ctx: TaskContext) -> SemanticUri:
+        kernel = _resolve_bound_kernel(self, ctx.workspace_root)
+        caller_mod = resolve_active_caller_module()
+        caller_vfs = kernel.scoped_vfs_for_module(caller_mod)
+        resolved_hp = kernel.space_registry.resolve_file_path(req.space_id, req.rel_path)
+        return caller_vfs.resolve_caller_uri(str(resolved_hp), ctx.caller_cwd)
+
+    @task(
+        name="core.space.match_spaces",
+        summary="List all compiled logical SpaceIds matching a caller-readable URI or path via SDK",
+        dispatch_mode=DispatchMode.HYBRID,
+        security=SecurityTier.SAFE,
+    )
+    def match_spaces(self, req: SpaceMatchSpacesInput, ctx: TaskContext) -> tuple[SpaceId, ...]:
+        kernel = _resolve_bound_kernel(self, ctx.workspace_root)
+        caller_mod = resolve_active_caller_module()
+        caller_vfs = kernel.scoped_vfs_for_module(caller_mod)
+        uri = caller_vfs.resolve_caller_uri(req.target, ctx.caller_cwd)
+        target_hp = caller_vfs.try_get_physical_path(uri)
+        if target_hp is None:
+            raise YscbError(
+                ErrorCode.ACCESS_DENIED,
+                f"Cannot match logical spaces against virtual URI without physical path: '{req.target}'.",
+            )
+        matched: list[SpaceId] = []
+        for spec in kernel.space_registry.list_spaces():
+            try:
+                if kernel.space_registry.match_path(spec.space_id, target_hp).matched:
+                    matched.append(spec.space_id)
+            except YscbError as exc:
+                if exc.detail.code == ErrorCode.SPACE_NOT_FOUND:
+                    continue
+                raise
+        matched.sort(key=lambda sid: str(sid))
+        return tuple(matched)
 
     @task(
         name="core.space.scan",

@@ -598,6 +598,7 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
                 profile_mem=prop.profile_mem,
                 external_flight_owner=bool(rpc_env.client_owns_flight_logs or rpc_env.caller_surface == CallerSurface.CLI),
                 active_profiler=rpc_prof,
+                include_presentation=rpc_env.include_presentation,
             )
             _ = DeadlineGuard.from_timeout_ms(rpc_env.timeout_ms, cancel_token)
         except (YscbError, KeyError, ValueError, TypeError) as exc:
@@ -614,6 +615,7 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
             ok=out.ok, raw_value=out.value, error=out.error, event_diagnostics=out.event_diagnostics,
             teardown_diagnostics=out.teardown_diagnostics, invoked_tasks=raw_res.invoked_tasks, coalesced=out.coalesced,
             profiler_tree=DataclassCodec.encode_object(rpc_prof.snapshot()),
+            rendered_text=out.rendered_text, exit_code=out.exit_code,
         )
 
     def invoke_typed(
@@ -1493,6 +1495,7 @@ class RuntimeDispatcher(TaskStepExecutor[InvokeRequest]):
                     priority=request.priority, approval_scope=request.approval_scope,
                     allow_conditional=request.allow_conditional, timeout_ms=eff_req_tmo, propagation=request.propagation,
                     client_owns_flight_logs=client_owns_flight,
+                    include_presentation=request.include_presentation,
                 )
             )
         except YscbError as exc:

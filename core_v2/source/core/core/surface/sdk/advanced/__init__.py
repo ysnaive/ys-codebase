@@ -11,6 +11,7 @@ from core.execution.runtime import (
     ExecutionPriority,
     TaskMetadata,
     YscbModule,
+    format_output,
 )
 from core.filesystem.space import ConsumerCursor, HashPolicy
 from core.filesystem.storage import SnapshotReader, StorageOpenOptions, WriteTransaction
@@ -35,7 +36,7 @@ from core.foundation import (
 )
 from core.metadata.contributes import AggregatedContributes, ProvenanceGraph
 from core.surface.sdk.client import YscbClient
-from core.surface.sdk.declarative import InMemoryModule, format_output
+from core.surface.sdk.declarative import InMemoryModule
 
 __all__: tuple[str, ...] = (
     "AggregatedContributes",

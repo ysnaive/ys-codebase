@@ -32,6 +32,7 @@ from typing import (
     Tuple,
     TypeVar,
     Union,
+    cast,
     get_args,
     get_origin,
     get_type_hints,
@@ -59,10 +60,61 @@ from core.foundation.primitives import (
     TaskId,
     VersionConstraint,
     clone_strict_json_object,
+    require_pure_bool,
     require_pure_str,
 )
 
 T = TypeVar("T")
+SECRET_FIELD_METADATA_KEY: Final[str] = "yscb_secret"
+
+
+def secret_field(
+    *,
+    default: object = dataclasses.MISSING,
+    default_factory: object = dataclasses.MISSING,
+    init: bool = True,
+    repr: bool = False,
+    compare: bool = True,
+    metadata: Optional[Mapping[str, object]] = None,
+) -> object:
+    """Declare a sensitive dataclass config field (writeOnly in JSON Schema, masked in CLI/config inspection, repr=False)."""
+    require_pure_bool(init, "secret_field.init")
+    require_pure_bool(repr, "secret_field.repr")
+    require_pure_bool(compare, "secret_field.compare")
+    if default is not dataclasses.MISSING and default_factory is not dataclasses.MISSING:
+        raise ValueError("cannot specify both default and default_factory")
+    if default_factory is not dataclasses.MISSING and not callable(default_factory):
+        raise ValueError("secret_field.default_factory must be callable")
+    merged_meta: dict[str, object] = {}
+    if metadata is not None:
+        if not isinstance(metadata, Mapping):
+            raise ValueError("secret_field.metadata must be a Mapping or None")
+        for mk, mv in metadata.items():
+            require_pure_str(mk, "secret_field.metadata key", non_empty=True)
+            merged_meta[mk] = mv
+    merged_meta[SECRET_FIELD_METADATA_KEY] = True
+    if default_factory is not dataclasses.MISSING:
+        return dataclasses.field(
+            default_factory=cast(Callable[[], object], default_factory),
+            init=init,
+            repr=repr,
+            compare=compare,
+            metadata=merged_meta,
+        )
+    if default is not dataclasses.MISSING:
+        return dataclasses.field(
+            default=default,
+            init=init,
+            repr=repr,
+            compare=compare,
+            metadata=merged_meta,
+        )
+    return dataclasses.field(
+        init=init,
+        repr=repr,
+        compare=compare,
+        metadata=merged_meta,
+    )
 _JSON_SCHEMA_DRAFT_URI: Final[str] = "https://json-schema.org/draft/2020-12/schema"
 _CANONICAL_INT_KEY_RE: Final[re.Pattern[str]] = re.compile(r"(?:0|-?[1-9][0-9]*)")
 _MAX_CODEC_DEPTH: Final[int] = MAX_USER_JSON_DEPTH
@@ -1723,6 +1775,10 @@ def _export_dc_object_schema(
             if has_dflt:
                 field_schema = dict(field_schema)
                 field_schema["default"] = enc_dflt
+        if fld.metadata.get(SECRET_FIELD_METADATA_KEY) is True:
+            field_schema = dict(field_schema)
+            field_schema["writeOnly"] = True
+            field_schema["x-yscb-secret"] = True
         props[fld.name] = field_schema
     return {
         "title": schema_title,

@@ -4,11 +4,11 @@
 > **模組路徑**：`core_v2/source/core/core/surface/sdk/`（`declarative.py`、`client.py`、`__init__.py`）
 > **依賴上限（Allowed Imports）**：`foundation/*`、`filesystem.{vfs, space, storage}`、`metadata.{config, contributes}`、`execution.{event, lifecycle, rpc, runtime}`
 > **禁止反向依賴（Forbidden Imports）**：`execution.daemon`、`packaging/*`、`surface.{cli, bootstrap}`（所有下層域亦嚴禁反向匯入 `surface/*`）
-> **狀態**：`Active Living Spec — Two-Tier Primary 52-Symbol Zero-Reflection SDK Facade`
+> **狀態**：`Active Living Spec — Two-Tier Primary 53-Symbol Zero-Reflection SDK Facade`
 
 ## 1. 模組定位與架構邊界 (Positioning & Layering Overview)
 
-`core.surface.sdk` 為下游業務模組（如 `knowledge-db`、`agents-workflow`、`ast`、`vscode-support`、`gdrive-support`）提供**精簡高信噪比之主公開入口（精準鎖定 52 個高頻核心符號）**；外部客戶端（`YscbClient`）、記憶體治具（`InMemoryModule`）、CLI 呈現輔助（`format_output`）、底層剖析與儲存轉接契約則分流至二層子套件 [`core.surface.sdk.advanced`](./sdk_advanced.md)（38 個符號，兩層交集為空）：
+`core.surface.sdk` 為下游業務模組（如 `knowledge-db`、`agents-workflow`、`ast`、`vscode-support`、`gdrive-support`）提供**精簡高信噪比之主公開入口（精準鎖定 53 個高頻核心符號，含 `secret_field` 憑證標記）**；外部客戶端（`YscbClient`）、記憶體治具（`InMemoryModule`）、CLI 呈現輔助（`format_output`）、底層剖析與儲存轉接契約則分流至二層子套件 [`core.surface.sdk.advanced`](./sdk_advanced.md)（38 個符號，兩層交集為空）：
 
 - **宣告式 DSL (`declarative.py`)**：透過內部零反射 Metaclass（`_DeclarativeMeta(ABCMeta)`）於類別定義期掃描 `Module`（含 `aliases`、`description`、`config_type`、`extension_points`）與協變泛型 `TaskGroup[TModule_co]`（公開 `parent_module -> Optional[TModule_co]` 與非空 `module -> TModule_co`）內之 `@task`（含 `equivalence_fn`）、`@on_event`、`@periodic`、`@on_migrate` 方法並編譯為強型別 `TaskMetadata` 與 `YscbModule` 轉接器；`ProtectedModuleLoader` 於未宣告 `create_module()` 時亦支援自動偵測 `module_entry.py` 內唯一具象 `Module` 子類。
 - **零反射疊加描述符與一等業務能力**：裝飾器疊加封裝於不可變描述符（`_DecoratedMethod`）；結合 Domain 5 匯出之 `SpaceClient`（`ctx.spaces`）、`TaskRef[TIn, TOut]`（`ctx.call(ref, req)`）、`ProcessResult`（`ctx.run_process(...)`）與 6 組強型別系統事件常數，免除下游模組重複造輪。
@@ -31,6 +31,8 @@ from core.execution.runtime import (
     ConfigChangedEventPayload,
     DispatchMode,
     Empty,
+    ExitCodeProvider,
+    HumanRenderable,
     ModuleLifecycleEventPayload,
     ProcessResult,
     SecurityTier,
@@ -61,6 +63,7 @@ from core.foundation import (
     StructuredLogger,
     TaskCancelledException,
     YscbError,
+    secret_field,
 )
 from core.metadata.contributes import AggregatedContributes, ContribField, ExtensionPointSpec, MergeStrategy
 
@@ -89,16 +92,6 @@ class Option:
 class MigrationRequest:
     old_version: SemVer4
     new_version: SemVer4
-
-
-@runtime_checkable
-class HumanRenderable(Protocol):
-    def render_text(self) -> str: ...
-
-
-@runtime_checkable
-class ExitCodeProvider(Protocol):
-    def exit_code(self) -> int: ...
 
 
 class ModuleEnv:
@@ -250,6 +243,7 @@ __all__: tuple[str, ...] = (
     "on_event",
     "on_migrate",
     "periodic",
+    "secret_field",
     "task",
 )
 ```

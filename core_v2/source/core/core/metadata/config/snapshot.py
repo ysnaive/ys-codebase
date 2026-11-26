@@ -54,7 +54,6 @@ _CFG_SNAP_ID_RE: Final[re.Pattern[str]] = re.compile(r"^snap_\d{8}T\d{12}Z_(\d+)
 _CFG_SHA256_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
 _CFG_BACKUP_AREAS: Final[tuple[tuple[str, str], ...]] = (
     ("config", "config"),
-    ("config_local", ".config.local"),
     ("storage", "storage"),
 )
 
